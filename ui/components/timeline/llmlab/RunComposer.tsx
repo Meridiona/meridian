@@ -56,10 +56,13 @@ export function RunComposer({ starting, error, onRun }: {
     })
   }
 
+  // One variant per provider by default; a comma-separated model list fans the
+  // SAME provider out once per model ("gpt-5.3, gpt-5.1-mini" -> two columns), so
+  // models within a provider compare exactly like providers do.
   const variants = useMemo(() => (
-    LLM_PROVIDERS.filter(p => picked.has(p.id)).map(p => {
-      const model = (models[p.id] ?? '').trim()
-      return model ? `${p.id}:${model}` : p.id
+    LLM_PROVIDERS.filter(p => picked.has(p.id)).flatMap(p => {
+      const overrides = (models[p.id] ?? '').split(',').map(m => m.trim()).filter(Boolean)
+      return overrides.length ? overrides.map(m => `${p.id}:${m}`) : [p.id]
     })
   ), [picked, models])
 
@@ -151,7 +154,8 @@ export function RunComposer({ starting, error, onRun }: {
                 </span>
               </label>
               {on && (
-                <input type="text" placeholder="model override (optional)"
+                <input type="text" placeholder="model(s), comma-separated (optional)"
+                  title="Empty = the provider's default model. Several models = one variant each, e.g. gpt-5.3, gpt-5.1-mini"
                   value={models[p.id] ?? ''} onChange={e => setModels(m => ({ ...m, [p.id]: e.target.value }))}
                   className="mt-2 w-full rounded-lg px-2 py-1 bg-ctrl"
                   style={{ border: '1px solid var(--t-ctrl-border)', color: 'var(--t-title)', font: '500 11px var(--font-mono, ui-monospace)' }} />
