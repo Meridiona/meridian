@@ -213,7 +213,9 @@ pub(crate) fn open_wizard_window(app: &tauri::AppHandle) {
             #[cfg(target_os = "macos")]
             {
                 let fs_win = win.clone();
-                let _ = app.run_on_main_thread(move || make_fullscreenable(&fs_win));
+                if let Err(e) = app.run_on_main_thread(move || make_fullscreenable(&fs_win)) {
+                    tracing::warn!(error = %e, "failed to dispatch make_fullscreenable to main thread");
+                }
             }
             // Same gap as the dashboard window — see dismiss_popover_on_focus's
             // doc comment (clicking back into an already-open setup window
