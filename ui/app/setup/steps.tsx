@@ -58,6 +58,8 @@ export interface Wiz {
   setProvider: (id: LlmProviderId) => void
   providers: Record<string, ProviderStatus>
   scanningProviders: boolean
+  testingProviderIds: Set<string>
+  testProvider: (id: string) => void
   rescanProviders: () => void
 }
 
@@ -363,6 +365,8 @@ function IntelligenceBody({ wiz }: { wiz: Wiz }) {
         onChange={wiz.setProvider}
         status={wiz.providers}
         scanning={wiz.scanningProviders}
+        testingIds={wiz.testingProviderIds}
+        testOne={wiz.testProvider}
         rescan={wiz.rescanProviders}
       />
       <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-faint)', marginTop: 3 }}>

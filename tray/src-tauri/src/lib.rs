@@ -595,6 +595,8 @@ pub fn run() {
             commands::download_runtime_cmd,
             commands::prefetch_model_cmd,
             commands::detect_llm_providers,
+            commands::test_llm_provider,
+            commands::test_all_llm_providers,
             commands::detect_system_specs,
             // Uninstall wizard (plan + execute; see src/uninstall.rs for the CLI it drives)
             commands::get_uninstall_plan,

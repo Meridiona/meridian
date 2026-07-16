@@ -313,18 +313,71 @@ fn mark_local_chat_model_ready() {
 /// `copilot`). Drives the wizard's Intelligence step, which lets the user pick one - and
 /// says plainly when the CLI they picked isn't here yet.
 ///
-/// Reports *installed*, not *signed in*: see `meridian::llm::detect` for why we refuse to
-/// probe authentication. Not cached - the user will alt-tab out to `npm i -g …` and come
-/// back, and the step has a Rescan button that must tell the truth when they do.
+/// Reports *installed*, not *signed in*: this is the free, always-fresh half of provider
+/// state (`meridian::llm::detect::detect`), never itself run authentication - it just
+/// merges in the last real connectivity test on record for each provider (see
+/// [`test_llm_provider`]/[`test_all_llm_providers`]), if any. Not cached itself - the user
+/// will alt-tab out to `npm i -g …` and come back, and Rescan must tell the truth when
+/// they do.
 #[tauri::command]
 #[tracing::instrument]
 pub async fn detect_llm_providers() -> Result<Vec<meridian::llm::detect::ProviderStatus>, String> {
-    let found = meridian::llm::detect::detect_all().await;
+    let found = meridian::llm::detect::detect_all_with_cache().await;
     tracing::info!(
         installed = found.iter().filter(|p| p.installed).count(),
+        verified = found
+            .iter()
+            .filter(|p| matches!(
+                p.last_test.as_ref().map(|t| &t.outcome),
+                Some(meridian::llm::detect::ProviderTestOutcome::Ok)
+            ))
+            .count(),
         "llm: provider detection complete"
     );
     Ok(found)
+}
+
+/// Run one real, trivial call against `id`'s CLI and report + persist what happened - the
+/// Intelligence panel's per-card "Test" button. Spends one real request against the user's
+/// subscription, so this only ever runs on explicit user action, never automatically.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn test_llm_provider(
+    id: String,
+) -> Result<meridian::llm::detect::ProviderTestResult, String> {
+    let provider = meridian_core::LlmProvider::from_wire(&id)
+        .ok_or_else(|| format!("unknown provider {id:?}"))?;
+    let settings = meridian_core::settings::load_runtime_settings();
+    let result = meridian::llm::detect::test_provider(provider, &settings).await;
+    meridian::llm::detect::persist_test_result(&result);
+    tracing::info!(
+        provider = %id,
+        ok = matches!(result.outcome, meridian::llm::detect::ProviderTestOutcome::Ok),
+        elapsed_ms = result.elapsed_ms,
+        "llm: provider test complete"
+    );
+    Ok(result)
+}
+
+/// Test every currently-installed provider at once - the Intelligence panel's Rescan
+/// action. Each result is persisted as it lands (see
+/// [`meridian::llm::detect::test_all_installed`]), so a slow or hanging CLI can't hold the
+/// others' verified state hostage.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn test_all_llm_providers(
+) -> Result<Vec<meridian::llm::detect::ProviderTestResult>, String> {
+    let settings = meridian_core::settings::load_runtime_settings();
+    let results = meridian::llm::detect::test_all_installed(&settings).await;
+    tracing::info!(
+        tested = results.len(),
+        ok = results
+            .iter()
+            .filter(|r| matches!(r.outcome, meridian::llm::detect::ProviderTestOutcome::Ok))
+            .count(),
+        "llm: provider rescan-test complete"
+    );
+    Ok(results)
 }
 
 /// Start the MLX server if it isn't already running. The wizard's Model step

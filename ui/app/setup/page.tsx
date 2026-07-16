@@ -61,8 +61,10 @@ export default function SetupWizard() {
   // settings.json immediately on pick (not batched to Finish): if the user quits the
   // wizard halfway, the choice they made should still be the choice that runs.
   const [provider, setProviderState] = useState<LlmProviderId>(DEFAULT_LLM_PROVIDER)
-  const { status: providers, scanning: scanningProviders, rescan: rescanProviders } =
-    useLlmProviderDetection()
+  const {
+    status: providers, scanning: scanningProviders,
+    testingIds: testingProviderIds, testOne: testProvider, rescan: rescanProviders,
+  } = useLlmProviderDetection()
 
   // Seed from settings.json rather than assuming the default — a re-run of the wizard
   // must show what the user actually has, not reset them to on-device.
@@ -256,7 +258,8 @@ export default function SetupWizard() {
     err: mlxErr, retryModel,
     integrations, refetchIntegrations,
     signedInEmail, onSignedIn,
-    provider, setProvider, providers, scanningProviders, rescanProviders,
+    provider, setProvider, providers, scanningProviders,
+    testingProviderIds, testProvider, rescanProviders,
   }
 
   // ── Navigation ───────────────────────────────────────────────────────────────
