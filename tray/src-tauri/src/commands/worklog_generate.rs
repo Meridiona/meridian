@@ -34,7 +34,7 @@
 //! - `src/pm_worklog/generate.rs` — the CLI-side engine these spawn, and the source
 //!   of the exact JSON shapes deserialized below.
 //! - [`crate::commands::statuses`] — sibling CLI-spawning command, same
-//!   spawn/`current_dir(~/.meridian)`/timeout/`run_meridian_json` pattern.
+//!   spawn/[`crate::install::cli_cwd`]/timeout/`run_meridian_json` pattern.
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -139,36 +139,25 @@ pub struct ApproveResponse {
     pub error: Option<String>,
 }
 
-/// Resolve `~/.meridian` (created if missing) — the CWD the CLI must run in so
-/// dotenvy loads `~/.meridian/.env` (see [`crate::commands::statuses`]).
-fn meridian_home() -> Result<std::path::PathBuf, String> {
-    let home = std::env::var("HOME")
-        .map_err(|_| "HOME env var not set — cannot locate ~/.meridian".to_string())?;
-    let dir = std::path::PathBuf::from(&home).join(".meridian");
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir).map_err(|e| format!("could not create ~/.meridian: {e}"))?;
-    }
-    Ok(dir)
-}
-
-/// Run `meridian <args…>` in `~/.meridian` under `timeout`, returning trimmed
+/// Run `meridian <args…>` in [`crate::install::cli_cwd`] under `timeout`, returning trimmed
 /// stdout on success or a bounded error message. Same pattern as
 /// [`crate::commands::statuses`].
 ///
 /// Shared with [`crate::commands::plan_tasks`] — the CLI-spawning contract (argv, no
-/// shell; `current_dir(~/.meridian)` so dotenvy finds the daemon's `.env`; a bounded
+/// shell; [`crate::install::cli_cwd`] so dotenvy finds the right `.env`; a bounded
 /// error) is identical for every command that shells out, so it lives here once.
 pub(crate) async fn run_meridian(
     args: &[&str],
     timeout: Duration,
     label: &str,
 ) -> Result<String, String> {
-    let home = meridian_home()?;
+    let home = crate::install::cli_cwd()?;
     let bin = crate::install::meridian_bin();
-    // WHICH binary ran is the single most useful fact when one of these misbehaves:
-    // the tray calls the INSTALLED meridian, which can be older than the tray asking
-    // it for a subcommand. Log it before we spawn, so a failure downstream is one
-    // trace lookup rather than a guess.
+    // WHICH binary ran, and from where, are the most useful facts when one of these
+    // misbehaves: a release tray calls the INSTALLED meridian, which can be older
+    // than the tray asking it for a subcommand, and the cwd decides which `.env`
+    // (so which credentials) it got. Log both before we spawn, so a failure
+    // downstream is one trace lookup rather than a guess.
     tracing::debug!(bin = %bin, cwd = %home.display(), args = ?args, "{label}: spawning");
     let child = tokio::process::Command::new(&bin)
         .args(args)

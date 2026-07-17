@@ -145,3 +145,9 @@ capture = [
     "dep:cidre",
     "dep:tracing-subscriber",
 ]
+
+# Fixture trees for the install-path resolvers (dev_bin / dev_cwd), so the
+# dev-vs-installed choice is tested against a real directory rather than
+# whatever happens to exist on the machine running the tests.
+[dev-dependencies]
+tempfile = "3"

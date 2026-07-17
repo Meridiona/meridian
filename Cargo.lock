@@ -4621,6 +4621,7 @@ dependencies = [
  "tauri-plugin-positioner",
  "tauri-plugin-store",
  "tauri-plugin-updater",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
