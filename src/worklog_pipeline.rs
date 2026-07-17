@@ -28,7 +28,6 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Local, NaiveDateTime, TimeZone, Timelike, Utc};
 use sqlx::SqlitePool;
 use tokio::sync::watch;
-use tokio::time::Instant;
 use tracing::Instrument;
 
 use crate::pm_worklog::{ledger, PmWorklogConfig};
@@ -52,8 +51,9 @@ const MIN_SESSION_DURATION_S: i64 = 15;
 const MIN_SESSIONS: i64 = 5;
 /// Poll cadence while waiting for coding-agent summarisation to finish.
 const CODING_POLL: StdDuration = StdDuration::from_secs(30);
-/// Hard cap on the coding-summarisation wait, so it can never bleed into the next
-/// HH:03 tick (~57 min away). The indexer's hour-boundary seal makes hitting this rare.
+/// Hard cap on the coding-summarisation wait, measured from the END OF THE HOUR (not
+/// from when the daemon happened to start), so it can never bleed into the next HH:03
+/// tick (~57 min away). The indexer's hour-boundary seal makes hitting this rare.
 const CODING_MAX_WAIT: StdDuration = StdDuration::from_secs(20 * 60);
 /// A sealed coding row shorter than this is too trivial to be worth blocking the fold
 /// for: it carries essentially no content to summarise (e.g. a 0-3s Claude Code session
@@ -173,15 +173,41 @@ enum WaitOutcome {
     Shutdown,
 }
 
-/// Poll until no coding row overlapping the hour is in flight, up to `CODING_MAX_WAIT`.
-/// On a query error we return `Ready` (never block the worklog on a bad read).
+/// Wall-clock instant past which the coding wait gives up: `CODING_MAX_WAIT` after the
+/// hour ended. `None` when `he` is not a parseable bound.
+///
+/// Anchored to the hour's end rather than to process start so the cap survives a
+/// restart — see [`await_coding_ready`] for why that matters.
+fn coding_deadline(he: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(he)
+        .ok()
+        .map(|end| end.with_timezone(&Utc) + Duration::seconds(CODING_MAX_WAIT.as_secs() as i64))
+}
+
+/// Poll until no coding row overlapping the hour is in flight, until `CODING_MAX_WAIT`
+/// past the hour's END — a wall-clock deadline, not a per-process one.
+///
+/// The anchor is the whole point. `Instant::now() + CODING_MAX_WAIT` restarts the cap
+/// from zero on every process start, so a daemon that restarts more often than
+/// `CODING_MAX_WAIT` — a dev machine rebuilding on save, a crash loop, a run of updates
+/// — never reaches the cap and the hour is never processed AT ALL. Anchoring to
+/// `hour_end` makes the cap mean what `ledger.rs` already documents it to mean:
+/// "process best-effort once the hour has been over longer than the aging window."
+/// The wait now resumes across restarts, and an hour already past its cap (a backlog
+/// after downtime) proceeds immediately instead of buying another full wait per attempt.
+///
+/// On a query error we return `Ready` (never block the worklog on a bad read); an
+/// unparseable `he` takes the same escape rather than stalling the hour forever.
 async fn await_coding_ready(
     pool: &SqlitePool,
     hs: &str,
     he: &str,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) -> WaitOutcome {
-    let deadline = Instant::now() + CODING_MAX_WAIT;
+    let Some(deadline) = coding_deadline(he) else {
+        tracing::warn!(hour_end = %he, "worklog: unparseable hour end — proceeding");
+        return WaitOutcome::Ready;
+    };
     loop {
         match coding_in_flight(pool, hs, he).await {
             Ok(0) => return WaitOutcome::Ready,
@@ -191,7 +217,7 @@ async fn await_coding_ready(
                 return WaitOutcome::Ready;
             }
         }
-        if Instant::now() >= deadline {
+        if Utc::now() >= deadline {
             return WaitOutcome::CapHit;
         }
         tokio::select! {
@@ -456,6 +482,34 @@ mod tests {
         assert_eq!(wake_delay_secs(210), 3570); // 11:03:30 → next hour's :03
         assert_eq!(wake_delay_secs(180), 3600); // exactly :03 → next hour's :03
         assert_eq!(wake_delay_secs(3599), 181); // 11:59:59 → 12:03
+    }
+
+    /// The cap is 20 min past the hour's END, and is a pure function of the bound —
+    /// NOT of when the process started. This is what lets the wait survive a restart:
+    /// the same `he` yields the same deadline in every process, forever.
+    #[test]
+    fn coding_deadline_is_anchored_to_hour_end() {
+        let he = "2026-07-17T13:00:00+00:00";
+        let deadline = coding_deadline(he).expect("parseable bound");
+        assert_eq!(iso_bound(deadline), "2026-07-17T13:20:00+00:00");
+        // Stable across calls — no process-relative component.
+        assert_eq!(coding_deadline(he), Some(deadline));
+    }
+
+    /// An hour long past its cap must be already-expired, so a restarted daemon
+    /// proceeds best-effort immediately instead of buying a fresh 20-minute wait
+    /// on every attempt (the bug: it then never generates at all).
+    #[test]
+    fn coding_deadline_for_a_stale_hour_is_in_the_past() {
+        let long_ago = iso_bound(Utc::now() - Duration::hours(3));
+        assert!(coding_deadline(&long_ago).expect("parseable bound") < Utc::now());
+    }
+
+    /// A bad bound must not yield a deadline — the caller escapes to `Ready` rather
+    /// than stalling the hour forever.
+    #[test]
+    fn coding_deadline_rejects_an_unparseable_bound() {
+        assert_eq!(coding_deadline("not-a-timestamp"), None);
     }
 
     async fn fresh_db() -> SqlitePool {
