@@ -212,6 +212,15 @@ async fn probe_one_schema(
 /// Is this failure about the ENDPOINT rather than the rung? A bad key answers nothing at
 /// any rung, so walking the ladder would spend three more requests to learn the same thing
 /// and then record a confident, wrong `None`.
+///
+/// This is a substring contract on the messages [`crate::llm::openai_compat`] produces —
+/// "rejected the API key", "unreachable", "selected but not configured". It is deliberately
+/// prose-matching (not a structured `LlmError` variant) for now; the guard against a
+/// producer reword silently breaking classification is two-sided coverage: `openai_compat`'s
+/// own tests pin that it emits those substrings, and
+/// [`tests::endpoint_level_failures_are_fatal_but_rung_refusals_are_not`] pins that this fn
+/// treats them as fatal. Promoting `LlmError::Failed` to carry a reason enum would remove
+/// the guessing entirely and is tracked as a follow-up.
 fn is_fatal(msg: &str) -> bool {
     msg.contains("API key") || msg.contains("unreachable") || msg.contains("not configured")
 }
