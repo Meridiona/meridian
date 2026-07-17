@@ -163,7 +163,8 @@ export default function MeridianTimelineShell() {
       <div className="flex flex-1 min-h-0">
         <div className="relative flex-1 min-w-0 min-h-0 flex flex-col">
           <DayTaskColumn day={day} isToday={isToday}
-            selectedId={selectedDayTask?.id ?? null} onSelect={selectDayTask} />
+            selectedId={selectedDayTask?.id ?? null} onSelect={selectDayTask}
+            hourStatus={data.hourStatus} capturing={data.capturing} isSolo={isSolo} />
 
           {!isSolo && (
             <FloatingDraftsPill count={pendingCount}

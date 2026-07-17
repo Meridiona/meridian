@@ -9,16 +9,23 @@
 // between them reading as a break in the same workstream. Data is `get_day_tasks`,
 // folded hour by hour by the worklog pipeline.
 //
-// Self-contained (fetches + polls its own data, like OverviewPanel's plan) so the
-// shell only passes the day. Clicking a task opens a detail card with its time
-// breakdown and running summary; the whole point is the day reads as a handful of
-// workstreams placed where the time actually went, not 24 rows.
+// Mostly self-contained (fetches + polls its own tasks, like OverviewPanel's plan)
+// so the shell passes little more than the day. The exception is the live-hour
+// strip's inputs (hourStatus/capturing/isSolo), which the shell already polls —
+// see the props. Clicking a task opens a detail card with its time breakdown and
+// running summary; the whole point is the day reads as a handful of workstreams
+// placed where the time actually went, not 24 rows.
+//
+// On today, an HourTakeover strip closes the column out: the hour in progress,
+// which by construction has no finished task band of its own yet. See the
+// `liveMode` block for why it sits below the timeline rather than on it.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { fmtDur, PROVIDER_META } from '@/components/atoms'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { load } from '@/lib/bridge'
-import type { DayTask, DayTasksResponse } from '@/lib/api-types'
+import type { DayTask, DayTasksResponse, HourStatus } from '@/lib/api-types'
+import { HourTakeover } from './HourBadges'
 import {
   layoutDayTasks,
   taskWindow,
@@ -62,7 +69,7 @@ const META_MIN_PX = 62
 const SUMMARY_MIN_PX = 104
 const SUMMARY_LINE_PX = 17 // approx line height of a preview line
 
-export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
+export function DayTaskColumn({ day, isToday, selectedId, onSelect, hourStatus, capturing, isSolo }: {
   day: string
   isToday: boolean
   // Selection is owned by the shell so the clicked task's detail can render in
@@ -70,6 +77,14 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
   // selected card and dims the rest.
   selectedId: string | null
   onSelect: (detail: DayTaskDetail | null) => void
+  // The live-hour strip's inputs. Passed down rather than fetched here (this
+  // column otherwise reads its own data): useTimelineData already loads and
+  // polls get_hour_status for the shell, and a second poller for the same rows
+  // would be pure duplication.
+  hourStatus: HourStatus[]
+  /** `false` = tracking is paused RIGHT NOW. `null` while unknown. */
+  capturing: boolean | null
+  isSolo: boolean
 }) {
   const [resp, setResp] = useState<DayTasksResponse | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -158,6 +173,33 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
   const dayLabel = isToday ? 'Today' : day
   const taskCount = laid.length
 
+  // ── The live hour ─────────────────────────────────────────────────────────
+  // The current hour's status strip, restored from the old 24-row TimelineColumn
+  // (which no longer renders — this column replaced it, and HourTakeover was
+  // orphaned with it).
+  //
+  // It sits BELOW the timeline rather than at the current hour's position on it,
+  // because that position cannot hold it. Two measured reasons, both live on a
+  // real day:
+  //   1. The current hour is usually ALREADY OCCUPIED. Work is folded into tasks
+  //      continuously, so a task band is typically drawn inside the live hour
+  //      right up to a minute or two ago; a takeover placed there lands on top of
+  //      the card showing what is being worked on right now.
+  //   2. Most of the hour has no pixel space anyway. `taskWindow` ends 20 minutes
+  //      past the last segment and `toPx` CLAMPS past `win.hi` — so at 16:26 the
+  //      window ended 16:22 and 38 of the hour's 60 minutes map to no pixels at
+  //      all. There is no band to draw into.
+  // Below the last card it reads as what it actually is: the day so far, and then
+  // the hour still in progress.
+  const nowHour = isToday ? new Date().getHours() : -1
+  const liveStatus = isToday ? hourStatus.find(s => s.hour === nowHour) : undefined
+  // The current hour hasn't ended, so it is almost never `generating` — the DB
+  // only flips that for the seconds the /worklog_hour call is in flight. `queued`
+  // is what the user sees essentially always, which is exactly why the strip is
+  // worth showing: it is the only thing that says the hour is being tracked at
+  // all. (See HourBadges' doc comment.)
+  const liveMode = !isToday ? null : liveStatus?.generating ? 'generating' as const : 'queued' as const
+
   return (
     // A click anywhere in the column that isn't on a card clears the selection
     // (returns the right panel to the day's glance) — cards stopPropagation so
@@ -181,7 +223,9 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
       {!loaded ? null : taskCount === 0 ? (
         <EmptyState isToday={isToday} />
       ) : (
-        <div className="px-6 pb-8">
+        // The live strip below supplies the bottom padding when it is there, so
+        // the two don't stack into a large dead gap.
+        <div className={liveMode ? 'px-6 pb-4' : 'px-6 pb-8'}>
           <div className="relative" style={{ height: colHeight }}>
             {/* Hour gridlines + labels — positioned via the same scale as the
                 cards beneath them (see hourLines) so a label always sits at its
@@ -232,6 +276,34 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
                 )
               })}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* The hour in progress. Rendered on today only, and on the empty day too
+          — a day with nothing folded yet is exactly when "Meridian is watching
+          this hour" is the most useful thing on the screen. The hour label is
+          laid out like the gridline labels above (GUTTER - 12, then 12px), so the
+          strip lines up with the task cards rather than floating loose. */}
+      {loaded && liveMode && (
+        <div className="px-6 pb-8 flex items-start">
+          <span className="mt-mono-sm shrink-0" style={{
+            width: GUTTER - 12, fontSize: 10.5, textAlign: 'right',
+            color: 'var(--color-state-pending)',
+          }}>
+            {hourClock(nowHour)}
+          </span>
+          {/* 12px would carry the label's GUTTER - 12 width up to GUTTER, where
+              the task cards' rail sits — less HourTakeover's own mx-2, so its
+              visible edge lands on that rail rather than 8px inside it. */}
+          <div className="flex-1 min-w-0" style={{ marginLeft: 12 - 8 }}>
+            <HourTakeover
+              hour={nowHour}
+              mode={liveMode}
+              paused={capturing === false}
+              nextHourLabel={hourClock(nowHour + 1)}
+              isSolo={isSolo}
+            />
           </div>
         </div>
       )}
