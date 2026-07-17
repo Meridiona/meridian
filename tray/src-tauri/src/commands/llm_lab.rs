@@ -3,24 +3,31 @@
 //! experiments (no route - new work).
 //!
 //! # What this is
-//! Three commands behind the LLM Lab modal, a **development-only** surface for
+//! Four commands behind the LLM Lab, a **development-only** full-screen surface for
 //! comparing how the pipeline's prose stages come out across LLM providers:
 //! - [`run_llm_experiment`] — start one: shells `meridian llm-experiment create`
 //!   (fast, returns the id), then spawns `exec --id N` **detached** — an N-variant
 //!   run can far outlive any reasonable invoke budget, so the UI polls instead.
 //! - [`get_llm_experiments`] / [`get_llm_experiment`] — the past-runs list and the
-//!   per-variant detail the modal polls while a run progresses.
+//!   per-variant detail the UI polls while a run progresses.
+//! - [`draft_lab_worklog`] — the sidebar's on-demand "draft this task with the
+//!   shown variant": shells `meridian llm-experiment draft-task` and returns the
+//!   model's answer. EPHEMERAL (writes nothing) but fires a REAL, metered
+//!   completion, so the UI puts a free/local caution on the button.
 //!
 //! Every command is refused outside a dev build ([`dev_only`]): the Lab must not
-//! exist for users, even against a hand-crafted `invoke`. (The `llm-experiment`
-//! CLI itself stays ungated for field debugging — the UI is the gated surface.
-//! UI visibility rides `get_app_info().channel === 'dev'`, the same
-//! `cfg!(debug_assertions)` signal, in `MeridianTimelineShell`.)
+//! exist for users, even against a hand-crafted `invoke`. The read/run
+//! `llm-experiment` subcommands stay ungated for field debugging (they only write
+//! local experiment tables), but `draft-task` is dev-gated in the CLI too, since it
+//! alone calls a live provider and can incur cost. UI visibility rides
+//! `get_app_info().channel === 'dev'`, the same `cfg!(debug_assertions)` signal, in
+//! `MeridianTimelineShell`.
 //!
 //! # Who calls this
 //! Registered in `lib.rs`'s `invoke_handler!`; consumed by
 //! `ui/components/timeline/llmlab/` via `ui/lib/bridge.ts` — `load` for the two
-//! reads (flat named args), `invoke('run_llm_experiment', {body})` for the run.
+//! reads (flat named args), `invoke('run_llm_experiment', {body})` for a run, and
+//! `invoke('draft_lab_worklog', {body})` for the sidebar draft.
 //!
 //! # Related
 //! - `src/llm_experiment/` — the daemon-side harness the run command spawns.
@@ -158,4 +165,57 @@ pub async fn get_llm_experiment(
             tracing::warn!(error = %e, "get_llm_experiment failed");
             e.to_string()
         })
+}
+
+/// POST body for [`draft_lab_worklog`] - the selected fold task plus the variant
+/// to draft it with. `task` carries the inline content the daemon drafts from
+/// (`{title, summary, minutes}`); it is deliberately NOT looked up by id, because
+/// a fold task id is a model's SIMULATED day, not a production `day_tasks` row.
+#[derive(Debug, Deserialize)]
+pub struct DraftLabWorklogBody {
+    pub day: String,
+    /// A variant token: `provider`, `provider:model`, or `custom:<endpoint-id>`.
+    pub variant: String,
+    /// `{title, summary, minutes}` - passed through to the CLI as `--task-json`.
+    pub task: serde_json::Value,
+}
+
+/// `draft-task`'s one JSON line.
+#[derive(Debug, Deserialize)]
+struct DraftAck {
+    draft: String,
+}
+
+/// Draft ONE fold task's worklog with ONE variant, on demand - shells
+/// `meridian llm-experiment draft-task` (EPHEMERAL: no experiment row is written)
+/// and returns the model's raw answer for the sidebar to render. This fires a
+/// REAL, metered completion against the chosen variant, so the UI puts a
+/// free/local caution on the button. Dev-only, like the rest of the Lab.
+#[tauri::command]
+#[tracing::instrument(skip(body), fields(variant = %body.variant, day = %body.day))]
+pub async fn draft_lab_worklog(body: DraftLabWorklogBody) -> Result<String, String> {
+    dev_only()?;
+    let task_json = serde_json::to_string(&body.task).map_err(|e| e.to_string())?;
+    let args: Vec<String> = vec![
+        "llm-experiment".into(),
+        "draft-task".into(),
+        "--day".into(),
+        body.day.clone(),
+        "--variant".into(),
+        body.variant.clone(),
+        "--task-json".into(),
+        task_json,
+    ];
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    // The bottleneck is a full worklog-generate completion, which can be slow on a
+    // large model - a generous ceiling, not the 30 s the create step uses.
+    let stdout = run_meridian(
+        &arg_refs,
+        Duration::from_secs(180),
+        "llm-experiment-draft-task",
+    )
+    .await?;
+    let ack: DraftAck = parse_last_line(&stdout)?;
+    tracing::info!("llm-lab: inline worklog draft complete");
+    Ok(ack.draft)
 }

@@ -222,7 +222,7 @@ export default function MeridianTimelineShell() {
       )}
       {activeModal === 'report' && <ReportModal onClose={() => setActiveModal(null)} />}
       {activeModal === 'llmlab' && channel === 'dev' && (
-        <LlmLabModal onClose={() => setActiveModal(null)} />
+        <LlmLabScreen onClose={() => setActiveModal(null)} />
       )}
       {activeModal === 'whats-new' && <WhatsNewModal onClose={closeWhatsNew} />}
       {activeModal === 'plan' && <PlanModal onClose={closePlan} />}

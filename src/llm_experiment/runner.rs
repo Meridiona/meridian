@@ -118,18 +118,27 @@ pub async fn exec(pool: &SqlitePool, experiment_id: i64) -> Result<()> {
 /// custom provider). An id that names no row errors this one variant rather than falling
 /// back to the wrong endpoint silently.
 fn variant_backend(v: &store::StoredVariant) -> Result<Box<dyn LlmBackend>, String> {
-    let Some(provider) = LlmProvider::from_wire(&v.provider) else {
-        return Err(format!("unknown provider {:?}", v.provider));
+    resolve_backend(&v.provider, &v.model)
+}
+
+/// The token-level core of [`variant_backend`]: resolve a backend from a raw
+/// `(provider, model)` pair. `model` is a model override, EXCEPT for `custom`,
+/// where it is an endpoint id (see [`crate::llm_experiment::Variant`]) that points
+/// the config at that specific registry row. Shared with the ephemeral LLM-Lab
+/// draft path ([`crate::llm_experiment::cli`]), which has no stored variant row.
+pub(crate) fn resolve_backend(provider: &str, model: &str) -> Result<Box<dyn LlmBackend>, String> {
+    let Some(provider) = LlmProvider::from_wire(provider) else {
+        return Err(format!("unknown provider {provider:?}"));
     };
     let settings = load_runtime_settings();
     let mut cfg = LlmConfig::from_settings(&settings);
     if provider == LlmProvider::Custom {
         let row = settings
-            .custom_provider(&v.model)
-            .ok_or_else(|| format!("no custom endpoint with id {:?}", v.model))?;
+            .custom_provider(model)
+            .ok_or_else(|| format!("no custom endpoint with id {model:?}"))?;
         cfg = cfg.with_custom(row);
-    } else if !v.model.is_empty() {
-        cfg.model = v.model.clone();
+    } else if !model.is_empty() {
+        cfg.model = model.to_string();
     }
     Ok(backend_for(provider, cfg))
 }

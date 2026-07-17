@@ -541,6 +541,7 @@ pub fn run() {
             commands::get_llm_experiments,
             commands::get_llm_experiment,
             commands::run_llm_experiment,
+            commands::draft_lab_worklog,
             commands::get_version,
             commands::get_app_info,
             commands::check_update,
