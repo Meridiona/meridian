@@ -623,19 +623,48 @@ export interface DaySummary {
   /** The model's prose. Empty on the fallback path. */
   narrative: string
   insights: string[]
+  /**
+   * 0, 1 or 2. **Empty is a correct, common answer** — charts are optional and
+   * most days are best told in words alone, so an empty array means the model
+   * judged none worth showing, NOT that something failed (see `fallback`).
+   */
   panels: SummaryPanel[]
   /** Who ACTUALLY answered — the resolver degrades to local on failure. */
   provider: string
   /** The model override in force (`sonnet`/`haiku`), or '' for the default. */
   model: string
   /**
-   * The model produced no usable panel and the deterministic set was substituted.
-   * Not an error — the screen always renders — but it is why the narrative is
-   * empty when it is.
+   * The summary could not be composed at all (the call failed, or the answer was
+   * unparseable) and one deterministic chart was substituted. Not an error — the
+   * screen always renders — but it is why the narrative is empty when it is.
+   *
+   * NOT the same as `panels` being empty: a summary with no charts and a good
+   * narrative is the normal, intended outcome.
    */
   fallback: boolean
   generated_at: string
 }
 
-/** name → rows, the datasets a panel's spec binds to (`get_day_summary_data`). */
-export type DaySummaryData = Record<string, Record<string, unknown>[]>
+/** The day's headline numbers, as `day_evidence` derives them. */
+export interface DaySummaryScalars {
+  /** Engaged seconds — the SAME number the home page's FOCUS card shows. */
+  focus_s: number
+  /** Coding seconds incl. folded-in agent time — the home page's CODING card. */
+  coding_s: number
+  /** Workstreams of at least `task_min_minutes`. The count worth saying out loud. */
+  task_count: number
+  /** The threshold below which a workstream is a detour, not a thing you did. */
+  task_min_minutes: number
+  workstream_count_including_brief: number
+  idle_s: number
+  agent_s: number
+  session_count: number
+  switch_count: number
+}
+
+/** What `get_day_summary_data` returns: the panels' rows plus the screen's numbers. */
+export interface DaySummaryData {
+  /** name → rows. What a panel's spec binds to by name. */
+  datasets: Record<string, Record<string, unknown>[]>
+  scalars: DaySummaryScalars
+}

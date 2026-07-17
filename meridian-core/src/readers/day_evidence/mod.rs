@@ -38,6 +38,15 @@ use anyhow::Context;
 use serde::Serialize;
 use serde_json::{json, Value};
 
+/// How long a workstream must run to count as something you *did*.
+///
+/// Below this it is a detour, a glance, or a context switch that happened to earn
+/// a title. It stays in the datasets and on the timeline - it really happened -
+/// but it is excluded from `task_count`, the one number the summary says out loud.
+/// A count that includes every three-minute glance is a number the reader can see
+/// through immediately, and an inflated compliment reads as no compliment at all.
+pub const TASK_MIN_MINUTES: i64 = 30;
+
 /// Everything the model is shown about a day.
 #[derive(Debug, Clone, Serialize)]
 pub struct Evidence {
@@ -239,14 +248,46 @@ pub async fn collect(pool: &SqlitePool, day: &str) -> anyhow::Result<Evidence> {
         .filter_map(|h| h.report.map(|r| (h.hour, r)))
         .collect();
 
+    // "Coding" exactly as the home page's stat card shows it: read back out of the
+    // SAME merged rows the category chart renders rather than recomputed, which is
+    // the move `OverviewPanel` makes for the same reason — two independently
+    // derived numbers agree today and drift apart the next time either side
+    // changes, and a summary that contradicts the screen behind it is worse than
+    // no summary.
+    let coding_s = datasets["categories"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|v| v["category"] == "coding")
+        .and_then(|v| v["seconds"].as_i64())
+        .unwrap_or(0);
+
+    // The count worth saying out loud. A workstream under half an hour is a
+    // detour, a glance, or a context switch that happened to get a title - real,
+    // and visible on the timeline, but counting it as a thing you "did" inflates
+    // the number until it means nothing. Better a true "you did 3 things" than a
+    // flattering "you did 9" the reader can immediately see through.
+    let task_count = day_tasks
+        .tasks
+        .iter()
+        .filter(|t| t.minutes >= TASK_MIN_MINUTES)
+        .count();
+
     let scalars = json!({
-        "focus_s": today.focus_s,
+        // The two headline numbers, named and derived exactly as the home page's
+        // FOCUS and CODING cards. The summary is allowed to quote them precisely
+        // because they are the same values, not a second opinion.
+        "focus_s": today.engaged_s,
+        "coding_s": coding_s,
+        // Substantial workstreams only — see TASK_MIN_MINUTES.
+        "task_count": task_count,
+        "task_min_minutes": TASK_MIN_MINUTES,
+        // Everything below is context for the prose, not a headline.
+        "workstream_count_including_brief": day_tasks.tasks.len(),
         "idle_s": today.idle_s,
-        "engaged_s": today.engaged_s,
         "agent_s": today.agent_s,
         "session_count": today.session_count,
         "switch_count": today.switch_count,
-        "workstream_count": day_tasks.tasks.len(),
     });
 
     for (name, rows) in &datasets {

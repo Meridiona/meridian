@@ -86,11 +86,22 @@ pub async fn get_day_summary(
         })
 }
 
-/// The named datasets the day's panels bind to — `{segments: [...], apps: [...], …}`.
+/// Everything the summary screen renders besides the model's own words:
+/// `{datasets: {segments: [...], …}, scalars: {focus_s, coding_s, task_count, …}}`.
 ///
-/// Returned as the raw dataset map (not the whole [`meridian_core::day_evidence::Evidence`]):
-/// the prose evidence is the model's input, not the frontend's, and shipping the
-/// hour reports to a screen that never renders them is pure weight.
+/// **The datasets** are what each panel's spec binds to by name — a stored spec
+/// carries form only, so the rows are fetched here and injected at render.
+///
+/// **The scalars** are the screen's headline numbers, and they come from here rather
+/// than being derived in the frontend on purpose: `focus_s` and `coding_s` must be
+/// the SAME values the home page shows, and `coding_s` in particular is agent time
+/// folded into the coding category — a rule that already exists once in
+/// [`meridian_core::day_evidence`] and would be a second, drifting copy if the
+/// screen recomputed it.
+///
+/// The prose evidence ([`meridian_core::day_evidence::Evidence`]'s hour reports and
+/// workstream logs) is deliberately NOT returned: it is the model's input, not the
+/// frontend's, and shipping it to a screen that never renders it is pure weight.
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_day_summary_data(
@@ -108,5 +119,8 @@ pub async fn get_day_summary_data(
             e.to_string()
         })?;
     tracing::info!(day = %date, datasets = ev.datasets.len(), "day-summary data served");
-    Ok(serde_json::Value::Object(ev.datasets))
+    Ok(serde_json::json!({
+        "datasets": serde_json::Value::Object(ev.datasets),
+        "scalars": ev.scalars,
+    }))
 }

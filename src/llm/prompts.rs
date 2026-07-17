@@ -277,7 +277,7 @@ pub const DAILY_SUMMARY: &str = include_str!("../../services/prompts/daily-summa
 /// That has a real consequence worth stating: on a schema-enforcing backend the
 /// bounds here are hard token-level cuts, so the FSM can guarantee the WRAPPER is
 /// well-formed but nothing about the spec inside it. Hence `panels` is bounded
-/// (2-4, the screen holds no more) while its contents are not, and hence the
+/// (0-2, the screen holds no more) while its contents are not, and hence the
 /// validator — not the schema — is what keeps a broken chart off the screen.
 ///
 /// `why` is required on purpose: asking the model to justify the form is what makes
@@ -291,7 +291,7 @@ pub fn daily_summary_schema() -> Value {
                 "type": "array",
                 "items": {"type": "string"},
                 "minItems": 2,
-                "maxItems": 4
+                "maxItems": 3
             },
             "panels": {
                 "type": "array",
@@ -306,14 +306,18 @@ pub fn daily_summary_schema() -> Value {
                     "required": ["title", "why", "spec"],
                     "additionalProperties": false
                 },
-                // The floor is load-bearing, not decoration. The prompt asks for
-                // 2-4; with `minItems: 1` sonnet returned a ONE-panel screen on a
-                // real day, which is a poor answer to "show me my day" and not what
-                // the prose asked for. Claude validates --json-schema server-side,
-                // so the floor is genuinely enforced there. The ceiling is what the
-                // screen physically holds (code caps it too — see MAX_PANELS).
-                "minItems": 2,
-                "maxItems": 4
+                // There is NO floor, and that is the point: an empty array is a
+                // correct, common answer. A required panel is a panel invented to
+                // satisfy a requirement, and four such panels is how this screen
+                // first came out looking like a monitoring dashboard rather than
+                // something a person would want to read. Charts are optional; the
+                // prose is the feature.
+                //
+                // The ceiling is what the screen holds and what stays uncluttered.
+                // Code caps it too (MAX_PANELS) — a schema is only genuinely
+                // enforced on Claude.
+                "minItems": 0,
+                "maxItems": 2
             }
         },
         "required": ["narrative", "insights", "panels"],
@@ -372,18 +376,26 @@ mod tests {
         assert!(PLAN_TASK_DRAFT.contains("NOT ALL WORK IS ENGINEERING"));
         assert!(PLAN_TASK_DRAFT.contains("NEVER NAME THE PERSON"));
         assert!(PLAN_TASK_DRAFT.contains("Return a JSON object with these fields:"));
-        // The daily summary's whole design rests on four clauses. The data-binding
-        // rule is the load-bearing one: it is what makes a hallucinated number
-        // impossible, since the model never gets to write a value down. The rest
-        // are what stop it becoming the thing it must not be — a timesheet that
-        // replays a day back at the person who just lived it.
+        // The data-binding rule is the load-bearing one: it is what makes a
+        // hallucinated number impossible, since the model never gets to write a
+        // value down.
         assert!(DAILY_SUMMARY.contains("NEVER write `\"data\": {\"values\": [...]}`"));
         assert!(DAILY_SUMMARY.contains("bind data by name, never inline"));
-        assert!(DAILY_SUMMARY.contains("THIS IS NOT A REPORT AND NOT A TIMESHEET"));
-        assert!(DAILY_SUMMARY.contains("SHOW THEM SOMETHING THEY DID NOT ALREADY KNOW"));
-        assert!(DAILY_SUMMARY.contains("CHOOSE THE FORM FROM THE DATA"));
         assert!(DAILY_SUMMARY.contains("INVENT NOTHING"));
         assert!(DAILY_SUMMARY.contains("NEVER NAME THE PERSON"));
+        // The rest stop it becoming the thing it must not be. `DO NOT REPLAY THE
+        // DAY IN ORDER` is the one that was learned the hard way: the first version
+        // of this prompt lacked it and the model wrote a chronology ("the day opened
+        // with ... then ... the evening pivoted to"), which is exactly what the
+        // timeline beside it already shows, and reading it back is irritating.
+        assert!(DAILY_SUMMARY.contains("THIS IS NOT A REPORT AND NOT A TIMESHEET"));
+        assert!(DAILY_SUMMARY.contains("DO NOT REPLAY THE DAY IN ORDER"));
+        assert!(DAILY_SUMMARY.contains("NEVER cite clock times"));
+        assert!(DAILY_SUMMARY.contains("CHOOSE THE FORM FROM THE DATA"));
+        // Charts being optional is the other correction: asking for panels is how
+        // the screen became a dashboard of four charts nobody wanted.
+        assert!(DAILY_SUMMARY.contains("CHARTS ARE OPTIONAL AND USUALLY UNNECESSARY"));
+        assert!(DAILY_SUMMARY.contains("NEVER MORE THAN 2"));
     }
 
     #[test]
@@ -391,12 +403,12 @@ mod tests {
         let s = daily_summary_schema();
         assert_eq!(s["required"], json!(["narrative", "insights", "panels"]));
         let panels = &s["properties"]["panels"];
-        // The screen is one page — code enforces this too, but a schema-enforcing
-        // backend should never even offer a fifth panel.
-        assert_eq!(panels["maxItems"], json!(4));
-        // And a one-panel "summary" is not a summary. Observed for real on sonnet
-        // before this floor existed, hence the assert rather than trusting prose.
-        assert_eq!(panels["minItems"], json!(2));
+        // The screen is prose first — code enforces this too, but a schema-enforcing
+        // backend should never even offer a third panel.
+        assert_eq!(panels["maxItems"], json!(2));
+        // NO floor, asserted rather than left to prose: a required panel is a panel
+        // invented to satisfy a requirement. Zero is a correct answer.
+        assert_eq!(panels["minItems"], json!(0));
         let panel = &panels["items"];
         assert_eq!(panel["required"], json!(["title", "why", "spec"]));
         // `spec` is deliberately unconstrained: it is a whole raw Vega-Lite spec,
@@ -410,7 +422,10 @@ mod tests {
     /// taught a contract the validator then rejects.
     #[test]
     fn daily_summary_examples_only_name_real_datasets() {
-        for name in ["categories", "segments"] {
+        // Deliberately ONE example now, not three. Every example is a suggestion the
+        // model takes, and a prompt that showed a pie chart got a pie chart back —
+        // so what remains teaches the binding contract and nothing about the answer.
+        for name in ["segments"] {
             assert!(
                 DAILY_SUMMARY.contains(&format!("\"name\": \"{name}\"")),
                 "prompt example references dataset {name}"
@@ -420,14 +435,11 @@ mod tests {
                 "prompt example names dataset '{name}', which no longer exists"
             );
         }
-        // Every field the examples encode must be real, for the same reason.
+        // Every field the example encodes must be real, for the same reason.
         for (ds, field) in [
-            ("categories", "seconds"),
-            ("categories", "category"),
             ("segments", "start_min"),
             ("segments", "end_min"),
             ("segments", "title"),
-            ("segments", "task_id"),
             ("segments", "minutes"),
         ] {
             assert!(

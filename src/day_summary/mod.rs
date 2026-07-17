@@ -12,19 +12,28 @@
 //! It is deliberately **not** a worklog and **not** monitoring. The daily plan is
 //! never passed to the model — this is about what you did, not what you promised.
 //!
+//! # The prose is the feature
+//! This is a few honest sentences about what the day was about, not a chart grid.
+//! The model is told never to replay the day in order or quote a clock time — the
+//! timeline beside it already shows the when, and reading it back at the person who
+//! just lived it is worthless. Charts are OPTIONAL (0-2, the model's call) and most
+//! days need none.
+//!
 //! # The division of labour
-//! The model chooses WHICH panels, HOW MANY, WHAT FORM each takes, and writes the
-//! prose. It never supplies a number: specs bind data by name and the frontend
-//! injects the real rows at render ([`validate`] enforces this). That is
+//! The model chooses WHETHER to draw anything, HOW MANY, WHAT FORM each takes, and
+//! writes the prose. It never supplies a number: specs bind data by name and the
+//! frontend injects the real rows at render ([`validate`] enforces this). That is
 //! `worklog_pipeline::workstream`'s house rule — the model owns judgement, code
 //! owns plumbing — applied to visualisation.
 //!
 //! # The screen always renders
-//! Every failure path degrades: an unparseable answer, or one whose every panel is
-//! invalid, falls back to a deterministic panel set with `fallback = 1`. A feature
-//! whose job is to make someone feel good about their day must never greet them
-//! with an error. Precedent: the hourly-report path degrades to an even split
-//! rather than failing the hour.
+//! An unparseable answer or a failed call degrades to a single deterministic chart
+//! with `fallback = 1`. A feature whose job is to make someone feel good about their
+//! day must never greet them with an error. Precedent: the hourly-report path
+//! degrades to an even split rather than failing the hour.
+//!
+//! Note what `fallback` is NOT: an empty `panels` list is a correct answer, not a
+//! degraded one.
 //!
 //! # Layout
 //! - [`validate`] — the two-layer spec check (real Vega-Lite schema + our rules).

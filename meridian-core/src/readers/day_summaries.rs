@@ -63,9 +63,18 @@ pub struct DaySummary {
     pub provider: String,
     /// The model override in force, or "" for the provider's default.
     pub model: String,
-    /// True when the model produced no usable panel and the deterministic set was
-    /// substituted. Not an error — the screen always renders — but it is the
-    /// honest signal of whether this feature is working.
+    /// True when the summary could not be composed at all (the call failed, or the
+    /// answer was unparseable) and the deterministic chart was substituted. Not an
+    /// error — the screen always renders — but it is the honest signal of whether
+    /// this feature is working.
+    ///
+    /// NOT the same as an empty `panels` list: charts are optional and a summary
+    /// that is pure prose is the normal, intended outcome.
+    ///
+    /// **Migration 064's header still describes the older, narrower rule** ("the
+    /// model produced no usable panel"), from when panels were mandatory. It cannot
+    /// be corrected — editing an applied migration changes its checksum — so THIS
+    /// is the current definition. See `day_summary::generate`.
     pub fallback: bool,
     pub generated_at: String,
 }

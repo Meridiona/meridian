@@ -10,12 +10,17 @@
 //! that judgement is holding.
 //!
 //! # Nothing here can fail the screen
-//! Every failure degrades to [`fallback_panels`]: a bad LLM call, an unparseable
-//! answer, or an answer whose every panel is invalid all end with a rendered
-//! screen and `fallback = 1`. The one thing that DOES propagate is a collect
-//! failure — if the day's data cannot be read there is nothing to summarise, and
-//! pretending otherwise would show a confident empty review of a day that had work
-//! in it.
+//! A bad LLM call or an unparseable answer degrades to [`fallback_panels`] with
+//! `fallback = 1`. The one thing that DOES propagate is a collect failure — if the
+//! day's data cannot be read there is nothing to summarise, and pretending
+//! otherwise would show a confident empty review of a day that had work in it.
+//!
+//! **`fallback` does NOT mean "no charts".** Zero panels is a correct and common
+//! answer: the prose is the feature and the prompt says charts are optional, so a
+//! summary with a good narrative and no chart is the normal outcome, not a
+//! degraded one. An answer whose panels were all invalid keeps its narrative and
+//! simply shows no chart — only a summary that could not be composed AT ALL falls
+//! back.
 //!
 //! # Related
 //! - [`meridian_core::day_evidence`] — the evidence.
@@ -29,17 +34,24 @@ use serde_json::{json, Value};
 use tracing::field::Empty;
 
 use super::validate;
+use crate::llm::config::LlmConfig;
 use crate::llm::{self, prompts, PromptRequest};
 use meridian_core::day_evidence::{self, datasets};
+use meridian_core::settings::load_runtime_settings;
 
-/// Generous: the answer carries prose plus up to four Vega-Lite specs, and a
-/// layered spec is verbose. Truncation here reads as a parse failure downstream,
-/// which is a confusing way to discover the budget was too small.
+/// Generous: the answer carries prose plus up to two Vega-Lite specs, and a layered
+/// spec is verbose. Truncation here reads as a parse failure downstream, which is a
+/// confusing way to discover the budget was too small.
 const GENERATE_MAX_TOKENS: u32 = 8000;
 
-/// The screen holds four panels. The schema says so too, but a schema is a request
+/// At most two, and often none. The schema says so too, but a schema is a request
 /// on three of five providers, so the cap is enforced here as well.
-const MAX_PANELS: usize = 4;
+///
+/// This was 4, and 4 is how the screen first shipped looking like a monitoring
+/// dashboard: a pie of categories, a bar of totals, and two more that restated
+/// them. Panels are optional now — the prose is the feature and a chart has to earn
+/// its place beside it.
+const MAX_PANELS: usize = 2;
 
 /// Per-workstream log lines are the richest prose input and the easiest to blow a
 /// context window with. Same posture as `SESSION_TEXT_CAP`: cap it, and record what
@@ -63,10 +75,12 @@ struct Answer {
 ///
 /// Deliberately more forgiving than the schema, matching
 /// `pm_worklog::generate::parse_answer`: a schema is genuinely enforced only on
-/// some providers, so drift is expected rather than exceptional. A missing
-/// `narrative` or `insights` costs prose, not the screen — only a total absence of
-/// panels is worth reporting as a parse failure, and even that degrades rather than
-/// erroring.
+/// some providers, so drift is expected rather than exceptional.
+///
+/// `None` means the text was not JSON at all — that, and only that, is the parse
+/// failure that triggers the fallback. An empty `panels` array is a perfectly good
+/// answer (charts are optional), and a missing `narrative` costs prose rather than
+/// the screen.
 fn parse_answer(text: &str) -> Option<Answer> {
     let v = llm::parse_json_object(text)?;
 
@@ -128,69 +142,55 @@ fn parse_answer(text: &str) -> Option<Answer> {
     })
 }
 
-/// The deterministic panels used when the model gives us nothing usable.
+/// The deterministic panel used when the model gives us nothing usable.
 ///
-/// Plain, correct, and hand-checked against the validator by
-/// `tests::the_fallback_panels_are_themselves_valid` — a fallback that fails to
-/// render would turn a degraded screen into a broken one, which is the one outcome
-/// this whole path exists to prevent.
+/// ONE panel, not a set. This path runs when there is no narrative to show, and the
+/// honest response to "the model could not tell you about your day" is a plain
+/// picture of what happened - not three charts arranged to look like an answer. It
+/// was a set of three (sittings + a category pie + an app bar) back when panels
+/// were mandatory, and it was as much of a dashboard as the thing it was standing
+/// in for.
+///
+/// Hand-checked against the validator by `tests::the_fallback_panels_are_themselves_valid`:
+/// a fallback that fails to render would turn a degraded screen into a broken one,
+/// which is the one outcome this whole path exists to prevent.
 pub fn fallback_panels() -> Vec<SummaryPanel> {
-    vec![
-        SummaryPanel {
-            title: "When you worked".to_string(),
-            why: "the day's sittings on one time axis".to_string(),
-            spec: json!({
-                "data": {"name": "segments"},
-                "mark": {"type": "bar", "cornerRadius": 2},
-                "encoding": {
-                    "x":  {"field": "start_min", "type": "quantitative",
-                           "title": "time of day",
-                           "axis": {"labelExpr": "format(floor(datum.value/60),'02') + ':00'"},
-                           "scale": {"domain": [0, 1440]}},
-                    "x2": {"field": "end_min"},
-                    "y":  {"field": "title", "type": "nominal", "title": null},
-                    "color": {"field": "title", "type": "nominal", "legend": null}
-                }
-            }),
-        },
-        SummaryPanel {
-            title: "Where the time went".to_string(),
-            why: "the split across kinds of work".to_string(),
-            spec: json!({
-                "data": {"name": "categories"},
-                "transform": [{"calculate": "datum.seconds / 60", "as": "minutes_spent"}],
-                "mark": {"type": "arc", "innerRadius": 50},
-                "encoding": {
-                    "theta": {"field": "minutes_spent", "type": "quantitative"},
-                    "color": {"field": "category", "type": "nominal", "title": null}
-                }
-            }),
-        },
-        SummaryPanel {
-            title: "Top apps".to_string(),
-            why: "which tools the day actually ran through".to_string(),
-            spec: json!({
-                "data": {"name": "apps"},
-                "transform": [
-                    {"calculate": "datum.seconds / 60", "as": "minutes_spent"},
-                    {"window": [{"op": "rank", "as": "r"}], "sort": [{"field": "seconds", "order": "descending"}]},
-                    {"filter": "datum.r <= 8"}
-                ],
-                "mark": {"type": "bar", "cornerRadius": 2},
-                "encoding": {
-                    "x": {"field": "minutes_spent", "type": "quantitative", "title": "minutes"},
-                    "y": {"field": "app", "type": "nominal", "sort": "-x", "title": null}
-                }
-            }),
-        },
-    ]
+    vec![SummaryPanel {
+        title: "What the day looked like".to_string(),
+        why: "the day's sittings on one time axis".to_string(),
+        spec: json!({
+            "data": {"name": "segments"},
+            "mark": {"type": "bar", "cornerRadius": 3},
+            "encoding": {
+                "x":  {"field": "start_min", "type": "quantitative",
+                       "title": null,
+                       "axis": {"labelExpr": "format(floor(datum.value/60),'02') + ':00'"},
+                       "scale": {"domain": [0, 1440]}},
+                "x2": {"field": "end_min"},
+                "y":  {"field": "title", "type": "nominal", "title": null},
+                "tooltip": [
+                    {"field": "title", "type": "nominal", "title": "work"},
+                    {"field": "minutes", "type": "quantitative", "title": "minutes"}
+                ]
+            }
+        }),
+    }]
 }
 
 /// Render the day's evidence as the user message.
 fn build_user_prompt(ev: &day_evidence::Evidence) -> String {
     let mut s = String::new();
     s.push_str(&format!("=== THE DAY: {} ===\n", ev.day));
-    s.push_str(&format!("Totals: {}\n", ev.scalars));
+    s.push_str(&format!("Scalars: {}\n", ev.scalars));
+    // Named explicitly because the screen shows these three, verbatim, right next
+    // to the prose. The model needs to know they are ALREADY on the page - left to
+    // infer it from a bag of scalars, it spends its two sentences reciting numbers
+    // the reader can see an inch away.
+    s.push_str(
+        "\n`focus_s`, `coding_s` and `task_count` are ALREADY DISPLAYED on this screen as \
+         FOCUS, CODING and the count of things you did. Do not read them back. Use them to \
+         understand the day.\n",
+    );
 
     s.push_str("\n=== DATASETS (the only names and fields you may reference) ===\n");
     s.push_str(&datasets::describe());
@@ -214,7 +214,18 @@ fn build_user_prompt(ev: &day_evidence::Evidence) -> String {
     }
 
     if !ev.hour_reports.is_empty() {
-        s.push_str("\n=== HOUR BY HOUR (prose evidence, not chartable) ===\n");
+        // The framing matters as much as the content. Headed "HOUR BY HOUR", this
+        // block reliably produced an hour-by-hour answer - the model mirrors the
+        // shape it is handed, and a timestamped list reads as an instruction to
+        // narrate a sequence. It is the richest evidence of WHAT was done, so it
+        // stays; the hour labels are demoted to what they actually are, a capture
+        // artefact.
+        s.push_str(
+            "\n=== EVIDENCE OF WHAT THE WORK INVOLVED (prose, not chartable) ===\n\
+             Grouped by hour ONLY because that is how it was captured. The hour labels are \
+             not part of the story - do not sequence your answer around them, and never \
+             quote one.\n",
+        );
         for (h, r) in &ev.hour_reports {
             let trimmed: String = r.chars().take(MAX_HOUR_REPORT_CHARS).collect();
             s.push_str(&format!("{h:02}:00 - {trimmed}\n"));
@@ -286,11 +297,15 @@ pub async fn generate(pool: &SqlitePool, day_local: &str) -> Result<DaySummary> 
         }
     };
 
-    // Read at call time, like the resolver reads the provider — changing the model
-    // in Settings must take effect on the next generate, not the next restart.
-    let model = meridian_core::settings::load_runtime_settings()
-        .llm_provider_model
-        .unwrap_or_default();
+    // The model override comes through `LlmConfig` — the ONE place that defines what
+    // the global AI setting means — rather than reaching into settings.json for
+    // `llm_provider_model` directly. This module has no business knowing which
+    // settings key backs the choice or that an absent one means "the provider's
+    // default"; that is `llm::config`'s job, and a second reader of the same key is
+    // how the two quietly disagree the next time it moves. Read at call time, like
+    // the resolver reads the provider, so changing it in Settings takes effect on the
+    // next generate rather than the next restart.
+    let model = LlmConfig::from_settings(&load_runtime_settings()).model;
     span.record("model", model.as_str());
 
     // ── validate ──────────────────────────────────────────────────────────────
@@ -317,15 +332,19 @@ pub async fn generate(pool: &SqlitePool, day_local: &str) -> Result<DaySummary> 
     }
     kept.truncate(MAX_PANELS);
 
-    let fallback = kept.is_empty();
-    let (narrative, insights, panels) = if fallback {
-        // No narrative on the fallback path: the prose the model wrote (if any)
-        // described panels that no longer exist, and inventing a replacement is
-        // exactly what this feature must not do.
-        (String::new(), Vec::new(), fallback_panels())
-    } else {
-        let a = answer.expect("kept is non-empty, so an answer was parsed");
-        (a.narrative, a.insights, kept)
+    // ZERO PANELS IS A CORRECT ANSWER, not a failure. The prompt says charts are
+    // optional and most days genuinely need none, so the fallback trigger is the
+    // ANSWER being absent — a failed call or an unparseable one — never an empty
+    // panel list. This read `kept.is_empty()` when panels were mandatory; leaving
+    // it that way would throw away a perfectly good narrative for exactly the days
+    // the model judged best told in words alone, which is the common case.
+    let fallback = answer.is_none();
+    let (narrative, insights, panels) = match answer {
+        Some(a) => (a.narrative, a.insights, kept),
+        // No narrative on the fallback path: there is no prose to show, and writing
+        // a replacement is exactly what this feature must not do. One honest chart
+        // of what happened, and nothing claimed about it.
+        None => (String::new(), Vec::new(), fallback_panels()),
     };
 
     // Record every field on BOTH paths, `""`/`0` included. OpenObserve only learns
@@ -378,14 +397,24 @@ pub async fn get(pool: &SqlitePool, day_local: &str) -> Result<Option<DaySummary
     day_summaries::get_day_summary(pool, day_local).await
 }
 
-/// The datasets a panel binds to, for the frontend to inject at render.
+/// What the screen renders besides the model's words: the datasets each panel binds
+/// to, and the headline scalars shown beside the prose.
 ///
 /// Read live rather than stored with the spec: the day's data keeps moving, and a
 /// frozen copy would render a chart that silently disagrees with the timeline
 /// beside it. See migration 064's header.
+///
+/// Mirrors the tray's `get_day_summary_data` exactly — the tray reads
+/// `day_evidence` directly rather than spawning this, so the two shapes are kept
+/// identical deliberately: this is the debugging view of what the screen is given
+/// (`meridian day-summary-data --day X | jq .scalars`), and it is worth nothing if
+/// it shows something else.
 pub async fn panel_data(pool: &SqlitePool, day_local: &str) -> Result<Value> {
     let ev = day_evidence::collect(pool, day_local).await?;
-    Ok(Value::Object(ev.datasets))
+    Ok(json!({
+        "datasets": Value::Object(ev.datasets),
+        "scalars": ev.scalars,
+    }))
 }
 
 #[cfg(test)]
@@ -401,9 +430,27 @@ mod tests {
         }
     }
 
+    /// The fallback stands in for a summary that could not be written. One honest
+    /// chart is the whole of it — a set of three was itself a dashboard, which is
+    /// the thing this screen must not be.
     #[test]
-    fn the_fallback_set_fits_the_screen() {
+    fn the_fallback_is_a_single_panel() {
+        assert_eq!(fallback_panels().len(), 1);
         assert!(fallback_panels().len() <= MAX_PANELS);
+    }
+
+    /// Zero panels is a CORRECT answer, so an answer that parsed must never be
+    /// treated as a fallback just because the model chose no chart. Pins the rule
+    /// the `fallback` flag encodes; `kept.is_empty()` here would silently discard
+    /// the narrative on exactly the days best told in words alone.
+    #[test]
+    fn an_answer_with_no_panels_is_still_an_answer() {
+        let a = parse_answer(
+            r#"{"narrative":"A deep day on one thing.","insights":["x"],"panels":[]}"#,
+        )
+        .expect("an empty panel list is valid, not a parse failure");
+        assert!(a.panels.is_empty());
+        assert_eq!(a.narrative, "A deep day on one thing.");
     }
 
     #[test]
@@ -437,7 +484,9 @@ mod tests {
         assert!(parse_answer("I could not do that.").is_none());
     }
 
-    /// Missing prose costs prose, not the screen — the panels are the point.
+    /// Drift on the prose fields costs prose, not the screen. (Note the direction:
+    /// the prose is the feature and the panels are optional, so this is the
+    /// expensive kind of drift — but degrading beats erroring either way.)
     #[test]
     fn tolerates_a_missing_narrative_and_insights() {
         let a = parse_answer(r#"{"panels": [{"spec": {"mark": "bar"}}]}"#).unwrap();

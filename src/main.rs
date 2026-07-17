@@ -579,12 +579,11 @@ async fn main() -> Result<()> {
         let cfg = Config::from_env();
         match setup_db(&cfg.meridian_db_uri()).await {
             Ok(pool) => {
-                match meridian_core::day_evidence::collect(&pool, &day).await {
-                    Ok(ev) => println!(
-                        "{}",
-                        serde_json::to_string(&serde_json::Value::Object(ev.datasets))
-                            .unwrap_or_default()
-                    ),
+                // Through `panel_data`, NOT `collect` directly: this command's only
+                // job is to show what the screen is given, and it is worth nothing
+                // if it shapes the answer itself and shows something else.
+                match meridian::day_summary::generate::panel_data(&pool, &day).await {
+                    Ok(v) => println!("{}", serde_json::to_string(&v).unwrap_or_default()),
                     Err(e) => {
                         pool.close().await;
                         eprintln!("day-summary-data: {e:#}");
