@@ -89,6 +89,49 @@ pub async fn post_worklog(
     })
 }
 
+/// Post a plain status-update COMMENT (not a worklog — no time, no `⏱` marker) to
+/// the Jira issue `task_key` via `POST /rest/api/3/issue/{key}/comment`. `body` is
+/// posted verbatim, wrapped in ADF. Returns the created comment's id. This is the
+/// centralised comment primitive the day-task "Generate worklog" flow uses; the
+/// worklog endpoint ([`post_worklog`]) is unrelated.
+pub async fn post_comment(jira: &JiraConfig, task_key: &str, body: &str) -> Result<String> {
+    let ctx = resolve(jira)
+        .await
+        .context("resolving Jira auth for comment POST")?;
+    let url = ctx.api_url(&format!("/rest/api/3/issue/{task_key}/comment"));
+    let payload = json!({ "body": build_adf_comment(body) });
+
+    tracing::info!(task_key, comment_len = body.len(), "jira comment POST");
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .context("building Jira comment HTTP client")?;
+    let resp = ctx
+        .apply(client.post(&url))
+        .header("Accept", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .with_context(|| format!("network error reaching Jira at {url}"))?;
+
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("Jira comment POST for {task_key} returned {status}: {text}");
+    }
+    let parsed: Value =
+        serde_json::from_str(&text).context("parsing Jira comment response JSON")?;
+    parsed
+        .get("id")
+        .map(|v| {
+            v.as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| v.to_string())
+        })
+        .context("Jira comment response missing `id`")
+}
+
 /// Delete a previously-posted worklog entry. Used when an already-`posted`
 /// worklog is edited/re-matched (`meridian_core::worklogs::edit_worklog` /
 /// `rematch_worklog` stash the old id in `unpost_worklog_id`): the stale

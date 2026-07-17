@@ -1,9 +1,9 @@
 """Tiered task classifier — abstention-first, FSM JSON over HTTP.
 
 Tier 1: match the hour's activity report against the confirmed daily plan
-        (2-5 tasks), with reranker scores as a hint.
+        (2-5 tasks).
 Tier 2: only if Tier 1 found < 2 matches — scan the rest of the backlog in
-        reranker-ranked order, 5 tasks per batch, stop at the first batch that
+        5 tasks per batch, stop at the first batch that
         yields a match (off-plan work is rare; this bounds LLM calls).
 Tier 3: still nothing → caller proposes a new ticket.
 
@@ -39,8 +39,7 @@ _MIN_CONFIDENCE = 0.5  # drop matches the model itself isn't confident in
 class Candidate:
     task_key:    str
     title:       str
-    doc:         str            # rendered ticket text (for reranker + prompt)
-    rerank_score: float = 0.0
+    doc:         str            # rendered ticket text (for the prompt)
 
 
 @dataclass
@@ -73,7 +72,7 @@ def _post_classify(
     body = {
         "report":     report,
         "candidates": [
-            {"task_key": c.task_key, "title": c.title, "doc": c.doc, "rerank_score": c.rerank_score}
+            {"task_key": c.task_key, "title": c.title, "doc": c.doc}
             for c in candidates
         ],
         "tier":      tier,

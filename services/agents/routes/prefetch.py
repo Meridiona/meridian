@@ -1,7 +1,7 @@
 """Prefetch routes — /prefetch_model and /prefetch_status.
 
 Eager, registry-driven download of EVERY model the end-to-end pipeline needs
-(llm + reranker + embedder — see agents.model_registry), so the onboarding wizard
+(llm + embedder — see agents.model_registry), so the onboarding wizard
 can fetch the whole set before the user reaches the dashboard and no first
 worklog run stalls on a silent mid-pipeline download.
 

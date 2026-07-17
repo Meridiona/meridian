@@ -32,7 +32,6 @@ RULES
   will be created for this work. Returning nothing is a correct, expected answer, and is
   better than a wrong match. When unsure between "weak match" and "no match", choose no match.
 - You may return more than one task when the hour genuinely spans several.
-- A reranker pre-scored the candidates as a hint; it is only a hint. Trust the summary, not
   the score — a high score on work the summary does not support is still NO match.
 - Set `confidence` honestly: use it to express genuine certainty that the work advanced the
   task. Only include a match you are confident about (roughly 0.8 or higher).

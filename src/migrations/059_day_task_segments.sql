@@ -1,0 +1,13 @@
+-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+-- Day-task time segments — approximate start-end ranges per task, for the timeline.
+--
+-- The Workstream Builder now assigns each hour's work activities (which carry real
+-- `HH:MM-HH:MM` ranges from the activity report) to their task and stores the task's
+-- segments here. A task can hold several non-contiguous segments (breaks): worked
+-- 08:15-08:45, then 11:43-16:15 = two segments. This is what lets the timeline draw a
+-- task spanning its real approximate start-end rather than snapping to whole hours.
+--
+-- Additive + non-destructive: `hours_json` (idempotency + interim hour-block UI) and
+-- `minutes` (now the summed segment duration) are unchanged.
+ALTER TABLE day_tasks ADD COLUMN segments_json TEXT NOT NULL DEFAULT '[]';
+-- [{"start":"HH:MM","end":"HH:MM"}, …] ascending, overlaps coalesced; gaps = breaks.

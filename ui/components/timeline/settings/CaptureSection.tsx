@@ -19,6 +19,7 @@ export function CaptureSection({ settings, patch, save }: {
   save: (fields: Partial<RuntimeSettings>, setStatus?: (s: SaveStatus) => void) => Promise<void>
 }) {
   const [status, setStatus] = useState<SaveStatus>('idle')
+  const [streamingStatus, setStreamingStatus] = useState<SaveStatus>('idle')
 
   return (
     <div className="max-w-[640px] flex flex-col gap-5">
@@ -60,6 +61,19 @@ export function CaptureSection({ settings, patch, save }: {
             work_hours_end: settings.work_hours_end,
             work_days: settings.work_days,
           }, setStatus)}
+        />
+      </SectionCard>
+
+      <SectionCard>
+        <SectionHeader>Streaming video</SectionHeader>
+        <FieldRow label="Skip streaming services" description="Netflix, Disney+, Hulu, Prime Video, Apple TV, Peacock, Paramount+, HBO Max, and Crunchyroll show a black screen to any screen recorder — including Meridian — so there is nothing to capture anyway. Enabling this skips those frames outright (in the app or in a browser tab) instead of storing a blank capture.">
+          <Switch checked={settings.pause_on_streaming_video} onCheckedChange={v => patch({ pause_on_streaming_video: v })} />
+        </FieldRow>
+        <SaveButton
+          status={streamingStatus}
+          onClick={() => save({
+            pause_on_streaming_video: settings.pause_on_streaming_video,
+          }, setStreamingStatus)}
         />
       </SectionCard>
     </div>

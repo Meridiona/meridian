@@ -55,7 +55,7 @@ def _invalidate_dependent_caches() -> None:
     outlines_core Index/Guide/Vocabulary, which carry Python-side reference
     cycles) fully resident for the whole gap: it both defeated this module's
     single-slot residency guarantee (two generative models briefly alive at
-    once) and, since eviction fires here often — every reranker↔classifier
+    once) and, since eviction fires here often — every embedder↔classifier
     swap — let that stale generation pile up across many reload cycles
     before Python's own GC schedule swept it, producing multi-GB/hour
     malloc-zone growth invisible to ``mx.get_active_memory()`` (that call
@@ -175,7 +175,7 @@ def maybe_evict_idle(idle_s: float | None = None) -> float | None:
 def evict_resident_model() -> float | None:
     """Force-evict the resident generative model NOW, ignoring the idle timer.
 
-    The single-slot guarantee: the reranker must never be resident alongside
+    The single-slot guarantee: the embedder must never be resident alongside
     the generative model. Callers that are about to load a different model
     call this first. Respects _in_flight — returns None if an inference is
     running (the worklog pipeline is serialised, so nothing is in flight at a
