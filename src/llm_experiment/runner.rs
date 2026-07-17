@@ -108,13 +108,27 @@ pub async fn exec(pool: &SqlitePool, experiment_id: i64) -> Result<()> {
 
 /// Resolve one variant's backend: the stored provider plus its model override on
 /// top of the live settings-derived config.
+///
+/// A `custom` variant is special: `v.model` holds an endpoint ID (see
+/// [`crate::llm_experiment::Variant::parse`]), not a model. It addresses a specific registry
+/// row — which may NOT be the user's selected production endpoint, and need not even be
+/// production-eligible, because the Lab runs any measured endpoint on purpose. So the config
+/// is pointed at THAT row via [`LlmConfig::with_custom`], overriding whatever
+/// `from_settings` resolved as the active custom endpoint (or None, if the user runs no
+/// custom provider). An id that names no row errors this one variant rather than falling
+/// back to the wrong endpoint silently.
 fn variant_backend(v: &store::StoredVariant) -> Result<Box<dyn LlmBackend>, String> {
     let Some(provider) = LlmProvider::from_wire(&v.provider) else {
         return Err(format!("unknown provider {:?}", v.provider));
     };
     let settings = load_runtime_settings();
     let mut cfg = LlmConfig::from_settings(&settings);
-    if !v.model.is_empty() {
+    if provider == LlmProvider::Custom {
+        let row = settings
+            .custom_provider(&v.model)
+            .ok_or_else(|| format!("no custom endpoint with id {:?}", v.model))?;
+        cfg = cfg.with_custom(row);
+    } else if !v.model.is_empty() {
         cfg.model = v.model.clone();
     }
     Ok(backend_for(provider, cfg))

@@ -12,8 +12,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { load } from '@/lib/bridge'
 import type { DayTasksResponse, LlmExperimentProcess, RunLlmExperimentBody } from '@/lib/api-types'
-import { LLM_PROVIDERS, type LlmProviderId } from '@/lib/llm-providers'
+import { LLM_PROVIDERS, customVariantId, rungLabel, type LlmProviderId } from '@/lib/llm-providers'
 import { useLlmProviderDetection } from '@/components/LlmProviderPicker'
+import { useCustomProviders } from '@/components/CustomProviders'
 import { dayString } from '../types'
 
 const PROCESSES: { id: LlmExperimentProcess; name: string; hint: string }[] = [
@@ -34,8 +35,13 @@ export function RunComposer({ starting, error, onRun }: {
   const [taskId, setTaskId] = useState<string>('')
   const [picked, setPicked] = useState<Set<LlmProviderId>>(new Set(['local']))
   const [models, setModels] = useState<Partial<Record<LlmProviderId, string>>>({})
+  // Custom endpoints are picked by id, separately from the built-in providers - they aren't
+  // LlmProviderIds and the Lab runs ANY measured endpoint, so there's no install/eligibility
+  // gate on them here (unlike the production picker).
+  const [pickedCustom, setPickedCustom] = useState<Set<string>>(new Set())
 
   const { status, scanning } = useLlmProviderDetection()
+  const custom = useCustomProviders()
 
   // Day-task options for worklog-generate: the picked day's cards.
   const [dayTasks, setDayTasks] = useState<DayTasksResponse | null>(null)
@@ -57,15 +63,27 @@ export function RunComposer({ starting, error, onRun }: {
     })
   }
 
+  function toggleCustom(id: string) {
+    setPickedCustom(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
   // One variant per provider by default; a comma-separated model list fans the
   // SAME provider out once per model ("gpt-5.3, gpt-5.1-mini" -> two columns), so
-  // models within a provider compare exactly like providers do.
-  const variants = useMemo(() => (
-    LLM_PROVIDERS.filter(p => picked.has(p.id)).flatMap(p => {
+  // models within a provider compare exactly like providers do. Custom endpoints
+  // append as `custom:<id>` tokens - their model is fixed by the endpoint, so no
+  // model-override fan-out.
+  const variants = useMemo(() => ([
+    ...LLM_PROVIDERS.filter(p => picked.has(p.id)).flatMap(p => {
       const overrides = (models[p.id] ?? '').split(',').map(m => m.trim()).filter(Boolean)
       return overrides.length ? overrides.map(m => `${p.id}:${m}`) : [p.id]
-    })
-  ), [picked, models])
+    }),
+    ...custom.providers.filter(c => pickedCustom.has(c.id)).map(c => customVariantId(c.id)),
+  ]), [picked, models, pickedCustom, custom.providers])
 
   const hourLabel = `${day}T${String(hour).padStart(2, '0')}`
   const inputOk = process === 'worklog_generate' ? taskId !== '' : true
@@ -166,6 +184,33 @@ export function RunComposer({ starting, error, onRun }: {
                   value={models[p.id] ?? ''} onChange={e => setModels(m => ({ ...m, [p.id]: e.target.value }))}
                   className="mt-2 w-full rounded-lg px-2 py-1 bg-ctrl"
                   style={{ border: '1px solid var(--t-ctrl-border)', color: 'var(--t-title)', font: '500 11px var(--font-mono, ui-monospace)' }} />
+              )}
+            </div>
+          )
+        })}
+
+        {/* The user's own endpoints. Unlike the production picker, the Lab runs ANY measured
+            endpoint - even one whose rung is too weak for production - so these have no
+            eligibility gate; the rung is shown for context, not as a lock. */}
+        {custom.providers.map(c => {
+          const on = pickedCustom.has(c.id)
+          return (
+            <div key={c.id} className="rounded-xl px-3 py-2.5"
+              style={{
+                border: `1px solid ${on ? 'var(--btn-primary-bg)' : 'var(--t-card-border)'}`,
+                background: 'var(--t-box)',
+              }}>
+              <label className="flex items-center gap-2" style={{ cursor: 'pointer' }}>
+                <input type="checkbox" checked={on} onChange={() => toggleCustom(c.id)} />
+                <span className="mt-card-title truncate" style={{ color: 'var(--t-title)' }}>{c.name}</span>
+                <span className="ml-auto mt-body-sm shrink-0" style={{ color: 'var(--t-faint)', fontSize: 10.5 }}>
+                  {rungLabel(c.effective_rung)}
+                </span>
+              </label>
+              {on && (
+                <p className="mt-1.5 font-mono truncate" style={{ color: 'var(--t-faint)', fontSize: 10.5 }}>
+                  {c.model}
+                </p>
               )}
             </div>
           )

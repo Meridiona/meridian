@@ -2,7 +2,9 @@
 //! `meridian llm-experiment <run|create|exec|list|get>` — the LLM-Lab CLI surface.
 //!
 //! * `run    --process hour-report --hour 2026-07-15T14 --variants claude,codex:gpt-5.1,local`
-//!   — create + execute + print the detail JSON (the human one-shot).
+//!   — create + execute + print the detail JSON (the human one-shot). A `custom:<endpoint-id>`
+//!   token runs one of the user's configured cloud endpoints (the id from settings.json's
+//!   `custom_llm_providers`); its model comes from the endpoint, not a `:model` suffix.
 //! * `run    --process worklog-generate --day 2026-07-15 --task-id T2 --variants …`
 //! * `create <same args>` — insert the experiment + pending rows, print
 //!   `{"experiment_id":N}`, exit. The tray uses this to get a handle fast, then…
@@ -26,7 +28,7 @@ use super::{
 
 const USAGE: &str = "usage: meridian llm-experiment \
 run|create --process hour-report|workstream-fold|worklog-generate|day-fold \
-(--hour YYYY-MM-DDTHH | --day YYYY-MM-DD [--task-id T]) --variants p1,p2:model,… \
+(--hour YYYY-MM-DDTHH | --day YYYY-MM-DD [--task-id T]) --variants p1,p2:model,custom:id,… \
 | exec --id N | list [--limit N] | get --id N";
 
 /// Parse argv and dispatch. Prints exactly one JSON line on success (except

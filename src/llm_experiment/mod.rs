@@ -126,6 +126,15 @@ impl Variant {
     /// Parse one CLI variant token: `"codex"` (provider default model) or
     /// `"codex:gpt-5.1-codex"` (explicit model). Unknown providers error with the
     /// valid id list.
+    ///
+    /// # The custom case
+    /// `custom` is a KIND, not an endpoint, so a variant must name WHICH one:
+    /// `"custom:<endpoint-id>"`. The part after the colon is therefore the endpoint id, not
+    /// a model — a custom endpoint has no "default model" to override; its model, base URL,
+    /// key, and measured rung all come from its registry row, resolved at run time by
+    /// [`crate::llm_experiment::runner`]. It is carried in the `model` field only because the
+    /// stored schema has that column and no other; the runner reads it as an id, never as a
+    /// model. A bare `"custom"` is rejected here rather than failing later as a mystery.
     pub fn parse(s: &str) -> Result<Self> {
         let s = s.trim();
         if s.is_empty() {
@@ -143,6 +152,9 @@ impl Variant {
                 valid.join(", ")
             )
         })?;
+        if provider == LlmProvider::Custom && model.is_none() {
+            bail!("a custom variant must name an endpoint - want custom:<endpoint-id>");
+        }
         Ok(Self {
             provider,
             model,
@@ -250,6 +262,22 @@ mod tests {
 
         assert!(Variant::parse("").is_err());
         assert!(Variant::parse("gemini").is_err(), "unknown provider");
+    }
+
+    #[test]
+    fn custom_variant_carries_the_endpoint_id_in_model() {
+        // `custom:<id>` — the part after the colon is the endpoint id, which the runner
+        // resolves to a registry row; the Variant just carries it in `model`.
+        let v = Variant::parse("custom:gemini-flash").unwrap();
+        assert_eq!(v.provider, LlmProvider::Custom);
+        assert_eq!(v.model.as_deref(), Some("gemini-flash"));
+
+        // A bare `custom` names no endpoint - rejected here, not as a mystery at run time.
+        assert!(
+            Variant::parse("custom").is_err(),
+            "custom without an endpoint id must fail"
+        );
+        assert!(Variant::parse("custom:").is_err(), "empty id must fail");
     }
 
     #[test]
