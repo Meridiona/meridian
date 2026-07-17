@@ -188,7 +188,9 @@ export default function MeridianTimelineShell() {
         <ReviewModal items={items} actions={data.actions} focusKey={reviewFocusKey}
           onClose={() => { setActiveModal(null); setReviewFocusKey(null) }} />
       )}
-      {activeModal === 'cleanup' && <CleanupModal onClose={() => setActiveModal(null)} />}
+      {activeModal === 'cleanup' && (
+        <CleanupModal onClose={() => { setActiveModal(null); data.refetchTasks() }} />
+      )}
       {activeModal === 'settings' && (
         <SettingsModal onClose={() => setActiveModal(null)} initialSection={settingsSection} />
       )}

@@ -14,30 +14,20 @@
 //   - Azure DevOps   → `discover_azure_devops` (PAT → org → project) then
 //                      `save_integration_token`.
 
-import { useEffect, useRef, useState } from 'react'
-import { load, invoke, mutate, openExternal } from '@/lib/bridge'
+import { useEffect, useState } from 'react'
+import { mutate, openExternal } from '@/lib/bridge'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import { TRACKERS } from '@/lib/integrations'
 import type { Tracker, TokenField } from '@/lib/integrations'
 import { ProviderGlyph } from '@/components/atoms'
-
-const OAUTH_DEADLINE_MS = 180_000  // 3-minute browser-consent window (loopback: jira/trello)
-const DEVICE_FLOW_DEADLINE_MS = 900_000  // 15 min — matches GitHub device-code expiry
-
-// Clear a provider's error notice immediately (don't wait for the next ETL poll).
-// Fire-and-forget — a failure just means the banner clears on the next poll.
-function clearProviderNotice(provider: string): void {
-  void invoke('delete_notice', { noticeId: `pm.${provider}` }).catch(() => {})
-}
-
-// Abort a still-running jira/trello browser-OAuth attempt so a fresh
-// start_oauth call doesn't hit "already in progress". Only jira/trello are
-// wired server-side (cancel_oauth) — github's device flow has no loopback
-// port to free, so this is a silent no-op for it. Fire-and-forget: worst case
-// (the daemon is unreachable) is the pre-existing 5-minute timeout behavior.
-function cancelOAuth(provider: string): void {
-  void mutate('/api/auth/oauth/cancel', 'cancel_oauth', { provider }).catch(() => {})
-}
+import {
+  useConnectStore, clearProviderNotice,
+  oauthStore, startOAuth, cancelOAuth, setOAuthApiKey, resetOAuthIfSettled,
+  azureStore, azureLookupOrgs, azureSelectOrg, azureSubmitManualOrg, azureConnect,
+  setAzurePat, setAzureSelectedProject, setAzureManualOrg, resetAzureIfSettled,
+  githubPickerStore, githubEnsureLoaded, githubToggle, githubSave, resetGithubPickerIfSaved,
+} from '@/components/integrationConnectStore'
+import type { GithubProject } from '@/components/integrationConnectStore'
 
 // ── Main list ─────────────────────────────────────────────────────────────────
 export default function ConnectTrackers({
@@ -213,132 +203,26 @@ function ModeTab({ label, active, onClick }: { label: string; active: boolean; o
   )
 }
 
-// Sentinel matched against the Rust error message when TRELLO_APP_KEY is unset.
-// Extracted here so a rewording of the Rust error string is a single-site change.
-const TRELLO_MISSING_KEY_SENTINEL = 'Power-Up app key'
-
 // ── Browser OAuth (start_oauth + poll) ───────────────────────────────────────
+// A thin view over `oauthStore` — all flow state and the poll loop live in the
+// store (integrationConnectStore.ts) so an in-flight attempt (crucially the
+// device code the user is typing at github.com) survives this panel unmounting.
 function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () => void }) {
-  const [status, setStatus] = useState<'idle' | 'waiting' | 'done' | 'error'>('idle')
-  const [error, setError] = useState<string | null>(null)
-  // GitHub device flow: the one-time code the user enters at verifyUri
-  // (github.com/login/device). Empty for the loopback providers (jira/trello).
-  const [deviceCode, setDeviceCode] = useState<string | null>(null)
-  const [verifyUri, setVerifyUri] = useState<string | null>(null)
-  // Trello-specific: set when start_oauth rejects with the "Power-Up app key"
-  // error so the user can supply their own key from https://trello.com/app-key.
-  // Once set, the key is saved to .env before the next start_oauth call.
-  const [apiKeyPrompt, setApiKeyPrompt] = useState(false)
-  const [apiKey, setApiKey] = useState('')
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  // mountedRef lets the async startOAuth body detect an unmount that happened
-  // while awaiting mutate — before the interval is created and pollRef assigned.
-  const mountedRef = useRef(true)
-  // Mirrors `status` for the unmount cleanup below, which closes over the
-  // value from whichever render installed it (an empty-deps effect only runs
-  // once) — a ref always reads the latest value regardless of when it fires.
-  const statusRef = useRef(status)
-  statusRef.current = status
+  const { status, error, deviceCode, verifyUri, apiKeyPrompt, apiKey } = useConnectStore(oauthStore, tracker.id)
 
-  // Set the flag TRUE on (re)mount, not just FALSE on unmount. Under React
-  // StrictMode (on in `next dev`, which `tauri dev` serves) effects run
-  // mount → cleanup → mount: the first cleanup flips this to false, and without
-  // re-arming it here the component stays alive with mountedRef.current === false.
-  // startOAuth's `if (!mountedRef.current) return` guard would then bail right
-  // after `await mutate('start_oauth')`, so the poll interval that detects
-  // success AND surfaces OAuth errors never starts — the UI hangs on "Waiting…"
-  // forever even though the backend already wrote the credentials.
+  // On mount, clear a settled (done/error) attempt back to idle — but never
+  // touch a 'waiting' one, which is the in-flight state we exist to preserve.
+  useEffect(() => { resetOAuthIfSettled(tracker.id) }, [tracker.id])
+
+  // Fire onSuccess when the flow completes. GitHub defers this to its Projects
+  // picker (rendered below for status==='done'), which calls onSuccess once a
+  // board is actually saved. Every other provider is done the moment its store
+  // exists. The store poll sets 'done' whether or not this panel is mounted; if
+  // it isn't, reopening reloads integrations anyway, so nothing is missed.
   useEffect(() => {
-    mountedRef.current = true
-    return () => {
-      mountedRef.current = false
-      if (pollRef.current != null) clearInterval(pollRef.current)
-      // Closing Settings (or switching providers) mid-flow is the same
-      // "abandoned the browser tab" situation "Try again" fixes below —
-      // cancel server-side too so reopening doesn't hit "already in progress".
-      if (statusRef.current === 'waiting' && (tracker.id === 'jira' || tracker.id === 'trello')) {
-        cancelOAuth(tracker.id)
-      }
-    }
-  }, [tracker.id])
-
-  // Bail out of a 'waiting' OR 'error' attempt back to 'idle': stops the poll
-  // (if still running), tells the backend to abort/free the loopback port
-  // (jira/trello only — see cancelOAuth), and resets local state. Used by
-  // both the "waiting" state's manual Cancel (for failures Atlassian/Trello
-  // block at THEIR consent screen and never redirect back for — the loopback
-  // listener would otherwise sit waiting the full timeout with no feedback)
-  // and the "error" state's "Try again".
-  const cancelAndReset = () => {
-    if (pollRef.current != null) { clearInterval(pollRef.current); pollRef.current = null }
-    if (tracker.id === 'jira' || tracker.id === 'trello') cancelOAuth(tracker.id)
-    setStatus('idle'); setError(null); setDeviceCode(null); setVerifyUri(null)
-  }
-
-  const startOAuth = async () => {
-    setStatus('waiting'); setError(null); setDeviceCode(null); setVerifyUri(null)
-    try {
-      // For Trello: if a user-supplied API key is present, persist it to .env
-      // before start_oauth reads it. This unblocks dev builds where the baked-in
-      // DEFAULT_APP_KEY is empty. start_oauth_in_process re-parses .env on each
-      // call, so the write-then-call ordering is sufficient.
-      if (tracker.id === 'trello' && apiKey.trim()) {
-        await mutate('/api/auth/token', 'save_integration_token', {
-          provider: 'trello', fields: { api_key: apiKey.trim() },
-        })
-      }
-      const res = await mutate<{ user_code?: string; verification_uri?: string }>(
-        `/api/auth/oauth/start?provider=${tracker.id}`, 'start_oauth', { provider: tracker.id },
-      )
-      if (!mountedRef.current) return
-      // GitHub device flow returns a one-time code + URL for the user to enter.
-      if (res?.user_code) setDeviceCode(res.user_code)
-      if (res?.verification_uri) setVerifyUri(res.verification_uri)
-      // The device flow gives the user ~15 min to enter the code, and the tray
-      // polls that whole time (holding its in-flight guard). Match it so the UI
-      // doesn't give up early and then collide with the still-running poll on
-      // "Try again". Loopback providers (jira/trello) keep the 3-min window.
-      const deadline = Date.now() + (res?.user_code ? DEVICE_FLOW_DEADLINE_MS : OAUTH_DEADLINE_MS)
-      let stopped = false
-      const id = setInterval(async () => {
-        if (stopped) return
-        if (Date.now() > deadline) {
-          stopped = true; clearInterval(id); pollRef.current = null
-          setStatus('error'); setError('Timed out — try again'); return
-        }
-        // A terminal error from the flow surfaces immediately (no 3-min wait).
-        const oauthSt = await load<{ connected: boolean; error?: string | null }>(
-          `/api/auth/oauth/status?provider=${tracker.id}`, 'get_oauth_status', { provider: tracker.id },
-        ).catch(() => null)
-        if (stopped) return
-        if (oauthSt?.error) {
-          stopped = true; clearInterval(id); pollRef.current = null
-          setStatus('error'); setError(oauthSt.error); return
-        }
-        const data = await load<Record<string, unknown>>('/api/integrations', 'get_integrations').catch(() => null)
-        if (stopped || !data) return
-        if (data[tracker.id]) {
-          stopped = true; clearInterval(id); pollRef.current = null
-          setStatus('done'); clearProviderNotice(tracker.id)
-          // GitHub needs a Projects v2 board picked before sync does anything —
-          // the picker (rendered below for status==='done') calls onSuccess
-          // itself once a project is actually saved. Every other provider is
-          // done syncing-wise the moment the token/OAuth store exists.
-          if (tracker.id !== 'github') onSuccess?.()
-        }
-      }, 2_000)
-      pollRef.current = id
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      // Trello without a baked-in or user-supplied app key: show the API key
-      // input so the user can unblock themselves without editing .env manually.
-      if (tracker.id === 'trello' && msg.includes(TRELLO_MISSING_KEY_SENTINEL)) {
-        setApiKeyPrompt(true); setStatus('idle')
-      } else {
-        setError(msg); setStatus('error')
-      }
-    }
-  }
+    if (status === 'done' && tracker.id !== 'github') onSuccess?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, tracker.id])
 
   return (
     <div className="px-4 pb-4 pt-2" style={{ background: 'var(--t-box)' }}>
@@ -359,14 +243,14 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
                   hint: 'On the same page, add http://127.0.0.1:9123 under Allowed Origins — Trello only redirects back to listed origins.',
                 }}
                 value={apiKey}
-                onChange={setApiKey}
-                onEnter={() => { if (apiKey.trim()) void startOAuth() }}
+                onChange={(v) => setOAuthApiKey(tracker.id, v)}
+                onEnter={() => { if (apiKey.trim()) void startOAuth(tracker) }}
                 autoFocus
               />
             </>
           )}
           <button
-            onClick={() => void startOAuth()}
+            onClick={() => void startOAuth(tracker)}
             disabled={apiKeyPrompt && !apiKey.trim()}
             className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
             style={{
@@ -412,7 +296,7 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
                   back here, so there's no automatic error to catch; without
                   this the user is stuck watching "Waiting…" for up to 5 min. */}
               {(tracker.id === 'jira' || tracker.id === 'trello') && (
-                <button onClick={cancelAndReset} className="text-[11px]" style={{ color: 'var(--t-faint)', cursor: 'pointer' }}>
+                <button onClick={() => cancelOAuth(tracker)} className="text-[11px]" style={{ color: 'var(--t-faint)', cursor: 'pointer' }}>
                   Not going through? Cancel
                 </button>
               )}
@@ -428,7 +312,7 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
       {status === 'error' && (
         <div className="space-y-2">
           <p className="text-[12px]" style={{ color: 'var(--status-error-dot)' }}>{error ?? 'OAuth failed.'}</p>
-          <button onClick={cancelAndReset} className="text-[11px]" style={{ color: 'var(--color-state-proposal)', cursor: 'pointer' }}>
+          <button onClick={() => cancelOAuth(tracker)} className="text-[11px]" style={{ color: 'var(--color-state-proposal)', cursor: 'pointer' }}>
             Try again
           </button>
         </div>
@@ -522,65 +406,21 @@ function Field({ field, value, onChange, onEnter, autoFocus }: {
 }
 
 // ── Azure DevOps (PAT → org → project → save) ────────────────────────────────
-function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () => void }) {
-  const [pat, setPat] = useState('')
-  const [orgs, setOrgs] = useState<string[] | null>(null)
-  const [selectedOrg, setSelectedOrg] = useState('')
-  const [projects, setProjects] = useState<string[] | null>(null)
-  const [selectedProject, setSelectedProject] = useState('')
-  const [loading, setLoading] = useState<'orgs' | 'projects' | 'saving' | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [done, setDone] = useState(false)
-  const [reloadWarning, setReloadWarning] = useState(false)
-  const [showManualOrg, setShowManualOrg] = useState(false)
-  const [manualOrg, setManualOrg] = useState('')
+// A thin view over `azureStore` — the typed PAT, discovered orgs/projects, and
+// the multi-step progress live in the store so closing Settings mid-discovery
+// doesn't force the user to paste the PAT and re-run every lookup.
+function AzureDevOpsSetup({ tracker: _tracker, onSuccess }: { tracker: Tracker; onSuccess?: () => void }) {
+  const {
+    pat, orgs, selectedOrg, projects, selectedProject, loading, error, done, reloadWarning, showManualOrg, manualOrg,
+  } = useConnectStore(azureStore, 'azure_devops')
 
-  const lookupOrgs = async () => {
-    if (!pat.trim()) return
-    setLoading('orgs'); setError(null); setOrgs(null); setSelectedOrg(''); setProjects(null); setSelectedProject(''); setShowManualOrg(false); setManualOrg('')
-    try {
-      const json = await mutate<{ orgs?: string[] }>('/api/integrations/azure-devops/discover', 'discover_azure_devops', { pat: pat.trim() })
-      setOrgs(json.orgs ?? [])
-      if ((json.orgs ?? []).length === 1) { setSelectedOrg(json.orgs![0]); lookupProjects(json.orgs![0]) }
-    } catch (e) {
-      const message = typeof e === 'string' ? e : e instanceof Error ? e.message : 'Failed to fetch organisations'
-      setError(message)
-      setShowManualOrg(message.includes('enter your org name manually below'))
-    }
-    finally { setLoading(null) }
-  }
+  // Fresh slate on mount only when the last attempt actually completed; an
+  // in-progress discovery (typed PAT, fetched orgs) is preserved across unmount.
+  useEffect(() => { resetAzureIfSettled() }, [])
+  useEffect(() => { if (done) onSuccess?.(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [done])
 
-  const lookupProjects = async (org: string) => {
-    if (!org) return
-    setLoading('projects'); setError(null); setProjects(null); setSelectedProject('')
-    try {
-      const json = await mutate<{ projects?: string[] }>('/api/integrations/azure-devops/discover', 'discover_azure_devops', { pat: pat.trim(), org })
-      setProjects(json.projects ?? [])
-      if ((json.projects ?? []).length === 1) setSelectedProject(json.projects![0])
-    } catch (e) { setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Failed to fetch projects') }
-    finally { setLoading(null) }
-  }
-
-  const handleOrgChange = (org: string) => { setSelectedOrg(org); if (org) lookupProjects(org) }
-
-  const submitManualOrg = () => {
-    const org = manualOrg.trim()
-    if (org) { setSelectedOrg(org); lookupProjects(org) }
-  }
-
-  const connect = async () => {
-    if (!selectedOrg || !selectedProject) return
-    setLoading('saving'); setError(null)
-    try {
-      const res = await mutate<{ ok: boolean; reloaded: boolean }>('/api/auth/token', 'save_integration_token', {
-        provider: 'azure_devops',
-        fields: { url: `https://dev.azure.com/${selectedOrg}/${selectedProject}`, pat: pat.trim() },
-      })
-      setDone(true); setReloadWarning(res?.reloaded === false)
-      clearProviderNotice('azure_devops'); onSuccess?.()
-    } catch (e) { setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not save credentials') }
-    finally { setLoading(null) }
-  }
+  const lookupOrgs = () => void azureLookupOrgs()
+  const connect = () => void azureConnect()
 
   if (done) {
     return (
@@ -603,7 +443,7 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
         <a href="https://dev.azure.com" onClick={(e) => { e.preventDefault(); openExternal('https://dev.azure.com') }} style={{ color: 'var(--color-state-proposal)' }}>Open ↗</a>
       </p>
       <div className="flex gap-2">
-        <input type="password" value={pat} onChange={(e) => setPat(e.target.value)}
+        <input type="password" value={pat} onChange={(e) => setAzurePat(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && lookupOrgs()} placeholder="Paste your PAT here"
           className="flex-1 font-mono text-[11px] px-2 py-1.5 rounded-md border"
           style={{ color: 'var(--t-title)', background: 'var(--t-card)', borderColor: 'var(--t-hair)', outline: 'none' }} />
@@ -620,7 +460,7 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
           : (
             <label className="block">
               <span className="text-[11px]" style={{ color: 'var(--t-faint)' }}>Organisation</span>
-              <select value={selectedOrg} onChange={(e) => handleOrgChange(e.target.value)}
+              <select value={selectedOrg} onChange={(e) => azureSelectOrg(e.target.value)}
                 className="mt-1 w-full text-[12px] px-2 py-1.5 rounded-md border"
                 style={{ color: 'var(--t-title)', background: 'var(--t-card)', borderColor: 'var(--t-hair)' }}>
                 <option value="">— select org —</option>
@@ -638,7 +478,7 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
             : (
               <label className="block">
                 <span className="text-[11px]" style={{ color: 'var(--t-faint)' }}>Project</span>
-                <select value={selectedProject} onChange={(e) => setSelectedProject(e.target.value)}
+                <select value={selectedProject} onChange={(e) => setAzureSelectedProject(e.target.value)}
                   className="mt-1 w-full text-[12px] px-2 py-1.5 rounded-md border"
                   style={{ color: 'var(--t-title)', background: 'var(--t-card)', borderColor: 'var(--t-hair)' }}>
                   <option value="">— select project —</option>
@@ -657,13 +497,13 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
             <input
               id="azure-devops-org"
               value={manualOrg}
-              onChange={(e) => setManualOrg(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && submitManualOrg()}
+              onChange={(e) => setAzureManualOrg(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && azureSubmitManualOrg()}
               placeholder="e.g. my-company"
               className="flex-1 text-[11px] px-2 py-1.5 rounded-md border"
               style={{ color: 'var(--t-title)', background: 'var(--t-card)', borderColor: 'var(--t-hair)', outline: 'none' }} />
             <button
-              onClick={submitManualOrg}
+              onClick={azureSubmitManualOrg}
               disabled={!manualOrg.trim() || loading === 'projects'}
               className="text-[11px] px-3 py-1.5 rounded-md shrink-0"
               style={{ background: 'var(--color-state-proposal)', color: '#fff', opacity: (!manualOrg.trim() || loading === 'projects') ? 0.5 : 1, cursor: (!manualOrg.trim() || loading === 'projects') ? 'not-allowed' : 'pointer' }}>
@@ -687,53 +527,14 @@ function AzureDevOpsSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?
 // Runs right after a GitHub OAuth connect succeeds (see OAuthSetup's status==='done'
 // branch) AND from ConnectedPanel's "no projects selected" prompt — same component,
 // two entry points, since the underlying gap (token connected, no board chosen) is
-// identical either way.
-type GithubProject = { id: string; title: string; owner: string }
-
+// identical either way. A thin view over `githubPickerStore` so the discovered
+// board list and the user's checkbox selection survive the panel unmounting.
 function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
-  const [projects, setProjects] = useState<GithubProject[] | null>(null)
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  // Separate from saveError: this one gates the early return below, so
-  // reusing it for save failures would replace the whole picker (losing the
-  // user's selection) instead of showing an inline error next to Save.
-  const [loadError, setLoadError] = useState<string | null>(null)
-  const [saveError, setSaveError] = useState<string | null>(null)
-  const [reloadWarning, setReloadWarning] = useState(false)
+  const { projects, selected, loading, saving, loadError, saveError, reloadWarning, saved } = useConnectStore(githubPickerStore, 'github')
 
-  useEffect(() => {
-    let cancelled = false
-    load<{ projects?: GithubProject[] }>('/api/integrations/github/discover', 'discover_github_projects')
-      .then((json) => { if (!cancelled) setProjects(json.projects ?? []) })
-      .catch((e) => { if (!cancelled) setLoadError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Failed to load GitHub Projects') })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
-  }, [])
-
-  const toggle = (id: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id); else next.add(id)
-      return next
-    })
-  }
-
-  const save = async () => {
-    if (selected.size === 0 || saving) return
-    setSaving(true); setSaveError(null)
-    try {
-      const res = await mutate<{ ok: boolean; reloaded: boolean }>('/api/auth/token', 'save_integration_token', {
-        provider: 'github', fields: { project_ids: Array.from(selected).join(',') },
-      })
-      setReloadWarning(res?.reloaded === false)
-      clearProviderNotice('github'); onSuccess?.()
-    } catch (e) {
-      setSaveError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not save project selection')
-    } finally {
-      setSaving(false)
-    }
-  }
+  // Load once (store-guarded), and clear a completed save so reopening re-discovers.
+  useEffect(() => { resetGithubPickerIfSaved(); githubEnsureLoaded() }, [])
+  useEffect(() => { if (saved) onSuccess?.(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [saved])
 
   if (loading) return <p className="text-[11px]" style={{ color: 'var(--ink-3)' }}>Loading your GitHub Projects…</p>
 
@@ -764,7 +565,7 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
             <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--ink-4)' }}>{owner}</span>
             {ps.map((p) => (
               <label key={p.id} className="flex items-center gap-2 py-1 text-[12px]" style={{ color: 'var(--ink)' }}>
-                <input type="checkbox" checked={selected.has(p.id)} onChange={() => toggle(p.id)} />
+                <input type="checkbox" checked={selected.has(p.id)} onChange={() => githubToggle(p.id)} />
                 {p.title}
               </label>
             ))}
@@ -772,7 +573,7 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
         ))}
       </div>
       {saveError && <p className="text-[11px]" style={{ color: 'var(--status-error-text)' }}>{saveError}</p>}
-      <button onClick={save} disabled={selected.size === 0 || saving} className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
+      <button onClick={() => void githubSave()} disabled={selected.size === 0 || saving} className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
         style={{ background: 'var(--accent)', color: '#fff', opacity: (selected.size === 0 || saving) ? 0.5 : 1, cursor: (selected.size === 0 || saving) ? 'not-allowed' : 'pointer' }}>
         {saving ? 'Saving…' : selected.size === 0 ? 'Select a project' : `Sync ${selected.size} project${selected.size === 1 ? '' : 's'}`}
       </button>

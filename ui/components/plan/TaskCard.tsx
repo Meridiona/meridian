@@ -3,6 +3,7 @@
 
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { DuePill, OriginChip, StatusChip, EpicChip, PriorityTag, MetaChip } from '@/components/plan/parts'
+import { LOCAL_PROVIDER } from '@/lib/api-types'
 
 export interface CardTask {
   key: string
@@ -35,6 +36,12 @@ export function TaskCardBody({
   onOpen?: () => void
 }) {
   const showType = task.issue_type && !/^task$/i.test(task.issue_type)
+  // A personal task's key (`LOCAL-3`) is an internal handle, not a ticket anyone can
+  // look up — showing it in the key chip would read as a real ticket on a board that
+  // doesn't have it. A quiet "Personal" chip says what it actually is. (ProviderIcon
+  // already renders nothing for 'local', and the card's url is empty, so no other
+  // affordance needs guarding.)
+  const personal = task.provider === LOCAL_PROVIDER
   // The origin chip only adds value for signals the status/due chips DON'T already
   // show — otherwise it duplicates them ("In progress" beside an "In Progress"
   // status, "Due 2d" beside the due pill). Keep it for carried-over / worked-recently.
@@ -51,7 +58,9 @@ export function TaskCardBody({
         className={`min-w-0 flex-1 rounded ${onOpen ? 'cursor-pointer' : ''}`}>
         <div className="flex items-center gap-1.5 min-w-0">
           {task.provider && <ProviderIcon provider={task.provider} size={13} className="shrink-0" />}
-          <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text shrink-0">{task.key}</span>
+          {personal
+            ? <MetaChip>Personal</MetaChip>
+            : <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text shrink-0">{task.key}</span>}
           {showType && <MetaChip>{task.issue_type}</MetaChip>}
           <span className="mt-body-sm truncate"
             style={{ color: 'var(--t-title)', textDecoration: task.is_terminal ? 'line-through' : 'none' }}>

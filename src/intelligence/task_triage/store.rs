@@ -43,13 +43,19 @@ pub struct CuratedTask {
 }
 
 /// Read every cached ticket out of `pm_tasks` as triage input.
+///
+/// Personal tasks (`provider = 'local'`, see [`meridian_core::task_create`]) are
+/// excluded: board hygiene exists to make TRACKER tickets matchable by the team, and
+/// every fix it proposes is a tracker write. A task the user wrote for themselves has
+/// no board to be hygienic on, and "assign it / add a due date" is noise there.
 pub async fn load_board(pool: &SqlitePool) -> Result<Vec<CurationInput>> {
     let rows = sqlx::query(
         "SELECT task_key, provider, title, description_text, status_raw, is_terminal, \
                 sprint_name, due_date, start_date, updated_at, epic_title, parent_key, \
                 assignee_name, priority, story_points, acceptance_criteria \
-         FROM pm_tasks",
+         FROM pm_tasks WHERE provider != ?",
     )
+    .bind(meridian_core::task_create::LOCAL_PROVIDER)
     .fetch_all(pool)
     .await
     .context("loading pm_tasks for triage")?;
@@ -115,8 +121,16 @@ pub async fn save_verdict(
 /// row, so a transient sync gap that momentarily empties the board would otherwise
 /// delete EVERY human decision. An all-tickets-gone board is far more likely a
 /// failed sync than a real mass departure, so we skip pruning entirely then.
+///
+/// The count EXCLUDES personal tasks (`provider = 'local'`) on purpose. They are
+/// never synced, so they are always present — counting them would hold this guard
+/// permanently open, and the first user-authored task would silently disable the
+/// protection above for good. Only a real tracker row proves the board synced.
+/// (The DELETE itself stays unscoped: a local task simply never has a curation row,
+/// since `load_board` skips it.)
 pub async fn prune_orphans(pool: &SqlitePool) -> Result<u64> {
-    let board_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pm_tasks")
+    let board_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pm_tasks WHERE provider != ?")
+        .bind(meridian_core::task_create::LOCAL_PROVIDER)
         .fetch_one(pool)
         .await
         .context("counting pm_tasks before prune")?;
@@ -480,5 +494,113 @@ mod tests {
             assert_eq!(Decision::parse(d.as_str()), Some(d));
         }
         assert_eq!(Decision::parse("bogus"), None);
+    }
+
+    /// Insert a personal task (`provider = 'local'`) — see
+    /// `meridian_core::task_create`.
+    async fn insert_local_task(pool: &SqlitePool, key: &str) {
+        sqlx::query(
+            "INSERT INTO pm_tasks (task_key, provider, title, description_text, status_raw, \
+                is_terminal, url, updated_at) \
+             VALUES (?, 'local', 'A task I wrote for myself today', '', 'To Do', 0, '', \
+                '2026-01-01T00:00:00Z')",
+        )
+        .bind(key)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn load_board_excludes_personal_tasks() {
+        // Board hygiene proposes TRACKER writes; a personal task has no board to be
+        // hygienic on, so it must never reach triage.
+        let pool = db().await;
+        let long = "A".repeat(120);
+        insert_task(
+            &pool,
+            "T-1",
+            "Backlog",
+            0,
+            &long,
+            None,
+            "2026-01-01T00:00:00Z",
+        )
+        .await;
+        insert_local_task(&pool, "LOCAL-1").await;
+
+        let board = load_board(&pool).await.unwrap();
+        let keys: Vec<&str> = board.iter().map(|c| c.signals.task_key.as_str()).collect();
+        assert!(keys.contains(&"T-1"), "tracker tickets still triage");
+        assert!(
+            !keys.contains(&"LOCAL-1"),
+            "a personal task must never be triaged"
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_orphans_guard_ignores_personal_tasks() {
+        // REGRESSION: the empty-board guard protects every human curation decision
+        // from a transient sync gap. Personal tasks are never synced, so they are
+        // always present — if they counted, the FIRST user-authored task would hold
+        // the guard open forever and the next failed sync would delete every
+        // decision the user ever made.
+        let pool = db().await;
+        insert_local_task(&pool, "LOCAL-1").await;
+        // A human decision about a tracker ticket that is momentarily missing
+        // (exactly what a failed sync looks like).
+        sqlx::query(
+            "INSERT INTO pm_task_curation (task_key, provider, bucket, reasons_json, \
+                triaged_at, decision) \
+             VALUES ('KAN-1', 'jira', 'ready', '[]', '2026-01-01T00:00:00Z', 'keep')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let pruned = prune_orphans(&pool).await.unwrap();
+        assert_eq!(
+            pruned, 0,
+            "a board of only personal tasks is an UNSYNCED board - prune must be skipped"
+        );
+        let survived: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM pm_task_curation WHERE task_key = 'KAN-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(survived, 1, "the human decision must survive");
+    }
+
+    #[tokio::test]
+    async fn prune_orphans_still_runs_once_a_real_ticket_is_present() {
+        // The other half: a personal task must not SUPPRESS pruning either, or
+        // orphaned decisions would accumulate forever. One real row = a synced board.
+        let pool = db().await;
+        let long = "A".repeat(120);
+        insert_task(
+            &pool,
+            "T-1",
+            "Backlog",
+            0,
+            &long,
+            None,
+            "2026-01-01T00:00:00Z",
+        )
+        .await;
+        insert_local_task(&pool, "LOCAL-1").await;
+        sqlx::query(
+            "INSERT INTO pm_task_curation (task_key, provider, bucket, reasons_json, \
+                triaged_at, decision) \
+             VALUES ('GONE-1', 'jira', 'ready', '[]', '2026-01-01T00:00:00Z', 'keep')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            prune_orphans(&pool).await.unwrap(),
+            1,
+            "the orphaned decision should be pruned when the board really is synced"
+        );
     }
 }

@@ -15,7 +15,8 @@
 // workstreams placed where the time actually went, not 24 rows.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { fmtDur } from '@/components/atoms'
+import { fmtDur, PROVIDER_META } from '@/components/atoms'
+import { ProviderIcon } from '@/components/ProviderIcon'
 import { load } from '@/lib/bridge'
 import type { DayTask, DayTasksResponse } from '@/lib/api-types'
 import {
@@ -23,19 +24,23 @@ import {
   taskWindow,
   taskRangeLabel,
   hourClock,
+  hourHasWork,
+  buildTimelineScale,
   type LaidOutTask,
 } from './dayTaskLayout'
 import type { DayTaskDetail } from './DayTaskDetailPanel'
 import { taskHue, Bullets } from './dayTaskKit'
 
-// The vertical scale (px per minute) is DYNAMIC — the timeline fits itself to the
-// pane. A sparse day (one short task, the first hour after a fresh fold) would
-// collapse to a few unreadable pixels at a fixed scale, so instead we stretch the
-// content window to fill the available height. Bounds keep it honest: a dense full
-// day floors at MIN_PX_PER_MIN and scrolls; a near-empty day caps at MAX_PX_PER_MIN
-// so a single task fills the pane without becoming absurd.
-const MIN_PX_PER_MIN = 0.55 // ~33 px/hr — a long day stays compact, scrolls if needed
-const MAX_PX_PER_MIN = 9 // ~540 px/hr — a lone short task still reads big
+// The vertical scale (px per minute) is DYNAMIC — the timeline fits itself to
+// the pane (see buildTimelineScale in dayTaskLayout.ts), up to a comfortable
+// minimum row height. Every ACTIVE clock hour gets the same honest pixel
+// height as every other; a run of consecutive fully-idle hours collapses to
+// one hour's worth of space, however many real hours it actually spans, so
+// every visible hour-to-hour gap in the UI reads as the same size. That
+// collapse is safe specifically because it only ever applies to whole hours
+// with zero real work in them (see hourHasWork) — there's nothing there to
+// misalign. A sparse day still grows to fill the pane; a day that's naturally
+// tall even after idle collapsing simply scrolls.
 const FALLBACK_PANE_PX = 560 // used before the pane is measured (first paint / SSR)
 const GUTTER = 58 // px reserved on the left for hour labels
 // A task card never draws thinner than this, so even a few-minute workstream stays
@@ -108,12 +113,10 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
   // — that is what keeps near-touching short cards in separate side-by-side lanes.
   const laidBase = useMemo(() => layoutDayTasks(resp?.tasks ?? []), [resp])
   const win = useMemo(() => taskWindow(laidBase), [laidBase])
-  const windowMin = Math.max(1, win.hi - win.lo)
-  const pxPerMin = Math.max(
-    MIN_PX_PER_MIN,
-    Math.min(MAX_PX_PER_MIN, paneH / windowMin),
+  const { pxPerMin, colHeight, toPx } = useMemo(
+    () => buildTimelineScale(laidBase, win, paneH),
+    [laidBase, win, paneH],
   )
-  const colHeight = windowMin * pxPerMin
   // A card visually occupies at least MIN_SEG_PX; add a hair of separation so
   // adjacent lanes read as distinct. Convert that pixel floor back into minutes.
   const minGapMin = (MIN_SEG_PX + CARD_SEP_PX) / pxPerMin
@@ -123,10 +126,34 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
   )
   const firstHour = Math.floor(win.lo / 60)
   const lastHour = Math.ceil(win.hi / 60)
-  const hourLines = useMemo(
-    () => Array.from({ length: lastHour - firstHour + 1 }, (_, i) => firstHour + i),
-    [firstHour, lastHour],
-  )
+  // Whole-hour ticks (7 AM, 8 AM, ...) — an idle run only keeps the hour work
+  // just stopped in (e.g. "1 AM" right after a 12 AM sitting ends); it does
+  // NOT also keep the idle hour right before work resumes, since the resumed
+  // hour's own tick already says "work picked back up here" — showing both
+  // (e.g. "7 AM" AND "8 AM" back to back) is the same fact twice. The hours
+  // strictly inside a run are pure repetition of "still nothing" and are
+  // dropped. The same logic applies at the very end of the window: if the
+  // day's last real work already stopped a few hours ago, the trailing idle
+  // hours don't get a second, redundant "nothing happened" tick just because
+  // one of them happens to be the last hour in the window — only firstHour is
+  // unconditionally anchored, so the column always has a top label. Positions
+  // come from the same buildTimelineScale as the cards, whose idle-hour
+  // collapsing (see dayTaskLayout.ts) keeps every visible hour-to-hour gap
+  // the same size, active or collapsed.
+  const hourLines = useMemo(() => {
+    const shown = new Set<number>([firstHour])
+    for (let h = firstHour; h <= lastHour; h++) {
+      if (hourHasWork(laidBase, win, h) || (h > firstHour && hourHasWork(laidBase, win, h - 1))) {
+        shown.add(h)
+      }
+    }
+    const out: { hour: number; top: number }[] = []
+    for (const h of Array.from(shown).sort((a, b) => a - b)) {
+      const top = toPx(h * 60)
+      if (top >= -1 && top <= colHeight + 1) out.push({ hour: h, top })
+    }
+    return out
+  }, [firstHour, lastHour, toPx, colHeight, laidBase, win])
 
   const dayLabel = isToday ? 'Today' : day
   const taskCount = laid.length
@@ -156,21 +183,20 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
       ) : (
         <div className="px-6 pb-8">
           <div className="relative" style={{ height: colHeight }}>
-            {/* Hour gridlines + labels */}
-            {hourLines.map(h => {
-              const top = (h * 60 - win.lo) * pxPerMin
-              if (top < -1 || top > colHeight + 1) return null
-              return (
-                <div key={h} className="absolute left-0 right-0 flex items-start"
-                  style={{ top, height: 0 }}>
-                  <span className="mt-mono-sm shrink-0 -translate-y-1/2"
-                    style={{ width: GUTTER - 12, fontSize: 10.5, color: 'var(--t-faint)', textAlign: 'right' }}>
-                    {h < 24 ? hourClock(h) : ''}
-                  </span>
-                  <span className="flex-1 border-t" style={{ borderColor: 'var(--t-hair)', opacity: 0.6 }} />
-                </div>
-              )
-            })}
+            {/* Hour gridlines + labels — positioned via the same scale as the
+                cards beneath them (see hourLines) so a label always sits at its
+                real hour on the rail, decluttered for runs of hours inside one
+                compressed gap segment. */}
+            {hourLines.map(({ hour, top }) => (
+              <div key={hour} className="absolute left-0 right-0 flex items-start"
+                style={{ top, height: 0 }}>
+                <span className="mt-mono-sm shrink-0 -translate-y-1/2"
+                  style={{ width: GUTTER - 12, fontSize: 10.5, color: 'var(--t-faint)', textAlign: 'right' }}>
+                  {hourClock(hour)}
+                </span>
+                <span className="flex-1 border-t" style={{ borderColor: 'var(--t-hair)', opacity: 0.6 }} />
+              </div>
+            ))}
 
             {/* Task workstreams */}
             <div className="absolute top-0 bottom-0" style={{ left: GUTTER, right: 6 }}>
@@ -181,8 +207,7 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
                     key={l.task.id}
                     laid={l}
                     hue={hue}
-                    winLo={win.lo}
-                    pxPerMin={pxPerMin}
+                    toPx={toPx}
                     selected={selected === l.task.id}
                     dimmed={selected !== null && selected !== l.task.id}
                     onSelect={() =>
@@ -221,17 +246,41 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
  *  fragmenting the card. The body is filled top-down by available height: always a
  *  title, then a meta row, then as many summary lines as fit — a tall card shows
  *  what was done rather than sitting empty. */
-function TaskBand({ laid, hue, winLo, pxPerMin, selected, dimmed, onSelect }: {
+/** The "synced to {tracker}" pill on a posted task card: the tracker's brand mark
+ *  + a check, in a soft approved-green pill. Sits in-flow at the end of the title
+ *  row so it scales and is never clipped by the card's rounded corner. */
+function PostedPill({ provider, targetKey, alignTop }: { provider: string; targetKey: string | null; alignTop: boolean }) {
+  const label = PROVIDER_META[provider]?.label ?? provider
+  return (
+    <span
+      className="shrink-0 inline-flex items-center gap-1 rounded-full"
+      title={`Synced to ${label}${targetKey ? ` · ${targetKey}` : ''}`}
+      style={{
+        alignSelf: alignTop ? 'flex-start' : 'center',
+        marginTop: alignTop ? 1 : 0,
+        padding: '2px 6px 2px 5px',
+        background: 'color-mix(in srgb, var(--color-state-approved) 13%, var(--t-card))',
+        border: '1px solid color-mix(in srgb, var(--color-state-approved) 32%, transparent)',
+      }}>
+      <ProviderIcon provider={provider} size={11} />
+      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" aria-hidden
+        style={{ color: 'var(--color-state-approved)' }}>
+        <path d="M20 6 9 17l-5-5" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </span>
+  )
+}
+
+function TaskBand({ laid, hue, toPx, selected, dimmed, onSelect }: {
   laid: LaidOutTask
   hue: string
-  winLo: number
-  pxPerMin: number
+  toPx: (min: number) => number
   selected: boolean
   dimmed: boolean
   onSelect: () => void
 }) {
-  const top = (laid.footLo - winLo) * pxPerMin
-  const height = Math.max((laid.footHi - laid.footLo) * pxPerMin, MIN_SEG_PX)
+  const cardTop = toPx(laid.footLo)
+  const height = Math.max(toPx(laid.footHi) - cardTop, MIN_SEG_PX)
   const left = (laid.laneIndex / laid.laneCount) * 100
   const width = 100 / laid.laneCount
   const hasBreak = laid.segments.length > 1
@@ -250,7 +299,7 @@ function TaskBand({ laid, hue, winLo, pxPerMin, selected, dimmed, onSelect }: {
       title={laid.task.title || 'Activity'}
       className="dt-card absolute text-left transition-all"
       style={{
-        top,
+        top: cardTop,
         height,
         left: `calc(${left}% + ${left > 0 ? 5 : 0}px)`,
         width: `calc(${width}% - ${left > 0 ? 5 : 0}px - 2px)`,
@@ -276,8 +325,8 @@ function TaskBand({ laid, hue, winLo, pxPerMin, selected, dimmed, onSelect }: {
         // so cap it at a quarter of the height — the rail stays visible and
         // still floats off both edges.
         const inset = Math.min(RAIL_INSET, height * 0.25)
-        const rawTop = (s.startMin - laid.footLo) * pxPerMin
-        const rawBot = (s.endMin - laid.footLo) * pxPerMin
+        const rawTop = toPx(s.startMin) - cardTop
+        const rawBot = toPx(s.endMin) - cardTop
         const top = Math.max(rawTop, inset)
         const bot = Math.min(rawBot, height - inset)
         const rh = Math.max(bot - top, 4)
@@ -304,6 +353,18 @@ function TaskBand({ laid, hue, winLo, pxPerMin, selected, dimmed, onSelect }: {
             style={{ color: 'var(--t-title)', lineHeight: 1.25, display: '-webkit-box', WebkitLineClamp: compact ? 1 : 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
             {laid.task.title || 'Activity'}
           </span>
+          {/* "Synced to {tracker}" pill — shown once this task's worklog is posted,
+              so the timeline itself flags which cards are on the PM board. In-flow
+              at the row's end (never clipped by the card's rounded corner) and
+              vertically centred on compact cards. Non-interactive; the detail
+              panel carries the clickable link. */}
+          {laid.task.posted_provider && (
+            <PostedPill
+              provider={laid.task.posted_provider}
+              targetKey={laid.task.posted_target_key}
+              alignTop={!compact}
+            />
+          )}
         </div>
 
         {showMeta && (

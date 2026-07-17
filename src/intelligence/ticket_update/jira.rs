@@ -170,21 +170,39 @@ fn transition_status_options(transitions: &[Value]) -> Vec<StatusOption> {
 
 /// Find the transition whose target status matches `choice` (target id exact, or
 /// target name case-insensitive). Returns `(transition_id, target_status)`.
+///
+/// Builds `(transition_id, StatusOption)` pairs in a single pass over
+/// `transitions` — a transition whose `to` is missing `id`/`name` is skipped
+/// entirely, same as [`transition_status_options`]'s filter. Filtering the two
+/// lists independently and `zip`-ing them back together (the previous
+/// approach) silently misaligns transition ids with target statuses whenever
+/// a transition has `to.id` but no `to.name`, since only one side's filter
+/// would drop that entry.
 fn pick_transition_for_choice(
     transitions: &[Value],
     choice: &str,
 ) -> Option<(String, StatusOption)> {
-    let options = transition_status_options(transitions);
-    // Zip options back to their transition ids (same order, same filter).
-    transitions
-        .iter()
-        .filter(|t| t.pointer("/to/id").and_then(|i| i.as_str()).is_some())
-        .zip(options)
-        .find(|(_, opt)| opt.id == choice || opt.name.eq_ignore_ascii_case(choice))
-        .and_then(|(t, opt)| {
-            let tid = t.get("id")?.as_str()?.to_string();
-            Some((tid, opt))
-        })
+    transitions.iter().find_map(|t| {
+        let to = t.get("to")?;
+        let id = to.get("id")?.as_str()?.to_string();
+        let name = to.get("name")?.as_str()?.to_string();
+        if id != choice && !name.eq_ignore_ascii_case(choice) {
+            return None;
+        }
+        let cat = to
+            .pointer("/statusCategory/key")
+            .and_then(|k| k.as_str())
+            .unwrap_or("");
+        let tid = t.get("id")?.as_str()?.to_string();
+        Some((
+            tid,
+            StatusOption {
+                id,
+                name,
+                category: jira_category(cat).to_string(),
+            },
+        ))
+    })
 }
 
 /// The ticket's current status id + name (`GET /issue/{key}?fields=status`).
@@ -405,6 +423,32 @@ mod tests {
         let (tid, target) = pick_transition_for_choice(&transitions(), "5").unwrap();
         assert_eq!(tid, "31");
         assert_eq!(target.name, "Done");
+    }
+
+    #[test]
+    fn a_transition_missing_to_name_does_not_misalign_later_picks() {
+        // Regression: `pick_transition_for_choice` used to filter
+        // `transition_status_options` (requires `to.id` AND `to.name`) and the raw
+        // `transitions` (requires only `to.id`) independently, then `zip` the two
+        // sequences back together. A transition with `to.id` but no `to.name`
+        // (e.g. a malformed/partial Jira payload) drops out of one filtered list
+        // but not the other, shifting every subsequent pairing by one — silently
+        // handing back the WRONG transition id for a correct target status.
+        let transitions = vec![
+            json!({ "id": "11", "to": { "id": "3", "statusCategory": { "key": "indeterminate" } } }), // no `name` — dropped by the old options filter, kept by the old id-only filter
+            json!({ "id": "31", "to": { "id": "5", "name": "Done", "statusCategory": { "key": "done" } } }),
+            json!({ "id": "41", "to": { "id": "1", "name": "To Do", "statusCategory": { "key": "new" } } }),
+        ];
+        // Under the old zip-based logic this would misalign to transition "11"
+        // instead of "31" once the first entry (no `name`) fell out of `options`
+        // but stayed in the id-filtered `transitions` iterator.
+        let (tid, target) = pick_transition_for_choice(&transitions, "5").unwrap();
+        assert_eq!(tid, "31");
+        assert_eq!(target.name, "Done");
+
+        let (tid, target) = pick_transition_for_choice(&transitions, "to do").unwrap();
+        assert_eq!(tid, "41");
+        assert_eq!(target.name, "To Do");
     }
 
     #[test]

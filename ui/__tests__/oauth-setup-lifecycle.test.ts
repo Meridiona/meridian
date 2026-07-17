@@ -4,110 +4,127 @@ import { readFileSync } from 'fs'
 
 // Regression guard for the OAuth "stuck on Waiting…" bug.
 //
-// `OAuthSetup` (components/IntegrationConnect.tsx) keeps a `mountedRef` so its
-// async `startOAuth` body can detect an unmount that happened while awaiting
-// `mutate('start_oauth')` — before the poll interval exists to be cleared:
+// THE BUG: `OAuthSetup` kicked off the flow and then polled for completion:
 //
 //     await mutate(..., 'start_oauth', ...)   // backend runs, writes creds
-//     if (!mountedRef.current) return          // bail if we unmounted meanwhile
 //     ... create the 2s poll interval ...      // detects success + surfaces errors
 //
-// The original effect was cleanup-ONLY — it set the flag false on unmount but
-// never set it true on (re)mount:
+// With the flow's state and poll interval owned by the COMPONENT, an unmount
+// between those two lines orphaned the flow: the backend had already written the
+// credentials, but the poll that detects success never started, so the UI hung on
+// "Waiting…" forever with any real OAuth error silently swallowed (the error path
+// lives in that poll). `next.config.ts` sets `reactStrictMode: true` and `tauri
+// dev` serves via the Next dev server, so React runs effects mount→cleanup→mount
+// and made this fire on the FIRST connect attempt every time.
 //
-//     useEffect(() => () => { mountedRef.current = false; ... }, [])   // BUG
+// THE OLD FIX was a `mountedRef` the async body re-checked after the await, plus
+// an effect that re-armed the flag on remount. It worked, but it only patched the
+// StrictMode case — a real unmount (collapsing the accordion row, switching
+// provider, closing Settings) still threw the flow away mid-flight.
 //
-// `next.config.ts` has `reactStrictMode: true`, and `tauri dev` serves via the
-// Next dev server, so React StrictMode runs effects mount→cleanup→mount. With a
-// cleanup-only effect the first cleanup flips the flag false and the remount
-// never restores it, leaving a LIVE component with `mountedRef.current === false`.
-// `startOAuth` then bails right after the backend already wrote the credentials,
-// the poll interval never starts, and the UI hangs on "Waiting…" forever — with
-// any real OAuth error silently swallowed (the error path lives in that poll).
+// THE FIX IS NOW STRUCTURAL: the state and the poll loop live in a module-level,
+// provider-keyed store (components/integrationConnectStore.ts) that OUTLIVES the
+// component. The panel is a thin `useSyncExternalStore` view. Unmounting — for any
+// reason — can no longer orphan an in-flight flow, and reopening the row picks the
+// live flow back up. So `mountedRef` is not merely unnecessary, its return would
+// signal the state has been pulled back into the component. These guards pin that.
 //
 // The repo has no React render harness (no @testing-library/jsdom), so — like the
 // other UI guards (cursor-pointer, NumberStepper) — we model the lifecycle and
-// scan the source for the fixed shape rather than mount the component.
+// scan the source for the required shape rather than mount the component.
 
 const uiRoot = import.meta.dir + '/..'
-const src = readFileSync(uiRoot + '/components/IntegrationConnect.tsx', 'utf8')
+const view = readFileSync(uiRoot + '/components/IntegrationConnect.tsx', 'utf8')
+const store = readFileSync(uiRoot + '/components/integrationConnectStore.ts', 'utf8')
 
-type MountRef = { current: boolean }
+// ── The lifecycle model: where state lives decides whether it survives ────────
 
-// Faithful model of the FIXED effect: set the flag true on (re)mount, return a
-// cleanup that sets it false. This is the contract the component must honour.
-function fixedMountEffect(ref: MountRef): () => void {
-  ref.current = true
-  return () => { ref.current = false }
+/** Component-local state (the OLD shape): a fresh object per mount, thrown away
+ *  by cleanup. This is what made an in-flight flow droppable. */
+function componentLocalFlow() {
+  let state: { status: string } | null = null
+  return {
+    mount: () => { state = { status: 'idle' } },
+    cleanup: () => { state = null },
+    start: () => { if (state) state.status = 'waiting' },
+    read: () => state?.status ?? 'lost',
+  }
 }
 
-// The OLD buggy effect: body is JUST the cleanup, nothing re-arms the flag.
-function buggyMountEffect(ref: MountRef): () => void {
-  return () => { ref.current = false }
+/** Module-level keyed store (the CURRENT shape): mount/cleanup are just
+ *  subscribe/unsubscribe — they never touch the flow's state. */
+function moduleStoreFlow() {
+  const map = new Map<string, { status: string }>()
+  const listeners = new Set<() => void>()
+  return {
+    mount: () => { listeners.add(() => {}) },
+    cleanup: () => { listeners.clear() },
+    start: () => { map.set('jira', { status: 'waiting' }) },
+    read: () => map.get('jira')?.status ?? 'lost',
+  }
 }
 
-// Drive React's two lifecycle shapes against an effect.
-function runNormalMount(effect: (r: MountRef) => () => void, ref: MountRef) {
-  effect(ref) // single mount, cleanup runs only on real unmount
-}
-function runStrictModeMount(effect: (r: MountRef) => () => void, ref: MountRef) {
-  const cleanup1 = effect(ref) // initial mount
-  cleanup1() // StrictMode simulated unmount
-  effect(ref) // StrictMode remount — component stays alive, no further cleanup
-}
-
-describe('OAuthSetup mount flag survives React StrictMode double-invoke', () => {
-  it('fixed effect: flag is true after a normal single mount', () => {
-    const ref: MountRef = { current: true }
-    runNormalMount(fixedMountEffect, ref)
-    expect(ref.current).toBe(true)
+describe('an in-flight OAuth flow survives unmount', () => {
+  it('module store: a StrictMode mount→cleanup→mount keeps the flow', () => {
+    const f = moduleStoreFlow()
+    f.mount(); f.cleanup(); f.mount()   // StrictMode double-invoke
+    f.start()
+    expect(f.read()).toBe('waiting')
   })
 
-  it('fixed effect: flag is true after StrictMode mount→cleanup→mount', () => {
-    const ref: MountRef = { current: true }
-    runStrictModeMount(fixedMountEffect, ref)
-    expect(ref.current).toBe(true)
+  it('module store: a REAL unmount mid-flight keeps the flow, so reopening resumes it', () => {
+    const f = moduleStoreFlow()
+    f.mount()
+    f.start()                            // flow running…
+    f.cleanup()                          // …row collapsed / provider switched
+    expect(f.read()).toBe('waiting')     // still there
+    f.mount()                            // reopened — picks the live flow back up
+    expect(f.read()).toBe('waiting')
   })
 
-  it('buggy effect: StrictMode leaves the flag false — proving the test discriminates', () => {
-    // Documents the exact regression the fix prevents: with a cleanup-only
-    // effect, a live component ends up with mountedRef.current === false.
-    const ref: MountRef = { current: true }
-    runStrictModeMount(buggyMountEffect, ref)
-    expect(ref.current).toBe(false)
-  })
-
-  it('startOAuth guard does NOT bail when the (fixed) flag is true', () => {
-    const ref: MountRef = { current: true }
-    runStrictModeMount(fixedMountEffect, ref)
-    // startOAuth: `if (!mountedRef.current) return` — true ⇒ the poll can start.
-    const bailedBeforeCreatingPoll = !ref.current
-    expect(bailedBeforeCreatingPoll).toBe(false)
-  })
-
-  it('startOAuth guard WOULD bail under the buggy effect (the user-visible hang)', () => {
-    const ref: MountRef = { current: true }
-    runStrictModeMount(buggyMountEffect, ref)
-    const bailedBeforeCreatingPoll = !ref.current
-    expect(bailedBeforeCreatingPoll).toBe(true)
+  it('component-local: the same unmount LOSES the flow — proving these discriminate', () => {
+    // Documents the exact regression the store prevents: the backend has written
+    // the creds, but the state tracking it is gone, so the UI hangs on "Waiting…".
+    const f = componentLocalFlow()
+    f.mount()
+    f.start()
+    f.cleanup()
+    expect(f.read()).toBe('lost')
   })
 })
 
-describe('IntegrationConnect.tsx OAuthSetup re-arms the mount flag', () => {
-  it("the mount effect sets mountedRef.current = true BEFORE returning its cleanup", () => {
-    // Must re-arm on (re)mount, not just clear on unmount. This regex fails for
-    // the old cleanup-only `useEffect(() => () => { ... }, [])` shape.
-    expect(src).toMatch(
-      /useEffect\(\(\)\s*=>\s*\{[\s\S]*?mountedRef\.current\s*=\s*true[\s\S]*?return\s*\(\)\s*=>\s*\{/,
-    )
+// ── The source shape that backs the model ────────────────────────────────────
+
+describe('integrationConnectStore.ts owns the OAuth flow', () => {
+  it('keeps the poll loop at module scope, keyed by provider', () => {
+    // Module-level (not inside a component/hook) is what makes it outlive unmount.
+    expect(store).toMatch(/^const pollers = new Map</m)
+    expect(store).toMatch(/^function stopPoll\(provider: string\)/m)
   })
 
-  it('still clears the flag on unmount and tears down the poll interval', () => {
-    expect(src).toContain('mountedRef.current = false')
-    expect(src).toMatch(/clearInterval\(pollRef\.current\)/)
+  it('exposes the flow as functions over the store, not component state', () => {
+    expect(store).toMatch(/^export async function startOAuth\(/m)
+    expect(store).toMatch(/^export function cancelOAuth\(/m)
   })
 
-  it('startOAuth still guards on the flag after awaiting start_oauth', () => {
-    expect(src).toMatch(/if \(!mountedRef\.current\) return/)
+  it('hands useSyncExternalStore a STABLE empty snapshot', () => {
+    // A fresh object per getSnapshot call re-renders forever; the shared frozen
+    // default is what stops that.
+    expect(store).toContain('useSyncExternalStore')
+    expect(store).toMatch(/const OAUTH_EMPTY: OAuthState = Object\.freeze\(/)
+  })
+})
+
+describe('IntegrationConnect.tsx stays a thin view over the store', () => {
+  it('reads OAuth state from the store rather than holding it locally', () => {
+    expect(view).toMatch(/useConnectStore\(oauthStore, tracker\.id\)/)
+  })
+
+  it('has no mountedRef / component-owned poll — the bug those patched is gone', () => {
+    // Their return means the flow's state moved back into the component, which is
+    // exactly what made an unmount able to orphan it.
+    expect(view).not.toContain('mountedRef')
+    expect(view).not.toContain('pollRef')
+    expect(view).not.toContain('setInterval')
   })
 })

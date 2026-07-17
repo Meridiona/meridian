@@ -53,6 +53,13 @@ def fetch_confirmed_plan(conn: sqlite3.Connection, plan_date: str) -> list[str]:
 def fetch_open_tasks(conn: sqlite3.Connection) -> list[dict]:
     """Open (non-terminal) PM tasks, excluding curation-excluded ones. Returns
     dicts with task_key/title/description_text/issue_type/epic_title.
+
+    Personal tasks (``provider = 'local'``) are excluded. They are user-authored
+    tasks that live only in Meridian and have no tracker to post to; a match
+    against one could only ever produce a worklog that fails at delivery — and
+    worse, ``resolve_provider`` below defaults an unknown key to ``'jira'``, so a
+    matched personal task would be posted to the WRONG tracker. See
+    meridian-core/src/readers/task_create.rs for the full invariant.
     """
     try:
         rows = conn.execute(
@@ -62,12 +69,14 @@ def fetch_open_tasks(conn: sqlite3.Connection) -> list[dict]:
             LEFT JOIN pm_task_curation c ON c.task_key = pm_tasks.task_key
             WHERE COALESCE(pm_tasks.is_terminal, 0) = 0
               AND (c.decision IS NULL OR c.decision != 'excluded')
+              AND COALESCE(pm_tasks.provider, 'jira') != 'local'
             """
         ).fetchall()
     except sqlite3.OperationalError:
         rows = conn.execute(
             "SELECT task_key, title, description_text, issue_type, epic_title "
-            "FROM pm_tasks WHERE COALESCE(is_terminal, 0) = 0"
+            "FROM pm_tasks WHERE COALESCE(is_terminal, 0) = 0 "
+            "AND COALESCE(provider, 'jira') != 'local'"
         ).fetchall()
     return [dict(r) for r in rows]
 
