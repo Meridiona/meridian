@@ -71,11 +71,6 @@
       "description": "An update card in the dashboard sidebar, so you don't have to open the tray popover to check for or install a new version."
     },
     {
-      "title": "Idle & sleep detection",
-      "status": "planned",
-      "description": "Restore accurate detection of when you're away or your Mac is asleep, now that screen capture runs fully in-process."
-    },
-    {
       "title": "Lighter on-device AI footprint",
       "status": "considering",
       "description": "Explore ways to further reduce how much memory the local AI model uses beyond today's idle auto-unload."
