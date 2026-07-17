@@ -21,14 +21,22 @@
 //! | what happened | what we do |
 //! |---|---|
 //! | `Failed` (crashed, not installed, timed out) | retry once, then fall back to on-device |
-//! | `RateLimited` (subscription exhausted) | fall back **immediately** — retrying a quota is pointless — and stop routing to that provider for [`RATE_LIMIT_BACKOFF`] |
+//! | `RateLimited` (subscription exhausted) | fall back **immediately** — retrying a quota is pointless — and stop routing to that provider until it resets |
 //! | fallback also fails / model not downloaded | give up; the caller leaves the hour pending and retries next tick |
 //!
 //! The backoff lives **in memory here, not in settings.json**. The user's *choice* is
-//! sacred: being rate-limited degrades the *routing* for half an hour, it does not rewrite
-//! what they asked for. Writing it to settings would mean a quota blip silently and
-//! permanently switched them to the local model. That distinction is what keeps this from
-//! becoming Dayflow's three-settings mess.
+//! sacred: being rate-limited degrades the *routing*, it does not rewrite what they asked
+//! for. Writing it to settings would mean a quota blip silently and permanently switched
+//! them to the local model. That distinction is what keeps this from becoming Dayflow's
+//! three-settings mess.
+//!
+//! # How long the backoff actually lasts
+//!
+//! [`start_backoff`] tries [`super::reset_time::parse_backoff`] against the provider's own
+//! error message first — Claude Code and Codex both print their real reset hint ("resets
+//! 3pm", "try again in 5 hours"), so a call resumes the moment the provider says it will,
+//! not after an arbitrary wait. [`RATE_LIMIT_BACKOFF`] is only the fallback for a message
+//! shape we don't recognise (e.g. Codex's weekly-limit date format).
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -41,11 +49,13 @@ use tracing::Instrument;
 
 use super::{
     claude::ClaudeBackend, codex::CodexBackend, copilot::CopilotBackend, cursor::CursorBackend,
-    local::LocalBackend, LlmBackend, LlmConfig, LlmError, LlmOutput, LlmProvider, PromptRequest,
+    local::LocalBackend, reset_time, LlmBackend, LlmConfig, LlmError, LlmOutput, LlmProvider,
+    PromptRequest,
 };
 
-/// How long a rate-limited provider is skipped. Matches the summariser's own backoff:
-/// a quota that just refused us will still refuse us a minute later.
+/// Fallback for a rate-limit message [`reset_time::parse_backoff`] couldn't read. Matches
+/// the summariser's own backoff: a quota that just refused us will still refuse us a
+/// minute later, and this is a safe default while we wait to actually hear otherwise.
 pub const RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(30 * 60);
 
 /// When the chosen provider may be used again. `None` = now.
@@ -73,9 +83,9 @@ fn is_backing_off() -> bool {
     }
 }
 
-fn start_backoff() {
+fn start_backoff(duration: Duration) {
     let mut guard = RATE_LIMITED_UNTIL.lock().unwrap_or_else(|e| e.into_inner());
-    *guard = Some(Instant::now() + RATE_LIMIT_BACKOFF);
+    *guard = Some(Instant::now() + duration);
 }
 
 /// Clear the backoff. For tests, and for an explicit user-driven provider change.
@@ -255,16 +265,18 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
     for attempt in 1..=2u32 {
         match backend.complete(req).await {
             Ok(out) => return Ok((out, effective)),
-            Err(e @ LlmError::RateLimited(_)) => {
+            Err(LlmError::RateLimited(msg)) => {
+                let backoff = reset_time::parse_backoff(&msg, chrono::Local::now())
+                    .unwrap_or(RATE_LIMIT_BACKOFF);
                 tracing::warn!(
                     provider = effective.as_str(),
                     label = %req.label,
-                    error = %e,
-                    backoff_min = RATE_LIMIT_BACKOFF.as_secs() / 60,
+                    error = %msg,
+                    backoff_s = backoff.as_secs(),
                     "llm: provider rate-limited — falling back to on-device"
                 );
-                start_backoff();
-                last = e;
+                start_backoff(backoff);
+                last = LlmError::RateLimited(msg);
                 break;
             }
             Err(e) => {
@@ -372,7 +384,7 @@ mod tests {
 
         assert_eq!(resolve().provider(), LlmProvider::Claude);
 
-        start_backoff();
+        start_backoff(RATE_LIMIT_BACKOFF);
         assert_eq!(
             resolve().provider(),
             LlmProvider::Local,
@@ -402,7 +414,7 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("meridian-resolver-loc-{}", std::process::id()));
         write_settings(&dir, "local");
-        start_backoff();
+        start_backoff(RATE_LIMIT_BACKOFF);
         assert_eq!(resolve().provider(), LlmProvider::Local);
         clear_backoff();
         std::env::remove_var("MERIDIAN_SETTINGS_PATH");
