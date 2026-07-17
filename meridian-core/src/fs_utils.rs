@@ -18,7 +18,12 @@
 use anyhow::Context;
 use serde::Serialize;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Monotonic per-process counter making each temp file name unique — see the
+/// `tmp` construction in [`atomic_write_json`].
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Crash-safely persist `value` as pretty (2-space) JSON to `path`.
 ///
@@ -26,13 +31,31 @@ use std::path::Path;
 /// same directory** (so the rename stays on one filesystem and is therefore
 /// atomic), then renames it over `path`. A crash mid-write can only ever leave
 /// the stale `path` or the temp file — never a truncated `path`.
+///
+/// The temp file name carries a unique `pid.seq` suffix so two callers writing
+/// the **same** `path` concurrently (e.g. distinct threads persisting into one
+/// cache file) each get their own scratch file — otherwise a fixed temp name
+/// lets one writer truncate the other's temp mid-write, and the losing rename
+/// can leave a torn file that the reader then discards wholesale. The rename
+/// onto `path` is still last-writer-wins, but each write is individually intact;
+/// callers that must not lose each other's *content* still serialise the
+/// read-modify-write above this call (see `llm::detect::persist_test_result`).
 pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating dir {}", dir.display()))?;
     }
     let json = serde_json::to_string_pretty(value).context("serialising JSON")?;
-    // Temp file in the SAME directory so the rename is atomic (same filesystem).
-    let tmp = path.with_extension("json.tmp");
+    // Temp file in the SAME directory (so the rename is atomic) with a per-call
+    // unique name (so concurrent writers to one `path` never share a temp file).
+    let tmp: PathBuf = {
+        let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let mut name = path
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_default();
+        name.push(format!(".tmp.{}.{}", std::process::id(), seq));
+        path.with_file_name(name)
+    };
     {
         let mut f = std::fs::File::create(&tmp)
             .with_context(|| format!("creating temp file {}", tmp.display()))?;
