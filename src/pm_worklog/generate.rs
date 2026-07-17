@@ -507,6 +507,37 @@ pub(crate) async fn generate_request(
     Ok((req, candidates.len()))
 }
 
+/// Like [`generate_request`], but for a task supplied **inline** rather than read
+/// from `day_tasks`. The dev-only LLM-Lab draft button drafts a fold variant's OWN
+/// simulated task, whose id (`T1`, `T2`) is that model's in-memory day, not a
+/// production row — so the workstream report is built from the passed
+/// title/summary/minutes. Only the candidate set (the day's REAL plan) is read
+/// from the DB, which is correct and desirable: a Lab draft still compares against
+/// the actual board. Read-only.
+pub(crate) async fn generate_request_from_task(
+    pool: &SqlitePool,
+    day_local: &str,
+    title: String,
+    summary: Vec<String>,
+    minutes: i64,
+) -> Result<(PromptRequest, usize)> {
+    let report = WorkstreamReport {
+        title,
+        summary,
+        minutes,
+    };
+    let candidates = fetch_plan_candidates(pool, day_local).await?;
+    let user = build_user_prompt(&report, &candidates);
+    let req = PromptRequest {
+        system: prompts::WORKLOG_GENERATE,
+        user,
+        schema: Some(prompts::worklog_generate_schema()),
+        max_tokens: GENERATE_MAX_TOKENS,
+        label: format!("worklog-generate {day_local} (inline)"),
+    };
+    Ok((req, candidates.len()))
+}
+
 /// A day-task's whole-story report as the matcher sees it.
 struct WorkstreamReport {
     title: String,

@@ -11,11 +11,20 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import type { LlmExperimentDetail } from '@/lib/api-types'
+import type { LlmExperimentDetail, LlmExperimentResult } from '@/lib/api-types'
 import { llmProvider, type LlmProviderId } from '@/lib/llm-providers'
 import type { DayTaskDetail } from '../DayTaskDetailPanel'
 import { VariantBody, STATUS_META, isFoldProcess } from './VariantBody'
 import { LabTaskSidebar } from './LabTaskSidebar'
+
+/** The variant token the daemon understands (matches the composer / CLI): a
+ *  custom endpoint is `custom:<id>`, an explicit model is `provider:model`, and a
+ *  bare provider is just its id. Threaded to the draft button so it drafts with
+ *  the variant currently shown. */
+function variantToken(r: LlmExperimentResult): string {
+  if (r.provider === 'custom') return `custom:${r.model}`
+  return r.model ? `${r.provider}:${r.model}` : r.provider
+}
 
 /** Wire process -> display name. Also used by LlmLabScreen's past-runs rail. */
 export const PROCESS_NAMES: Record<string, string> = {
@@ -110,8 +119,13 @@ export function RunView({ detail }: { detail: LlmExperimentDetail }) {
             This run has no variants.
           </p>
         )}
-        {fold && selectedTask && (
-          <LabTaskSidebar detail={selectedTask} onClose={() => setSelectedTask(null)} />
+        {fold && selectedTask && selected && (
+          <LabTaskSidebar
+            key={selectedTask.id}
+            detail={selectedTask}
+            variantToken={variantToken(selected)}
+            onClose={() => setSelectedTask(null)}
+          />
         )}
       </div>
     </div>

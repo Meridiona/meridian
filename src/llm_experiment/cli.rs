@@ -24,12 +24,14 @@ use sqlx::SqlitePool;
 
 use super::{
     parse_variants, request, runner, store, ExperimentInput, ExperimentProcess, ExperimentSpec,
+    Variant,
 };
 
 const USAGE: &str = "usage: meridian llm-experiment \
 run|create --process hour-report|workstream-fold|worklog-generate|day-fold \
 (--hour YYYY-MM-DDTHH | --day YYYY-MM-DD [--task-id T]) --variants p1,p2:model,custom:id,… \
-| exec --id N | list [--limit N] | get --id N";
+| exec --id N | list [--limit N] | get --id N \
+| draft-task --day YYYY-MM-DD --variant p[:model] --task-json '{\"title\":…,\"summary\":[…],\"minutes\":N}'";
 
 /// Parse argv and dispatch. Prints exactly one JSON line on success (except
 /// `create`'s `{"experiment_id":N}` — also one line); errors bubble to `main.rs`.
@@ -68,8 +70,58 @@ pub async fn run(pool: &SqlitePool) -> Result<()> {
             let id = flag_i64(&args, "--id")?;
             print_detail(pool, id).await
         }
+        "draft-task" => draft_task(pool, &args).await,
         _ => bail!("{USAGE}"),
     }
+}
+
+/// Ephemeral inline worklog draft for the dev-only LLM Lab: draft ONE fold task
+/// with ONE variant, print `{"draft": <raw model answer>}`, and persist nothing
+/// (no experiment row). The task content is passed inline
+/// (`--task-json {title,summary,minutes}`) because a fold task id is a model's
+/// SIMULATED day, not a production `day_tasks` row - so there is nothing to read
+/// by id. Fires a real, metered completion; the UI gates this behind a
+/// free/local caution. The tray `draft_lab_worklog` command shells out to it.
+async fn draft_task(pool: &SqlitePool, args: &[String]) -> Result<()> {
+    let day = flag(args, "--day").with_context(|| format!("draft-task needs --day - {USAGE}"))?;
+    let variant =
+        flag(args, "--variant").with_context(|| format!("draft-task needs --variant - {USAGE}"))?;
+    let task_json = flag(args, "--task-json")
+        .with_context(|| format!("draft-task needs --task-json - {USAGE}"))?;
+
+    #[derive(serde::Deserialize)]
+    struct InlineTask {
+        title: String,
+        #[serde(default)]
+        summary: Vec<String>,
+        #[serde(default)]
+        minutes: i64,
+    }
+    let task: InlineTask = serde_json::from_str(&task_json).context("parsing --task-json")?;
+
+    // Parse the variant token (validates the provider + the custom:<id> shape),
+    // then resolve its backend from live settings - the same resolution the
+    // experiment runner uses, so a `custom:<id>` draft hits the same endpoint.
+    let v = Variant::parse(&variant)?;
+    let model = v.model.unwrap_or_default();
+    let backend =
+        runner::resolve_backend(v.provider.as_str(), &model).map_err(anyhow::Error::msg)?;
+
+    let (req, _) = crate::pm_worklog::generate::generate_request_from_task(
+        pool,
+        &day,
+        task.title,
+        task.summary,
+        task.minutes,
+    )
+    .await?;
+
+    let out = backend
+        .complete(&req)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    println!("{}", serde_json::json!({ "draft": out.text }));
+    Ok(())
 }
 
 /// Build + snapshot + insert; returns the new experiment id.

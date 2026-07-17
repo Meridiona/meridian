@@ -159,3 +159,56 @@ pub async fn get_llm_experiment(
             e.to_string()
         })
 }
+
+/// POST body for [`draft_lab_worklog`] - the selected fold task plus the variant
+/// to draft it with. `task` carries the inline content the daemon drafts from
+/// (`{title, summary, minutes}`); it is deliberately NOT looked up by id, because
+/// a fold task id is a model's SIMULATED day, not a production `day_tasks` row.
+#[derive(Debug, Deserialize)]
+pub struct DraftLabWorklogBody {
+    pub day: String,
+    /// A variant token: `provider`, `provider:model`, or `custom:<endpoint-id>`.
+    pub variant: String,
+    /// `{title, summary, minutes}` - passed through to the CLI as `--task-json`.
+    pub task: serde_json::Value,
+}
+
+/// `draft-task`'s one JSON line.
+#[derive(Debug, Deserialize)]
+struct DraftAck {
+    draft: String,
+}
+
+/// Draft ONE fold task's worklog with ONE variant, on demand - shells
+/// `meridian llm-experiment draft-task` (EPHEMERAL: no experiment row is written)
+/// and returns the model's raw answer for the sidebar to render. This fires a
+/// REAL, metered completion against the chosen variant, so the UI puts a
+/// free/local caution on the button. Dev-only, like the rest of the Lab.
+#[tauri::command]
+#[tracing::instrument(skip(body), fields(variant = %body.variant, day = %body.day))]
+pub async fn draft_lab_worklog(body: DraftLabWorklogBody) -> Result<String, String> {
+    dev_only()?;
+    let task_json = serde_json::to_string(&body.task).map_err(|e| e.to_string())?;
+    let args: Vec<String> = vec![
+        "llm-experiment".into(),
+        "draft-task".into(),
+        "--day".into(),
+        body.day.clone(),
+        "--variant".into(),
+        body.variant.clone(),
+        "--task-json".into(),
+        task_json,
+    ];
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    // The bottleneck is a full worklog-generate completion, which can be slow on a
+    // large model - a generous ceiling, not the 30 s the create step uses.
+    let stdout = run_meridian(
+        &arg_refs,
+        Duration::from_secs(180),
+        "llm-experiment-draft-task",
+    )
+    .await?;
+    let ack: DraftAck = parse_last_line(&stdout)?;
+    tracing::info!("llm-lab: inline worklog draft complete");
+    Ok(ack.draft)
+}
