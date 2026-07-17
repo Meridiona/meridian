@@ -23,6 +23,7 @@ mod live;
 mod notifications;
 mod plan_auto_open;
 mod refresh;
+mod whats_new_auto_open;
 
 pub(crate) use notifications::notifications_allowed;
 
@@ -138,6 +139,11 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
             // (marker-file gated; a single file stat on the common path). If
             // the pool isn't open yet this tick, it simply retries next tick.
             plan_auto_open::maybe_auto_open_plan(&app, pool).await;
+            // "What's New" auto-open — at most once per app version. Defers
+            // itself (see its own module docs) whenever the dashboard window
+            // is already open — which also naturally avoids colliding with
+            // the Plan auto-open just above on the same tick.
+            whats_new_auto_open::maybe_auto_open_whats_new(&app).await;
         }
 
         // Drain the daemon's notification outbox every tick — this is the single

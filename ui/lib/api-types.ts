@@ -472,3 +472,23 @@ export interface AppInfo {
   version: string
   channel: 'dev' | 'staging' | 'prod'
 }
+
+// ── What's New (`get_whats_new`) ───────────────────────────────────────────────
+
+export interface ReleaseNote {
+  version: string
+  date: string
+  highlights: string[]
+  fixes: string[]
+}
+
+export interface RoadmapItem {
+  title: string
+  status: 'in-progress' | 'planned' | 'considering'
+  description: string
+}
+
+export interface WhatsNewData {
+  releases: ReleaseNote[]
+  roadmap: RoadmapItem[]
+}

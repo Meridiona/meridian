@@ -28,9 +28,10 @@ import { PlanModal } from './PlanModal'
 import { TasksModal } from './TasksModal'
 import { TaskDetailDialog } from './TaskDetailDialog'
 import { ReportModal } from './ReportModal'
+import { WhatsNewModal } from './WhatsNewModal'
 import type { SettingsSection } from './settings/types'
 
-export type ActiveModal = 'review' | 'cleanup' | 'settings' | 'plan' | 'tasks' | 'report' | null
+export type ActiveModal = 'review' | 'cleanup' | 'settings' | 'plan' | 'tasks' | 'report' | 'whats-new' | null
 
 export default function MeridianTimelineShell() {
   const [day, setDay] = useState<string>(dayString(0))
@@ -92,6 +93,8 @@ export default function MeridianTimelineShell() {
       } else if (target === '/worklogs') {
         setReviewFocusKey(null)
         setActiveModal('review')
+      } else if (target === '/whats-new') {
+        setActiveModal('whats-new')
       }
     }
     return subscribe<string | null>('/deep-link', 'take_pending_deep_link', 'dashboard-navigate', navigate)
@@ -131,6 +134,14 @@ export default function MeridianTimelineShell() {
     setActiveModal(null)
   }
 
+  // Marks the running app version "seen" so the once-per-version auto-open
+  // (poll::whats_new_auto_open) doesn't fire again — whether this close came
+  // from the auto-open or a manual nav-pill open, viewing it counts as seen.
+  function closeWhatsNew() {
+    invoke('mark_whats_new_seen_cmd').catch(() => {})
+    setActiveModal(null)
+  }
+
   // Opens the same swipeable Review dialog the pill/nav use, scoped to just
   // one ticket, instead of the right-side Hour-detail panel. Two callers:
   // a still-drafted card clicked directly on the timeline (TimelineColumn —
@@ -156,6 +167,7 @@ export default function MeridianTimelineShell() {
         connectedProviderId={connectedProviderId}
         onOpenSettings={(section) => { setSettingsSection(section); setActiveModal('settings') }}
         onOpenReport={() => setActiveModal('report')}
+        onOpenWhatsNew={() => setActiveModal('whats-new')}
       />
 
       <div className="flex flex-1 min-h-0">
@@ -193,6 +205,7 @@ export default function MeridianTimelineShell() {
         <SettingsModal onClose={() => setActiveModal(null)} initialSection={settingsSection} />
       )}
       {activeModal === 'report' && <ReportModal onClose={() => setActiveModal(null)} />}
+      {activeModal === 'whats-new' && <WhatsNewModal onClose={closeWhatsNew} />}
       {activeModal === 'plan' && <PlanModal onClose={closePlan} />}
       {activeModal === 'tasks' && (
         <TasksModal onClose={() => setActiveModal(null)} onOpenTask={(key, title) => setOpenTask({ key, title })} />
