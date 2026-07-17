@@ -98,7 +98,10 @@ impl CaptureEngine for ScreenpipeEngine {
             // and MUST finish before any await: `&dyn TreeWalkerPlatform` is
             // `Send` but not `Sync`, so the reference cannot cross an await
             // point. Returning an owned outcome keeps the borrow local to here.
-            let outcome = try_walk_a11y(walker.as_ref());
+            // Pooled: the AX calls autorelease bridged values into the current
+            // thread's pool, and tokio worker threads never drain one — see
+            // `with_autorelease_pool`.
+            let outcome = with_autorelease_pool(|| try_walk_a11y(walker.as_ref()));
             // Pre-capture gate: macOS blanks/flickers DRM video whenever ANY
             // ScreenCaptureKit session is active on the display — regardless
             // of which window it targets — so the OCR fallback's SCK call
@@ -354,7 +357,14 @@ async fn capture_once_ocr(
         if is_self_app(&win.app_name.to_lowercase()) {
             continue;
         }
-        let (text, _json, _confidence) = screenpipe_screen::perform_ocr_apple(&win.image, &[]);
+        // Pooled: Apple Vision autoreleases its request/observation objects and
+        // intermediate CGImages into the current thread's pool on every call.
+        // This is the hottest allocation site in the engine (a full retina
+        // window bitmap per tick for canvas apps like Figma that always take
+        // the OCR path), so without a per-call drain the process grows without
+        // bound — see `with_autorelease_pool`.
+        let (text, _json, _confidence) =
+            with_autorelease_pool(|| screenpipe_screen::perform_ocr_apple(&win.image, &[]));
         if text.trim().is_empty() {
             continue; // nothing legible in this window — skip it
         }
@@ -425,6 +435,44 @@ async fn send_frame(
             false
         }
     }
+}
+
+/// Run `f` inside a fresh Objective-C autorelease pool, draining it on return.
+///
+/// The capture loop runs on tokio worker threads. Unlike the main thread —
+/// whose run loop drains an autorelease pool every cycle — a tokio worker
+/// lives for the whole process and never drains one, so every object the
+/// Apple frameworks autorelease during a tick (Vision text observations and
+/// their backing CGImages, AX attribute values, bridged NSStrings) stays
+/// referenced by the thread's pool forever. At one tick every 2 s that is
+/// unbounded multi-GB growth over a workday — worst for canvas apps (Figma),
+/// which take the image-grab + Vision-OCR path on every tick.
+///
+/// `objc_autoreleasePoolPush`/`Pop` is the stable libobjc pair that an
+/// `@autoreleasepool` block compiles down to.
+///
+/// `f` must be synchronous — never hold a pool across an `.await` (the task
+/// can resume on a different worker thread, unbalancing push/pop). Taking a
+/// non-async closure enforces that at the call site.
+fn with_autorelease_pool<R>(f: impl FnOnce() -> R) -> R {
+    #[link(name = "objc")]
+    extern "C" {
+        fn objc_autoreleasePoolPush() -> *mut std::ffi::c_void;
+        fn objc_autoreleasePoolPop(pool: *mut std::ffi::c_void);
+    }
+    // Drop guard so the pool is popped even if `f` panics (unwinding past a
+    // pushed pool would otherwise leak it and everything in it).
+    struct PoolGuard(*mut std::ffi::c_void);
+    impl Drop for PoolGuard {
+        fn drop(&mut self) {
+            // Safety: pops the pool pushed below, on the same thread, exactly once.
+            unsafe { objc_autoreleasePoolPop(self.0) }
+        }
+    }
+    // Safety: push/pop are balanced by the guard; no other pool operations
+    // interleave from this scope.
+    let _pool = PoolGuard(unsafe { objc_autoreleasePoolPush() });
+    f()
 }
 
 /// Register for Screen Recording, but **only prompt when it isn't already
