@@ -28,6 +28,7 @@
 //! - [`setup`]     — first-run detection, permission probes, MLX status/start.
 //! - [`uninstall`] — the in-app uninstall wizard's plan + execute commands.
 //! - [`version`]   — installed vs. published version (`/api/version`).
+//! - [`whats_new`] — curated changelog + roadmap for the "What's New" modal.
 //! - [`worklogs`]  — worklog review read + edit/approve/reject/unapprove writes.
 //!
 //! # Related
@@ -58,6 +59,7 @@ pub mod tasks;
 pub mod triage;
 pub mod uninstall;
 pub mod version;
+pub mod whats_new;
 pub mod worklog_generate;
 pub mod worklogs;
 
@@ -87,5 +89,6 @@ pub use tasks::*;
 pub use triage::*;
 pub use uninstall::*;
 pub use version::*;
+pub use whats_new::*;
 pub use worklog_generate::*;
 pub use worklogs::*;

@@ -1,0 +1,48 @@
+{
+  "releases": [
+    {
+      "version": "1.70.0",
+      "date": "2026-07-09",
+      "highlights": [
+        "Track work automatically across GitHub, Linear, Azure DevOps, Jira, Trello, and Asana.",
+        "Pick which GitHub Projects (v2) board to sync right from the connect flow.",
+        "Sign in to GitHub natively - no more copy-pasting a command-line login.",
+        "Popover: tap the \"Capturing\" status to see a live health panel.",
+        "Onboarding shows expected memory usage and downloads models faster.",
+        "Redesigned Overview and Hour-detail views."
+      ],
+      "fixes": [
+        "Fixed OAuth connect flows that could get stuck if you canceled partway through.",
+        "Fixed \"Open in tracker\" links that weren't opening your browser.",
+        "Daily plan reminders no longer stack up past midnight."
+      ]
+    },
+    {
+      "version": "1.69.0",
+      "date": "2026-07-03",
+      "highlights": [
+        "Brand-new one-pager Timeline dashboard design.",
+        "Added the Meridian nav pill to the toolbar for quicker navigation.",
+        "Broader ticket write-back support across Jira, Linear, and Azure DevOps.",
+        "Rebuilt the popover to match the latest design."
+      ],
+      "fixes": [
+        "Fixed a leak that could grow the local AI server's memory use by several GB an hour.",
+        "Fixed a bug that could post the same work log to Jira twice.",
+        "Fixed external links not opening from inside the app."
+      ]
+    }
+  ],
+  "roadmap": [
+    {
+      "title": "Idle & sleep detection",
+      "status": "in-progress",
+      "description": "Restore accurate detection of when you're away or your Mac is asleep, now that screen capture runs fully in-process."
+    },
+    {
+      "title": "Lighter local AI footprint",
+      "status": "planned",
+      "description": "Reduce how much memory the on-device model holds while it's idle."
+    }
+  ]
+}

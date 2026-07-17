@@ -431,6 +431,16 @@ the packaged-build test recipe). In short:
 2. Edit the TypeScript source in `packages/meridian-mcp/src/`
 3. Run `npm run build` in `packages/meridian-mcp/` and verify `dist/index.js` is updated
 
+### Add a What's New entry per release
+
+The dashboard's "What's New" modal (`ui/components/timeline/WhatsNewModal.tsx`, opened via the toolbar nav pill or auto-opened once per app version by the tray's `poll::whats_new_auto_open`) is **hand-curated**, deliberately separate from the auto-generated `CHANGELOG.md` — that file is commit-level and too internal to show end users (e.g. `hf-proxy: bake MERIDIAN_HF_ENDPOINT into the staging channel`).
+
+1. Edit `tray/src-tauri/resources/whats-new.json` (compiled into the tray binary via `include_str!`, not Tauri resource-bundling — a rebuild always picks up the change).
+2. Add a new object to the front of `releases` (newest-first): `version`, `date`, `highlights` (features, user-facing language), `fixes`. Rewrite each bullet in plain user terms — never paste a commit message verbatim.
+3. Update `roadmap` if upcoming plans changed — `status` is `in-progress` | `planned` | `considering`.
+4. Every string in this file is user-facing app text — plain hyphen `-` only, no em-dash, per the Hard Rules at the top of this file.
+5. `cargo test -p meridian-tray` (from `tray/src-tauri/`) covers `whats_new_json_parses`, which fails the build if the JSON doesn't match the expected shape.
+
 ### Add a Golden to the classifier eval dataset
 
 Goldens are hand-authored seed sessions that target specific failure modes of the MLX classifier. The eval pipeline scores the classifier against them on every model swap, prompt edit, or temperature change.

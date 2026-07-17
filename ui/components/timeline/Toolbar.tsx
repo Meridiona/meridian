@@ -30,7 +30,7 @@ import { ProviderIcon } from '@/components/ProviderIcon'
 import type { SettingsSection } from './settings/types'
 
 export function Toolbar({
-  day, isToday, onShiftDay, isSolo, connectedProviderName, connectedProviderId, onOpenSettings, onOpenReport,
+  day, isToday, onShiftDay, isSolo, connectedProviderName, connectedProviderId, onOpenSettings, onOpenReport, onOpenWhatsNew,
   showLlmLab = false, onOpenLlmLab,
 }: {
   day: string
@@ -41,6 +41,7 @@ export function Toolbar({
   connectedProviderId: string | null
   onOpenSettings: (section?: SettingsSection) => void
   onOpenReport: () => void
+  onOpenWhatsNew: () => void
   /** Dev builds only ('dev' channel) - shows the LLM Lab flask button. */
   showLlmLab?: boolean
   onOpenLlmLab?: () => void
@@ -77,7 +78,7 @@ export function Toolbar({
 
       {/* nav pill — centered regardless of left/right content width. */}
       <div className="justify-self-center">
-        <MeridianNavPill onOpenSettings={onOpenSettings} onOpenReport={onOpenReport} />
+        <MeridianNavPill onOpenSettings={onOpenSettings} onOpenReport={onOpenReport} onOpenWhatsNew={onOpenWhatsNew} />
       </div>
 
       <div className="ml-auto flex items-center gap-4">
@@ -180,9 +181,10 @@ function SettingsGlyph() {
  *  ReportModal get-in-touch card (see MeridianTimelineShell). Solid dark
  *  lockup, unaffected by the light/blush/ink surface theme — ported from the
  *  design mock's pill navbar (`pillBarStyle`/`pillBrandStyle`/`pillSettingsStyle`). */
-function MeridianNavPill({ onOpenSettings, onOpenReport }: {
+function MeridianNavPill({ onOpenSettings, onOpenReport, onOpenWhatsNew }: {
   onOpenSettings: (section?: SettingsSection) => void
   onOpenReport: () => void
+  onOpenWhatsNew: () => void
 }) {
   return (
     <div className="flex items-center" style={{
@@ -198,6 +200,7 @@ function MeridianNavPill({ onOpenSettings, onOpenReport }: {
       <NavPillItem active>Timeline</NavPillItem>
       <NavPillItem active={false} onClick={() => onOpenSettings('integrations')}>Integrations</NavPillItem>
       <NavPillItem active={false} onClick={onOpenReport}>Report</NavPillItem>
+      <NavPillItem active={false} onClick={onOpenWhatsNew}>What's New</NavPillItem>
       <button onClick={() => onOpenSettings()} aria-label="Settings" className="mt-navpill-item"
         style={{
           display: 'flex', alignItems: 'center', gap: 6, borderRadius: 999,
