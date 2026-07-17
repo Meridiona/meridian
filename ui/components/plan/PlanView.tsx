@@ -249,15 +249,19 @@ export default function PlanView() {
         </header>
 
         {boardEmpty ? (
-          <div className="flex-1 min-h-0 overflow-y-auto nice-scroll flex items-center justify-center p-6">
-            <div className="w-full">
-              <TaskComposer hero day={todayKey} trackers={trackers} onDone={onCreated} />
-              {trackers.length === 0 && (
-                <p className="mt-4 text-center mt-body-sm" style={{ color: 'var(--t-faint-2)' }}>
-                  Using Jira, Linear or GitHub? Connect it in Settings and your tickets show up here too.
-                </p>
-              )}
-            </div>
+          // Top-anchored + scrollable, NOT vertically centered: centering a flex
+          // item taller than the viewport clips it symmetrically top and bottom
+          // (the classic unsafe-centering bug) — the footer "Add to today" button
+          // was getting pushed past the scrollable edge and clipped by the modal.
+          // Every other modal in this codebase (SettingsModal, ReportModal) is
+          // top-anchored inside its scroll region; this follows the same convention.
+          <div className="flex-1 min-h-0 overflow-y-auto nice-scroll p-6">
+            <TaskComposer hero day={todayKey} trackers={trackers} onDone={onCreated} />
+            {trackers.length === 0 && (
+              <p className="mt-4 text-center mt-body-sm mx-auto" style={{ color: 'var(--t-faint-2)', maxWidth: 560 }}>
+                Using Jira, Linear or GitHub? Connect it in Settings and your tickets show up here too.
+              </p>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 flex-1 min-h-0 p-6">

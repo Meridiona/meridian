@@ -33,8 +33,12 @@ export function ModalShell({ title, onClose, children, maxWidth = 720, scrollIns
       style={{ background: 'rgba(20,16,40,0.5)', backdropFilter: 'blur(3px)' }} onClick={onClose}>
       <div className="w-full rounded-2xl overflow-hidden flex flex-col bg-panel"
         style={{
+          // `maxHeight` alone (no fixed `height`) lets the box size to its content
+          // up to the cap: short content (e.g. the Daily-plan empty state) never
+          // shows a scrollbar, while content that exceeds the cap still gets a
+          // definite height here, which is what lets a `scrollInside` child's own
+          // `flex-1 min-h-0 overflow-y-auto` region clip and scroll correctly.
           maxWidth, maxHeight: '92%', border: '1px solid var(--t-card-border)', boxShadow: 'var(--mt-modal-shadow)',
-          ...(scrollInside ? { height: 720 } : {}),
         }}
         onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-7 py-5 border-b shrink-0" style={{ borderColor: 'var(--t-hair)' }}>

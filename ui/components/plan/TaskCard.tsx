@@ -62,7 +62,7 @@ export function TaskCardBody({
             ? <MetaChip>Personal</MetaChip>
             : <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text shrink-0">{task.key}</span>}
           {showType && <MetaChip>{task.issue_type}</MetaChip>}
-          <span className="mt-body-sm truncate"
+          <span className="mt-body-sm truncate flex-1 min-w-0"
             style={{ color: 'var(--t-title)', textDecoration: task.is_terminal ? 'line-through' : 'none' }}>
             {task.title}
           </span>

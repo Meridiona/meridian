@@ -293,11 +293,19 @@ function TaskBand({ laid, hue, toPx, selected, dimmed, onSelect }: {
   const compact = height < COMPACT_MAX_PX
   const showMeta = height >= META_MIN_PX
   // How many summary lines can we show under the header without overflowing?
+  // If not every line fits, one of those slots has to go to the "+N more"
+  // caption itself — otherwise the caption is an EXTRA row tacked on below
+  // however many bullets fit exactly, pushing the card past its own height
+  // and getting silently clipped by overflow:hidden (a half-cut-off bullet
+  // line with no "+more" to explain it).
   const summary = laid.task.summary ?? []
+  const summarySlots = height >= SUMMARY_MIN_PX ? Math.floor((height - (showMeta ? 74 : 52)) / SUMMARY_LINE_PX) : 0
   const previewLines =
-    height >= SUMMARY_MIN_PX && summary.length > 0
-      ? Math.max(0, Math.min(summary.length, Math.floor((height - (showMeta ? 74 : 52)) / SUMMARY_LINE_PX)))
-      : 0
+    summary.length === 0
+      ? 0
+      : summarySlots >= summary.length
+        ? summary.length // everything fits — no caption needed
+        : Math.max(0, Math.min(summary.length, summarySlots - 1)) // reserve a slot for "+N more"
 
   return (
     <button

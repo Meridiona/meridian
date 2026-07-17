@@ -33,9 +33,11 @@
 //! # Related
 //! - `src/pm_worklog/generate.rs` — the CLI-side engine these spawn, and the source
 //!   of the exact JSON shapes deserialized below.
-//! - [`crate::commands::cli_exec`] — the shared spawn/`current_dir(~/.meridian)`/
+//! - [`crate::commands::cli_exec`] — the shared spawn/[`crate::install::cli_cwd`]/
 //!   timeout/`parse_last_line`/`run_meridian_json` helpers (this module's former
 //!   private copies).
+//! - [`crate::commands::statuses`] — sibling CLI-spawning command, same pattern
+//!   through the same helpers.
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
