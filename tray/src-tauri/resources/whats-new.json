@@ -1,6 +1,25 @@
 {
   "releases": [
     {
+      "version": "1.71.0",
+      "date": "2026-07-15",
+      "highlights": [
+        "Redesigned dashboard look: refined typography, a single violet accent, and real per-app brand colors.",
+        "Sign in with just your email and a one-time code, then manage your account from Settings.",
+        "Meridian is now signed and notarized by Apple, so macOS won't flag it as an unidentified app.",
+        "Added an in-app uninstall wizard.",
+        "The \"Plan your day\" view now opens automatically once a day to help you start with a plan.",
+        "Onboarding now shows an expected-memory gauge and a notifications permission step."
+      ],
+      "fixes": [
+        "Fixed navigating to a specific view sometimes not working if the dashboard was already open.",
+        "Fixed worklog creation failing for Jira projects that don't have a Bug issue type.",
+        "Fixed worklogs repeatedly failing to post once a Jira issue hit its daily worklog limit.",
+        "Fixed a bug that could trigger duplicate Jira worklog backfills.",
+        "Fixed the notifications permission link opening the wrong settings pane."
+      ]
+    },
+    {
       "version": "1.70.0",
       "date": "2026-07-09",
       "highlights": [
@@ -18,6 +37,14 @@
       ]
     },
     {
+      "version": "1.69.1",
+      "date": "2026-07-05",
+      "highlights": [],
+      "fixes": [
+        "Fixed external links not opening from inside the app."
+      ]
+    },
+    {
       "version": "1.69.0",
       "date": "2026-07-03",
       "highlights": [
@@ -28,21 +55,30 @@
       ],
       "fixes": [
         "Fixed a leak that could grow the local AI server's memory use by several GB an hour.",
-        "Fixed a bug that could post the same work log to Jira twice.",
-        "Fixed external links not opening from inside the app."
+        "Fixed a bug that could post the same work log to Jira twice."
       ]
     }
   ],
   "roadmap": [
     {
-      "title": "Idle & sleep detection",
+      "title": "Choose your own AI provider",
       "status": "in-progress",
+      "description": "Pick your own Claude, Codex, Cursor, or Copilot CLI subscription (or stay fully on-device) to power worklog generation, switchable anytime from Settings."
+    },
+    {
+      "title": "See and install updates from the dashboard",
+      "status": "in-progress",
+      "description": "An update card in the dashboard sidebar, so you don't have to open the tray popover to check for or install a new version."
+    },
+    {
+      "title": "Idle & sleep detection",
+      "status": "planned",
       "description": "Restore accurate detection of when you're away or your Mac is asleep, now that screen capture runs fully in-process."
     },
     {
-      "title": "Lighter local AI footprint",
-      "status": "planned",
-      "description": "Reduce how much memory the on-device model holds while it's idle."
+      "title": "Lighter on-device AI footprint",
+      "status": "considering",
+      "description": "Explore ways to further reduce how much memory the local AI model uses beyond today's idle auto-unload."
     }
   ]
 }
