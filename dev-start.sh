@@ -71,6 +71,28 @@ pkill -f 'uvicorn agents.server:app'    2>/dev/null || true   # MLX dev server
 pkill -f 'tauri dev'                    2>/dev/null || true   # tray file-watcher
 pkill -f 'target/debug/meridian-tray$'  2>/dev/null || true   # tray binary
 pkill -f 'Meridian Dev.app'             2>/dev/null || true   # stale dev .app bundle
+# The tray SUPERVISES the MLX server: every poll tick, an unhealthy port with a
+# runtime present is restarted (mlx_server.rs). So this must come AFTER the tray is
+# dead — kill the server first and the supervisor simply puts it back.
+#
+# And it must match BY PATH, not by the uvicorn pattern above: `resolve_mlx_command`
+# prefers the DOWNLOADED runtime (~/.meridian/runtime) over the checkout, so on a
+# machine that also has Meridian installed the tray spawns
+# `~/.meridian/runtime/bin/python server.py` — which `uvicorn agents.server:app`
+# never matches. It is spawned detached, so it outlives the tray (orphaned to
+# launchd) and holds port 7823 across dev runs. The symptom is the MLX window dying
+# instantly with "[Errno 48] Address already in use" while a months-old runtime
+# quietly serves every request — i.e. your services/ edits do nothing.
+pkill -f '\.meridian/runtime/bin/python.*server\.py' 2>/dev/null || true  # installed-runtime MLX server
+rm -f "${HOME}/.meridian/mlx-server.pid"                                 # its pid file (tray-owned)
+# Anything else still holding 7823 (a hand-started server, a crashed reloader child
+# whose cmdline no longer names uvicorn) — the port is the contract, so go by it.
+# (BSD xargs has no `-r`, and `set -e` is on, so test before killing.)
+MLX_PORT_PIDS="$(lsof -ti tcp:7823 2>/dev/null || true)"
+if [ -n "$MLX_PORT_PIDS" ]; then
+    # shellcheck disable=SC2086  # deliberate word-split: lsof returns one pid per line
+    kill $MLX_PORT_PIDS 2>/dev/null || true
+fi
 # next dev is spawned by the tray's beforeDevCommand as a child of `tauri dev` —
 # if tauri dev is killed abruptly (rapid restarts) it can be orphaned and keep
 # holding port 3939, causing the next run's beforeDevCommand to fail outright.
@@ -93,6 +115,15 @@ if pgrep -f '\.meridian/.*bin/meridian$' >/dev/null 2>&1; then
     echo "  ⚠ an installed daemon (~/.meridian/**/bin/meridian) is STILL running — quit the Meridian app and re-run" >&2
 else
     echo "  ✓ canonical launchd daemon stopped + disabled (re-enable later with: meridian start)"
+fi
+# Say so if the port is still taken. Silence here is what let a months-old runtime
+# serve every request for a whole session: the MLX window dies in its own Terminal
+# with [Errno 48] and nothing else ever mentions it.
+if [ -n "$(lsof -ti tcp:7823 2>/dev/null || true)" ]; then
+    echo "  ⚠ something is STILL holding port 7823 — the MLX window will die with [Errno 48]" >&2
+    lsof -nP -iTCP:7823 -sTCP:LISTEN 2>/dev/null | tail -n +2 | sed 's/^/      /' >&2
+else
+    echo "  ✓ port 7823 free (any installed-runtime MLX server stopped)"
 fi
 # Also stops the legacy launchd-managed a11y-helper, if present. Capture now runs
 # in-process inside the dev tray binary, so a lingering a11y-helper would be a
