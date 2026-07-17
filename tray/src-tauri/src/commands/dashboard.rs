@@ -61,6 +61,28 @@ pub async fn get_today(
         })
 }
 
+/// The day's inferred day-level tasks (`day_tasks`, migration 058 — no route).
+/// `day` defaults to today (local) when omitted, matching [`get_today`]; the
+/// timeline passes the currently-viewed day so its task spans track the selected
+/// date. The worklog pipeline folds each hour into these 1-5 tasks.
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn get_day_tasks(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    day: Option<String>,
+) -> Result<meridian_core::day_tasks::DayTasksResponse, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let date = day.unwrap_or_else(meridian_core::date::today_string);
+    meridian_core::day_tasks::get_day_tasks(pool, &date)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "get_day_tasks failed");
+            e.to_string()
+        })
+}
+
 /// The 7-day Week summary, computed in Rust (the ported /api/week).
 #[tauri::command]
 #[tracing::instrument(skip(pool))]

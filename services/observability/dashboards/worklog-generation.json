@@ -1,0 +1,345 @@
+{
+  "version": 8,
+  "title": "Worklog Generation",
+  "description": "The on-demand 'Generate worklog' call from a day-task card: one centralised LLM call (span `worklog.generate`, service meridian-rust) matches a workstream against the tracker's non-terminal tasks (or proposes a new one) and drafts a high-level status update; `worklog.generate.approve` posts it. `matched_task_key` = the task it will comment on (null when it proposed a new one), `proposed` = whether a new task was proposed, `n_candidates` = how many tasks the model chose among, `llm_provider` = who served the call. Each row's full trace carries the llm.request(prompt+input)/llm.response(output) subspans. Click a row for the trace.",
+  "tabs": [
+    {
+      "tabId": "default",
+      "name": "Default",
+      "panels": [
+        {
+          "id": "m_total",
+          "type": "metric",
+          "title": "Worklogs generated",
+          "description": "Total worklog.generate spans in range",
+          "config": {
+            "show_legends": false,
+            "no_value_replacement": "0",
+            "decimals": 0.0
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as y_axis_1 FROM \"default\" WHERE operation_name='worklog.generate'",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Worklogs generated",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "color": "#5960b2",
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 0,
+            "w": 48,
+            "h": 18,
+            "i": 1
+          }
+        },
+        {
+          "id": "m_matched",
+          "type": "metric",
+          "title": "Matched an existing task",
+          "description": "Generations that matched a task (vs proposing a new one)",
+          "config": {
+            "show_legends": false,
+            "no_value_replacement": "0",
+            "decimals": 0.0
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as y_axis_1 FROM \"default\" WHERE operation_name='worklog.generate' AND matched_task_key IS NOT NULL",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Matched an existing task",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "color": "#59b27a",
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 48,
+            "y": 0,
+            "w": 48,
+            "h": 18,
+            "i": 2
+          }
+        },
+        {
+          "id": "m_proposed",
+          "type": "metric",
+          "title": "Proposed a new task",
+          "description": "Generations that proposed a new task instead of matching",
+          "config": {
+            "show_legends": false,
+            "no_value_replacement": "0",
+            "decimals": 0.0
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as y_axis_1 FROM \"default\" WHERE operation_name='worklog.generate' AND proposed='true'",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Proposed a new task",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "color": "#b29959",
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 96,
+            "y": 0,
+            "w": 48,
+            "h": 18,
+            "i": 3
+          }
+        },
+        {
+          "id": "m_elapsed",
+          "type": "metric",
+          "title": "Avg elapsed (s)",
+          "description": "Mean span wall-clock for the generate call",
+          "config": {
+            "show_legends": false,
+            "no_value_replacement": "0",
+            "decimals": 1.0,
+            "unit": "seconds"
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT histogram(_timestamp) as x_axis_1, round(avg(CAST(duration AS DOUBLE)/1000000),1) as y_axis_1 FROM \"default\" WHERE operation_name='worklog.generate' GROUP BY x_axis_1",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Avg elapsed (s)",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "color": "#59a0b2",
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 144,
+            "y": 0,
+            "w": 48,
+            "h": 18,
+            "i": 4
+          }
+        },
+        {
+          "id": "t_all",
+          "type": "table",
+          "title": "All generations — newest first",
+          "description": "One row per Generate call. 'When (local)' = when the call ran; 'Match' = the task it will comment on (blank when it proposed a new one); 'Proposed' = a new task was drafted; 'Candidates' = tasks the model chose among. Click a row to open its full trace tree (the llm.call spans with input/prompt/output).",
+          "config": {
+            "show_legends": false,
+            "wrap_table_cells": false,
+            "drilldown": [
+              {
+                "name": "Open this trace's spans",
+                "type": "byUrl",
+                "targetBlank": true,
+                "findBy": "name",
+                "data": {
+                  "url": "/web/traces?org_identifier=default&stream=default&search_type=ui&search_mode=spans&period=30d&query=${row.field.trace_filter}",
+                  "folder": "",
+                  "dashboard": "",
+                  "tab": "",
+                  "passAllVariables": false,
+                  "variables": []
+                }
+              }
+            ]
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT\n  to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M') as \"When (local)\",\n  llm_provider as \"Provider\",\n  matched_task_key as \"Match\",\n  proposed as \"Proposed\",\n  CAST(n_candidates AS BIGINT) as \"Candidates\",\n  round(CAST(duration AS DOUBLE)/1000000,1) as \"Elapsed (s)\",\n  trace_id,\n  encode(concat('trace_id=''', trace_id, ''''),'base64') as trace_filter\nFROM \"default\" WHERE operation_name='worklog.generate' ORDER BY _timestamp DESC",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [
+                  {
+                    "label": "When (local)",
+                    "alias": "When (local)",
+                    "column": "When (local)",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Provider",
+                    "alias": "Provider",
+                    "column": "Provider",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Match",
+                    "alias": "Match",
+                    "column": "Match",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Proposed",
+                    "alias": "Proposed",
+                    "column": "Proposed",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Candidates",
+                    "alias": "Candidates",
+                    "column": "Candidates",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Elapsed (s)",
+                    "alias": "Elapsed (s)",
+                    "column": "Elapsed (s)",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "trace_id",
+                    "alias": "trace_id",
+                    "column": "trace_id",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "trace_filter",
+                    "alias": "trace_filter",
+                    "column": "trace_filter",
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 18,
+            "w": 192,
+            "h": 42,
+            "i": 9
+          }
+        }
+      ]
+    }
+  ],
+  "variables": {
+    "list": [],
+    "showDynamicFilters": true
+  },
+  "defaultDatetimeDuration": {
+    "type": "relative",
+    "relativeTimePeriod": "24h"
+  }
+}

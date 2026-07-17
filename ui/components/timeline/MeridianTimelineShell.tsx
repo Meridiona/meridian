@@ -17,7 +17,8 @@ import HealthBanner from '@/components/HealthBanner'
 import { useTimelineData } from './useTimelineData'
 import { dayString, shiftDay, isPending } from './types'
 import { Toolbar } from './Toolbar'
-import { TimelineColumn } from './TimelineColumn'
+import { DayTaskColumn } from './DayTaskColumn'
+import type { DayTaskDetail } from './DayTaskDetailPanel'
 import { RightPanel } from './RightPanel'
 import { FloatingDraftsPill } from './FloatingDraftsPill'
 import { ReviewModal } from './ReviewModal'
@@ -27,13 +28,18 @@ import { PlanModal } from './PlanModal'
 import { TasksModal } from './TasksModal'
 import { TaskDetailDialog } from './TaskDetailDialog'
 import { ReportModal } from './ReportModal'
+import { WhatsNewModal } from './WhatsNewModal'
 import type { SettingsSection } from './settings/types'
 
-export type ActiveModal = 'review' | 'cleanup' | 'settings' | 'plan' | 'tasks' | 'report' | null
+export type ActiveModal = 'review' | 'cleanup' | 'settings' | 'plan' | 'tasks' | 'report' | 'whats-new' | null
 
 export default function MeridianTimelineShell() {
   const [day, setDay] = useState<string>(dayString(0))
   const [selectedHour, setSelectedHour] = useState<number | null>(null)
+  // A day-task card clicked in the timeline column — its detail replaces "Today
+  // at a glance" in the right panel (same swap the hour/approved-card detail
+  // uses), so the timeline keeps the clicked card highlighted and the rest dulled.
+  const [selectedDayTask, setSelectedDayTask] = useState<DayTaskDetail | null>(null)
   // Set only when a specific worklog card (not the hour row itself) was
   // clicked — narrows the Hour-detail panel to that one card instead of every
   // ticket in the hour, and suppresses the row-level highlight (the card
@@ -87,6 +93,8 @@ export default function MeridianTimelineShell() {
       } else if (target === '/worklogs') {
         setReviewFocusKey(null)
         setActiveModal('review')
+      } else if (target === '/whats-new') {
+        setActiveModal('whats-new')
       }
     }
     return subscribe<string | null>('/deep-link', 'take_pending_deep_link', 'dashboard-navigate', navigate)
@@ -96,6 +104,7 @@ export default function MeridianTimelineShell() {
   function shift(delta: number) {
     setSelectedHour(null)
     setSelectedCardKey(null)
+    setSelectedDayTask(null)
     setDay(d => shiftDay(d, delta))
   }
 
@@ -104,14 +113,16 @@ export default function MeridianTimelineShell() {
   function selectHour(hour: number | null) {
     setSelectedHour(hour)
     setSelectedCardKey(null)
+    // An hour's detail and a day-task's detail both own the right panel; the
+    // latest click wins.
+    if (hour !== null) setSelectedDayTask(null)
   }
 
-  // Card-level selection — narrows Hour-detail to just this one card.
-  // Approved/posted/dismissed cards only; drafts route through
-  // openDraftReview instead (see TimelineColumn/HourDetailPanel).
-  function selectCard(hour: number, cardKey: string) {
-    setSelectedHour(hour)
-    setSelectedCardKey(cardKey)
+  // A day-task claims the right panel; clear any hour detail so they don't fight
+  // over it.
+  function selectDayTask(detail: DayTaskDetail | null) {
+    setSelectedDayTask(detail)
+    if (detail) { setSelectedHour(null); setSelectedCardKey(null) }
   }
 
   // Closing the planner restarts the daemon's plan-nudge hold-back clock
@@ -120,6 +131,14 @@ export default function MeridianTimelineShell() {
   // lands an hour after the DISMISSAL, not the auto-open.
   function closePlan() {
     invoke('plan_dismissed').catch(() => {})
+    setActiveModal(null)
+  }
+
+  // Marks the running app version "seen" so the once-per-version auto-open
+  // (poll::whats_new_auto_open) doesn't fire again — whether this close came
+  // from the auto-open or a manual nav-pill open, viewing it counts as seen.
+  function closeWhatsNew() {
+    invoke('mark_whats_new_seen_cmd').catch(() => {})
     setActiveModal(null)
   }
 
@@ -148,25 +167,13 @@ export default function MeridianTimelineShell() {
         connectedProviderId={connectedProviderId}
         onOpenSettings={(section) => { setSettingsSection(section); setActiveModal('settings') }}
         onOpenReport={() => setActiveModal('report')}
+        onOpenWhatsNew={() => setActiveModal('whats-new')}
       />
 
       <div className="flex flex-1 min-h-0">
         <div className="relative flex-1 min-w-0 min-h-0 flex flex-col">
-          <TimelineColumn
-            hourBuckets={data.hourBuckets}
-            isSolo={isSolo}
-            today={data.today}
-            selectedHour={selectedHour}
-            selectedCardKey={selectedCardKey}
-            onSelectHour={selectHour}
-            onSelectCard={selectCard}
-            onOpenDraftReview={openReview}
-            isToday={isToday}
-            day={day}
-            hourStatus={data.hourStatus}
-            capturing={data.capturing}
-            hourReports={data.hourReports}
-          />
+          <DayTaskColumn day={day} isToday={isToday}
+            selectedId={selectedDayTask?.id ?? null} onSelect={selectDayTask} />
 
           {!isSolo && (
             <FloatingDraftsPill count={pendingCount}
@@ -178,6 +185,8 @@ export default function MeridianTimelineShell() {
             data={data}
             selectedHour={selectedHour}
             selectedCardKey={selectedCardKey}
+            dayTaskDetail={selectedDayTask}
+            onCloseDayTask={() => setSelectedDayTask(null)}
             onSelectHour={selectHour}
             onOpen={setActiveModal}
             onOpenTask={(key, title) => setOpenTask({ key, title })}
@@ -196,6 +205,7 @@ export default function MeridianTimelineShell() {
         <SettingsModal onClose={() => setActiveModal(null)} initialSection={settingsSection} />
       )}
       {activeModal === 'report' && <ReportModal onClose={() => setActiveModal(null)} />}
+      {activeModal === 'whats-new' && <WhatsNewModal onClose={closeWhatsNew} />}
       {activeModal === 'plan' && <PlanModal onClose={closePlan} />}
       {activeModal === 'tasks' && (
         <TasksModal onClose={() => setActiveModal(null)} onOpenTask={(key, title) => setOpenTask({ key, title })} />

@@ -7,6 +7,7 @@
 
 export type SettingsSection =
   | 'integrations'
+  | 'intelligence'
   | 'capture'
   | 'notifications'
   | 'appearance'

@@ -1,6 +1,6 @@
 """End-to-end worklog pipeline for one hour, as composable stages.
 
-    distil_hour → activity report → reranker hint → tiered match →
+    distil_hour → activity report → tiered match →
     propose (if <2 matched, may abstain) → worklog draft per ticket → persist
 
 The work is split into stages that share a single ``HourContext``; ``workflow.py``
@@ -33,7 +33,7 @@ tracer = trace.get_tracer("meridian.worklog.pipeline")
 _DEFAULT_SERVER = "http://127.0.0.1:7823"
 
 # Per-endpoint transport timeouts. The fast, non-generative calls (embedding
-# distill, rerank) cap at 120s; the generative /activity_report gets the full
+# distill) cap at 120s; the generative /activity_report gets the full
 # generation budget (matches generation._post's 300s default) so a slow model
 # doesn't time it out while the downstream /generate_worklog would not.
 _FAST_TIMEOUT = 120.0
@@ -278,7 +278,13 @@ def stage_report(ctx: HourContext) -> None:
 
 
 def stage_candidates(ctx: HourContext) -> None:
-    """Read daily plan + backlog candidates and attach reranker hints."""
+    """Read the daily plan + backlog candidates for the hour.
+
+    The reranker that used to pre-score these was removed: it was a second model
+    resident alongside the classifier, competing for the same single Metal slot, to
+    produce a "hint" the prompt explicitly told the model not to trust. The classifier
+    reads the candidates directly.
+    """
     conn = wdb.open_db(ctx.db_path)
     try:
         plan_keys = wdb.fetch_confirmed_plan(conn, ctx.day_local)
@@ -294,26 +300,10 @@ def stage_candidates(ctx: HourContext) -> None:
     ctx.daily = [cand(k) for k in plan_keys if k in open_tasks]
     backlog_keys = [k for k in open_tasks if k not in plan_set]
 
-    def rerank(cands: list[Candidate]) -> None:
-        if not cands:
-            return
-        ranked = _post(ctx.server_url, "/rerank", {
-            "query": ctx.report[:1800],
-            "candidates": [{"task_key": c.task_key, "doc": c.doc} for c in cands],
-            "traceparent": observability.current_traceparent(),
-        }, timeout=_FAST_TIMEOUT)["ranked"]
-        score = {r["task_key"]: r["score"] for r in ranked}
-        for c in cands:
-            c.rerank_score = score.get(c.task_key, 0.0)
-
     with tracer.start_as_current_span("worklog.candidates", context=_parent(ctx)) as span:
         _t0 = time.monotonic()
-        rerank(ctx.daily)
         if backlog_keys:
-            bcands = [cand(k) for k in backlog_keys]
-            rerank(bcands)
-            bcands.sort(key=lambda c: -c.rerank_score)
-            ctx.backlog = bcands[:ctx.max_backlog]
+            ctx.backlog = [cand(k) for k in backlog_keys][:ctx.max_backlog]
         span.set_attribute("n_daily", len(ctx.daily))
         span.set_attribute("n_backlog", len(ctx.backlog))
         span.set_attribute("elapsed_s", round(time.monotonic() - _t0, 2))

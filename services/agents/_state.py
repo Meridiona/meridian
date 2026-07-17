@@ -11,7 +11,7 @@ app_state: dict[str, Any] = {}
 
 # Shared prefetch progress, guarded by prefetch_lock. states: idle|downloading|done|error.
 # `received`/`total` are AGGREGATE byte counts summed across every pipeline model
-# (llm + reranker + embedder), so the wizard's progress bar has a single honest
+# (llm + embedder), so the wizard's progress bar has a single honest
 # denominator. The wire contract the Rust tray decodes is exactly
 # state/received/total/error/speed (tray/src-tauri/src/mlx_server.rs::PrefetchStatus);
 # `models` is an additive per-model breakdown the tray ignores.

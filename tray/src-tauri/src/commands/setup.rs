@@ -14,6 +14,7 @@
 
 use crate::mlx_server::{self, MlxStatus, SharedMlxManager};
 use serde::Serialize;
+use serde_json::Value;
 use tauri::Emitter;
 
 /// Response shape for the wizard's Model step poll.
@@ -264,7 +265,7 @@ pub async fn download_runtime_cmd(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Eager-download every pipeline model (llm + reranker + embedder — the server's
+/// Eager-download every pipeline model (llm + embedder — the server's
 /// model registry) into the HF cache so the first worklog run doesn't pay a
 /// silent download mid-pipeline. The model set is fixed server-side, so this
 /// prefetches exactly what each `load()` resolves. Streams aggregate progress via
@@ -285,8 +286,45 @@ pub async fn prefetch_model_cmd(
     })
     .await
     .inspect_err(|e| tracing::warn!(error = %e, "mlx: model prefetch failed"))?;
+    mark_local_chat_model_ready();
     tracing::info!("mlx: model prefetch finished");
     Ok(())
+}
+
+/// Record that the on-device chat model is on disk.
+///
+/// This is what `llm::resolver` consults before it dares fall back to the local model
+/// when a CLI provider fails: falling back to a model that was never downloaded would
+/// turn one broken hour into a hang. The prefetch is the only thing that knows the
+/// weights landed, so it is the only honest place to set this.
+///
+/// Best-effort: a failed write costs a conservative "no local fallback", never a failed
+/// setup — so it warns rather than propagating.
+fn mark_local_chat_model_ready() {
+    let mut v = meridian_core::settings::read_settings_value();
+    let Some(obj) = v.as_object_mut() else { return };
+    obj.insert("llm_local_chat_model_ready".into(), Value::Bool(true));
+    if let Err(e) = meridian_core::settings::write_settings_value(&v) {
+        tracing::warn!(error = %e, "mlx: could not record llm_local_chat_model_ready");
+    }
+}
+
+/// Which AI provider CLIs are installed on this Mac (`claude`, `codex`, `cursor-agent`,
+/// `copilot`). Drives the wizard's Intelligence step, which lets the user pick one - and
+/// says plainly when the CLI they picked isn't here yet.
+///
+/// Reports *installed*, not *signed in*: see `meridian::llm::detect` for why we refuse to
+/// probe authentication. Not cached - the user will alt-tab out to `npm i -g …` and come
+/// back, and the step has a Rescan button that must tell the truth when they do.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn detect_llm_providers() -> Result<Vec<meridian::llm::detect::ProviderStatus>, String> {
+    let found = meridian::llm::detect::detect_all().await;
+    tracing::info!(
+        installed = found.iter().filter(|p| p.installed).count(),
+        "llm: provider detection complete"
+    );
+    Ok(found)
 }
 
 /// Start the MLX server if it isn't already running. The wizard's Model step

@@ -24,6 +24,10 @@ pub mod jira;
 mod jira_transitions;
 pub mod linear;
 pub mod parents;
+/// Status list + set (`ticket-statuses` / `ticket-set-status`) — shared response
+/// types, canonical-category mapping, id-or-name resolver, and the top-level
+/// dispatch. Per-provider `list_statuses`/`set_status` live in each provider mod.
+pub mod statuses;
 pub mod trello;
 
 use anyhow::{bail, Result};
@@ -169,26 +173,7 @@ pub async fn apply(
     field: &str,
     value: &str,
 ) -> Result<ApplyResult> {
-    let pcfg = config
-        .pm_providers
-        .iter()
-        .find(|p| p.provider_name() == provider)
-        .or_else(|| {
-            // Jira may be OAuth-only (no env config row) yet still configured.
-            (provider == "jira")
-                .then(|| {
-                    config
-                        .pm_providers
-                        .iter()
-                        .find(|p| matches!(p, PmProviderConfig::Jira(_)))
-                })
-                .flatten()
-        });
-
-    let pcfg = match pcfg {
-        Some(p) => p,
-        None => bail!("provider {provider:?} is not configured"),
-    };
+    let pcfg = resolve_provider(config, provider)?;
 
     let write = match WriteField::parse(field, value) {
         Some(w) => w,
@@ -211,6 +196,35 @@ pub async fn apply(
         PmProviderConfig::GitHub(cfg) => github::apply(cfg, key, &write).await,
         PmProviderConfig::Trello(cfg) => trello::apply(cfg, key, &write).await,
         PmProviderConfig::AzureDevOps(cfg) => azure_devops::apply(cfg, key, &write).await,
+    }
+}
+
+/// Look up a configured provider by id, with the Jira special case: Jira may be
+/// OAuth-only (no env config row) yet still configured. Shared by [`apply`] and
+/// the status list/set dispatch ([`statuses::list_statuses`] /
+/// [`statuses::set_status`]) so they agree on which providers count as ready.
+pub(crate) fn resolve_provider<'a>(
+    config: &'a Config,
+    provider: &str,
+) -> Result<&'a PmProviderConfig> {
+    let pcfg = config
+        .pm_providers
+        .iter()
+        .find(|p| p.provider_name() == provider)
+        .or_else(|| {
+            // Jira may be OAuth-only (no env config row) yet still configured.
+            (provider == "jira")
+                .then(|| {
+                    config
+                        .pm_providers
+                        .iter()
+                        .find(|p| matches!(p, PmProviderConfig::Jira(_)))
+                })
+                .flatten()
+        });
+    match pcfg {
+        Some(p) => Ok(p),
+        None => bail!("provider {provider:?} is not configured"),
     }
 }
 

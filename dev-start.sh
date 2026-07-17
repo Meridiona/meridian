@@ -75,10 +75,24 @@ pkill -f 'Meridian Dev.app'             2>/dev/null || true   # stale dev .app b
 # if tauri dev is killed abruptly (rapid restarts) it can be orphaned and keep
 # holding port 3939, causing the next run's beforeDevCommand to fail outright.
 pkill -f 'next dev --turbopack -p 3939' 2>/dev/null || true   # orphaned Next.js dev server
-if launchctl print "gui/$(id -u)/com.meridiona.daemon" >/dev/null 2>&1; then
-    launchctl disable "gui/$(id -u)/com.meridiona.daemon" 2>/dev/null || true
-    launchctl bootout "gui/$(id -u)/com.meridiona.daemon" 2>/dev/null || true
-    echo "  ✓ stopped canonical launchd daemon (com.meridiona.daemon) — re-enable with: meridian start"
+# Stop the canonical launchd daemon UNCONDITIONALLY and durably. Previously this
+# was guarded on `launchctl print` succeeding and relied on bootout alone; if the
+# bootout didn't take (KeepAlive respawn, wrong-instant timing) nothing else caught
+# the installed daemon and it kept running next to the dev one — two daemons, both
+# firing the HH:03 worklog trigger + ETL against the same meridian.db. So: `disable`
+# (launchd won't re-launch it at login / kickstart), `bootout` (stop the live one),
+# then pkill the installed binary BY PATH as a backstop (the dev pkills above only
+# match `target/debug/meridian`, never `~/.meridian/**/bin/meridian`). Re-enable the
+# installed daemon later with `meridian start`.
+DAEMON_LABEL="gui/$(id -u)/com.meridiona.daemon"
+launchctl disable "$DAEMON_LABEL" 2>/dev/null || true
+launchctl bootout "$DAEMON_LABEL" 2>/dev/null || true
+pkill -f '\.meridian/bin/meridian$'     2>/dev/null || true   # DMG-staged installed daemon
+pkill -f '\.meridian/app/bin/meridian$' 2>/dev/null || true   # npm-bundle installed daemon
+if pgrep -f '\.meridian/.*bin/meridian$' >/dev/null 2>&1; then
+    echo "  ⚠ an installed daemon (~/.meridian/**/bin/meridian) is STILL running — quit the Meridian app and re-run" >&2
+else
+    echo "  ✓ canonical launchd daemon stopped + disabled (re-enable later with: meridian start)"
 fi
 # Also stops the legacy launchd-managed a11y-helper, if present. Capture now runs
 # in-process inside the dev tray binary, so a lingering a11y-helper would be a

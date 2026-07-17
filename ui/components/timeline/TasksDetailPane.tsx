@@ -12,19 +12,22 @@
 'use client'
 
 import { fmtDur, fmtClock, AppGlyph, CatDot, CATS, PROVIDER_META } from '@/components/atoms'
-import type { TaskSummary, TodayResponse } from '@/lib/api-types'
+import type { TaskSummary, TodayResponse, TaskStatusOption } from '@/lib/api-types'
+import { StatusPicker } from './StatusPicker'
 
 function isDueSoon(due: string): boolean {
   const ms = new Date(due + 'T00:00:00').getTime() - Date.now()
   return ms <= 3 * 86400000
 }
 
-export function TasksDetailPane({ task, sessions, epicColor, onFix, onOpenDetail }: {
+export function TasksDetailPane({ task, sessions, epicColor, onFix, onOpenDetail, onSetStatus, statusBusy }: {
   task: TaskSummary
   sessions: TodayResponse['sessions']
   epicColor: string
   onFix: () => void
   onOpenDetail: () => void
+  onSetStatus: (task: TaskSummary, option: TaskStatusOption) => void
+  statusBusy: boolean
 }) {
   const sortedSessions = [...sessions].sort((a, b) => b.started_at.localeCompare(a.started_at))
   const providerMeta = PROVIDER_META[task.provider]
@@ -45,11 +48,7 @@ export function TasksDetailPane({ task, sessions, epicColor, onFix, onOpenDetail
 
         <div className="flex items-center gap-2 flex-wrap mb-2.5">
           <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text">{task.key}</span>
-          <span className="mt-body-sm inline-flex items-center gap-1.5" style={{ color: 'var(--t-muted)' }}>
-            <span className="inline-block w-1.5 h-1.5 rounded-full"
-              style={{ background: task.is_terminal ? 'var(--color-state-approved)' : 'var(--color-state-proposal)' }} />
-            {task.status || '—'}
-          </span>
+          <StatusPicker task={task} onPick={(o) => onSetStatus(task, o)} busy={statusBusy} />
           {task.issue_type && (
             <span className="mt-chip px-1.5 py-0.5 rounded" style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)' }}>
               {task.issue_type}

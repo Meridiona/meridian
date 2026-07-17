@@ -148,6 +148,15 @@ export const TRACKER_BY_ID: Record<TrackerId, Tracker> = Object.fromEntries(
  * connected. Returns the full list unchanged while integrations is still
  * loading (null), so callers see no flash of empty state.
  */
+/** The display names of the PM trackers currently connected (e.g. `['Jira']`),
+ *  in `TRACKERS` order. `null` integrations (still loading) yields `[]`. Used to
+ *  name the tracker in copy and to decide whether any tracker is connected. */
+export function connectedTrackerNames(integrations: IntegrationsResponse | null): string[] {
+  if (!integrations) return []
+  const int = integrations as unknown as Record<string, boolean>
+  return TRACKERS.filter(t => int[t.id]).map(t => t.name)
+}
+
 export function filterByConnectedProviders<T extends { provider: string }>(
   tasks: T[],
   integrations: IntegrationsResponse | null,

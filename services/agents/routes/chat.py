@@ -39,6 +39,19 @@ class _OAIChatRequest(BaseModel):
     # Tolerate unknown fields agno / openai-python may add.
     response_format: dict | None = None
 
+    # Non-standard extension (not OpenAI; ignored by agno / openai-python).
+    #
+    # Force the <think> block off for a free-form PROSE call. Without this there is no way
+    # to disable reasoning on the free-form path (it goes through outlines, which has no
+    # thinking control), and the 2B leaks its reasoning into the answer as plain
+    # untagged prose — "Thinking Process: 1. Analyze the request…" — which the
+    # </think> stripper below cannot catch because there is no tag to strip.
+    #
+    # The Rust prose backend (src/llm/local.rs) sets this False. Measured across real
+    # hours, thinking on this task is actively harmful: the 2B burned its whole thinking
+    # budget, emitted a report with no clock times at all, and took 3.5x longer.
+    enable_thinking: bool | None = None
+
 
 def _flatten_message_content(content: Any) -> str:
     """OpenAI allows `content` to be a list of typed parts; we flatten to text."""
@@ -103,17 +116,33 @@ async def openai_chat_completions(req: _OAIChatRequest) -> dict:
             from outlines.types import JsonSchema
             output_type = JsonSchema(schema)
 
-    def _generate_thinking() -> str:
-        """json_object path: shared thinking-mode generation with caller sampling.
+    # An explicit enable_thinking=False on a FREE-FORM call routes it through
+    # generate_thinking with the <think> block disabled at the chat-template level. The
+    # outlines free-form path cannot do this — it has no thinking control at all — so
+    # without this a prose caller gets the model's reasoning leaked into the answer.
+    # A json_schema request always keeps the outlines FSM: the grammar constraint is the
+    # whole point of that path and is never traded away.
+    prose_no_think = req.enable_thinking is False and output_type is None
+    if prose_no_think:
+        use_thinking = True
 
-        Uses agents.thinking.generate_thinking (the same budget-enforced thinking
-        path as the pipeline endpoints) but passes the caller-supplied temperature /
-        top_p / presence_penalty so OpenAI-compat semantics are preserved. The
-        <think> block is stripped; json_mode recovers the last {...} if untagged.
+    def _generate_thinking() -> str:
+        """Shared thinking-mode generation with caller sampling.
+
+        Uses agents.thinking.generate_thinking (the same budget-enforced path as the
+        pipeline endpoints) but passes the caller-supplied temperature / top_p /
+        presence_penalty so OpenAI-compat semantics are preserved.
+
+        Two callers land here:
+          - json_object  → thinking ON, json_mode recovers the last {...} if untagged.
+          - a prose caller that passed enable_thinking=False → thinking OFF, and the
+            whole answer is kept (json_mode would throw prose away looking for braces).
         """
         res = generate_thinking(
             m, msgs,
-            max_tokens=max_tokens, json_mode=True,
+            max_tokens=max_tokens,
+            enable_thinking=not prose_no_think,
+            json_mode=not prose_no_think,
             temp=temperature, top_p=top_p, presence_penalty=presence_penalty)
         if not res.text and not res.closed_think:
             log.warning("_generate_thinking: no </think> and no JSON object found in output")

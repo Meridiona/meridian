@@ -17,7 +17,9 @@ import type {
 } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import { TRACKERS } from '@/lib/integrations'
+import { llmProvider, type LlmProviderId } from '@/lib/llm-providers'
 import ConnectTrackers from '@/components/IntegrationConnect'
+import LlmProviderPicker, { type ProviderStatus } from '@/components/LlmProviderPicker'
 import { SignInWidget } from './signin'
 
 const SERIF: CSSProperties = { fontFamily: 'var(--font-serif)' }
@@ -49,6 +51,14 @@ export interface Wiz {
   // how it reports a completed sign-in back up to the wizard.
   signedInEmail: string | null
   onSignedIn: (email: string) => void
+  // Step 4 — intelligence. The one AI choice everything downstream obeys
+  // (settings.json `llm_provider` → src/llm/resolver.rs). `providers` is the live
+  // which-CLIs-are-installed probe; it never gates the choice, only informs it.
+  provider: LlmProviderId
+  setProvider: (id: LlmProviderId) => void
+  providers: Record<string, ProviderStatus>
+  scanningProviders: boolean
+  rescanProviders: () => void
 }
 
 // ── STEP 1 — Permissions ──────────────────────────────────────────────────────
@@ -334,6 +344,42 @@ function SignInBody({ wiz }: { wiz: Wiz }) {
   return <SignInWidget onSignedIn={wiz.onSignedIn} />
 }
 
+// ── STEP 4 — Intelligence (which AI writes the summaries) ────────────────────
+// One choice, one place. Everything downstream reads it from settings.json — the
+// resolver re-reads it on every call (src/llm/resolver.rs), so changing it later in
+// Settings takes effect on the next hour with nothing to restart.
+//
+// The choice is never blocked on the CLI being installed: the probe reports *installed*,
+// not *signed in* (we refuse to probe auth — see src/llm/detect.rs), so a hard gate here
+// would be built on a half-truth. Picking a missing CLI shows the install command and an
+// honest note that the hour falls back on-device until it's there.
+function IntelligenceBody({ wiz }: { wiz: Wiz }) {
+  const picked = llmProvider(wiz.provider)
+  const missing = picked.kind === 'cli' && wiz.providers[picked.id]?.installed === false
+  return (
+    <div className="flex flex-col" style={{ gap: 9 }}>
+      <LlmProviderPicker
+        value={wiz.provider}
+        onChange={wiz.setProvider}
+        status={wiz.providers}
+        scanning={wiz.scanningProviders}
+        rescan={wiz.rescanProviders}
+      />
+      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-faint)', marginTop: 3 }}>
+        <span style={{
+          width: 5, height: 5, borderRadius: 99,
+          background: missing ? 'var(--color-state-pending)' : 'var(--color-state-approved)',
+        }} />
+        {missing
+          ? `${picked.name} isn't installed yet - install it and hit Rescan, or Meridian will use the on-device model in the meantime.`
+          : picked.kind === 'local'
+            ? 'Nothing leaves your Mac. Change it anytime in Settings.'
+            : `Summaries are written by ${picked.name}, on your own subscription. Change it anytime in Settings.`}
+      </p>
+    </div>
+  )
+}
+
 // ── Welcome (pre-step intro) ──────────────────────────────────────────────────
 export function Welcome({ onBegin }: { onBegin: () => void }) {
   const points = [
@@ -367,7 +413,7 @@ export function Welcome({ onBegin }: { onBegin: () => void }) {
         ))}
       </div>
       <Btn onClick={onBegin} style={{ padding: '11px 26px', fontSize: 13.5 }}>Get started</Btn>
-      <p className="font-mono" style={{ fontSize: 10.5, letterSpacing: '.04em', color: 'var(--t-faint-2)', marginTop: 14 }}>Three quick steps · about a minute</p>
+      <p className="font-mono" style={{ fontSize: 10.5, letterSpacing: '.04em', color: 'var(--t-faint-2)', marginTop: 14 }}>{STEPS.length} quick steps · about a minute</p>
     </div>
   )
 }
@@ -378,6 +424,7 @@ export function Completion({ wiz }: { wiz: Wiz }) {
   const grantedCount = [wiz.perms.accessibility, wiz.perms.screen].filter(Boolean).length
   const lines = [
     { k: 'Permissions', v: `${grantedCount} of 2 granted` },
+    { k: 'Intelligence', v: llmProvider(wiz.provider).name },
     { k: 'Local model', v: fmtModelLabel(MODEL_ID) },
     { k: 'Footprint', v: `${fmtSize(MODEL_RAM_GB + APP.ramGB)} memory` },
     { k: 'Connected', v: connected.length ? connected.map((c) => c.name).join(', ') : 'None yet' },
@@ -448,13 +495,23 @@ export const STEPS: StepMeta[] = [
     canNext: (s) => !!s.signedInEmail,
   },
   {
-    id: 'mlx', n: '04', label: 'Local intelligence', kicker: 'On-device AI',
+    id: 'provider', n: '04', label: 'Intelligence', kicker: 'Your AI',
+    title: 'Choose the AI that writes your summaries',
+    subtitle: 'One choice, used everywhere Meridian writes prose about your day. Use a coding-agent CLI you already pay for, or keep it entirely on-device.',
+    Body: IntelligenceBody,
+    status: (s) => llmProvider(s.provider).name,
+    // Never gates. Every path out of this step is valid — including picking a CLI that
+    // isn't installed yet, which degrades to on-device rather than dead-ending setup.
+    canNext: () => true,
+  },
+  {
+    id: 'mlx', n: '05', label: 'Local intelligence', kicker: 'On-device AI',
     title: 'Set up on-device intelligence',
     subtitle: 'Everything runs privately on your Mac with Apple MLX. The models started downloading when setup opened - this is just the finish line.',
     Body: MLXBody,
     status: (s) => s.modelReady ? 'Ready' : (s.mlx?.runtime_found || s.mlx?.runtime_installed) ? 'Downloading…' : 'Installing…',
     // Block Finish until every model is on disk — the worklog pipeline (distill →
-    // rerank → match) can't run a cycle without all three, so the user must not
+    // report) can't run a cycle without them, so the user must not
     // reach the dashboard early. The download has had the whole wizard to run, so
     // this is usually instant; visible progress + Retry keep it from being a dead end.
     // Exception: if the runtime itself is unavailable (incompatible hardware, no
