@@ -62,12 +62,15 @@ pub use util::{date, hygiene, intervals};
 
 pub use readers::{
     active, board, coding_agents, current_task, day_task_worklogs, day_tasks, hour_status,
-    hour_text, integrations, notices, plan, proposed, task_create, task_detail, tasks, today,
-    triage, week, worklogs,
+    hour_text, integrations, llm_experiments, notices, plan, proposed, task_create, task_detail,
+    tasks, today, triage, week, worklogs,
 };
 
 pub use canonical_task::{CanonicalTask, PersonRef, Priority, Provider, StatusCategory, TaskKind};
 
 pub use llm_provider::LlmProvider;
+/// The custom-endpoint registry types. `CustomLlmProvider` carries the API key and is the
+/// STORAGE form — see its docs before serialising one anywhere.
+pub use settings::{CustomLlmProvider, SchemaRung};
 
 pub use adapters::ProviderAdapter;

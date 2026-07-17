@@ -25,8 +25,8 @@
 //! # Related
 //! - `src/intelligence/ticket_update/statuses.rs` — the CLI-side dispatch these
 //!   spawn, and the source of the exact JSON shapes parsed below.
-//! - [`crate::commands::apply_ticket_fix`] — sibling hygiene write-back, same
-//!   spawn/`current_dir(~/.meridian)`/timeout pattern.
+//! - [`crate::commands::cli_exec`] — the shared spawn/`current_dir(~/.meridian)`/
+//!   timeout/`parse_last_line` helpers (this module's former private copies).
 //! - [`crate::install::meridian_bin`] — the "native binary first" resolver.
 
 use serde::{Deserialize, Serialize};
@@ -37,7 +37,7 @@ use std::time::Duration;
 // the binary) lives in ONE place. This module used to carry its own copy of
 // meridian_home/run_meridian/parse_last_line; they drifted, and the drift is what
 // made a stale-binary failure read as an unparseable socket warning.
-use super::worklog_generate::run_meridian_json;
+use super::cli_exec::run_meridian_json;
 
 /// One status option — mirrors the CLI's `{id,name,category}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -49,8 +49,8 @@ use tracing::Instrument;
 
 use super::{
     claude::ClaudeBackend, codex::CodexBackend, copilot::CopilotBackend, cursor::CursorBackend,
-    local::LocalBackend, reset_time, LlmBackend, LlmConfig, LlmError, LlmOutput, LlmProvider,
-    PromptRequest,
+    local::LocalBackend, openai_compat::OpenAiCompatBackend, reset_time, LlmBackend, LlmConfig,
+    LlmError, LlmOutput, LlmProvider, PromptRequest,
 };
 
 /// Fallback for a rate-limit message [`reset_time::parse_backoff`] couldn't read. Matches
@@ -102,6 +102,11 @@ pub fn backend_for(provider: LlmProvider, cfg: LlmConfig) -> Box<dyn LlmBackend>
         LlmProvider::Cursor => Box::new(CursorBackend { cfg }),
         LlmProvider::Copilot => Box::new(CopilotBackend { cfg }),
         LlmProvider::Local => Box::new(LocalBackend { cfg }),
+        // The endpoint was resolved into `cfg` (see `LlmConfig::from_settings`), because
+        // this factory cannot fail. A `cfg.custom` of None — "custom" selected with no live
+        // row — surfaces as a clear error on the call, never as a quiet switch to another
+        // provider.
+        LlmProvider::Custom => Box::new(OpenAiCompatBackend { cfg }),
     }
 }
 

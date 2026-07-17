@@ -13,9 +13,9 @@
 //! The chosen LLM provider (`settings.json`) and tracker auth (`~/.meridian/.env`)
 //! both live in the daemon, so — exactly like [`crate::commands::worklog_generate`] —
 //! these spawn the `meridian` CLI rather than talking to a model or a tracker
-//! in-process. The `run_meridian_json` helper is reused from that
-//! module rather than re-implemented; the CLI logs before its result line, which is
-//! why the LAST non-empty stdout line is the payload.
+//! in-process. The `run_meridian_json` helper is reused from
+//! [`crate::commands::cli_exec`] rather than re-implemented; the CLI logs before
+//! its result line, which is why the LAST non-empty stdout line is the payload.
 //!
 //! # Who calls this
 //! Registered in `lib.rs`'s `invoke_handler!`; consumed by the plan's task composer
@@ -30,7 +30,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-use super::worklog_generate::run_meridian_json;
+use super::cli_exec::run_meridian_json;
 
 /// An LLM call — same budget as the other model-backed commands.
 const LLM_TIMEOUT: Duration = Duration::from_secs(150);

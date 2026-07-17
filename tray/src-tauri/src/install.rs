@@ -164,8 +164,17 @@ fn dev_env(repo: &std::path::Path) -> std::path::PathBuf {
 /// shared resolver for every command that shells out to it (`tasks-sync`,
 /// `ticket-update`, `ticket-parents`, …).
 ///
-/// **Debug: the checkout's own `target/debug/meridian`, full stop** — no probing,
-/// no fallback to the installed binary. `dev-start.sh` stops the installed
+/// **`MERIDIAN_BIN` overrides everything, in either profile** — the one explicit
+/// opt-in, mirroring `meridian_db_path()`. It lets a `tauri dev` tray spawn a
+/// workspace build the debug rule below wouldn't pick (e.g. `target/release/meridian`,
+/// worth it for a long LLM-experiment run) without restaging `~/.meridian/bin` —
+/// which would also point the REAL tray/daemon at the branch build (see the
+/// overlapping-installs migration trap). It is deliberate, per-process, and named
+/// in the log, so it is not the silent fallback the debug rule exists to prevent;
+/// a value that doesn't exist is ignored with a warning rather than honoured.
+///
+/// **Debug: otherwise the checkout's own `target/debug/meridian`, full stop** — no
+/// probing, no fallback to the installed binary. `dev-start.sh` stops the installed
 /// *daemon* but cannot stop a shell-out, so a fallback here meant a dev tray
 /// silently drove the packaged CLI against a DB its own daemon had already
 /// migrated ahead; that CLI refuses to open it ("migration N was previously
@@ -179,6 +188,17 @@ fn dev_env(repo: &std::path::Path) -> std::path::PathBuf {
 /// a `#!/usr/bin/env node` wrapper that dies when launchd's PATH lacks `node`, so
 /// it's only the fallback; bare `meridian` (relies on `$PATH`) is the last resort.
 pub(crate) fn meridian_bin() -> String {
+    // Checked in BOTH profiles, before anything else: an explicit, logged opt-in
+    // beats every rule below. Ignored (with a warning) when it points at nothing,
+    // so a stale export degrades to the normal resolution rather than a spawn
+    // failure.
+    if let Ok(p) = std::env::var("MERIDIAN_BIN") {
+        if std::path::Path::new(&p).exists() {
+            tracing::info!(source = "process_env", bin = %p, "meridian bin resolved");
+            return p;
+        }
+        tracing::warn!(bin = %p, "MERIDIAN_BIN set but missing - falling back to the default binary");
+    }
     #[cfg(debug_assertions)]
     {
         dev_bin(&dev_root()).to_string_lossy().into_owned()

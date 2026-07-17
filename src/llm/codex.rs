@@ -7,11 +7,16 @@
 //!
 //! `-s read-only` + `--skip-git-repo-check` + `--ephemeral`: this is a summarisation call,
 //! not an agent session. It must not touch the filesystem or leave a rollout behind.
+//!
+//! The shared schema is rewritten to OpenAI's strict dialect on the way out — see
+//! [`crate::llm::schema::strictify`], without which no schema-bearing call reaches the
+//! model at all.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+use serde_json::Value;
 
 use crate::coding_agent_session_ingest::summariser::prompts as sp;
 use crate::coding_agent_session_ingest::summariser::run_capture;
@@ -26,6 +31,36 @@ impl Drop for TempDirGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// The real reason a `codex exec` call failed, out of its stderr.
+///
+/// Codex writes an informational banner first — `Reading additional input from
+/// stdin...`, the model/sandbox header — so the FIRST line is never the error, and
+/// reporting it (as this backend once did) surfaced the stdin notice as the cause of
+/// every failure, which is how a 400 `invalid_json_schema` masqueraded as a stdin
+/// problem. The real failure is an `ERROR:` line followed by the API's JSON body, so
+/// prefer that body's `message`; fall back to the raw `ERROR:` text, and only then to
+/// the first line (a crash with no ERROR block at all).
+fn codex_error(stderr: &str) -> String {
+    let Some(rest) = stderr.split("ERROR:").nth(1) else {
+        return sp::first_line(stderr);
+    };
+    // The body is pretty-printed JSON, so it spans lines — let serde find where it ends
+    // rather than guessing, and fall back to the text if it isn't JSON at all.
+    if let Some(Ok(v)) = serde_json::Deserializer::from_str(rest.trim())
+        .into_iter::<Value>()
+        .next()
+    {
+        if let Some(msg) = v
+            .pointer("/error/message")
+            .or_else(|| v.pointer("/message"))
+            .and_then(Value::as_str)
+        {
+            return msg.chars().take(300).collect();
+        }
+    }
+    sp::first_line(rest)
 }
 
 pub struct CodexBackend {
@@ -71,7 +106,7 @@ impl LlmBackend for CodexBackend {
         ];
         if let Some(schema) = &req.schema {
             let schema_path = td.join("schema.json");
-            std::fs::write(&schema_path, schema.to_string())
+            std::fs::write(&schema_path, super::schema::strictify(schema).to_string())
                 .map_err(|e| LlmError::Failed(format!("codex: write schema: {e}")))?;
             args.push("--output-schema".into());
             args.push(schema_path.display().to_string());
@@ -104,10 +139,18 @@ impl LlmBackend for CodexBackend {
                     msg
                 }));
             }
+            // The summary line is bounded, so keep the whole of stderr on the span: a
+            // rejected request answers WHY only in the API's JSON body, and that body is
+            // the one thing worth having when this fails.
+            tracing::error!(
+                code = ?cap.code,
+                stderr = %cap.stderr,
+                "codex exec failed"
+            );
             return Err(LlmError::Failed(format!(
                 "codex exited {:?}: {}",
                 cap.code,
-                sp::first_line(&cap.stderr)
+                codex_error(&cap.stderr)
             )));
         }
 
@@ -123,5 +166,46 @@ impl LlmBackend for CodexBackend {
             output_tokens: 0,
             elapsed_s: t0.elapsed().as_secs_f64(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verbatim stderr from the live failure (codex-cli 0.141.0). The banner's first line
+    /// is what this backend used to report as the cause.
+    const REAL_STDERR: &str = "Reading additional input from stdin...\nOpenAI Codex v0.141.0\n--------\nworkdir: /Users/x/.meridian\nmodel: gpt-5.5\n--------\nERROR: {\n  \"type\": \"error\",\n  \"error\": {\n    \"type\": \"invalid_request_error\",\n    \"code\": \"invalid_json_schema\",\n    \"message\": \"Invalid schema for response_format 'codex_output_schema': In context=('properties', 'placements', 'items'), 'required' is required to be supplied and to be an array including every key in properties. Missing 'id'.\",\n    \"param\": \"text.format.schema\"\n  },\n  \"status\": 400\n}\n";
+
+    #[test]
+    fn codex_error_reports_the_api_message_not_the_stdin_banner() {
+        let msg = codex_error(REAL_STDERR);
+        assert!(
+            msg.starts_with("Invalid schema for response_format"),
+            "got: {msg}"
+        );
+        assert!(
+            !msg.contains("stdin"),
+            "the banner must never be the reported cause: {msg}"
+        );
+    }
+
+    /// No ERROR block (a crash / a usage message) still has to say something.
+    #[test]
+    fn codex_error_falls_back_to_the_first_line() {
+        assert_eq!(
+            codex_error("codex: command failed\n\n"),
+            "codex: command failed"
+        );
+        assert_eq!(codex_error(""), "");
+    }
+
+    /// An ERROR block that isn't JSON (a panic, a plain-text failure) reports its text.
+    #[test]
+    fn codex_error_handles_a_non_json_error_block() {
+        assert_eq!(
+            codex_error("banner\nERROR: stream disconnected\n"),
+            "stream disconnected"
+        );
     }
 }

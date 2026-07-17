@@ -43,8 +43,9 @@ use crate::config::Config;
 use crate::llm::{self, parse_json_object, prompts, PromptRequest};
 
 /// Token budget for the combined match/propose/update answer — a handful of short
-/// fields plus a few bullet arrays.
-const GENERATE_MAX_TOKENS: u32 = 1500;
+/// fields plus a few bullet arrays. `pub(crate)` so the LLM-Lab replay
+/// ([`crate::llm_experiment`]) rebuilds the identical request contract.
+pub(crate) const GENERATE_MAX_TOKENS: u32 = 1500;
 
 /// One open ticket the matcher may bind to, rendered for the prompt.
 struct Candidate {
@@ -97,18 +98,8 @@ pub async fn generate(
         n_candidates = Empty,
     );
     async move {
-        let report = load_workstream_report(pool, day_local, task_id).await?;
-        let candidates = fetch_plan_candidates(pool, day_local).await?;
-        tracing::Span::current().record("n_candidates", candidates.len());
-
-        let user = build_user_prompt(&report, &candidates);
-        let req = PromptRequest {
-            system: prompts::WORKLOG_GENERATE,
-            user,
-            schema: Some(prompts::worklog_generate_schema()),
-            max_tokens: GENERATE_MAX_TOKENS,
-            label: format!("worklog-generate {day_local} {task_id}"),
-        };
+        let (req, n_candidates) = generate_request(pool, day_local, task_id).await?;
+        tracing::Span::current().record("n_candidates", n_candidates);
 
         let (out, provider) = llm::complete(&req)
             .await
@@ -492,6 +483,29 @@ async fn approve_inner(
 }
 
 // ── Prompt assembly ───────────────────────────────────────────────────────────
+
+/// The generate-worklog call's exact [`PromptRequest`] (plus the candidate count for
+/// the caller's span) — extracted from [`generate`] so the LLM-Lab replay
+/// ([`crate::llm_experiment`]) fans the byte-identical request across arbitrary
+/// providers. Read-only: loads the day-task's whole-story report and THAT DAY'S
+/// planned tasks as candidates, then assembles the user prompt.
+pub(crate) async fn generate_request(
+    pool: &SqlitePool,
+    day_local: &str,
+    task_id: &str,
+) -> Result<(PromptRequest, usize)> {
+    let report = load_workstream_report(pool, day_local, task_id).await?;
+    let candidates = fetch_plan_candidates(pool, day_local).await?;
+    let user = build_user_prompt(&report, &candidates);
+    let req = PromptRequest {
+        system: prompts::WORKLOG_GENERATE,
+        user,
+        schema: Some(prompts::worklog_generate_schema()),
+        max_tokens: GENERATE_MAX_TOKENS,
+        label: format!("worklog-generate {day_local} {task_id}"),
+    };
+    Ok((req, candidates.len()))
+}
 
 /// A day-task's whole-story report as the matcher sees it.
 struct WorkstreamReport {
