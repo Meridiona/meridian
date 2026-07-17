@@ -32,7 +32,12 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-use super::cli_exec::{parse_last_line, run_meridian};
+// The CLI-spawning contract (argv/no shell, `current_dir(~/.meridian)` so dotenvy
+// finds the daemon's `.env`, a timeout, last-line JSON, and a diagnostic that names
+// the binary) lives in ONE place. This module used to carry its own copy of
+// meridian_home/run_meridian/parse_last_line; they drifted, and the drift is what
+// made a stale-binary failure read as an unparseable socket warning.
+use super::cli_exec::run_meridian_json;
 
 /// One status option — mirrors the CLI's `{id,name,category}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,13 +94,12 @@ pub async fn list_task_statuses(
     if provider.is_empty() || key.is_empty() {
         return Err("provider and key are required".to_string());
     }
-    let stdout = run_meridian(
+    let resp: StatusListResponse = run_meridian_json(
         &["ticket-statuses", "--provider", &provider, "--key", &key],
         Duration::from_secs(30),
         "ticket-statuses",
     )
     .await?;
-    let resp: StatusListResponse = parse_last_line(&stdout)?;
     tracing::info!(%provider, %key, statuses = resp.statuses.len(), "ticket-statuses served");
     Ok(resp)
 }
@@ -110,7 +114,7 @@ pub async fn set_task_status(body: SetStatusBody) -> Result<SetStatusResponse, S
     if body.provider.is_empty() || body.key.is_empty() || body.status_id.is_empty() {
         return Err("provider, key and status_id are required".to_string());
     }
-    let stdout = run_meridian(
+    let resp: SetStatusResponse = run_meridian_json(
         &[
             "ticket-set-status",
             "--provider",
@@ -124,7 +128,6 @@ pub async fn set_task_status(body: SetStatusBody) -> Result<SetStatusResponse, S
         "ticket-set-status",
     )
     .await?;
-    let resp: SetStatusResponse = parse_last_line(&stdout)?;
     tracing::info!(status = %resp.result.status, "ticket-set-status applied");
     Ok(resp)
 }

@@ -14,6 +14,10 @@
 /// The `/api/active` dashboard view of the active session (ported from active/route.ts).
 pub mod active;
 
+/// The ONE definition of "what is on your board", shared by the Tasks page and
+/// the worklog matcher so the two can never disagree. No route — new work.
+pub mod board;
+
 /// The `/api/coding-agents` daily agent totals (ported from coding-agents/route.ts).
 pub mod coding_agents;
 
@@ -37,7 +41,7 @@ pub mod day_task_worklogs;
 pub mod hour_status;
 
 /// Reads for the dev-only LLM-Lab comparison harness (`llm_experiments`,
-/// migration 061; no route — new work).
+/// migration 064; no route — new work).
 pub mod llm_experiments;
 
 /// The `/api/tasks` per-task time + hygiene payload (ported from tasks/route.ts).
@@ -51,6 +55,10 @@ pub mod plan;
 
 /// The `/api/plan/task` single-ticket detail (ported from plan/task/route.ts).
 pub mod task_detail;
+
+/// Writing user-authored tasks into `pm_tasks` (the `'local'` sentinel provider).
+/// New backend work — no route to port.
+pub mod task_create;
 
 /// The `/api/today` dashboard payload, computed in Rust (ported from today/route.ts).
 pub mod today;

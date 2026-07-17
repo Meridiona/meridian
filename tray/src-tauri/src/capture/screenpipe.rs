@@ -106,8 +106,13 @@ impl CaptureEngine for ScreenpipeEngine {
             // it's for a completely unrelated app. Checked with process
             // existence + AppleScript only (never SCK) — see
             // `drm_detector::any_streaming_content_visible`.
-            let skip_ocr_for_streaming =
-                pause_on_streaming && drm_detector::any_streaming_content_visible();
+            // `any_streaming_content_visible` shells out to `pgrep`/`osascript`
+            // (up to 9 process spawns) — run it on the blocking pool rather
+            // than stalling this tokio worker thread every tick.
+            let skip_ocr_for_streaming = pause_on_streaming
+                && tokio::task::spawn_blocking(drm_detector::any_streaming_content_visible)
+                    .await
+                    .unwrap_or(false);
             if let Err(e) = dispatch(
                 &tx,
                 outcome,
@@ -307,7 +312,7 @@ async fn dispatch(
 ) -> anyhow::Result<()> {
     match outcome {
         A11yOutcome::Frame(frame) => {
-            send_frame(tx, *frame, pause_on_streaming, streaming_gate);
+            send_frame(tx, *frame, pause_on_streaming, streaming_gate).await;
             Ok(())
         }
         A11yOutcome::Skip => Ok(()),
@@ -362,7 +367,7 @@ async fn capture_once_ocr(
             text,
             text_source: TextSource::Ocr,
         };
-        if !send_frame(tx, frame, pause_on_streaming, streaming_gate) {
+        if !send_frame(tx, frame, pause_on_streaming, streaming_gate).await {
             break; // consumer backpressure / gone — end this tick
         }
     }
@@ -382,18 +387,26 @@ async fn capture_once_ocr(
 /// reliable signal after the first few seconds of a stream. Also uses
 /// `streaming_gate` to stay sticky for browsers/cases the AppleScript fallback
 /// doesn't cover (see [`drm_detector::StreamingGate`]).
-fn send_frame(
+async fn send_frame(
     tx: &FrameTx,
     frame: CapturedFrame,
     pause_on_streaming_video: bool,
     streaming_gate: &mut StreamingGate,
 ) -> bool {
     if pause_on_streaming_video {
-        let app_name = frame.app_name.as_deref().unwrap_or("");
-        let resolved_url = frame
-            .browser_url
-            .clone()
-            .or_else(|| drm_detector::resolve_url_via_applescript(app_name));
+        let app_name = frame.app_name.as_deref().unwrap_or("").to_string();
+        let resolved_url = match frame.browser_url.clone() {
+            Some(u) => Some(u),
+            // `resolve_url_via_applescript` shells out to `osascript` — a
+            // blocking process spawn that can take real wall-clock time. Run
+            // it on the blocking pool rather than stalling this tokio worker
+            // thread (and every other task scheduled on it) for the duration.
+            None => tokio::task::spawn_blocking(move || {
+                drm_detector::resolve_url_via_applescript(&app_name)
+            })
+            .await
+            .unwrap_or(None),
+        };
 
         if streaming_gate.should_skip(frame.app_name.as_deref(), resolved_url.as_deref()) {
             debug!(

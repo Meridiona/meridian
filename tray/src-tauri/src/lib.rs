@@ -548,7 +548,13 @@ pub fn run() {
             commands::get_app_icon,
             // DB writes (ported /api/* POSTs/PATCH/DELETE)
             commands::plan_action,
+            commands::get_board_tickets,
+            commands::retarget_day_task_worklog,
+            commands::dismiss_worklog_target,
             commands::plan_dismissed,
+            commands::draft_plan_task,
+            commands::create_plan_task,
+            commands::edit_plan_task,
             commands::triage_decision,
             commands::triage_ignore,
             commands::apply_ticket_fix,

@@ -12,7 +12,7 @@
 //!
 //! Experiments NEVER write production tables: `pm_worklog_hours` / `day_tasks` /
 //! `pm_tasks` are read as inputs; outputs land only in `llm_experiments` /
-//! `llm_experiment_results` (migration 061). Rendering stops at "what the pipeline
+//! `llm_experiment_results` (migration 064). Rendering stops at "what the pipeline
 //! would have made of the answer" — nothing is persisted back.
 //!
 //! Replay fidelity caveats, accepted for A/B comparison (all variants still get

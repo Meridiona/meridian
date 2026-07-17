@@ -9,6 +9,9 @@
 //! `~/.meridian/.env` / `settings.json`, so any command doing tracker or model work
 //! spawns the CLI rather than talking to a tracker or model in-process; the CWD
 //! must be `~/.meridian` because dotenvy walks UP from the process CWD.
+//! [`run_meridian_json`] pairs [`run_meridian`] + [`parse_last_line`] with a
+//! diagnostic that names the binary on an unparseable result (a stale installed
+//! `meridian` is the usual cause).
 //!
 //! # Who calls this
 //! [`crate::commands::statuses`], [`crate::commands::worklog_generate`],
@@ -117,6 +120,51 @@ pub(crate) fn parse_last_line<T: for<'de> Deserialize<'de>>(stdout: &str) -> Res
             let skip = s.chars().count().saturating_sub(200);
             let tail: String = s.chars().skip(skip).collect();
             Err(format!("could not parse result: {tail}"))
+        }
+    }
+}
+
+/// Last `n` chars of `s` — bounded so a runaway log line can't fill a span.
+fn tail(s: &str, n: usize) -> String {
+    let s = s.trim();
+    s.chars()
+        .skip(s.chars().count().saturating_sub(n))
+        .collect()
+}
+
+/// Run `meridian <args…>` and parse its last stdout line as JSON `T` — the ONE
+/// way a command should shell out for a JSON result ([`run_meridian`] +
+/// [`parse_last_line`] were being paired by hand at every call site, and the
+/// pairing is where the diagnostics went missing).
+///
+/// # Why the error names the binary
+/// The tray spawns the INSTALLED `meridian`, which is versioned independently of
+/// the tray. Ask a stale one for a subcommand it doesn't have and (before the
+/// guard in `main.rs`) it ignored the argv and booted a daemon, which the
+/// single-instance guard killed with a warning on stdout — surfacing to the user
+/// as "could not parse result: …daemon.sock", a message about a socket, naming
+/// neither the binary nor the subcommand. So a parse failure here reports WHICH
+/// binary produced the unparseable output, and logs the whole of it at `error`
+/// for the trace.
+pub(crate) async fn run_meridian_json<T: for<'de> Deserialize<'de>>(
+    args: &[&str],
+    timeout: Duration,
+    label: &str,
+) -> Result<T, String> {
+    let stdout = run_meridian(args, timeout, label).await?;
+    match parse_last_line::<T>(&stdout) {
+        Ok(v) => Ok(v),
+        Err(_) => {
+            let bin = crate::install::meridian_bin();
+            tracing::error!(
+                bin = %bin,
+                args = ?args,
+                stdout = %tail(&stdout, 2000),
+                "{label}: output was not JSON - is this binary older than the tray?"
+            );
+            Err(format!(
+                "{label}: {bin} returned no result. It may be older than this app - reinstall or rebuild it."
+            ))
         }
     }
 }

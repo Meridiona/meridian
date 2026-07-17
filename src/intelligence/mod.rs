@@ -16,8 +16,14 @@ use crate::config::{Config, PmProviderConfig};
 /// provider authenticated and fetched successfully, so a non-zero count is proof
 /// a tracker actually WORKS (not merely that keys are present — bad creds 401 and
 /// leave the table empty). A DB error is treated as "not present" (fail closed).
+///
+/// Personal tasks (`provider = 'local'`, see [`meridian_core::task_create`]) are
+/// excluded: the user writes those themselves, so they prove nothing about a tracker.
+/// Counting them would make one self-authored task convince the daemon a tracker is
+/// connected and working — which gates onboarding, sync scheduling and notifications.
 pub async fn pm_tasks_present(pool: &SqlitePool) -> bool {
-    match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pm_tasks")
+    match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pm_tasks WHERE provider != ?")
+        .bind(meridian_core::task_create::LOCAL_PROVIDER)
         .fetch_one(pool)
         .await
     {

@@ -229,7 +229,9 @@ fn azure_category(category: &str) -> &'static str {
 }
 
 /// PATCH `System.State`. `Ok(None)` = applied; `Ok(Some(text))` = the workflow
-/// rejected it (HTTP error body, for the redirect reason); `Err` = network/parse.
+/// rejected the transition (a genuine client-side validation failure, for the
+/// redirect reason); `Err` = network/auth/rate-limit/server failure, which must
+/// NOT be reported as a redirect — see [`is_workflow_rejection`].
 async fn try_patch_state(
     client: &reqwest::Client,
     cfg: &AzureDevOpsConfig,
@@ -256,7 +258,26 @@ async fn try_patch_state(
         return Ok(None);
     }
     let text = resp.text().await.unwrap_or_default();
+    if !is_workflow_rejection(status) {
+        bail!(
+            "Azure DevOps PATCH work item {} state returned {status}: {text}",
+            item.id
+        );
+    }
     Ok(Some(azure_error_message(&text, status)))
+}
+
+/// Whether a failed `System.State` PATCH is a genuine workflow rejection (the
+/// process rules forbid this transition) rather than an auth/rate-limit/server
+/// failure. Azure DevOps reports a rule violation as `400 Bad Request` with a
+/// `message` describing the invalid field/state; auth failures (401/403),
+/// not-found (404), throttling (429), and server errors (5xx) are never a
+/// workflow decision and must surface as a real error instead of silently
+/// reading to the user as "your board can't move it to that status" — that
+/// would mask an expired PAT or an outage as normal transition-forbidden UX.
+fn is_workflow_rejection(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::BAD_REQUEST
+        || status == reqwest::StatusCode::UNPROCESSABLE_ENTITY
 }
 
 /// Azure's human error `message` from a failed body, or a status fallback.
@@ -398,6 +419,32 @@ mod tests {
         assert_eq!(priority_to_int("High"), 2);
         assert_eq!(priority_to_int("Medium"), 3);
         assert_eq!(priority_to_int("Low"), 4);
+    }
+
+    #[test]
+    fn workflow_rejection_is_only_the_client_validation_statuses() {
+        // 400/422 are genuine "the process rules forbid this transition" outcomes
+        // — safe to redirect the user.
+        assert!(is_workflow_rejection(reqwest::StatusCode::BAD_REQUEST));
+        assert!(is_workflow_rejection(
+            reqwest::StatusCode::UNPROCESSABLE_ENTITY
+        ));
+    }
+
+    #[test]
+    fn auth_and_server_failures_are_not_workflow_rejections() {
+        // Regression: these used to be treated identically to a workflow reject
+        // and silently reported to the user as "your board can't move it to that
+        // status" — masking an expired PAT, a rate limit, or a real outage.
+        assert!(!is_workflow_rejection(reqwest::StatusCode::UNAUTHORIZED));
+        assert!(!is_workflow_rejection(reqwest::StatusCode::FORBIDDEN));
+        assert!(!is_workflow_rejection(reqwest::StatusCode::NOT_FOUND));
+        assert!(!is_workflow_rejection(
+            reqwest::StatusCode::TOO_MANY_REQUESTS
+        ));
+        assert!(!is_workflow_rejection(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        ));
     }
 
     #[test]

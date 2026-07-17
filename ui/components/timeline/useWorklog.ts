@@ -4,17 +4,24 @@
 // so the panel stays presentational and this — the get/generate/approve flow and
 // its every-provider error handling — lives in one testable place.
 //
-// Lifecycle: on mount (or when the selected task changes) it reads any existing
-// draft; `generate` runs (or re-runs, overwriting) the centralised AI match/
-// propose call; `approve` creates-if-proposed then posts the update and reflects
-// the posted result locally. All three go through the Tauri bridge:
+// STATE LIVES IN A MODULE-LEVEL STORE, not in the hook. `generate` can take ~a
+// minute (an LLM call in the Rust CLI); the detail panel unmounts the moment you
+// select another card, which would destroy component-local state and orphan the
+// in-flight request. Keying the state by `(day, taskId)` in a store that outlives
+// the panel means switching away and back preserves the "generating…" state and
+// picks up the result when it lands. The hook is a thin `useSyncExternalStore`
+// view over that store.
+//
+// All I/O goes through the Tauri bridge:
 //   - get      → load  (flat args)   read, returns null when there's no draft
 //   - generate → invoke (flat args)  the LLM call (can take ~a minute)
 //   - approve  → mutate (body)       create + post, idempotent server-side
+// Flat args (get/generate) cross the bridge as camelCase (`taskId`); the approve
+// body struct keeps snake_case (`task_id`) — see worklog_generate.rs.
 
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { load, invoke, mutate } from '@/lib/bridge'
 import type { DayTaskWorklogDraft, ApproveWorklogResponse } from '@/lib/api-types'
 
@@ -32,8 +39,17 @@ export interface WorklogState {
   setConfirming: (v: boolean) => void
   /** Run (or regenerate, overwriting) the AI draft. */
   generate: () => void
-  /** Approve the current draft: create-if-proposed, post the comment, link it. */
+  /** Approve the current draft: create-if-proposed, post the comment to every
+   *  target, link it. Safe to retry after a partial post - already-posted tickets
+   *  are skipped server-side. */
   approve: () => void
+  /** Point the draft at ONE ticket the user picked over the whole board, dropping
+   *  the AI's. The AI only ever matches against the day's planned tasks, so this is
+   *  the override for unplanned work. No LLM call - it retargets, it doesn't
+   *  rewrite. */
+  retarget: (taskKey: string) => void
+  /** Drop one ticket the AI matched, keeping the rest. */
+  dismiss: (taskKey: string) => void
 }
 
 const errMsg = (e: unknown): string =>
@@ -41,51 +57,178 @@ const errMsg = (e: unknown): string =>
 
 const API = '/api/day-task-worklog' // vestigial route label the bridge wants (Tauri-only now)
 
-/** Own the worklog flow for `(day, taskId)`. Re-primes when either changes. */
+// ── The external store (module-level, survives panel unmount) ─────────────────
+
+interface Entry {
+  draft: DayTaskWorklogDraft | null
+  phase: WorklogPhase
+  error: string | null
+  /** True once the initial get has resolved for this key (don't re-load). */
+  loaded: boolean
+}
+
+// A single shared default so `getSnapshot` returns a STABLE reference for keys not
+// yet in the store (useSyncExternalStore loops forever if the snapshot identity
+// changes every call).
+const EMPTY: Entry = { draft: null, phase: 'loading', error: null, loaded: false }
+
+const store = new Map<string, Entry>()
+const listeners = new Set<() => void>()
+
+// A space is a safe separator here: `day` is YYYY-MM-DD and `taskId` is T1/T2…,
+// so neither half can contain one and no two cards can collide on a key.
+const keyOf = (day: string, taskId: string) => `${day} ${taskId}`
+const snapshot = (key: string): Entry => store.get(key) ?? EMPTY
+
+function patch(key: string, next: Partial<Entry>) {
+  store.set(key, { ...snapshot(key), ...next })
+  listeners.forEach((l) => l())
+}
+
+function subscribe(l: () => void): () => void {
+  listeners.add(l)
+  return () => listeners.delete(l)
+}
+
+/** Load the existing draft once per key. No-op if it's already loaded or a
+ *  generate/approve is in flight (never clobber live state with a stale read). */
+function ensureLoaded(day: string, taskId: string) {
+  const key = keyOf(day, taskId)
+  const e = store.get(key)
+  if (e && (e.loaded || e.phase === 'generating' || e.phase === 'approving')) return
+  patch(key, { phase: 'loading', error: null })
+  load<DayTaskWorklogDraft | null>(API, 'get_day_task_worklog', { day, taskId })
+    .then((r) => {
+      // A generate/approve may have started while the read was in flight — don't
+      // stomp it.
+      const cur = store.get(key)
+      if (cur && (cur.phase === 'generating' || cur.phase === 'approving')) return
+      patch(key, { draft: r ?? null, phase: 'idle', loaded: true })
+    })
+    .catch(() => patch(key, { phase: 'idle', loaded: true }))
+}
+
+/** Run (or regenerate) the AI draft for `(day, taskId)`. Idempotent against a
+ *  double-tap: a second call while one is running is ignored. */
+function runGenerate(day: string, taskId: string) {
+  const key = keyOf(day, taskId)
+  if (store.get(key)?.phase === 'generating') return
+  patch(key, { phase: 'generating', error: null })
+  invoke<DayTaskWorklogDraft>('generate_day_task_worklog', { day, taskId })
+    .then((r) => patch(key, { draft: r, phase: 'idle', loaded: true, error: r.error ?? null }))
+    .catch((e) => patch(key, { phase: 'idle', error: errMsg(e) }))
+}
+
+/** Approve the current draft: create-if-proposed then post to every target.
+ *
+ *  Re-reads the draft rather than patching the local copy from the response. An
+ *  approve can land on some tickets and fail on others, so the resulting state is
+ *  per-ticket (which posted, which carry an error, whether the row went `posted` at
+ *  all) — and the server already computed all of it. Reconstructing that here from
+ *  the response would be a second implementation of the same rules, free to drift.
+ *
+ *  Idempotent server-side (an already-posted ticket is never posted to twice) and
+ *  against a double-tap here.
+ */
+function runApprove(day: string, taskId: string) {
+  const key = keyOf(day, taskId)
+  if (store.get(key)?.phase === 'approving') return
+  patch(key, { phase: 'approving', error: null })
+  mutate<ApproveWorklogResponse>(API, 'approve_day_task_worklog', { day, task_id: taskId })
+    .then(async (r) => {
+      const fresh = await load<DayTaskWorklogDraft | null>(API, 'get_day_task_worklog', {
+        day,
+        taskId,
+      }).catch(() => null)
+      const failed = r.targets.filter((t) => !t.posted)
+      const error =
+        r.error ||
+        (failed.length
+          ? `Could not post to ${failed.map((t) => t.task_key).join(', ')} - the rest went through. Try again to finish.`
+          : null)
+      patch(key, { phase: 'idle', loaded: true, error, ...(fresh ? { draft: fresh } : {}) })
+    })
+    .catch((e) => patch(key, { phase: 'idle', error: errMsg(e) }))
+}
+
+/** Drop one ticket from the draft's target set. Like retarget, a plain DB write. */
+function runDismiss(day: string, taskId: string, taskKey: string) {
+  const key = keyOf(day, taskId)
+  const cur = store.get(key)
+  if (cur?.phase === 'approving' || cur?.phase === 'generating') return
+  patch(key, { phase: 'approving', error: null })
+  mutate<DayTaskWorklogDraft>(API, 'dismiss_worklog_target', {
+    day,
+    task_id: taskId,
+    task_key: taskKey,
+  })
+    .then((r) => patch(key, { draft: r, phase: 'idle', loaded: true, error: r.error ?? null }))
+    .catch((e) => patch(key, { phase: 'idle', error: errMsg(e) }))
+}
+
+/** Retarget the draft at a user-picked ticket. Unlike generate this is a plain DB
+ *  write (no LLM, no CLI spawn), so it resolves in milliseconds — but it still
+ *  goes through the store, because the panel can unmount mid-flight like anything
+ *  else here. Reuses the `approving` phase: both mean "a write is in flight, don't
+ *  touch the draft", and a third phase would have to be handled at every branch
+ *  in the footer for no behavioural difference. */
+function runRetarget(day: string, taskId: string, taskKey: string) {
+  const key = keyOf(day, taskId)
+  const cur = store.get(key)
+  if (cur?.phase === 'approving' || cur?.phase === 'generating') return
+  patch(key, { phase: 'approving', error: null })
+  mutate<DayTaskWorklogDraft>(API, 'retarget_day_task_worklog', {
+    day,
+    task_id: taskId,
+    task_key: taskKey,
+  })
+    .then((r) => patch(key, { draft: r, phase: 'idle', loaded: true, error: r.error ?? null }))
+    .catch((e) => patch(key, { phase: 'idle', error: errMsg(e) }))
+}
+
+// ── The hook: a thin view over the store ──────────────────────────────────────
+
+/** Own the worklog flow for `(day, taskId)`. Reads live state from the module
+ *  store so it survives the panel unmounting mid-generation. */
 export function useWorklog(day: string, taskId: string): WorklogState {
-  const [draft, setDraft] = useState<DayTaskWorklogDraft | null>(null)
-  const [phase, setPhase] = useState<WorklogPhase>('loading')
-  const [error, setError] = useState<string | null>(null)
+  const key = keyOf(day, taskId)
+  const entry = useSyncExternalStore(
+    subscribe,
+    () => snapshot(key),
+    () => EMPTY,
+  )
+  // `confirming` is a transient per-view toggle (Approve tapped → awaiting "Yes,
+  // post"); intentionally local, and reset when the selected task changes so you
+  // never return to a card mid-confirm.
   const [confirming, setConfirming] = useState(false)
 
-  // Load any existing draft when the selected task changes. No draft yet — a task
-  // never generated, or a pre-060 DB — resolves to null, which is not an error.
   useEffect(() => {
-    let alive = true
-    setPhase('loading'); setError(null); setConfirming(false); setDraft(null)
-    load<DayTaskWorklogDraft | null>(API, 'get_day_task_worklog', { day, task_id: taskId })
-      .then(r => { if (alive) { setDraft(r); setPhase('idle') } })
-      .catch(() => { if (alive) setPhase('idle') })
-    return () => { alive = false }
+    setConfirming(false)
+    ensureLoaded(day, taskId)
   }, [day, taskId])
 
-  const generate = () => {
-    setPhase('generating'); setError(null); setConfirming(false)
-    invoke<DayTaskWorklogDraft>('generate_day_task_worklog', { day, task_id: taskId })
-      .then(r => { setDraft(r); setPhase('idle'); if (r.error) setError(r.error) })
-      .catch(e => { setError(errMsg(e)); setPhase('idle') })
-  }
-
-  const approve = () => {
-    setPhase('approving'); setError(null); setConfirming(false)
-    mutate<ApproveWorklogResponse>(API, 'approve_day_task_worklog', { day, task_id: taskId })
-      .then(r => {
-        setPhase('idle')
-        if (!r.posted || r.error) { setError(r.error || 'Could not post the update'); return }
-        // Reflect the posted result locally so the panel updates without a reload.
-        setDraft(d => d ? { ...d, state: 'posted', target_key: r.target_key, created_task_key: r.created_task_key, browse_url: r.browse_url } : d)
-      })
-      .catch(e => { setError(errMsg(e)); setPhase('idle') })
-  }
-
   return {
-    draft,
-    phase,
-    error,
-    posted: draft?.state === 'posted',
+    draft: entry.draft,
+    phase: entry.phase,
+    error: entry.error,
+    posted: entry.draft?.state === 'posted',
     confirming,
     setConfirming,
-    generate,
-    approve,
+    generate: () => {
+      setConfirming(false)
+      runGenerate(day, taskId)
+    },
+    approve: () => {
+      setConfirming(false)
+      runApprove(day, taskId)
+    },
+    retarget: (taskKey: string) => {
+      setConfirming(false)
+      runRetarget(day, taskId, taskKey)
+    },
+    dismiss: (taskKey: string) => {
+      setConfirming(false)
+      runDismiss(day, taskId, taskKey)
+    },
   }
 }

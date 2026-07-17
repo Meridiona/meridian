@@ -1,0 +1,125 @@
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+import { describe, it, expect } from 'bun:test'
+import { readFileSync } from 'fs'
+
+// Guards for the task composer's two load-bearing invariants.
+//
+// 1. THE AI CAN NEVER BLOCK A CREATE. Drafting is an LLM call that can take most of
+//    a minute and can fail outright (a cold model, no provider configured, a copilot
+//    backend that gives no schema guarantee at all). If the fields were gated behind
+//    a successful draft, every one of those turns the morning planner back into the
+//    dead end this feature exists to remove. So: the fields render unconditionally,
+//    and `canCreate` looks at the title and nothing else.
+//
+// 2. COMPOSER STATE LIVES IN A MODULE STORE, not component state. The composer is
+//    inside the Plan modal, which the user can close (Escape, backdrop, the X) while
+//    a draft is in flight — component state would take the in-flight request and the
+//    note they typed with it. Same hazard, and same fix, as useWorklog/planStore.
+//
+// No React render harness in this repo (see oauth-setup-lifecycle) — we model the
+// store's predicate and scan the source for the required shape.
+
+const uiRoot = import.meta.dir + '/..'
+const composer = readFileSync(`${uiRoot}/components/plan/TaskComposer.tsx`, 'utf8')
+const store = readFileSync(`${uiRoot}/components/plan/useTaskComposer.ts`, 'utf8')
+
+/** The real predicate, mirrored (the source is the contract; this pins its shape). */
+const MIN_TITLE_WORDS = 4
+const titleWords = (t: string) => t.trim().split(/\s+/).filter(Boolean).length
+const canCreate = (s: { title: string; description: string; phase: string }) =>
+  titleWords(s.title) >= MIN_TITLE_WORDS &&
+  s.description.trim().length > 0 &&
+  s.phase === 'idle'
+
+/** A submittable task, for tests that vary one field off it. */
+const ok = { title: 'Draft the Q3 roadmap deck', description: 'Put the deck together.', phase: 'idle' }
+
+describe('the composer never blocks on the AI', () => {
+  it('typed fields alone are enough to create - no draft required', () => {
+    expect(canCreate(ok)).toBe(true)
+  })
+
+  it('a blank or whitespace title blocks', () => {
+    expect(canCreate({ ...ok, title: '' })).toBe(false)
+    expect(canCreate({ ...ok, title: '   ' })).toBe(false)
+  })
+
+  it('a title under the floor blocks - it names a subject, not the work', () => {
+    // The floor the draft prompt also enforces, so AI and manual entry agree.
+    expect(canCreate({ ...ok, title: 'Roadmap' })).toBe(false)
+    expect(canCreate({ ...ok, title: 'Login bug' })).toBe(false)
+    expect(canCreate({ ...ok, title: 'Fix broken login' })).toBe(false)
+    // …and it counts WORDS, not characters: padding whitespace doesn't buy a pass.
+    expect(canCreate({ ...ok, title: 'Roadmap                ' })).toBe(false)
+    expect(canCreate({ ...ok, title: 'Fix the broken login' })).toBe(true)
+  })
+
+  it('a missing description blocks - a task you cannot decode next week is not one', () => {
+    expect(canCreate({ ...ok, description: '' })).toBe(false)
+    expect(canCreate({ ...ok, description: '  ' })).toBe(false)
+  })
+
+  it('an in-flight draft or create blocks a second submit', () => {
+    expect(canCreate({ ...ok, phase: 'drafting' })).toBe(false)
+    expect(canCreate({ ...ok, phase: 'creating' })).toBe(false)
+  })
+
+  it('canCreate never consults the draft or the note - only what is in the fields', () => {
+    const src = store.slice(store.indexOf('export const canCreate'))
+    const body = src.slice(0, src.indexOf('\n\n'))
+    for (const forbidden of ['Drafted', 'note', 'error', 'created']) {
+      expect(body.includes(forbidden)).toBe(false)
+    }
+  })
+
+  it('a failed draft sets an error and leaves the fields alone', () => {
+    // The draft path's failure arms must never touch title/description — that is
+    // what makes a dead model a slow suggestion rather than a lost task.
+    const fn = store.slice(store.indexOf('export function draftFromNote'), store.indexOf('export function createTask'))
+    expect(fn.includes("patch({ phase: 'idle', error: d.error })")).toBe(true)
+    expect(fn.includes("patch({ phase: 'idle', error: errMsg(e) })")).toBe(true)
+  })
+
+  it('the title/description fields are not rendered behind a draft conditional', () => {
+    // The fields must sit outside any `draft &&` / `hasDraft ?` gate. If this ever
+    // trips, someone has re-gated the manual path behind the model.
+    expect(/\bdraft(ed)?\s*&&\s*\(?\s*<input/i.test(composer)).toBe(false)
+    expect(composer.includes('value={s.title}')).toBe(true)
+    expect(composer.includes('value={s.description}')).toBe(true)
+  })
+})
+
+describe('composer state survives the plan modal closing mid-draft', () => {
+  it('the store is module-level and exposed via useSyncExternalStore', () => {
+    expect(store.includes('useSyncExternalStore')).toBe(true)
+    expect(store.includes('let state: ComposerState = EMPTY')).toBe(true)
+  })
+
+  it('the server snapshot is a stable frozen EMPTY (a fresh object loops forever)', () => {
+    expect(store.includes('Object.freeze(')).toBe(true)
+    expect(/\(\)\s*=>\s*EMPTY,/.test(store)).toBe(true)
+  })
+
+  it('the component holds no useState for composer fields', () => {
+    expect(composer.includes('useState')).toBe(false)
+  })
+
+  it('personal is the default target - filing on a shared board is a deliberate click', () => {
+    expect(store.includes('target: LOCAL_PROVIDER')).toBe(true)
+  })
+})
+
+describe('nothing calls the plan-task commands outside the store', () => {
+  it('draft/create/edit are invoked only from useTaskComposer', () => {
+    const files = ['components/plan/TaskComposer.tsx', 'components/plan/PlanView.tsx',
+      'components/plan/PlanBoardColumn.tsx', 'components/plan/PlanTodayColumn.tsx']
+    for (const f of files) {
+      const src = readFileSync(`${uiRoot}/${f}`, 'utf8')
+      for (const cmd of ['draft_plan_task', 'create_plan_task', 'edit_plan_task']) {
+        expect(src.includes(cmd)).toBe(false)
+      }
+    }
+    expect(store.includes('draft_plan_task')).toBe(true)
+    expect(store.includes('create_plan_task')).toBe(true)
+  })
+})

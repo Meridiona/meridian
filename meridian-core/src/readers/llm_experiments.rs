@@ -1,6 +1,6 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //! Reads for the dev-only LLM-Lab comparison harness (`llm_experiments` /
-//! `llm_experiment_results`, migration 061; no route — new work).
+//! `llm_experiment_results`, migration 064; no route — new work).
 //!
 //! # What this is
 //! The read side of the LLM Lab: list past experiments (newest first, with a done
@@ -9,7 +9,7 @@
 //! Writes live in the daemon (`meridian::llm_experiment::store`); this module is
 //! deliberately read-only, per the meridian-core DB-only convention.
 //!
-//! A pre-061 DB (the tray opens `meridian.db` without running migrations) degrades
+//! A pre-064 DB (the tray opens `meridian.db` without running migrations) degrades
 //! to empty / `None` instead of erroring — the Lab simply shows no runs until the
 //! daemon has applied the migration.
 //!
@@ -94,14 +94,14 @@ async fn tables_exist(pool: &SqlitePool) -> bool {
     .is_some()
 }
 
-/// The past-runs list, newest first. Empty on a pre-061 DB.
+/// The past-runs list, newest first. Empty on a pre-064 DB.
 #[tracing::instrument(skip(pool))]
 pub async fn list_experiments(
     pool: &SqlitePool,
     limit: i64,
 ) -> anyhow::Result<Vec<LlmExperimentSummary>> {
     if !tables_exist(pool).await {
-        tracing::debug!("llm_experiments table missing (pre-061 DB) - returning empty");
+        tracing::debug!("llm_experiments table missing (pre-064 DB) - returning empty");
         return Ok(Vec::new());
     }
 
@@ -125,14 +125,14 @@ pub async fn list_experiments(
     Ok(rows)
 }
 
-/// One experiment's full detail, or `None` for an unknown id / a pre-061 DB.
+/// One experiment's full detail, or `None` for an unknown id / a pre-064 DB.
 #[tracing::instrument(skip(pool))]
 pub async fn get_experiment(
     pool: &SqlitePool,
     id: i64,
 ) -> anyhow::Result<Option<LlmExperimentDetail>> {
     if !tables_exist(pool).await {
-        tracing::debug!("llm_experiments table missing (pre-061 DB) - returning None");
+        tracing::debug!("llm_experiments table missing (pre-064 DB) - returning None");
         return Ok(None);
     }
 
