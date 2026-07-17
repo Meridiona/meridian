@@ -21,6 +21,7 @@ import type { PlanItem, PlanResponse, CodingAgentsResponse } from '@/lib/api-typ
 import { formatDayLabel, isPending } from './types'
 import { TimeByApp, appTotals } from './TimeByApp'
 import { TimeByCategory, categoryRows } from './TimeByCategory'
+import { UpdateCard } from './UpdateCard'
 import type { TimelineData } from './useTimelineData'
 import type { ActiveModal } from './MeridianTimelineShell'
 import type { SettingsSection } from './settings/types'
@@ -145,6 +146,11 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
 
   return (
     <div className="h-full overflow-y-auto nice-scroll p-6 space-y-7">
+      {/* DMG update CTA — only renders when a newer version is available; sits
+          at the top of the sidebar so it's noticeable without stealing the
+          whole header. Sibling of the tray popover's update banner. */}
+      <UpdateCard />
+
       <div>
         <p className="mt-label" style={{ color: 'var(--t-faint)' }}>{greetingEyebrow}</p>
         <p className="mt-greeting text-title mt-1">{greetingTitle}</p>
