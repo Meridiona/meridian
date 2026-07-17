@@ -155,38 +155,56 @@ function BulletList({ items, dotColor }: { items: string[]; dotColor: string }) 
 }
 
 function RoadmapList({ items }: { items: RoadmapItem[] }) {
-  if (items.length === 0) {
-    return <p className="mt-body-sm" style={{ color: 'var(--t-faint)' }}>Nothing on the roadmap yet.</p>
-  }
   return (
     <div className="flex flex-col gap-3">
-      {items.map((item, i) => (
-        <div key={item.title} className="mer-pop rounded-2xl p-4 mt-card-hover"
-          style={{
-            animationDelay: `${i * 60}ms`,
-            border: '1px solid var(--t-card-border)',
-            background: 'var(--t-box)',
-            boxShadow: `inset 3px 0 0 ${ROADMAP_STATUS_COLOR[item.status]}`,
-          }}>
-          <div className="flex items-center justify-between gap-2 mb-1.5">
-            <p className="mt-card-title" style={{ color: 'var(--t-title)' }}>{item.title}</p>
-            <span className="mt-label shrink-0" style={{
-              padding: '3px 9px',
-              borderRadius: 999,
-              background: ROADMAP_STATUS_COLOR[item.status],
-              // Fixed dark text, not a theme token: these pill backgrounds are
-              // fixed brand colors (not theme-derived), and white text fails
-              // contrast against the lighter ones (e.g. the amber "Planned" /
-              // lavender "Considering" pills) — dark text reads cleanly
-              // against all three regardless of theme.
-              color: 'rgba(0,0,0,0.78)',
+      {items.length === 0 ? (
+        <p className="mt-body-sm" style={{ color: 'var(--t-faint)' }}>Nothing on the roadmap yet.</p>
+      ) : (
+        items.map((item, i) => (
+          <div key={item.title} className="mer-pop rounded-2xl p-4 mt-card-hover"
+            style={{
+              animationDelay: `${i * 60}ms`,
+              border: '1px solid var(--t-card-border)',
+              background: 'var(--t-box)',
+              boxShadow: `inset 3px 0 0 ${ROADMAP_STATUS_COLOR[item.status]}`,
             }}>
-              {ROADMAP_STATUS_LABEL[item.status]}
-            </span>
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <p className="mt-card-title" style={{ color: 'var(--t-title)' }}>{item.title}</p>
+              <span className="mt-label shrink-0" style={{
+                padding: '3px 9px',
+                borderRadius: 999,
+                background: ROADMAP_STATUS_COLOR[item.status],
+                // Fixed dark text, not a theme token: these pill backgrounds are
+                // fixed brand colors (not theme-derived), and white text fails
+                // contrast against the lighter ones (e.g. the amber "Planned" /
+                // lavender "Considering" pills) — dark text reads cleanly
+                // against all three regardless of theme.
+                color: 'rgba(0,0,0,0.78)',
+              }}>
+                {ROADMAP_STATUS_LABEL[item.status]}
+              </span>
+            </div>
+            <p className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>{item.description}</p>
           </div>
-          <p className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>{item.description}</p>
-        </div>
-      ))}
+        ))
+      )}
+      <RequestFeatureCta />
     </div>
+  )
+}
+
+// Same channel the toolbar's Report modal offers ("Suggest a feature"), just
+// surfaced in context here since a user reading the roadmap is the one most
+// likely to have an opinion on what's missing from it.
+function RequestFeatureCta() {
+  return (
+    <a href="mailto:hey@meridiona.com?subject=Feature%20suggestion"
+      className="flex items-center justify-between gap-3 no-underline rounded-2xl mt-card-hover"
+      style={{ padding: '13px 16px', border: '1px dashed var(--t-card-border)', background: 'var(--t-box)' }}>
+      <p className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>Don&apos;t see what you're looking for?</p>
+      <span className="mt-body-sm shrink-0" style={{ color: 'var(--btn-primary-bg)', fontWeight: 700 }}>
+        Suggest a feature →
+      </span>
+    </a>
   )
 }
