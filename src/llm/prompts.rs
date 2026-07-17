@@ -256,6 +256,71 @@ pub fn plan_task_draft_schema() -> Value {
     })
 }
 
+/// The daily-summary prompt — the AI-composed end-of-day review. Takes a day's
+/// evidence (workstreams, their segments, time by app/category, the hourly shape,
+/// and the hour reports as prose) and returns a narrative, a few insight lines, and
+/// 2-4 Vega-Lite specs it chose itself. Same one-prompt-all-providers rule.
+///
+/// The daily plan is deliberately NOT an input: this is what the day WAS, not what
+/// was promised, and mixing them turns a review into a scorecard.
+pub const DAILY_SUMMARY: &str = include_str!("../../services/prompts/daily-summary.md");
+
+/// The JSON shape the daily-summary call must answer in.
+///
+/// `spec` is deliberately an **unconstrained object**: it is a whole raw Vega-Lite
+/// spec, and Vega-Lite's own schema is 1.8 MB with 458 definitions — inlining a
+/// subset of it here would be a second, drifting copy of someone else's grammar,
+/// and would also cap what the model is allowed to express, which is the one thing
+/// this feature is for. Validity is established after the fact instead, against the
+/// real schema, in `crate::day_summary::validate`.
+///
+/// That has a real consequence worth stating: on a schema-enforcing backend the
+/// bounds here are hard token-level cuts, so the FSM can guarantee the WRAPPER is
+/// well-formed but nothing about the spec inside it. Hence `panels` is bounded
+/// (2-4, the screen holds no more) while its contents are not, and hence the
+/// validator — not the schema — is what keeps a broken chart off the screen.
+///
+/// `why` is required on purpose: asking the model to justify the form is what makes
+/// it consider fit at all, rather than reaching for a bar chart every time.
+pub fn daily_summary_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "narrative": {"type": "string"},
+            "insights": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 2,
+                "maxItems": 4
+            },
+            "panels": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "why":   {"type": "string"},
+                        // A whole Vega-Lite spec. See the doc comment above.
+                        "spec":  {"type": "object"}
+                    },
+                    "required": ["title", "why", "spec"],
+                    "additionalProperties": false
+                },
+                // The floor is load-bearing, not decoration. The prompt asks for
+                // 2-4; with `minItems: 1` sonnet returned a ONE-panel screen on a
+                // real day, which is a poor answer to "show me my day" and not what
+                // the prose asked for. Claude validates --json-schema server-side,
+                // so the floor is genuinely enforced there. The ceiling is what the
+                // screen physically holds (code caps it too — see MAX_PANELS).
+                "minItems": 2,
+                "maxItems": 4
+            }
+        },
+        "required": ["narrative", "insights", "panels"],
+        "additionalProperties": false
+    })
+}
+
 /// Appended to the prompt for backends with NO schema mechanism (copilot, cursor).
 ///
 /// They cannot be constrained at the token level, so the contract has to ride in the
@@ -307,6 +372,69 @@ mod tests {
         assert!(PLAN_TASK_DRAFT.contains("NOT ALL WORK IS ENGINEERING"));
         assert!(PLAN_TASK_DRAFT.contains("NEVER NAME THE PERSON"));
         assert!(PLAN_TASK_DRAFT.contains("Return a JSON object with these fields:"));
+        // The daily summary's whole design rests on four clauses. The data-binding
+        // rule is the load-bearing one: it is what makes a hallucinated number
+        // impossible, since the model never gets to write a value down. The rest
+        // are what stop it becoming the thing it must not be — a timesheet that
+        // replays a day back at the person who just lived it.
+        assert!(DAILY_SUMMARY.contains("NEVER write `\"data\": {\"values\": [...]}`"));
+        assert!(DAILY_SUMMARY.contains("bind data by name, never inline"));
+        assert!(DAILY_SUMMARY.contains("THIS IS NOT A REPORT AND NOT A TIMESHEET"));
+        assert!(DAILY_SUMMARY.contains("SHOW THEM SOMETHING THEY DID NOT ALREADY KNOW"));
+        assert!(DAILY_SUMMARY.contains("CHOOSE THE FORM FROM THE DATA"));
+        assert!(DAILY_SUMMARY.contains("INVENT NOTHING"));
+        assert!(DAILY_SUMMARY.contains("NEVER NAME THE PERSON"));
+    }
+
+    #[test]
+    fn daily_summary_schema_bounds_the_wrapper_but_not_the_spec() {
+        let s = daily_summary_schema();
+        assert_eq!(s["required"], json!(["narrative", "insights", "panels"]));
+        let panels = &s["properties"]["panels"];
+        // The screen is one page — code enforces this too, but a schema-enforcing
+        // backend should never even offer a fifth panel.
+        assert_eq!(panels["maxItems"], json!(4));
+        // And a one-panel "summary" is not a summary. Observed for real on sonnet
+        // before this floor existed, hence the assert rather than trusting prose.
+        assert_eq!(panels["minItems"], json!(2));
+        let panel = &panels["items"];
+        assert_eq!(panel["required"], json!(["title", "why", "spec"]));
+        // `spec` is deliberately unconstrained: it is a whole raw Vega-Lite spec,
+        // and constraining it here would both duplicate a 1.8 MB grammar and cap
+        // what the model may express. `day_summary::validate` is what checks it.
+        assert_eq!(panel["properties"]["spec"], json!({"type": "object"}));
+    }
+
+    /// The prompt's worked examples name real datasets. If a dataset is renamed in
+    /// `meridian_core::day_evidence::datasets` the examples must move with it, or the model is
+    /// taught a contract the validator then rejects.
+    #[test]
+    fn daily_summary_examples_only_name_real_datasets() {
+        for name in ["categories", "segments"] {
+            assert!(
+                DAILY_SUMMARY.contains(&format!("\"name\": \"{name}\"")),
+                "prompt example references dataset {name}"
+            );
+            assert!(
+                meridian_core::day_evidence::datasets::by_name(name).is_some(),
+                "prompt example names dataset '{name}', which no longer exists"
+            );
+        }
+        // Every field the examples encode must be real, for the same reason.
+        for (ds, field) in [
+            ("categories", "seconds"),
+            ("categories", "category"),
+            ("segments", "start_min"),
+            ("segments", "end_min"),
+            ("segments", "title"),
+            ("segments", "task_id"),
+            ("segments", "minutes"),
+        ] {
+            assert!(
+                meridian_core::day_evidence::datasets::has_field(ds, field),
+                "prompt example encodes {ds}.{field}, which no longer exists"
+            );
+        }
     }
 
     #[test]

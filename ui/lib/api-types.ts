@@ -599,3 +599,43 @@ export interface AppInfo {
   version: string
   channel: 'dev' | 'staging' | 'prod'
 }
+
+// ── Daily summary (`get_day_summary` / `generate_day_summary`) ────────────────
+
+/** One visualisation the model chose for a day. */
+export interface SummaryPanel {
+  title: string
+  /** The model's reason for choosing THIS form for THIS data. */
+  why: string
+  /**
+   * A raw Vega-Lite spec. Server-validated before it ever reaches here, and its
+   * data is always bound BY NAME (`{"data": {"name": "segments"}}`) — the real
+   * rows come from `get_day_summary_data` and are injected at render, so a stored
+   * chart can never disagree with the timeline beside it. Typed `unknown` rather
+   * than `any`: nothing here should read into it, only hand it to vega-embed.
+   */
+  spec: unknown
+}
+
+/** A day's composed review. `null` from `get_day_summary` until one is generated. */
+export interface DaySummary {
+  day: string
+  /** The model's prose. Empty on the fallback path. */
+  narrative: string
+  insights: string[]
+  panels: SummaryPanel[]
+  /** Who ACTUALLY answered — the resolver degrades to local on failure. */
+  provider: string
+  /** The model override in force (`sonnet`/`haiku`), or '' for the default. */
+  model: string
+  /**
+   * The model produced no usable panel and the deterministic set was substituted.
+   * Not an error — the screen always renders — but it is why the narrative is
+   * empty when it is.
+   */
+  fallback: boolean
+  generated_at: string
+}
+
+/** name → rows, the datasets a panel's spec binds to (`get_day_summary_data`). */
+export type DaySummaryData = Record<string, Record<string, unknown>[]>

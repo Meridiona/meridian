@@ -3,10 +3,11 @@
 //! `ui/app/api/coding-agents/route.ts`.
 //!
 //! # What this is
-//! Today's coding-agent activity: the union of all coding-agent sessions
-//! (overlap deduped) plus a per-agent union, descending. NOTE: the route unions
-//! the raw `started_at`/`ended_at` spans (it does NOT cap to `duration_s` the
-//! way `today`/the session-interval math does), so neither do we — byte-identical.
+//! A day's coding-agent activity: the union of all coding-agent sessions
+//! (overlap deduped) plus a per-agent union, descending. Takes an explicit
+//! `date` — any day, not just today. NOTE: the route unions the raw
+//! `started_at`/`ended_at` spans (it does NOT cap to `duration_s` the way
+//! `today`/the session-interval math does), so neither do we — byte-identical.
 //!
 //! # Who calls this
 //! The tray `get_coding_agents` command → `ui/components/timeline/OverviewPanel.tsx`
@@ -15,6 +16,10 @@
 //! `get_today`'s `sessions` (a separate overlay stream), so this is the only
 //! source of a real per-tool split. `today`'s `agent_s`/`agent_segments` remain
 //! the combined-across-all-agents total used elsewhere (Focus/Coding stats).
+//! The daemon's `day_summary` collector folds it in the same way, for the same
+//! reason. The tray command used to hardcode today's date, which meant a past
+//! day's app breakdown had to drop agent time entirely rather than show the
+//! wrong day's; it now passes the viewed day through.
 //!
 //! # Related
 //! - [`crate::intervals::union_seconds`] does the overlap-dedup math.

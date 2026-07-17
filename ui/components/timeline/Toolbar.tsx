@@ -30,7 +30,7 @@ import { ProviderIcon } from '@/components/ProviderIcon'
 import type { SettingsSection } from './settings/types'
 
 export function Toolbar({
-  day, isToday, onShiftDay, isSolo, connectedProviderName, connectedProviderId, onOpenSettings, onOpenReport,
+  day, isToday, onShiftDay, isSolo, connectedProviderName, connectedProviderId, onOpenSettings, onOpenReport, onOpenSummary,
 }: {
   day: string
   isToday: boolean
@@ -40,6 +40,7 @@ export function Toolbar({
   connectedProviderId: string | null
   onOpenSettings: (section?: SettingsSection) => void
   onOpenReport: () => void
+  onOpenSummary: () => void
 }) {
   const [running, setRunning] = useState<boolean | null>(null)
 
@@ -69,6 +70,17 @@ export function Toolbar({
           </span>
           <NavBtn glyph="›" label="Next day" onClick={() => onShiftDay(1)} disabled={isToday} />
         </div>
+
+        {/* Daily summary — sits with the date nav because it is about the day
+            being viewed, not about the app. */}
+        <button onClick={onOpenSummary}
+          className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 bg-ctrl shrink-0 transition-transform hover:-translate-y-px"
+          style={{ border: '1px solid var(--t-ctrl-border)' }}
+          title="How this day went">
+          <span aria-hidden="true" className="inline-block rounded-full"
+            style={{ width: 6, height: 6, background: 'var(--accent)' }} />
+          <span className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>Daily summary</span>
+        </button>
       </div>
 
       {/* nav pill — centered regardless of left/right content width. */}

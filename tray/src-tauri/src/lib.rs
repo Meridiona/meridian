@@ -537,6 +537,8 @@ pub fn run() {
             commands::get_ticket_parents,
             commands::list_task_statuses,
             commands::get_day_task_worklog,
+            commands::get_day_summary,
+            commands::get_day_summary_data,
             commands::get_version,
             commands::get_app_info,
             commands::check_update,
@@ -557,6 +559,9 @@ pub fn run() {
             commands::set_task_status,
             commands::generate_day_task_worklog,
             commands::approve_day_task_worklog,
+            // An LLM call, so it lives with the writes despite reading nothing back
+            // but its own result.
+            commands::generate_day_summary,
             commands::dismiss_notification,
             commands::record_notification_response,
             commands::delete_notice,

@@ -27,6 +27,7 @@
 //! - [`triage`]    — cleanup working set + the decision/ignore DB writes.
 //! - [`setup`]     — first-run detection, permission probes, MLX status/start.
 //! - [`uninstall`] — the in-app uninstall wizard's plan + execute commands.
+//! - [`day_summary`] — the AI-composed end-of-day review (generate / read / its data).
 //! - [`version`]   — installed vs. published version (`/api/version`).
 //! - [`worklogs`]  — worklog review read + edit/approve/reject/unapprove writes.
 //!
@@ -39,6 +40,7 @@ pub mod account;
 pub mod app_icons;
 pub mod daemon;
 pub mod dashboard;
+pub mod day_summary;
 pub mod diagnostics;
 pub mod health;
 pub mod integrations;
@@ -66,6 +68,7 @@ pub use account::*;
 pub use app_icons::*;
 pub use daemon::*;
 pub use dashboard::*;
+pub use day_summary::*;
 pub use diagnostics::*;
 pub use health::*;
 pub use integrations::*;

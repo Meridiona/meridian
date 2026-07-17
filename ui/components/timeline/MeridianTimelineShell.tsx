@@ -28,9 +28,10 @@ import { PlanModal } from './PlanModal'
 import { TasksModal } from './TasksModal'
 import { TaskDetailDialog } from './TaskDetailDialog'
 import { ReportModal } from './ReportModal'
+import { DaySummaryOverlay } from '@/components/summary/DaySummaryOverlay'
 import type { SettingsSection } from './settings/types'
 
-export type ActiveModal = 'review' | 'cleanup' | 'settings' | 'plan' | 'tasks' | 'report' | null
+export type ActiveModal = 'review' | 'cleanup' | 'settings' | 'plan' | 'tasks' | 'report' | 'summary' | null
 
 export default function MeridianTimelineShell() {
   const [day, setDay] = useState<string>(dayString(0))
@@ -156,6 +157,7 @@ export default function MeridianTimelineShell() {
         connectedProviderId={connectedProviderId}
         onOpenSettings={(section) => { setSettingsSection(section); setActiveModal('settings') }}
         onOpenReport={() => setActiveModal('report')}
+        onOpenSummary={() => setActiveModal('summary')}
       />
 
       <div className="flex flex-1 min-h-0">
@@ -195,6 +197,19 @@ export default function MeridianTimelineShell() {
         <SettingsModal onClose={() => setActiveModal(null)} initialSection={settingsSection} />
       )}
       {activeModal === 'report' && <ReportModal onClose={() => setActiveModal(null)} />}
+      {/* The summary owns the whole surface (one screen) and navigates days
+          itself, reusing the shell's own day state so closing it leaves you on
+          whatever day you read last. */}
+      {activeModal === 'summary' && (
+        <DaySummaryOverlay
+          day={day}
+          isToday={isToday}
+          onShiftDay={shift}
+          onClose={() => setActiveModal(null)}
+          onOpenSettings={(section) => { setSettingsSection(section); setActiveModal('settings') }}
+          onOpenTask={(key, title) => setOpenTask({ key, title })}
+        />
+      )}
       {activeModal === 'plan' && <PlanModal onClose={closePlan} />}
       {activeModal === 'tasks' && (
         <TasksModal onClose={() => setActiveModal(null)} onOpenTask={(key, title) => setOpenTask({ key, title })} />

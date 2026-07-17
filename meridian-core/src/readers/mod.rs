@@ -37,6 +37,14 @@ pub mod day_tasks;
 /// (`day_task_worklogs`, migration 060; no route — new work).
 pub mod day_task_worklogs;
 
+/// The AI-composed end-of-day review (`day_summaries`, migration 064; no route —
+/// new work). The DB shape only; the LLM call lives in the daemon's `day_summary`.
+pub mod day_summaries;
+
+/// A day's evidence as named, chartable datasets — what a summary is composed from
+/// and what its stored specs bind to at render. No route; new work.
+pub mod day_evidence;
+
 /// Per-hour generating/paused badge state for the timeline; no route — new work.
 pub mod hour_status;
 
