@@ -57,7 +57,15 @@ export function useCustomProviders() {
   const add = useCallback(async (fields: {
     vendor: string; name: string; base_url: string; model: string; api_key: string
   }): Promise<ProbeOutcome> => {
-    const outcome = await invoke<ProbeOutcome>('add_custom_llm_provider', fields)
+    // Tauri maps the Rust command's snake_case params to camelCase JS keys, so the invoke
+    // args must be camelCase - `base_url`/`api_key` would be rejected as missing `baseUrl`.
+    const outcome = await invoke<ProbeOutcome>('add_custom_llm_provider', {
+      vendor: fields.vendor,
+      name: fields.name,
+      baseUrl: fields.base_url,
+      model: fields.model,
+      apiKey: fields.api_key,
+    })
     await refresh()
     return outcome
   }, [refresh])
