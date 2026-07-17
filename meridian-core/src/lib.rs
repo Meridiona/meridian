@@ -69,5 +69,8 @@ pub use readers::{
 pub use canonical_task::{CanonicalTask, PersonRef, Priority, Provider, StatusCategory, TaskKind};
 
 pub use llm_provider::LlmProvider;
+/// The custom-endpoint registry types. `CustomLlmProvider` carries the API key and is the
+/// STORAGE form — see its docs before serialising one anywhere.
+pub use settings::{CustomLlmProvider, SchemaRung};
 
 pub use adapters::ProviderAdapter;

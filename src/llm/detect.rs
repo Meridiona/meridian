@@ -115,9 +115,15 @@ pub async fn detect_all_with_cache() -> Vec<ProviderStatus> {
     all
 }
 
-/// Probe every provider at once. The shell probes are I/O-bound and independent.
+/// Probe every built-in provider at once. The shell probes are I/O-bound and independent.
+///
+/// `builtins()`, not `all()`: a custom endpoint is a registry row, not a variant, so it has
+/// no install state to probe — and [`detect`] reads "no CLI name" as "the on-device model,
+/// always installed", which for `Custom` would report an endpoint the user has not even
+/// configured as ready. Custom cards are built from the registry (each with its measured
+/// rung) rather than probed here.
 pub async fn detect_all() -> Vec<ProviderStatus> {
-    let futures = LlmProvider::all().map(detect);
+    let futures = LlmProvider::builtins().map(detect);
     futures::future::join_all(futures).await
 }
 
@@ -335,12 +341,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn detect_all_covers_every_provider_exactly_once() {
+    async fn detect_all_covers_every_builtin_exactly_once() {
         let all = detect_all().await;
-        assert_eq!(all.len(), LlmProvider::all().len());
-        for p in LlmProvider::all() {
+        assert_eq!(all.len(), LlmProvider::builtins().len());
+        for p in LlmProvider::builtins() {
             assert_eq!(all.iter().filter(|s| s.id == p.as_str()).count(), 1);
         }
+    }
+
+    /// `Custom` must never be probed as if it were one fixed thing. `detect` reports "no CLI
+    /// name" as the always-installed on-device model, so a `Custom` card from here would
+    /// claim an endpoint the user has not configured is ready to use. Custom cards come from
+    /// the registry, each carrying its own measured rung.
+    #[tokio::test]
+    async fn detect_all_never_reports_a_custom_card() {
+        assert!(detect_all()
+            .await
+            .iter()
+            .all(|s| s.id != LlmProvider::Custom.as_str()));
     }
 
     #[tokio::test]
