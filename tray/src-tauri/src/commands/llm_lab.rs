@@ -3,24 +3,31 @@
 //! experiments (no route - new work).
 //!
 //! # What this is
-//! Three commands behind the LLM Lab modal, a **development-only** surface for
+//! Four commands behind the LLM Lab, a **development-only** full-screen surface for
 //! comparing how the pipeline's prose stages come out across LLM providers:
 //! - [`run_llm_experiment`] — start one: shells `meridian llm-experiment create`
 //!   (fast, returns the id), then spawns `exec --id N` **detached** — an N-variant
 //!   run can far outlive any reasonable invoke budget, so the UI polls instead.
 //! - [`get_llm_experiments`] / [`get_llm_experiment`] — the past-runs list and the
-//!   per-variant detail the modal polls while a run progresses.
+//!   per-variant detail the UI polls while a run progresses.
+//! - [`draft_lab_worklog`] — the sidebar's on-demand "draft this task with the
+//!   shown variant": shells `meridian llm-experiment draft-task` and returns the
+//!   model's answer. EPHEMERAL (writes nothing) but fires a REAL, metered
+//!   completion, so the UI puts a free/local caution on the button.
 //!
 //! Every command is refused outside a dev build ([`dev_only`]): the Lab must not
-//! exist for users, even against a hand-crafted `invoke`. (The `llm-experiment`
-//! CLI itself stays ungated for field debugging — the UI is the gated surface.
-//! UI visibility rides `get_app_info().channel === 'dev'`, the same
-//! `cfg!(debug_assertions)` signal, in `MeridianTimelineShell`.)
+//! exist for users, even against a hand-crafted `invoke`. The read/run
+//! `llm-experiment` subcommands stay ungated for field debugging (they only write
+//! local experiment tables), but `draft-task` is dev-gated in the CLI too, since it
+//! alone calls a live provider and can incur cost. UI visibility rides
+//! `get_app_info().channel === 'dev'`, the same `cfg!(debug_assertions)` signal, in
+//! `MeridianTimelineShell`.
 //!
 //! # Who calls this
 //! Registered in `lib.rs`'s `invoke_handler!`; consumed by
 //! `ui/components/timeline/llmlab/` via `ui/lib/bridge.ts` — `load` for the two
-//! reads (flat named args), `invoke('run_llm_experiment', {body})` for the run.
+//! reads (flat named args), `invoke('run_llm_experiment', {body})` for a run, and
+//! `invoke('draft_lab_worklog', {body})` for the sidebar draft.
 //!
 //! # Related
 //! - `src/llm_experiment/` — the daemon-side harness the run command spawns.

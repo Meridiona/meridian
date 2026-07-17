@@ -1,5 +1,5 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-//! `meridian llm-experiment <run|create|exec|list|get>` — the LLM-Lab CLI surface.
+//! `meridian llm-experiment <run|create|exec|list|get|draft-task>` — the LLM-Lab CLI surface.
 //!
 //! * `run    --process hour-report --hour 2026-07-15T14 --variants claude,codex:gpt-5.1,local`
 //!   — create + execute + print the detail JSON (the human one-shot). A `custom:<endpoint-id>`
@@ -12,12 +12,20 @@
 //!   UI polls progress instead of holding a long invoke). Resumable.
 //! * `list   [--limit N]` / `get --id N` — read back via
 //!   `meridian_core::llm_experiments`, printed as one JSON line.
+//! * `draft-task --day D --variant p[:model] --task-json '{…}'` — the ONE exception
+//!   to the paragraph below: an ephemeral, on-demand worklog draft for a single
+//!   inline task that fires a REAL, metered LLM completion (see [`draft_task`]).
 //!
-//! Deliberately ungated in release binaries: it is useful for field debugging and
-//! only ever writes the experiment tables. The UI surface is the gated part.
+//! `run`/`create`/`exec`/`list`/`get` are deliberately ungated in release binaries:
+//! they are useful for field debugging and **only ever write the experiment
+//! tables** — no network, no cost — so an unattended run is harmless. `draft-task`
+//! is different (it calls a live provider and can incur cost), so it alone is
+//! **dev-gated** here too — a release binary refuses it, matching the tray's
+//! `draft_lab_worklog` gate. The UI surface as a whole is the gated part.
 //!
 //! # Who calls this
-//! `main.rs`'s `llm-experiment` dispatch block; the tray's `run_llm_experiment`.
+//! `main.rs`'s `llm-experiment` dispatch block; the tray's `run_llm_experiment`
+//! (and, for `draft-task`, `draft_lab_worklog`).
 
 use anyhow::{bail, Context, Result};
 use sqlx::SqlitePool;
@@ -82,7 +90,17 @@ pub async fn run(pool: &SqlitePool) -> Result<()> {
 /// SIMULATED day, not a production `day_tasks` row - so there is nothing to read
 /// by id. Fires a real, metered completion; the UI gates this behind a
 /// free/local caution. The tray `draft_lab_worklog` command shells out to it.
+///
+/// Unlike its sibling subcommands (which only write local experiment tables), this
+/// one costs money, so it is refused in a release build - it runs only from a dev
+/// binary, the same `debug_assertions` signal the tray's `dev_only` gate uses.
 async fn draft_task(pool: &SqlitePool, args: &[String]) -> Result<()> {
+    if !cfg!(debug_assertions) {
+        bail!(
+            "draft-task is a dev-only subcommand - it fires a real, metered LLM completion, \
+             so a release binary refuses it"
+        );
+    }
     let day = flag(args, "--day").with_context(|| format!("draft-task needs --day - {USAGE}"))?;
     let variant =
         flag(args, "--variant").with_context(|| format!("draft-task needs --variant - {USAGE}"))?;

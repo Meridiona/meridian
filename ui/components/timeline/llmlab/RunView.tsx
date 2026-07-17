@@ -38,8 +38,8 @@ export function RunView({ detail }: { detail: LlmExperimentDetail }) {
   const fold = isFoldProcess(detail.process)
   const results = detail.results
 
-  // Default the switcher to the first ok variant (else the first) - computed once
-  // for this run; the view is keyed by run id, so a new run gets a fresh default.
+  // The first ok variant, else the first. Recomputed as the run polls, so it
+  // tracks completions rather than being frozen at mount.
   const firstOk = useMemo(() => {
     const i = results.findIndex(r => r.status === 'ok')
     return i >= 0 ? i : 0
@@ -47,6 +47,22 @@ export function RunView({ detail }: { detail: LlmExperimentDetail }) {
 
   const [selectedIdx, setSelectedIdx] = useState(firstOk)
   const [selectedTask, setSelectedTask] = useState<DayTaskDetail | null>(null)
+  // Whether the user has clicked a switcher tab. Until they do, the view
+  // auto-follows the first variant to finish; the view is keyed by run id, so a
+  // new run starts untouched.
+  const [touched, setTouched] = useState(false)
+
+  // Auto-follow the first completion: while untouched, if the shown variant is
+  // not itself ok and SOME variant now is, snap to the first ok one. This lands a
+  // still-running run on whichever model finishes first, instead of sitting on a
+  // pending/failed variant. Once the shown variant is ok (or the user clicks) it
+  // stays put - no jumping back to a lower-index variant that finishes later.
+  useEffect(() => {
+    if (touched) return
+    if (results[selectedIdx]?.status !== 'ok' && results.some(r => r.status === 'ok')) {
+      setSelectedIdx(firstOk)
+    }
+  }, [touched, results, selectedIdx, firstOk])
 
   // The results array grows/settles as the run polls; keep the index in range.
   useEffect(() => {
@@ -55,12 +71,13 @@ export function RunView({ detail }: { detail: LlmExperimentDetail }) {
 
   const selected = results[selectedIdx]
 
-  // Switching variant clears the task selection - task ids (T1, T2) are
-  // per-variant (each model builds its OWN day), so a stale id must not carry
-  // across a switch.
+  // A manual pick freezes the choice (stops auto-follow) and clears the task
+  // selection - task ids (T1, T2) are per-variant (each model builds its OWN
+  // day), so a stale id must not carry across a switch.
   function pickVariant(idx: number) {
     setSelectedIdx(idx)
     setSelectedTask(null)
+    setTouched(true)
   }
 
   return (

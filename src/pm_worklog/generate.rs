@@ -1064,6 +1064,68 @@ mod tests {
         assert_eq!(keys, vec!["KAN-1".to_string()]);
     }
 
+    #[test]
+    fn build_user_prompt_pins_the_shape_both_draft_paths_share() {
+        // build_user_prompt is the ONE assembler both generate_request (DB task)
+        // and generate_request_from_task (inline task) feed, so pinning its exact
+        // output guards the two paths against silent drift.
+        let report = WorkstreamReport {
+            title: "Auth refactor".to_string(),
+            summary: vec![
+                "Split token refresh".to_string(),
+                "Added a file lock".to_string(),
+            ],
+            minutes: 45,
+        };
+        let candidates = vec![Candidate {
+            task_key: "KAN-12".to_string(),
+            provider: "jira".to_string(),
+            doc: "[Task] Auth. Epic: E. Reworked refresh".to_string(),
+        }];
+
+        let expected = "=== WORKSTREAM (one strand of the day's work) ===\n\
+TITLE: Auth refactor\n\
+WHAT WAS DONE:\n\
+- Split token refresh\n\
+- Added a file lock\n\
+(measured ~45 min across the day)\n\n\
+=== TODAY'S PLANNED TASKS (the ONLY tickets you may match to - by task_key; any number, or none) ===\n\
+- KAN-12 [jira] [Task] Auth. Epic: E. Reworked refresh\n";
+
+        assert_eq!(build_user_prompt(&report, &candidates), expected);
+    }
+
+    #[tokio::test]
+    async fn inline_draft_request_matches_the_worklog_generate_contract() {
+        // The LLM-Lab draft path: generate_request_from_task must build the SAME
+        // request contract as the DB-backed generate_request - only the workstream
+        // source differs (inline title/summary/minutes vs a day_tasks read).
+        let pool = db().await;
+        // No plan seeded -> empty candidate set, exactly like a fresh day.
+        let (req, n) = generate_request_from_task(
+            &pool,
+            "2026-07-17",
+            "Auth refactor".to_string(),
+            vec![
+                "Split token refresh".to_string(),
+                "Added a file lock".to_string(),
+            ],
+            45,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(n, 0, "no plan seeded -> no candidates");
+        assert_eq!(req.system, prompts::WORKLOG_GENERATE);
+        assert_eq!(req.schema, Some(prompts::worklog_generate_schema()));
+        assert_eq!(req.max_tokens, GENERATE_MAX_TOKENS);
+        // The inline title/summary/minutes reach the workstream block verbatim.
+        assert!(req.user.contains("TITLE: Auth refactor"));
+        assert!(req.user.contains("- Split token refresh"));
+        assert!(req.user.contains("(measured ~45 min across the day)"));
+        assert!(req.user.contains("(no tasks were planned for this day"));
+    }
+
     #[tokio::test]
     async fn a_checked_off_planned_task_is_still_a_candidate() {
         // Checking a task off the plan CLOSES the real ticket (is_terminal = 1).
