@@ -61,6 +61,8 @@ export default function SetupWizard() {
   // settings.json immediately on pick (not batched to Finish): if the user quits the
   // wizard halfway, the choice they made should still be the choice that runs.
   const [provider, setProviderState] = useState<LlmProviderId>(DEFAULT_LLM_PROVIDER)
+  // Which custom endpoint, when `provider` is 'custom' — see RuntimeSettings.
+  const [providerCustomId, setProviderCustomIdState] = useState<string | null>(null)
   const {
     status: providers, scanning: scanningProviders,
     testingIds: testingProviderIds, testOne: testProvider, rescan: rescanProviders,
@@ -70,18 +72,27 @@ export default function SetupWizard() {
   // must show what the user actually has, not reset them to on-device.
   useEffect(() => {
     load<RuntimeSettings>('/api/settings', 'get_settings')
-      .then((s) => { if (s?.llm_provider) setProviderState(s.llm_provider) })
+      .then((s) => {
+        if (s?.llm_provider) setProviderState(s.llm_provider)
+        setProviderCustomIdState(s?.llm_provider_custom_id ?? null)
+      })
       .catch(() => {})
   }, [])
 
-  const setProvider = useCallback((id: LlmProviderId) => {
+  const setProvider = useCallback((id: LlmProviderId, customId?: string) => {
     const prev = provider
+    const prevCustom = providerCustomId
+    // 'custom' is a kind, not an endpoint — it only ever travels with the id of the one
+    // chosen, which update_settings requires and validates.
+    const fields: Partial<RuntimeSettings> =
+      id === 'custom' ? { llm_provider: id, llm_provider_custom_id: customId ?? null } : { llm_provider: id }
     setProviderState(id)  // optimistic — the picker must feel instant
-    mutate<RuntimeSettings>('/api/settings', 'update_settings', { llm_provider: id }, 'PUT')
+    if (id === 'custom') setProviderCustomIdState(customId ?? null)
+    mutate<RuntimeSettings>('/api/settings', 'update_settings', fields, 'PUT')
       // Roll back on a rejected write, or the UI would claim a choice the daemon
       // isn't honouring — the exact silent-mismatch update_settings validates against.
-      .catch((e) => { setProviderState(prev); setErr(String(e)) })
-  }, [provider])
+      .catch((e) => { setProviderState(prev); setProviderCustomIdState(prevCustom); setErr(String(e)) })
+  }, [provider, providerCustomId])
 
   const active = !welcome && !done
 
@@ -258,7 +269,7 @@ export default function SetupWizard() {
     err: mlxErr, retryModel,
     integrations, refetchIntegrations,
     signedInEmail, onSignedIn,
-    provider, setProvider, providers, scanningProviders,
+    provider, providerCustomId, setProvider, providers, scanningProviders,
     testingProviderIds, testProvider, rescanProviders,
   }
 

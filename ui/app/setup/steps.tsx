@@ -55,7 +55,9 @@ export interface Wiz {
   // (settings.json `llm_provider` → src/llm/resolver.rs). `providers` is the live
   // which-CLIs-are-installed probe; it never gates the choice, only informs it.
   provider: LlmProviderId
-  setProvider: (id: LlmProviderId) => void
+  /** Which custom endpoint, when `provider` is 'custom'. */
+  providerCustomId: string | null
+  setProvider: (id: LlmProviderId, customId?: string) => void
   providers: Record<string, ProviderStatus>
   scanningProviders: boolean
   testingProviderIds: Set<string>
@@ -362,6 +364,7 @@ function IntelligenceBody({ wiz }: { wiz: Wiz }) {
     <div className="flex flex-col" style={{ gap: 9 }}>
       <LlmProviderPicker
         value={wiz.provider}
+        selectedCustomId={wiz.providerCustomId}
         onChange={wiz.setProvider}
         status={wiz.providers}
         scanning={wiz.scanningProviders}
@@ -378,7 +381,10 @@ function IntelligenceBody({ wiz }: { wiz: Wiz }) {
           ? `${picked.name} isn't installed yet - install it and hit Rescan, or Meridian will use the on-device model in the meantime.`
           : picked.kind === 'local'
             ? 'Nothing leaves your Mac. Change it anytime in Settings.'
-            : `Summaries are written by ${picked.name}, on your own subscription. Change it anytime in Settings.`}
+            : picked.kind === 'custom'
+              // Not "your own subscription" - this one bills per call on the key they pasted.
+              ? 'Summaries are written by your own endpoint, billed to your own API key. Change it anytime in Settings.'
+              : `Summaries are written by ${picked.name}, on your own subscription. Change it anytime in Settings.`}
       </p>
     </div>
   )

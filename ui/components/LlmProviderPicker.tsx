@@ -16,7 +16,8 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { invoke, openExternal } from '@/lib/bridge'
-import { LLM_PROVIDERS, USAGE_FOOTPRINT_NOTE, type LlmProviderId, type LlmProviderMeta } from '@/lib/llm-providers'
+import { CUSTOM_PROVIDER_COST_NOTE, LLM_PROVIDERS, USAGE_FOOTPRINT_NOTE, type LlmProviderId, type LlmProviderMeta } from '@/lib/llm-providers'
+import { AddCustomProvider, CustomProviderCard, useCustomProviders } from '@/components/CustomProviders'
 
 /** What one real connectivity test found (mirrors `ProviderTestOutcome` in src/llm/detect.rs). */
 export type ProviderTestOutcome =
@@ -259,7 +260,12 @@ function ProviderCard({ p, picked, missing, testing, lastTest, onPick, onTest }:
 
 export interface LlmProviderPickerProps {
   value: LlmProviderId
-  onChange: (id: LlmProviderId) => void
+  /** Which custom endpoint, when `value` is 'custom'. The registry can hold several, so the
+   *  kind alone can't say which card is chosen. Ignored otherwise. */
+  selectedCustomId?: string | null
+  /** `customId` is set only when `id` is 'custom'; the owner persists BOTH fields together
+   *  (`llm_provider` + `llm_provider_custom_id`), since either alone is not a valid choice. */
+  onChange: (id: LlmProviderId, customId?: string) => void
   status: Record<string, ProviderStatus>
   scanning: boolean
   /** Providers a real connectivity test is currently in flight for — from Rescan (all
@@ -270,10 +276,11 @@ export interface LlmProviderPickerProps {
   rescan: () => void
 }
 
-export default function LlmProviderPicker({ value, onChange, status, scanning, testingIds, testOne, rescan }: LlmProviderPickerProps) {
+export default function LlmProviderPicker({ value, selectedCustomId, onChange, status, scanning, testingIds, testOne, rescan }: LlmProviderPickerProps) {
   const picked = LLM_PROVIDERS.find((p) => p.id === value)
   const usingCli = picked?.kind === 'cli'
   const busy = scanning || testingIds.size > 0
+  const custom = useCustomProviders()
 
   return (
     <div className="flex flex-col" style={{ gap: 12 }}>
@@ -297,6 +304,26 @@ export default function LlmProviderPicker({ value, onChange, status, scanning, t
             />
           )
         })}
+
+        {/* The user's own endpoints, after the built-ins: they are the advanced case, and
+            unlike the built-ins they only become selectable once MEASURED (the settings
+            write rejects an ineligible one - the card says why). */}
+        {custom.providers.map((c) => (
+          <CustomProviderCard
+            key={c.id}
+            p={c}
+            picked={value === 'custom' && selectedCustomId === c.id}
+            probing={custom.probingIds.has(c.id)}
+            onPick={() => onChange('custom', c.id)}
+            onProbe={(hard) => custom.probe(c.id, hard)}
+            onRemove={() => custom.remove(c.id)}
+          />
+        ))}
+
+        {/* The form is wide (URL, model, key), so it takes the full row rather than a cell. */}
+        <div style={{ gridColumn: '1 / -1' }}>
+          {!custom.loading && <AddCustomProvider onAdd={custom.add} />}
+        </div>
       </div>
 
       {/* Usage-footprint reassurance — only meaningful when a paid CLI is in play. */}
@@ -325,10 +352,19 @@ export default function LlmProviderPicker({ value, onChange, status, scanning, t
         </div>
       )}
 
+      {/* Standing warning while a custom endpoint is the chosen provider - the pipeline then
+          bills the user's own key every hour, unattended. */}
+      {value === 'custom' && (
+        <p style={{ fontSize: 11, lineHeight: 1.45, color: 'var(--color-state-pending)' }}>
+          {CUSTOM_PROVIDER_COST_NOTE}
+        </p>
+      )}
+
       <div className="flex items-center justify-between">
         <p style={{ fontSize: 11, color: 'var(--t-faint)', lineHeight: 1.45, flex: 1, paddingRight: 12 }}>
-          Meridian uses the login you already have in that CLI - it never asks for an API key. If it
-          turns out not to be signed in, that hour quietly falls back to on-device.
+          The four coding agents use the login you already have in that CLI - Meridian never asks
+          them for an API key, and an hour they can’t serve quietly falls back to on-device. A custom
+          endpoint is the exception: it runs on a key you paste here.
         </p>
         <button onClick={rescan} disabled={busy} className="font-mono shrink-0"
           style={{

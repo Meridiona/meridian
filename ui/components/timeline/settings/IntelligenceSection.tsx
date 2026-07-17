@@ -33,13 +33,18 @@ export function IntelligenceSection({ settings, patch, save }: {
   const selectedTest = picked.kind === 'cli' ? status[picked.id]?.last_test ?? null : null
   const selectedBroken = !!selectedTest && selectedTest.outcome.status !== 'ok'
 
-  const onChange = useCallback((id: LlmProviderId) => {
-    if (id === provider) return
+  const onChange = useCallback((id: LlmProviderId, customId?: string) => {
+    if (id === provider && !customId) return
+    // 'custom' names a KIND, so it always travels with the endpoint's id - either alone is
+    // not a valid choice, and update_settings rejects a custom selection that names no
+    // configured endpoint.
+    const fields: Partial<RuntimeSettings> =
+      id === 'custom' ? { llm_provider: id, llm_provider_custom_id: customId ?? null } : { llm_provider: id }
     // Optimistic: reflect the pick immediately, then persist. `save` rolls the store back
     // to the server's answer on failure (it setSettings to the response), so a rejected
     // write can't leave the UI claiming a provider the daemon isn't running.
-    patch({ llm_provider: id })
-    save({ llm_provider: id }, setSaveStatus)
+    patch(fields)
+    save(fields, setSaveStatus)
   }, [provider, patch, save])
 
   return (
@@ -55,6 +60,7 @@ export function IntelligenceSection({ settings, patch, save }: {
 
       <LlmProviderPicker
         value={provider}
+        selectedCustomId={settings.llm_provider_custom_id}
         onChange={onChange}
         status={status}
         scanning={scanning}
