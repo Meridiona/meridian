@@ -69,6 +69,22 @@ impl SchemaRung {
     }
 }
 
+/// Every schema the worklog pipeline asks a provider to answer in — the key set a
+/// measurement must cover before [`CustomLlmProvider::effective_rung`] will call an
+/// endpoint measured at all.
+///
+/// It lives HERE, next to the gate that enforces it, rather than beside the schemas
+/// themselves: the gate's whole job is to know what a COMPLETE measurement looks like, and
+/// it must be able to say "you never tried that one" without depending on the daemon's LLM
+/// code (which this crate cannot see). The daemon's `llm::probe` builds its work list from
+/// this list, so adding a schema to the pipeline forces both to move together.
+pub const PIPELINE_SCHEMA_KEYS: [&str; 4] = [
+    "activity_report",
+    "workstream",
+    "worklog_generate",
+    "plan_task_draft",
+];
+
 /// One user-configured cloud endpoint — **the storage form, and the only place the API key
 /// lives**.
 ///
@@ -106,16 +122,37 @@ pub struct CustomLlmProvider {
 }
 
 impl CustomLlmProvider {
-    /// The weakest rung across every probed schema — the honest answer to "how well does
+    /// The weakest rung across the pipeline's schemas — the honest answer to "how well does
     /// this endpoint hold a contract", because the pipeline sends all of them.
     ///
-    /// [`SchemaRung::None`] when never probed: unmeasured is not innocent.
+    /// [`SchemaRung::None`] unless EVERY key in [`PIPELINE_SCHEMA_KEYS`] has been measured.
+    /// A `min()` over whatever happens to be present would let a partial probe pass: a rate
+    /// limit halfway through leaves three `Strict` rungs and one schema never tried, and
+    /// "the three I got round to are excellent" is not evidence about the fourth. Unmeasured
+    /// is not innocent — including when it is unmeasured only because we ran out of quota.
     pub fn effective_rung(&self) -> SchemaRung {
-        self.rungs
-            .values()
-            .copied()
+        PIPELINE_SCHEMA_KEYS
+            .iter()
+            .map(|k| self.rungs.get(*k).copied().unwrap_or(SchemaRung::None))
             .min()
             .unwrap_or(SchemaRung::None)
+    }
+
+    /// Schemas still to measure — what a resumed probe should spend requests on.
+    ///
+    /// A probe attempt costs real money, so a retry after a rate limit must not re-buy an
+    /// answer already on the row.
+    pub fn unmeasured_schemas(&self) -> Vec<&'static str> {
+        PIPELINE_SCHEMA_KEYS
+            .iter()
+            .copied()
+            .filter(|k| !self.rungs.contains_key(*k))
+            .collect()
+    }
+
+    /// Has every pipeline schema been measured? `false` = the probe never finished.
+    pub fn is_fully_probed(&self) -> bool {
+        self.unmeasured_schemas().is_empty()
     }
 
     /// May this endpoint be the production provider? See [`SchemaRung::is_production_eligible`].
@@ -433,20 +470,60 @@ mod tests {
         }
     }
 
+    /// Every schema at `rung` — a fully-probed endpoint.
+    fn fully_probed(id: &str, rung: SchemaRung) -> CustomLlmProvider {
+        let all: Vec<(&str, SchemaRung)> =
+            PIPELINE_SCHEMA_KEYS.iter().map(|k| (*k, rung)).collect();
+        custom_row(id, &all)
+    }
+
     /// The gate is the WEAKEST schema, not the best or the average: production sends all
     /// four, so one schema the endpoint can't hold is enough to disqualify it.
     #[test]
     fn effective_rung_is_the_weakest_schema() {
-        let p = custom_row(
-            "g1",
-            &[
-                ("workstream", SchemaRung::Strict),
-                ("activity_report", SchemaRung::Strict),
-                // The one that would silently drop work if it were trusted.
-                ("worklog_generate", SchemaRung::Prompt),
-            ],
-        );
+        let mut p = fully_probed("g1", SchemaRung::Strict);
+        // The one that would silently drop work if it were trusted.
+        p.rungs
+            .insert("worklog_generate".to_string(), SchemaRung::Prompt);
         assert_eq!(p.effective_rung(), SchemaRung::Prompt);
+        assert!(!p.is_production_eligible());
+    }
+
+    /// A probe that died partway (a rate limit is the ordinary way) leaves excellent rungs
+    /// for the schemas it reached. `min()` over only those would read as "excellent" and let
+    /// the endpoint into production with a schema NEVER TRIED — observed live: a free-tier
+    /// key 429s on the fourth schema after three clean `Strict` results.
+    #[test]
+    fn a_partial_probe_never_passes_the_gate() {
+        let mut p = fully_probed("g1", SchemaRung::Strict);
+        p.rungs.remove("plan_task_draft");
+
+        assert_eq!(p.effective_rung(), SchemaRung::None);
+        assert!(!p.is_production_eligible());
+        assert!(!p.is_fully_probed());
+        assert_eq!(p.unmeasured_schemas(), vec!["plan_task_draft"]);
+    }
+
+    /// A resumed probe must only pay for what is missing.
+    #[test]
+    fn unmeasured_schemas_lists_only_what_is_missing() {
+        let p = custom_row("g1", &[("workstream", SchemaRung::Strict)]);
+        assert_eq!(
+            p.unmeasured_schemas(),
+            vec!["activity_report", "worklog_generate", "plan_task_draft"]
+        );
+        assert!(fully_probed("g2", SchemaRung::Strict).is_fully_probed());
+    }
+
+    /// A rung recorded under an unknown key (a renamed schema, a hand-edited file) must not
+    /// count towards the gate — it is evidence about nothing the pipeline sends.
+    #[test]
+    fn an_unknown_schema_key_does_not_satisfy_the_gate() {
+        let mut p = fully_probed("g1", SchemaRung::Strict);
+        p.rungs.remove("workstream");
+        p.rungs
+            .insert("workstream_v2".to_string(), SchemaRung::Strict);
+        assert_eq!(p.effective_rung(), SchemaRung::None);
         assert!(!p.is_production_eligible());
     }
 

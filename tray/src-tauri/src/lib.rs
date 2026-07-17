@@ -608,6 +608,12 @@ pub fn run() {
             commands::test_llm_provider,
             commands::test_all_llm_providers,
             commands::detect_system_specs,
+            // Custom cloud endpoints (add/probe/remove). `add` + `probe` spend real metered
+            // requests measuring the endpoint — only ever on explicit user action.
+            commands::add_custom_llm_provider,
+            commands::probe_custom_llm_provider,
+            commands::remove_custom_llm_provider,
+            commands::list_custom_llm_providers,
             // Uninstall wizard (plan + execute; see src/uninstall.rs for the CLI it drives)
             commands::get_uninstall_plan,
             commands::execute_uninstall,

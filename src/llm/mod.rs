@@ -33,6 +33,7 @@ pub mod cursor;
 pub mod detect;
 pub mod local;
 pub mod openai_compat;
+pub mod probe;
 pub mod prompts;
 pub mod reset_time;
 pub mod resolver;

@@ -38,6 +38,7 @@
 pub mod account;
 pub mod app_icons;
 pub mod cli_exec;
+pub mod custom_llm;
 pub mod daemon;
 pub mod dashboard;
 pub mod diagnostics;
@@ -66,6 +67,7 @@ pub mod worklogs;
 // this path, and only a glob carries them along with the command fn.
 pub use account::*;
 pub use app_icons::*;
+pub use custom_llm::*;
 pub use daemon::*;
 pub use dashboard::*;
 pub use diagnostics::*;
