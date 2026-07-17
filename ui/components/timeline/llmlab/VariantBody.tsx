@@ -1,21 +1,23 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// The LLM Lab's side-by-side comparison: one column per provider/model variant,
-// each showing its outcome badge, timing/token metrics, and the output. For the
-// fold processes (workstream_fold / day_fold) a successful variant's
-// output_rendered is a DayTasksResponse - it is fed straight into the REAL
-// DayTaskColumn, so each column shows the day's actual dashboard timeline as
-// that model would have built it. Other processes render text; every column has
-// a raw toggle. Dev-only surface - plain hyphens in all copy.
+// One LLM Lab variant's rendered outcome, drawn full-width for the single-timeline
+// view (RunView). For a fold process (workstream_fold / day_fold) a successful
+// variant's output_rendered is a DayTasksResponse - it is fed straight into the
+// REAL DayTaskColumn, so the pane shows the day's actual dashboard timeline as
+// that model would have built it, and clicking a card drives the run's shared
+// task sidebar (selection is owned by RunView, not here). Other processes render
+// text with a raw toggle; failed / rate-limited / pending variants show their
+// status instead of an empty pane. Extracted from the former ResultsGrid's
+// VariantColumn. Dev-only surface - plain hyphens in all copy.
 
 'use client'
 
 import { useMemo, useState } from 'react'
-import type { DayTasksResponse, LlmExperimentDetail, LlmExperimentResult } from '@/lib/api-types'
-import { llmProvider, type LlmProviderId } from '@/lib/llm-providers'
+import type { DayTasksResponse, LlmExperimentResult } from '@/lib/api-types'
 import { DayTaskColumn } from '../DayTaskColumn'
+import type { DayTaskDetail } from '../DayTaskDetailPanel'
 
-const STATUS_META: Record<string, { label: string; color: string }> = {
+export const STATUS_META: Record<string, { label: string; color: string }> = {
   pending: { label: 'Queued', color: 'var(--t-faint)' },
   running: { label: 'Running…', color: 'var(--color-state-pending)' },
   ok: { label: 'OK', color: 'var(--color-state-approved)' },
@@ -25,7 +27,7 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
 
 /** The two processes whose rendered output is a day-task set the real timeline
  *  can draw. */
-function isFoldProcess(process: string): boolean {
+export function isFoldProcess(process: string): boolean {
   return process === 'workstream_fold' || process === 'day_fold'
 }
 
@@ -43,28 +45,20 @@ function fmtTokens(n: number | null): string {
   return n && n > 0 ? String(n) : '-'
 }
 
-export function ResultsGrid({ detail }: { detail: LlmExperimentDetail }) {
-  const fold = isFoldProcess(detail.process)
-  return (
-    <div className="flex-1 min-h-0 flex gap-3 overflow-x-auto nice-scroll" style={{ padding: 2 }}>
-      {detail.results.map(r => (
-        <VariantColumn key={r.variant_idx} result={r} fold={fold} />
-      ))}
-    </div>
-  )
-}
-
 /** A fold variant's rendered payload: the day-task set (+ optional honesty note,
  *  e.g. "no usable placements" / "stopped at <hour>"). */
 type FoldRender = (DayTasksResponse & { note?: string }) | null
 
-function VariantColumn({ result, fold }: { result: LlmExperimentResult; fold: boolean }) {
+/** One variant's body, full-width. `selectedTask` / `onSelectTask` are the run's
+ *  shared task selection (owned by RunView) - clicking a fold card opens the
+ *  sidebar beside this pane. */
+export function VariantBody({ result, fold, selectedTask, onSelectTask }: {
+  result: LlmExperimentResult
+  fold: boolean
+  selectedTask: DayTaskDetail | null
+  onSelectTask: (detail: DayTaskDetail | null) => void
+}) {
   const [showRaw, setShowRaw] = useState(false)
-  // Local selection so clicking a task card highlights it (there is no right
-  // panel inside the modal to show its detail).
-  const [selectedTask, setSelectedTask] = useState<string | null>(null)
-  const meta = llmProvider(result.provider as LlmProviderId)
-  const status = STATUS_META[result.status] ?? STATUS_META.pending
 
   // Parse the fold payload once per result; a parse failure falls back to text.
   const foldRender: FoldRender = useMemo(() => {
@@ -80,28 +74,10 @@ function VariantColumn({ result, fold }: { result: LlmExperimentResult; fold: bo
   const timeline = foldRender !== null && !showRaw
 
   return (
-    <div className="flex flex-col shrink-0 rounded-xl overflow-hidden"
-      style={{ width: fold ? 420 : 340, border: '1px solid var(--t-card-border)', background: 'var(--t-box)' }}>
-      {/* header: provider + model chip + status badge */}
-      <div className="flex items-center gap-2 px-3.5 py-2.5 border-b shrink-0" style={{ borderColor: 'var(--t-hair)' }}>
-        <span className="mt-card-title truncate" style={{ color: 'var(--t-title)' }}>{meta.name}</span>
-        {result.model !== '' && (
-          <span className="font-mono truncate rounded px-1.5 py-0.5"
-            style={{ fontSize: 10, background: 'var(--t-wrap)', color: 'var(--t-muted)' }}>
-            {result.model}
-          </span>
-        )}
-        <span className="ml-auto inline-flex items-center gap-1.5 shrink-0">
-          {result.status === 'running' && (
-            <span className="inline-block w-2 h-2 rounded-full animate-pulse" style={{ background: status.color }} />
-          )}
-          <span className="mt-body-sm" style={{ color: status.color, fontWeight: 700 }}>{status.label}</span>
-        </span>
-      </div>
-
+    <div className="flex-1 min-h-0 flex flex-col">
       {/* metrics row */}
-      <div className="flex items-center gap-3 px-3.5 py-1.5 border-b shrink-0"
-        style={{ borderColor: 'var(--t-hair)', color: 'var(--t-faint)', fontSize: 10.5 }}>
+      <div className="flex items-center gap-3 px-4 py-2 border-b shrink-0"
+        style={{ borderColor: 'var(--t-hair)', color: 'var(--t-faint)', fontSize: 11 }}>
         <span>time {fmtElapsed(result.elapsed_s)}</span>
         <span>tokens in {fmtTokens(result.input_tokens)} / out {fmtTokens(result.output_tokens)}</span>
         {result.status === 'ok' && (
@@ -117,29 +93,30 @@ function VariantColumn({ result, fold }: { result: LlmExperimentResult; fold: bo
 
       {/* honesty note from the renderer (kept prior state / partial day) */}
       {timeline && foldRender?.note && (
-        <p className="px-3.5 py-1.5 border-b shrink-0 mt-body-sm"
-          style={{ borderColor: 'var(--t-hair)', color: 'var(--color-state-pending)', fontSize: 10.5 }}>
+        <p className="px-4 py-1.5 border-b shrink-0"
+          style={{ borderColor: 'var(--t-hair)', color: 'var(--color-state-pending)', fontSize: 11 }}>
           {foldRender.note}
         </p>
       )}
 
       {/* body */}
       {timeline && foldRender ? (
-        // The REAL dashboard timeline, fed this variant's simulated day.
+        // The REAL dashboard timeline, fed this variant's simulated day. Selection
+        // is the run's shared state, so a click here opens the task sidebar.
         <div className="flex-1 min-h-0">
           <DayTaskColumn
             day={foldRender.day}
             isToday={false}
-            selectedId={selectedTask}
-            onSelect={d => setSelectedTask(d?.id ?? null)}
+            selectedId={selectedTask?.id ?? null}
+            onSelect={onSelectTask}
             tasks={foldRender.tasks}
           />
         </div>
       ) : (
-        <div className="flex-1 min-h-0 overflow-y-auto nice-scroll px-3.5 py-3">
+        <div className="flex-1 min-h-0 overflow-y-auto nice-scroll px-5 py-4">
           {result.status === 'ok' && (
             <pre className="whitespace-pre-wrap break-words"
-              style={{ font: '400 11.5px/1.55 var(--font-mono, ui-monospace)', color: 'var(--t-muted)', margin: 0 }}>
+              style={{ font: '400 12px/1.6 var(--font-mono, ui-monospace)', color: 'var(--t-muted)', margin: 0, maxWidth: 760 }}>
               {(showRaw ? result.output_text : result.output_rendered) ?? '(no output recorded)'}
             </pre>
           )}
@@ -151,7 +128,7 @@ function VariantColumn({ result, fold }: { result: LlmExperimentResult; fold: bo
               {/* A failed day-fold still carries the partial day it built. */}
               {result.output_rendered && fold && (
                 <pre className="whitespace-pre-wrap break-words mt-2"
-                  style={{ font: '400 10.5px/1.5 var(--font-mono, ui-monospace)', color: 'var(--t-faint)', margin: 0 }}>
+                  style={{ font: '400 11px/1.5 var(--font-mono, ui-monospace)', color: 'var(--t-faint)', margin: 0 }}>
                   {result.output_rendered}
                 </pre>
               )}

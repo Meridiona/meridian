@@ -1,33 +1,45 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// The dev-only "LLM Lab" modal: replay one pipeline prose stage across several
-// provider/model variants and compare the outcomes side by side. Left rail =
-// past runs (click to reopen); right pane = the RunComposer for a new run, or
-// the ResultsGrid for the selected/active one. Rendered by MeridianTimelineShell
-// ONLY when get_app_info reports the 'dev' channel; every backing command is
-// additionally refused in release builds (commands/llm_lab.rs) - this surface
-// does not exist for users. Plain hyphens in all copy.
+// The dev-only "LLM Lab" surface: replay one pipeline prose stage across several
+// provider/model variants and compare the outcomes. A FULL-SCREEN panel (its own
+// dashboard, not a modal) - left rail = past runs (click to reopen); right =
+// the RunComposer for a new run, or RunView for the selected/active one (a single
+// timeline with a variant switcher + task sidebar). Rendered by
+// MeridianTimelineShell ONLY when get_app_info reports the 'dev' channel; every
+// backing command is additionally refused in release builds (commands/llm_lab.rs)
+// - this surface does not exist for users. Plain hyphens in all copy.
 
 'use client'
 
-import { ModalShell } from '../ModalShell'
-import { ResultsGrid } from './ResultsGrid'
+import { useEffect } from 'react'
 import { RunComposer } from './RunComposer'
+import { RunView, PROCESS_NAMES } from './RunView'
 import { useLlmLab } from './useLlmLab'
 import type { LlmExperimentSummary } from '@/lib/api-types'
 
-const PROCESS_NAMES: Record<string, string> = {
-  hour_report: 'Hour report',
-  workstream_fold: 'Day-task fold',
-  day_fold: 'Full-day fold',
-  worklog_generate: 'Worklog draft',
-}
-
-export function LlmLabModal({ onClose }: { onClose: () => void }) {
+export function LlmLabScreen({ onClose }: { onClose: () => void }) {
   const { runs, detail, starting, error, run, openRun, closeRun } = useLlmLab()
 
+  // Escape closes the surface (matches the wrapper-modal convention it replaces).
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
   return (
-    <ModalShell title="LLM Lab (dev only)" onClose={onClose} maxWidth={1180} scrollInside>
+    <div className="absolute inset-0 z-40 flex flex-col bg-panel rise">
+      {/* header */}
+      <div className="flex items-center justify-between px-6 py-4 border-b shrink-0" style={{ borderColor: 'var(--t-hair)' }}>
+        <p className="mt-modal-title text-title">LLM Lab (dev only)</p>
+        <button onClick={onClose} aria-label="Close"
+          className="inline-flex items-center justify-center rounded-full bg-wrap"
+          style={{ width: 30, height: 30, color: 'var(--t-muted)' }}>
+          <span className="text-[17px] leading-none">×</span>
+        </button>
+      </div>
+
+      {/* body: past-runs rail | composer or run */}
       <div className="flex flex-1 min-h-0">
         {/* past runs rail */}
         <div className="shrink-0 border-r flex flex-col min-h-0" style={{ width: 250, borderColor: 'var(--t-hair)' }}>
@@ -56,26 +68,18 @@ export function LlmLabModal({ onClose }: { onClose: () => void }) {
           </div>
         </div>
 
-        {/* composer / results */}
-        <div className="flex-1 min-w-0 min-h-0 flex flex-col p-5">
+        {/* composer / run */}
+        <div className="flex-1 min-w-0 min-h-0 flex flex-col">
           {detail
-            ? (
-              <>
-                <div className="flex items-baseline gap-2.5 pb-3 shrink-0">
-                  <p className="mt-card-title" style={{ color: 'var(--t-title)' }}>
-                    {PROCESS_NAMES[detail.process] ?? detail.process} · {detail.input_ref}
-                  </p>
-                  <span className="mt-body-sm" style={{ color: 'var(--t-faint)' }}>
-                    {detail.status === 'running' ? 'running…' : detail.status} · run #{detail.id}
-                  </span>
-                </div>
-                <ResultsGrid detail={detail} />
-              </>
-            )
-            : <RunComposer starting={starting} error={error} onRun={run} />}
+            ? <RunView key={detail.id} detail={detail} />
+            : (
+              <div className="flex-1 min-h-0 overflow-y-auto nice-scroll p-5">
+                <RunComposer starting={starting} error={error} onRun={run} />
+              </div>
+            )}
         </div>
       </div>
-    </ModalShell>
+    </div>
   )
 }
 

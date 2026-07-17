@@ -28,7 +28,7 @@ import { PlanModal } from './PlanModal'
 import { TasksModal } from './TasksModal'
 import { TaskDetailDialog } from './TaskDetailDialog'
 import { ReportModal } from './ReportModal'
-import { LlmLabModal } from './llmlab/LlmLabModal'
+import { LlmLabScreen } from './llmlab/LlmLabScreen'
 import type { AppInfo } from '@/lib/api-types'
 import type { SettingsSection } from './settings/types'
 
@@ -210,7 +210,7 @@ export default function MeridianTimelineShell() {
       )}
       {activeModal === 'report' && <ReportModal onClose={() => setActiveModal(null)} />}
       {activeModal === 'llmlab' && channel === 'dev' && (
-        <LlmLabModal onClose={() => setActiveModal(null)} />
+        <LlmLabScreen onClose={() => setActiveModal(null)} />
       )}
       {activeModal === 'plan' && <PlanModal onClose={closePlan} />}
       {activeModal === 'tasks' && (
