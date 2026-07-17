@@ -279,10 +279,22 @@ fn load_test_cache() -> HashMap<String, ProviderTestResult> {
     serde_json::from_str(&raw).unwrap_or_default()
 }
 
+/// Serialises the load→insert→write of the test cache. `test_all_installed` fans the
+/// per-provider tests out concurrently and each lands its own result here; without this
+/// lock those read-modify-write cycles interleave and silently drop each other's entries
+/// (a lost update), exactly the state Rescan produces on any machine with 2+ CLIs. The
+/// blocking I/O under the lock is a single tiny JSON file, so it is deliberately left
+/// synchronous rather than moved to `spawn_blocking`.
+static CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Record one test result to the on-disk cache, crash-safely (temp file + atomic rename,
 /// same idiom as `settings.json`). Logged, not propagated — a failed cache write must not
 /// fail the test the user just watched succeed or fail in front of them.
+///
+/// The whole read-modify-write is held under [`CACHE_LOCK`] so concurrent persists (a
+/// Rescan testing every installed provider at once) can't lose each other's results.
 pub fn persist_test_result(result: &ProviderTestResult) {
+    let _guard = CACHE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut cache = load_test_cache();
     cache.insert(result.id.clone(), result.clone());
     if let Err(e) = meridian_core::fs_utils::atomic_write_json(&test_cache_path(), &cache) {
@@ -427,6 +439,36 @@ mod tests {
         assert_eq!(cache.len(), 2);
         assert_eq!(cache.get("claude"), Some(&result));
         assert_eq!(cache.get("cursor"), Some(&rate_limited));
+    }
+
+    /// The `test_all_installed` scenario: many providers persist their results at once.
+    /// Without the read-modify-write lock in `persist_test_result` these interleave and
+    /// lose updates; with it, every result survives. Runs real OS threads to make the
+    /// contention genuine.
+    #[test]
+    fn concurrent_persists_do_not_lose_results() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        with_temp_meridian_home();
+
+        const N: usize = 12;
+        std::thread::scope(|scope| {
+            for i in 0..N {
+                scope.spawn(move || {
+                    persist_test_result(&ProviderTestResult {
+                        id: format!("provider-{i}"),
+                        outcome: ProviderTestOutcome::Ok,
+                        elapsed_ms: i as u64,
+                        tested_at: "2026-07-17T10:00:00+00:00".into(),
+                    });
+                });
+            }
+        });
+
+        let cache = load_test_cache();
+        assert_eq!(cache.len(), N, "a concurrent persist was lost");
+        for i in 0..N {
+            assert!(cache.contains_key(&format!("provider-{i}")), "missing {i}");
+        }
     }
 
     #[test]

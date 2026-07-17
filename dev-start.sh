@@ -120,7 +120,7 @@ fi
 # serve every request for a whole session: the MLX window dies in its own Terminal
 # with [Errno 48] and nothing else ever mentions it.
 if [ -n "$(lsof -ti tcp:7823 2>/dev/null || true)" ]; then
-    echo "  ⚠ something is STILL holding port 7823 — the MLX window will die with [Errno 48]" >&2
+    echo "  ⚠ something is STILL holding port 7823 - the MLX window will die with [Errno 48]" >&2
     lsof -nP -iTCP:7823 -sTCP:LISTEN 2>/dev/null | tail -n +2 | sed 's/^/      /' >&2
 else
     echo "  ✓ port 7823 free (any installed-runtime MLX server stopped)"

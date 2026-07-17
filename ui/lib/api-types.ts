@@ -647,3 +647,47 @@ export interface RunLlmExperimentBody {
   task_id?: string          // …with this
   variants: string[]        // "provider" or "provider:model" tokens
 }
+
+// ── DMG auto-update (`check_update` / `install_update` / `update-progress`) ─────
+// Mirrors `tray/src-tauri/src/update.rs`'s `UpdateStatus` (serde camelCase). A
+// failed check is data (`state: 'error'` + `error`), never a thrown command, so
+// the banner renders a diagnostic instead of swallowing it.
+
+export interface UpdateStatus {
+  state: 'available' | 'uptodate' | 'unsupported' | 'error'
+  currentVersion: string
+  /** The newer version, when `state === 'available'`. */
+  version: string | null
+  notes: string | null
+  minimumVersion: string | null
+  /** Running version is below the manifest floor — installs without a click. */
+  mandatory: boolean
+  error: string | null
+}
+
+// `update-progress` event payload emitted by `download_and_apply`. `contentLength`
+// is null when the server didn't send a Content-Length header.
+export interface UpdateProgress {
+  downloaded: number
+  contentLength: number | null
+}
+
+// ── What's New (`get_whats_new`) ───────────────────────────────────────────────
+
+export interface ReleaseNote {
+  version: string
+  date: string
+  highlights: string[]
+  fixes: string[]
+}
+
+export interface RoadmapItem {
+  title: string
+  status: 'in-progress' | 'planned' | 'considering'
+  description: string
+}
+
+export interface WhatsNewData {
+  releases: ReleaseNote[]
+  roadmap: RoadmapItem[]
+}
