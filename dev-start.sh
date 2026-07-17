@@ -7,7 +7,7 @@
 #   cargo install cargo-watch    # Rust file watcher
 #
 # What this opens (3 Terminal windows):
-#   1. Rust daemon  — cargo watch, rebuilds + restarts on every .rs save
+#   1. Rust daemon  — cargo watch, rebuilds + restarts on a daemon-source save
 #   2. MLX server   — uvicorn --reload, reloads on every .py save in services/agents/
 #   3. Tauri tray   — npm run tauri dev (automatically starts Next.js hot-reload
 #                     on port 3939 via beforeDevCommand; dashboard loads in the
@@ -151,12 +151,26 @@ if [ -n "${SCREENPIPE_FORK_PATH:-}" ] && [ -d "${SCREENPIPE_FORK_PATH}" ]; then
     FORK_WATCH_FLAG="--watch '${SCREENPIPE_FORK_PATH}'"
 fi
 
+# Watch ONLY what actually rebuilds the daemon binary: its own sources, its two
+# path dependencies, and the build inputs. `--watch .` (the old value) watches the
+# entire repo, so a write anywhere — ui/, services/, tray/, a stray untracked file —
+# restarts the daemon even though none of it can change the binary.
+#
+# That is not merely wasteful: SIGKILL mid-run is data-visible. The worklog pipeline
+# needs many uninterrupted minutes to process an hour (await_coding_ready alone waits
+# up to CODING_MAX_WAIT = 20 min), and a kill leaves pm_worklog_hours stranded at
+# 'generating' — mark_hour_pending only runs on a clean Err, never on a kill. The
+# next restart re-enters catch_up_today and restarts the 20-minute wait from zero,
+# so a busy repo can starve the hour indefinitely and the timeline stops advancing.
+# Editing daemon code still kills an in-flight hour; this stops everything else from.
+DAEMON_WATCH="--watch src --watch meridian-core/src --watch meridian-oauth/src --watch build.rs --watch Cargo.toml"
+
 osascript <<APPLESCRIPT
 tell application "Terminal"
     activate
 
     -- 1. Rust daemon (cargo watch)
-    do script "echo '=== Rust daemon (cargo watch) ===' && cd '${REPO_ROOT}' && cargo watch --watch . ${FORK_WATCH_FLAG} -x 'run --bin meridian'"
+    do script "echo '=== Rust daemon (cargo watch) ===' && cd '${REPO_ROOT}' && cargo watch ${DAEMON_WATCH} ${FORK_WATCH_FLAG} -x 'run --bin meridian'"
 
     -- 2. MLX server (uvicorn --reload, watches services/agents/ only)
     do script "echo '=== MLX server (uvicorn --reload) ===' && cd '${REPO_ROOT}/services' && HF_TOKEN='${HF_TOKEN:-}' HF_XET_HIGH_PERFORMANCE=1 .venv/bin/uvicorn agents.server:app --reload --reload-dir '${REPO_ROOT}/services/agents' --host 127.0.0.1 --port 7823"
