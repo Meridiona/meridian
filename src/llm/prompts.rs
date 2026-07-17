@@ -156,33 +156,38 @@ pub fn workstream_schema() -> Value {
 }
 
 /// The "Generate worklog" prompt — one combined, provider-agnostic call behind the
-/// day-task card action. Takes a day-level workstream + the open PM tickets and
-/// returns, in one pass: `match` XOR `propose` (advance an existing ticket or draft
-/// a new one), plus a high-level `update` (summary / decisions / architecture /
-/// status) to post as a comment. Same one-prompt-all-providers rule as the others.
+/// day-task card action. Takes a day-level workstream + the day's planned tasks and
+/// returns, in one pass: `matches` XOR `propose` (advance the existing tickets this
+/// work moved — one or several — or draft a new one), plus a high-level `update`
+/// (summary / free-form `sections` / status) posted as a comment on each matched
+/// ticket. Same one-prompt-all-providers rule as the others.
 pub const WORKLOG_GENERATE: &str = include_str!("../../services/prompts/worklog-generate.md");
 
-/// The JSON shape the "Generate worklog" call must answer in. `match` and `propose`
-/// are nullable objects (the model returns exactly one non-null — code enforces the
-/// XOR after parsing); `update` is required with a `summary`, `decisions`/
-/// `architecture` string arrays, and a `status` line; `reasoning` is required.
+/// The JSON shape the "Generate worklog" call must answer in. `matches` is an array
+/// (a day's strand of work can advance several planned tasks) and `propose` is a
+/// nullable object; the model takes exactly one branch — a non-empty `matches` XOR
+/// a `propose` — and code enforces that after parsing. `update` is required with a
+/// `summary`, free-form `sections`, and a `status` line; `reasoning` is required.
 ///
-/// The nullable branches are `["object", "null"]` so a schema-enforcing backend can
-/// emit `null` for the branch it didn't take; `match`/`propose` are deliberately NOT
-/// in `required` so a backend that omits the unused branch entirely is also valid.
-/// Parsing is tolerant either way (see `parse_json_object`).
+/// `propose` is `["object", "null"]` so a schema-enforcing backend can emit `null`
+/// for the branch it didn't take; neither branch is in `required`, so a backend that
+/// omits the unused one entirely is also valid (an omitted `matches` reads as no
+/// matches). Parsing is tolerant either way (see `parse_json_object`).
 pub fn worklog_generate_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "match": {
-                "type": ["object", "null"],
-                "properties": {
-                    "task_key":   {"type": "string"},
-                    "confidence": {"type": "number", "minimum": 0, "maximum": 1}
-                },
-                "required": ["task_key", "confidence"],
-                "additionalProperties": false
+            "matches": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "task_key":   {"type": "string"},
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+                    },
+                    "required": ["task_key", "confidence"],
+                    "additionalProperties": false
+                }
             },
             "propose": {
                 "type": ["object", "null"],
@@ -197,17 +202,56 @@ pub fn worklog_generate_schema() -> Value {
             "update": {
                 "type": "object",
                 "properties": {
-                    "summary":      {"type": "string"},
-                    "decisions":    {"type": "array", "items": {"type": "string"}},
-                    "architecture": {"type": "array", "items": {"type": "string"}},
-                    "status":       {"type": "string"}
+                    "summary": {"type": "string"},
+                    "sections": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "heading": {"type": "string"},
+                                "points":  {"type": "array", "items": {"type": "string"}}
+                            },
+                            "required": ["heading", "points"],
+                            "additionalProperties": false
+                        }
+                    },
+                    "status": {"type": "string"}
                 },
-                "required": ["summary", "decisions", "architecture", "status"],
+                "required": ["summary", "sections", "status"],
                 "additionalProperties": false
             },
             "reasoning": {"type": "string"}
         },
         "required": ["update", "reasoning"],
+        "additionalProperties": false
+    })
+}
+
+/// The "draft a task from my note" prompt — behind the daily plan's task composer.
+/// Takes one rough note the dev typed while planning and shapes it into
+/// `{title, description, issue_type}` for them to review and edit. Deliberately a
+/// FORMATTER, not an expander: the prompt's load-bearing rule is `INVENT NOTHING`,
+/// because the failure mode of a four-word note is a fabricated three-paragraph
+/// ticket. Same one-prompt-all-providers rule as the others.
+pub const PLAN_TASK_DRAFT: &str = include_str!("../../services/prompts/plan-task-draft.md");
+
+/// The JSON shape the task-draft call must answer in. All three fields required.
+///
+/// `title` is bounded at 120 even though the prompt asks for <=80: on a
+/// schema-enforcing backend (the `local` outlines FSM) the bound is a hard token-level
+/// cut, so setting it to 80 would truncate a slightly-long title mid-word rather than
+/// reject it. Prose holds the 80; the schema only catches a runaway. `issue_type` is
+/// an enum — it is the one field with a closed set, and a backend that can enforce it
+/// should.
+pub fn plan_task_draft_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "title":       {"type": "string", "maxLength": 120},
+            "description": {"type": "string"},
+            "issue_type":  {"type": "string", "enum": ["Task", "Bug"]}
+        },
+        "required": ["title", "description", "issue_type"],
         "additionalProperties": false
     })
 }
@@ -243,25 +287,55 @@ mod tests {
         assert!(WORKSTREAM.contains("segment"));
         assert!(WORKSTREAM.to_lowercase().contains("leisure"));
         assert!(WORKSTREAM.contains("NEVER NAME THE PERSON"));
-        // The Generate-worklog prompt's whole design rests on: match XOR propose,
+        // The Generate-worklog prompt's whole design rests on: matches XOR propose,
         // no-match being valid, a high-level status update (not a time worklog),
         // and never naming the person.
         assert!(WORKLOG_GENERATE.contains("MUTUALLY EXCLUSIVE"));
-        assert!(WORKLOG_GENERATE.contains("NO MATCH IS A VALID"));
+        assert!(WORKLOG_GENERATE.contains("AN EMPTY `matches` IS A VALID"));
+        // Multi-match's two halves: list every ticket the work advanced, but make
+        // each one earn its place alone. Without the second the model hedges, and a
+        // hedge is a comment on someone's board.
+        assert!(WORKLOG_GENERATE.contains("MATCH EVERY TICKET THIS WORK GENUINELY ADVANCED"));
+        assert!(WORKLOG_GENERATE.contains("EARN its place independently"));
         assert!(WORKLOG_GENERATE.to_lowercase().contains("status update"));
         assert!(WORKLOG_GENERATE.contains("NEVER NAME THE PERSON"));
+        // The task-draft prompt's whole design rests on it being a FORMATTER, not an
+        // expander: the note is the only source of fact, a short note deserves a
+        // short task, and not every note is engineering work.
+        assert!(PLAN_TASK_DRAFT.contains("THE CONTEXT IS THEIRS, NOT YOURS"));
+        assert!(PLAN_TASK_DRAFT.contains("SHORT, HONEST TASK IS THE CORRECT ANSWER"));
+        assert!(PLAN_TASK_DRAFT.contains("NOT ALL WORK IS ENGINEERING"));
+        assert!(PLAN_TASK_DRAFT.contains("NEVER NAME THE PERSON"));
+        assert!(PLAN_TASK_DRAFT.contains("Return a JSON object with these fields:"));
     }
 
     #[test]
-    fn worklog_generate_schema_pins_match_xor_propose_and_update() {
+    fn plan_task_draft_schema_pins_the_task_shape() {
+        let s = plan_task_draft_schema();
+        let props = &s["properties"];
+        assert_eq!(s["required"], json!(["title", "description", "issue_type"]));
+        assert_eq!(s["additionalProperties"], json!(false));
+        // issue_type is the one closed set — a schema-enforcing backend should hold it.
+        assert_eq!(props["issue_type"]["enum"], json!(["Task", "Bug"]));
+        // The title bound is deliberately looser than the prompt's <=80: on the FSM
+        // backend the bound is a hard token-level cut, so 80 here would truncate a
+        // slightly-long title mid-word instead of rejecting it.
+        assert_eq!(props["title"]["maxLength"], json!(120));
+        assert_eq!(props["description"]["type"], json!("string"));
+    }
+
+    #[test]
+    fn worklog_generate_schema_pins_matches_xor_propose_and_update() {
         let s = worklog_generate_schema();
         let props = &s["properties"];
-        // match / propose are nullable objects, not in `required` (XOR enforced in code).
-        assert_eq!(props["match"]["type"], json!(["object", "null"]));
+        // matches is an ARRAY: one strand of a day's work can advance several
+        // planned tasks, and each listed ticket gets the update posted to it.
+        // Neither branch is in `required` (the XOR is enforced in code).
+        assert_eq!(props["matches"]["type"], json!("array"));
         assert_eq!(props["propose"]["type"], json!(["object", "null"]));
         assert_eq!(s["required"], json!(["update", "reasoning"]));
-        // The match branch carries a task_key + a 0-1 confidence.
-        let m = &props["match"]["properties"];
+        // Each match carries a task_key + a 0-1 confidence.
+        let m = &props["matches"]["items"]["properties"];
         assert_eq!(m["task_key"]["type"], json!("string"));
         assert_eq!(m["confidence"]["maximum"], json!(1));
         // The propose branch carries issue_type / title / description.
@@ -269,14 +343,14 @@ mod tests {
         assert_eq!(p["issue_type"]["type"], json!("string"));
         assert_eq!(p["title"]["type"], json!("string"));
         assert_eq!(p["description"]["type"], json!("string"));
-        // The update requires all four fields; decisions/architecture are arrays.
+        // The update requires summary/sections/status; sections is an array of
+        // {heading, points[]} groups the model names to fit the work.
         let u = &props["update"];
-        assert_eq!(
-            u["required"],
-            json!(["summary", "decisions", "architecture", "status"])
-        );
-        assert_eq!(u["properties"]["decisions"]["type"], json!("array"));
-        assert_eq!(u["properties"]["architecture"]["type"], json!("array"));
+        assert_eq!(u["required"], json!(["summary", "sections", "status"]));
+        assert_eq!(u["properties"]["sections"]["type"], json!("array"));
+        let sec = &u["properties"]["sections"]["items"]["properties"];
+        assert_eq!(sec["heading"]["type"], json!("string"));
+        assert_eq!(sec["points"]["type"], json!("array"));
     }
 
     #[test]

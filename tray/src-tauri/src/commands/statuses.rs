@@ -32,6 +32,13 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+// The CLI-spawning contract (argv/no shell, `current_dir(~/.meridian)` so dotenvy
+// finds the daemon's `.env`, a timeout, last-line JSON, and a diagnostic that names
+// the binary) lives in ONE place. This module used to carry its own copy of
+// meridian_home/run_meridian/parse_last_line; they drifted, and the drift is what
+// made a stale-binary failure read as an unparseable socket warning.
+use super::worklog_generate::run_meridian_json;
+
 /// One status option — mirrors the CLI's `{id,name,category}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusOptionDto {
@@ -75,71 +82,6 @@ pub struct SetStatusBody {
     pub status_id: String,
 }
 
-/// Resolve `~/.meridian` (created if missing). The CLI reads tracker creds from
-/// `~/.meridian/.env` via dotenvy, which walks UP from the process CWD — so the
-/// subprocess must run with its CWD there or auth is never loaded (see
-/// [`crate::commands::apply_ticket_fix`] for the full rationale).
-fn meridian_home() -> Result<std::path::PathBuf, String> {
-    let home = std::env::var("HOME")
-        .map_err(|_| "HOME env var not set — cannot locate ~/.meridian".to_string())?;
-    let dir = std::path::PathBuf::from(&home).join(".meridian");
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir).map_err(|e| format!("could not create ~/.meridian: {e}"))?;
-    }
-    Ok(dir)
-}
-
-/// Run `meridian <args…>` in `~/.meridian` with stdin nulled and stdout/stderr
-/// piped, under `timeout`. Returns the trimmed stdout on success, or the trimmed
-/// stderr (or a status message) as `Err` on non-zero exit / timeout / spawn error.
-async fn run_meridian(args: &[&str], timeout: Duration, label: &str) -> Result<String, String> {
-    let home = meridian_home()?;
-    let bin = crate::install::meridian_bin();
-    let child = tokio::process::Command::new(&bin)
-        .args(args)
-        .current_dir(&home)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output();
-
-    let output = match tokio::time::timeout(timeout, child).await {
-        Err(_) => return Err(format!("{label} timed out")),
-        Ok(Err(e)) => {
-            tracing::warn!(bin = %bin, error = %e, "{label} spawn failed");
-            return Err(format!("spawn error: {e}"));
-        }
-        Ok(Ok(o)) => o,
-    };
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let msg = if stderr.is_empty() {
-            format!("{label} exited {:?}", output.status.code())
-        } else {
-            stderr
-        };
-        tracing::warn!("{label} non-zero: {msg}");
-        return Err(msg);
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-/// Parse the LAST non-empty stdout line as JSON `T` (the CLI logs before the
-/// result line). Returns a bounded parse-error message on failure.
-fn parse_last_line<T: for<'de> Deserialize<'de>>(stdout: &str) -> Result<T, String> {
-    let last = stdout.lines().rfind(|l| !l.trim().is_empty());
-    match last.and_then(|l| serde_json::from_str::<T>(l).ok()) {
-        Some(v) => Ok(v),
-        None => {
-            let s = stdout.trim();
-            let skip = s.chars().count().saturating_sub(200);
-            let tail: String = s.chars().skip(skip).collect();
-            Err(format!("could not parse result: {tail}"))
-        }
-    }
-}
-
 /// List the statuses `key` can move to (+ its current status) on `provider`.
 /// Spawns `meridian ticket-statuses --provider <p> --key <k>` (argv, no shell —
 /// no injection), 30 s timeout, and parses the last JSON line of stdout.
@@ -152,13 +94,12 @@ pub async fn list_task_statuses(
     if provider.is_empty() || key.is_empty() {
         return Err("provider and key are required".to_string());
     }
-    let stdout = run_meridian(
+    let resp: StatusListResponse = run_meridian_json(
         &["ticket-statuses", "--provider", &provider, "--key", &key],
         Duration::from_secs(30),
         "ticket-statuses",
     )
     .await?;
-    let resp: StatusListResponse = parse_last_line(&stdout)?;
     tracing::info!(%provider, %key, statuses = resp.statuses.len(), "ticket-statuses served");
     Ok(resp)
 }
@@ -173,7 +114,7 @@ pub async fn set_task_status(body: SetStatusBody) -> Result<SetStatusResponse, S
     if body.provider.is_empty() || body.key.is_empty() || body.status_id.is_empty() {
         return Err("provider, key and status_id are required".to_string());
     }
-    let stdout = run_meridian(
+    let resp: SetStatusResponse = run_meridian_json(
         &[
             "ticket-set-status",
             "--provider",
@@ -187,7 +128,6 @@ pub async fn set_task_status(body: SetStatusBody) -> Result<SetStatusResponse, S
         "ticket-set-status",
     )
     .await?;
-    let resp: SetStatusResponse = parse_last_line(&stdout)?;
     tracing::info!(status = %resp.result.status, "ticket-set-status applied");
     Ok(resp)
 }

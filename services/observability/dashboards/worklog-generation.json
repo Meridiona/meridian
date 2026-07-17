@@ -1,7 +1,7 @@
 {
   "version": 8,
   "title": "Worklog Generation",
-  "description": "The on-demand 'Generate worklog' call from a day-task card: one centralised LLM call (span `worklog.generate`, service meridian-rust) matches a workstream against the tracker's non-terminal tasks (or proposes a new one) and drafts a high-level status update; `worklog.generate.approve` posts it. `matched_task_key` = the task it will comment on (null when it proposed a new one), `proposed` = whether a new task was proposed, `n_candidates` = how many tasks the model chose among, `llm_provider` = who served the call. Each row's full trace carries the llm.request(prompt+input)/llm.response(output) subspans. Click a row for the trace.",
+  "description": "The on-demand 'Generate worklog' call from a day-task card: one centralised LLM call (span `worklog.generate`, service meridian-rust) matches a workstream against the tracker's non-terminal tasks (or proposes a new one) and drafts a high-level status update; `worklog.generate.approve` posts it. `proposed` = whether a new task was proposed (vs matched an existing one; the matched task key is the `matched_task_key` span attribute), `n_candidates` = how many tasks the model chose among, `llm_provider` = who served the call. Each row's full trace carries the llm.request(prompt+input)/llm.response(output) subspans. Click a row for the trace.",
   "tabs": [
     {
       "tabId": "default",
@@ -72,7 +72,7 @@
           "queryType": "sql",
           "queries": [
             {
-              "query": "SELECT count(*) as y_axis_1 FROM \"default\" WHERE operation_name='worklog.generate' AND matched_task_key IS NOT NULL",
+              "query": "SELECT count(*) as y_axis_1 FROM \"default\" WHERE operation_name='worklog.generate' AND proposed='false'",
               "customQuery": true,
               "fields": {
                 "stream": "default",
@@ -220,7 +220,7 @@
           "id": "t_all",
           "type": "table",
           "title": "All generations — newest first",
-          "description": "One row per Generate call. 'When (local)' = when the call ran; 'Match' = the task it will comment on (blank when it proposed a new one); 'Proposed' = a new task was drafted; 'Candidates' = tasks the model chose among. Click a row to open its full trace tree (the llm.call spans with input/prompt/output).",
+          "description": "One row per Generate call. 'When (local)' = when the call ran; 'Result' = matched an existing task vs proposed a new one; 'Candidates' = tasks the model chose among. Click a row to open its full trace tree (the llm.call spans with input/prompt/output, and the matched task key on the worklog.generate span).",
           "config": {
             "show_legends": false,
             "wrap_table_cells": false,
@@ -244,7 +244,7 @@
           "queryType": "sql",
           "queries": [
             {
-              "query": "SELECT\n  to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M') as \"When (local)\",\n  llm_provider as \"Provider\",\n  matched_task_key as \"Match\",\n  proposed as \"Proposed\",\n  CAST(n_candidates AS BIGINT) as \"Candidates\",\n  round(CAST(duration AS DOUBLE)/1000000,1) as \"Elapsed (s)\",\n  trace_id,\n  encode(concat('trace_id=''', trace_id, ''''),'base64') as trace_filter\nFROM \"default\" WHERE operation_name='worklog.generate' ORDER BY _timestamp DESC",
+              "query": "SELECT\n  to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M') as \"When (local)\",\n  llm_provider as \"Provider\",\n  CASE WHEN proposed='true' THEN 'proposed new task' ELSE 'matched existing' END as \"Result\",\n  CAST(n_candidates AS BIGINT) as \"Candidates\",\n  round(CAST(duration AS DOUBLE)/1000000,1) as \"Elapsed (s)\",\n  trace_id,\n  encode(concat('trace_id=''', trace_id, ''''),'base64') as trace_filter\nFROM \"default\" WHERE operation_name='worklog.generate' ORDER BY _timestamp DESC",
               "customQuery": true,
               "fields": {
                 "stream": "default",
@@ -265,16 +265,9 @@
                     "havingConditions": []
                   },
                   {
-                    "label": "Match",
-                    "alias": "Match",
-                    "column": "Match",
-                    "isDerived": false,
-                    "havingConditions": []
-                  },
-                  {
-                    "label": "Proposed",
-                    "alias": "Proposed",
-                    "column": "Proposed",
+                    "label": "Result",
+                    "alias": "Result",
+                    "column": "Result",
                     "isDerived": false,
                     "havingConditions": []
                   },
@@ -340,6 +333,6 @@
   },
   "defaultDatetimeDuration": {
     "type": "relative",
-    "relativeTimePeriod": "24h"
+    "relativeTimePeriod": "6h"
   }
 }

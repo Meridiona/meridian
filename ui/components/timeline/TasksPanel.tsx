@@ -222,10 +222,15 @@ export function TasksPanel({ onOpenTask }: { onOpenTask: (key: string, title?: s
     return <div>{header}<ConnectTrackers integrations={integrations} onChanged={fetchIntegrations} /></div>
   }
 
-  // Done/terminal tasks are hidden from the board — a completed ticket isn't
-  // something you act on here. (It still counts toward "touched today" and stays
-  // available to the classifier/worklog matching; it's just not listed.)
-  const activeTasks = connectedTasks.filter(t => !t.is_terminal)
+  // What's on the board — a completed or cleaned-up ticket isn't something you
+  // act on here. It still counts toward "touched today"; it's just not listed.
+  //
+  // `on_board` is computed in Rust by the same predicate that builds the worklog
+  // matcher's candidate set, so this list IS that list. Do not substitute
+  // `!t.is_terminal`: that was the old filter, and it disagreed with the matcher
+  // (which also drops cleanup-excluded tickets), so a task could sit here and be
+  // invisible to the model with nothing saying so.
+  const activeTasks = connectedTasks.filter(t => t.on_board)
   if (activeTasks.length === 0) {
     return (
       <div>

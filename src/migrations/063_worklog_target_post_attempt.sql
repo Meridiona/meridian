@@ -1,0 +1,31 @@
+-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+--
+-- The "we called post_comment and never learned the outcome" marker, per ticket.
+--
+-- WHY THIS EXISTS. `posted_comment_id` records a post we KNOW landed, and 062
+-- leans on it to make retry safe. It does not cover the gap between
+-- `post_comment` returning and that id reaching disk: if the process dies in
+-- there, the comment is live on the ticket and nothing here remembers it, so the
+-- retry posts a SECOND copy. `post_comment` carries no dedup marker to catch that
+-- after the fact - by design, see its module docs - so the guard has to be
+-- written down BEFORE the call, not after.
+--
+-- `post_attempt_at` is that write-ahead marker. It is set immediately before the
+-- provider call and cleared the moment the outcome is known, either way:
+--
+--   post_attempt_at | posted_comment_id | meaning
+--   ----------------|-------------------|-----------------------------------------
+--   NULL            | NULL              | not attempted - safe to post
+--   NOT NULL        | NULL              | outcome UNKNOWN - never auto-retry
+--   NULL            | NOT NULL          | posted - never post again
+--
+-- The middle row is the whole point, and it is deliberately a dead end rather
+-- than a retry: only a human can look at the ticket and say whether the comment
+-- is there. Guessing wrong in one direction duplicates a comment on someone
+-- else's board; guessing wrong in the other loses an update the user can simply
+-- regenerate. The asymmetry decides it.
+--
+-- This restores, per ticket, the `approved -> posting` CAS that migration 062's
+-- rework dropped (it was row-level, and posting is now per-ticket).
+
+ALTER TABLE day_task_worklog_targets ADD COLUMN post_attempt_at TEXT;

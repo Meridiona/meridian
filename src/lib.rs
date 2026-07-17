@@ -14,6 +14,7 @@ pub mod notices;
 pub mod notification_responses;
 pub mod notifications;
 pub mod observability;
+pub mod plan_tasks;
 pub mod pm_worklog;
 pub mod telemetry_spool;
 pub mod uninstall;
