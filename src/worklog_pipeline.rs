@@ -33,15 +33,17 @@ use tracing::Instrument;
 
 use crate::pm_worklog::{ledger, PmWorklogConfig};
 
-mod hour;
-mod hour_db;
-mod hour_input;
-mod segment;
-mod task_db;
-mod workstream;
-mod workstream_parse;
-mod workstream_sanitize;
-mod workstream_state;
+// `pub(crate)` where the LLM-Lab replay ([`crate::llm_experiment`]) reuses the request
+// builders / parsers / DB fetchers to rebuild a past hour's exact model input.
+pub(crate) mod hour;
+pub(crate) mod hour_db;
+pub(crate) mod hour_input;
+pub(crate) mod segment;
+pub(crate) mod task_db;
+pub(crate) mod workstream;
+pub(crate) mod workstream_parse;
+pub(crate) mod workstream_sanitize;
+pub(crate) mod workstream_state;
 
 /// Seconds past the top of the hour at which a completed hour is processed (HH:03).
 const WAKE_OFFSET_SECS: i64 = 3 * 60;
@@ -400,42 +402,59 @@ pub async fn run_loop(pool: SqlitePool, db_path: String, mut shutdown_rx: watch:
 /// fires) but still waits for coding summarisation. For manual runs / testing.
 pub async fn cli_run_hour(pool: &SqlitePool, db_path: &str, label: &str) {
     let cfg = PmWorklogConfig::from_env();
-    let naive = match NaiveDateTime::parse_from_str(&format!("{label}:00:00"), "%Y-%m-%dT%H:%M:%S")
-    {
-        Ok(n) => n,
+    let b = match hour_bounds(label) {
+        Ok(b) => b,
         Err(e) => {
-            eprintln!("worklog-hour: invalid hour label {label:?} (want YYYY-MM-DDTHH): {e}");
+            // `:#` keeps the chrono parse detail behind the context line.
+            eprintln!("worklog-hour: {e:#}");
             return;
         }
     };
-    let hs_local = match Local.from_local_datetime(&naive).single() {
-        Some(d) => d,
-        None => {
-            eprintln!("worklog-hour: ambiguous local hour {label:?} (DST transition)");
-            return;
-        }
-    };
-    let he_local = hs_local + Duration::hours(1);
-    let hs = iso_bound(hs_local.with_timezone(&Utc));
-    let he = iso_bound(he_local.with_timezone(&Utc));
-    let day_local = hs_local.format("%Y-%m-%d").to_string();
-    let cycle_index = hs_local.hour() as i64;
 
     let (_tx, mut rx) = watch::channel(false);
     process_hour(
         pool,
         &cfg,
         db_path,
-        &day_local,
-        &hs,
-        &he,
+        &b.day_local,
+        &b.hs,
+        &b.he,
         label,
-        cycle_index,
+        b.cycle_index,
         true,
         &mut rx,
     )
     .await;
     println!("worklog-hour: processed {label}");
+}
+
+/// Everything an `YYYY-MM-DDTHH` local hour label resolves to: its UTC bounds
+/// (`…+00:00`, the `pm_worklog_hours` key form), the local day, and the hour-of-day
+/// cycle index. Extracted from [`cli_run_hour`] so the LLM-Lab replay
+/// ([`crate::llm_experiment`]) resolves an hour identically.
+pub(crate) struct HourBounds {
+    pub hs: String,
+    pub he: String,
+    pub day_local: String,
+    pub cycle_index: i64,
+}
+
+/// Resolve a local `YYYY-MM-DDTHH` label to [`HourBounds`]. Errors on a malformed label
+/// or an hour that doesn't exist locally (DST transition).
+pub(crate) fn hour_bounds(label: &str) -> Result<HourBounds> {
+    let naive = NaiveDateTime::parse_from_str(&format!("{label}:00:00"), "%Y-%m-%dT%H:%M:%S")
+        .with_context(|| format!("invalid hour label {label:?} (want YYYY-MM-DDTHH)"))?;
+    let hs_local = Local
+        .from_local_datetime(&naive)
+        .single()
+        .with_context(|| format!("ambiguous local hour {label:?} (DST transition)"))?;
+    let he_local = hs_local + Duration::hours(1);
+    Ok(HourBounds {
+        hs: iso_bound(hs_local.with_timezone(&Utc)),
+        he: iso_bound(he_local.with_timezone(&Utc)),
+        day_local: hs_local.format("%Y-%m-%d").to_string(),
+        cycle_index: hs_local.hour() as i64,
+    })
 }
 
 #[cfg(test)]

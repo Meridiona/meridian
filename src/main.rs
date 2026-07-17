@@ -276,6 +276,37 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `meridian llm-experiment run|create|exec|list|get …` — the dev-only LLM Lab
+    // harness: replay one prose stage (hour report / workstream fold / worklog
+    // generate) across several provider/model variants and record every outcome in
+    // the llm_experiment* tables. Never writes production tables.
+    if std::env::args().nth(1).as_deref() == Some("llm-experiment") {
+        let cfg = Config::from_env();
+        // Init observability so each variant emits its llm.experiment.variant span.
+        let obs_guard = observability::init("meridian-rust").ok();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                let result = meridian::llm_experiment::cli::run(&pool).await;
+                pool.close().await;
+                if let Err(e) = result {
+                    if let Some(g) = obs_guard {
+                        g.shutdown().await;
+                    }
+                    eprintln!("llm-experiment: {e:#}");
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                eprintln!("llm-experiment: open db: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
+        }
+        return Ok(());
+    }
+
     // `meridian worklog-post-approved` — post every worklog the user approved in
     // the dashboard to Jira now (the same sweep the daemon runs every ~60s). This
     // is the only path that writes to real Jira.

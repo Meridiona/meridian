@@ -37,11 +37,13 @@
 
 pub mod account;
 pub mod app_icons;
+pub mod cli_exec;
 pub mod daemon;
 pub mod dashboard;
 pub mod diagnostics;
 pub mod health;
 pub mod integrations;
+pub mod llm_lab;
 pub mod notices;
 pub mod notifications;
 pub mod parents;
@@ -69,6 +71,7 @@ pub use dashboard::*;
 pub use diagnostics::*;
 pub use health::*;
 pub use integrations::*;
+pub use llm_lab::*;
 pub use notices::*;
 pub use notifications::*;
 pub use parents::*;

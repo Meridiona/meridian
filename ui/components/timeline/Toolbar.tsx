@@ -31,6 +31,7 @@ import type { SettingsSection } from './settings/types'
 
 export function Toolbar({
   day, isToday, onShiftDay, isSolo, connectedProviderName, connectedProviderId, onOpenSettings, onOpenReport,
+  showLlmLab = false, onOpenLlmLab,
 }: {
   day: string
   isToday: boolean
@@ -40,6 +41,9 @@ export function Toolbar({
   connectedProviderId: string | null
   onOpenSettings: (section?: SettingsSection) => void
   onOpenReport: () => void
+  /** Dev builds only ('dev' channel) - shows the LLM Lab flask button. */
+  showLlmLab?: boolean
+  onOpenLlmLab?: () => void
 }) {
   const [running, setRunning] = useState<boolean | null>(null)
 
@@ -77,6 +81,15 @@ export function Toolbar({
       </div>
 
       <div className="ml-auto flex items-center gap-4">
+        {/* dev-only LLM Lab opener - never rendered on staging/prod channels */}
+        {showLlmLab && onOpenLlmLab && (
+          <button onClick={onOpenLlmLab} aria-label="LLM Lab (dev only)" title="LLM Lab (dev only)"
+            className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 bg-ctrl"
+            style={{ border: '1px dashed var(--t-ctrl-border)', cursor: 'pointer' }}>
+            <span aria-hidden="true" style={{ fontSize: 12, lineHeight: 1 }}>⚗</span>
+            <span className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>Lab</span>
+          </button>
+        )}
         <ThemeSwatches />
         <span className="w-px h-5" style={{ background: 'var(--t-hair)' }} />
         <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 bg-ctrl"

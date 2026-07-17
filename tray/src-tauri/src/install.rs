@@ -84,6 +84,18 @@ pub(crate) fn canonical_env_path() -> Option<std::path::PathBuf> {
 /// a `#!/usr/bin/env node` wrapper that dies when launchd's PATH lacks `node`, so
 /// it's only the fallback; bare `meridian` (relies on `$PATH`) is the last resort.
 pub(crate) fn meridian_bin() -> String {
+    // Process env first, mirroring `meridian_db_path()` - lets a `tauri dev` tray
+    // spawn a workspace build (e.g. target/release/meridian) instead of the staged
+    // install, so a feature branch's new subcommands are testable without
+    // restaging ~/.meridian/bin (which would also point the REAL tray/daemon at
+    // the branch build - see the overlapping-installs migration trap).
+    if let Ok(p) = std::env::var("MERIDIAN_BIN") {
+        if std::path::Path::new(&p).exists() {
+            tracing::info!(source = "process_env", bin = %p, "meridian bin resolved");
+            return p;
+        }
+        tracing::warn!(bin = %p, "MERIDIAN_BIN set but missing - using staged binaries");
+    }
     if let Ok(home) = std::env::var("HOME") {
         // `~/.meridian/bin/meridian` is the DMG path (staged by `backend_install`);
         // `~/.meridian/app/bin/meridian` is the npm bundle. Both are native (no
