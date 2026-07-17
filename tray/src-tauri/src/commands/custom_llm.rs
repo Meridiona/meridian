@@ -118,6 +118,19 @@ fn selected_custom_id(v: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Lay a probe's measurements over what was already known, keeping any schema the probe never
+/// reached.
+///
+/// The whole point is that a probe which stops early (a 429) must not be able to LOWER what
+/// the row claims — see `probe_custom_llm_provider`, which is where that would strand the
+/// user's selected endpoint below the gate.
+fn merge_rungs(
+    stored: &mut std::collections::BTreeMap<String, SchemaRung>,
+    fresh: std::collections::BTreeMap<String, SchemaRung>,
+) {
+    stored.extend(fresh);
+}
+
 /// An id derived from the name, unique within the registry. Stable and human-readable, so a
 /// `custom:<id>` Lab variant and a settings file stay legible — the alternative (a uuid)
 /// makes both unreadable for no gain at this scale.
@@ -255,6 +268,21 @@ pub async fn add_custom_llm_provider(
 /// `refresh` re-measures from scratch (the endpoint's support can change under it: a vendor
 /// ships strict mode, a key is swapped for one on a different tier). Otherwise this only
 /// buys the schemas still missing, so resuming after a 429 costs nothing already paid for.
+///
+/// # A refresh MERGES, it does not reset
+///
+/// The fresh measurements are laid over the stored ones rather than replacing them, and the
+/// stored row is never cleared up front. This matters because a refresh can stop early — a
+/// 429 is routine on the free-tier keys this feature is meant for — and a cleared row would
+/// then be left half-measured, i.e. below the gate. The gate only runs on the settings WRITE,
+/// so nothing would catch it: an endpoint the user has already selected would keep the
+/// selection while silently dropping to a rung the pipeline can't rely on, and the next hour
+/// would run degraded. Merging means an interrupted refresh costs requests and nothing else.
+///
+/// A refresh that DOES reach a schema still overwrites it, so a genuine downgrade (the vendor
+/// pulled strict mode) is recorded. A schema it never reached keeps the measurement it
+/// already had — which is exactly what it had a moment ago, so this can't make the row's
+/// claims any staler than not pressing the button at all.
 #[tauri::command]
 #[tracing::instrument]
 pub async fn probe_custom_llm_provider(id: String, refresh: bool) -> Result<ProbeOutcome, String> {
@@ -265,11 +293,18 @@ pub async fn probe_custom_llm_provider(id: String, refresh: bool) -> Result<Prob
         .position(|r| r.id == id)
         .ok_or_else(|| format!("no custom endpoint with id {id}"))?;
 
-    if refresh {
-        rows[idx].rungs.clear();
-    }
-    let report = meridian::llm::probe::probe_endpoint(&rows[idx]).await;
-    rows[idx].rungs = report.rungs;
+    // A scratch row with no measurements makes `probe_endpoint` treat every schema as
+    // unmeasured (it resumes from `unmeasured_schemas()`), without touching what is stored.
+    let target = if refresh {
+        CustomLlmProvider {
+            rungs: Default::default(),
+            ..rows[idx].clone()
+        }
+    } else {
+        rows[idx].clone()
+    };
+    let report = meridian::llm::probe::probe_endpoint(&target).await;
+    merge_rungs(&mut rows[idx].rungs, report.rungs);
 
     tracing::info!(
         endpoint_id = %id,
@@ -432,6 +467,43 @@ mod tests {
             selected_custom_id(&serde_json::json!({"llm_provider":"custom"})),
             None
         );
+    }
+
+    /// A refresh cut short by a rate limit must not be able to demote the row - that is what
+    /// would strand a SELECTED endpoint below the gate with nothing to catch it (the gate
+    /// only runs on the settings write).
+    #[test]
+    fn an_interrupted_refresh_cannot_lower_what_was_already_measured() {
+        let mut stored = std::collections::BTreeMap::from([
+            ("activity_report".to_string(), SchemaRung::Strict),
+            ("workstream".to_string(), SchemaRung::Strict),
+            ("worklog_generate".to_string(), SchemaRung::JsonSchema),
+            ("plan_task_draft".to_string(), SchemaRung::Strict),
+        ]);
+        // A refresh that got one schema in before the 429 reports only that one.
+        merge_rungs(
+            &mut stored,
+            std::collections::BTreeMap::from([("activity_report".to_string(), SchemaRung::Strict)]),
+        );
+        assert_eq!(
+            stored.len(),
+            4,
+            "the untouched schemas keep their measurement"
+        );
+        assert_eq!(stored["worklog_generate"], SchemaRung::JsonSchema);
+    }
+
+    /// The other half of the same rule: a refresh that DOES reach a schema records what it
+    /// found, downgrade included - otherwise re-testing could never discover bad news.
+    #[test]
+    fn a_completed_refresh_records_a_downgrade() {
+        let mut stored =
+            std::collections::BTreeMap::from([("workstream".to_string(), SchemaRung::Strict)]);
+        merge_rungs(
+            &mut stored,
+            std::collections::BTreeMap::from([("workstream".to_string(), SchemaRung::JsonObject)]),
+        );
+        assert_eq!(stored["workstream"], SchemaRung::JsonObject);
     }
 
     /// An unmeasured endpoint is Lab-only, and the view says so rather than making the UI

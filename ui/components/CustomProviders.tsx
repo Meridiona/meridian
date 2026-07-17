@@ -133,6 +133,10 @@ function AddForm({ onAdd, onCancel }: {
   const [apiKey, setApiKey] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** A probe that stopped early - the endpoint IS saved, so this is a "resume it" notice,
+   *  not a failure. Keeping the form open to say so beats making the user infer it from a
+   *  card that merely isn't fully tested. */
+  const [incomplete, setIncomplete] = useState<string | null>(null)
 
   const preset = customVendorPreset(vendor)
   // Only the escape hatch types its own URL; a preset's URL is fixed so a typo can't turn
@@ -149,10 +153,14 @@ function AddForm({ onAdd, onCancel }: {
   async function submit() {
     setBusy(true)
     setError(null)
+    setIncomplete(null)
     try {
-      await onAdd({ vendor, name, base_url: baseUrl, model, api_key: apiKey })
-      setApiKey('')
-      onCancel()
+      const outcome = await onAdd({ vendor, name, base_url: baseUrl, model, api_key: apiKey })
+      setApiKey('')  // the key is stored daemon-side now and never comes back - don't keep it here
+      // The endpoint is saved either way; only a COMPLETE measurement closes the form, since
+      // an incomplete one has something the user needs to act on.
+      if (outcome.incomplete) setIncomplete(outcome.incomplete)
+      else onCancel()
     } catch (e) {
       setError(String(e))
     } finally {
@@ -210,6 +218,16 @@ function AddForm({ onAdd, onCancel }: {
       )}
 
       {error && <p style={{ fontSize: 10.5, lineHeight: 1.4, color: 'var(--status-error-dot)' }}>{error}</p>}
+
+      {/* Saved, but not fully measured - say so plainly, because the card alone would only
+          show the symptom (not selectable) and not the reason. */}
+      {incomplete && (
+        <p style={{ fontSize: 10.5, lineHeight: 1.45, color: 'var(--color-state-pending)' }}>
+          Added, but testing stopped early: {incomplete}. It’s saved and usable in the LLM Lab -
+          press Test on its card when the limit clears to finish measuring it, and it can then be
+          selected here.
+        </p>
+      )}
 
       <div className="flex items-center" style={{ gap: 8 }}>
         <button onClick={submit} disabled={busy}
