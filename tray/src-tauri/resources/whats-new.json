@@ -69,11 +69,6 @@
       "title": "See and install updates from the dashboard",
       "status": "in-progress",
       "description": "An update card in the dashboard sidebar, so you don't have to open the tray popover to check for or install a new version."
-    },
-    {
-      "title": "Lighter on-device AI footprint",
-      "status": "considering",
-      "description": "Explore ways to further reduce how much memory the local AI model uses beyond today's idle auto-unload."
     }
   ]
 }
