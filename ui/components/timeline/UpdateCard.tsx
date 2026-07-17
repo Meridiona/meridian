@@ -53,6 +53,7 @@ export function UpdateCard() {
     if (installing) return
     setInstalling(true)
     setFailed(false)
+    setPct(null)
     // Resolves only on failure - success re-execs the app (the relaunch).
     invoke('install_update').catch(() => {
       setInstalling(false)

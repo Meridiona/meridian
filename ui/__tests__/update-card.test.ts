@@ -55,4 +55,9 @@ describe('UpdateCard', () => {
     expect(src).toContain('rounded-xl')
     expect(src).toContain('var(--accent)')
   })
+
+  it('resets the stale download percentage when retrying after a failed install', () => {
+    const onInstall = src.slice(src.indexOf('const onInstall'), src.indexOf('const title'))
+    expect(onInstall).toContain('setPct(null)')
+  })
 })
