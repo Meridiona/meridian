@@ -151,9 +151,10 @@ function ProviderGlyph({ id, on }: { id: LlmProviderId; on: boolean }) {
   )
 }
 
-function Badge({ text, tone }: { text: string; tone: 'accent' | 'warn' | 'muted' }) {
+function Badge({ text, tone }: { text: string; tone: 'accent' | 'warn' | 'muted' | 'ok' }) {
   const c = tone === 'accent' ? 'var(--color-state-proposal)'
-    : tone === 'warn' ? 'var(--color-state-pending)' : 'var(--t-faint)'
+    : tone === 'warn' ? 'var(--color-state-pending)'
+    : tone === 'ok' ? 'var(--color-state-approved)' : 'var(--t-title)'
   return (
     <span className="font-mono" style={{
       fontSize: 8.5, letterSpacing: '.1em', color: c,
@@ -169,7 +170,7 @@ function TestBadge({ testing, lastTest }: { testing: boolean; lastTest: Provider
   if (!lastTest) return null
   const when = timeAgo(lastTest.tested_at)
   if (lastTest.outcome.status === 'ok') {
-    return <Badge text={when ? `VERIFIED · ${when}` : 'VERIFIED'} tone="accent" />
+    return <Badge text={when ? `VERIFIED · ${when}` : 'VERIFIED'} tone="ok" />
   }
   if (lastTest.outcome.status === 'rate_limited') {
     return <Badge text={when ? `RATE LIMITED · ${when}` : 'RATE LIMITED'} tone="warn" />
@@ -207,7 +208,6 @@ function ProviderCard({ p, picked, missing, testing, lastTest, onPick, onTest }:
             <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>{p.name}</span>
           </div>
           <div className="flex items-center flex-wrap" style={{ gap: 5, marginTop: 4 }}>
-            {p.recommended && <Badge text="RECOMMENDED" tone="accent" />}
             {p.kind === 'local' && <Badge text="PRIVATE" tone="muted" />}
             {missing && <Badge text="NOT INSTALLED" tone="warn" />}
             <TestBadge testing={testing} lastTest={lastTest} />
@@ -223,18 +223,18 @@ function ProviderCard({ p, picked, missing, testing, lastTest, onPick, onTest }:
         </span>
       </div>
 
-      <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-faint)' }}>{p.blurb}</p>
+      <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-title)' }}>{p.blurb}</p>
 
       {/* The failure/rate-limit message from the last test, when there is one. */}
       {lastTest && lastTest.outcome.status !== 'ok' && (
-        <p style={{ fontSize: 10.5, lineHeight: 1.4, color: 'var(--t-faint-2)' }}>
+        <p style={{ fontSize: 10.5, lineHeight: 1.4, color: 'var(--t-title)' }}>
           {lastTest.outcome.message}
         </p>
       )}
 
       {/* Picking an uninstalled CLI is allowed, not blocked — show exactly how to get it. */}
       {missing && picked && (
-        <p className="font-mono" style={{ fontSize: 10.5, lineHeight: 1.5, color: 'var(--t-faint-2)', background: 'var(--t-card)', borderRadius: 6, padding: '6px 8px' }}>
+        <p className="font-mono" style={{ fontSize: 10.5, lineHeight: 1.5, color: 'var(--t-title)', background: 'var(--t-card)', borderRadius: 6, padding: '6px 8px' }}>
           {p.installHint}
         </p>
       )}
@@ -246,7 +246,7 @@ function ProviderCard({ p, picked, missing, testing, lastTest, onPick, onTest }:
           className="font-mono self-start"
           style={{
             fontSize: 9.5, letterSpacing: '.08em', textTransform: 'uppercase',
-            color: 'var(--t-faint)', border: '0.5px solid var(--t-card-border)',
+            color: 'var(--t-title)', border: '0.5px solid var(--t-title)',
             borderRadius: 5, padding: '3px 7px', cursor: testing ? 'default' : 'pointer',
             opacity: testing ? 0.55 : 1, background: 'transparent',
           }}>
@@ -333,7 +333,7 @@ export default function LlmProviderPicker({ value, onChange, status, scanning, t
         <button onClick={rescan} disabled={busy} className="font-mono shrink-0"
           style={{
             fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase',
-            color: 'var(--t-faint)', border: '0.5px solid var(--t-card-border)',
+            color: 'var(--t-title)', border: '0.5px solid var(--t-title)',
             borderRadius: 6, padding: '4px 9px', cursor: busy ? 'default' : 'pointer',
             opacity: busy ? 0.55 : 1, background: 'transparent',
           }}>
