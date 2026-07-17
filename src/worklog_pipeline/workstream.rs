@@ -68,16 +68,20 @@ pub(crate) fn workstream_request(
     }
 }
 
-/// Has `hour_label` (`YYYY-MM-DDTHH`, local) already been folded into the day's tasks?
+/// Does a prior segment **start** inside `hour_label` (`YYYY-MM-DDTHH`, local)? One of the
+/// two idempotency signals in [`run`] (the other is [`task_db::hour_folded_marker_exists`]).
 ///
-/// Judged by a prior segment **starting** inside the hour — NOT by `DayTaskRow::hours`
-/// (`hours_json`), which is derived from segments *touching* an hour: a segment that
-/// merely spills past the boundary (`14:44-15:02`, `16:20-17:01`) marks the NEXT hour
-/// as touched, and guarding on that skipped the next hour's real fold, silently
-/// dropping its work (observed live twice on 2026-07-16, hours 15 and 17). A fold's
-/// own placements start inside the hour being folded, so segment starts are the
-/// honest signal. An unparseable hour suffix fails open (fold runs — the merge is
-/// retry-safe) rather than risking a silent drop.
+/// Judged by segment starts — NOT by `DayTaskRow::hours` (`hours_json`), which is derived
+/// from segments *touching* an hour: a segment that merely spills past the boundary
+/// (`14:44-15:02`, `16:20-17:01`) marks the NEXT hour as touched, and guarding on that
+/// skipped the next hour's real fold, silently dropping its work (observed live twice on
+/// 2026-07-16, hours 15 and 17). A fold's own placements start inside the hour being
+/// folded, so segment starts are the honest signal.
+///
+/// Its blind spot — a folded hour whose only segment coalesced backward into the prior
+/// hour, so nothing starts in this hour's window — is exactly what the marker-row signal
+/// covers; the two are OR'd. An unparseable hour suffix fails open (fold runs — the merge
+/// is retry-safe) rather than risking a silent drop.
 fn hour_already_folded(prior: &[task_db::DayTaskRow], hour_label: &str) -> bool {
     let Some(hh) = hour_label
         .rsplit('T')
@@ -104,8 +108,16 @@ fn hour_already_folded(prior: &[task_db::DayTaskRow], hour_label: &str) -> bool 
 pub async fn run(pool: &SqlitePool, day_local: &str, hour_label: &str, report: &str) -> Result<()> {
     let prior = task_db::fetch_state(pool, day_local).await;
 
-    // Idempotency: this hour is already folded in — nothing to do.
-    if hour_already_folded(&prior, hour_label) {
+    // Idempotency: this hour is already folded in — nothing to do. Two independent signals,
+    // OR'd so either alone suffices:
+    //   1. a per-hour marker row (written after this hour's fold succeeds) — geometry-
+    //      independent, so it survives segment coalescing that moves a folded hour's
+    //      segment start back into the prior hour;
+    //   2. a segment *starting* inside this hour — covers the narrow window where a fold
+    //      completed but the daemon died before the marker write (retry finds the segment).
+    if hour_already_folded(&prior, hour_label)
+        || task_db::hour_folded_marker_exists(pool, day_local, hour_label).await
+    {
         tracing::info!(
             hour = hour_label,
             "worklog: hour already in workstreams — build skipped"
@@ -239,5 +251,20 @@ mod tests {
         assert!(!hour_already_folded(&[], "2026-07-16T17"));
         let prior = vec![row_with_segments(vec![seg(0, 60)])];
         assert!(!hour_already_folded(&prior, "not-an-hour-label"));
+    }
+
+    /// The coalescing blind spot the marker signal exists to cover: hour 15's fold extended
+    /// a task across the 15:00 boundary and `segment::normalize` merged it back into hour
+    /// 14's segment (14:44-15:02 + 15:02-15:30 -> 14:44-15:30), keeping the earlier start.
+    /// Nothing now STARTS in hour 15, so the geometry check alone reports "not folded" and
+    /// would re-fold hour 15 on any retry. This pins that gap; `run`'s marker-row check
+    /// (`task_db::hour_folded_marker_exists`, DB-backed) is what actually closes it.
+    #[test]
+    fn a_coalesced_segment_defeats_the_start_check_alone() {
+        let prior = vec![row_with_segments(vec![seg(14 * 60 + 44, 15 * 60 + 30)])];
+        assert!(
+            !hour_already_folded(&prior, "2026-07-16T15"),
+            "documents the geometry blind spot the marker row covers"
+        );
     }
 }

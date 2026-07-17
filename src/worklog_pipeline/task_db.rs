@@ -9,8 +9,10 @@
 //! never leaves an orphan, while a surviving task keeps its original
 //! `created_at`. Each task's time lives in its `segments` (migration 059); its
 //! `minutes` and `hours` are derived from them, so `day_hour_spans` is no longer
-//! a minute source — [`upsert_hour_span`] still records the measured per-hour span
-//! (write-only, kept for a future consumer) but nothing here reads it back.
+//! a minute source. Its *presence* per hour is now load-bearing, though:
+//! [`upsert_hour_span`] writes a row once an hour has been folded, and
+//! [`hour_folded_marker_exists`] reads that back as the fold's idempotency
+//! marker (the recorded `span_min` value itself is still write-only).
 //!
 //! Both are today-forward, tolerant of a pre-058/059 DB: a missing table/column
 //! degrades to an empty read / a skipped write, never an error that fails the hour.
@@ -31,8 +33,10 @@ pub struct DayTaskRow {
     /// Local hour labels this task's segments touch (`'YYYY-MM-DDTHH'`) — the
     /// interim hour-block UI's coarse span. Code-derived from `segments`, not
     /// authored by the model. NOT the fold's idempotency key: "touches" includes a
-    /// segment spilling past an hour boundary, which is exactly why
-    /// [`super::workstream::run`]'s guard judges by segment *starts* instead.
+    /// segment spilling past an hour boundary, which would over-eagerly skip the
+    /// next hour's fold. Idempotency is instead judged by
+    /// [`hour_folded_marker_exists`] (a per-hour marker row) plus a segment-*start*
+    /// check — see [`super::workstream::run`].
     pub hours: Vec<String>,
     /// Approximate `HH:MM-HH:MM` time ranges this task was worked (migration 059).
     /// Non-contiguous segments are breaks; the timeline draws the task across them.
@@ -202,6 +206,36 @@ pub async fn upsert_hour_span(
     }
 }
 
+/// Has `hour_label` already been folded into the day's tasks? Answered by the presence of
+/// its [`upsert_hour_span`] marker row, which the driver ([`super::hour::run_hour`]) writes
+/// **after** a successful fold — so a row means "this hour's report is already merged in".
+///
+/// This is the geometry-independent half of [`super::workstream::run`]'s idempotency guard.
+/// The other half judges by a segment *starting* inside the hour, which is defeated by
+/// segment coalescing: folding hour N+1 can extend a task across the boundary and
+/// [`segment::normalize`] merges it back into hour N's segment, keeping the earlier
+/// `start_min` — so a later re-check of N+1 finds nothing starting in its window and would
+/// re-fold already-merged work. The marker row does not move, so it closes that gap.
+///
+/// A missing table (pre-058 DB) or read error fails **open** (returns `false` → the fold
+/// runs) — same tolerance as [`fetch_state`], since a re-fold is retry-safe but a wrong
+/// skip would silently drop the hour.
+pub async fn hour_folded_marker_exists(
+    pool: &SqlitePool,
+    day_local: &str,
+    hour_label: &str,
+) -> bool {
+    let res = sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM day_hour_spans WHERE day_local = ? AND hour_label = ? LIMIT 1",
+    )
+    .bind(day_local)
+    .bind(hour_label)
+    .fetch_optional(pool)
+    .instrument(tracing::debug_span!("worklog.tasks.read.hour_span_marker"))
+    .await;
+    matches!(res, Ok(Some(_)))
+}
+
 /// A pre-058 DB lacks these tables: log and skip rather than failing the hour.
 /// Any other DB error propagates with context.
 fn skip_or_err(e: sqlx::Error, ctx: &'static str) -> Result<()> {
@@ -348,5 +382,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(n, 2);
+    }
+
+    #[tokio::test]
+    async fn hour_folded_marker_reflects_the_span_row() {
+        let pool = fresh().await;
+        // No marker yet — the fold has not run for either hour.
+        assert!(!hour_folded_marker_exists(&pool, "2026-07-15", "2026-07-15T08").await);
+
+        upsert_hour_span(&pool, "2026-07-15", "2026-07-15T08", 40)
+            .await
+            .unwrap();
+
+        // A row now exists for 08 (folded) but not 09 (not folded).
+        assert!(hour_folded_marker_exists(&pool, "2026-07-15", "2026-07-15T08").await);
+        assert!(!hour_folded_marker_exists(&pool, "2026-07-15", "2026-07-15T09").await);
+        // Wrong day never matches.
+        assert!(!hour_folded_marker_exists(&pool, "2026-07-14", "2026-07-15T08").await);
     }
 }
