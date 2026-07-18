@@ -60,6 +60,49 @@ impl CustomEndpoint {
     }
 }
 
+/// Pull the model ids out of a `/models` response body.
+///
+/// Split out from [`list_models`] so the envelope handling is unit-testable without a live
+/// endpoint — the shapes below are the whole reason this function is fallible.
+///
+/// OpenAI answers `{"data":[{"id":…}]}`. Some compatible servers answer `{"models":[…]}`, and
+/// a few return a bare array; entries are usually objects but are sometimes bare strings. All
+/// are accepted, because the alternative is making a user hand-type a model purely because
+/// their vendor picked a different envelope.
+///
+/// Returns an empty vec — NOT an error — for a well-formed response listing nothing. That is
+/// a real answer ("this endpoint serves no models it will admit to"), and callers already
+/// treat empty as "fall back to free text".
+fn parse_models_body(body: &str) -> Result<Vec<String>, LlmError> {
+    let parsed: Value = serde_json::from_str(body)
+        .map_err(|e| LlmError::Failed(format!("custom provider models response: {e}")))?;
+
+    let items = parsed
+        .get("data")
+        .or_else(|| parsed.get("models"))
+        .unwrap_or(&parsed);
+    let mut ids: Vec<String> = items
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| {
+                    // An entry is either {"id": "…"} or, on some servers, a bare string.
+                    m.get("id")
+                        .and_then(Value::as_str)
+                        .or_else(|| m.as_str())
+                        .map(str::to_string)
+                })
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    // Sorted and deduped so the picker's order doesn't depend on the server's, and a vendor
+    // that lists the same id twice doesn't render it twice.
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
 /// How long to wait on a models listing. Deliberately short and NOT `cli_timeout_s`: this
 /// runs while a user watches a dropdown, and a slow endpoint should fall back to free text
 /// quickly rather than freeze the picker.
@@ -117,33 +160,7 @@ pub async fn list_models(
         return Err(classify_error(status, &headers, &body, endpoint_id));
     }
 
-    let parsed: Value = serde_json::from_str(&body)
-        .map_err(|e| LlmError::Failed(format!("custom provider models response: {e}")))?;
-
-    // OpenAI's shape is {"data":[{"id":…}]}. Some compatible servers answer {"models":[…]},
-    // and a few return a bare array. Accept all three rather than make the user hand-type a
-    // model because their vendor picked a different envelope.
-    let items = parsed
-        .get("data")
-        .or_else(|| parsed.get("models"))
-        .unwrap_or(&parsed);
-    let mut ids: Vec<String> = items
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|m| {
-                    // An entry is either {"id": "…"} or, on some servers, a bare string.
-                    m.get("id")
-                        .and_then(Value::as_str)
-                        .or_else(|| m.as_str())
-                        .map(str::to_string)
-                })
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
-    ids.sort();
-    ids.dedup();
+    let ids = parse_models_body(&body)?;
 
     tracing::info!(
         endpoint_id = %endpoint_id,
@@ -410,6 +427,70 @@ fn classify_error(
         ));
     }
     LlmError::Failed(format!("custom provider {status}: {head}"))
+}
+
+#[cfg(test)]
+mod models_listing_tests {
+    use super::*;
+
+    /// The OpenAI shape, which Groq/OpenRouter/Gemini's compat layer all follow.
+    #[test]
+    fn reads_the_openai_data_envelope() {
+        let body = r#"{"object":"list","data":[
+            {"id":"gpt-5.1","object":"model"},
+            {"id":"gpt-5.5","object":"model"}
+        ]}"#;
+        assert_eq!(parse_models_body(body).unwrap(), vec!["gpt-5.1", "gpt-5.5"]);
+    }
+
+    /// Some compatible servers use `models` instead of `data`.
+    #[test]
+    fn reads_the_models_envelope() {
+        let body = r#"{"models":[{"id":"llama-3.3-70b"}]}"#;
+        assert_eq!(parse_models_body(body).unwrap(), vec!["llama-3.3-70b"]);
+    }
+
+    /// …and a few return the array itself, sometimes as bare strings.
+    #[test]
+    fn reads_a_bare_array_of_objects_or_strings() {
+        assert_eq!(
+            parse_models_body(r#"[{"id":"a"},"b"]"#).unwrap(),
+            vec!["a", "b"]
+        );
+    }
+
+    /// Order comes from us, not the server, and a duplicate id renders once.
+    #[test]
+    fn sorts_and_dedupes() {
+        let body = r#"{"data":[{"id":"z"},{"id":"a"},{"id":"z"}]}"#;
+        assert_eq!(parse_models_body(body).unwrap(), vec!["a", "z"]);
+    }
+
+    /// A well-formed response listing nothing is an ANSWER, not a failure - the caller
+    /// falls back to free text either way, but an Err would surface a scary message for
+    /// what is simply an endpoint with nothing to declare.
+    #[test]
+    fn empty_list_is_ok_not_an_error() {
+        assert_eq!(
+            parse_models_body(r#"{"data":[]}"#).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    /// Entries we can't read a usable id from are skipped rather than poisoning the list
+    /// with empty options.
+    #[test]
+    fn skips_entries_with_no_usable_id() {
+        let body = r#"{"data":[{"id":"good"},{"object":"model"},{"id":""}]}"#;
+        assert_eq!(parse_models_body(body).unwrap(), vec!["good"]);
+    }
+
+    /// A non-JSON body (an HTML error page from a proxy, say) must fail rather than be
+    /// reported as "no models", which would look like a working endpoint serving nothing.
+    #[test]
+    fn rejects_a_non_json_body() {
+        assert!(parse_models_body("<html>502 Bad Gateway</html>").is_err());
+    }
 }
 
 #[cfg(test)]
