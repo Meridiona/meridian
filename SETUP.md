@@ -10,7 +10,7 @@
 curl -fsSL https://raw.githubusercontent.com/Meridiona/meridian/main/scripts/bootstrap.sh | bash
 ```
 
-This downloads the Meridian `.app`, installs the `meridian` CLI, then runs `meridian setup` automatically.
+This downloads the latest signed Meridian `.app`, installs it to `/Applications`, and launches it. The app stages its own background daemon on first run and opens the setup wizard automatically. (Prefer to do it by hand? Download `Meridian.dmg` from the [latest release](https://github.com/Meridiona/meridian/releases/latest) and drag Meridian to Applications.)
 
 `meridian setup` will walk you through:
 1. Granting **Screen Recording** and **Accessibility** permissions to **Meridian** (required)

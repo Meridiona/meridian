@@ -3,26 +3,26 @@
 //!
 //! # What this is
 //! The installed version + whether a newer one is published, for the dashboard's
-//! "update available" banner. Reads the bundle's `~/.meridian/app/VERSION` (or
-//! `MERIDIAN_VERSION`, else `"dev"`) and the latest published version from the
-//! npm registry. NOT a DB read (file + external HTTP), so it lives tray-side, not
-//! in meridian-core.
+//! "update available" banner. Reads the app's baked version and the latest
+//! published version from the GitHub releases API (the app is distributed as a
+//! signed DMG — there is no npm package). NOT a DB read (file + external HTTP),
+//! so it lives tray-side, not in meridian-core.
 //!
-//! [`run_update`] (the ported `/api/update` POST) is the action behind that
-//! banner: it launches `meridian update` in a visible Terminal window (it
-//! self-elevates the npm step + restarts daemons, so it must run interactively,
-//! not silently inside the app).
+//! [`run_update`] (the ported `/api/update` POST) is the source-checkout action
+//! behind that banner: it launches `meridian update` in a visible Terminal window
+//! (it rebuilds + restarts daemons, so it must run interactively). A packaged
+//! `.app` updates itself in-app instead — see [`install_update`].
 //!
 //! # Who calls this
 //! The `get_version` + `run_update` Tauri commands → the dashboard `Sidebar`
 //! (the version / update line). `get_version` never throws — an update check
 //! must not break the UI. `get_app_info` → the dashboard's Account settings
 //! section and the popover footer (the version/channel badge, dev vs staging
-//! vs prod) — synchronous, no npm-registry round trip.
+//! vs prod) — synchronous, no network round trip.
 //!
 //! # Related
-//! - The npm result is cached process-wide for [`CHECK_TTL_MS`] so a dashboard
-//!   left open doesn't hammer the registry (mirrors the route's module cache).
+//! - The GitHub result is cached process-wide for [`CHECK_TTL_MS`] so a dashboard
+//!   left open doesn't hammer the API.
 
 use chrono::{DateTime, Duration as ChronoDuration, SecondsFormat, Utc};
 use serde::Serialize;
@@ -30,12 +30,12 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tracing::Instrument;
 
-/// npm package whose published `latest` dist-tag we compare against.
-const NPM_PKG_URL: &str = "https://registry.npmjs.org/@meridiona/meridian";
-/// Re-check the registry at most hourly.
+/// GitHub releases API — its `tag_name` is the latest published version.
+const GITHUB_LATEST_URL: &str = "https://api.github.com/repos/Meridiona/meridian/releases/latest";
+/// Re-check the API at most hourly.
 const CHECK_TTL_MS: i64 = 60 * 60 * 1000;
 
-/// Process-wide cache of the npm result (`latest`, when checked). Persists
+/// Process-wide cache of the GitHub result (`latest`, when checked). Persists
 /// across `get_version` calls; `None` until the first check.
 static CACHE: Mutex<Option<(Option<String>, DateTime<Utc>)>> = Mutex::new(None);
 
@@ -50,22 +50,19 @@ pub struct VersionInfo {
     pub checked_at: Option<String>,
 }
 
-/// Installed bundle version from `~/.meridian/app/VERSION`, else
-/// `MERIDIAN_VERSION`, else `"dev"` (a source/dev run).
-fn read_current_version() -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        if let Ok(v) = std::fs::read_to_string(format!("{home}/.meridian/app/VERSION")) {
-            let v = v.trim();
-            if !v.is_empty() {
-                return v.to_string();
-            }
+/// Installed version: `MERIDIAN_VERSION` if set (a legacy override), else the
+/// app's baked `tauri.conf.json` version, else `"dev"` (an unbundled run).
+fn read_current_version(app: &tauri::AppHandle) -> String {
+    if let Ok(v) = std::env::var("MERIDIAN_VERSION") {
+        let v = v.trim();
+        if !v.is_empty() {
+            return v.to_string();
         }
     }
-    std::env::var("MERIDIAN_VERSION")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "dev".to_string())
+    if cfg!(debug_assertions) {
+        return "dev".to_string();
+    }
+    app.package_info().version.to_string()
 }
 
 /// Dotted numeric compare — `true` if `latest` > `current`. A `dev` current is
@@ -102,41 +99,39 @@ async fn fetch_latest() -> (Option<String>, DateTime<Utc>) {
     // Fast path: a fresh cached result. Lock is released before any await.
     if let Some((latest, checked)) = CACHE.lock().unwrap().as_ref() {
         if Utc::now() - *checked < ChronoDuration::milliseconds(CHECK_TTL_MS) {
-            tracing::debug!("version: npm cache hit");
+            tracing::debug!("version: github cache hit");
             return (latest.clone(), *checked);
         }
     }
 
     let fetched: Result<Option<String>, String> = async {
         let resp = reqwest::Client::new()
-            .get(NPM_PKG_URL)
-            // Abbreviated metadata: dist-tags without the full per-version payload.
-            .header(
-                reqwest::header::ACCEPT,
-                "application/vnd.npm.install-v1+json",
-            )
+            .get(GITHUB_LATEST_URL)
+            // GitHub's API rejects requests without a User-Agent (403).
+            .header(reqwest::header::USER_AGENT, "meridian-tray")
+            .header(reqwest::header::ACCEPT, "application/vnd.github+json")
             .timeout(Duration::from_secs(5))
             .send()
             .await
             .map_err(|e| e.to_string())?;
         if !resp.status().is_success() {
-            return Err(format!("npm registry {}", resp.status()));
+            return Err(format!("github api {}", resp.status()));
         }
         let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        // `tag_name` is like "v1.71.0"; is_newer() strips the leading v itself.
         Ok(body
-            .get("dist-tags")
-            .and_then(|t| t.get("latest"))
-            .and_then(|l| l.as_str())
+            .get("tag_name")
+            .and_then(|t| t.as_str())
             .map(str::to_string))
     }
-    .instrument(tracing::debug_span!("version.fetch.npm_registry"))
+    .instrument(tracing::debug_span!("version.fetch.github_releases"))
     .await;
 
     let mut guard = CACHE.lock().unwrap();
     match fetched {
         Ok(latest) => *guard = Some((latest, Utc::now())),
         Err(e) => {
-            tracing::warn!(error = %e, "version check: npm registry unreachable");
+            tracing::warn!(error = %e, "version check: github releases API unreachable");
             // Keep any prior result; otherwise record a null check now.
             if guard.is_none() {
                 *guard = Some((None, Utc::now()));
@@ -148,9 +143,9 @@ async fn fetch_latest() -> (Option<String>, DateTime<Utc>) {
 
 /// Current vs latest version for the dashboard (the ported /api/version GET).
 #[tauri::command]
-#[tracing::instrument]
-pub async fn get_version() -> VersionInfo {
-    let current = read_current_version();
+#[tracing::instrument(skip(app))]
+pub async fn get_version(app: tauri::AppHandle) -> VersionInfo {
+    let current = read_current_version(&app);
     let (latest, checked_at) = fetch_latest().await;
     let update_available = latest
         .as_deref()
@@ -271,9 +266,9 @@ pub fn get_app_info(app: tauri::AppHandle) -> AppInfo {
 /// DMG auto-update check for the in-app banners (sidebar + popover). Wraps
 /// [`crate::update::check_status`] — a structured, never-throwing status
 /// (`available` / `uptodate` / `unsupported` / `error`). Distinct from
-/// [`get_version`] above: that compares the npm-bundle version against the npm
-/// registry (the `meridian update` Terminal path); this checks the GitHub
-/// `latest.json` the packaged `.app` updates from.
+/// [`get_version`] above: that reports current-vs-latest for the version line
+/// (GitHub releases tag); this drives the in-app DMG updater against the GitHub
+/// `latest.json` the packaged `.app` installs from.
 #[tauri::command]
 #[tracing::instrument(skip(app))]
 pub async fn check_update(app: tauri::AppHandle) -> crate::update::UpdateStatus {

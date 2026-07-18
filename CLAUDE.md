@@ -132,7 +132,7 @@ meridian/
 > `tray/src-tauri/src/commands/parents.rs`. The dashboard ships **embedded in the tray binary** (`tauri
 > build` → `generate_context!` bundles `ui/out`); the standalone-Node-server release machinery (the
 > `com.meridiona.ui` plist, `ui-start.sh`, the `ui.tar.gz` packing, the pinned Node runtime + better-sqlite3
-> ABI dance) was retired, and `install-from-bundle.sh` boots out any leftover `com.meridiona.ui` agent on
+> ABI dance) was retired, and `backend_install.rs` boots out any leftover `com.meridiona.ui` agent on
 > update. Dev-only `--features otel` on the tray exports spans to OpenObserve
 > (`service.name = meridian-tray`) — release builds omit it. Rationale + full scope: Obsidian
 > `Decisions/Dashboard frontend - keep Next in Tauri.md`, `~/.claude/plans/meridian-next-fold.md`.
@@ -473,7 +473,7 @@ New sources plug into the `AgentSource` enum in `sources/mod.rs` and are swept b
 
 Source-adapter env overrides: `COPILOT_SESSION_STATE_DIR`, `VSCODE_USER_DIR`, `CURSOR_STATE_VSCDB`, `CURSOR_CLI_CHATS_DIR`, `ANTIGRAVITY_APP_DIR`.
 
-> **Daemon config gotcha:** the daemon loads env via `dotenvy::dotenv_override()`, which walks UP from its launchd `WorkingDirectory` and stops at the first `.env`. All install types converge on the **canonical `~/.meridian/.env`** (the same file the tray writes tracker creds to): the **npm bundle**'s `WorkingDirectory` is `~/.meridian/app` but no `~/.meridian/app/.env` is written (the installer creates `~/.meridian/.env`), so dotenvy walks up to it; the **`.app` DMG** (the tray stages the daemon via `tray/src-tauri/src/backend_install.rs`) sets `WorkingDirectory` to `~/.meridian` and reads it directly; **source/dev** reads the repo `.env`. Edit `~/.meridian/.env` (then `meridian restart`) to tune daemon env on an installed system.
+> **Daemon config gotcha:** the daemon loads env via `dotenvy::dotenv_override()`, which walks UP from its launchd `WorkingDirectory` and stops at the first `.env`. Both install types converge on the **canonical `~/.meridian/.env`** (the same file the tray writes tracker creds to): the **`.app` DMG** (the tray stages the daemon via `tray/src-tauri/src/backend_install.rs`) sets `WorkingDirectory` to `~/.meridian` and reads it directly; **source/dev** reads the repo `.env`. (The old npm bundle install was retired - the DMG is the only packaged distribution now.) Edit `~/.meridian/.env` (then `meridian restart`) to tune daemon env on an installed system.
 
 The pipeline is fully in Rust. The former Python `coding_agent_indexer` +
 `coding_agent_summariser` packages **and the entire Python `services/` tree (the MLX

@@ -57,14 +57,9 @@ A dashboard inside the Meridian app (open it from the menu-bar tray icon) shows 
 curl -fsSL https://raw.githubusercontent.com/Meridiona/meridian/main/scripts/bootstrap.sh | bash
 ```
 
-This installs the `meridian` CLI and runs `meridian setup`, which brings up everything else — the background daemon, capture, and the dashboard — then walks you through macOS permissions and connecting your tracker.
+This downloads the latest signed Meridian app, installs it to `/Applications`, and launches it. The app stages its own background daemon on first run and opens the setup wizard — macOS permissions, the AI that writes your summaries, and connecting your tracker. Updates install themselves from within the app.
 
-Prefer npm:
-
-```bash
-npm install -g @meridiona/meridian
-meridian setup
-```
+Prefer to do it by hand? Download `Meridian.dmg` from the [latest release](https://github.com/Meridiona/meridian/releases/latest), open it, and drag **Meridian** to Applications.
 
 ## Supported PM tools
 
