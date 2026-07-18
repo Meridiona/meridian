@@ -209,12 +209,6 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, hourS
   // worth showing: it is the only thing that says the hour is being tracked at
   // all. (See HourBadges' doc comment.)
   const liveMode = !isToday ? null : liveStatus?.generating ? 'generating' as const : 'queued' as const
-  // Whether to print the strip's own hour label in the gutter. When the live
-  // hour is ALREADY a gridline label on the timeline above (work was folded into
-  // it a moment ago — the common case), repeating "9 PM" here just reads as a
-  // duplicate. Only label the strip when the hour isn't already on the rail —
-  // e.g. the last real work stopped hours ago, so the strip needs its own anchor.
-  const showLiveHourLabel = liveMode !== null && !hourLines.some(h => h.hour === nowHour)
 
   return (
     // A click anywhere in the column that isn't on a card clears the selection
@@ -259,7 +253,6 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, hourS
             <span className="absolute" style={{ left: GUTTER - 5, top: 0, bottom: 0, width: 2, background: 'var(--t-hair)', opacity: 0.22 }} />
             {hourLines.map(({ hour, top }) => {
               const isNow = isToday && hour === nowHour
-              const nodeSize = isNow ? 11 : 9
               return (
                 <div key={hour} className="absolute left-0 right-0 flex items-start"
                   style={{ top, height: 0 }}>
@@ -274,20 +267,26 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, hourS
                       paddingRight: 6,
                       color: 'var(--t-faint-2)', fontFamily: 'var(--font-jetbrains-mono), monospace',
                     }}>
-                    {hourClock(hour)}
+                    {/* Blank for the live hour — the takeover strip below owns both
+                        the label AND the live dot now (see liveMode's render below),
+                        so this row isn't left with an orphaned pulsing dot up here
+                        with nothing beside it. The gridline still draws (next span)
+                        since this row can mark a real boundary — the previous hour's
+                        work ending — just without repeating the hour marker twice. */}
+                    {isNow ? '' : hourClock(hour)}
                   </span>
-                  {/* Every non-live node is the same light ring: panel fill inside, a
-                      thin muted border outside — one consistent look for every
-                      ordinary hour, only the current hour's node differs (solid
-                      accent + pulse). */}
-                  <span className={`absolute rounded-full -translate-y-1/2 ${isNow ? 'live-dot' : ''}`} style={{
-                    left: GUTTER - 5 - nodeSize / 2, width: nodeSize, height: nodeSize,
-                    background: isNow ? 'var(--color-state-proposal)' : 'var(--t-panel)',
-                    border: isNow ? 'none' : '2px solid color-mix(in srgb, var(--t-faint-2) 55%, transparent)',
-                    boxShadow: isNow
-                      ? '0 0 0 3px color-mix(in srgb, var(--color-state-proposal) 18%, transparent)'
-                      : '0 0 0 3px var(--t-panel)',
-                  }} />
+                  {/* Every ordinary hour gets the same light ring: panel fill inside,
+                      a thin muted border outside. The live hour's own accent+pulse
+                      dot now lives next to its label in the takeover strip instead
+                      of up here (see above), so nothing renders in its place. */}
+                  {!isNow && (
+                    <span className="absolute rounded-full -translate-y-1/2" style={{
+                      left: GUTTER - 5 - 4.5, width: 9, height: 9,
+                      background: 'var(--t-panel)',
+                      border: '2px solid color-mix(in srgb, var(--t-faint-2) 55%, transparent)',
+                      boxShadow: '0 0 0 3px var(--t-panel)',
+                    }} />
+                  )}
                   {/* Starts past the card gutter (not GUTTER) so it never touches the
                       spine/node — a separate row divider for the card column only,
                       same as demo.css's .hour-body border-top living in its own
@@ -341,22 +340,38 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, hourS
           — a day with nothing folded yet is exactly when "Meridian is watching
           this hour" is the most useful thing on the screen. The gutter reserves
           the same label width as the gridlines above (GUTTER - 12, then 12px) so
-          the strip lines up with the task cards; the hour text itself is only
-          drawn when the timeline isn't already labelling this hour above
-          (see showLiveHourLabel) — otherwise it just duplicates that label. */}
+          the strip lines up with the task cards. The hour text is always drawn
+          here (even when the grid above already ticked this hour) — leaving it
+          blank made the card read as floating/unaligned, with nothing to its
+          left tying it to the current hour; a little label duplication reads
+          better than that. items-start so the label's top lines up with the
+          card's own top edge (its border), not the vertical center of the
+          whole card, which sat noticeably lower than where the card starts. */}
       {loaded && liveMode && (
         <div className="px-6 pb-8 flex items-start">
           <span className="mt-mono-sm shrink-0" style={{
-            width: GUTTER - 12, fontSize: 10.5, textAlign: 'right',
+            width: GUTTER - 12, fontSize: 10.5, textAlign: 'right', paddingRight: 6,
             color: 'var(--color-state-pending)',
           }}>
-            {showLiveHourLabel ? hourClock(nowHour) : ''}
+            {hourClock(nowHour)}
           </span>
+          {/* The live-hour dot the grid above no longer draws (moved here so it
+              sits next to the current-hour label instead of floating alone with
+              nothing beside it) — same accent+pulse treatment as an ordinary
+              hour node's `isNow` state used to get up on the rail. 4px gap on
+              each side, taken out of the card's own marginLeft below so the
+              card's visible edge doesn't shift from where it sat before. */}
+          <span className="shrink-0 rounded-full live-dot" style={{
+            width: 9, height: 9, marginLeft: 4,
+            background: 'var(--color-state-proposal)',
+            boxShadow: '0 0 0 3px color-mix(in srgb, var(--color-state-proposal) 18%, transparent)',
+          }} />
           {/* 12px carries the label's GUTTER - 12 width up to GUTTER, then
               CARD_GUTTER_GAP up to where the task cards actually start —
               less HourTakeover's own mx-2, so its visible edge lines up with
-              the cards above it rather than sitting further left. */}
-          <div className="flex-1 min-w-0" style={{ marginLeft: 12 + CARD_GUTTER_GAP - 8 }}>
+              the cards above it rather than sitting further left; less the
+              dot's own width + both 4px gaps, now that it sits inline here too. */}
+          <div className="flex-1 min-w-0" style={{ marginLeft: 12 + CARD_GUTTER_GAP - 8 - 9 - 4 - 4 }}>
             <HourTakeover
               hour={nowHour}
               mode={liveMode}
