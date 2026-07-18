@@ -84,8 +84,17 @@ mod tests {
 
     #[test]
     fn expand_handles_tilde_and_absolute() {
-        assert!(expand("~/x").ends_with("/x"));
-        assert!(!expand("~/x").starts_with('~'));
+        // The separator comes from the platform, so assert on the component
+        // rather than a literal "/x" — the latter is a Unix-only spelling and
+        // fails on Windows even though expansion worked correctly.
+        let expanded = expand("~/x");
+        assert!(
+            std::path::Path::new(&expanded)
+                .file_name()
+                .is_some_and(|n| n == "x"),
+            "expected {expanded:?} to end in the component 'x'"
+        );
+        assert!(!expanded.starts_with('~'));
         assert_eq!(expand("/abs/path"), "/abs/path");
     }
 }
