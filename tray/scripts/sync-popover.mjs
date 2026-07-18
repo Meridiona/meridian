@@ -1,28 +1,38 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// Copy the tray popover sources into the Next.js public dir so `tauri dev`
-// can serve them.
+// Copy the tray popover sources (tray/src) into the Next.js tree so the
+// popover window resolves. Two modes, two destinations:
 //
-// This replaces `rm -rf … && mkdir -p … && cp -r …` in tauri.conf.json's
-// beforeDevCommand. Tauri runs that string through the platform shell — `sh -c`
-// on Unix but `cmd /C` on Windows — where none of those three commands exist,
-// so the dev server never starts. Node is already required to run the dev
-// server itself, so doing it here costs no new dependency and behaves
-// identically on every platform.
+//   dev   → ui/public/popover   (next dev serves public/ at the root)
+//   build → ui/out/popover      (the static export the packaged app loads)
 //
-// Why the copy exists at all: the popover's source of truth is tray/src/, but
-// the main window loads it from the Next output (`popover/index.html`). In a
-// packaged build the Tauri build step copies it into ui/out/popover/; in dev,
-// next serves ui/public/, so it has to land there instead. See CLAUDE.md's
-// "Asset layout" note.
+// This replaces two Unix-only shell copies that failed on Windows:
+//   * tauri.conf.json's beforeDevCommand: `rm -rf … && mkdir -p … && cp -r …`,
+//     run through `cmd /C` on Windows where none of those commands exist;
+//   * ui/package.json's build: `next build && cp -r ../tray/src out/popover`,
+//     run inside `tauri build`'s beforeBuildCommand, so a Windows package
+//     build died right after `next build`.
+//
+// Node already runs both the dev server and the build, so this adds no
+// dependency and behaves identically on every platform. Paths are resolved
+// from THIS file's location, so the caller's working directory does not
+// matter (dev runs it from tray/, the build from ui/).
 
 import { cpSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const mode = process.argv[2] ?? "dev";
+const DESTS = { dev: ["public", "popover"], build: ["out", "popover"] };
+const rel = DESTS[mode];
+if (!rel) {
+  console.error(`sync-popover: unknown mode "${mode}" (expected "dev" or "build")`);
+  process.exit(1);
+}
+
 const trayDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const src = resolve(trayDir, "src");
-const dest = resolve(trayDir, "..", "ui", "public", "popover");
+const dest = resolve(trayDir, "..", "ui", ...rel);
 
 // `force` so a first run (nothing to delete) is not an error, and `recursive`
 // so a populated directory from a previous run goes cleanly.
@@ -30,4 +40,4 @@ rmSync(dest, { recursive: true, force: true });
 mkdirSync(dest, { recursive: true });
 cpSync(src, dest, { recursive: true });
 
-console.log(`✓ popover synced: ${src} → ${dest}`);
+console.log(`✓ popover synced (${mode}): ${src} → ${dest}`);

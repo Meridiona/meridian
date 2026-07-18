@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "../../ui/out",
     "devUrl": "http://localhost:3939",
-    "beforeDevCommand": "node scripts/sync-popover.mjs && cd ../ui && npm run dev",
+    "beforeDevCommand": "node scripts/sync-popover.mjs dev && cd ../ui && npm run dev",
     "beforeBuildCommand": "cd ../ui && npm run build"
   },
   "app": {

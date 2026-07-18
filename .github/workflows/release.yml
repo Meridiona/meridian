@@ -291,16 +291,34 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build the dashboard
+      # Reuse the Next.js compiler cache across release runs — the dashboard
+      # build is otherwise from scratch every time.
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: ui/.next/cache
+          key: nextjs-win-${{ hashFiles('ui/package-lock.json') }}-${{ hashFiles('ui/**/*.ts', 'ui/**/*.tsx') }}
+          restore-keys: |
+            nextjs-win-${{ hashFiles('ui/package-lock.json') }}-
+            nextjs-win-
+
+      # Install JS deps only. The dashboard itself is built exactly once, by
+      # `tauri build`'s `beforeBuildCommand` (`cd ../ui && npm run build`)
+      # inside build:windows below — an explicit `npm run build` here would be
+      # a second, redundant full Next.js production build.
+      - name: Install JS dependencies
         shell: bash
-        run: cd ui && npm ci --no-audit --no-fund && npm run build
+        run: |
+          (cd ui && npm ci --no-audit --no-fund)
+          (cd tray && npm ci --no-audit --no-fund)
 
       - name: Build the daemon + tray (NSIS)
         shell: bash
         # tauri.windows.conf.json is picked up automatically for this target:
         # it swaps the bundle to NSIS and points bundle.resources at
-        # meridian.exe. No flag needed.
-        run: cd tray && npm ci --no-audit --no-fund && npm run build:windows
+        # meridian.exe. No flag needed. tauri build's beforeBuildCommand builds
+        # the dashboard (ui/out) as its first step.
+        run: cd tray && npm run build:windows
 
       - name: Attach the installer and merge the updater manifest
         shell: bash
