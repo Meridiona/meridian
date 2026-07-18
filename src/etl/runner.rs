@@ -454,12 +454,18 @@ pub async fn run_etl(meridian: &SqlitePool) -> Result<Vec<i64>> {
 
     if let Err(e) = result {
         warn!(error = %e, "ETL run failed — updating cursor to last successful frame");
-        complete_etl_run(meridian, run_id, sessions_closed, Some(&e.to_string()))
-            .await
-            .context("failed to mark etl_runs row failed")?;
-        update_cursor(meridian, last_processed_id, run_id)
-            .await
-            .context("failed to advance etl_cursor after failed run")?;
+        if let Err(recovery_err) =
+            complete_etl_run(meridian, run_id, sessions_closed, Some(&e.to_string())).await
+        {
+            warn!(error = %recovery_err, run_id, "failed to mark etl_runs row failed");
+        }
+        if let Err(recovery_err) = update_cursor(meridian, last_processed_id, run_id).await {
+            warn!(
+                error = %recovery_err,
+                run_id,
+                "failed to advance etl_cursor after failed run"
+            );
+        }
         return Err(e);
     }
 

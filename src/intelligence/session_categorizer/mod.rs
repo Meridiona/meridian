@@ -543,4 +543,16 @@ mod tests {
         assert!(ActivityKind::Coding.is_pm_mappable());
         assert!(ActivityKind::DeploymentDevops.is_pm_mappable());
     }
+
+    #[test]
+    fn winner_does_not_panic_on_nan_score() {
+        // total_cmp's total order ranks a positive NaN above every finite
+        // value, so a NaN score wins outright rather than panicking like
+        // partial_cmp would.
+        let mut scores = Scores::new();
+        scores.add(ActivityKind::Coding, f32::NAN);
+        scores.add(ActivityKind::Meeting, 1.0);
+        let (winner, _confidence) = scores.winner();
+        assert_eq!(winner, ActivityKind::Coding);
+    }
 }
