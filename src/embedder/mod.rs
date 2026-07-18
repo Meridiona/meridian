@@ -79,7 +79,8 @@ fn embed_blocking(texts: &[String]) -> Result<Vec<Vec<f32>>> {
         *guard = Some(Embedder::load()?);
     }
     let embedder = guard.as_ref().expect("just loaded");
-    texts.iter().map(|t| embedder.embed_one(t)).collect()
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    embedder.embed_batch(&refs)
 }
 
 #[cfg(test)]

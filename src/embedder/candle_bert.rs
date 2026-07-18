@@ -49,6 +49,11 @@ impl Embedder {
                 ..Default::default()
             }))
             .map_err(|e| anyhow::anyhow!("configuring tokenizer truncation: {e}"))?;
+        // BatchLongest (the default): pad every sequence in a batch up to the longest one
+        // in THAT batch, not to MAX_LEN — an hour's spans are mostly short OCR lines, so
+        // padding to the batch max keeps the tensor small instead of paying for 512 columns
+        // on every call.
+        tokenizer.with_padding(Some(tokenizers::PaddingParams::default()));
 
         let weights = dir.join("model.safetensors");
         // SAFETY: the file is our own downloaded, verified-present safetensors blob.
@@ -71,24 +76,51 @@ impl Embedder {
         })
     }
 
-    /// Embed one string → an L2-normalized vector. CLS-pooled (first token).
-    pub fn embed_one(&self, text: &str) -> Result<Vec<f32>> {
-        let encoding = self
+    /// Embed a batch of strings in ONE forward pass → one L2-normalized vector per input,
+    /// same order. CLS-pooled (first token) — correct only because CLS is real content in
+    /// every row (the tokenizer never truncates it away) and, being right-padded, position
+    /// 0 is identical whether or not a row also carries trailing pad tokens.
+    ///
+    /// Batching (rather than one forward pass per string) is what makes this cheap on an
+    /// hour's worth of spans: the model's cost is dominated by the matmuls, which scale
+    /// with the PADDED batch shape, not with `texts.len()` separate calls.
+    pub fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let encodings = self
             .tokenizer
-            .encode(text, true)
-            .map_err(|e| anyhow::anyhow!("tokenizing: {e}"))?;
-        let ids: Vec<u32> = encoding.get_ids().to_vec();
+            .encode_batch(texts.to_vec(), true)
+            .map_err(|e| anyhow::anyhow!("tokenizing batch: {e}"))?;
 
-        let input_ids = Tensor::new(ids.as_slice(), &self.device)?.unsqueeze(0)?; // [1, seq]
+        // Padding gives every encoding the same length (BatchLongest, set in `load`), so a
+        // single rectangular tensor holds the whole batch.
+        let seq_len = encodings.first().map(|e| e.get_ids().len()).unwrap_or(0);
+        let mut ids = Vec::with_capacity(texts.len() * seq_len);
+        let mut mask = Vec::with_capacity(texts.len() * seq_len);
+        for enc in &encodings {
+            ids.extend_from_slice(enc.get_ids());
+            mask.extend(enc.get_attention_mask().iter().map(|&m| m as f32));
+        }
+
+        let input_ids =
+            Tensor::new(ids.as_slice(), &self.device)?.reshape((texts.len(), seq_len))?; // [B, seq]
         let token_type_ids = input_ids.zeros_like()?;
-        // Single sequence, no padding → attention mask is all-ones / unnecessary.
-        let hidden = self.model.forward(&input_ids, &token_type_ids, None)?; // [1, seq, H]
+        let attention_mask =
+            Tensor::new(mask.as_slice(), &self.device)?.reshape((texts.len(), seq_len))?;
+        let hidden = self
+            .model
+            .forward(&input_ids, &token_type_ids, Some(&attention_mask))?; // [B, seq, H]
 
-        // CLS pooling: the first token's hidden state.
-        let cls = hidden.i((0, 0))?.to_dtype(DType::F32)?; // [H]
-        let norm = cls.sqr()?.sum_all()?.sqrt()?.to_scalar::<f32>()?;
-        let inv = if norm > 0.0 { 1.0 / norm } else { 0.0 };
-        let v: Vec<f32> = cls.to_vec1::<f32>()?.into_iter().map(|x| x * inv).collect();
-        Ok(v)
+        // CLS pooling per row, then L2-normalize each — same math as the single-item path,
+        // just applied per row of the batch instead of once.
+        let mut out = Vec::with_capacity(texts.len());
+        for b in 0..texts.len() {
+            let cls = hidden.i((b, 0))?.to_dtype(DType::F32)?; // [H]
+            let norm = cls.sqr()?.sum_all()?.sqrt()?.to_scalar::<f32>()?;
+            let inv = if norm > 0.0 { 1.0 / norm } else { 0.0 };
+            out.push(cls.to_vec1::<f32>()?.into_iter().map(|x| x * inv).collect());
+        }
+        Ok(out)
     }
 }
