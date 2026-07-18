@@ -62,14 +62,9 @@ jobs:
       - name: test
         run: cargo test
 
-  # Windows portability burn-down. The daemon is currently unconditionally Unix
-  # (`tokio::signal::unix`, a `UnixListener` single-instance guard), so this job
-  # STARTS RED ON PURPOSE and is non-blocking until the port lands. Its value is
-  # as a visible, per-PR measure of what is left — and, once green, as the gate
-  # that stops Windows support from silently rotting again.
-  #
-  # `continue-on-error: true` is temporary. Remove it (and this paragraph) the
-  # moment `cargo check` passes, so a regression fails CI like any other.
+  # The daemon builds and its full suite passes on Windows, so this job is a
+  # BLOCKING gate: it exists to stop that silently rotting. It began as a
+  # non-blocking burn-down while the port landed; that phase is over.
   #
   # This job is also the ONLY way to validate Windows: `cargo check --target
   # x86_64-pc-windows-msvc` from macOS dies in `ring`'s build script (its C
@@ -77,15 +72,17 @@ jobs:
   # documents that meaningful cross-compilation is not possible. There is no
   # local shortcut — push and read this job.
   #
-  # Only the `meridian` package is checked for now: `cargo check` from the root
-  # selects it alone (the workspace declares no `default-members` and the root
-  # IS a package), and the tray is a separate, later phase — it has never been
-  # compiled in CI on any platform, so folding it in here would conflate "not
-  # ported to Windows yet" with "never built in CI at all".
+  # Scope is the `meridian` + `meridian-core` packages. The tray is a later
+  # phase and has never been compiled in CI on any platform, so folding it in
+  # here would conflate "not ported to Windows yet" with "never built in CI at
+  # all" — and would take this gate red for a reason unrelated to portability.
+  #
+  # NOTE: passing here means the daemon COMPILES and its tests pass on a CI
+  # runner. It does not mean Meridian works on Windows: capture, the tray, and
+  # the installer are not covered, and nothing here exercises a real desktop.
   windows-portability:
-    name: Windows portability (burn-down, non-blocking)
+    name: Windows portability
     runs-on: windows-latest
-    continue-on-error: true
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
     steps:
