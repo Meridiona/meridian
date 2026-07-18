@@ -89,9 +89,7 @@ async fn main() -> Result<()> {
     // Code command file so `claude -p /session-summary` works. Idempotent; safe
     // to run any number of times. Also called by `meridian doctor --fix`.
     if std::env::args().nth(1).as_deref() == Some("coding-agent-install-skill") {
-        let home = std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let home = meridian_core::paths::home_dir_or_cwd();
         let commands_dir = home.join(".claude/commands");
         let skill_path = commands_dir.join("session-summary.md");
         // Keep in sync with assets/skills/coding-agent/session-summary/SKILL.md.
@@ -891,8 +889,9 @@ async fn main() -> Result<()> {
     //     the installed daemon first so the dev build wins, and any KeepAlive respawn
     //     self-terminates on the next line.
     let sock_path = {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
-        std::path::PathBuf::from(format!("{}/.meridian/daemon.sock", home))
+        meridian_core::paths::home_dir_or_cwd()
+            .join(".meridian")
+            .join("daemon.sock")
     };
     if daemon_already_running(&sock_path).await {
         tracing::warn!(

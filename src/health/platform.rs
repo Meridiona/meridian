@@ -15,9 +15,7 @@ const LABEL_DAEMON: &str = "com.meridiona.daemon";
 // ── shared helpers ──────────────────────────────────────────────────────────
 
 fn home() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+    meridian_core::paths::home_dir_or_cwd()
 }
 
 fn is_exec(p: &Path) -> bool {

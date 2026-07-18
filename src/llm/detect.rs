@@ -47,12 +47,12 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// Where these CLIs actually land, for when the login shell is unavailable or too slow.
 fn candidate_dirs() -> Vec<PathBuf> {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = meridian_core::paths::home_dir_or_cwd();
     [
-        format!("{home}/.local/bin"),
-        format!("{home}/.npm-global/bin"),
-        format!("{home}/.bun/bin"),
-        format!("{home}/.volta/bin"),
+        home.join(".local/bin").to_string_lossy().into_owned(),
+        home.join(".npm-global/bin").to_string_lossy().into_owned(),
+        home.join(".bun/bin").to_string_lossy().into_owned(),
+        home.join(".volta/bin").to_string_lossy().into_owned(),
         "/opt/homebrew/bin".to_string(),
         "/usr/local/bin".to_string(),
     ]
@@ -232,10 +232,7 @@ pub async fn test_all_installed(settings: &RuntimeSettings) -> Vec<ProviderTestR
 fn test_cache_path() -> PathBuf {
     let home = std::env::var("MERIDIAN_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let h = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(h).join(".meridian")
-        });
+        .unwrap_or_else(|_| meridian_core::paths::home_dir_or_cwd().join(".meridian"));
     home.join("provider_test_cache.json")
 }
 

@@ -216,9 +216,9 @@ impl Plan {
 pub fn run(args: &[String]) {
     let flags = Flags::from_args(args);
 
-    let home = match std::env::var("HOME") {
-        Ok(h) => PathBuf::from(h),
-        Err(_) => {
+    let home = match meridian_core::paths::home_dir() {
+        Some(h) => h,
+        None => {
             if flags.json {
                 println!(r#"{{"error":"HOME not set - cannot locate the install"}}"#);
             } else {

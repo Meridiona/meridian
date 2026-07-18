@@ -11,9 +11,7 @@ use crate::health::Check;
 use std::path::PathBuf;
 
 fn home() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+    meridian_core::paths::home_dir_or_cwd()
 }
 
 fn expand(p: &str) -> String {

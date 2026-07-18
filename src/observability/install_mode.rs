@@ -40,16 +40,14 @@
 /// Falls back to the old marker-file check only if `current_exe()` itself
 /// fails (should not happen in practice).
 pub(super) fn is_canonical_install() -> bool {
+    let Some(meridian_dir) = meridian_core::paths::meridian_dir() else {
+        return false;
+    };
     match std::env::current_exe() {
-        Ok(exe) => std::env::var("HOME").is_ok_and(|home| {
-            let home = std::path::Path::new(&home);
-            exe == home.join(".meridian/bin/meridian")
-        }),
+        Ok(exe) => exe == meridian_dir.join("bin").join("meridian"),
         // `current_exe()` failing is rare (permissions, exotic sandboxing) —
         // fall back to the machine-wide marker file rather than guessing.
-        Err(_) => std::env::var("HOME")
-            .map(|home| std::path::Path::new(&home).join(".meridian/.env").exists())
-            .unwrap_or(false),
+        Err(_) => meridian_dir.join(".env").exists(),
     }
 }
 

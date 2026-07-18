@@ -12,9 +12,7 @@ use crate::health::Check;
 use std::path::PathBuf;
 
 pub fn checks(_cfg: &Config) -> Vec<Check> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
+    let home = meridian_core::paths::home_dir_or_cwd();
 
     let claude_present = which("claude").is_some();
     let skill_path = home.join(".claude/commands/session-summary.md");

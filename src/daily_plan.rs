@@ -82,9 +82,8 @@ pub async fn maybe_nudge(pool: &SqlitePool) -> Result<()> {
     // open's timestamp — see `meridian_core::plan_marker`). Once the hour has
     // passed and the plan is still unconfirmed, the nudge fires as usual, so
     // a dismissed planner still gets its reminder later.
-    if let Ok(home) = std::env::var("HOME") {
-        let path =
-            meridian_core::plan_marker::marker_path(&std::path::Path::new(&home).join(".meridian"));
+    if let Some(meridian_dir) = meridian_core::paths::meridian_dir() {
+        let path = meridian_core::plan_marker::marker_path(&meridian_dir);
         let marker = std::fs::read_to_string(path).unwrap_or_default();
         if nudge_held_back(&marker, &today, &now) {
             return Ok(());

@@ -117,13 +117,14 @@ pub struct Config {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Expand a leading `~/` in a configured path.
+///
+/// Delegates to [`meridian_core::paths::expand_tilde_string`] — the single
+/// shared implementation, which resolves the home directory in a way that also
+/// works on Windows (where `$HOME` is typically unset) and joins with the
+/// platform's own separator instead of a hardcoded `/`.
 fn expand_tilde(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return format!("{}/{}", home, rest);
-        }
-    }
-    path.to_owned()
+    meridian_core::paths::expand_tilde_string(path)
 }
 
 fn env_list(key: &str) -> Vec<String> {
@@ -327,8 +328,15 @@ impl Config {
         let meridian_db = std::env::var("MERIDIAN_DB")
             .map(|v| expand_tilde(&v))
             .unwrap_or_else(|_| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
-                format!("{}/.meridian/meridian.db", home)
+                // Falls back to `./.meridian/meridian.db` only when the home
+                // directory cannot be resolved at all — the same degradation
+                // the previous `HOME`-only lookup had.
+                meridian_core::paths::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".meridian")
+                    .join("meridian.db")
+                    .to_string_lossy()
+                    .into_owned()
             });
 
         // settings.json is loaded first; its values take precedence over env-var

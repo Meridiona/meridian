@@ -380,8 +380,9 @@ pub fn resolve_log_dir() -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("MERIDIAN_LOG_DIR") {
         return Ok(PathBuf::from(shellexpand::tilde(&dir).into_owned()));
     }
-    let home = std::env::var("HOME").context("HOME not set")?;
-    Ok(PathBuf::from(home).join(".meridian").join("logs"))
+    let meridian_dir =
+        meridian_core::paths::meridian_dir().context("cannot resolve the home directory")?;
+    Ok(meridian_dir.join("logs"))
 }
 
 /// Inject the current span's W3C `traceparent` into a string suitable for
