@@ -50,6 +50,10 @@ import { taskHue, Bullets } from './dayTaskKit'
 // tall even after idle collapsing simply scrolls.
 const FALLBACK_PANE_PX = 560 // used before the pane is measured (first paint / SSR)
 const GUTTER = 58 // px reserved on the left for hour labels
+// Breathing room between the hour rail (dots/spine, which sits at the GUTTER
+// edge) and the task cards, so cards read as their own column rather than
+// butting up against the rail — see demo.css's dedicated .hour-spine column.
+const CARD_GUTTER_GAP = 16
 // A task card never draws thinner than this, so even a few-minute workstream stays
 // visible, labelled, and tappable (a small honest over-draw for very short work).
 const MIN_SEG_PX = 22
@@ -177,7 +181,6 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, hourS
     return out
   }, [firstHour, lastHour, toPx, colHeight, laidBase, win])
 
-  const dayLabel = isToday ? 'Today' : day
   const taskCount = laid.length
 
   // ── The live hour ─────────────────────────────────────────────────────────
@@ -219,13 +222,12 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, hourS
     // clicking one still just selects/toggles it.
     <div className="relative h-full" onClick={() => { if (selected) onSelect(null) }}>
       <div ref={scrollRef} className="h-full overflow-y-auto nice-scroll">
+      {/* Task count only — no date line above it (the date already lives in the
+          toolbar above this column; repeating it here was redundant). */}
       <div ref={headerRef} className="px-6 pt-6 pb-2 flex items-baseline justify-between">
-        <div>
-          <p className="mt-label" style={{ color: 'var(--t-faint)' }}>{dayLabel}</p>
-          <p className="mt-greeting text-title mt-1" style={{ fontSize: 20 }}>
-            {taskCount > 0 ? `${taskCount} task${taskCount === 1 ? '' : 's'} today` : 'Your day, in tasks'}
-          </p>
-        </div>
+        <p className="mt-greeting text-title" style={{ fontSize: 20 }}>
+          {taskCount > 0 ? `${taskCount} task${taskCount === 1 ? '' : 's'} today` : 'Your day, in tasks'}
+        </p>
         {taskCount > 0 && (
           <p className="mt-body-sm" style={{ color: 'var(--t-faint)' }}>
             {fmtDur(laid.reduce((a, l) => a + l.task.minutes, 0) * 60)} tracked
@@ -238,25 +240,67 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, hourS
       ) : (
         // The live strip below supplies the bottom padding when it is there, so
         // the two don't stack into a large dead gap.
-        <div className={liveMode ? 'px-6 pb-4' : 'px-6 pb-8'}>
+        <div className={liveMode ? 'px-6 pt-4 pb-4' : 'px-6 pt-4 pb-8'}>
+          {/* pt-4: the topmost hour tick sits at colHeight-relative top:0 and is
+              itself centred on its row via -translate-y-1/2 (see below), so
+              without this cushion its top half is clipped by the scroll
+              viewport's own edge — this is what left "8 AM" invisible. */}
           <div className="relative" style={{ height: colHeight }}>
             {/* Hour gridlines + labels — positioned via the same scale as the
                 cards beneath them (see hourLines) so a label always sits at its
                 real hour on the rail, decluttered for runs of hours inside one
-                compressed gap segment. */}
-            {hourLines.map(({ hour, top }) => (
-              <div key={hour} className="absolute left-0 right-0 flex items-start"
-                style={{ top, height: 0 }}>
-                <span className="mt-mono-sm shrink-0 -translate-y-1/2"
-                  style={{ width: GUTTER - 12, fontSize: 10.5, color: 'var(--t-faint)', textAlign: 'right' }}>
-                  {hourClock(hour)}
-                </span>
-                <span className="flex-1 border-t" style={{ borderColor: 'var(--t-hair)', opacity: 0.6 }} />
-              </div>
-            ))}
+                compressed gap segment. Ported from the marketing site's product
+                demo (meridiona-website/assets/js/demo.js renderTimeline +
+                assets/css/demo.css .hour-spine/.hour-node): one vertical spine
+                with a node per hour — the same light ring for every ordinary
+                hour, solid + pulsing accent only for the current one. The
+                label itself never changes weight/color by state — only the
+                node does. */}
+            <span className="absolute" style={{ left: GUTTER - 5, top: 0, bottom: 0, width: 2, background: 'var(--t-hair)', opacity: 0.22 }} />
+            {hourLines.map(({ hour, top }) => {
+              const isNow = isToday && hour === nowHour
+              const nodeSize = isNow ? 11 : 9
+              return (
+                <div key={hour} className="absolute left-0 right-0 flex items-start"
+                  style={{ top, height: 0 }}>
+                  {/* One-off: real JetBrains Mono (--font-jetbrains-mono, layout.tsx),
+                      not the app's --font-mono alias — matches the reference demo's
+                      .hour-label exactly, scoped to this rail only. */}
+                  <span className="shrink-0 -translate-y-1/2"
+                    style={{
+                      width: GUTTER - 12, fontSize: 10.5, fontWeight: 600, textAlign: 'right',
+                      // paddingRight: breathing room before the dot/spine — without it
+                      // the right-aligned text sits almost flush against the node.
+                      paddingRight: 6,
+                      color: 'var(--t-faint-2)', fontFamily: 'var(--font-jetbrains-mono), monospace',
+                    }}>
+                    {hourClock(hour)}
+                  </span>
+                  {/* Every non-live node is the same light ring: panel fill inside, a
+                      thin muted border outside — one consistent look for every
+                      ordinary hour, only the current hour's node differs (solid
+                      accent + pulse). */}
+                  <span className={`absolute rounded-full -translate-y-1/2 ${isNow ? 'live-dot' : ''}`} style={{
+                    left: GUTTER - 5 - nodeSize / 2, width: nodeSize, height: nodeSize,
+                    background: isNow ? 'var(--color-state-proposal)' : 'var(--t-panel)',
+                    border: isNow ? 'none' : '2px solid color-mix(in srgb, var(--t-faint-2) 55%, transparent)',
+                    boxShadow: isNow
+                      ? '0 0 0 3px color-mix(in srgb, var(--color-state-proposal) 18%, transparent)'
+                      : '0 0 0 3px var(--t-panel)',
+                  }} />
+                  {/* Starts past the card gutter (not GUTTER) so it never touches the
+                      spine/node — a separate row divider for the card column only,
+                      same as demo.css's .hour-body border-top living in its own
+                      grid column rather than the spine's. */}
+                  <span className="flex-1 border-t" style={{ borderColor: 'var(--t-hair)', opacity: 0.5, marginLeft: 12 + CARD_GUTTER_GAP }} />
+                </div>
+              )
+            })}
 
-            {/* Task workstreams */}
-            <div className="absolute top-0 bottom-0" style={{ left: GUTTER, right: 6 }}>
+            {/* Task workstreams — inset further than the rail itself (GUTTER)
+                so the cards read as their own column, not flush against the
+                dots/spine (see demo.css's dedicated 26px .hour-spine column). */}
+            <div className="absolute top-0 bottom-0" style={{ left: GUTTER + CARD_GUTTER_GAP, right: 6 }}>
               {laid.map((l, idx) => {
                 const hue = taskHue(l.task.id, idx)
                 return (
@@ -308,10 +352,11 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, hourS
           }}>
             {showLiveHourLabel ? hourClock(nowHour) : ''}
           </span>
-          {/* 12px would carry the label's GUTTER - 12 width up to GUTTER, where
-              the task cards' rail sits — less HourTakeover's own mx-2, so its
-              visible edge lands on that rail rather than 8px inside it. */}
-          <div className="flex-1 min-w-0" style={{ marginLeft: 12 - 8 }}>
+          {/* 12px carries the label's GUTTER - 12 width up to GUTTER, then
+              CARD_GUTTER_GAP up to where the task cards actually start —
+              less HourTakeover's own mx-2, so its visible edge lines up with
+              the cards above it rather than sitting further left. */}
+          <div className="flex-1 min-w-0" style={{ marginLeft: 12 + CARD_GUTTER_GAP - 8 }}>
             <HourTakeover
               hour={nowHour}
               mode={liveMode}
@@ -334,8 +379,11 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, hourS
  *  title, then a meta row, then as many summary lines as fit — a tall card shows
  *  what was done rather than sitting empty. */
 /** The "synced to {tracker}" pill on a posted task card: the tracker's brand mark
- *  + a check, in a soft approved-green pill. Sits in-flow at the end of the title
- *  row so it scales and is never clipped by the card's rounded corner. */
+ *  + a check. Sits in-flow at the end of the title row so it scales and is never
+ *  clipped by the card's rounded corner. The pill's own background is the card's
+ *  surface color (not a green tint) with a crisp white ring around it, so it reads
+ *  as a badge sitting ON the card rather than a colored chip competing with it —
+ *  only the check mark itself stays approved-green, as the one "done" signal. */
 function PostedPill({ provider, targetKey, alignTop }: { provider: string; targetKey: string | null; alignTop: boolean }) {
   const label = PROVIDER_META[provider]?.label ?? provider
   return (
@@ -345,9 +393,10 @@ function PostedPill({ provider, targetKey, alignTop }: { provider: string; targe
       style={{
         alignSelf: alignTop ? 'flex-start' : 'center',
         marginTop: alignTop ? 1 : 0,
-        padding: '2px 6px 2px 5px',
-        background: 'color-mix(in srgb, var(--color-state-approved) 13%, var(--t-card))',
-        border: '1px solid color-mix(in srgb, var(--color-state-approved) 32%, transparent)',
+        padding: '2.5px 7px 2.5px 6px',
+        background: 'var(--t-card)',
+        border: '1.5px solid #fff',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.12)',
       }}>
       <ProviderIcon provider={provider} size={11} />
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" aria-hidden

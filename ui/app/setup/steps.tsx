@@ -74,7 +74,7 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="flex items-center" style={{ gap: 8 }}>
                 <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>{p.name}</span>
-                {!notif && <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', color: 'var(--t-muted)', border: '0.5px solid var(--t-card-border)', borderRadius: 4, padding: '1px 5px' }}>{p.required ? 'REQUIRED' : 'OPTIONAL'}</span>}
+                {!notif && <span className="mt-chip" style={{ color: 'var(--t-muted)', border: '0.5px solid var(--t-card-border)', borderRadius: 4, padding: '1px 5px' }}>{p.required ? 'REQUIRED' : 'OPTIONAL'}</span>}
               </div>
               <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-muted)', marginTop: 3 }}>{p.desc}</p>
             </div>
@@ -93,8 +93,8 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
           </Row>
         )
       })}
-      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-muted)', marginTop: 3 }}>
-        <span style={{ width: 5, height: 5, borderRadius: 99, background: 'var(--color-state-approved)' }} />
+      <p className="flex items-start" style={{ gap: 7, fontSize: 11, lineHeight: 1.5, color: 'var(--t-muted)', marginTop: 3 }}>
+        <span style={{ width: 5, height: 5, borderRadius: 99, background: 'var(--color-state-approved)', marginTop: 5, flexShrink: 0 }} />
         Your screen, tasks, and worklogs stay on this Mac and are never uploaded. We send usage stats - daily focus time, app version, and your email once you sign in - to improve Meridian, never your content.
       </p>
     </div>
@@ -109,8 +109,8 @@ function IntegrationsBody({ wiz }: { wiz: Wiz }) {
   return (
     <div className="flex flex-col" style={{ gap: 9 }}>
       <ConnectTrackers integrations={wiz.integrations} onChanged={wiz.refetchIntegrations} compact />
-      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-muted)', marginTop: 3 }}>
-        <span style={{ width: 5, height: 5, borderRadius: 99, background: connected ? 'var(--color-state-approved)' : 'var(--t-faint-2)' }} />
+      <p className="flex items-start" style={{ gap: 7, fontSize: 11, lineHeight: 1.5, color: 'var(--t-muted)', marginTop: 3 }}>
+        <span style={{ width: 5, height: 5, borderRadius: 99, background: connected ? 'var(--color-state-approved)' : 'var(--t-faint-2)', marginTop: 5, flexShrink: 0 }} />
         {connected > 0
           ? `${connected} connected · Meridian will match sessions and draft worklogs.`
           : 'Optional - skip it and Meridian still tracks your day. Connect a tracker anytime from Settings to auto-draft worklogs.'}
@@ -169,9 +169,9 @@ function IntelligenceBody({ wiz }: { wiz: Wiz }) {
         testOne={wiz.testProvider}
         rescan={wiz.rescanProviders}
       />
-      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-muted)', marginTop: 3 }}>
+      <p className="flex items-start" style={{ gap: 7, fontSize: 11, lineHeight: 1.5, color: 'var(--t-muted)', marginTop: 3 }}>
         <span style={{
-          width: 5, height: 5, borderRadius: 99,
+          width: 5, height: 5, borderRadius: 99, marginTop: 5, flexShrink: 0,
           background: missing ? 'var(--color-state-pending)' : 'var(--color-state-approved)',
         }} />
         {missing
@@ -245,7 +245,7 @@ export function Completion({ wiz }: { wiz: Wiz }) {
       <div style={{ width: '100%', maxWidth: 360, border: '0.5px solid var(--t-card-border)', borderRadius: 13, overflow: 'hidden' }}>
         {lines.map((l, i) => (
           <div key={l.k} className="flex items-center justify-between" style={{ padding: '10px 14px', borderTop: i ? '1px solid var(--t-hair)' : 'none' }}>
-            <span className="font-mono" style={{ fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--t-faint)' }}>{l.k}</span>
+            <span className="mt-chip" style={{ color: 'var(--t-faint)' }}>{l.k}</span>
             <span style={{ fontSize: 12.5, color: 'var(--t-title)', fontWeight: 450 }}>{l.v}</span>
           </div>
         ))}
