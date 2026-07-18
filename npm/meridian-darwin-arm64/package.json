@@ -16,7 +16,6 @@
   ],
   "files": [
     "bin/",
-    "services/",
     "scripts/",
     ".env.example",
     "VERSION"

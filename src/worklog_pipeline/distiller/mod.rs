@@ -2,11 +2,11 @@
 //! Session distiller — compress an hour of `app_sessions` into a structured,
 //! noise-reduced activity excerpt for the hour report.
 //!
-//! A faithful in-process Rust port of `services/agents/session_distiller.py` (the one
-//! Python capability that had no CLI-provider equivalent). ~85-92% char reduction while
-//! preserving named facts (ticket keys, PR numbers, file paths), via an 11-stage
-//! pipeline: segment → junk gate → prose gate → DF cut → lexical dedup → SemDeDup →
-//! facility-location → entity rescue → empty-session rescue → format → header/stats.
+//! Runs fully in-process — the one capability with no CLI-provider equivalent, so it
+//! stays local. ~85-92% char reduction while preserving named facts (ticket keys, PR
+//! numbers, file paths), via an 11-stage pipeline: segment → junk gate → prose gate →
+//! DF cut → lexical dedup → SemDeDup → facility-location → entity rescue →
+//! empty-session rescue → format → header/stats.
 //!
 //! # Embedder degradation
 //! SemDeDup + facility-location's diversity path are the only stages needing the
@@ -46,7 +46,7 @@ use segment::{
 };
 use select::Item;
 
-// ── Tunables (env-overridable, matching services/agents/config.py) ──────────────
+// ── Tunables (env-overridable) ──────────────────────────────────────────────────
 
 /// Coding-agent apps whose transcripts are folded in as clean summaries elsewhere, so
 /// they never reach this OCR-tuned compressor.

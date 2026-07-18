@@ -116,7 +116,7 @@ fi
 
 # Watch ONLY what actually rebuilds the daemon binary: its own sources, its two
 # path dependencies, and the build inputs. `--watch .` (the old value) watches the
-# entire repo, so a write anywhere — ui/, services/, tray/, a stray untracked file —
+# entire repo, so a write anywhere — ui/, tray/, a stray untracked file —
 # restarts the daemon even though none of it can change the binary.
 #
 # That is not merely wasteful: SIGKILL mid-run is data-visible. The worklog pipeline

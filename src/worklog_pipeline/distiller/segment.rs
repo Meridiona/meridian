@@ -1,8 +1,7 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //! Stages 1-3 of the distiller: line segmentation + the junk gate + the prose gate,
-//! plus the shared regexes and small text helpers. A faithful port of the top of
-//! `services/agents/session_distiller.py` (the module-level regexes + `_segment`,
-//! `_is_hard_junk`, `_fails_prose_gate`, `_norm`, `_clean_window_title`).
+//! plus the shared regexes and small text helpers (`segment`, `is_hard_junk`,
+//! `fails_prose_gate`, `norm`, `clean_window_title`).
 //!
 //! These gates are what turn raw OCR/a11y screen text into candidate prose spans:
 //! `_segment` breaks over-long run-on lines on bullet/whitespace glyphs, `is_hard_junk`
