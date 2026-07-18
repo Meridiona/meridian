@@ -356,11 +356,16 @@ pub fn enforce_minimum_version(app: &AppHandle) {
                 "update: running version is below the minimum supported - forcing install"
             );
             if !notified {
+                // Warm and factual. The user did not ask for this install and
+                // is about to have the app restart under them, so the toast
+                // says what is happening and that it will restart — but it does
+                // not scold them for the version they were on. Matches the tone
+                // of the other update toasts ("You're on the latest version.").
                 notify_update(
                     &app,
                     "mandatory",
                     "Updating Meridian",
-                    &format!("This version is no longer supported - installing v{v}"),
+                    &format!("Installing v{v} - Meridian will restart in a moment."),
                 )
                 .await;
                 notified = true;
