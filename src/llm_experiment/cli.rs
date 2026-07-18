@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn parses_an_hour_process_spec() {
         let spec = parse_spec(&argv(
-            "run --process hour-report --hour 2026-07-15T14 --variants claude,local",
+            "run --process hour-report --hour 2026-07-15T14 --variants claude,codex",
         ))
         .unwrap();
         assert_eq!(spec.process, ExperimentProcess::HourReport);

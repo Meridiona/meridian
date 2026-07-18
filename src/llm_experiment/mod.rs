@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn parse_variants_splits_and_rejects_empty() {
-        let vs = parse_variants("claude, codex:gpt-5.1 ,local").unwrap();
+        let vs = parse_variants("claude, codex:gpt-5.1 ,cursor").unwrap();
         assert_eq!(vs.len(), 3);
         assert_eq!(vs[1].model.as_deref(), Some("gpt-5.1"));
         assert!(parse_variants("").is_err());

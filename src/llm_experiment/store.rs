@@ -277,8 +277,8 @@ mod tests {
         assert_eq!(pending.len(), 2);
         assert_eq!(pending[0].provider, "claude");
         assert_eq!(pending[0].model, "");
-        assert_eq!(pending[1].provider, "local");
-        assert_eq!(pending[1].model, "qwen");
+        assert_eq!(pending[1].provider, "cursor");
+        assert_eq!(pending[1].model, "");
     }
 
     #[tokio::test]
