@@ -958,6 +958,21 @@ async fn main() -> Result<()> {
         Err(e) => tracing::error!("cleanup_incomplete_runs failed: {}", e),
     }
 
+    // 7a-bis. Same recovery, for the worklog pipeline's own ledger: an hour left
+    // `generating` by a crash mid-`/worklog_hour` call would otherwise never
+    // retry and would silently block every hour after it from ever getting a
+    // ledger row (see reset_stuck_generating_hours's doc comment).
+    match meridian::pm_worklog::ledger::reset_stuck_generating_hours(&meridian).await {
+        Ok(0) => {
+            tracing::info!("no stuck-generating worklog hours found");
+        }
+        Ok(n) => tracing::warn!(
+            reset_count = n,
+            "reset worklog hour(s) stuck in generating from a previous crash"
+        ),
+        Err(e) => tracing::error!("reset_stuck_generating_hours failed: {}", e),
+    }
+
     // 7b. Shared handles the poll loop uses to signal ETL ticks to observers.
     let etl_notify: Arc<Notify> = Arc::new(Notify::new());
     let etl_tick_span: Arc<std::sync::Mutex<Option<tracing::Span>>> =
