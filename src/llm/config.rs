@@ -85,6 +85,7 @@ fn endpoint_from_row(
         base_url: row.base_url.clone(),
         model: row.model.clone(),
         api_key: row.api_key.clone(),
+        rpm: row.rpm,
         rung: row.effective_rung(),
     }
 }

@@ -190,7 +190,9 @@ pub async fn test_provider(
 
     let outcome = match backend_for(provider, cfg).complete(&req).await {
         Ok(_) => ProviderTestOutcome::Ok,
-        Err(LlmError::RateLimited(m)) => ProviderTestOutcome::RateLimited { message: m },
+        Err(LlmError::RateLimited { message: m, .. }) => {
+            ProviderTestOutcome::RateLimited { message: m }
+        }
         Err(LlmError::Failed(m)) => ProviderTestOutcome::Failed { message: m },
     };
     finish_test(id, outcome, t0)

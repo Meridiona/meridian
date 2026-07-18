@@ -21,7 +21,10 @@
 //!
 //! # Related
 //! - [`meridian_core::LlmProvider`] — the enum + the stored setting.
-//! - [`resolver`] — the single factory, and the rate-limit backoff.
+//! - [`resolver`] — the single factory, and the reactive rate-limit backoff.
+//! - [`rate_limit`] — the proactive half: paces a metered custom endpoint to its configured
+//!   RPM so the 429 never happens. No-op for the CLI providers, which spend a flat-rate
+//!   subscription rather than a per-minute quota.
 
 pub mod claude;
 pub mod codex;
@@ -32,11 +35,13 @@ pub mod detect;
 pub mod openai_compat;
 pub mod probe;
 pub mod prompts;
+pub mod rate_limit;
 pub mod reset_time;
 pub mod resolver;
 pub mod schema;
 
 use std::fmt;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -67,8 +72,24 @@ pub const DO_NOT_TRACK: (&str, &str) = ("DO_NOT_TRACK", "1");
 /// Mirrors the summariser's `SummariserError`, which established this split.
 #[derive(Debug, Clone)]
 pub enum LlmError {
-    /// The user's subscription is exhausted. Do not retry — fall back immediately.
-    RateLimited(String),
+    /// The user's subscription or per-minute quota is exhausted. Do not retry — fall back
+    /// immediately.
+    RateLimited {
+        /// What the provider said, verbatim-ish. Still the input to
+        /// [`reset_time::parse_backoff`] for the CLI providers, which announce their reset
+        /// window in prose on stderr and have no other channel.
+        message: String,
+        /// How long to wait, when the provider told us in a MACHINE-READABLE way — i.e. an
+        /// HTTP `Retry-After` / `x-ratelimit-reset-*` header on a metered endpoint.
+        ///
+        /// `None` for every CLI provider, and that is not an omission: a subprocess has no
+        /// headers, so its reset time can only arrive as prose and must go through the text
+        /// parser. Keeping the two channels separate is deliberate — synthesising fake
+        /// message text from a header just to re-parse it would widen a parser that is
+        /// scoped to stderr wording on purpose (it has no seconds unit, because no CLI
+        /// emits one, while per-minute quotas are measured in seconds).
+        retry_after: Option<Duration>,
+    },
     /// Anything else: not installed, timed out, bad output, non-zero exit.
     Failed(String),
 }
@@ -76,7 +97,7 @@ pub enum LlmError {
 impl fmt::Display for LlmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LlmError::RateLimited(m) => write!(f, "rate-limited: {m}"),
+            LlmError::RateLimited { message, .. } => write!(f, "rate-limited: {message}"),
             LlmError::Failed(m) => write!(f, "{m}"),
         }
     }
@@ -85,7 +106,19 @@ impl std::error::Error for LlmError {}
 
 impl LlmError {
     pub fn is_rate_limited(&self) -> bool {
-        matches!(self, LlmError::RateLimited(_))
+        matches!(self, LlmError::RateLimited { .. })
+    }
+
+    /// A rate limit whose reset time we only have as prose (or not at all) — every CLI
+    /// provider, plus any HTTP 429 that arrived without a usable header.
+    ///
+    /// The caller falls back to [`reset_time::parse_backoff`] on the message, then to a flat
+    /// per-transport default. Use the struct form directly when a header DID give a duration.
+    pub fn rate_limited(message: impl Into<String>) -> Self {
+        Self::RateLimited {
+            message: message.into(),
+            retry_after: None,
+        }
     }
 }
 
@@ -219,7 +252,7 @@ mod tests {
 
     #[test]
     fn rate_limited_is_distinguishable() {
-        assert!(LlmError::RateLimited("quota".into()).is_rate_limited());
+        assert!(LlmError::rate_limited("quota").is_rate_limited());
         assert!(!LlmError::Failed("not on PATH".into()).is_rate_limited());
     }
 }

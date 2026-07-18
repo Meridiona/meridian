@@ -22,6 +22,7 @@
 //!   the `llm_provider` write.
 //! - `meridian::llm::probe` — the measurement; `meridian_core::SchemaRung` — what it means.
 
+use meridian_core::llm_capacity::{self, CapacityAssessment};
 use meridian_core::{settings, CustomLlmProvider, SchemaRung};
 use serde::Serialize;
 use serde_json::Value;
@@ -45,6 +46,15 @@ pub struct CustomProviderView {
     pub name: String,
     pub base_url: String,
     pub model: String,
+    /// Requests-per-minute ceiling, `0` = unpaced. Safe to surface: unlike the key it is a
+    /// user-entered plan limit, not a secret.
+    pub rpm: u32,
+    /// Requests-per-day ceiling, `0` = not known. Same safety note as `rpm`.
+    pub rpd: u32,
+    /// Whether these limits can actually run the app for a day, computed in
+    /// `meridian-core` so the frontend renders a verdict rather than deriving a second,
+    /// drifting one from the raw numbers.
+    pub capacity: CapacityAssessment,
     /// Measured rung per schema key. Missing key = never measured.
     pub rungs: std::collections::BTreeMap<String, SchemaRung>,
     /// The weakest measured rung — what the endpoint can actually be trusted to hold.
@@ -65,6 +75,9 @@ impl CustomProviderView {
             name: row.name.clone(),
             base_url: row.base_url.clone(),
             model: row.model.clone(),
+            rpm: row.rpm,
+            rpd: row.rpd,
+            capacity: llm_capacity::assess(row.rpm, row.rpd),
             rungs: row.rungs.clone(),
             effective_rung: row.effective_rung(),
             fully_probed: row.is_fully_probed(),
@@ -72,6 +85,19 @@ impl CustomProviderView {
             selected: selected_id == Some(row.id.as_str()),
         }
     }
+}
+
+/// Judge a prospective endpoint's limits WITHOUT saving or contacting anything.
+///
+/// Exists so the add form can warn before the user commits. It could not just do this
+/// arithmetic in TypeScript: adding an endpoint spends real requests from the very quota
+/// being judged, so the warning has to be right the first time, and a second
+/// implementation of [`llm_capacity::assess`] in the frontend would be free to drift
+/// from the one the saved card then shows.
+#[tauri::command]
+#[tracing::instrument]
+pub fn assess_llm_capacity(rpm: u32, rpd: u32) -> CapacityAssessment {
+    llm_capacity::assess(rpm, rpd)
 }
 
 /// What `add`/`probe` report back: the row plus what the measurement cost and whether it
@@ -220,6 +246,8 @@ pub async fn add_custom_llm_provider(
     base_url: String,
     model: String,
     api_key: String,
+    rpm: u32,
+    rpd: u32,
 ) -> Result<ProbeOutcome, String> {
     validate(&name, &base_url, &model, &api_key)?;
 
@@ -245,9 +273,16 @@ pub async fn add_custom_llm_provider(
         base_url: base_url.trim().trim_end_matches('/').to_string(),
         model: model.trim().to_string(),
         api_key: api_key.trim().to_string(),
+        rpm,
+        rpd,
         rungs: Default::default(),
     };
 
+    // `rpm` is set on the row BEFORE this call, not after the probe writes back: the probe is
+    // the single biggest burst this endpoint will ever see (one metered request per schema ×
+    // rung), and on a free tier it is the thing most likely to 429. An endpoint added with a
+    // ceiling it does not yet carry would eat that burst exactly once - on the first run, the
+    // only run where the measurement it produces is still missing.
     let report = meridian::llm::probe::probe_endpoint(&row).await;
     let row = CustomLlmProvider {
         rungs: report.rungs,
@@ -363,6 +398,11 @@ pub async fn remove_custom_llm_provider(id: String) -> Result<Vec<CustomProvider
             "this endpoint is your current AI provider - switch to another provider first".into(),
         );
     }
+    // Drop this endpoint's pacing reservation. Only clears THIS process's map (the tray, which
+    // paces probes); the daemon keeps its own for production calls and lets it expire, which is
+    // harmless — a reservation is at most one interval long and the id is never reused.
+    meridian::llm::rate_limit::forget(&meridian::llm::rate_limit::custom_key(&id));
+
     let before = rows.len();
     rows.retain(|r| r.id != id);
     if rows.len() == before {
@@ -404,6 +444,7 @@ mod tests {
             base_url: "https://x.test/v1".into(),
             model: "m".into(),
             api_key: "secret".into(),
+            rpm: 0,
             rungs: Default::default(),
         }
     }

@@ -58,7 +58,7 @@ pub use capture::{
     CaptureUiEventInsert,
 };
 
-pub use util::{date, hygiene, intervals};
+pub use util::{date, hygiene, intervals, llm_capacity};
 
 pub use readers::{
     active, board, capture_apps, coding_agents, current_task, day_evidence, day_summaries,

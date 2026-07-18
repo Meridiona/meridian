@@ -113,6 +113,35 @@ pub struct CustomLlmProvider {
     pub model: String,
     /// Sent as `Authorization: Bearer`. See the type docs: storage only.
     pub api_key: String,
+    /// Requests-per-minute ceiling this endpoint's plan allows. `0` (the default) means
+    /// "unmetered as far as we know" and disables pacing entirely.
+    ///
+    /// Free tiers are the reason this exists: a 15-RPM key cannot survive [`crate`]'s probe
+    /// burst, which fires one metered request per schema × rung back-to-back. Pacing to this
+    /// number turns "429s partway through, endpoint never becomes gate-eligible" into "takes
+    /// a minute longer, completes".
+    ///
+    /// Deliberately requests-only for now. A token-per-minute ceiling is the other half of
+    /// most free tiers and frequently binds first on long worklog prompts, but pacing it
+    /// needs a token estimate before the call; until then TPM is handled REACTIVELY, from the
+    /// `x-ratelimit-reset-tokens` header on a 429. See `src/llm/rate_limit.rs`.
+    #[serde(default)]
+    pub rpm: u32,
+    /// Requests-per-DAY ceiling this endpoint's plan allows. `0` (the default) means
+    /// "not known" — never "zero allowed" — so a user who leaves it blank is told we
+    /// cannot judge, not that their key is bad.
+    ///
+    /// Advisory only: nothing paces against it. Unlike [`Self::rpm`], a daily quota has no
+    /// remedy in software — pacing can spread requests across a minute, but it cannot
+    /// conjure a 21st request out of a 20-a-day key. All this field buys is the ability to
+    /// TELL the user before they rely on the endpoint, which is why it feeds
+    /// [`crate::llm_capacity::assess`] and nothing else.
+    ///
+    /// User-entered because it is not discoverable: RPM occasionally arrives in an
+    /// `x-ratelimit-limit-requests` header, but a daily ceiling essentially never does, and
+    /// inferring one from a 429 would mean learning it only after burning the day's quota.
+    #[serde(default)]
+    pub rpd: u32,
     /// The rung measured for EACH pipeline schema, keyed by schema name — not one scalar.
     /// The schemas differ in what they demand (`worklog_generate` carries a union type and
     /// deeper nesting than `workstream`), and a vendor's support is not guaranteed uniform
@@ -471,6 +500,8 @@ mod tests {
             base_url: "https://example.test/v1beta/openai".to_string(),
             model: "gemini-flash-latest".to_string(),
             api_key: "secret".to_string(),
+            rpm: 0,
+            rpd: 0,
             rungs: rungs.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
         }
     }
