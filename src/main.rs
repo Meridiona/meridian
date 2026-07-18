@@ -219,37 +219,6 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // `meridian pm-worklog [--day YYYY-MM-DD]` — one-shot Stage 4: walk the day's
-    // hours and DRAFT one worklog per task per ready hour (never posts — posting
-    // is approval-gated). Opens via setup_db so migrations (incl. the pm_worklog
-    // tables) are applied even when run standalone.
-    if std::env::args().nth(1).as_deref() == Some("pm-worklog") {
-        let args: Vec<String> = std::env::args().collect();
-        let day = args
-            .iter()
-            .position(|a| a == "--day")
-            .and_then(|i| args.get(i + 1).cloned());
-        let cfg = Config::from_env();
-        // Initialise observability so this one-shot emits the SAME worklog_draft
-        // trace the daemon does (lineage child spans + the active span whose
-        // traceparent propagates to the MLX synth, nesting worklog_input/output
-        // inside the worklog trace). Without this the CLI emitted no spans and the
-        // synth landed as an orphan root. Flushed explicitly before exit so the
-        // batch processor's final spans reach the telemetry spool.
-        let obs_guard = observability::init("meridian-rust").ok();
-        match setup_db(&cfg.meridian_db_uri()).await {
-            Ok(pool) => {
-                meridian::pm_worklog::cli_run(&pool, day.as_deref()).await;
-                pool.close().await;
-            }
-            Err(e) => eprintln!("pm-worklog: open db: {e}"),
-        }
-        if let Some(g) = obs_guard {
-            g.shutdown().await;
-        }
-        return Ok(());
-    }
-
     // `meridian worklog-hour <YYYY-MM-DDTHH>` — force-run the hour-level worklog
     // pipeline for one explicit local hour (bypasses the activity gate + done-check,
     // still waits for coding summarisation). Manual runs / testing the clock driver.

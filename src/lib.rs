@@ -12,7 +12,6 @@ pub mod health;
 pub mod intelligence;
 pub mod llm;
 pub mod llm_experiment;
-pub mod llm_gate;
 pub mod notices;
 pub mod notification_responses;
 pub mod notifications;

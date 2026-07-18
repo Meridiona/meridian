@@ -1,18 +1,10 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// Env-driven config for the pm-worklog stage. Defaults mirror the Python
-// `pm_worklog_update/config.py`; the cadence + readiness knobs are new for the
-// in-daemon hourly driver.
+// Env-driven config for the pm-worklog stage — routing/readiness/post thresholds.
 
 /// Tunables for one pm-worklog run/cycle.
 #[derive(Debug, Clone)]
 pub struct PmWorklogConfig {
-    /// MLX server host/port for the `/synthesise_worklog` endpoint.
-    pub mlx_host: String,
-    pub mlx_port: u16,
-    /// HTTP timeout for one synth call (the agno agent can take ~60s).
-    pub synth_timeout_s: u64,
-
     /// Hours between scheduled driver passes (informational — the driver also
     /// runs on the daemon poll tick).
     pub interval_hours: f64,
@@ -31,10 +23,6 @@ pub struct PmWorklogConfig {
     pub min_post_seconds: i64,
 }
 
-fn env_str(key: &str, default: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| default.to_string())
-}
-
 fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
     std::env::var(key)
         .ok()
@@ -45,9 +33,6 @@ fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
 impl PmWorklogConfig {
     pub fn from_env() -> Self {
         Self {
-            mlx_host: env_str("MLX_SERVER_HOST", "127.0.0.1"),
-            mlx_port: env_parse("MLX_SERVER_PORT", 7823),
-            synth_timeout_s: env_parse("PM_WORKLOG_SYNTH_TIMEOUT_S", 300),
             interval_hours: env_parse("PM_WORKLOG_INTERVAL_HOURS", 1.0),
             min_confidence: env_parse("PM_WORKLOG_MIN_CONFIDENCE", 0.65),
             min_coverage: env_parse("PM_WORKLOG_MIN_COVERAGE", 0.80),
