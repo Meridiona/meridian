@@ -1,21 +1,26 @@
 # Meridian Release Runbook
 
-Operational procedures for the DMG app and the MLX runtime — currently focused
-on **rollbacks**. Read alongside `CLAUDE.md` (§ "Make a DMG release mandatory"
-and § "Ship a `services/` Python change to users").
+Operational procedures for the DMG app — currently focused on **rollbacks**.
+Read alongside `CLAUDE.md` (§ "Make a DMG release mandatory").
+
+> **Note:** Meridian no longer ships a separate on-device model runtime. Since
+> the Python/MLX removal, the only model Meridian downloads is the candle-based
+> BGE embedder (used solely for the distiller's semantic dedup), which is fetched
+> from HuggingFace on demand — there is no runtime release channel to roll back.
+> Generation runs through the user's chosen CLI provider (`src/llm/`). This
+> runbook therefore covers the **app/DMG channel only**.
 
 ---
 
-## Background: how updates flow (why rollback differs by component)
+## Background: how app updates flow
 
-The app and the runtime update through **two independent channels** with
-**different comparison rules** — this is the whole reason a rollback works one
-way for the app and another for the runtime.
+The app updates through the GitHub `latest` release channel, which the updater
+compares **strictly forward** — this is the whole reason a rollback ships the
+good code under a *higher* version rather than downgrading.
 
 | Component | Channel | Compare rule | Downgrade installed clients? |
 |---|---|---|---|
 | **App** (`.app`/DMG) | GitHub `latest` release → `latest.json` | `tauri-plugin-updater` default: **strictly forward** (`new > current`) | **No** — must ship the old code under a *higher* version |
-| **MLX runtime** (`~/.meridian/runtime/`) | `runtime-latest` release → `runtime-manifest.json` | **equality skip** (`installed == manifest` → skip) | **Yes** — publishing an older version pulls it |
 
 Key code:
 
@@ -25,9 +30,6 @@ Key code:
 - App forced-install floor: `update.rs::enforce_minimum_version` +
   `scripts/package-updater.sh` (reads `tray/minimum-version`, bakes a
   `Minimum-Version:` line into `latest.json`'s notes).
-- Runtime skip: `tray/src-tauri/src/mlx_server.rs` — `download_and_stage` skips
-  only when `installed_version() == manifest.version` (an **equality** check,
-  not `>`), so any difference — including an older version — triggers a swap.
 - App release wiring: `.github/workflows/release.yml`'s `semantic-release` step
   runs `npx semantic-release`, whose `@semantic-release/exec` `prepareCmd`
   (`.releaserc.json`) chains `… && bash scripts/package-updater.sh <ver> && bash
@@ -91,53 +93,12 @@ git add tray/minimum-version
 
 ---
 
-## B. Roll back the MLX runtime (a true downgrade)
-
-The runtime compares `installed != manifest.version`, so publishing an **older**
-version to the channel pulls it. Use the **manual-tag escape hatch** — the
-auto-publish *gate* (`scripts/runtime-publish-gate.sh`) is strictly-greater and
-won't downgrade, but tags publish on **any** version difference (trusting the
-operator).
-
-```bash
-git fetch origin --tags
-
-# Pick the last known-good runtime commit; its version is that commit's pyproject.
-GOOD_COMMIT=<sha>
-VER=$(git show "${GOOD_COMMIT}:services/pyproject.toml" \
-      | grep -m1 '^version' | sed -E 's/.*"([^"]+)".*/\1/')
-echo "rolling runtime back to ${VER}"
-
-# Production channel (runtime-latest):
-git tag "runtime-v${VER}" "${GOOD_COMMIT}"
-git push origin "runtime-v${VER}"
-
-# Staging channel instead:
-#   git tag "runtime-staging-v${VER}" "${GOOD_COMMIT}" && git push origin "runtime-staging-v${VER}"
-```
-
-- `.github/workflows/build-mlx-runtime.yml` builds → smoke-tests (macOS
-  14/15/26) → publishes. **If the publish job runs in the `production-runtime`
-  GitHub Environment, a required reviewer must approve it.**
-- Each machine's tray (`auto_upgrade_runtime`) sees `manifest.version !=
-  installed` on next launch and swaps to `${VER}` (~3 s reload).
-
-> ⚠️ **Gotcha:** once `runtime-latest` is at the older `${VER}`, a later merge to
-> `main` whose `services/pyproject.toml` is **greater** than `${VER}` re-publishes
-> and moves everyone forward again (the gate is strictly-greater). After a
-> rollback, either hold runtime bumps or immediately ship a **fixed forward**
-> version.
-
----
-
 ## Quick decision guide
 
 | Situation | Action |
 |---|---|
 | Bad app build, not urgent | **A1** — revert → forward version |
 | Bad app build, must evict now | **A2** — revert + `tray/minimum-version` floor |
-| Bad `services/` runtime | **B** — tag `runtime-v<good>` |
-| Bad app **and** runtime | **A2 + B** (independent channels) |
 
 ## Post-rollback checklist
 
@@ -145,10 +106,6 @@ git push origin "runtime-v${VER}"
       higher (rollback) version, and `verify-release-bundle.sh` passed.
 - [ ] App (forced): `tray/minimum-version` emptied in a follow-up PR once the
       fleet has moved.
-- [ ] Runtime: `runtime-latest` `runtime-manifest.json` shows `${VER}`; the
-      `production-runtime` publish approval was granted.
-- [ ] Runtime: a fixed **forward** version is queued so the next `main` merge
-      doesn't silently re-roll the fleet forward onto broken code.
 - [ ] Root cause captured (issue/ticket) so the reverted change can return
       safely.
 
@@ -156,7 +113,7 @@ git push origin "runtime-v${VER}"
 
 ## Scope notes
 
-- These procedures affect the **DMG channel** and the **runtime channel** only.
-  npm/CLI installs update via `meridian update`.
-- The staging channel (`pre-main` → `runtime-staging`, staging DMG updater)
-  mirrors production and should be exercised first when time allows.
+- These procedures affect the **DMG channel** only. npm/CLI installs update via
+  `meridian update`.
+- The staging channel (`pre-main` → staging DMG updater) mirrors production and
+  should be exercised first when time allows.

@@ -18,7 +18,7 @@ Meridian itself collects **no data**. Instead:
 
 - **screenpipe** (a separate process you control) captures screen frames, OCR text, audio transcriptions, and UI element metadata according to its own configuration
 - **Meridian** reads screenpipe's local SQLite database (`~/.screenpipe/db.sqlite`), structures the raw captures into app-based activity sessions, and stores them in its own database (`~/.meridian/meridian.db`)
-- **Processed on-device** — capture, structuring, and classification all happen locally; your screen content is never sent to Meridiana. The only data that leaves your machine is described under [Third-party Integrations](#third-party-integrations) and [Optional cloud LLM](#optional-cloud-llm) below
+- **Processed on-device** — capture, structuring, and categorization all happen locally; your screen content is never sent to Meridiana. Session text is sent to the LLM provider you configure when summarising and matching tickets — this and the other outbound traffic are described under [Third-party Integrations](#third-party-integrations) and [LLM provider](#llm-provider-summarisation--ticket-matching) below
 
 ---
 
@@ -49,11 +49,11 @@ When you authorize an integration:
 
 ---
 
-## Optional cloud LLM
+## LLM provider (summarisation & ticket matching)
 
-By default, classification and summarisation run **on-device** using a local model (MLX). You can optionally configure a cloud LLM (any OpenAI-compatible endpoint, e.g. OpenRouter) as a fallback for machines that can't run the local model.
+Capture, OCR, and session structuring/categorization all run **on-device**. The AI that writes worklog summaries and matches your work to the right ticket runs through the coding-agent CLI you already use — Claude Code, Codex, Cursor, or Copilot CLI, on your own account — or a cloud LLM endpoint (any OpenAI-compatible endpoint, e.g. OpenRouter) that you configure. There is no on-device generative model; the only model that runs fully locally is a small text-embedding model used purely to de-duplicate similar activity before summarising, which never sends anything off your machine.
 
-**If you enable this, session text — which may include OCR'd screen content — is sent to that provider** so it can classify the session. This is **off by default**; it only happens if you set a cloud LLM API key in your configuration. Choose a provider you trust, and review its data-handling policy. To keep everything on-device, leave the cloud LLM unconfigured.
+**Because this step uses an LLM, session text — which may include OCR'd screen content — is sent to whichever provider you choose** so it can produce the summary. Meridian ships with Claude as the default provider; you can pick a different CLI or cloud endpoint. Choose a provider you trust, and review its data-handling policy. Meridiana (the company) is never in this path — the request goes directly from your machine to the provider you configured.
 
 ---
 

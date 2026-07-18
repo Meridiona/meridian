@@ -25,8 +25,7 @@ For anything beyond a small fix, **open an issue first**.
 | `meridian-core/` | Shared Rust crate — DB readers used by both the daemon and the tray |
 | `ui/` | Next.js dashboard (static export, embedded in the Tauri binary — no Node server) |
 | `packages/meridian-mcp/` | TypeScript MCP server |
-| `tray/` | Tauri menu-bar app — in-process capture, dashboard webview, MLX supervision |
-| `services/` | Python services — MLX model server and worklog synthesiser |
+| `tray/` | Tauri menu-bar app — in-process capture, dashboard webview, live event streams |
 | `tests/` | Rust integration tests |
 
 See **[CLAUDE.md](CLAUDE.md)** for the full architecture and per-task recipes.
@@ -35,7 +34,7 @@ See **[CLAUDE.md](CLAUDE.md)** for the full architecture and per-task recipes.
 
 ## Development setup
 
-**Requirements:** macOS on Apple Silicon (M1+), Rust 1.93.1 (pinned via `rust-toolchain.toml`), Node 20+, Python 3.11.
+**Requirements:** macOS on Apple Silicon (M1+), Rust 1.93.1 (pinned via `rust-toolchain.toml`), Node 20+.
 
 ### First-time setup
 
@@ -48,7 +47,7 @@ cargo install cargo-watch    # Rust file watcher (one-time)
 bash scripts/setup-hooks.sh  # install git hooks — do this before your first commit
 ```
 
-`install-dev.sh` builds all deps but does **not** register the daemon, MLX server, or tray as launchd agents — those run in watch mode instead. Capture runs in-process inside the Tauri tray; no screenpipe or a11y-helper agent is needed.
+`install-dev.sh` builds all deps but does **not** register the daemon or tray as launchd agents — those run in watch mode instead. Capture runs in-process inside the Tauri tray; no screenpipe or a11y-helper agent is needed.
 
 > **Upgrading from an older dev setup?** If you have screenpipe or a11y-helper registered from before v1.64.0, remove them:
 >
@@ -64,12 +63,11 @@ bash scripts/setup-hooks.sh  # install git hooks — do this before your first c
 bash dev-start.sh
 ```
 
-This opens **3 Terminal windows**:
+This opens **2 Terminal windows**:
 
 | Window | Command | Triggers on |
 |---|---|---|
 | Rust daemon | `cargo watch -x 'run --bin meridian'` | any `.rs` save |
-| MLX server | `uvicorn --reload --reload-dir services/agents/` | any `.py` save in `services/agents/` |
 | Tauri tray | `npm run tauri dev` | any Rust or frontend save |
 
 `npm run tauri dev` automatically starts the Next.js dev server on port 3939 (via `beforeDevCommand` in `tray/src-tauri/tauri.conf.json`) and opens the dashboard in a native Tauri webview — no separate `npm run dev` terminal is needed. The `beforeDevCommand` also copies `tray/src/` into `ui/public/popover/` so the popover window resolves correctly in dev mode.
@@ -86,20 +84,19 @@ The first-run setup wizard only auto-opens when the onboarded marker is absent. 
 rm -f ~/.meridian/onboarded
 ```
 
-Then restart the tray (re-run `dev-start.sh`, or restart the `npm run tauri dev` window). To also re-watch the model **download** flow from scratch, clear the HuggingFace cache for the models first (they otherwise show as already-installed):
+Then restart the tray (re-run `dev-start.sh`, or restart the `npm run tauri dev` window). To also re-watch the embedder **download** flow from scratch, clear the on-disk model weights first (they otherwise show as already-installed):
 
 ```bash
-rm -rf ~/.cache/huggingface/hub/models--mlx-community--Qwen3.5-2B-OptiQ-4bit \
-       ~/.cache/huggingface/hub/models--kerncore--Qwen3-Reranker-0.6B-MLX-4bit \
-       ~/.cache/huggingface/hub/models--mlx-community--Qwen3-Embedding-0.6B-8bit
+rm -rf ~/.meridian/models/bge-small-en-v1.5
 ```
+
+(The candle-based BGE embedder is the only model Meridian downloads — it is used solely for the distiller's semantic dedup, not for generation. Generation runs through your chosen CLI provider; see [CLAUDE.md](CLAUDE.md).)
 
 ### Installed app vs dev mode
 
 | | Installed app (`.dmg` / `bootstrap.sh`) | Dev mode (`install-dev.sh`) |
 |---|---|---|
 | Rust daemon | launchd agent, release binary | `cargo watch` in terminal |
-| MLX server | launchd agent, provisioned runtime | `uvicorn --reload` in terminal |
 | Dashboard | static export embedded in tray binary | Next.js dev server (auto-started by `tauri dev`) |
 | Tauri tray | installed `.app` | `npm run tauri dev` in terminal |
 | Capture | in-process inside tray | in-process inside tray |
@@ -152,7 +149,7 @@ Every `.rs`, `.ts`, and `.tsx` file must start with:
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 ```
 
-SQL migrations use the `--` comment form. Python files in `services/agents/` use a `"""…"""` module docstring. The hooks expect these.
+SQL migrations use the `--` comment form. The hooks expect these.
 
 ---
 

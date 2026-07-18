@@ -67,76 +67,23 @@ these break whenever `runner.rs` or `extractor.rs` changes. test ALL of these af
 - [ ] **`MERIDIAN_DB` env var** — MCP server reads from custom path when env var is set.
 - [ ] **read-only connection** — MCP server opens DB with `readonly: true`; no accidental writes.
 
-### 7. task linker / hermes classification
+### 7. session categorization
 
-These are real integration tests — they call the actual `services/agents/run_task_linker.py`, which fetches session data from a temp DB, calls hermes, and returns a classification. Rust writes the result back to the DB.
-
-**Prerequisites**
+Session categorization runs **fully in Rust** (`src/intelligence/session_categorizer/`) — there is no Python, no hermes, and no on-device model in this path. The `cat_smoke` binary reads real `app_sessions` rows from `meridian.db`, runs `categorize()` on each, and prints the result without writing anything back.
 
 ```bash
-# 1. python3 in PATH (check)
-python3 --version
+# Categorize every session (read-only — nothing is written)
+cargo run --bin cat_smoke
 
-# 2. hermes configured (must exist)
-ls services/.hermes/config.yaml
-
-# 3. venv with dependencies installed
-cd services && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+# Limit the sample, or filter to one app
+cargo run --bin cat_smoke -- --limit 50
+cargo run --bin cat_smoke -- --app "Google Chrome"
 ```
 
-**Classify a single real session (writes to DB)**
+- [ ] **category and confidence assigned** — each row gets a non-empty `category` and a `confidence` in `[0.0, 1.0]`.
+- [ ] **trivial / empty sessions** — a row with empty `session_text` is categorized without crashing (no LLM required for the trivial path).
 
-```bash
-# dry run — see what hermes would decide without writing
-cargo run --bin backfill_task_classification -- --session <ID> --dry-run
-
-# real run — calls hermes, writes task_key + dimensions to ~/.meridian/meridian.db
-cargo run --bin backfill_task_classification -- --session <ID>
-
-# check what was written
-sqlite3 ~/.meridian/meridian.db \
-  "SELECT id, task_key, task_method, task_routing, task_confidence FROM app_sessions WHERE id = <ID>"
-```
-
-**Watch logs while it runs**
-
-```bash
-# in a second terminal — tail Python logs (hermes output goes to stderr)
-RUST_LOG=meridian=debug cargo run --bin backfill_task_classification -- --session <ID> 2>&1 | tee /tmp/classify.log
-
-# or tail the tagger daemon log if the daemon is running
-tail -f ~/.meridian/logs/tagger-daemon.log
-```
-
-**Run the automated smoke tests**
-
-```bash
-# All four tests (two require hermes, two are always-on prefilter tests)
-cargo test --test task_linker_smoke
-
-# Verbose output — see which tests ran vs. skipped
-cargo test --test task_linker_smoke -- --nocapture
-
-# One specific test
-cargo test --test task_linker_smoke real_classification_writes_task_and_advances_cursor -- --nocapture
-```
-
-**What each test does**
-
-| Test | Needs hermes | What it verifies |
-|---|---|---|
-| `real_classification_writes_task_and_advances_cursor` | Yes | Full round-trip: hermes classifies, `task_method` written to DB, cursor advanced, `agent_run` recorded |
-| `real_classification_does_not_reprocess_classified_session` | Yes | Running twice classifies the session exactly once |
-| `short_session_is_not_classified` | No | Sessions under `min_classification_duration_s` never reach Python |
-| `trivial_session_is_marked_overhead_without_python` | No | Empty `session_text` → `prefilter_trivial/skip` without LLM |
-
-**Skip vs. fail**
-
-If python3 is missing, `services/agents/run_task_linker.py` is not found, or `services/.hermes/config.yaml` does not exist, the hermes-dependent tests print `SKIP:` and exit cleanly. The test suite still passes. Run with `--nocapture` to see skip reasons.
-
-**What the tests do NOT assert**
-
-They do not assert a specific `task_key` — that is LLM output and varies by model and session content. They assert that `task_method IS NOT NULL` (something was written) and that cursor + audit rows are consistent.
+Ticket linking and worklog drafting that consume these categories go through the user's chosen CLI provider (`src/llm/`); those LLM hops are exercised end-to-end by running the daemon, not by a dedicated smoke test.
 
 ### 8. configuration and startup
 
@@ -145,91 +92,11 @@ They do not assert a specific `task_key` — that is LLM output and varies by mo
 - [ ] **graceful shutdown on SIGTERM** — `kill <pid>`; daemon finishes the current ETL pass and exits cleanly.
 - [ ] **graceful shutdown on Ctrl-C** — same as SIGTERM.
 
-### 9. Classifier eval pipeline (deepeval + golden dataset)
+### 9. LLM experimentation (dev-only LLM Lab)
 
-The eval pipeline scores the MLX classifier against a hand-authored golden dataset and emits OTel spans to OpenObserve so each run is inspectable as a trace tree. This is the experimentation harness — every model swap, prompt edit, or temperature tweak goes through it.
+The Python `deepeval` + MLX golden-dataset eval harness that lived under `services/tests/evals/` was removed along with the rest of the Python `services/` tree — there is no on-device model to score anymore. Generation now runs through the user's chosen third-party CLI provider (`src/llm/`).
 
-**Inputs**
-
-- `services/tests/evals/data/seeds/sessions_<persona>.json` — structured seed sessions with `ground_truth` (task_key, session_type, reasoning, difficulty, scoreable) + `design_notes`. Hand-authored, one persona per file.
-- `services/tests/evals/data/seeds/tickets_<persona>.json` — open ticket list (real KAN-* / PROJ-* + synthetic decoys) the classifier picks from.
-
-**Run flow**
-
-```bash
-# 1. Render seeds → deepeval Goldens (regenerate after any seed edit)
-services/.venv/bin/python services/tests/evals/render_seeds.py [persona]
-# default persona = a_meridian; valid: a_meridian, b_generic
-# writes: services/tests/evals/data/generated/goldens_<persona>.json
-
-# 2. Run the eval (MLX server auto-discovered on port 7823)
-EVAL_DATASET_PATH=services/tests/evals/data/generated/goldens_a_meridian.json \
-services/.venv/bin/python services/tests/evals/eval_classifier.py
-```
-
-**Pre-reqs**
-
-- `services/.venv` with `deepeval`, `python-dotenv`, `ollama` (`pip install -r services/requirements.txt` covers it; `ollama` is needed only because metrics.py imports `OllamaModel` for the unused LLM-judge metric — actual scoring is exact-match).
-- MLX server up on port 7823: `services/.venv/bin/python -m agents.server --backend mlx --port 7823`
-- OTel env vars in `.env` (`MERIDIAN_OTLP_ENDPOINT`, `MERIDIAN_OO_AUTH`) — `eval_classifier.py` auto-loads via `python-dotenv`.
-
-**What gets emitted**
-
-Each run produces one trace tree in OpenObserve under `service.name = meridian-eval`:
-
-| Span | Attributes |
-|---|---|
-| `eval.run` (root) | `run.id`, `persona`, `dataset_path`, `server_url`, `dataset_size`, `accuracy.task_key`, `accuracy.session_type`, `accuracy.both` |
-| `eval.classify` (×N children) | `seed_id`, `difficulty`, `app_name`, `persona`, `expected.task_key`, `expected.session_type`, `actual.task_key`, `actual.session_type`, `classifier.confidence`, `key_ok`, `type_ok`, `both_ok`, `elapsed_s`, plus an event `actual_reasoning` with the classifier's rationale |
-
-**Failure-mode taxonomy in the dataset**
-
-Each scoreable Golden targets a specific class of mistake:
-
-| Tier | Tests | Failure if it doesn't pass |
-|---|---|---|
-| `easy` | branch + ticket + activity all line up | classifier fundamentally broken |
-| `medium` | needs recent-context block to disambiguate | context window isn't earning its weight |
-| `hard` | ambiguous between 2 real tickets | model can't discriminate close cases |
-| `hard-decoy` | content adjacent to a decoy ticket | model picks decoys when it shouldn't |
-| `overhead` | text mentions tickets but user isn't working on them | keyword-mention false positive — highest-volume prod failure |
-| `untracked` | work but no candidate fits | model hallucinates a ticket to look productive |
-| `context-only` | timeline density, not scored | n/a (excluded from Goldens via `scoreable=false`) |
-
-A pass-rate of 95% concentrated in `easy` cases is materially worse than 80% with every tier above 50% — the latter exposes a real failure surface to attack, the former hides it. Author Goldens against failure modes, not coverage.
-
-**Useful OpenObserve queries** (paste into Logs panel, traces stream):
-
-```sql
--- All eval runs, newest first
-SELECT _timestamp, run_id, persona, accuracy_both, dataset_size, duration
-FROM "default"
-WHERE service_name='meridian-eval' AND operation_name='eval.run'
-ORDER BY _timestamp DESC LIMIT 20
-
--- Failing cases from the most recent run
-SELECT seed_id, difficulty, app_name, expected_task_key, actual_task_key, classifier_confidence
-FROM "default"
-WHERE service_name='meridian-eval' AND operation_name='eval.classify' AND both_ok='false'
-ORDER BY _timestamp DESC LIMIT 30
-
--- Per-tier accuracy for one trace
-SELECT difficulty,
-       COUNT(DISTINCT seed_id) AS total,
-       COUNT(DISTINCT CASE WHEN both_ok='true' THEN seed_id END) AS passed
-FROM "default"
-WHERE service_name='meridian-eval' AND operation_name='eval.classify' AND trace_id='<TRACE_ID>'
-GROUP BY difficulty ORDER BY difficulty
-```
-
-**When to re-run**
-
-- After editing `services/skills/activity/task-classifier/SKILL.md` (prompt change)
-- After bumping `MLX_MODEL_ID` or restarting the MLX server with a different model
-- After adding / editing Goldens in `dev_<persona>_sessions.json`
-- After any change to `services/agents/run_task_linker_mlx.py` (FSM schema, sampling, system_prompt composition)
-
-See [`services/tests/evals/README.md`](services/tests/evals/README.md) for the file inventory + the rendered Golden schema.
+Prompt and provider experimentation happens through the **dev-only LLM Lab** (`meridian llm-experiment run|create|exec|list|get …`), which writes only the `llm_experiment*` tables and never touches production tables. Like every other LLM call, its runs emit OTel spans to OpenObserve, so a run is inspectable as a trace tree there.
 
 ## Install-package tests
 
