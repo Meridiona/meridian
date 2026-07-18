@@ -147,12 +147,18 @@ export function IntelligenceSection({ settings, save }: {
           warnings are on screen. Rendered last (after the warnings) so, once scrolled to
           the end, it sits in natural document order rather than overlapping anything.
           <SaveButton> supplies its own 'Saved'/'Failed to save' status, the same as
-          Advanced/Capture/Notifications. */}
+          Advanced/Capture/Notifications; the line above it carries the part that generic
+          status can't - WHICH provider is staged, and (on failure) that the pick survived
+          the failed write, so Save can simply be pressed again without re-picking. */}
       {pending && (
         <div className="sticky bottom-0 flex flex-col gap-2 pb-1"
           style={{ background: 'var(--t-panel)' }}>
-          <p className="mt-body-sm" style={{ color: 'var(--color-state-pending)' }}>
-            {`${llmProvider(pending.id).name} isn't in use yet - Save to switch to it.`}
+          <p className="mt-body-sm" style={{
+            color: saveStatus === 'error' ? 'var(--status-error-dot)' : 'var(--color-state-pending)',
+          }}>
+            {saveStatus === 'error'
+              ? `Couldn't switch to ${llmProvider(pending.id).name} - it's still selected here, so you can press Save to try again.`
+              : `${llmProvider(pending.id).name} isn't in use yet - Save to switch to it.`}
           </p>
           <SaveButton status={saveStatus} onClick={onSave} />
         </div>
