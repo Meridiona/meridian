@@ -11,9 +11,7 @@ DRY_RUN=0
 NO_DAEMON=0
 SKIP_PERMISSIONS=0
 SKIP_ENV=0
-DEV_MODE=0  # --dev: debug binary + npm ci only; MLX server + Rust daemon run via launchd
-USE_MLX=1   # MLX inference server is the only backend (powers classify + PM-worklog synth)
-MLX_PORT=7823
+DEV_MODE=0  # --dev: debug binary + npm ci only; the Rust daemon runs via launchd
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -156,10 +154,10 @@ prompt_env_vars() {
     mkdir -p "$(dirname "$root_env")"
     [[ -f "$root_env" ]] || touch "$root_env"
 
-    info "→ LLM for task classification"
-    echo "    Using the persistent MLX inference server (Apple Silicon). No LLM endpoint"
-    echo "    needed — the daemon always calls the MLX classifier; MLX_SERVER_PORT is"
-    echo "    written to <repo>/.env automatically."
+    info "→ AI provider"
+    echo "    Summaries and ticket-matching run through the coding-agent CLI you already"
+    echo "    use (Claude / Codex / Cursor / Copilot) or a cloud endpoint you configure."
+    echo "    Pick it in the app's setup wizard (or Settings) - nothing to set here."
     echo
 
     if prompt_category "Jira"; then
@@ -223,8 +221,7 @@ prompt_env_vars() {
             fi
         fi
 
-        prompt_env_var "MERIDIAN_OTLP_ENDPOINT" "OTLP HTTP traces endpoint (Rust side, e.g. http://localhost:5080/api/default/v1/traces)" 0 "$root_env"
-        prompt_env_var "MERIDIAN_OTLP_TRACES_ENDPOINT" "OTLP HTTP traces endpoint (Python side; same URL as above is fine)" 0 "$root_env"
+        prompt_env_var "MERIDIAN_OTLP_ENDPOINT" "OTLP HTTP traces endpoint (e.g. http://localhost:5080/api/default/v1/traces)" 0 "$root_env"
     fi
 
     ok "Credential collection complete"
@@ -265,31 +262,26 @@ while [[ $# -gt 0 ]]; do
         --skip-permissions)  SKIP_PERMISSIONS=1 ;;
         --skip-env)          SKIP_ENV=1 ;;
         --dev)               DEV_MODE=1 ;;
-        --mlx)               : ;;   # accepted no-op (MLX is the only backend); kept for back-compat
-        --mlx-port)          MLX_PORT="$2"; shift ;;
+        --mlx|--mlx-port)    [[ "$1" == "--mlx-port" ]] && shift ;;  # accepted no-op (the on-device model was removed); kept for back-compat
         --help|-h)
             cat >&2 <<'EOF'
 Usage: bash install.sh [OPTIONS]
 
   --dev                Dev mode: debug Rust binary (faster builds), npm ci only for UI
-                       (no next build). MLX server + Rust daemon run via launchd;
-                       tray + UI run with hot-reload via dev-start.sh.
+                       (no next build). The Rust daemon runs via launchd; tray + UI run
+                       with hot-reload via dev-start.sh.
   --no-ui              Skip the Next.js build/install step entirely
   --dry-run            Print every action with [DRY-RUN] prefix; create/run nothing
   --no-daemon          Build everything but skip launchd registration
-  --skip-permissions   Skip the macOS permissions walkthrough (Screen Recording, Accessibility, Microphone)
+  --skip-permissions   Skip the macOS permissions walkthrough (Screen Recording, Accessibility)
   --skip-env           Skip the interactive credentials collection step
-  --mlx                Accepted no-op (the persistent MLX inference server is the only
-                       backend; Apple Silicon only). Installs mlx-lm + outlines + fastapi
-                       into .venv, registers the MLX server LaunchAgent. The MLX server
-                       powers classification AND the PM-worklog synthesiser.
-  --mlx-port N         MLX server port (default: 7823). Written to <repo>/.env.
+  --mlx, --mlx-port N  Accepted no-ops (the on-device model was removed); kept for back-compat
   --help, -h           Print this usage and exit
 
 After permissions, install.sh walks you through collecting credentials interactively
-(API keys for Jira, GitHub, Linear, OpenRouter, and OpenObserve). Existing values
-are never overwritten. Press Enter on any prompt to skip it. Use --skip-env to
-bypass this step entirely (e.g. in CI or when credentials are already in place).
+(API keys for Jira, GitHub, Linear, and OpenObserve). Existing values are never
+overwritten. Press Enter on any prompt to skip it. Use --skip-env to bypass this
+step entirely (e.g. in CI or when credentials are already in place).
 
 Capture runs in-process inside the Meridian tray — no separate screenpipe process needed.
 EOF
@@ -362,33 +354,6 @@ if [[ "${_node_ok}" -eq 0 ]]; then
     fi
 fi
 ok "Node.js 18+"
-
-_py_ok=0
-if command -v python3.11 >/dev/null 2>&1; then
-    _py_ok=1
-elif command -v python3 >/dev/null 2>&1; then
-    _py_ver="$(python3 --version 2>&1 | awk '{print $2}')"
-    _py_minor="${_py_ver#*.}"
-    _py_minor="${_py_minor%%.*}"
-    _py_major="${_py_ver%%.*}"
-    if [[ "${_py_major}" -ge 3 && "${_py_minor}" -ge 11 ]]; then
-        _py_ok=1
-    fi
-fi
-if [[ "${_py_ok}" -eq 0 ]]; then
-    warn "Python 3.11+ not found."
-    if prompt_install "Install Python 3.11 via Homebrew now?"; then
-        run brew install python@3.11
-        if [[ "${DRY_RUN}" -eq 0 ]] && ! command -v python3 >/dev/null 2>&1; then
-            warn "python3 still not on PATH after install — you may need to add $(brew --prefix python@3.11)/bin to PATH"
-        fi
-    else
-        err "Python 3.11+ is required. Install it and re-run."
-        exit 1
-    fi
-fi
-ok "Python 3.11+"
-
 
 # OpenObserve — optional local backend for traces + logs. Not on Homebrew; we
 # download the latest release from GitHub directly to ~/.openobserve/.
@@ -586,15 +551,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 6: Python services setup
-# ---------------------------------------------------------------------------
-
-info "Setting up Python services..."
-run bash "${REPO_ROOT}/scripts/setup-services.sh" --mlx
-ok "Python services ready"
-
-# ---------------------------------------------------------------------------
-# Step 7: Daemon install (skippable)
+# Step 6: Daemon install (skippable)
 # ---------------------------------------------------------------------------
 
 if [[ "${NO_DAEMON}" -eq 0 ]]; then
@@ -607,65 +564,6 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
         fi
     fi
 
-    # MLX server must be running before the Rust daemon starts — the daemon
-    # TCP-connects to it on startup and exits hard if the port is not reachable.
-    if [[ "${USE_MLX}" -eq 1 ]]; then
-        info "Writing MLX classification env vars to <repo>/.env..."
-        set_env_value "MLX_SERVER_PORT"    "${MLX_PORT}"  "${REPO_ROOT}/.env"
-        ok "MLX_SERVER_PORT=${MLX_PORT}"
-
-        info "Installing MLX inference server launchd agent..."
-        run bash "${REPO_ROOT}/services/scripts/install-mlx-server-daemon.sh" \
-            --port "${MLX_PORT}"
-        ok "MLX server launchd agent installed"
-
-        if [[ "${DRY_RUN}" -eq 0 ]]; then
-            # All three pipeline models must be cached (defaults shown; env
-            # overrides MERIDIAN_LLM_ID / MERIDIAN_EMBEDDER_ID
-            # aren't resolved here, so this is best-effort/informational only).
-            _hub="${HOME}/.cache/huggingface/hub"
-            _all_cached=1
-            for _m in \
-                "models--mlx-community--Qwen3.5-2B-OptiQ-4bit" \
-                "models--kerncore--Qwen3-Reranker-0.6B-MLX-4bit" \
-                "models--mlx-community--Qwen3-Embedding-0.6B-8bit"; do
-                _snap="${_hub}/${_m}/snapshots"
-                if [[ ! -d "${_snap}" || -z "$(ls -A "${_snap}" 2>/dev/null)" ]]; then
-                    _all_cached=0
-                fi
-            done
-            if [[ "${_all_cached}" -eq 1 ]]; then
-                info "MLX server starting (models cached, loading into Metal)..."
-            else
-                echo
-                info "First run: downloading on-device models (llm + embedder, ~2 GB total). This takes a few minutes on a fast connection. Do not interrupt."
-            fi
-            echo "  ─────────────────────────────────────────────────────────────"
-            mkdir -p "${HOME}/.meridian/logs"
-            : >> "${HOME}/.meridian/logs/mlx-server.log"
-            tail -n 0 -f "${HOME}/.meridian/logs/mlx-server.log" &
-            _tail_pid=$!
-            trap 'kill "${_tail_pid}" 2>/dev/null || true' EXIT
-            _mlx_wait=0
-            _mlx_timeout=300
-            until curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; do
-                sleep 3
-                _mlx_wait=$(( _mlx_wait + 3 ))
-                if [[ "${_mlx_wait}" -ge "${_mlx_timeout}" ]]; then
-                    kill "${_tail_pid}" 2>/dev/null || true
-                    echo "  ─────────────────────────────────────────────────────────────"
-                    warn "MLX server did not become ready within ${_mlx_timeout}s — check: tail -f ~/.meridian/logs/mlx-server.log"
-                    break
-                fi
-            done
-            if curl -sf "http://127.0.0.1:${MLX_PORT}/health" >/dev/null 2>&1; then
-                kill "${_tail_pid}" 2>/dev/null || true
-                echo "  ─────────────────────────────────────────────────────────────"
-                ok "MLX server ready on port ${MLX_PORT} (${_mlx_wait}s)"
-            fi
-        fi
-    fi
-
     info "Installing Rust daemon launchd agent..."
     run bash "${REPO_ROOT}/scripts/install-daemon.sh"
     ok "Rust daemon launchd agent installed"
@@ -674,47 +572,31 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
     # to your tracker (Jira/Linear/GitHub) only after you approve them in the
     # dashboard (Worklogs view).
 
-    info "Installing Claude Code coding-agent SessionEnd hook..."
-    if ! run bash "${REPO_ROOT}/services/scripts/install-claude-hook.sh"; then
-        warn "coding-agent hook install skipped"
+    info "Installing session-summary Claude Code command..."
+    if run "${MERIDIAN_BIN}" coding-agent-install-skill; then
+        ok "session-summary command → ~/.claude/commands/session-summary.md"
     else
-        ok "Claude Code coding-agent SessionEnd hook installed"
+        warn "session-summary command install skipped — run 'meridian coding-agent-install-skill' later"
     fi
 
-    info "Installing session-summary Claude Code command..."
-    _skill_src="${REPO_ROOT}/services/skills/coding-agent/session-summary/SKILL.md"
-    _skill_dst="${HOME}/.claude/commands/session-summary.md"
-    mkdir -p "${HOME}/.claude/commands"
-    cp "${_skill_src}" "${_skill_dst}"
-    ok "session-summary command → ~/.claude/commands/session-summary.md"
-
-    # Coding-agent summariser engines (informational): each agent's sessions
-    # are summarised by its OWN CLI when present; a missing CLI is never fatal
-    # — those sessions fall back to the local MLX model. Surface what the
-    # daemon will use so users know why a summary came from MLX.
-    # `meridian doctor` re-checks all of this any time.
+    # Coding-agent summariser engines (informational): each agent's sessions are
+    # summarised by its OWN CLI when present. There is no fallback — a missing CLI
+    # means those sessions are left pending until it's installed. `meridian doctor`
+    # re-checks all of this any time.
     info "Coding-agent summariser engines:"
     for _eng in claude codex copilot; do
         if command -v "${_eng}" >/dev/null 2>&1; then
             ok "${_eng} CLI found — those sessions summarise natively"
         else
-            info "  ${_eng} CLI not found — those sessions will use the local model (MLX)"
+            info "  ${_eng} CLI not found — those sessions stay pending until it's installed"
         fi
     done
     if command -v cursor-agent >/dev/null 2>&1; then
         ok "cursor-agent CLI found — Cursor sessions summarise natively"
     elif command -v cursor >/dev/null 2>&1 || [[ -d "${HOME}/Library/Application Support/Cursor" ]]; then
-        info "  cursor-agent CLI not found — Cursor sessions will use the local model (MLX)."
+        info "  cursor-agent CLI not found — Cursor sessions stay pending until it's installed."
         info "  To summarise with Cursor's own CLI:  curl https://cursor.com/install -fsS | bash  then: cursor-agent login"
         info "  Or let the daemon install it on demand: add CURSOR_AGENT_AUTO_INSTALL=1 to your .env"
-    fi
-
-    if [[ "${DEV_MODE}" -eq 1 ]]; then
-        info "Dev mode — skipping UI launchd agent (run: cd ui && npm run dev)"
-    else
-        info "Installing UI launchd agent..."
-        run bash "${REPO_ROOT}/scripts/install-ui-daemon.sh"
-        ok "UI launchd agent installed"
     fi
 
     if [[ "${NO_UI}" -eq 0 ]]; then
@@ -744,15 +626,14 @@ run ln -sfn "${REPO_ROOT}/scripts/meridian-cli.sh" "${BIN_DIR}/meridian"
 ok "meridian CLI → ${BIN_DIR}/meridian"
 
 # ---------------------------------------------------------------------------
-# Step 9: Pipeline smoke test — verify both LLM stages work (no DB writes)
+# Step 9: Health check — surface any config/permission/CLI issues
 # ---------------------------------------------------------------------------
 
-echo ""
-info "Running pipeline smoke test (this exercises the model — may take ~30s)..."
-if bash "${REPO_ROOT}/scripts/meridian-cli.sh" smoke; then
-    ok "pipeline smoke passed — classification and worklog synthesis are working"
-else
-    warn "pipeline smoke found issues — run 'meridian doctor' for remedies"
+if [[ "${DRY_RUN}" -eq 0 ]]; then
+    echo ""
+    info "Running health check..."
+    bash "${REPO_ROOT}/scripts/meridian-cli.sh" doctor || \
+        warn "doctor found issues — run 'meridian doctor' for remedies"
 fi
 
 # Verify database schema has all migrations applied
@@ -775,15 +656,13 @@ echo ""
 if [[ "${DEV_MODE}" -eq 1 ]]; then
     echo "✓ Meridian installed (dev mode)."
     echo ""
-    echo "  Rust daemon + MLX server + tray run with hot-reload via dev-start.sh."
+    echo "  Rust daemon + tray run with hot-reload via dev-start.sh."
     echo ""
     echo "Start all services with hot-reload:"
     echo "  bash dev-start.sh"
     echo ""
     echo "  1. Rust daemon   — cargo watch, rebuilds on every .rs save"
-    echo "  2. MLX server    — uvicorn --reload, reloads on .py changes"
-    echo "  3. Next.js UI    — http://localhost:3939 (hot reload)"
-    echo "  4. Tauri tray    — hot reload"
+    echo "  2. Tauri tray    — hot reload (Next.js dev server starts automatically)"
     echo ""
     echo "Useful commands:"
     echo "  meridian doctor         # diagnose"
@@ -791,16 +670,15 @@ if [[ "${DEV_MODE}" -eq 1 ]]; then
 else
     echo "✓ Meridian installed."
     echo ""
-    echo "  meridian start          # start all daemons (Rust daemon + MLX server)"
+    echo "  meridian start          # start the Rust daemon"
     echo "  meridian permissions    # re-run the permissions walkthrough"
     echo "  meridian status         # check running state"
     echo "  meridian logs           # tail Rust daemon log"
     echo "  meridian doctor         # diagnose"
     echo "  meridian config edit    # open <repo>/.env"
     echo ""
-    echo "Required before Jira/GitHub/Linear sync:"
-    echo "  <repo>/.env                  # one backend env for the Rust daemon AND Python services"
-    echo "  ui/.env.local                # Next.js UI"
+    echo "  Pick the AI that writes your summaries in the app's setup wizard"
+    echo "  (or later in Settings) - a coding-agent CLI you use, or a cloud endpoint."
     echo ""
     echo "Worklogs (Jira/Linear/GitHub) are DRAFTED only — review, edit, and approve"
     echo "them in the dashboard (Worklogs view); the daemon posts approved worklogs"
