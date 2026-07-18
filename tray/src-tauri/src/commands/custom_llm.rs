@@ -194,6 +194,29 @@ fn make_id(name: &str, existing: &[CustomLlmProvider]) -> String {
         .unwrap()
 }
 
+/// The checks every outbound request needs, whatever it is being sent for.
+///
+/// Shared by [`validate`] (adding an endpoint) and
+/// [`list_custom_llm_provider_models`] (listing one that isn't saved yet) so the two cannot
+/// drift — a rule enforced on the add path but not the listing path would be a rule with a
+/// hole in it.
+fn validate_transport_inputs(base_url: &str, api_key: &str) -> Result<(), String> {
+    if api_key.trim().is_empty() {
+        return Err("API key is required".into());
+    }
+    if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+        return Err("base URL must start with http:// or https://".into());
+    }
+    // The key becomes an Authorization header and the URL becomes a request line: a newline
+    // in either is header injection, exactly as `oo_email`/`oo_password` guard against.
+    for (field, v) in [("API key", api_key), ("base URL", base_url)] {
+        if v.contains('\n') || v.contains('\r') {
+            return Err(format!("{field} contains invalid characters"));
+        }
+    }
+    Ok(())
+}
+
 /// Reject what would break the request or the file. Kept strict at the door: the alternative
 /// is discovering it hours later as a failed fold.
 fn validate(name: &str, base_url: &str, model: &str, api_key: &str) -> Result<(), String> {
@@ -204,22 +227,11 @@ fn validate(name: &str, base_url: &str, model: &str, api_key: &str) -> Result<()
         // Unlike a CLI provider there is no "the provider's default model" to fall back to.
         return Err("model is required - a custom endpoint has no default".into());
     }
-    if api_key.trim().is_empty() {
-        return Err("API key is required".into());
-    }
-    if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
-        return Err("base URL must start with http:// or https://".into());
-    }
-    // The key becomes an Authorization header and the URL becomes a request line: a newline
-    // in either is header injection, exactly as `oo_email`/`oo_password` guard against.
-    for (field, v) in [
-        ("API key", api_key),
-        ("base URL", base_url),
-        ("model", model),
-    ] {
-        if v.contains('\n') || v.contains('\r') {
-            return Err(format!("{field} contains invalid characters"));
-        }
+    validate_transport_inputs(base_url, api_key)?;
+    // The model rides in the request BODY rather than a header or the request line, so it is
+    // checked here rather than in the shared transport helper.
+    if model.contains('\n') || model.contains('\r') {
+        return Err("model contains invalid characters".into());
     }
     Ok(())
 }
@@ -418,6 +430,71 @@ pub async fn remove_custom_llm_provider(id: String) -> Result<Vec<CustomProvider
         .iter()
         .map(|r| CustomProviderView::of(r, sel.as_deref()))
         .collect())
+}
+
+/// Ask an endpoint which models it serves, for the model picker.
+///
+/// Two callers, two shapes:
+///
+/// * **A saved endpoint** — pass `id` alone. The base URL and key are read from the registry
+///   here, because [`CustomProviderView`] deliberately omits `api_key` (there is a test
+///   pinning that), so the frontend has no key to hand back and MUST go through the id.
+/// * **The add-endpoint form** — pass `base_url` + `api_key`, which the user has just typed
+///   and no row exists for yet.
+///
+/// # This is best-effort by design
+///
+/// Plenty of OpenAI-compatible servers never implement `/models`. Every caller must treat an
+/// error as "offer free text" rather than a failure — the model field stays hand-typeable in
+/// all cases, so a missing listing costs convenience and nothing else.
+///
+/// # Cost
+///
+/// One unmetered-in-practice `GET`, only ever on an explicit user action (opening or
+/// refreshing the picker) — never on a mount or a poll tick. Unlike
+/// [`probe_custom_llm_provider`] it spends no completion tokens, so it takes no rate-limit
+/// reservation; a 429 is surfaced to the caller instead of retried.
+///
+/// # Related
+///
+/// [`meridian::llm::openai_compat::list_models`] does the request and response shaping.
+#[tauri::command]
+// `base_url` is skipped alongside the key, not just the key: a base URL can carry a
+// credential in a query string, and this span goes to the telemetry spool that ships inside
+// a diagnostics bundle. The endpoint id is the one safe thing to record - the same rule the
+// backend follows (see the logging note in src/llm/openai_compat.rs).
+#[tracing::instrument(skip(base_url, api_key))]
+pub async fn list_custom_llm_provider_models(
+    id: Option<String>,
+    base_url: Option<String>,
+    api_key: Option<String>,
+) -> Result<Vec<String>, String> {
+    // Resolve to (base_url, key, id-for-logging) from whichever shape the caller used.
+    let (url, key, log_id) = match id {
+        Some(id) => {
+            let settings_v = settings::read_settings_value();
+            let rows = read_rows(&settings_v);
+            let row = rows
+                .iter()
+                .find(|r| r.id == id)
+                .ok_or_else(|| format!("no custom endpoint with id {id}"))?;
+            (row.base_url.clone(), row.api_key.clone(), id)
+        }
+        None => {
+            let url = base_url.unwrap_or_default();
+            let key = api_key.unwrap_or_default();
+            // The same door the add path uses - see `validate_transport_inputs`.
+            validate_transport_inputs(&url, &key)?;
+            (url, key, "unsaved".to_string())
+        }
+    };
+
+    meridian::llm::openai_compat::list_models(&url, &key, &log_id)
+        .await
+        .map_err(|e| {
+            tracing::warn!(endpoint_id = %log_id, error = %e, "custom_llm: model listing failed");
+            e.to_string()
+        })
 }
 
 /// Every configured endpoint, keyless — what the picker and the Lab's variant list render.

@@ -60,6 +60,148 @@ impl CustomEndpoint {
     }
 }
 
+/// Pull the model ids out of a `/models` response body.
+///
+/// Split out from [`list_models`] so the envelope handling is unit-testable without a live
+/// endpoint — the shapes below are the whole reason this function is fallible.
+///
+/// OpenAI answers `{"data":[{"id":…}]}`. Some compatible servers answer `{"models":[…]}`, and
+/// a few return a bare array; entries are usually objects but are sometimes bare strings. All
+/// are accepted, because the alternative is making a user hand-type a model purely because
+/// their vendor picked a different envelope.
+///
+/// Returns an empty vec — NOT an error — for a well-formed response listing nothing. That is
+/// a real answer ("this endpoint serves no models it will admit to"), and callers already
+/// treat empty as "fall back to free text".
+fn parse_models_body(body: &str) -> Result<Vec<String>, LlmError> {
+    let parsed: Value = serde_json::from_str(body)
+        .map_err(|e| LlmError::Failed(format!("custom provider models response: {e}")))?;
+
+    let items = parsed
+        .get("data")
+        .or_else(|| parsed.get("models"))
+        .unwrap_or(&parsed);
+    // A non-array envelope is a FAILURE, not an empty list. Some endpoints answer 200 with
+    // an error object (`{"error":"invalid key"}`); treating that as "listed no models" would
+    // report a working endpoint serving nothing and hide the real reason from the user.
+    let items = items.as_array().ok_or_else(|| {
+        LlmError::Failed("custom provider models response was not a list".to_string())
+    })?;
+    let mut ids: Vec<String> = items
+        .iter()
+        .filter_map(|m| {
+            // An entry is either {"id": "…"} or, on some servers, a bare string.
+            m.get("id")
+                .and_then(Value::as_str)
+                .or_else(|| m.as_str())
+                .map(str::to_string)
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+    // Sorted and deduped so the picker's order doesn't depend on the server's, and a vendor
+    // that lists the same id twice doesn't render it twice.
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+/// How long to wait on a models listing. Deliberately short and NOT `cli_timeout_s`: this
+/// runs while a user watches a dropdown, and a slow endpoint should fall back to free text
+/// quickly rather than freeze the picker.
+const MODELS_TIMEOUT_S: u64 = 10;
+
+/// Ceiling on a `/models` body. Generous for the use case — the longest real listing is a
+/// few hundred entries, well under 100 KB — while still bounded.
+const MODELS_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+
+/// Read a response body with a hard byte ceiling.
+///
+/// `resp.text()` buffers without limit, and the URL here is **user-supplied**: a faulty or
+/// hostile endpoint could stream indefinitely and exhaust tray memory, which the request
+/// timeout does not prevent (a steady trickle never times out). Chunks are accumulated and
+/// the read is abandoned the moment it exceeds the cap.
+async fn read_capped_body(mut resp: reqwest::Response) -> Result<String, LlmError> {
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| LlmError::Failed(format!("custom provider models response: {e}")))?
+    {
+        if buf.len() + chunk.len() > MODELS_MAX_BODY_BYTES {
+            return Err(LlmError::Failed(format!(
+                "custom provider models response exceeded {} KB",
+                MODELS_MAX_BODY_BYTES / 1024
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    // Lossy rather than strict: a body that is almost-JSON with one bad byte should reach
+    // the parser and fail there with a useful message, not die as an encoding error.
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Ask an OpenAI-compatible endpoint what models it serves — `GET <base_url>/models`.
+///
+/// Takes the base URL and key rather than a [`CustomEndpoint`] because the main caller is the
+/// ADD-endpoint form, where no model has been chosen yet and so no endpoint exists to build.
+///
+/// # Why `<base_url>/models` and not `<base_url>/v1/models`
+///
+/// The stored `base_url` already carries the version segment (`https://…/v1`,
+/// `https://…/v1beta/openai`) — the same reason [`CustomEndpoint::chat_url`] appends a bare
+/// `/chat/completions`. Appending `/v1` here would 404 every configured endpoint.
+///
+/// # Who calls this
+///
+/// [`crate::llm`] exposes it to the tray's `list_custom_llm_provider_models` command, which
+/// serves the custom-endpoint model picker.
+///
+/// # Errors
+///
+/// Reuses [`classify_error`], so a 429 comes back as [`LlmError::RateLimited`] and a 401/403
+/// as a key-specific message. Callers are expected to DEGRADE on any error — every field this
+/// populates must stay usable as free text, since plenty of OpenAI-compatible servers don't
+/// implement `/models` at all.
+pub async fn list_models(
+    base_url: &str,
+    api_key: &str,
+    endpoint_id: &str,
+) -> Result<Vec<String>, LlmError> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(MODELS_TIMEOUT_S))
+        // Same reasoning as the chat call: a 3xx to another origin would forward the
+        // Authorization header (and the key) to a host the user never configured.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| LlmError::Failed(format!("custom provider client: {e}")))?;
+
+    let resp = client
+        .get(&url)
+        .bearer_auth(api_key)
+        .send()
+        .await
+        // As in `complete`: `e` can carry the URL but never the key (reqwest redacts auth).
+        .map_err(|e| LlmError::Failed(format!("custom provider models request failed: {e}")))?;
+
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let body = read_capped_body(resp).await?;
+    if !status.is_success() {
+        return Err(classify_error(status, &headers, &body, endpoint_id));
+    }
+
+    let ids = parse_models_body(&body)?;
+
+    tracing::info!(
+        endpoint_id = %endpoint_id,
+        models = ids.len(),
+        "custom provider: listed models"
+    );
+    Ok(ids)
+}
+
 pub struct OpenAiCompatBackend {
     pub cfg: LlmConfig,
 }
@@ -317,6 +459,79 @@ fn classify_error(
         ));
     }
     LlmError::Failed(format!("custom provider {status}: {head}"))
+}
+
+#[cfg(test)]
+mod models_listing_tests {
+    use super::*;
+
+    /// The OpenAI shape, which Groq/OpenRouter/Gemini's compat layer all follow.
+    #[test]
+    fn reads_the_openai_data_envelope() {
+        let body = r#"{"object":"list","data":[
+            {"id":"gpt-5.1","object":"model"},
+            {"id":"gpt-5.5","object":"model"}
+        ]}"#;
+        assert_eq!(parse_models_body(body).unwrap(), vec!["gpt-5.1", "gpt-5.5"]);
+    }
+
+    /// Some compatible servers use `models` instead of `data`.
+    #[test]
+    fn reads_the_models_envelope() {
+        let body = r#"{"models":[{"id":"llama-3.3-70b"}]}"#;
+        assert_eq!(parse_models_body(body).unwrap(), vec!["llama-3.3-70b"]);
+    }
+
+    /// …and a few return the array itself, sometimes as bare strings.
+    #[test]
+    fn reads_a_bare_array_of_objects_or_strings() {
+        assert_eq!(
+            parse_models_body(r#"[{"id":"a"},"b"]"#).unwrap(),
+            vec!["a", "b"]
+        );
+    }
+
+    /// Order comes from us, not the server, and a duplicate id renders once.
+    #[test]
+    fn sorts_and_dedupes() {
+        let body = r#"{"data":[{"id":"z"},{"id":"a"},{"id":"z"}]}"#;
+        assert_eq!(parse_models_body(body).unwrap(), vec!["a", "z"]);
+    }
+
+    /// A well-formed response listing nothing is an ANSWER, not a failure - the caller
+    /// falls back to free text either way, but an Err would surface a scary message for
+    /// what is simply an endpoint with nothing to declare.
+    #[test]
+    fn empty_list_is_ok_not_an_error() {
+        assert_eq!(
+            parse_models_body(r#"{"data":[]}"#).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    /// Entries we can't read a usable id from are skipped rather than poisoning the list
+    /// with empty options.
+    #[test]
+    fn skips_entries_with_no_usable_id() {
+        let body = r#"{"data":[{"id":"good"},{"object":"model"},{"id":""}]}"#;
+        assert_eq!(parse_models_body(body).unwrap(), vec!["good"]);
+    }
+
+    /// A non-JSON body (an HTML error page from a proxy, say) must fail rather than be
+    /// reported as "no models", which would look like a working endpoint serving nothing.
+    #[test]
+    fn rejects_a_non_json_body() {
+        assert!(parse_models_body("<html>502 Bad Gateway</html>").is_err());
+    }
+
+    /// Valid JSON that isn't a list must fail for the same reason. Some endpoints answer
+    /// **200** with an error object, and reporting that as "no models" would blame the
+    /// endpoint for serving nothing while hiding the actual cause (a bad key, usually).
+    #[test]
+    fn rejects_a_non_array_envelope() {
+        assert!(parse_models_body(r#"{"error":"invalid key"}"#).is_err());
+        assert!(parse_models_body(r#"{"data":{"id":"a"}}"#).is_err());
+    }
 }
 
 #[cfg(test)]

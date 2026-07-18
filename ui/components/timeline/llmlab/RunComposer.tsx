@@ -15,6 +15,7 @@ import type { DayTasksResponse, LlmExperimentProcess, RunLlmExperimentBody } fro
 import { LLM_PROVIDERS, customVariantId, rungLabel, type LlmProviderId } from '@/lib/llm-providers'
 import { useLlmProviderDetection } from '@/components/LlmProviderPicker'
 import { useCustomProviders } from '@/components/CustomProviders'
+import { ModelMultiSelect, ModelUnsupportedNote } from '@/components/ModelPicker'
 import { dayString } from '../types'
 
 const PROCESSES: { id: LlmExperimentProcess; name: string; hint: string }[] = [
@@ -79,7 +80,12 @@ export function RunComposer({ starting, error, onRun }: {
   // model-override fan-out.
   const variants = useMemo(() => ([
     ...LLM_PROVIDERS.filter(p => picked.has(p.id)).flatMap(p => {
-      const overrides = (models[p.id] ?? '').split(',').map(m => m.trim()).filter(Boolean)
+      // A provider whose backend discards the model (copilot) never fans out, even if a
+      // stale string is still held in state - a `copilot:<model>` column would promise a
+      // comparison the run can't actually make.
+      const overrides = p.supportsModelOverride
+        ? (models[p.id] ?? '').split(',').map(m => m.trim()).filter(Boolean)
+        : []
       return overrides.length ? overrides.map(m => `${p.id}:${m}`) : [p.id]
     }),
     ...custom.providers.filter(c => pickedCustom.has(c.id)).map(c => customVariantId(c.id)),
@@ -177,13 +183,20 @@ export function RunComposer({ starting, error, onRun }: {
                     : installable ? 'installed' : 'not installed'}
                 </span>
               </label>
-              {on && (
-                <input type="text" placeholder="model(s), comma-separated (optional)"
-                  title="Empty = the provider's default model. Several models = one variant each, e.g. gpt-5.3, gpt-5.1-mini"
-                  value={models[p.id] ?? ''} onChange={e => setModels(m => ({ ...m, [p.id]: e.target.value }))}
-                  className="mt-2 w-full rounded-lg px-2 py-1 bg-ctrl"
-                  style={{ border: '1px solid var(--t-ctrl-border)', color: 'var(--t-title)', font: '500 11px var(--font-mono, ui-monospace)' }} />
-              )}
+              {/* Tick curated models and/or type your own; both feed the same comma list, so
+                  the variant assembly above is unchanged. copilot takes no model at all, so
+                  it gets a note rather than a control that would be silently discarded. */}
+              {on && (p.supportsModelOverride ? (
+                <ModelMultiSelect
+                  value={models[p.id] ?? ''}
+                  onChange={next => setModels(m => ({ ...m, [p.id]: next }))}
+                  models={p.models}
+                />
+              ) : (
+                <div className="mt-2">
+                  <ModelUnsupportedNote providerName={p.name} />
+                </div>
+              ))}
             </div>
           )
         })}

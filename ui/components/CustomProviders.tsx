@@ -15,7 +15,7 @@
 //     selects an ineligible endpoint, so the UI must not offer one as selectable - a
 //     rejected save would silently roll the choice back with nothing to explain it.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke, openExternal } from '@/lib/bridge'
 import {
   CUSTOM_PROVIDER_COST_NOTE,
@@ -25,8 +25,10 @@ import {
   capacityNotice,
   type CapacityAssessment,
   type CustomProviderView,
+  type LlmModelOption,
   type ProbeOutcome,
 } from '@/lib/llm-providers'
+import { ModelSelect } from '@/components/ModelPicker'
 
 /**
  * The configured endpoints, plus the writes that change them.
@@ -170,6 +172,56 @@ function AddForm({ onAdd, onCancel }: {
   }, [rpm, rpd])
   const addNotice = capacity ? capacityNotice(capacity) : null
 
+  // Models as reported by the endpoint itself. null = never asked (or the ask failed), which
+  // is NOT an error state: many OpenAI-compatible servers don't implement /models, so the
+  // field stays hand-typeable throughout and this only ever adds convenience.
+  const [models, setModels] = useState<LlmModelOption[] | null>(null)
+  const [listing, setListing] = useState(false)
+  const [listError, setListError] = useState<string | null>(null)
+  // Bumped whenever the endpoint being described changes. A listing carries the generation
+  // it started in and is DISCARDED if that no longer matches, so a slow answer for the old
+  // URL/key can't repopulate the picker after the user has retargeted the form - which would
+  // otherwise let a model that doesn't exist on the new endpoint be selected and saved.
+  const listGen = useRef(0)
+
+  /** Drop everything discovered about the previous endpoint. */
+  const resetModelDiscovery = useCallback(() => {
+    listGen.current += 1
+    setModels(null)
+    setListError(null)
+    setListing(false)
+    // The chosen model belonged to the old endpoint; keeping it would submit a model the
+    // new one may not serve.
+    setModel('')
+  }, [])
+
+  // Both are needed for the call: the key authenticates it, the URL addresses it.
+  const canList = baseUrl.trim() !== '' && apiKey.trim() !== ''
+
+  async function listModels() {
+    const gen = listGen.current
+    setListing(true)
+    setListError(null)
+    try {
+      // No `id` - this endpoint isn't saved yet, so the tray takes the typed URL and key
+      // directly. camelCase per the note in `add` above.
+      const ids = await invoke<string[]>('list_custom_llm_provider_models', {
+        baseUrl,
+        apiKey,
+      })
+      if (gen !== listGen.current) return
+      setModels(ids.map((m) => ({ id: m, label: m })))
+      if (ids.length === 0) setListError('This endpoint listed no models - type one instead.')
+    } catch (e) {
+      if (gen !== listGen.current) return
+      // Degrade, never block: the model field is still a text box.
+      setModels(null)
+      setListError(String(e))
+    } finally {
+      if (gen === listGen.current) setListing(false)
+    }
+  }
+
   const preset = customVendorPreset(vendor)
   // Only the escape hatch types its own URL; a preset's URL is fixed so a typo can't turn
   // "Gemini" into an endpoint that isn't Gemini.
@@ -180,6 +232,9 @@ function AddForm({ onAdd, onCancel }: {
     const p = customVendorPreset(id)
     setBaseUrl(p?.baseUrl ?? '')
     if (!name.trim() && p && id !== 'other') setName(p.name)
+    // A different vendor is a different endpoint - anything discovered about the last one
+    // is now wrong.
+    resetModelDiscovery()
   }
 
   async function submit() {
@@ -223,11 +278,9 @@ function AddForm({ onAdd, onCancel }: {
 
       <Field label="Name" value={name} onChange={setName} placeholder="Gemini Flash" />
       {urlEditable && (
-        <Field label="Base URL" value={baseUrl} onChange={setBaseUrl} mono
+        <Field label="Base URL" value={baseUrl} onChange={(v) => { setBaseUrl(v); resetModelDiscovery() }} mono
           placeholder="https://host/v1" />
       )}
-      <Field label="Model" value={model} onChange={setModel} mono placeholder="gemini-flash-latest" />
-
       {/* The cost warning sits with the key field, because that is where the money decision
           is made - see CUSTOM_PROVIDER_COST_NOTE. */}
       <div className="flex items-start" style={{
@@ -239,7 +292,9 @@ function AddForm({ onAdd, onCancel }: {
         <p style={{ fontSize: 10.5, lineHeight: 1.45, color: 'var(--t-muted)' }}>{CUSTOM_PROVIDER_COST_NOTE}</p>
       </div>
 
-      <Field label="API key" value={apiKey} onChange={setApiKey} type="password" mono
+      {/* A different key can address a different account, and therefore a different set of
+          models - so it invalidates a listing just as the URL does. */}
+      <Field label="API key" value={apiKey} onChange={(v) => { setApiKey(v); resetModelDiscovery() }} type="password" mono
         placeholder="pasted once - never shown again" />
       {preset?.keyUrl && (
         <button onClick={() => preset.keyUrl && openExternal(preset.keyUrl)}
@@ -247,6 +302,43 @@ function AddForm({ onAdd, onCancel }: {
           style={{ fontSize: 10.5, color: 'var(--color-state-proposal)', background: 'none', border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'underline' }}>
           Get a {preset.name} key ↗
         </button>
+      )}
+
+      {/* Model sits AFTER the key on purpose: listing what an endpoint serves needs the key,
+          so asking for the model first would mean typing it blind. This is the one provider
+          whose models can be enumerated live - every other one is a CLI with no such
+          endpoint. Required here because, unlike a CLI, a custom endpoint has no default. */}
+      <label className="flex flex-col" style={{ gap: 4 }}>
+        <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t-faint)' }}>
+          Model
+        </span>
+        <ModelSelect
+          value={model}
+          onChange={setModel}
+          models={models ?? []}
+          required
+          action={
+            <button
+              type="button"
+              onClick={listModels}
+              disabled={!canList || listing}
+              style={{
+                fontSize: 10.5, padding: '5px 9px', borderRadius: 7, whiteSpace: 'nowrap',
+                border: '1px solid var(--t-ctrl-border)', background: 'var(--t-ctrl)',
+                color: canList ? 'var(--t-title)' : 'var(--t-faint)',
+                cursor: canList && !listing ? 'pointer' : 'not-allowed',
+              }}
+              title={canList ? 'Ask this endpoint which models it serves' : 'Enter the base URL and API key first'}
+            >
+              {listing ? 'Listing…' : models ? 'Refresh' : 'List models'}
+            </button>
+          }
+        />
+      </label>
+      {listError && (
+        <p style={{ fontSize: 10.5, lineHeight: 1.45, color: 'var(--t-faint)', marginTop: -4 }}>
+          {listError} You can still type the model name yourself.
+        </p>
       )}
 
       <Field label="Requests per minute" value={rpm} onChange={setRpm} type="number" mono
