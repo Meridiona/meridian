@@ -1,3 +1,112 @@
+## [1.72.0](https://github.com/Meridiona/meridian/compare/v1.71.0...v1.72.0) (2026-07-18)
+
+### 🚀 Features
+
+* **capture:** ignore chosen apps and websites from Settings ([7524951](https://github.com/Meridiona/meridian/commit/7524951f00495ac58841b804d47e48d4d36eaba3))
+* **dashboard:** add a "suggest a feature" link to the What's New roadmap ([72d8d2f](https://github.com/Meridiona/meridian/commit/72d8d2f80b0b855c62525b7d51f588e340399b51))
+* **dashboard:** add a What's New changelog + roadmap modal ([4b272cc](https://github.com/Meridiona/meridian/commit/4b272cc0ffd674b5ef5eee8ab70868ef67eab8eb))
+* **llm-lab:** add the llm_experiments ledger tables (migration 064) ([3002ece](https://github.com/Meridiona/meridian/commit/3002eced7c144fd1d8e9b718f9aabeadd9a11b1f))
+* **llm-lab:** compare several models of one provider from the composer ([d3dbc70](https://github.com/Meridiona/meridian/commit/d3dbc700cee1fa8420bb2d76055f72a1dd4f41f0))
+* **llm-lab:** day-fold process + render fold outcomes as day-task timelines ([86df503](https://github.com/Meridiona/meridian/commit/86df503e94b95b40c5eb0725a3b6bfd9a5ff66c5))
+* **llm-lab:** dev-only tray commands + shared CLI-exec helpers ([20d8ebc](https://github.com/Meridiona/meridian/commit/20d8ebc5329800dc66a3d09303c4e125aa4cc962))
+* **llm-lab:** draft a fold task's worklog on demand with the shown variant ([8f8a785](https://github.com/Meridiona/meridian/commit/8f8a785359bf1a10ae74878ef65e833ed2660a4d))
+* **llm-lab:** full-screen surface with a variant switcher and task sidebar ([875641e](https://github.com/Meridiona/meridian/commit/875641eaddb58c6bd704e0ac8f752edf4e088fd7))
+* **llm-lab:** meridian llm-experiment CLI (run/create/exec/list/get) ([4d3fba2](https://github.com/Meridiona/meridian/commit/4d3fba278c6613c6cdfbd7f08534c770b71b2085))
+* **llm-lab:** meridian-core reader for the experiment tables ([d4c9481](https://github.com/Meridiona/meridian/commit/d4c9481984e9f486b4c384d569b18e70f2d0ea7f))
+* **llm-lab:** render fold comparisons as the real dashboard timeline ([420dc85](https://github.com/Meridiona/meridian/commit/420dc8504856419840378fc55bcc6fb7facb1cb4))
+* **llm-lab:** run a custom endpoint as a Lab variant ([6ea7cde](https://github.com/Meridiona/meridian/commit/6ea7cdea0dce3db4590e98f29b90c28d2ba110c0))
+* **llm-lab:** the dev-only LLM Lab modal - compose, run, compare side by side ([5213f63](https://github.com/Meridiona/meridian/commit/5213f63e06e7e722054aa2074711341656532ccc))
+* **llm-lab:** the experiment harness - types, ledger store, request replay, runner ([dbcb2b1](https://github.com/Meridiona/meridian/commit/dbcb2b1fe0cf213e76d66f258ccc4e7d04d09c34))
+* **llm:** add a real connectivity test for provider CLIs ([cf1470c](https://github.com/Meridiona/meridian/commit/cf1470c94a773581f9dd38eeb6de75cf807dbd16))
+* **llm:** custom OpenAI-compatible cloud providers - the identity, registry and backend ([12de023](https://github.com/Meridiona/meridian/commit/12de023c5c973a4189ae3fd6109252cf88e53137))
+* **llm:** honor the provider's own rate-limit reset time ([e7fed73](https://github.com/Meridiona/meridian/commit/e7fed73b669b4fbc58df5d81022d104aa6ab3120))
+* **llm:** pace metered endpoints and honour 429 reset headers ([#465](https://github.com/Meridiona/meridian/issues/465)) ([3e68da9](https://github.com/Meridiona/meridian/commit/3e68da96dacfbf649d826a91e1796e94bc55ee13)), closes [#467](https://github.com/Meridiona/meridian/issues/467)
+* **llm:** probe a custom endpoint's real schema support, and gate production on it ([c9447a1](https://github.com/Meridiona/meridian/commit/c9447a1cc30940bcdc387d077725f995618e1443))
+* **llm:** wire the connectivity test into Settings and the setup wizard ([d9288f5](https://github.com/Meridiona/meridian/commit/d9288f5931fcf381d766145d6f80d6b39c97c1b6))
+* **release:** ship Meridian as a universal (Apple Silicon + Intel) binary ([#469](https://github.com/Meridiona/meridian/issues/469)) ([44a2bdd](https://github.com/Meridiona/meridian/commit/44a2bddbcf56a31d48d89cdc23ad719d74695012))
+* **settings:** add the centralised AI-provider choice ([ebc62fe](https://github.com/Meridiona/meridian/commit/ebc62fea12339abeba257b629267fbb99f1ce573))
+* **settings:** add the centralised AI-provider choice ([#444](https://github.com/Meridiona/meridian/issues/444)) ([93028ca](https://github.com/Meridiona/meridian/commit/93028caf28ca4c7464fdd732073a4763eab03c61))
+* **summary:** AI-composed daily summary with model-chosen visualisations ([98085cf](https://github.com/Meridiona/meridian/commit/98085cfd21c2b2ce3ec6141bff6fa4e8eb4f75a8))
+* **timeline:** bring back the live-hour strip on the day-task column ([d420974](https://github.com/Meridiona/meridian/commit/d42097430386a7c7d99b7259e9ba79490d18186d))
+* **tray:** MERIDIAN_BIN env override for the spawned CLI binary ([417268b](https://github.com/Meridiona/meridian/commit/417268b90414c99aa6e7138e277990341238581f))
+* **ui:** add and select a custom cloud endpoint from the provider picker ([31c2974](https://github.com/Meridiona/meridian/commit/31c2974ba6ff8d05c352c8e1fc9094de773afc76))
+* **ui:** add DMG update banner to the dashboard ([839d811](https://github.com/Meridiona/meridian/commit/839d811416247a2013feadb1f00521cd5f1761ef))
+* **ui:** polish setup wizard + day-task timeline hour rail ([#470](https://github.com/Meridiona/meridian/issues/470)) ([07390ac](https://github.com/Meridiona/meridian/commit/07390ac6c9861c93508b87640e2849510fa896f6))
+* **worklog:** generate-worklog from day-task cards + status picker ([b33fdd5](https://github.com/Meridiona/meridian/commit/b33fdd52bf995fe7690343d53c87d5fca408626e))
+* **worklog:** scope matching to the day's plan and post to every ticket it advanced ([b0ddf35](https://github.com/Meridiona/meridian/commit/b0ddf35840d106f6e758b822a51b04030e2dfcb4))
+
+### 🐛 Bug Fixes
+
+* **capture:** drain autorelease pools around per-tick Vision OCR and AX walks ([3550281](https://github.com/Meridiona/meridian/commit/3550281ce374e266e7d2bb32760335239c08c06f))
+* **ci:** add --release to the notifications-plugin clean so it actually rebuilds ([b5dd14e](https://github.com/Meridiona/meridian/commit/b5dd14ef2219b483cb147bd55e45bdef1f199675)), closes [#461](https://github.com/Meridiona/meridian/issues/461)
+* **ci:** force a clean notifications-plugin build so its Swift static lib links ([1a83624](https://github.com/Meridiona/meridian/commit/1a83624dd4c6f6e3b3f8cffc1c0baacfeecb8108))
+* **custom-llm:** a re-test cut short must not demote the selected endpoint ([03eac43](https://github.com/Meridiona/meridian/commit/03eac431c61c9ddd0239f8dff6c5cd7182047f86))
+* **dev-start:** stop the installed-runtime MLX server, so a dev run uses its own services/ ([846cd0d](https://github.com/Meridiona/meridian/commit/846cd0dd0c1edd0732044da2b84e242b2de741fd))
+* **dev-start:** watch only what rebuilds the daemon, not the whole repo ([d7232e0](https://github.com/Meridiona/meridian/commit/d7232e0faabe1c13bc730a5ba18e4a2575f2b62e))
+* **llm-lab:** address PR [#458](https://github.com/Meridiona/meridian/issues/458) review - gate metered draft-task, docs, auto-follow, tests ([3f4f65c](https://github.com/Meridiona/meridian/commit/3f4f65cb7b47bf7b3a79ef26cb6d826ce066fbbb))
+* **llm:** address PR [#454](https://github.com/Meridiona/meridian/issues/454) review - Lab CLI gating, worklog/plan idempotency, per-provider backoff, key-leak hardening ([986a307](https://github.com/Meridiona/meridian/commit/986a307cca4ee6164fa690ec860dcf22da9f5faa))
+* **llm:** address review — timezone doc, overflow guard, coverage gap ([f130fcb](https://github.com/Meridiona/meridian/commit/f130fcb13f6497ee74dbf7086ecd7a608d5a7fc7))
+* **llm:** keep the trailing minutes on a compact relative wait ([8a69cd0](https://github.com/Meridiona/meridian/commit/8a69cd0b3bf3fd5ef83bc18f39d24ea3f29af93d))
+* **llm:** make Codex speak OpenAI's strict schema dialect, and report its real error ([c6eb06c](https://github.com/Meridiona/meridian/commit/c6eb06c29794d5676365309aba7264e52c09f077))
+* **llm:** serialize provider-test cache writes so Rescan can't lose results ([2104c03](https://github.com/Meridiona/meridian/commit/2104c030cc5421e4c91cee44ed80a14344cbc8cc))
+* **review:** address correctness findings from PR [#444](https://github.com/Meridiona/meridian/issues/444) review ([3dd8e81](https://github.com/Meridiona/meridian/commit/3dd8e81d8bd5c4bba7a82c97e606ccaedcde78da))
+* **review:** address PR [#450](https://github.com/Meridiona/meridian/issues/450) review findings on the What's New modal ([a4999bc](https://github.com/Meridiona/meridian/commit/a4999bce6ea20be60aecaacce7cecc8f549b3ace))
+* **summary:** make the daily summary a summary, not a dashboard ([e5ce0cb](https://github.com/Meridiona/meridian/commit/e5ce0cba35fe1e9641beb3c31b4d276c0289494c))
+* **timeline:** reserve room for "+N more" so a card's summary never clips mid-line ([4e537d0](https://github.com/Meridiona/meridian/commit/4e537d04919ec4afc6fe3e021ea412bb91f2297d))
+* **tray:** dispatch setup wizard full-screen call to the main thread ([c0dec8d](https://github.com/Meridiona/meridian/commit/c0dec8de514584576c7c49d80373aa4b4ab2b8c7))
+* **tray:** log a warning if the main-thread dispatch fails ([faf827d](https://github.com/Meridiona/meridian/commit/faf827d9c4667ffd5b565a47d6d6aec5919ed051))
+* **tray:** make a dev run depend only on its own checkout ([3aad8e6](https://github.com/Meridiona/meridian/commit/3aad8e6b9b48be027055756c8af39bf5d6a8c901))
+* **ui:** brighten the Intelligence picker and gate switching behind Save ([f2a9bd0](https://github.com/Meridiona/meridian/commit/f2a9bd0b5868356f8aa65e7575ad21fd851e5846)), closes [#FFFFFF](https://github.com/Meridiona/meridian/issues/FFFFFF)
+* **ui:** fit-not-scroll modals, task-title truncation, status change in Cleanup ([68bf911](https://github.com/Meridiona/meridian/commit/68bf9114d17aedb604455c9cd82bddc7b06e2211))
+* **ui:** import renamed LlmLabScreen, not the deleted LlmLabModal ([943597d](https://github.com/Meridiona/meridian/commit/943597d1fd4fd9e5b33fb786b755dc5ddcb8d245)), closes [#458](https://github.com/Meridiona/meridian/issues/458)
+* **ui:** reset stale download percentage when retrying a failed update ([7d08797](https://github.com/Meridiona/meridian/commit/7d087975198818fc2bc4c8707a25f4b4cdf8f6e9))
+* **ui:** restyle LLM provider picker for readability and drop recommended badge ([d255902](https://github.com/Meridiona/meridian/commit/d255902ad5d7725d9fd23487cd3f59915d2b4ed5))
+* **ui:** send camelCase args to add_custom_llm_provider ([42710e0](https://github.com/Meridiona/meridian/commit/42710e0b52530485eff85291a95142831c8881df))
+* **worklog:** anchor the coding wait to the hour's end, not to process start ([1375878](https://github.com/Meridiona/meridian/commit/1375878105bd65e2358791cfe9bd63f4ea95a648))
+* **worklog:** geometry-independent fold idempotency + bracket-gated report parse ([babbd9d](https://github.com/Meridiona/meridian/commit/babbd9d83bd97d78cd8db49cac5af3908a2e5086)), closes [#453](https://github.com/Meridiona/meridian/issues/453)
+* **worklog:** judge the fold's idempotency by segment starts, not hours touched ([e714f93](https://github.com/Meridiona/meridian/commit/e714f931293398c4a50d895a08eea6e6f2afd313))
+* **worklog:** recover hours stuck in 'generating' from a daemon restart ([#471](https://github.com/Meridiona/meridian/issues/471)) ([00baecf](https://github.com/Meridiona/meridian/commit/00baecf856a75f6364d424c98742e1998826b8af))
+* **worklog:** retry hours stranded by a failure across local midnight ([05fe752](https://github.com/Meridiona/meridian/commit/05fe7520d7a4856582ff7ebbdbc1c803d821c218))
+* **worklog:** tolerate a literal <HH:MM-HH:MM> wrapper in the report parser ([33324c3](https://github.com/Meridiona/meridian/commit/33324c377215c49dcada86abac6e96611994d467))
+
+### ⚡ Performance
+
+* **embedder:** unload the model after its one per-hour use ([#472](https://github.com/Meridiona/meridian/issues/472)) ([ff34d35](https://github.com/Meridiona/meridian/commit/ff34d35cf821129dd23e570c5f7b540a206ec360))
+
+### ♻️ Refactoring
+
+* **llm:** remove the on-device MLX fallback ([976d2f6](https://github.com/Meridiona/meridian/commit/976d2f63bff77e7ce6e4b5b582ce03679acd7f3e))
+* **ui:** move update surface to a sidebar card, not a header banner ([d46d4d8](https://github.com/Meridiona/meridian/commit/d46d4d8035ea5f4b9848f9dcc9f60e196c768027))
+* **worklog:** extract the exact request builders for the 3 prose stages ([842164d](https://github.com/Meridiona/meridian/commit/842164df842f7bf7c3db6839e18984ad7e3b7644))
+
+### ✅ Tests
+
+* **llm:** pin reset-time parsing to real message formats per provider ([667894a](https://github.com/Meridiona/meridian/commit/667894a98f4f1e363dd61f57b021ac77a8fa919c))
+* **ui:** guard the staged-Save provider logic, and say the pick survived a failure ([203c2df](https://github.com/Meridiona/meridian/commit/203c2df458607216a6ce52bb1abea6a46f4b53f8)), closes [#464](https://github.com/Meridiona/meridian/issues/464)
+* **update:** arm minimum-version floor to verify forced install on staging ([1b3f925](https://github.com/Meridiona/meridian/commit/1b3f9256e52899bc9fda9e8e55df7b5330bf8b8c))
+
+### 📝 Documentation
+
+* add release rollback runbook (app + MLX runtime) ([5751811](https://github.com/Meridiona/meridian/commit/57518117013406d3821a680611dc57961f83746a))
+* **llm:** pin is_fatal string contract; hyphen-only dev-start stderr ([4e7b402](https://github.com/Meridiona/meridian/commit/4e7b402eae8c8cac2f3aa3713701ed430bf5d6a5))
+* **summariser:** note the dead-letter guard in the no-fallback comments ([5960d19](https://github.com/Meridiona/meridian/commit/5960d19ea08056f4b2ab7cee2e35a337e1623d67))
+* **whats-new:** add the 1.72.0 entry for the post-1.71.0 work ([6922a0d](https://github.com/Meridiona/meridian/commit/6922a0dc6cf1a4585c638e37cc154c675e824fff))
+* **whats-new:** drop the "Idle & sleep detection" roadmap item ([c70a9d2](https://github.com/Meridiona/meridian/commit/c70a9d2e263ef99606a60cad42b1249d96de36bc))
+* **whats-new:** drop the "Lighter on-device AI footprint" roadmap item ([6bbc9cc](https://github.com/Meridiona/meridian/commit/6bbc9ccbef1a10034969ae355fe5790af788e3fd)), closes [#292](https://github.com/Meridiona/meridian/issues/292)
+* **whats-new:** replace seed content with real release notes + roadmap ([f87728e](https://github.com/Meridiona/meridian/commit/f87728e111b6a61c73a327951384c12f5d8a1172)), closes [444/#454](https://github.com/444/meridian/issues/454) [#448](https://github.com/Meridiona/meridian/issues/448) [#292](https://github.com/Meridiona/meridian/issues/292)
+
+### 🎨 Styles
+
+* **dashboard:** give the What's New modal a livelier visual treatment ([2a90b47](https://github.com/Meridiona/meridian/commit/2a90b47b4be50c129b98ee4bb63b3d869ab1b7a4))
+
+### 🔧 Chores
+
+* checkpoint feat/llm-provider-enum work before merging pre-main ([b2a4e65](https://github.com/Meridiona/meridian/commit/b2a4e652e8131d9175e8bffdd458f5522cbb8cab))
+* **merge:** fold daily-summary + capture-ignore into llm-provider-enum ([9a77b38](https://github.com/Meridiona/meridian/commit/9a77b38b7739db5ade2f5b05f00e67c916b22175)), closes [#454](https://github.com/Meridiona/meridian/issues/454)
+* **merge:** fold daily-summary + capture-ignore into llm-provider-enum ([f3f02f5](https://github.com/Meridiona/meridian/commit/f3f02f5708edc9e6c823375498910fd689f8497a))
+* **merge:** reconcile main's 1.71.0 release commit into pre-main ([4d0aa3c](https://github.com/Meridiona/meridian/commit/4d0aa3c482910c853e8ce6e529951ec0751409a4)), closes [#468](https://github.com/Meridiona/meridian/issues/468) [#479](https://github.com/Meridiona/meridian/issues/479)
+* **runtime:** bump services runtime to 1.70.1 so the staging channel ships it ([8085508](https://github.com/Meridiona/meridian/commit/8085508a6e0d9df42d75e1faf167f6fefb52842b))
+
 ## [1.71.0](https://github.com/Meridiona/meridian/compare/v1.70.0...v1.71.0) (2026-07-15)
 
 ### 🚀 Features
