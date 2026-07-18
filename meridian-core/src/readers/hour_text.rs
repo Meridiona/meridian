@@ -13,17 +13,22 @@
 //! only as diagnostic/fallback data, never shown as the primary summary. There is
 //! no matching Next.js route — this is new backend work, not a route port.
 //!
-//! Like the worklog pipeline itself, this is **today-only**: a non-today `day`
-//! short-circuits to an empty response rather than querying (the pipeline never
-//! back-fills, so past hours carry no going-forward guarantee).
+//! **Any day, best-effort.** Rows are keyed on an absolute `hour_start`, so a past
+//! day returns whatever the pipeline persisted while it was current, and a day it
+//! never ran for returns empty on its own. There is no *completeness* guarantee
+//! for a past day (the pipeline never back-fills) — but that argues for showing
+//! partial data, not for hiding it, which is why the old today-only gate was
+//! dropped when the daily summary gained day navigation.
 //!
 //! # Who calls this
 //! The tray `get_hour_text` command → the dashboard hour-detail panel
-//! (`HourDetailPanel`), fetched on the selected-hour change.
+//! (`HourDetailPanel`), fetched on the selected-hour change; `get_hour_reports` →
+//! the solo timeline's per-hour rows, and the daemon's `day_summary` collector
+//! (which needs a past day's hours for the summary's day navigation).
 //!
 //! # Related
 //! - [`crate::worklogs`] — the day's worklog cards the same panel filters by hour.
-//! - [`crate::date`] — the shared local-day helper this reuses for the today gate.
+//! - [`crate::date`] — the shared local-day helper.
 
 use crate::SqlitePool;
 use chrono::{Duration, Local, NaiveDate, TimeZone, Utc};
@@ -83,22 +88,22 @@ fn hour_start_key(day: &str, hour: &str) -> Option<String> {
 
 /// Read the distilled activity text for the local `day` + `hour`.
 ///
-/// Today-only: a `day` other than the local today short-circuits to an empty
-/// response (no query), matching the worklog pipeline's no-backfill convention.
-/// A missing table / pre-053 columns (older DB) also degrade to an empty response
-/// rather than erroring.
+/// Reads whatever the pipeline persisted for that hour, on ANY day. A missing
+/// table / pre-053 columns (older DB) degrade to an empty response rather than
+/// erroring, as does an hour that never reached the report stage.
+///
+/// This used to short-circuit on a non-today `day`. The gate was removed when the
+/// daily summary gained day navigation: `pm_worklog_hours` rows persist, the
+/// lookup is keyed on an absolute `hour_start`, and a day with no rows returns
+/// empty on its own. The gate's stated reason — the pipeline never back-fills, so
+/// a past day carries no *completeness* guarantee — is true but argues for
+/// partial data, not for hiding data that is right there.
 #[tracing::instrument(skip(pool))]
 pub async fn get_hour_text(
     pool: &SqlitePool,
     day: &str,
     hour: &str,
 ) -> anyhow::Result<HourTextResponse> {
-    // Today-only gate — past hours carry no going-forward persistence guarantee.
-    if day != crate::date::today_string() {
-        tracing::debug!(day, "hour_text: non-today day — empty response");
-        return Ok(HourTextResponse::empty(hour));
-    }
-
     let Some(hour_start) = hour_start_key(day, hour) else {
         tracing::warn!(day, hour, "hour_text: could not build hour_start key");
         return Ok(HourTextResponse::empty(hour));
@@ -168,8 +173,9 @@ struct RawHourReportRow {
 
 /// Read every local hour's activity report for `day` in one query — the
 /// solo-mode timeline's per-row source (replacing the coarse session-derived
-/// one-liner with the actual `/activity_report` output). Same today-only gate
-/// and graceful-degradation posture as [`get_hour_text`]; see its docs.
+/// one-liner with the actual `/activity_report` output), and the daily summary's
+/// hourly evidence. Reads any day, and degrades gracefully, exactly as
+/// [`get_hour_text`] does; see its docs for why the today-only gate went away.
 #[tracing::instrument(skip(pool))]
 pub async fn get_hour_reports(pool: &SqlitePool, day: &str) -> anyhow::Result<HourReportsResponse> {
     let empty = || HourReportsResponse {
@@ -181,11 +187,6 @@ pub async fn get_hour_reports(pool: &SqlitePool, day: &str) -> anyhow::Result<Ho
             })
             .collect(),
     };
-
-    if day != crate::date::today_string() {
-        tracing::debug!(day, "hour_reports: non-today day — empty response");
-        return Ok(empty());
-    }
 
     // hour_start keys for this day's 24 local hours, built the same way
     // get_hour_text does per-hour — kept as a Vec so we can map rows back to
@@ -271,13 +272,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_today_short_circuits_without_querying() {
+    async fn a_day_with_nothing_persisted_is_empty_not_an_error() {
         let pool = pool_with_hours().await;
-        // A date that is definitely not today → empty, no error even though we
-        // never seeded a row.
         let resp = get_hour_text(&pool, "2000-01-01", "9").await.unwrap();
         assert!(resp.report.is_none());
         assert_eq!(resp.hour, "9");
+    }
+
+    /// The daily summary navigates to past days, so a past hour's persisted report
+    /// must come back. This is the behaviour the old today-only gate suppressed:
+    /// the row was right there and the reader refused to look at it.
+    #[tokio::test]
+    async fn reads_a_past_days_persisted_report() {
+        let pool = pool_with_hours().await;
+        let hour_start = hour_start_key("2020-05-05", "14").unwrap();
+        sqlx::query(
+            "INSERT INTO pm_worklog_hours (hour_start, day_utc, hour_end, status, task_count, \
+                hour_report, hour_report_chars) \
+             VALUES (?, '2020-05-05', '', 'done', 0, 'Shipped the parser rewrite.', 26)",
+        )
+        .bind(&hour_start)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let resp = get_hour_text(&pool, "2020-05-05", "14").await.unwrap();
+        assert_eq!(resp.report.as_deref(), Some("Shipped the parser rewrite."));
     }
 
     #[tokio::test]
@@ -321,12 +341,41 @@ mod tests {
         assert!(resp.report.is_none());
     }
 
+    /// A day the pipeline never ran for still answers with 24 empty hours — the
+    /// shape callers rely on — rather than erroring.
     #[tokio::test]
-    async fn hour_reports_non_today_short_circuits_all_empty() {
+    async fn hour_reports_for_a_day_with_no_rows_is_24_empties() {
         let pool = pool_with_hours().await;
         let resp = get_hour_reports(&pool, "2000-01-01").await.unwrap();
         assert_eq!(resp.hours.len(), 24);
         assert!(resp.hours.iter().all(|h| h.report.is_none()));
+    }
+
+    /// The batch read must surface a past day's reports too — the summary's day
+    /// navigation is built on this.
+    #[tokio::test]
+    async fn hour_reports_returns_a_past_days_rows() {
+        let pool = pool_with_hours().await;
+        let hs = hour_start_key("2020-05-05", "10").unwrap();
+        sqlx::query(
+            "INSERT INTO pm_worklog_hours (hour_start, day_utc, hour_end, status, task_count, hour_report) \
+             VALUES (?, '2020-05-05', '', 'done', 0, 'Reviewed the migration.')",
+        )
+        .bind(&hs)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let resp = get_hour_reports(&pool, "2020-05-05").await.unwrap();
+        assert_eq!(
+            resp.hours
+                .iter()
+                .find(|h| h.hour == 10)
+                .unwrap()
+                .report
+                .as_deref(),
+            Some("Reviewed the migration.")
+        );
     }
 
     #[tokio::test]

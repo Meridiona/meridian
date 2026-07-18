@@ -34,7 +34,10 @@
 //! future re-added UI). Every end-user-facing workflow goes through Export
 //! Diagnostics instead, which needs none of these fields.
 
+use crate::capture_ignore::CaptureIgnore;
+use crate::state::AppState;
 use serde_json::Value;
+use std::sync::{Arc, Mutex};
 use tauri::State;
 
 /// Returned to the UI when a password is stored — the real value never leaves the
@@ -105,9 +108,10 @@ pub async fn get_settings() -> Result<Value, String> {
 /// is sent, writes crash-safely, and returns the merged settings (password
 /// redacted). `body` is one payload object so the Tauri + browser paths match.
 #[tauri::command]
-#[tracing::instrument(skip(pool, body))]
+#[tracing::instrument(skip(pool, app_state, body))]
 pub async fn update_settings(
     pool: State<'_, Option<meridian_core::SqlitePool>>,
+    app_state: State<'_, Arc<Mutex<AppState>>>,
     body: Value,
 ) -> Result<Value, String> {
     // `pool` is unused (settings live in a file, not the DB) but kept in the
@@ -184,6 +188,20 @@ pub async fn update_settings(
         tracing::warn!(error = %e, "update_settings: write failed");
         e.to_string()
     })?;
+
+    // Refresh the live capture ignore list so a Settings change takes effect on
+    // the very next captured frame — no capture restart. The frame + UI-event
+    // consumers read this same shared handle (see `crate::start_capture`).
+    let apps = str_list(&updated, "ignored_apps");
+    let urls = str_list(&updated, "ignored_urls");
+    if let Ok(mut ig) = app_state.lock().unwrap().capture_ignore.lock() {
+        *ig = CaptureIgnore::new(&apps, &urls);
+    }
+    tracing::info!(
+        ignored_apps = apps.len(),
+        ignored_urls = urls.len(),
+        "update_settings: capture ignore list refreshed"
+    );
 
     redact_password(&mut updated);
     redact_custom_keys(&mut updated);
@@ -283,6 +301,19 @@ fn enforce_custom_provider_gate(updated: &Value) -> Result<(), String> {
         "settings: custom provider selected (gate passed)"
     );
     Ok(())
+}
+
+/// Pull a JSON string-array field out of a settings object as `Vec<String>`,
+/// dropping non-string entries. An absent or non-array field yields an empty vec.
+fn str_list(v: &Value, key: &str) -> Vec<String> {
+    v.get(key)
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| e.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

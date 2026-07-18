@@ -30,11 +30,12 @@ import { TaskDetailDialog } from './TaskDetailDialog'
 import { ReportModal } from './ReportModal'
 import { LlmLabScreen } from './llmlab/LlmLabScreen'
 import { WhatsNewModal } from './WhatsNewModal'
+import { DaySummaryOverlay } from '@/components/summary/DaySummaryOverlay'
 import type { AppInfo } from '@/lib/api-types'
 import type { SettingsSection } from './settings/types'
 
 export type ActiveModal =
-  | 'review' | 'cleanup' | 'settings' | 'plan' | 'tasks' | 'report' | 'llmlab' | 'whats-new' | null
+  | 'review' | 'cleanup' | 'settings' | 'plan' | 'tasks' | 'report' | 'llmlab' | 'whats-new' | 'summary' | null
 
 export default function MeridianTimelineShell() {
   const [day, setDay] = useState<string>(dayString(0))
@@ -182,12 +183,14 @@ export default function MeridianTimelineShell() {
         showLlmLab={channel === 'dev'}
         onOpenLlmLab={() => setActiveModal('llmlab')}
         onOpenWhatsNew={() => setActiveModal('whats-new')}
+        onOpenSummary={() => setActiveModal('summary')}
       />
 
       <div className="flex flex-1 min-h-0">
         <div className="relative flex-1 min-w-0 min-h-0 flex flex-col">
           <DayTaskColumn day={day} isToday={isToday}
-            selectedId={selectedDayTask?.id ?? null} onSelect={selectDayTask} />
+            selectedId={selectedDayTask?.id ?? null} onSelect={selectDayTask}
+            hourStatus={data.hourStatus} capturing={data.capturing} isSolo={isSolo} />
 
           {!isSolo && (
             <FloatingDraftsPill count={pendingCount}
@@ -225,6 +228,19 @@ export default function MeridianTimelineShell() {
         <LlmLabScreen onClose={() => setActiveModal(null)} />
       )}
       {activeModal === 'whats-new' && <WhatsNewModal onClose={closeWhatsNew} />}
+      {/* The summary owns the whole surface (one screen) and navigates days
+          itself, reusing the shell's own day state so closing it leaves you on
+          whatever day you read last. */}
+      {activeModal === 'summary' && (
+        <DaySummaryOverlay
+          day={day}
+          isToday={isToday}
+          onShiftDay={shift}
+          onClose={() => setActiveModal(null)}
+          onOpenSettings={(section) => { setSettingsSection(section); setActiveModal('settings') }}
+          onOpenTask={(key, title) => setOpenTask({ key, title })}
+        />
+      )}
       {activeModal === 'plan' && <PlanModal onClose={closePlan} />}
       {activeModal === 'tasks' && (
         <TasksModal onClose={() => setActiveModal(null)} onOpenTask={(key, title) => setOpenTask({ key, title })} />

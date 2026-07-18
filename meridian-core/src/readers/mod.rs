@@ -21,6 +21,10 @@ pub mod board;
 /// The `/api/coding-agents` daily agent totals (ported from coding-agents/route.ts).
 pub mod coding_agents;
 
+/// The apps recently seen in `capture_frames` — the picker source for the
+/// Settings capture-ignore control. No route; new work.
+pub mod capture_apps;
+
 /// The menu-bar pill's "current task" + progress-ring fill (tray-only; no route).
 pub mod current_task;
 
@@ -36,6 +40,14 @@ pub mod day_tasks;
 /// The generated-worklog ledger behind the day-task "Generate worklog" action
 /// (`day_task_worklogs`, migration 060; no route — new work).
 pub mod day_task_worklogs;
+
+/// The AI-composed end-of-day review (`day_summaries`, migration 064; no route —
+/// new work). The DB shape only; the LLM call lives in the daemon's `day_summary`.
+pub mod day_summaries;
+
+/// A day's evidence as named, chartable datasets — what a summary is composed from
+/// and what its stored specs bind to at render. No route; new work.
+pub mod day_evidence;
 
 /// Per-hour generating/paused badge state for the timeline; no route — new work.
 pub mod hour_status;

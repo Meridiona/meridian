@@ -61,9 +61,9 @@ pub use capture::{
 pub use util::{date, hygiene, intervals};
 
 pub use readers::{
-    active, board, coding_agents, current_task, day_task_worklogs, day_tasks, hour_status,
-    hour_text, integrations, llm_experiments, notices, plan, proposed, task_create, task_detail,
-    tasks, today, triage, week, worklogs,
+    active, board, capture_apps, coding_agents, current_task, day_evidence, day_summaries,
+    day_task_worklogs, day_tasks, hour_status, hour_text, integrations, llm_experiments, notices,
+    plan, proposed, task_create, task_detail, tasks, today, triage, week, worklogs,
 };
 
 pub use canonical_task::{CanonicalTask, PersonRef, Priority, Provider, StatusCategory, TaskKind};

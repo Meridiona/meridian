@@ -46,11 +46,11 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
   // instead of one generic bucket.
   const [codingAgents, setCodingAgents] = useState<CodingAgentsResponse | null>(null)
   useEffect(() => {
-    const fetchAgents = () => loadData<CodingAgentsResponse>('/api/coding-agents', 'get_coding_agents').then(setCodingAgents).catch(() => {})
+    const fetchAgents = () => loadData<CodingAgentsResponse>('/api/coding-agents', 'get_coding_agents', { day }).then(setCodingAgents).catch(() => {})
     fetchAgents()
     const id = setInterval(fetchAgents, 30_000)
     return () => clearInterval(id)
-  }, [])
+  }, [day])
   // "Focus" is inclusive of ALL engaged time, not just foreground presence —
   // today.engaged_s (= focus_s + autonomous_s, computed server-side in
   // meridian-core/src/readers/today/mod.rs) folds in autonomous agent time
@@ -73,11 +73,12 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
   // the underlying today.autonomous_s data is still computed server-side,
   // this just stops surfacing it in the UI while the framing gets rethought).
   // const autonomous_s = today?.autonomous_s ?? 0
-  // get_coding_agents has no date param (it always reads today's totals —
-  // tray/src-tauri/src/commands/dashboard.rs hardcodes today_string()), so
-  // only fold it in while viewing today; on a past day it would inject
-  // TODAY's coding time into that day's app breakdown.
-  const appTops = today ? appTotals(today.sessions, isToday ? (codingAgents?.agents ?? []) : []) : []
+  // get_coding_agents is day-scoped now (it takes the same `day` this panel
+  // shows), so its totals are folded in on every day. It used to hardcode
+  // today's date, which forced this to drop agent rows entirely on a past day
+  // rather than inject the wrong day's coding time — a past day simply showed
+  // no agent time at all. Both halves now read the same date.
+  const appTops = today ? appTotals(today.sessions, codingAgents?.agents ?? []) : []
   const appCount = appTops.length
   const catTops = today ? categoryRows(today.sessions, agent_s) : []
   // Pull the "Coding" number straight out of the SAME merged rows the
