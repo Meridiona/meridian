@@ -367,7 +367,7 @@ export default function LlmProviderPicker({ value, selectedCustomId, onChange, s
       <div className="flex items-center justify-between">
         <p style={{ fontSize: 11, color: 'var(--t-faint)', lineHeight: 1.45, flex: 1, paddingRight: 12 }}>
           The four coding agents use the login you already have in that CLI - Meridian never asks
-          them for an API key, and an hour they can’t serve quietly falls back to on-device. A custom
+          them for an API key, and an hour they can’t serve is held and retried later. A custom
           endpoint is the exception: it runs on a key you paste here.
         </p>
         <button onClick={rescan} disabled={busy} className="font-mono shrink-0"
