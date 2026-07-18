@@ -145,6 +145,31 @@ pub async fn mark_hour_pending(pool: &SqlitePool, hour_start: &str) -> Result<()
     Ok(())
 }
 
+/// Startup recovery: reset any hour still marked `generating` back to `pending`.
+///
+/// `mark_hour_generating`/`mark_hour_pending` only cover a call that actually
+/// RETURNS (success -> `done`, error -> reverted to `pending`) — see the
+/// `hour::run_hour` call site in `worklog_pipeline.rs`. If the daemon is killed
+/// or crashes while a `/worklog_hour` call is in flight (a `cargo-watch` rebuild,
+/// `launchd` restart, an OOM kill, a hard crash), the row is left `generating`
+/// forever: nothing else ever queries for it, so the pipeline just treats it as
+/// "someone is still working on this hour" on every future tick, and — because
+/// hours are walked forward from the first not-done one — every hour AFTER it
+/// silently never gets a ledger row either, not just the stuck one.
+///
+/// Mirrors [`crate::db::meridian::cleanup_incomplete_runs`]'s ETL-run recovery:
+/// call this once on startup, before the worklog pipeline's first tick, so a
+/// crash mid-generation costs at most one retried hour rather than a permanent
+/// stall from that hour onward for as long as the daemon runs.
+pub async fn reset_stuck_generating_hours(pool: &SqlitePool) -> Result<u64> {
+    let result =
+        sqlx::query("UPDATE pm_worklog_hours SET status = 'pending' WHERE status = 'generating'")
+            .execute(pool)
+            .await
+            .context("reset stuck generating hours")?;
+    Ok(result.rows_affected())
+}
+
 /// True when the hour's upstream data is complete: ETL has crossed the hour
 /// boundary AND no session started in the hour is still *genuinely in-flight*.
 ///
