@@ -122,6 +122,13 @@ jobs:
       - name: check
         run: cargo check -p meridian -p meridian-core --all-targets
 
+      # Compiling is not working. The remaining Windows gaps are behavioural —
+      # tests that hardcode a Unix path, a launchd label, or an argv shape —
+      # and only running them surfaces those. Kept in the same non-blocking
+      # job so the burn-down stays one signal rather than two.
+      - name: test
+        run: cargo test -p meridian -p meridian-core
+
   ui:
     name: UI
     runs-on: ubuntu-latest
