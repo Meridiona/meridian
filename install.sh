@@ -134,7 +134,7 @@ prompt_category() {
     [[ "$ans" =~ ^[Yy] ]]
 }
 
-# GitHub setup helpers — shared with scripts/install-from-bundle.sh.
+# Credential-collection helpers for the interactive prompts.
 source "${REPO_ROOT}/scripts/lib-github-setup.sh"
 source "${REPO_ROOT}/scripts/lib-jira-setup.sh"
 source "${REPO_ROOT}/scripts/lib-azure-setup.sh"

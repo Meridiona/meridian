@@ -1,25 +1,24 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //! Bundled-backend first-run install orchestration (Gap-2 Bucket 1, slice 1b).
 //!
-//! On the self-contained `.app` DMG path the daemon ships inside
-//! `Meridian.app/Contents/Resources/backend/` (wired by `tauri.conf.json`'s
-//! `bundle.resources`). This module is the tray side of that: on startup it
-//! stages the binary to the **stable** `~/.meridian/bin/` path and registers
-//! its launchd agent — the same step `scripts/install-from-bundle.sh` does
-//! for the npm bundle, ported into the tray so the DMG needs no shell
-//! installer.
+//! The daemon ships inside `Meridian.app/Contents/Resources/backend/` (wired by
+//! `tauri.conf.json`'s `bundle.resources`). This module is the tray side of that:
+//! on startup it stages the binary to the **stable** `~/.meridian/bin/` path and
+//! registers its launchd agent — so the self-contained `.app` DMG needs no shell
+//! installer. (The DMG is the only packaged install path; the old npm bundle was
+//! retired.)
 //!
 //! It is a **faithful port of the launchctl flow, not SMAppService**:
 //! SMAppService's managed-Login-Items payoff only matters once the app is
 //! Developer-ID-signed (Gap-2 Bucket 3), so it's deferred to then.
 //!
-//! Unlike the npm bundle (WorkingDirectory `~/.meridian/app`, daemon reads
-//! `~/.meridian/app/.env`), the DMG daemon's WorkingDirectory is `~/.meridian`,
-//! so `dotenvy` self-loads the **canonical** `~/.meridian/.env` the tray already
-//! writes to — unifying tray and daemon on one credential file. A bundle→DMG
-//! migrant's pre-existing `~/.meridian/app/.env` is copied across once
-//! ([`migrate_legacy_bundle_env`]) and stale bundle launchd agents
-//! (screenpipe / a11y-helper / MLX / UI server) are booted out during [`install`].
+//! The DMG daemon's WorkingDirectory is `~/.meridian`, so `dotenvy` self-loads
+//! the **canonical** `~/.meridian/.env` the tray already writes to — unifying tray
+//! and daemon on one credential file. A migrant from the retired npm bundle (which
+//! used WorkingDirectory `~/.meridian/app` and read `~/.meridian/app/.env`) has that
+//! file copied across once ([`migrate_legacy_bundle_env`]), and stale bundle launchd
+//! agents (screenpipe / a11y-helper / MLX / UI server) are booted out during
+//! [`install`].
 //!
 //! **The `meridian-a11y-helper` launchd agent is retired** (was
 //! `com.meridiona.a11y-helper`): it existed to poke `AXManualAccessibility`
@@ -38,8 +37,7 @@
 //! # Related
 //! - [`crate::install`] — resolves where data lives; [`crate::install::meridian_bin`]
 //!   prefers the `~/.meridian/bin/meridian` this module stages.
-//! - `scripts/install-from-bundle.sh`, `scripts/install-daemon.sh` — the shell
-//!   flow this ports.
+//! - `scripts/install-daemon.sh` — the source-install shell flow this parallels.
 
 use std::path::{Path, PathBuf};
 
@@ -132,12 +130,11 @@ async fn install(backend: &Path, home: &Path) -> Result<(), String> {
 
     // Purge leftovers from a pre-cutover **bundle** install before staging the
     // in-process backend. A user migrating from the old npm/curl bundle to this
-    // DMG carries launchd agents the new topology replaced (the in-process
-    // capturer supersedes screenpipe and does its own AX poke; the tray
-    // supervises MLX itself); left running they race the tray, contend for
-    // :7823, or surface a redundant "meridian-a11y-helper" Accessibility
-    // entry. `install-from-bundle.sh` boots these out for the bundle path;
-    // the DMG path needs the same. All best-effort + non-fatal.
+    // An install upgraded from an older topology may carry launchd agents the
+    // new one replaced (the in-process capturer supersedes screenpipe and does
+    // its own AX poke; the on-device MLX server is gone); left running they race
+    // the tray, contend for :7823, or surface a redundant "meridian-a11y-helper"
+    // Accessibility entry — so boot them out. All best-effort + non-fatal.
     cleanup_legacy_screenpipe(home).await;
     cleanup_legacy_mlx_server(home).await;
     cleanup_legacy_a11y_helper(home).await;
@@ -173,7 +170,7 @@ async fn install(backend: &Path, home: &Path) -> Result<(), String> {
 
 /// Purge a leftover **pre-cutover screenpipe install**. Before the in-process
 /// cutover, capture ran as a separate `screenpipe` binary under a
-/// `com.meridiona.screenpipe` launchd agent (staged by `install-from-bundle.sh`).
+/// `com.meridiona.screenpipe` launchd agent (staged by the old installer).
 /// The in-process build doesn't use screenpipe, but an *update* over such an
 /// install leaves that agent running — it respawns `screenpipe record`, which
 /// requests Screen Recording (a duplicate prompt) and races the tray's in-process
