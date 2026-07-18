@@ -31,7 +31,7 @@ import type { SettingsSection } from './settings/types'
 export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
   data: TimelineData
   onOpen: (modal: ActiveModal) => void
-  onOpenTask: (key: string, title?: string) => void
+  onOpenTask: (key: string, title?: string, editable?: boolean) => void
   onOpenSettings: (section?: SettingsSection) => void
 }) {
   const { today, isSolo, items, cleanupIssueCount, tasks, isToday, day } = data
@@ -249,8 +249,8 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
                 return (
                   <div key={t.task_key}
                     role="button" tabIndex={0}
-                    onClick={() => onOpenTask(t.task_key, t.title)}
-                    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenTask(t.task_key, t.title) } }}
+                    onClick={() => onOpenTask(t.task_key, t.title, isToday)}
+                    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenTask(t.task_key, t.title, isToday) } }}
                     className="w-full text-left flex items-center gap-3 px-4 py-3 cursor-pointer">
                     <button
                       onClick={e => { e.stopPropagation(); toggleDone(t, terminal) }}

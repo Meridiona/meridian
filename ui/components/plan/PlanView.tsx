@@ -294,6 +294,7 @@ export default function PlanView() {
         <TaskDetailDialog
           taskKey={openTask.key}
           fallbackTitle={openTask.title}
+          day={todayKey}
           inToday={today.some(t => t.key === openTask.key)}
           canEdit={editable}
           onClose={() => setOpenTask(null)}

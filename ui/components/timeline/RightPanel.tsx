@@ -22,7 +22,10 @@ export function RightPanel({ data, selectedHour, selectedCardKey, dayTaskDetail,
   onCloseDayTask: () => void
   onSelectHour: (hour: number | null) => void
   onOpen: (modal: ActiveModal) => void
-  onOpenTask: (key: string, title?: string) => void
+  // `editable` (only ever passed by OverviewPanel's Today's-focus checklist) is
+  // false for a past day's focus item — you can look back at what a prior day's
+  // plan was, but not rewrite it after the fact.
+  onOpenTask: (key: string, title?: string, editable?: boolean) => void
   // Edit an approved/posted card — opens the same Review dialog drafts use,
   // scoped to this one ticket (see MeridianTimelineShell's openReview).
   onEditWorklog: (cardKey: string) => void
