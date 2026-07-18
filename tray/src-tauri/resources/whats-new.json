@@ -1,6 +1,28 @@
 {
   "releases": [
     {
+      "version": "1.72.0",
+      "date": "2026-07-18",
+      "highlights": [
+        "Choose apps and websites for Meridian to ignore, so nothing from them is ever captured. Set them up in Settings.",
+        "Bring your own cloud AI provider: add any OpenAI-compatible endpoint from the provider picker and Meridian will use it for worklogs and summaries.",
+        "Test your AI provider connection from Settings or during setup, so you can confirm it works before relying on it.",
+        "A new AI-composed daily summary that reads like a summary of your day, with the charts chosen to fit what actually happened.",
+        "The day timeline shows the current hour as a live strip again, so you can watch the hour fill in as you work.",
+        "Worklogs now follow the day's plan and post to every ticket you actually moved forward.",
+        "Added a \"suggest a feature\" link to the roadmap in What's New."
+      ],
+      "fixes": [
+        "Fixed a memory leak that made Meridian's memory use climb while screen capture was running.",
+        "Fixed duplicate and missing worklogs when the same hour was processed more than once.",
+        "Fixed worklog drafting failing on the Codex provider, and it now reports the real reason when it does fail.",
+        "Fixed a failed update showing a stale download percentage when you retried it.",
+        "Fixed modals scrolling instead of fitting, clipped task titles, and changing a task's status from Cleanup.",
+        "Fixed a task card's summary clipping mid-line instead of leaving room for the \"+N more\" label.",
+        "Made the AI provider picker easier to read."
+      ]
+    },
+    {
       "version": "1.71.0",
       "date": "2026-07-15",
       "highlights": [

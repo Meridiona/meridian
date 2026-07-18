@@ -132,12 +132,17 @@ function timeAgo(iso: string): string {
 }
 
 function ProviderGlyph({ id, on }: { id: LlmProviderId; on: boolean }) {
-  const color = on ? 'var(--color-state-proposal)' : 'var(--t-faint)'
+  // Unselected uses --t-muted, not --t-faint: on the ink palette --t-faint (#9A8FC2)
+  // against the card reads as disabled rather than merely unselected.
+  const color = on ? 'var(--color-state-proposal)' : 'var(--t-muted)'
   return (
     <span className="flex items-center justify-center shrink-0" style={{
       width: 30, height: 30, borderRadius: 9,
-      background: on ? 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)' : 'var(--t-box)',
-      border: '0.5px solid var(--t-card-border)', color,
+      // --t-box (the subtle-fill token), not --t-ctrl: on the light palettes --t-ctrl is
+      // #FFFFFF, the same value as the --t-card the glyph now sits on, so it would read
+      // as an empty outline. --t-box lifts off the card on all three palettes.
+      background: on ? 'color-mix(in srgb, var(--color-state-proposal) 16%, transparent)' : 'var(--t-box)',
+      border: '1px solid var(--t-ctrl-border)', color,
     }}>
       {id === 'local' ? (
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
@@ -158,9 +163,12 @@ function Badge({ text, tone }: { text: string; tone: 'accent' | 'warn' | 'muted'
     : tone === 'ok' ? 'var(--color-state-approved)' : 'var(--t-title)'
   return (
     <span className="font-mono" style={{
-      fontSize: 8.5, letterSpacing: '.1em', color: c,
-      border: `0.5px solid ${tone === 'muted' ? 'var(--t-card-border)' : c}`,
-      borderRadius: 4, padding: '1px 5px', whiteSpace: 'nowrap',
+      // 9.5px, not 8.5: at 8.5 these badges carry real state (VERIFIED / NOT
+      // INSTALLED / CONNECTION FAILED) at a size that reads as decorative.
+      fontSize: 9.5, letterSpacing: '.09em', color: c,
+      border: `1px solid ${tone === 'muted' ? 'var(--t-ctrl-border)' : c}`,
+      background: tone === 'muted' ? 'transparent' : `color-mix(in srgb, ${c} 10%, transparent)`,
+      borderRadius: 4, padding: '1.5px 5px', whiteSpace: 'nowrap',
     }}>{text}</span>
   )
 }
@@ -197,9 +205,16 @@ function ProviderCard({ p, picked, missing, testing, lastTest, onPick, onTest }:
       className="flex flex-col text-left h-full"
       style={{
         gap: 8, padding: '13px 14px', borderRadius: 13, cursor: 'pointer',
-        background: picked ? 'color-mix(in srgb, var(--color-state-proposal) 7%, transparent)' : 'var(--t-box)',
-        border: `1px solid ${picked ? 'var(--color-state-proposal)' : 'var(--t-card-border)'}`,
-        boxShadow: picked ? 'inset 0 0 0 1px color-mix(in srgb, var(--color-state-proposal) 22%, transparent)' : 'none',
+        // --t-card, not --t-box: on the ink palette --t-box is rgba(255,255,255,.055),
+        // which leaves the cards barely distinguishable from the desk behind them. The
+        // real card surface reads as a solid, lit object on all three palettes.
+        background: picked
+          ? 'color-mix(in srgb, var(--color-state-proposal) 12%, var(--t-card))'
+          : 'var(--t-card)',
+        border: `1px solid ${picked ? 'var(--color-state-proposal)' : 'var(--t-ctrl-border)'}`,
+        boxShadow: picked
+          ? 'inset 0 0 0 1px color-mix(in srgb, var(--color-state-proposal) 30%, transparent)'
+          : '0 1px 2px rgba(0,0,0,.04)',
         transition: 'background .14s, border-color .14s',
       }}>
       <div className="flex items-start" style={{ gap: 10 }}>
@@ -233,9 +248,11 @@ function ProviderCard({ p, picked, missing, testing, lastTest, onPick, onTest }:
         </p>
       )}
 
-      {/* Picking an uninstalled CLI is allowed, not blocked — show exactly how to get it. */}
+      {/* Picking an uninstalled CLI is allowed, not blocked — show exactly how to get it.
+          Surfaced on --t-key-bg, not --t-card: the card itself is now --t-card, so this
+          inset command block needs its own surface to stay legible as a nested element. */}
       {missing && picked && (
-        <p className="font-mono" style={{ fontSize: 10.5, lineHeight: 1.5, color: 'var(--t-title)', background: 'var(--t-card)', borderRadius: 6, padding: '6px 8px' }}>
+        <p className="font-mono" style={{ fontSize: 10.5, lineHeight: 1.5, color: 'var(--t-key-text)', background: 'var(--t-key-bg)', borderRadius: 6, padding: '6px 8px' }}>
           {p.installHint}
         </p>
       )}
@@ -250,10 +267,13 @@ function ProviderCard({ p, picked, missing, testing, lastTest, onPick, onTest }:
           disabled={testing}
           className="font-mono self-start"
           style={{
-            fontSize: 9.5, letterSpacing: '.08em', textTransform: 'uppercase',
-            color: 'var(--t-title)', border: '0.5px solid var(--t-title)',
-            borderRadius: 5, padding: '3px 7px', cursor: testing ? 'default' : 'pointer',
-            opacity: testing ? 0.55 : 1, background: 'transparent',
+            fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase',
+            // A filled control on --t-box rather than a hairline outline on transparent,
+            // which on the card surface read as a disabled label. (--t-box, not --t-ctrl:
+            // --t-ctrl equals --t-card on the light palettes - see ProviderGlyph.)
+            color: 'var(--t-title)', border: '1px solid var(--t-ctrl-border)',
+            borderRadius: 5, padding: '4px 8px', cursor: testing ? 'default' : 'pointer',
+            opacity: testing ? 0.55 : 1, background: 'var(--t-box)',
           }}>
           {testing ? 'Testing…' : 'Test connection'}
         </button>
@@ -288,7 +308,10 @@ export default function LlmProviderPicker({ value, selectedCustomId, onChange, s
 
   return (
     <div className="flex flex-col" style={{ gap: 12 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 9 }}>
+      {/* auto-fill rather than a fixed 2 columns: the same grid serves the narrow setup
+          wizard (falls to 2) and the wider Settings pane (fits 3), and more columns means
+          fewer rows, which is what keeps Settings' Save button above the fold. */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(232px, 1fr))', gap: 9 }}>
         {LLM_PROVIDERS.map((p) => {
           const isPicked = p.id === value
           // Unknown (probe failed) is NOT "missing" — only say "not installed" when we
@@ -324,15 +347,15 @@ export default function LlmProviderPicker({ value, selectedCustomId, onChange, s
           />
         ))}
 
-        {/* The form is wide (URL, model, key), so it takes the full row rather than a cell. */}
-        <div style={{ gridColumn: '1 / -1' }}>
-          {!custom.loading && <AddCustomProvider onAdd={custom.add} />}
-        </div>
+        {/* Renders as one more card in the grid; it spans the full row only while its
+            form is open (URL, model, key need the width) - that span is owned by
+            <AddCustomProvider> itself, since only it knows whether the form is showing. */}
+        {!custom.loading && <AddCustomProvider onAdd={custom.add} />}
       </div>
 
       {/* Usage-footprint reassurance — only meaningful when a paid CLI is in play. */}
       {usingCli && (
-        <p style={{ fontSize: 11, lineHeight: 1.45, color: 'var(--t-faint)' }}>
+        <p style={{ fontSize: 11, lineHeight: 1.45, color: 'var(--t-muted)' }}>
           {USAGE_FOOTPRINT_NOTE}
         </p>
       )}
@@ -342,7 +365,7 @@ export default function LlmProviderPicker({ value, selectedCustomId, onChange, s
       {usingCli && picked?.privacyUrl && (
         <div className="flex items-start" style={{
           gap: 8, padding: '10px 12px', borderRadius: 10,
-          background: 'var(--t-box)', border: '0.5px solid var(--t-card-border)',
+          background: 'var(--t-card)', border: '1px solid var(--t-ctrl-border)',
         }}>
           <span className="shrink-0" style={{ marginTop: 1, color: 'var(--color-state-approved)' }} aria-hidden="true">🔒</span>
           <p style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--t-muted)' }}>
@@ -365,17 +388,18 @@ export default function LlmProviderPicker({ value, selectedCustomId, onChange, s
       )}
 
       <div className="flex items-center justify-between">
-        <p style={{ fontSize: 11, color: 'var(--t-faint)', lineHeight: 1.45, flex: 1, paddingRight: 12 }}>
+        <p style={{ fontSize: 11, color: 'var(--t-muted)', lineHeight: 1.45, flex: 1, paddingRight: 12 }}>
           The four coding agents use the login you already have in that CLI - Meridian never asks
           them for an API key, and an hour they can’t serve is held and retried later. A custom
           endpoint is the exception: it runs on a key you paste here.
         </p>
         <button onClick={rescan} disabled={busy} className="font-mono shrink-0"
           style={{
-            fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase',
-            color: 'var(--t-title)', border: '0.5px solid var(--t-title)',
-            borderRadius: 6, padding: '4px 9px', cursor: busy ? 'default' : 'pointer',
-            opacity: busy ? 0.55 : 1, background: 'transparent',
+            fontSize: 10.5, letterSpacing: '.08em', textTransform: 'uppercase',
+            // Same fill as the per-card Test buttons - they are the same class of control.
+            color: 'var(--t-title)', border: '1px solid var(--t-ctrl-border)',
+            borderRadius: 6, padding: '5px 10px', cursor: busy ? 'default' : 'pointer',
+            opacity: busy ? 0.55 : 1, background: 'var(--t-box)',
           }}>
           {scanning ? 'Scanning…' : testingIds.size > 0 ? 'Testing…' : 'Rescan'}
         </button>
