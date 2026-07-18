@@ -420,6 +420,77 @@ pub async fn remove_custom_llm_provider(id: String) -> Result<Vec<CustomProvider
         .collect())
 }
 
+/// Ask an endpoint which models it serves, for the model picker.
+///
+/// Two callers, two shapes:
+///
+/// * **A saved endpoint** — pass `id` alone. The base URL and key are read from the registry
+///   here, because [`CustomProviderView`] deliberately omits `api_key` (there is a test
+///   pinning that), so the frontend has no key to hand back and MUST go through the id.
+/// * **The add-endpoint form** — pass `base_url` + `api_key`, which the user has just typed
+///   and no row exists for yet.
+///
+/// # This is best-effort by design
+///
+/// Plenty of OpenAI-compatible servers never implement `/models`. Every caller must treat an
+/// error as "offer free text" rather than a failure — the model field stays hand-typeable in
+/// all cases, so a missing listing costs convenience and nothing else.
+///
+/// # Cost
+///
+/// One unmetered-in-practice `GET`, only ever on an explicit user action (opening or
+/// refreshing the picker) — never on a mount or a poll tick. Unlike
+/// [`probe_custom_llm_provider`] it spends no completion tokens, so it takes no rate-limit
+/// reservation; a 429 is surfaced to the caller instead of retried.
+///
+/// # Related
+///
+/// [`meridian::llm::openai_compat::list_models`] does the request and response shaping.
+#[tauri::command]
+#[tracing::instrument(skip(api_key))]
+pub async fn list_custom_llm_provider_models(
+    id: Option<String>,
+    base_url: Option<String>,
+    api_key: Option<String>,
+) -> Result<Vec<String>, String> {
+    // Resolve to (base_url, key, id-for-logging) from whichever shape the caller used.
+    let (url, key, log_id) = match id {
+        Some(id) => {
+            let settings_v = settings::read_settings_value();
+            let rows = read_rows(&settings_v);
+            let row = rows
+                .iter()
+                .find(|r| r.id == id)
+                .ok_or_else(|| format!("no custom endpoint with id {id}"))?;
+            (row.base_url.clone(), row.api_key.clone(), id)
+        }
+        None => {
+            let url = base_url.unwrap_or_default();
+            let key = api_key.unwrap_or_default();
+            if key.trim().is_empty() {
+                return Err("API key is required to list models".into());
+            }
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err("base URL must start with http:// or https://".into());
+            }
+            // Same header-injection guard `validate` applies before storing these.
+            for (field, v) in [("API key", &key), ("base URL", &url)] {
+                if v.contains('\n') || v.contains('\r') {
+                    return Err(format!("{field} contains invalid characters"));
+                }
+            }
+            (url, key, "unsaved".to_string())
+        }
+    };
+
+    meridian::llm::openai_compat::list_models(&url, &key, &log_id)
+        .await
+        .map_err(|e| {
+            tracing::warn!(endpoint_id = %log_id, error = %e, "custom_llm: model listing failed");
+            e.to_string()
+        })
+}
+
 /// Every configured endpoint, keyless — what the picker and the Lab's variant list render.
 #[tauri::command]
 #[tracing::instrument]

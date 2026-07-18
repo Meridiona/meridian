@@ -60,6 +60,99 @@ impl CustomEndpoint {
     }
 }
 
+/// How long to wait on a models listing. Deliberately short and NOT `cli_timeout_s`: this
+/// runs while a user watches a dropdown, and a slow endpoint should fall back to free text
+/// quickly rather than freeze the picker.
+const MODELS_TIMEOUT_S: u64 = 10;
+
+/// Ask an OpenAI-compatible endpoint what models it serves — `GET <base_url>/models`.
+///
+/// Takes the base URL and key rather than a [`CustomEndpoint`] because the main caller is the
+/// ADD-endpoint form, where no model has been chosen yet and so no endpoint exists to build.
+///
+/// # Why `<base_url>/models` and not `<base_url>/v1/models`
+///
+/// The stored `base_url` already carries the version segment (`https://…/v1`,
+/// `https://…/v1beta/openai`) — the same reason [`CustomEndpoint::chat_url`] appends a bare
+/// `/chat/completions`. Appending `/v1` here would 404 every configured endpoint.
+///
+/// # Who calls this
+///
+/// [`crate::llm`] exposes it to the tray's `list_custom_llm_provider_models` command, which
+/// serves the custom-endpoint model picker.
+///
+/// # Errors
+///
+/// Reuses [`classify_error`], so a 429 comes back as [`LlmError::RateLimited`] and a 401/403
+/// as a key-specific message. Callers are expected to DEGRADE on any error — every field this
+/// populates must stay usable as free text, since plenty of OpenAI-compatible servers don't
+/// implement `/models` at all.
+pub async fn list_models(
+    base_url: &str,
+    api_key: &str,
+    endpoint_id: &str,
+) -> Result<Vec<String>, LlmError> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(MODELS_TIMEOUT_S))
+        // Same reasoning as the chat call: a 3xx to another origin would forward the
+        // Authorization header (and the key) to a host the user never configured.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| LlmError::Failed(format!("custom provider client: {e}")))?;
+
+    let resp = client
+        .get(&url)
+        .bearer_auth(api_key)
+        .send()
+        .await
+        // As in `complete`: `e` can carry the URL but never the key (reqwest redacts auth).
+        .map_err(|e| LlmError::Failed(format!("custom provider models request failed: {e}")))?;
+
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(classify_error(status, &headers, &body, endpoint_id));
+    }
+
+    let parsed: Value = serde_json::from_str(&body)
+        .map_err(|e| LlmError::Failed(format!("custom provider models response: {e}")))?;
+
+    // OpenAI's shape is {"data":[{"id":…}]}. Some compatible servers answer {"models":[…]},
+    // and a few return a bare array. Accept all three rather than make the user hand-type a
+    // model because their vendor picked a different envelope.
+    let items = parsed
+        .get("data")
+        .or_else(|| parsed.get("models"))
+        .unwrap_or(&parsed);
+    let mut ids: Vec<String> = items
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| {
+                    // An entry is either {"id": "…"} or, on some servers, a bare string.
+                    m.get("id")
+                        .and_then(Value::as_str)
+                        .or_else(|| m.as_str())
+                        .map(str::to_string)
+                })
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    ids.dedup();
+
+    tracing::info!(
+        endpoint_id = %endpoint_id,
+        models = ids.len(),
+        "custom provider: listed models"
+    );
+    Ok(ids)
+}
+
 pub struct OpenAiCompatBackend {
     pub cfg: LlmConfig,
 }

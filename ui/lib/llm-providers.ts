@@ -162,6 +162,22 @@ export function customVariantId(id: string): string {
   return `custom:${id}`
 }
 
+/**
+ * One selectable model in a provider's curated list.
+ *
+ * The list is a CONVENIENCE, never a constraint: nothing in the pipeline validates the
+ * string (it is passed verbatim into the CLI's argv - see `src/llm/claude.rs` and friends),
+ * so the picker always allows a free-text value for a model we haven't listed.
+ */
+export interface LlmModelOption {
+  /** The exact string handed to the backend - a CLI alias or a full model id. */
+  id: string
+  /** What the picker shows. */
+  label: string
+  /** Optional one-liner shown under the label. */
+  note?: string
+}
+
 export interface LlmProviderMeta {
   id: LlmProviderId
   name: string
@@ -177,6 +193,21 @@ export interface LlmProviderMeta {
   /** Shown when the CLI is not installed - the command that installs it. */
   installHint?: string
   installUrl?: string
+  /**
+   * Whether this backend actually passes a model through. FALSE for copilot, whose argv is
+   * built without a model flag and never reads `cfg.model` (`src/llm/copilot.rs`) - the
+   * picker must show "managed by the CLI" there rather than a control that silently does
+   * nothing. Mirrors the doc comment on `llm_provider_model` in meridian-core/src/settings.rs,
+   * which likewise omits copilot.
+   */
+  supportsModelOverride: boolean
+  /**
+   * The curated model list offered in the picker. May be empty for a provider whose model
+   * names we can't enumerate confidently - the picker then falls back to free text alone.
+   * These are CLI subprocesses with no models endpoint, so this list is hand-maintained;
+   * only custom endpoints can be enumerated live (see `list_custom_llm_provider_models`).
+   */
+  models: LlmModelOption[]
   /**
    * Where the user opts their prompts OUT of model training. This is ACCOUNT-LEVEL for
    * every provider (a subprocess can't flip it - Meridian only disables telemetry per
@@ -200,6 +231,17 @@ export const LLM_PROVIDERS: LlmProviderMeta[] = [
     installUrl: 'https://claude.com/claude-code',
     privacyUrl: 'https://claude.ai/settings/data-privacy-controls',
     privacyLabel: 'Claude - Privacy controls',
+    supportsModelOverride: true,
+    // The claude CLI accepts both tier aliases and full model ids. Aliases are listed
+    // first: they keep working across releases, where a pinned id eventually retires.
+    models: [
+      { id: 'opus', label: 'Opus', note: 'Most capable - the default for hourly summaries' },
+      { id: 'sonnet', label: 'Sonnet', note: 'Balanced speed and quality' },
+      { id: 'haiku', label: 'Haiku', note: 'Fastest and cheapest' },
+      { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', note: 'Pinned version of Opus' },
+      { id: 'claude-sonnet-5', label: 'Claude Sonnet 5', note: 'Pinned version of Sonnet' },
+      { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', note: 'Pinned version of Haiku' },
+    ],
   },
   {
     id: 'codex',
@@ -211,6 +253,12 @@ export const LLM_PROVIDERS: LlmProviderMeta[] = [
     installUrl: 'https://developers.openai.com/codex/cli',
     privacyUrl: 'https://chatgpt.com/#settings/DataControls',
     privacyLabel: 'ChatGPT - Data Controls',
+    supportsModelOverride: true,
+    models: [
+      { id: 'gpt-5.5', label: 'GPT-5.5', note: 'Latest general model' },
+      { id: 'gpt-5.1-codex', label: 'GPT-5.1 Codex', note: 'Tuned for coding' },
+      { id: 'gpt-5.1', label: 'GPT-5.1' },
+    ],
   },
   {
     id: 'cursor',
@@ -222,6 +270,11 @@ export const LLM_PROVIDERS: LlmProviderMeta[] = [
     installUrl: 'https://cursor.com/cli',
     privacyUrl: 'https://cursor.com/settings',
     privacyLabel: 'Cursor - Privacy Mode',
+    supportsModelOverride: true,
+    // Deliberately empty: cursor-agent takes --model, but its accepted values aren't
+    // pinned anywhere we can verify, and an invented id would be passed verbatim into
+    // argv and fail at run time. Free text only until we can source a real list.
+    models: [],
   },
   {
     id: 'copilot',
@@ -233,8 +286,36 @@ export const LLM_PROVIDERS: LlmProviderMeta[] = [
     installUrl: 'https://github.com/features/copilot/cli',
     privacyUrl: 'https://github.com/settings/copilot/features',
     privacyLabel: 'GitHub - Copilot policies',
+    // The copilot backend builds its argv without a model flag and never reads cfg.model
+    // (src/llm/copilot.rs) - the model is whatever the CLI itself is configured to use.
+    // Offering a picker here would write a setting the backend drops on the floor.
+    supportsModelOverride: false,
+    models: [],
   },
 ]
+
+/** Look up one provider's metadata, or undefined for an unknown id. */
+export function providerMeta(id: LlmProviderId): LlmProviderMeta | undefined {
+  return LLM_PROVIDERS.find((p) => p.id === id)
+}
+
+/**
+ * The curated models for a provider - empty when we can't enumerate them (cursor) or the
+ * backend ignores the model entirely (copilot). Callers must treat empty as "free text
+ * only", NOT as "this provider has no models".
+ */
+export function modelsFor(id: LlmProviderId): LlmModelOption[] {
+  return providerMeta(id)?.models ?? []
+}
+
+/**
+ * Whether a model control should be offered for this provider at all. False means the
+ * chosen model would be silently discarded by the backend - show an explanatory note
+ * instead of a picker.
+ */
+export function supportsModelOverride(id: LlmProviderId): boolean {
+  return providerMeta(id)?.supportsModelOverride ?? false
+}
 
 /**
  * The stored default - Claude, the first/recommended coding agent (matches
@@ -349,6 +430,13 @@ export const CUSTOM_PROVIDER_META: LlmProviderMeta = {
   bin: null,
   // Account-level, and it varies per vendor - there is no one link to send them to.
   privacyUrl: null,
+  // A custom endpoint carries its model per-row (`CustomEndpoint.model`, sent as the
+  // "model" body field in src/llm/openai_compat.rs) rather than through the shared
+  // `llm_provider_model` setting - but a model IS selectable, hence true.
+  supportsModelOverride: true,
+  // Empty on purpose: these are the one provider whose models can be enumerated LIVE,
+  // from the endpoint's own {base_url}/models. Nothing to hand-maintain here.
+  models: [],
 }
 
 export function llmProvider(id: LlmProviderId): LlmProviderMeta {
