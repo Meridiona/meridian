@@ -62,6 +62,88 @@ jobs:
       - name: test
         run: cargo test
 
+  # The daemon builds and its full suite passes on Windows, so this job is a
+  # BLOCKING gate: it exists to stop that silently rotting. It began as a
+  # non-blocking burn-down while the port landed; that phase is over.
+  #
+  # This job is also the ONLY way to validate Windows: `cargo check --target
+  # x86_64-pc-windows-msvc` from macOS dies in `ring`'s build script (its C
+  # sources need the Windows SDK headers), which is the same reason Tauri
+  # documents that meaningful cross-compilation is not possible. There is no
+  # local shortcut — push and read this job.
+  #
+  # NOTE: passing here means the code COMPILES and its tests pass on a CI
+  # runner. It does not mean Meridian works on Windows — nothing here
+  # exercises a real desktop, so capture producing frames, the tray rendering,
+  # and the installer registering a service are all still unverified.
+  windows-portability:
+    name: Windows portability
+    runs-on: windows-latest
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        # Same mechanism as the Rust job above — cargo resolves the whole
+        # workspace, so the private git dep must be fetchable even though this
+        # job never compiles the crate that uses it.
+        # `shell: bash` (Git Bash ships on windows-latest) so this is character-
+        # for-character the same command as the Rust job's, rather than a
+        # PowerShell transliteration that could drift from it.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          # x86_64-pc-windows-msvc is this runner's host target, so no `targets:`
+          # entry is needed. It is deliberately NOT added to rust-toolchain.toml
+          # either — that would make every macOS dev machine download the Windows
+          # std for a target they never build.
+          components: clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: check
+        run: cargo check -p meridian -p meridian-core --all-targets
+
+      # Compiling is not working. The remaining Windows gaps are behavioural —
+      # tests that hardcode a Unix path, a launchd label, or an argv shape —
+      # and only running them surfaces those. Kept in the same non-blocking
+      # job so the burn-down stays one signal rather than two.
+      - name: test
+        run: cargo test -p meridian -p meridian-core
+
+      # The tray is checked separately and non-blocking: unlike the daemon it
+      # has never been compiled in CI on ANY platform, so a failure here may
+      # well be latent breakage that has nothing to do with Windows. Keeping it
+      # out of the blocking steps above means it cannot take the portability
+      # gate red for an unrelated reason, while still reporting.
+      #
+      # Tauri's build script validates that every bundle.resources path EXISTS,
+      # but `cargo check` never reads the contents — so a placeholder satisfies
+      # it. A real `cargo build --release --bin meridian` here took ~9 minutes
+      # (release-optimised candle/tokenizers/sqlx) purely to produce a file the
+      # check only stats. The release daemon genuinely building on Windows is
+      # covered by the release pipeline, not needed for a compile check.
+      - name: Stub the tray bundle resource
+        shell: bash
+        run: |
+          mkdir -p target/release
+          : > target/release/meridian.exe
+
+      - name: check tray
+        continue-on-error: true
+        run: cargo check -p meridian-tray --all-targets
+
   ui:
     name: UI
     runs-on: ubuntu-latest

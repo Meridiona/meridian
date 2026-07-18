@@ -141,7 +141,13 @@ macOS has **no per-notification duration API**. What we have:
 
 1. `tauri-plugin-notifications` is pinned `=0.4.6` with
    **`default-features = false`** — the default `notify-rust` feature silently
-   replaces the Swift layer (no buttons, no events).
+   replaces the Swift layer (no buttons, no events). **On Windows that feature
+   is turned back on**, via a re-declaration of the same dependency in the
+   `cfg(target_os = "windows")` block: the plugin's backend exists only under
+   `cfg(all(desktop, feature = "notify-rust"))` or
+   `cfg(all(target_os = "macos", not(feature = "notify-rust")))`, so a Windows
+   build without it matches neither arm and has no backend at all. See #7 for
+   what that costs.
 2. The Swift layer needs `-Wl,-rpath,/usr/lib/swift` (tray `build.rs`) or the
    packaged app dies at launch on `libswift_Concurrency.dylib`.
 3. **Extras don't round-trip**: the toast's notification identifier (= outbox
@@ -154,6 +160,28 @@ macOS has **no per-notification duration API**. What we have:
    (in-memory map) — an answer after a tray restart is dropped; expiry cleans
    those up.
 6. Banners collapse buttons behind a hover "Options" affordance; that's macOS.
+7. **Windows gets plain toasts only — title and body, no buttons, no inline
+   reply, no action events.** That follows from #1: `notify-rust` has no
+   action-button API, which is the whole reason macOS runs the Swift
+   `UNUserNotificationCenter` layer instead.
+
+   The practical consequence: an **interactive** notification still
+   *delivers* on Windows, but the user has no way to answer it, so its outbox
+   row is only ever resolved by expiry. Producers need no change — policy
+   lives at drain time — but do not design a flow whose only path forward is a
+   toast button and assume every platform can take it.
+
+   Closing this means implementing Windows toasts against
+   `windows-rs`' `Windows.UI.Notifications` (toast XML *does* support actions),
+   behind the existing `notify`/`notify_outbox`/`retract_toast`/
+   `register_notification_categories` facade in `tray/src-tauri/src/sys.rs`.
+   That facade is already the abstraction boundary — no caller in `poll/` or
+   `commands/` would change.
+8. `is_bundled()` gates plugin registration and means "packaged install, not a
+   dev build". On macOS that is a literal `.app` layout check (the Swift layer
+   genuinely requires a bundle). Windows has no bundle concept, so it detects
+   the *dev* case instead — an executable under `target\debug\` or
+   `target\release\` — and treats everything else as installed.
 
 ## Testing a new notification
 

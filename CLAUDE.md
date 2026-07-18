@@ -137,6 +137,26 @@ meridian/
 > (`service.name = meridian-tray`) — release builds omit it. Rationale + full scope: Obsidian
 > `Decisions/Dashboard frontend - keep Next in Tauri.md`, `~/.claude/plans/meridian-next-fold.md`.
 
+### Per-OS Tauri config — `tauri.windows.conf.json` (read before editing `bundle.resources`)
+
+Tauri auto-merges `tauri.<platform>.conf.json` into `tauri.conf.json` when
+building for that platform (no flag; detected from the target). Meridian uses
+`tray/src-tauri/tauri.windows.conf.json` for everything Windows-specific —
+`bundle.targets`, the daemon resource, NSIS options — so **`tauri.conf.json`
+stays the macOS source of truth and is never edited for Windows**.
+
+**The gotcha:** the merge is JSON Merge Patch (RFC 7396), which merges objects
+**key by key** rather than replacing them. `bundle.resources` is a map, so the
+macOS entries (`target/release/meridian`, `com.meridiona.daemon.plist`)
+would otherwise survive into the Windows bundle and fail the build — the file
+names differ (`.exe`) and a plist is meaningless there. They are explicitly set
+to `null`, which is how RFC 7396 spells "delete this key".
+
+So: **adding a resource to `tauri.conf.json` means also deciding what Windows
+does with it.** If it is macOS-only, null it out in `tauri.windows.conf.json`.
+Arrays and scalars (e.g. `bundle.targets`) replace wholesale and need no such
+care.
+
 ---
 
 ## Build, Test, Lint

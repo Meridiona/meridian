@@ -117,13 +117,14 @@ pub struct Config {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Expand a leading `~/` in a configured path.
+///
+/// Delegates to [`meridian_core::paths::expand_tilde_string`] — the single
+/// shared implementation, which resolves the home directory in a way that also
+/// works on Windows (where `$HOME` is typically unset) and joins with the
+/// platform's own separator instead of a hardcoded `/`.
 fn expand_tilde(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return format!("{}/{}", home, rest);
-        }
-    }
-    path.to_owned()
+    meridian_core::paths::expand_tilde_string(path)
 }
 
 fn env_list(key: &str) -> Vec<String> {
@@ -327,8 +328,15 @@ impl Config {
         let meridian_db = std::env::var("MERIDIAN_DB")
             .map(|v| expand_tilde(&v))
             .unwrap_or_else(|_| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
-                format!("{}/.meridian/meridian.db", home)
+                // Falls back to `./.meridian/meridian.db` only when the home
+                // directory cannot be resolved at all — the same degradation
+                // the previous `HOME`-only lookup had.
+                meridian_core::paths::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".meridian")
+                    .join("meridian.db")
+                    .to_string_lossy()
+                    .into_owned()
             });
 
         // settings.json is loaded first; its values take precedence over env-var
@@ -406,17 +414,26 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     // Env vars are process-global — serialize all config tests to prevent races.
-    fn env_lock() -> &'static Mutex<()> {
+    //
+    // Poison-tolerant on purpose: a poisoned lock only means some earlier test
+    // panicked while holding it, and every test here restores the vars it set
+    // regardless. Without this, one genuine failure cascades into `unwrap()`
+    // panics across every other test in the module, burying the real cause
+    // under noise — which is exactly what happened when a single Windows
+    // assertion failed and took `test_uri_prefix` down with it.
+    fn env_lock() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     #[test]
     fn test_default_paths_contain_expected_dirs() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         std::env::remove_var("MERIDIAN_DB");
         std::env::set_var("HOME", "/tmp/test_home");
         let cfg = Config::from_env();
@@ -426,7 +443,7 @@ mod tests {
 
     #[test]
     fn test_env_overrides() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         std::env::set_var("MERIDIAN_DB", "/custom/meridian.db");
         let cfg = Config::from_env();
         assert_eq!(cfg.meridian_db, "/custom/meridian.db");
@@ -445,18 +462,26 @@ mod tests {
 
     #[test]
     fn test_tilde_expansion() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         std::env::set_var("HOME", "/Users/testuser");
         std::env::set_var("MERIDIAN_DB", "~/custom/db.sqlite");
         let cfg = Config::from_env();
-        assert_eq!(cfg.meridian_db, "/Users/testuser/custom/db.sqlite");
+        // Build the expectation the same way the code does rather than
+        // hardcoding '/': expansion joins with the platform separator, so a
+        // literal "/Users/testuser/custom/db.sqlite" asserts a Unix-only
+        // spelling and fails on Windows for the wrong reason.
+        let expected = PathBuf::from("/Users/testuser")
+            .join("custom/db.sqlite")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(cfg.meridian_db, expected);
         std::env::remove_var("HOME");
         std::env::remove_var("MERIDIAN_DB");
     }
 
     #[test]
     fn test_parse_github_reads_token_and_project_ids() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         std::env::set_var("GITHUB_TOKEN", "gho_testtoken");
         std::env::set_var("GITHUB_PROJECT_IDS", "PVT_aaa, PVT_bbb");
         let parsed = parse_github();
@@ -472,7 +497,7 @@ mod tests {
 
     #[test]
     fn test_parse_github_requires_token() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         std::env::remove_var("GITHUB_TOKEN");
         std::env::set_var("GITHUB_PROJECT_IDS", "PVT_aaa");
         assert!(
@@ -484,7 +509,7 @@ mod tests {
 
     #[test]
     fn test_parse_github_token_only_empty_project_ids() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         std::env::set_var("GITHUB_TOKEN", "gho_x");
         std::env::remove_var("GITHUB_PROJECT_IDS");
         let parsed = parse_github();
@@ -519,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_parse_jira_basic_auth_complete() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let home = clear_jira_env();
         std::env::set_var("JIRA_BASE_URL", "https://acme.atlassian.net");
         std::env::set_var("JIRA_EMAIL", "a@b.com");
@@ -536,7 +561,7 @@ mod tests {
 
     #[test]
     fn test_parse_jira_oauth_store_configures() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let home = clear_jira_env();
         // No basic creds at all — a present OAuth token store alone configures Jira.
         crate::intelligence::oauth::store::save(&crate::intelligence::oauth::store::OAuthTokens {
@@ -560,7 +585,7 @@ mod tests {
 
     #[test]
     fn test_parse_jira_incomplete_basic_is_none() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let home = clear_jira_env();
         // base_url + email but NO token, and no OAuth login → not configured.
         std::env::set_var("JIRA_BASE_URL", "https://acme.atlassian.net");
@@ -575,7 +600,7 @@ mod tests {
 
     #[test]
     fn test_parse_jira_nothing_configured_is_none() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let home = clear_jira_env();
         // No creds, no token store → no Jira provider (no per-tick auth-fail spam).
         assert!(parse_jira().is_none());
@@ -585,7 +610,7 @@ mod tests {
 
     #[test]
     fn test_uri_prefix() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         std::env::set_var("MERIDIAN_DB", "/other/meridian.db");
         let cfg = Config::from_env();
         assert!(cfg.meridian_db_uri().starts_with("sqlite://"));

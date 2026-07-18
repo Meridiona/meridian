@@ -1044,9 +1044,7 @@ async fn start_oauth_github_device(provider: String) -> Result<StartOAuthRespons
 
     // Open the browser to the verification page. Non-fatal if it fails — the UI
     // also shows the code + link for manual entry.
-    let _ = std::process::Command::new("open")
-        .arg(&device.verification_uri)
-        .spawn();
+    crate::sys::open_url_detached(&device.verification_uri);
 
     let user_code = device.user_code.clone();
     let verification_uri = device.verification_uri.clone();

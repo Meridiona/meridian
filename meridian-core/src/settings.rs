@@ -26,6 +26,7 @@
 //!   merges the body on top of [`read_settings_value`] and persists via
 //!   [`write_settings_value`].
 
+use crate::paths::{expand_tilde, home_dir};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -343,17 +344,6 @@ impl Default for RuntimeSettings {
     }
 }
 
-/// Expand a leading `~/` to `$HOME` (the only tilde form we accept — mirrors the
-/// dashboard's settings.ts). Avoids pulling shellexpand into the lean crate.
-fn expand_tilde(p: &str) -> PathBuf {
-    if let Some(rest) = p.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
-    }
-    PathBuf::from(p)
-}
-
 /// Resolve `settings.json` — must agree with the dashboard (`ui/lib/settings.ts`)
 /// or "Apply" never reaches the daemon. Resolution order:
 ///   1. `MERIDIAN_SETTINGS_PATH` override (tests / non-standard installs)
@@ -371,9 +361,7 @@ pub fn settings_json_path() -> PathBuf {
         }
     }
 
-    let canonical = std::env::var("HOME")
-        .ok()
-        .map(|home| PathBuf::from(home).join(".meridian").join("settings.json"));
+    let canonical = home_dir().map(|home| home.join(".meridian").join("settings.json"));
 
     if let Some(path) = &canonical {
         if path.exists() {

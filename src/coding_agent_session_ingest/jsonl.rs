@@ -61,24 +61,29 @@ fn is_real_user_prompt(content: &Value) -> bool {
 }
 
 /// Infer the agent from a JSONL path (mirrors `_infer_agent`).
+///
+/// Two tiers, in this order: the canonical store layout (`.claude/projects`,
+/// `.codex/sessions`) first, then a bare `.claude`/`.codex` anywhere in the
+/// path for stores that don't use the subdirectory.
+///
+/// Every check matches whole path **components**. The fallback tier used to
+/// test `path.to_string_lossy().contains("/.claude/")`, which is separator-
+/// dependent: on Windows the same path is spelled `\.claude\`, so the check
+/// silently returned `false` and the session was attributed to `"unknown"`
+/// rather than failing loudly. Component matching is separator-agnostic and
+/// additionally stops `.claude-backup` from matching `.claude`.
 pub fn infer_agent(path: &Path) -> String {
-    let names: Vec<String> = path
-        .ancestors()
-        .filter_map(|p| p.file_name())
-        .map(|n| n.to_string_lossy().into_owned())
-        .collect();
-    let has = |n: &str| names.iter().any(|x| x == n);
-    if has("projects") && has(".claude") {
+    let has = |name: &str| meridian_core::paths::has_component(path, name);
+    if has(".claude") && has("projects") {
         return "claude_code".to_string();
     }
-    if has("sessions") && has(".codex") {
+    if has(".codex") && has("sessions") {
         return "codex".to_string();
     }
-    let s = path.to_string_lossy();
-    if s.contains("/.claude/") {
+    if has(".claude") {
         return "claude_code".to_string();
     }
-    if s.contains("/.codex/") {
+    if has(".codex") {
         return "codex".to_string();
     }
     "unknown".to_string()
@@ -458,4 +463,79 @@ fn format_codex_message(content: &Value) -> String {
         .filter(|p| !p.is_empty())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The canonical store layouts must resolve to their agent. `infer_agent`
+    /// feeds `segment.rs`'s `app_name`/`session_text_source`, so a wrong answer
+    /// here silently misattributes a whole coding session rather than erroring.
+    #[test]
+    fn infers_agent_from_the_canonical_layouts() {
+        assert_eq!(
+            infer_agent(Path::new("/Users/me/.claude/projects/proj/abc.jsonl")),
+            "claude_code"
+        );
+        assert_eq!(
+            infer_agent(Path::new("/Users/me/.codex/sessions/2026/rollout-x.jsonl")),
+            "codex"
+        );
+    }
+
+    /// The second tier: a store dir without the `projects`/`sessions` level.
+    #[test]
+    fn infers_agent_without_the_subdirectory_level() {
+        assert_eq!(
+            infer_agent(Path::new("/Users/me/.claude/abc.jsonl")),
+            "claude_code"
+        );
+        assert_eq!(
+            infer_agent(Path::new("/Users/me/.codex/abc.jsonl")),
+            "codex"
+        );
+    }
+
+    /// Regression guard for the bug this function carried: the fallback tier
+    /// matched the substring `"/.claude/"`, which never appears in a
+    /// Windows-spelled path (`\.claude\`), so ingest silently returned
+    /// `"unknown"` there. Component matching is separator-agnostic, so a
+    /// backslash-spelled path must resolve identically to its POSIX twin.
+    ///
+    /// Constructed component-wise so the assertion is meaningful on every
+    /// platform rather than only on the one whose separator is hardcoded.
+    #[test]
+    fn separator_spelling_does_not_change_the_answer() {
+        let built: std::path::PathBuf = ["/Users/me", ".claude", "projects", "p", "abc.jsonl"]
+            .iter()
+            .collect();
+        assert_eq!(infer_agent(&built), "claude_code");
+
+        // The literal backslash spelling is a single opaque component on unix
+        // and a real path on Windows; either way it must not be reported as a
+        // Claude path unless `.claude` genuinely is a component.
+        let windows_spelled = Path::new(r"C:\Users\me\.claude\projects\p\abc.jsonl");
+        #[cfg(windows)]
+        assert_eq!(infer_agent(windows_spelled), "claude_code");
+        #[cfg(not(windows))]
+        let _ = windows_spelled; // not a component-separated path on unix
+    }
+
+    /// A directory that merely starts with `.claude` is a different store and
+    /// must not be claimed — the old substring check got this right by
+    /// accident (`"/.claude/"` needs the trailing slash); component matching
+    /// gets it right by construction.
+    #[test]
+    fn does_not_match_a_partial_directory_name() {
+        assert_eq!(
+            infer_agent(Path::new("/Users/me/.claude-backup/projects/abc.jsonl")),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn unrecognised_paths_are_unknown() {
+        assert_eq!(infer_agent(Path::new("/tmp/random/file.jsonl")), "unknown");
+    }
 }

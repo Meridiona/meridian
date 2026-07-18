@@ -180,29 +180,46 @@ pub struct UpdateLaunch {
 /// `open -a Terminal` it — LaunchServices, so no AppleEvents/Automation prompt,
 /// and an interactive login shell where `meridian` is on PATH. Never errors —
 /// returns `launched=false` so the UI falls back to the copyable command.
+///
+/// **macOS only.** On Windows the update path is the in-app auto-updater
+/// (`tauri-plugin-updater` → the NSIS installer), and there is no `meridian`
+/// CLI on `PATH` to run in a terminal, so this reports `launched=false` without
+/// spawning anything — the UI then shows its "check for updates" affordance,
+/// which drives the auto-updater.
 #[tauri::command]
 #[tracing::instrument]
 pub async fn run_update() -> UpdateLaunch {
-    let script = [
-        "#!/bin/bash",
-        "echo \"→ Updating Meridian…\"",
-        "echo",
-        UPDATE_CMD,
-        "status=$?",
-        "echo",
-        "if [ $status -eq 0 ]; then echo \"✓ Update complete — you can close this window.\"; \
-         else echo \"✗ Update failed (exit $status). See output above.\"; fi",
-        "",
-    ]
-    .join("\n");
-    let script_path = std::env::temp_dir().join("meridian-update.command");
+    #[cfg(target_os = "macos")]
+    let launched = {
+        let script = [
+            "#!/bin/bash",
+            "echo \"→ Updating Meridian…\"",
+            "echo",
+            UPDATE_CMD,
+            "status=$?",
+            "echo",
+            "if [ $status -eq 0 ]; then echo \"✓ Update complete — you can close this window.\"; \
+             else echo \"✗ Update failed (exit $status). See output above.\"; fi",
+            "",
+        ]
+        .join("\n");
+        let script_path = std::env::temp_dir().join("meridian-update.command");
+        let ok = write_and_open(&script_path, &script).is_ok();
+        if ok {
+            tracing::info!(path = %script_path.display(), "launched meridian update in Terminal");
+        } else {
+            tracing::warn!("could not launch Terminal for update");
+        }
+        ok
+    };
 
-    let launched = write_and_open(&script_path, &script).is_ok();
-    if launched {
-        tracing::info!(path = %script_path.display(), "launched meridian update in Terminal");
-    } else {
-        tracing::warn!("could not launch Terminal for update");
-    }
+    #[cfg(not(target_os = "macos"))]
+    let launched = {
+        // No terminal launch on Windows/Linux — the auto-updater is the path.
+        tracing::debug!("run_update: no terminal-update flow off macOS — auto-updater handles it");
+        false
+    };
+
     UpdateLaunch {
         launched,
         command: UPDATE_CMD.to_string(),
@@ -211,9 +228,9 @@ pub async fn run_update() -> UpdateLaunch {
 
 /// Write the `.command` script (executable) and `open -a Terminal` it. Split out
 /// so the single `is_ok()` above captures any failure as `launched=false`.
+#[cfg(target_os = "macos")]
 fn write_and_open(script_path: &std::path::Path, script: &str) -> std::io::Result<()> {
     std::fs::write(script_path, script)?;
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(script_path, std::fs::Permissions::from_mode(0o755))?;

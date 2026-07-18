@@ -12,9 +12,7 @@ use crate::health::Check;
 use std::path::PathBuf;
 
 pub fn checks(_cfg: &Config) -> Vec<Check> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
+    let home = meridian_core::paths::home_dir_or_cwd();
 
     let claude_present = which("claude").is_some();
     let skill_path = home.join(".claude/commands/session-summary.md");
@@ -59,12 +57,17 @@ pub fn checks(_cfg: &Config) -> Vec<Check> {
     // Cursor: sidebar/IDE-agent transcripts are ingested from state.vscdb and
     // cursor-agent CLI chats from ~/.cursor/chats. Summaries use the
     // cursor-agent CLI when present + authenticated; otherwise they stay pending.
+    // Cursor's state lives under the platform's app-support root, not a
+    // hardcoded ~/Library path — see meridian_core::paths::app_support_dir.
+    let cursor_support = meridian_core::paths::app_support_dir("Cursor");
     let cursor_present =
-        which("cursor").is_some() || home.join("Library/Application Support/Cursor").is_dir();
+        which("cursor").is_some() || cursor_support.as_ref().is_some_and(|d| d.is_dir());
     if cursor_present {
         let vscdb = env_path(
             "CURSOR_STATE_VSCDB",
-            home.join("Library/Application Support/Cursor/User/globalStorage/state.vscdb"),
+            cursor_support
+                .map(|d| d.join("User").join("globalStorage").join("state.vscdb"))
+                .unwrap_or_default(),
         );
         if vscdb.is_file() {
             out.push(Check::ok(

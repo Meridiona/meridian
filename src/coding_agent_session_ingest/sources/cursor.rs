@@ -47,12 +47,13 @@ pub struct CursorSource {
 
 impl CursorSource {
     pub fn from_env() -> Self {
-        let raw = std::env::var("CURSOR_STATE_VSCDB").unwrap_or_else(|_| {
-            "~/Library/Application Support/Cursor/User/globalStorage/state.vscdb".to_string()
-        });
-        Self {
-            vscdb_path: PathBuf::from(shellexpand::tilde(&raw).into_owned()),
-        }
+        let vscdb_path = match std::env::var("CURSOR_STATE_VSCDB") {
+            Ok(raw) => PathBuf::from(shellexpand::tilde(&raw).into_owned()),
+            Err(_) => meridian_core::paths::app_support_dir("Cursor")
+                .map(|d| d.join("User").join("globalStorage").join("state.vscdb"))
+                .unwrap_or_default(),
+        };
+        Self { vscdb_path }
     }
 
     pub fn present(&self) -> bool {

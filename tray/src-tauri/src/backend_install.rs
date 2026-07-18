@@ -52,7 +52,16 @@ fn sha256_hex_of(path: &Path) -> std::io::Result<String> {
 }
 
 /// launchd agents this stages, paired with their bundled plist template.
+#[cfg(target_os = "macos")]
 const AGENTS: &[(&str, &str)] = &[("com.meridiona.daemon", "com.meridiona.daemon.plist")];
+
+/// The daemon executable's file name inside `Resources/backend/` and at its
+/// staged destination. Windows needs the `.exe` suffix to be runnable at all;
+/// `tauri.windows.conf.json`'s resource map bundles it under that name.
+#[cfg(target_os = "windows")]
+const DAEMON_FILE: &str = "meridian.exe";
+#[cfg(not(target_os = "windows"))]
+const DAEMON_FILE: &str = "meridian";
 
 /// Stage the bundled backend and register its launchd agent — idempotent and
 /// non-fatal.
@@ -81,7 +90,7 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
         }
     };
 
-    let daemon_src = backend.join("meridian");
+    let daemon_src = backend.join(DAEMON_FILE);
     let bundled_hash = match sha256_hex_of(&daemon_src) {
         Ok(h) => h,
         Err(e) => {
@@ -123,27 +132,42 @@ async fn install(backend: &Path, home: &Path) -> Result<(), String> {
             .await
             .map_err(|e| format!("mkdir {}: {e}", p.display()))?;
     }
+    // Purge leftovers from a pre-cutover **bundle** install before staging the
+    // in-process backend. macOS-only by construction: Windows has no install
+    // history to migrate from, so there is nothing to boot out and no legacy
+    // .env to recover. Skipped there deliberately, not by omission.
+    #[cfg(target_os = "macos")]
+    {
+        // An install upgraded from an older topology may carry launchd agents
+        // the new one replaced (the in-process capturer supersedes screenpipe
+        // and does its own AX poke; the on-device MLX server is gone); left
+        // running they race the tray, contend for :7823, or surface a redundant
+        // "meridian-a11y-helper" Accessibility entry — so boot them out. All
+        // best-effort + non-fatal.
+        cleanup_legacy_screenpipe(home).await;
+        cleanup_legacy_mlx_server(home).await;
+        cleanup_legacy_a11y_helper(home).await;
+        // Recover tracker credentials the bundle wrote to ~/.meridian/app/.env
+        // so the DMG daemon (which reads the canonical ~/.meridian/.env)
+        // doesn't lose them.
+        migrate_legacy_bundle_env(home).await;
+    }
+
+    let daemon_bin = home.join(".meridian").join("bin").join(DAEMON_FILE);
+    stage_binary(&backend.join(DAEMON_FILE), &daemon_bin).await?;
+
+    register_service(backend, home, &daemon_bin).await
+}
+
+/// Register the staged daemon to run at login and keep running.
+///
+/// macOS: a launchd **LaunchAgent** — per-user, no admin, `KeepAlive`.
+#[cfg(target_os = "macos")]
+async fn register_service(backend: &Path, home: &Path, daemon_bin: &Path) -> Result<(), String> {
     let launch_agents = home.join("Library/LaunchAgents");
     tokio::fs::create_dir_all(&launch_agents)
         .await
         .map_err(|e| format!("mkdir {}: {e}", launch_agents.display()))?;
-
-    // Purge leftovers from a pre-cutover **bundle** install before staging the
-    // in-process backend. A user migrating from the old npm/curl bundle to this
-    // An install upgraded from an older topology may carry launchd agents the
-    // new one replaced (the in-process capturer supersedes screenpipe and does
-    // its own AX poke; the on-device MLX server is gone); left running they race
-    // the tray, contend for :7823, or surface a redundant "meridian-a11y-helper"
-    // Accessibility entry — so boot them out. All best-effort + non-fatal.
-    cleanup_legacy_screenpipe(home).await;
-    cleanup_legacy_mlx_server(home).await;
-    cleanup_legacy_a11y_helper(home).await;
-    // Recover tracker credentials the bundle wrote to ~/.meridian/app/.env so the
-    // DMG daemon (which reads the canonical ~/.meridian/.env) doesn't lose them.
-    migrate_legacy_bundle_env(home).await;
-
-    let daemon_bin = home.join(".meridian/bin/meridian");
-    stage_binary(&backend.join("meridian"), &daemon_bin).await?;
 
     // Render the plist. The bundled template carries {{…}} placeholders the
     // npm installer substitutes too; here REPO_ROOT (the daemon's WorkingDirectory)
@@ -167,6 +191,78 @@ async fn install(backend: &Path, home: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Register the staged daemon to run at login and keep running.
+///
+/// Windows: a **per-user scheduled task**, via `schtasks.exe`.
+///
+/// # Why not a Windows Service
+///
+/// A Service is the instinctive analogue of launchd, and it is the wrong one.
+/// Creating one requires administrator rights, but Meridian installs per-user
+/// with no elevation (`installMode: "currentUser"` in
+/// `tauri.windows.conf.json`) — deliberately, so installing never raises a UAC
+/// prompt. A Service would force elevation on every user at install time.
+///
+/// What is being ported here is a launchd **LaunchAgent**, not a LaunchDaemon:
+/// per-user, in the logged-in session, started at login. A per-user scheduled
+/// task is the exact counterpart — same scope, same trigger, no admin — and
+/// unlike a `Run` registry key it can also restart the daemon if it exits,
+/// which is what `KeepAlive` buys on macOS.
+///
+/// `schtasks.exe` is used rather than the `windows-service` crate because this
+/// needs the Task Scheduler, not the Service Control Manager, and shelling out
+/// avoids taking a dependency for one idempotent call.
+#[cfg(target_os = "windows")]
+async fn register_service(_backend: &Path, home: &Path, daemon_bin: &Path) -> Result<(), String> {
+    // `/F` replaces an existing task, so re-registering on every update is
+    // idempotent — the role `launchctl bootout` + `bootstrap` plays on macOS.
+    //
+    // `/RL LIMITED` keeps the task at the user's own privilege level. It must
+    // not run elevated: the files it writes under ~/.meridian would then be
+    // owned such that the un-elevated tray could not touch them.
+    let out = tokio::process::Command::new("schtasks")
+        .args([
+            "/Create",
+            "/F",
+            "/TN",
+            WINDOWS_TASK_NAME,
+            "/SC",
+            "ONLOGON",
+            "/RL",
+            "LIMITED",
+            "/TR",
+        ])
+        .arg(format!("\"{}\"", daemon_bin.display()))
+        .output()
+        .await
+        .map_err(|e| format!("run schtasks: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "schtasks /Create {WINDOWS_TASK_NAME} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+
+    // Start it now so the first run does not wait for the next logon. Failure
+    // is not fatal — the task is registered either way, so the daemon comes up
+    // at login regardless.
+    let _ = tokio::process::Command::new("schtasks")
+        .args(["/Run", "/TN", WINDOWS_TASK_NAME])
+        .output()
+        .await;
+
+    tracing::info!(
+        task = WINDOWS_TASK_NAME,
+        home = %home.display(),
+        "backend_install: scheduled task registered"
+    );
+    Ok(())
+}
+
+/// Task Scheduler name for the daemon's per-user login task.
+#[cfg(target_os = "windows")]
+const WINDOWS_TASK_NAME: &str = "Meridian Daemon";
 
 /// Purge a leftover **pre-cutover screenpipe install**. Before the in-process
 /// cutover, capture ran as a separate `screenpipe` binary under a

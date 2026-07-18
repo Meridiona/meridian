@@ -50,10 +50,7 @@ impl LlmConfig {
     pub fn from_settings(s: &RuntimeSettings) -> Self {
         let home = std::env::var("MERIDIAN_HOME")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                let h = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                PathBuf::from(h).join(".meridian")
-            });
+            .unwrap_or_else(|_| meridian_core::paths::home_dir_or_cwd().join(".meridian"));
         Self {
             model: s.llm_provider_model.clone().unwrap_or_default(),
             meridian_home: home,

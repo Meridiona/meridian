@@ -233,9 +233,7 @@ fn confirm(label: &str, argv: &[String]) -> bool {
 
 /// Write a content-free diagnostic bundle (the porcelain report) for handoff.
 fn write_bundle(report: &Report) -> Option<String> {
-    let dir = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)?
-        .join(".meridian");
+    let dir = meridian_core::paths::meridian_dir()?;
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("doctor-bundle.txt");
     let mut body = String::from("meridian doctor diagnostic bundle\n\n");

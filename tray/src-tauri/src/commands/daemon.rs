@@ -1,10 +1,14 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //! Daemon lifecycle + status commands.
 //!
-//! Controls the `com.meridiona.daemon` launchd service (restart / pause / resume)
-//! and reports its liveness — both the cached tray view ([`get_status`], from
-//! [`crate::state::AppState`]) and a fresh socket probe ([`get_daemon_status`],
+//! Controls the daemon service (restart / pause / resume) and reports its
+//! liveness — both the cached tray view ([`get_status`], from
+//! [`crate::state::AppState`]) and a fresh endpoint probe ([`get_daemon_status`],
 //! the ported `/api/daemon/status`).
+//!
+//! The OS-specific mechanics — launchd + a Unix socket on macOS, the Task
+//! Scheduler + a named pipe on Windows — live in [`super::daemon_control`]; this
+//! module is the platform-agnostic command surface over them.
 //!
 //! # Who calls this
 //! Registered in `lib.rs`'s `invoke_handler!`. `get_daemon_status` is polled by
@@ -19,11 +23,9 @@
 //!   out of this module (CLAUDE.md's 500-line file cap).
 
 use crate::state::{AppState, StatusPayload};
-use crate::sys;
 use meridian_core::SqlitePool;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tauri::State;
 
 /// The cached tray status (health + active session + today totals), read from
@@ -36,29 +38,20 @@ pub fn get_status(state: State<'_, Arc<Mutex<AppState>>>) -> Result<StatusPayloa
         .map_err(|e| e.to_string())
 }
 
-/// Force-restart the daemon via `launchctl kickstart -k`.
+/// Force-restart the daemon (macOS `launchctl kickstart -k`; Windows restarts
+/// the scheduled task).
 #[tauri::command]
 pub async fn restart_daemon() -> Result<(), String> {
-    let uid = sys::uid_str();
-    let status = std::process::Command::new("launchctl")
-        .args([
-            "kickstart",
-            "-k",
-            &format!("gui/{}/com.meridiona.daemon", uid),
-        ])
-        .status()
-        .map_err(|e| format!("launchctl failed: {}", e))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err("launchctl kickstart returned non-zero".to_string())
-    }
+    super::daemon_control::restart().await
 }
 
-/// Pause (`stop`) or resume (`start`) the daemon. On success, raises/clears a
+/// Pause (stop) or resume (start) the daemon. On success, raises/clears a
 /// `tray.daemon_paused` notice — same `system.pause` event_key (and
 /// `notify_system_pause` toggle) as [`crate::commands::pause`]'s capture-pause
 /// notice, so quiet-hours/master-switch/per-type policy applies identically.
+///
+/// Start/stop goes through [`super::daemon_control`] (launchd on macOS, the
+/// scheduled task on Windows) rather than `launchctl` directly.
 #[tauri::command]
 pub async fn toggle_daemon(
     _app: tauri::AppHandle,
@@ -66,50 +59,33 @@ pub async fn toggle_daemon(
     db_pool: State<'_, Option<SqlitePool>>,
 ) -> Result<(), String> {
     let pool = db_pool.inner().clone();
-    let uid = sys::uid_str();
-    let service = format!("gui/{}/com.meridiona.daemon", uid);
 
-    let status = if is_running {
-        std::process::Command::new("launchctl")
-            .args(["stop", &service])
-            .status()
-    } else {
-        std::process::Command::new("launchctl")
-            .args(["start", &service])
-            .status()
-    }
-    .map_err(|e| format!("launchctl failed: {}", e))?;
+    // `is_running` is the CURRENT state, so pausing means "make it not running".
+    super::daemon_control::set_running(!is_running).await?;
 
-    if status.success() {
-        if let Some(p) = pool.as_ref() {
-            let result = if is_running {
-                meridian::notices::raise_typed(
-                    p,
-                    meridian::notices::Notice {
-                        id: "tray.daemon_paused",
-                        severity: "info",
-                        title: "Paused",
-                        detail: "Meridian is paused. Click to resume.",
-                        remedy: None,
-                        event_key: "system.pause",
-                        deep_link: None,
-                    },
-                )
-                .await
-            } else {
-                meridian::notices::clear_typed(p, "tray.daemon_paused", "system.pause").await
-            };
-            if let Err(e) = result {
-                tracing::warn!(error = %e, is_running, "daemon toggle notice write failed");
-            }
+    if let Some(p) = pool.as_ref() {
+        let result = if is_running {
+            meridian::notices::raise_typed(
+                p,
+                meridian::notices::Notice {
+                    id: "tray.daemon_paused",
+                    severity: "info",
+                    title: "Paused",
+                    detail: "Meridian is paused. Click to resume.",
+                    remedy: None,
+                    event_key: "system.pause",
+                    deep_link: None,
+                },
+            )
+            .await
+        } else {
+            meridian::notices::clear_typed(p, "tray.daemon_paused", "system.pause").await
+        };
+        if let Err(e) = result {
+            tracing::warn!(error = %e, is_running, "daemon toggle notice write failed");
         }
-        Ok(())
-    } else {
-        Err(format!(
-            "launchctl {} returned non-zero",
-            if is_running { "stop" } else { "start" }
-        ))
     }
+    Ok(())
 }
 
 /// Response shape matching the TS route's `{ running, pid? }`.
@@ -120,19 +96,19 @@ pub struct DaemonStatusResponse {
     pub pid: Option<u32>,
 }
 
-/// Probe `~/.meridian/daemon.sock` with an 800 ms timeout (the ported
+/// Probe the daemon's IPC endpoint with an 800 ms timeout (the ported
 /// `/api/daemon/status` GET). Returns `{running: false}` on any error — no error
 /// surfaces to the caller (resolve-empty contract: stale UI stays visible rather
 /// than erroring on every health poll tick).
 #[tauri::command]
 #[tracing::instrument]
 pub async fn get_daemon_status() -> Result<DaemonStatusResponse, String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let sock_path = format!("{}/.meridian/daemon.sock", home);
-
-    let result = probe_socket(&sock_path).await;
-    tracing::info!(running = result.running, pid = ?result.pid, "daemon_status");
-    Ok(result)
+    let probe = super::daemon_control::probe().await;
+    tracing::info!(running = probe.running, pid = ?probe.pid, "daemon_status");
+    Ok(DaemonStatusResponse {
+        running: probe.running,
+        pid: probe.pid,
+    })
 }
 
 /// `{ ok, pid }` on a successful reload — mirrors the route's success body.
@@ -142,71 +118,19 @@ pub struct ReloadResponse {
     pub pid: u32,
 }
 
-/// Reload the daemon's config by sending it SIGHUP (the ported
-/// `/api/daemon/reload` POST). The daemon exits cleanly on SIGHUP and launchd
-/// restarts it, picking up `settings.json` changes (OTLP config, credentials).
-/// Log-level changes hot-reload in-process and don't need this. Errors when the
-/// daemon isn't running (the route's 503) — we resolve its pid from the same
-/// `daemon.sock` greeting [`get_daemon_status`] reads.
+/// Reload the daemon's config (the ported `/api/daemon/reload` POST).
+///
+/// macOS sends SIGHUP: the daemon exits cleanly and launchd relaunches it,
+/// picking up startup-only `settings.json` values (OTLP config, credentials).
+/// Windows restarts the scheduled task to the same end — most settings are
+/// re-read every poll tick regardless, so only startup-only ones need this.
+/// Log-level changes hot-reload in-process and need neither.
+///
+/// Errors when the daemon isn't running (the route's 503).
 #[tauri::command]
 #[tracing::instrument]
 pub async fn reload_daemon() -> Result<ReloadResponse, String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let sock_path = format!("{}/.meridian/daemon.sock", home);
-
-    let probe = probe_socket(&sock_path).await;
-    let Some(pid) = probe.pid.filter(|_| probe.running) else {
-        return Err("daemon not running".to_string());
-    };
-
-    // `kill -HUP <pid>` (the route's `process.kill(pid, 'SIGHUP')`) — no libc dep.
-    let status = std::process::Command::new("kill")
-        .args(["-HUP", &pid.to_string()])
-        .status()
-        .map_err(|e| format!("kill failed: {e}"))?;
-    if !status.success() {
-        return Err(format!("kill -HUP {pid} returned non-zero"));
-    }
-    tracing::info!(pid, "daemon reload (SIGHUP) sent");
+    let pid = super::daemon_control::reload().await?;
+    tracing::info!(pid, "daemon reload requested");
     Ok(ReloadResponse { ok: true, pid })
-}
-
-async fn probe_socket(sock_path: &str) -> DaemonStatusResponse {
-    use tokio::io::AsyncReadExt;
-    use tokio::net::UnixStream;
-    use tokio::time::timeout;
-
-    let connect = timeout(Duration::from_millis(800), UnixStream::connect(sock_path)).await;
-
-    let mut stream = match connect {
-        Ok(Ok(s)) => s,
-        _ => {
-            return DaemonStatusResponse {
-                running: false,
-                pid: None,
-            }
-        }
-    };
-
-    // Read until EOF or timeout, then parse the greeting JSON.
-    let mut buf = Vec::new();
-    let _ = timeout(Duration::from_millis(800), stream.read_to_end(&mut buf)).await;
-
-    if buf.is_empty() {
-        return DaemonStatusResponse {
-            running: false,
-            pid: None,
-        };
-    }
-
-    match serde_json::from_slice::<serde_json::Value>(&buf) {
-        Ok(v) => {
-            let pid = v.get("pid").and_then(|p| p.as_u64()).map(|p| p as u32);
-            DaemonStatusResponse { running: true, pid }
-        }
-        Err(_) => DaemonStatusResponse {
-            running: false,
-            pid: None,
-        },
-    }
 }

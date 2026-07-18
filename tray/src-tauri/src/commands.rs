@@ -41,6 +41,7 @@ pub mod app_icons;
 pub mod cli_exec;
 pub mod custom_llm;
 pub mod daemon;
+pub mod daemon_control;
 pub mod dashboard;
 pub mod day_summary;
 pub mod diagnostics;
