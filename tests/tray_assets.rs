@@ -339,3 +339,31 @@ fn js_element_id_contract_holds() {
     assert_ids_present("tray/src/app.js", "tray/src/index.html");
     assert_ids_present("tray/src/tooltip.js", "tray/src/tooltip.html");
 }
+
+/// GUARD: the tray must hide the hover tooltip on mouse-DOWN, not only on Up.
+///
+/// tray-icon's `rightMouseDown:` emits a Down click event and then calls
+/// `performClick`, which runs the NSMenu in a modal tracking loop. That loop
+/// swallows `rightMouseUp:`, so an Up-only handler never fires for a
+/// right-click and the tooltip strands on screen behind the context menu
+/// (`Leave` doesn't fire either while the menu holds the run loop). A previous
+/// fix added a right-button branch but left it inside the Up arm, so it could
+/// never run - hence this guard is on the Down arm specifically.
+///
+/// Static source assertion because tray-icon events need a real menu-bar click
+/// and a running event loop, which CI has no way to drive.
+#[test]
+fn tray_hides_tooltip_on_mouse_down() {
+    let src = read_text("tray/src-tauri/src/lib.rs");
+    let down_arm = src.find("button_state: MouseButtonState::Down").expect(
+        "tray click handler must match MouseButtonState::Down - without it a \
+                 right-click leaves the hover tooltip stranded (the NSMenu tracking \
+                 loop swallows rightMouseUp:, so the Up arm never fires)",
+    );
+    let rest = &src[down_arm..];
+    let arm_end = rest.find("MouseButtonState::Up").unwrap_or(rest.len());
+    assert!(
+        rest[..arm_end].contains("tray-tooltip") && rest[..arm_end].contains("hide()"),
+        "the MouseButtonState::Down arm must hide the tray-tooltip window",
+    );
+}
