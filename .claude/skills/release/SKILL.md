@@ -1,30 +1,72 @@
 ---
 name: release
-description: "Release the Meridian monorepo. Bumps versions, verifies builds, and triggers GitHub Actions via release-please."
+description: "Release the Meridian monorepo. Bumps versions, builds/signs/notarizes the DMG, and publishes via semantic-release."
 allowed-tools: Bash, Read, Edit, Grep, Write
 ---
 
 # Meridian Release Skill
 
+Meridian uses **semantic-release** (not release-please) driven by two GitHub
+Actions workflows: `.github/workflows/release.yml` (production, on push to
+`main`) and `.github/workflows/release-staging.yml` (staging, on push to
+`pre-main` gated by a `[staging-release]` commit-message marker, or manual
+dispatch).
+
 ## Components & Version Files
 
-| Component | Version File | Workflow |
-|-----------|--------------|----------|
-| Rust daemon | `Cargo.toml` (`version = "X.Y.Z"`) | `release-please.yml` |
-| MCP server | `packages/meridian-mcp/package.json` (`"version": "X.Y.Z"`) | `release-please.yml` |
+Bumped in lockstep by `scripts/set-version.sh <version>`:
 
-Meridian uses **release-please** for automated changelog and version management.
-Config: `release-please-config.json`, manifest: `.release-please-manifest.json`.
+| Component | Version File |
+|-----------|--------------|
+| Rust daemon | `Cargo.toml` (`version = "X.Y.Z"`), `Cargo.lock` |
+| UI | `ui/package.json` |
+| MCP server | `packages/meridian-mcp/package.json` |
+| Tray app | `tray/src-tauri/tauri.conf.json` |
 
 ## Release Workflow
 
+### Production (`main`)
+Config: `.releaserc.json`. Commit-message convention (conventionalcommits
+preset): `feat:` → minor, `fix:` → patch, `feat!:`/`BREAKING CHANGE:` → major,
+`chore:`/`docs:`/`refactor:` → no bump but included in changelog.
+
+`prepareCmd` runs, in order:
+1. `scripts/set-version.sh <ver>` — bump all version files
+2. `cargo build --release`
+3. UI build (`ui/`), tray build (`tray/`, `tauri build`)
+4. `scripts/notarize-dmg.sh <ver>` — notarize + staple the `.dmg` (Tauri only
+   signs+notarizes+staples the `.app`, not the `.dmg`)
+5. `scripts/package-updater.sh <ver>` — build `latest.json` from the real
+   minisign `.sig`, copy the versioned DMG to a stable `Meridian.dmg` name
+6. `scripts/verify-release-bundle.sh <ver>` — hard gate: codesign identity,
+   Gatekeeper offline acceptance, staple presence, and that the updater
+   artifacts (`.app.tar.gz`, `.sig`, `latest.json`) exist and are non-empty
+   (Tauri can silently exit 0 with a bad/missing signing key)
+
+Then `@semantic-release/github` publishes `Meridian.dmg`,
+`Meridian.app.tar.gz`, `.sig`, and `latest.json` onto a versioned `v<version>`
+GitHub Release (becomes GitHub's "latest"), and `@semantic-release/git`
+commits the version bump + `CHANGELOG.md` back to `main`
+(`chore(release): X.Y.Z [skip ci]`).
+
+### Staging (`pre-main`)
+Config: `.releaserc.staging.json` (copied over `.releaserc.json` at CI
+runtime — never the committed file). Same `prepareCmd` pipeline, but the tray
+builds with the `tray/src-tauri/tauri.staging.conf.json` overlay (different
+updater endpoint) and cuts a prerelease version `X.Y.Z-staging.N`. No
+version-bump commit back to `pre-main`. `publishCmd` runs
+`scripts/mirror-staging-release.sh <ver>`, which mirrors `latest.json` (and
+the DMG) onto a fixed, rolling `updater-staging` GitHub prerelease tag so it
+never leaks into production's "latest" pointer.
+
 ### 1. Check Current Versions
 ```bash
-echo "=== Daemon ===" && grep '^version' Cargo.toml | head -1
-echo "=== MCP ===" && grep '"version"' packages/meridian-mcp/package.json | head -1
+grep '^version' Cargo.toml | head -1
+grep '"version"' packages/meridian-mcp/package.json | head -1
+grep '"version"' tray/src-tauri/tauri.conf.json | head -1
 ```
 
-### 2. Verify Build & Tests Pass
+### 2. Verify Build & Tests Pass Locally First
 ```bash
 cargo build --release
 cargo test
@@ -32,22 +74,40 @@ cargo clippy -- -D warnings
 cd packages/meridian-mcp && npm run build && cd ../..
 ```
 
-### 3. How release-please Works
-- Merge PRs with conventional commits (`feat:`, `fix:`, `chore:`) into `main`
-- release-please bot opens a "Release PR" automatically
-- Merging the Release PR bumps versions, tags the release, and triggers the release workflow
+### 3. Trigger a Release
+Production: merge conventional-commit PRs into `main` — `release.yml` runs
+semantic-release automatically on push. Staging: push to `pre-main` with
+`[staging-release]` in the commit message, or `gh workflow run
+release-staging.yml`.
 
-### 4. Trigger Build
+### 4. Monitor Build Status
 ```bash
-# After merging the release-please PR, monitor the CI run
-gh run list --workflow=release-please.yml --limit=5
+gh run list --workflow=release.yml --limit=5
 gh run view <RUN_ID> --json status,conclusion,jobs
-```
-
-### 5. Monitor Build Status
-```bash
 gh run view <RUN_ID> --log-failed 2>&1 | tail -100
 ```
+
+## Auto-Update
+
+Client-side update-check/apply logic lives in `tray/src-tauri/src/update.rs`
+(`tauri-plugin-updater`). Production is consent-based (in-app banner / tray
+menu "Check for Updates…"). A force-update floor exists
+(`enforce_minimum_version`, checked 30s after launch then every 6h) sourced
+from `tray/minimum-version` (plain `X.Y.Z`) — if that file is absent or
+empty, no release carries a `Minimum-Version:` marker and every update stays
+consent-based. Only touch `tray/minimum-version` to force-migrate users off a
+broken old version; empty/remove it afterward to go back to consent-based.
+
+## Required GitHub Secrets
+
+Signing/notarization needs: `APPLE_SIGNING_IDENTITY`, `APPLE_API_KEY`,
+`APPLE_API_ISSUER`, `APPLE_API_KEY_CONTENT`, `APPLE_CERTIFICATE`,
+`APPLE_CERTIFICATE_PASSWORD`. Update-manifest signing needs
+`TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Missing
+Apple secrets degrade gracefully to ad-hoc signing (which
+`verify-release-bundle.sh` then hard-fails on); missing Tauri signing keys
+make `package-updater.sh` skip `latest.json` generation (also caught by
+`verify-release-bundle.sh`).
 
 ## Quick Reference
 
@@ -63,6 +123,9 @@ gh run rerun <RUN_ID> --failed
 
 # Cancel running build
 gh run cancel <RUN_ID>
+
+# Check configured release secrets
+gh secret list
 ```
 
 ## Troubleshooting
@@ -84,9 +147,7 @@ SQLX_OFFLINE=true cargo build --release
 cd packages/meridian-mcp && npm install && npm run build
 ```
 
-## Commit Conventions
-release-please uses conventional commits to determine version bumps:
-- `feat:` → minor bump
-- `fix:` → patch bump
-- `feat!:` or `BREAKING CHANGE:` → major bump
-- `chore:`, `docs:`, `refactor:` → no bump (but included in changelog)
+### Updater artifacts missing (`verify-release-bundle.sh` fails)
+Usually means `TAURI_SIGNING_PRIVATE_KEY`/`_PASSWORD` is wrong or unset —
+`tauri build` silently skips generating `.sig`/`latest.json` in that case
+instead of failing. Confirm the secrets with `gh secret list`.

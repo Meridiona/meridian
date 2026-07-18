@@ -17,7 +17,9 @@ import ConnectTrackers from '@/components/IntegrationConnect'
 import LlmProviderPicker, { type ProviderStatus } from '@/components/LlmProviderPicker'
 import { SignInWidget } from './signin'
 
-const SERIF: CSSProperties = { fontFamily: 'var(--font-serif)' }
+// One voice with the timeline UI: SF Pro (var(--font-sans)), not the old
+// Instrument Serif. Display headings just go heavier + tighter, same family.
+const DISPLAY: CSSProperties = { fontFamily: 'var(--font-sans)', fontWeight: 700, letterSpacing: '-.02em' }
 
 /** The live wizard handle page.tsx builds and threads to every step body. */
 export interface Wiz {
@@ -72,9 +74,9 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="flex items-center" style={{ gap: 8 }}>
                 <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>{p.name}</span>
-                {!notif && <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', color: 'var(--t-faint)', border: '0.5px solid var(--t-card-border)', borderRadius: 4, padding: '1px 5px' }}>{p.required ? 'REQUIRED' : 'OPTIONAL'}</span>}
+                {!notif && <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', color: 'var(--t-muted)', border: '0.5px solid var(--t-card-border)', borderRadius: 4, padding: '1px 5px' }}>{p.required ? 'REQUIRED' : 'OPTIONAL'}</span>}
               </div>
-              <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-faint)', marginTop: 3 }}>{p.desc}</p>
+              <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-muted)', marginTop: 3 }}>{p.desc}</p>
             </div>
 
             <div className="shrink-0">
@@ -91,7 +93,7 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
           </Row>
         )
       })}
-      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-faint)', marginTop: 3 }}>
+      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-muted)', marginTop: 3 }}>
         <span style={{ width: 5, height: 5, borderRadius: 99, background: 'var(--color-state-approved)' }} />
         Your screen, tasks, and worklogs stay on this Mac and are never uploaded. We send usage stats - daily focus time, app version, and your email once you sign in - to improve Meridian, never your content.
       </p>
@@ -107,7 +109,7 @@ function IntegrationsBody({ wiz }: { wiz: Wiz }) {
   return (
     <div className="flex flex-col" style={{ gap: 9 }}>
       <ConnectTrackers integrations={wiz.integrations} onChanged={wiz.refetchIntegrations} compact />
-      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-faint)', marginTop: 3 }}>
+      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-muted)', marginTop: 3 }}>
         <span style={{ width: 5, height: 5, borderRadius: 99, background: connected ? 'var(--color-state-approved)' : 'var(--t-faint-2)' }} />
         {connected > 0
           ? `${connected} connected · Meridian will match sessions and draft worklogs.`
@@ -135,7 +137,7 @@ function SignInBody({ wiz }: { wiz: Wiz }) {
         }}><Check size={16} color="var(--color-state-proposal)" w={2.2} /></span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>Signed in</span>
-          <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-faint)', marginTop: 3 }}>{wiz.signedInEmail}</p>
+          <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-muted)', marginTop: 3 }}>{wiz.signedInEmail}</p>
         </div>
       </Row>
     )
@@ -167,7 +169,7 @@ function IntelligenceBody({ wiz }: { wiz: Wiz }) {
         testOne={wiz.testProvider}
         rescan={wiz.rescanProviders}
       />
-      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-faint)', marginTop: 3 }}>
+      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-muted)', marginTop: 3 }}>
         <span style={{
           width: 5, height: 5, borderRadius: 99,
           background: missing ? 'var(--color-state-pending)' : 'var(--color-state-approved)',
@@ -187,21 +189,21 @@ function IntelligenceBody({ wiz }: { wiz: Wiz }) {
 export function Welcome({ onBegin }: { onBegin: () => void }) {
   const points = [
     { t: 'On-device', d: 'Your screen is read and understood locally on your Mac, never uploaded.' },
-    { t: 'Automatic', d: 'Builds an accurate timeline of the tickets you worked on - then drafts the updates for you.' },
+    { t: 'Automatic', d: 'Builds an accurate timeline of the tickets you worked on, then drafts the updates for you.' },
     { t: 'Connected', d: 'Works with Jira, Linear, GitHub, Trello, and Azure DevOps.' },
   ]
   return (
     <div className="flex flex-col items-center justify-center" style={{ height: '100%', textAlign: 'center', padding: '36px 44px' }}>
-      <div className="flex items-center mer-pop" style={{ gap: 9, marginBottom: 24 }}>
+      <div className="flex items-center mer-pop" style={{ gap: 9, marginBottom: 22 }}>
         <span style={{ width: 9, height: 9, borderRadius: 99, background: 'var(--color-state-proposal)' }} />
-        <span style={{ ...SERIF, fontSize: 25, lineHeight: 1, letterSpacing: '.01em', color: 'var(--t-title)' }}>meridian</span>
+        <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 19, lineHeight: 1, letterSpacing: '-.01em', color: 'var(--t-title)' }}>meridian</span>
       </div>
       <Kicker style={{ marginBottom: 14 }}>First-run setup</Kicker>
-      <h1 style={{ ...SERIF, fontSize: 39, lineHeight: 1.02, letterSpacing: '-.015em', color: 'var(--t-title)', maxWidth: 440, textWrap: 'balance' }}>
-        Your work, <span style={{ fontStyle: 'italic', color: 'var(--color-state-proposal)' }}>remembered - accurately.</span>
+      <h1 style={{ ...DISPLAY, fontSize: 33, fontWeight: 750, lineHeight: 1.08, letterSpacing: '-.03em', color: 'var(--t-title)', maxWidth: 400, textWrap: 'balance' }}>
+        Your work, <span style={{ color: 'var(--color-state-proposal)' }}>remembered accurately.</span>
       </h1>
-      <p style={{ fontSize: 13.5, lineHeight: 1.55, color: 'var(--t-muted)', marginTop: 14, maxWidth: 380, textWrap: 'pretty' }}>
-        Meridian watches your work on-device and keeps an accurate record of what you actually did - then turns it into worklogs and ticket updates you just approve.
+      <p style={{ fontSize: 13.5, lineHeight: 1.55, color: 'var(--t-muted)', marginTop: 13, maxWidth: 384, textWrap: 'pretty' }}>
+        Meridian watches your work on-device and keeps an accurate record of what you actually did, then turns it into worklogs and ticket updates you just approve.
       </p>
       <div className="flex flex-col" style={{ gap: 11, margin: '26px 0 28px', textAlign: 'left', width: '100%', maxWidth: 360 }}>
         {points.map((p) => (
@@ -216,7 +218,7 @@ export function Welcome({ onBegin }: { onBegin: () => void }) {
         ))}
       </div>
       <Btn onClick={onBegin} style={{ padding: '11px 26px', fontSize: 13.5 }}>Get started</Btn>
-      <p className="font-mono" style={{ fontSize: 10.5, letterSpacing: '.04em', color: 'var(--t-faint-2)', marginTop: 14 }}>{STEPS.length} quick steps · about a minute</p>
+      <p className="font-mono" style={{ fontSize: 10.5, letterSpacing: '.04em', color: 'var(--t-faint)', marginTop: 14 }}>{STEPS.length} quick steps · about a minute</p>
     </div>
   )
 }
@@ -236,7 +238,7 @@ export function Completion({ wiz }: { wiz: Wiz }) {
         <Check size={28} color="var(--color-state-proposal)" w={2.2} />
       </span>
       <Kicker style={{ marginBottom: 10 }}>Setup complete</Kicker>
-      <h1 style={{ ...SERIF, fontSize: 38, lineHeight: 1, letterSpacing: '-.01em', color: 'var(--t-title)', marginBottom: 10 }}>You&apos;re all set.</h1>
+      <h1 style={{ ...DISPLAY, fontSize: 31, fontWeight: 750, lineHeight: 1.05, letterSpacing: '-.03em', color: 'var(--t-title)', marginBottom: 10 }}>You&apos;re all set.</h1>
       <p style={{ fontSize: 13.5, lineHeight: 1.5, color: 'var(--t-muted)', maxWidth: 340, textWrap: 'pretty', marginBottom: 22 }}>
         Meridian is now tracking quietly in your menu bar - on-device, private, and matched to your work.
       </p>
