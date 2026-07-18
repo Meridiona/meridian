@@ -8,9 +8,10 @@
 // (both Rust subprocesses on the user's subscription). Each engine is tried up to
 // `primary_attempts` times; a rate-limit short-circuits. There is no fallback
 // engine — the local MLX server used to catch every failure here, and with it
-// deprecated an unsummarisable row simply stays pending for a later tick.
-// Sequential (one transcript in flight) keeps memory flat and avoids bursting
-// rate limits.
+// deprecated a row its own agent cannot summarise stays pending and is retried
+// on later ticks, then dead-lettered to 'subprocess_error' after
+// MAX_ROW_ATTEMPTS so it cannot churn forever. Sequential (one transcript in
+// flight) keeps memory flat and avoids bursting rate limits.
 //
 // Cadence: woken in-process by the indexer's own seals (near-instant) plus a
 // short catch-up sweep for hook-sealed rows — no listener (local-only rule).
@@ -281,9 +282,10 @@ async fn summarise_one_inner(
 
     // The session's own agent summarises it, up to `primary_attempts` tries
     // (codex→codex, copilot→copilot, cursor→cursor-agent, claude/unknown→claude).
-    // There is no fallback engine: MLX used to catch every failure here, and its
-    // removal means a row the agent can't summarise stays `pending_summariser` and
-    // is retried on a later tick instead of being written with a weaker answer.
+    // There is no fallback engine: MLX used to catch every failure here. A row the
+    // agent can't summarise is left `pending_summariser` for a later tick rather
+    // than written with a weaker answer, and `drain`'s attempt ledger dead-letters
+    // it after MAX_ROW_ATTEMPTS so a permanently-broken row cannot churn.
     let agent = row.agent.trim();
     let primary_source = if agent.eq_ignore_ascii_case("codex") {
         Source::Codex
@@ -521,10 +523,14 @@ pub async fn run_loop(
 /// Per-daemon-lifetime failure ledger: a row that fails this many drain
 /// passes is dead-lettered (skipped with a warn) instead of retried forever.
 /// The churn this prevents was observed live 2026-06-07: rows whose capped
-/// prompt exceeds claude's 200k context AND whose MLX answer is empty cycled
-/// every drain, each burning 2 claude calls + 1 MLX call, indefinitely. The
+/// prompt exceeds claude's 200k context cycled every drain, each burning two
+/// claude calls (plus, at the time, an MLX fallback call), indefinitely. The
 /// ledger is in-memory by design: a daemon restart (or `--day` backfill after
 /// fixing the engine) retries cleanly.
+///
+/// This is what makes removing the MLX fallback safe rather than a hot loop:
+/// MLX used to terminate a row the primary engine could never summarise, and
+/// this ledger is now the only thing that does.
 const MAX_ROW_ATTEMPTS: u32 = 3;
 
 /// One drain pass: summarise pending rows from a bounded recent window
