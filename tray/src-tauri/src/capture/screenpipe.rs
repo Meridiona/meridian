@@ -33,7 +33,9 @@ use chrono::Utc;
 use screenpipe_a11y::tree::{
     create_tree_walker, TreeSnapshot, TreeWalkResult, TreeWalkerConfig, TreeWalkerPlatform,
 };
-use screenpipe_screen::capture_screenshot_by_window::{capture_all_visible_windows, WindowFilters};
+use screenpipe_screen::capture_screenshot_by_window::{
+    capture_all_visible_windows, CapturedWindow, WindowFilters,
+};
 use tracing::{debug, info, warn};
 
 use super::drm_detector::{self, StreamingGate};
@@ -357,14 +359,9 @@ async fn capture_once_ocr(
         if is_self_app(&win.app_name.to_lowercase()) {
             continue;
         }
-        // Pooled: Apple Vision autoreleases its request/observation objects and
-        // intermediate CGImages into the current thread's pool on every call.
-        // This is the hottest allocation site in the engine (a full retina
-        // window bitmap per tick for canvas apps like Figma that always take
-        // the OCR path), so without a per-call drain the process grows without
-        // bound — see `with_autorelease_pool`.
-        let (text, _json, _confidence) =
-            with_autorelease_pool(|| screenpipe_screen::perform_ocr_apple(&win.image, &[]));
+        let Some(text) = perform_ocr(&win).await else {
+            continue;
+        };
         if text.trim().is_empty() {
             continue; // nothing legible in this window — skip it
         }
@@ -437,6 +434,48 @@ async fn send_frame(
     }
 }
 
+/// OCR one window image, returning its text.
+///
+/// The fork exposes a different function per platform rather than one
+/// dispatching entry point, and they do not share a signature: the Apple one
+/// is synchronous and returns a bare tuple, the Windows one is `async` and
+/// returns a `Result`. So this is the one place in the engine that has to know
+/// which OS it is on — everything else
+/// (`capture_all_visible_windows`, `list_monitors`, `create_tree_walker`)
+/// already dispatches internally inside the fork.
+///
+/// `None` means "nothing legible", which the caller skips.
+#[cfg(target_os = "macos")]
+async fn perform_ocr(win: &CapturedWindow) -> Option<String> {
+    // Pooled: Apple Vision autoreleases its request/observation objects and
+    // intermediate CGImages into the current thread's pool on every call. This
+    // is the hottest allocation site in the engine (a full retina window bitmap
+    // per tick for canvas apps like Figma, which always take the OCR path), so
+    // without a per-call drain the process grows without bound — see
+    // `with_autorelease_pool`.
+    let (text, _json, _confidence) =
+        with_autorelease_pool(|| screenpipe_screen::perform_ocr_apple(&win.image, &[]));
+    (!text.trim().is_empty()).then_some(text)
+}
+
+/// Windows counterpart of [`perform_ocr`] — Windows.Media.Ocr via the fork.
+///
+/// No autorelease pool: that is an Objective-C runtime concept with no
+/// counterpart here. Unlike the Apple call this one is fallible, and a failure
+/// is logged and treated as "nothing legible" rather than aborting the tick —
+/// OCR is already the fallback path, so losing one window's text costs a
+/// sample, not a session.
+#[cfg(target_os = "windows")]
+async fn perform_ocr(win: &CapturedWindow) -> Option<String> {
+    match screenpipe_screen::perform_ocr_windows(&win.image, &[]).await {
+        Ok((text, _json, _confidence)) => (!text.trim().is_empty()).then_some(text),
+        Err(e) => {
+            debug!(error = %e, "capture: windows OCR failed for this window");
+            None
+        }
+    }
+}
+
 /// Run `f` inside a fresh Objective-C autorelease pool, draining it on return.
 ///
 /// The capture loop runs on tokio worker threads. Unlike the main thread —
@@ -454,6 +493,7 @@ async fn send_frame(
 /// `f` must be synchronous — never hold a pool across an `.await` (the task
 /// can resume on a different worker thread, unbalancing push/pop). Taking a
 /// non-async closure enforces that at the call site.
+#[cfg(target_os = "macos")]
 fn with_autorelease_pool<R>(f: impl FnOnce() -> R) -> R {
     #[link(name = "objc")]
     extern "C" {
@@ -480,6 +520,7 @@ fn with_autorelease_pool<R>(f: impl FnOnce() -> R) -> R {
 /// read) first and only calls the prompting `CGRequestScreenCaptureAccess` when
 /// needed, so a granted permission never re-triggers the system prompt on launch
 /// (Apple's preflight-then-request pattern). Returns `true` if already/now granted.
+#[cfg(target_os = "macos")]
 fn request_screen_capture_access() -> bool {
     #[link(name = "CoreGraphics", kind = "framework")]
     extern "C" {
@@ -506,6 +547,7 @@ fn request_screen_capture_access() -> bool {
 /// (`…with_prompt(true)`) when not already trusted, so a granted permission never
 /// re-prompts on launch. Not fatal when denied: OCR still works, only a11y-tree
 /// text is unavailable.
+#[cfg(target_os = "macos")]
 fn request_accessibility_access() -> bool {
     if cidre::ax::is_process_trusted_with_prompt(false) {
         debug!("capture: accessibility (AX) already trusted — not prompting");
@@ -518,4 +560,28 @@ fn request_accessibility_access() -> bool {
         warn!("capture: accessibility not granted yet — a11y-tree text unavailable until granted (OCR still works)");
     }
     trusted
+}
+
+/// Windows counterpart of [`request_screen_capture_access`] — nothing to do.
+///
+/// Windows has no TCC: Windows Graphics Capture needs no persistent
+/// per-app grant, so there is no permission to preflight and no prompt to
+/// raise. Returning `true` unconditionally is the accurate answer, not a
+/// placeholder — the fork's own `screenpipe_a11y::platform::windows`
+/// `check_permissions()` hardcodes the same, with the note that "Windows
+/// doesn't require explicit permissions for hooks".
+#[cfg(target_os = "windows")]
+fn request_screen_capture_access() -> bool {
+    debug!("capture: screen capture needs no explicit grant on Windows");
+    true
+}
+
+/// Windows counterpart of [`request_accessibility_access`] — nothing to do.
+///
+/// Same reasoning as [`request_screen_capture_access`]: UI Automation has no
+/// AX-trust equivalent, so there is no prompt and no state to query.
+#[cfg(target_os = "windows")]
+fn request_accessibility_access() -> bool {
+    debug!("capture: UI Automation needs no explicit grant on Windows");
+    true
 }

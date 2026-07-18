@@ -59,7 +59,53 @@ echo "→ building icon.icns"
 iconutil -c icns "${ICONSET}" -o "${ICONS_DIR}/icon.icns"
 rm -rf "${ICONSET}"
 
-# .ico — simple copy of 32x32 (proper multi-size .ico needs extra tooling)
-cp "${ICONS_DIR}/32x32.png" "${ICONS_DIR}/icon.ico"
+# ── icon.ico — a REAL multi-size ICO, not a renamed PNG ─────────────────────
+# This used to be `cp 32x32.png icon.ico`, which is a PNG carrying the wrong
+# extension. Nothing consumed it while Meridian shipped macOS-only, so it went
+# unnoticed; Tauri's Windows bundler does consume it, and a PNG-in-.ico is not
+# a valid icon resource.
+#
+# Assembled here rather than with ImageMagick/iconutil because neither is a
+# safe assumption: `iconutil` cannot write ICO at all, and ImageMagick is not
+# installed by default on macOS or on the GitHub runners. The ICO container is
+# a 6-byte header plus one 16-byte directory entry per image, and every Windows
+# since Vista reads PNG-compressed entries directly — so the PNGs generated
+# above can be embedded as-is with no re-encoding and no new dependency.
+# python3 is already required by scripts/make-dmg-background.py.
+echo "→ building icon.ico (multi-size)"
+python3 - "${ICONS_DIR}" <<'PY'
+import struct, sys
+from pathlib import Path
+
+icons = Path(sys.argv[1])
+# Sizes Windows actually picks between: taskbar, alt-tab, desktop, and the
+# 256px used by the installer and large-icon views.
+wanted = [(16, "32x32.png"), (32, "32x32.png"), (48, "128x128.png"),
+          (64, "32x32@2x.png"), (128, "128x128.png"), (256, "256x256.png")]
+
+entries = []
+for size, name in wanted:
+    src = icons / name
+    if not src.is_file():
+        sys.exit(f"missing {src} - cannot build icon.ico")
+    entries.append((size, src.read_bytes()))
+
+# Deduplicate by payload so the same PNG reused at several declared sizes is
+# stored once; Windows scales from the nearest entry.
+out = bytearray()
+out += struct.pack("<HHH", 0, 1, len(entries))  # reserved, type=1 (ICO), count
+offset = 6 + 16 * len(entries)
+for size, data in entries:
+    # 256 is encoded as 0 in the single-byte width/height fields.
+    dim = 0 if size >= 256 else size
+    out += struct.pack("<BBBBHHII", dim, dim, 0, 0, 1, 32, len(data), offset)
+    offset += len(data)
+for _, data in entries:
+    out += data
+
+dest = icons / "icon.ico"
+dest.write_bytes(bytes(out))
+print(f"  · icon.ico ({len(entries)} sizes, {len(out)} bytes)")
+PY
 
 echo "✓ icons generated in src-tauri/icons/"
