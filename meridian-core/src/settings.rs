@@ -512,6 +512,7 @@ mod tests {
             model: "gemini-flash-latest".to_string(),
             api_key: "secret".to_string(),
             rpm: 0,
+            rpd: 0,
             rungs: rungs.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
         }
     }
