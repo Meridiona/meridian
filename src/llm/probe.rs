@@ -190,7 +190,7 @@ async fn probe_one_schema(
         match attempt(row, schema, rung).await {
             Ok(()) => return Ok((rung, spent)),
             // "Ask me later" — never a statement about the schema. Stop, keep what we have.
-            Err(e @ LlmError::RateLimited(_)) => {
+            Err(e @ LlmError::RateLimited { .. }) => {
                 return Err((
                     format!("rate-limited while probing {name} ({e}) - retry to resume"),
                     spent,
@@ -240,6 +240,14 @@ async fn attempt(
     schema: &Value,
     rung: SchemaRung,
 ) -> Result<(), LlmError> {
+    // The reason this module drove the pacing work. Unbounded (`None`) on purpose: unlike a
+    // production call there is no one waiting on a specific answer, and a probe that takes a
+    // minute and COMPLETES beats one that returns in two seconds having 429'd partway and
+    // left the endpoint unmeasured — which the production gate then refuses to pass.
+    // `probe_endpoint` goes through this for every attempt, so the whole 16-request worst
+    // case is spread, not just the gaps between schemas.
+    super::rate_limit::acquire(&super::rate_limit::custom_key(&row.id), row.rpm, None).await;
+
     let cfg = LlmConfig {
         model: String::new(),
         meridian_home: std::env::temp_dir(),
@@ -252,6 +260,7 @@ async fn attempt(
             base_url: row.base_url.clone(),
             model: row.model.clone(),
             api_key: row.api_key.clone(),
+            rpm: row.rpm,
             rung,
         }),
     };
@@ -356,6 +365,10 @@ mod tests {
             base_url,
             model,
             api_key,
+            // The live probe deliberately runs UNPACED (`0`): this test exists to prove the
+            // resume path still works when a real free tier cuts us off partway. Pacing it
+            // would make the very case it covers unreachable.
+            rpm: 0,
             rungs: BTreeMap::new(),
         };
 

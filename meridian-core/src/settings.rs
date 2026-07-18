@@ -113,6 +113,20 @@ pub struct CustomLlmProvider {
     pub model: String,
     /// Sent as `Authorization: Bearer`. See the type docs: storage only.
     pub api_key: String,
+    /// Requests-per-minute ceiling this endpoint's plan allows. `0` (the default) means
+    /// "unmetered as far as we know" and disables pacing entirely.
+    ///
+    /// Free tiers are the reason this exists: a 15-RPM key cannot survive [`crate`]'s probe
+    /// burst, which fires one metered request per schema × rung back-to-back. Pacing to this
+    /// number turns "429s partway through, endpoint never becomes gate-eligible" into "takes
+    /// a minute longer, completes".
+    ///
+    /// Deliberately requests-only for now. A token-per-minute ceiling is the other half of
+    /// most free tiers and frequently binds first on long worklog prompts, but pacing it
+    /// needs a token estimate before the call; until then TPM is handled REACTIVELY, from the
+    /// `x-ratelimit-reset-tokens` header on a 429. See `src/llm/rate_limit.rs`.
+    #[serde(default)]
+    pub rpm: u32,
     /// The rung measured for EACH pipeline schema, keyed by schema name — not one scalar.
     /// The schemas differ in what they demand (`worklog_generate` carries a union type and
     /// deeper nesting than `workstream`), and a vendor's support is not guaranteed uniform
@@ -482,6 +496,7 @@ mod tests {
             base_url: "https://example.test/v1beta/openai".to_string(),
             model: "gemini-flash-latest".to_string(),
             api_key: "secret".to_string(),
+            rpm: 0,
             rungs: rungs.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
         }
     }

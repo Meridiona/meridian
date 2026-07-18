@@ -32,11 +32,26 @@
 //!
 //! # How long the backoff actually lasts
 //!
-//! [`start_backoff`] tries [`super::reset_time::parse_backoff`] against the provider's own
-//! error message first — Claude Code and Codex both print their real reset hint ("resets
-//! 3pm", "try again in 5 hours"), so a call resumes the moment the provider says it will,
-//! not after an arbitrary wait. [`RATE_LIMIT_BACKOFF`] is only the fallback for a message
-//! shape we don't recognise (e.g. Codex's weekly-limit date format).
+//! Three sources, most authoritative first:
+//!
+//! 1. **A `Retry-After` / `x-ratelimit-reset-*` header**, parsed by
+//!    [`super::openai_compat`] and carried on `LlmError::RateLimited::retry_after`. Custom
+//!    endpoints only — a CLI subprocess has no headers.
+//! 2. **The provider's own message**, via [`super::reset_time::parse_backoff`] — Claude Code
+//!    and Codex both print their real reset hint ("resets 3pm", "try again in 5 hours"), so
+//!    a call resumes the moment the provider says it will.
+//! 3. **A flat default**, per transport ([`default_backoff`]). [`RATE_LIMIT_BACKOFF`] (30
+//!    min) for a subscription; [`CUSTOM_RATE_LIMIT_BACKOFF`] (60 s) for a metered endpoint,
+//!    whose binding limit is normally per-MINUTE and would recover long before the
+//!    subscription figure expired.
+//!
+//! # Reactive here, proactive next door
+//!
+//! Everything above is after-the-fact: a 429 must land before anything slows down. The
+//! complement is [`super::rate_limit`], which paces a custom endpoint's requests so the 429
+//! does not happen in the first place. [`complete_inner`] calls it before each attempt, and
+//! the two share a key derivation ([`backoff_key`] / [`super::rate_limit::custom_key`]) so
+//! an endpoint cannot be paced under one identity and parked under another.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -59,6 +74,39 @@ use super::{
 /// hour later, and this is a safe default while we wait to actually hear otherwise.
 pub const RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(30 * 60);
 
+/// Same idea as [`RATE_LIMIT_BACKOFF`] but for a metered endpoint, where the assumption
+/// behind the 30-minute figure does not hold.
+///
+/// That constant is justified by SUBSCRIPTION semantics: a Claude/Codex plan that just
+/// refused us is out for a 5-hour window, so half an hour is a cheap, safe guess. A custom
+/// endpoint's binding limit is usually requests-per-MINUTE, which refills in under 60
+/// seconds — parking it for 30 minutes on one blip would dump ~30 hours of pipeline work
+/// onto the local 2B model for a quota that came back before the next poll tick.
+///
+/// Only reached when the endpoint sent no usable header AND its message was unparseable;
+/// a well-behaved provider never gets here.
+pub const CUSTOM_RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(60);
+
+/// How long a production call will wait for a paced slot before giving up on pacing and
+/// sending anyway.
+///
+/// Some of these callers are user-driven (drafting a task, synthesising a worklog, with
+/// someone watching a spinner), so an unbounded wait is not acceptable here the way it is
+/// for the probe. Proceeding unpaced is safe: the reactive backoff still catches the 429 if
+/// one lands. Sized to cover a full window at the free tiers this targets — 30s is ~7 slots
+/// at 15 rpm — so it only trips when genuinely many calls are queued at once.
+const PACING_MAX_WAIT: Duration = Duration::from_secs(30);
+
+/// The flat backoff to use when a provider gave us nothing to go on — keyed by transport,
+/// because a flat-rate subscription and a per-minute metered quota recover on completely
+/// different timescales.
+fn default_backoff(provider: LlmProvider) -> Duration {
+    match provider {
+        LlmProvider::Custom => CUSTOM_RATE_LIMIT_BACKOFF,
+        _ => RATE_LIMIT_BACKOFF,
+    }
+}
+
 /// When each rate-limited backend may be used again, keyed by backend IDENTITY (see
 /// [`backoff_key`]) — NOT the bare [`LlmProvider`], because two custom endpoints share the
 /// `Custom` variant but must back off independently.
@@ -76,7 +124,7 @@ static RATE_LIMITED_UNTIL: Mutex<BTreeMap<String, Instant>> = Mutex::new(BTreeMa
 /// Bridge the summariser's error type (raised by the shared `run_capture`) into ours.
 pub(super) fn from_summariser_error(e: SummariserError) -> LlmError {
     match e {
-        SummariserError::RateLimited(m) => LlmError::RateLimited(m),
+        SummariserError::RateLimited(m) => LlmError::rate_limited(m),
         SummariserError::Failed(m) => LlmError::Failed(m),
     }
 }
@@ -86,10 +134,9 @@ pub(super) fn from_summariser_error(e: SummariserError) -> LlmError {
 /// is never rate-limited, so it never reaches here.
 fn backoff_key(provider: LlmProvider, cfg: &LlmConfig) -> String {
     match provider {
-        LlmProvider::Custom => format!(
-            "custom:{}",
-            cfg.custom.as_ref().map(|c| c.id.as_str()).unwrap_or("")
-        ),
+        LlmProvider::Custom => {
+            super::rate_limit::custom_key(cfg.custom.as_ref().map(|c| c.id.as_str()).unwrap_or(""))
+        }
         _ => provider.as_str().to_string(),
     }
 }
@@ -295,20 +342,43 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
     // A `Failed` may be a blip, so it earns one retry. A `RateLimited` never does —
     // the quota will not refill in the next two seconds.
     for attempt in 1..=2u32 {
+        // Pace BEFORE the request, not after a failure — the whole point is that the 429
+        // never happens. No-op unless this is a custom endpoint with an `rpm` configured.
+        if effective == LlmProvider::Custom {
+            if let Some(ep) = cfg.custom.as_ref() {
+                super::rate_limit::acquire(
+                    &backoff_key(effective, &cfg),
+                    ep.rpm,
+                    Some(PACING_MAX_WAIT),
+                )
+                .await;
+            }
+        }
         match backend.complete(req).await {
             Ok(out) => return Ok((out, effective)),
-            Err(LlmError::RateLimited(msg)) => {
-                let backoff = reset_time::parse_backoff(&msg, chrono::Local::now())
-                    .unwrap_or(RATE_LIMIT_BACKOFF);
+            Err(LlmError::RateLimited {
+                message,
+                retry_after,
+            }) => {
+                // Most authoritative first: a header the endpoint actually sent, then the
+                // provider's own prose, then a flat per-transport default. The header wins
+                // because it is the only one of the three that is machine-generated.
+                let backoff = retry_after
+                    .or_else(|| reset_time::parse_backoff(&message, chrono::Local::now()))
+                    .unwrap_or_else(|| default_backoff(effective));
                 tracing::warn!(
                     provider = effective.as_str(),
                     label = %req.label,
-                    error = %msg,
+                    error = %message,
                     backoff_s = backoff.as_secs(),
+                    backoff_source = if retry_after.is_some() { "header" } else { "message-or-default" },
                     "llm: provider rate-limited — falling back to on-device"
                 );
                 start_backoff(&backoff_key(effective, &cfg), backoff);
-                last = LlmError::RateLimited(msg);
+                last = LlmError::RateLimited {
+                    message,
+                    retry_after,
+                };
                 break;
             }
             Err(e) => {

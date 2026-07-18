@@ -55,7 +55,7 @@ export function useCustomProviders() {
 
   /** Add + measure one endpoint. Throws the tray's message for the form to show verbatim. */
   const add = useCallback(async (fields: {
-    vendor: string; name: string; base_url: string; model: string; api_key: string
+    vendor: string; name: string; base_url: string; model: string; api_key: string; rpm: number
   }): Promise<ProbeOutcome> => {
     // Tauri maps the Rust command's snake_case params to camelCase JS keys, so the invoke
     // args must be camelCase - `base_url`/`api_key` would be rejected as missing `baseUrl`.
@@ -65,6 +65,7 @@ export function useCustomProviders() {
       baseUrl: fields.base_url,
       model: fields.model,
       apiKey: fields.api_key,
+      rpm: fields.rpm,
     })
     await refresh()
     return outcome
@@ -131,7 +132,7 @@ function Field({ label, value, onChange, placeholder, type = 'text', mono }: {
  * actually made, not buried in docs read after a billing-enabled key is already pasted.
  */
 function AddForm({ onAdd, onCancel }: {
-  onAdd: (fields: { vendor: string; name: string; base_url: string; model: string; api_key: string }) => Promise<ProbeOutcome>
+  onAdd: (fields: { vendor: string; name: string; base_url: string; model: string; api_key: string; rpm: number }) => Promise<ProbeOutcome>
   onCancel: () => void
 }) {
   const [vendor, setVendor] = useState(CUSTOM_VENDOR_PRESETS[0].id)
@@ -139,6 +140,9 @@ function AddForm({ onAdd, onCancel }: {
   const [baseUrl, setBaseUrl] = useState(CUSTOM_VENDOR_PRESETS[0].baseUrl)
   const [model, setModel] = useState('')
   const [apiKey, setApiKey] = useState('')
+  // Held as a string because the number input reports one; coerced at submit. Empty or
+  // unparseable means 0, i.e. unpaced - the same as the field never being touched.
+  const [rpm, setRpm] = useState('0')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   /** A probe that stopped early - the endpoint IS saved, so this is a "resume it" notice,
@@ -163,7 +167,7 @@ function AddForm({ onAdd, onCancel }: {
     setError(null)
     setIncomplete(null)
     try {
-      const outcome = await onAdd({ vendor, name, base_url: baseUrl, model, api_key: apiKey })
+      const outcome = await onAdd({ vendor, name, base_url: baseUrl, model, api_key: apiKey, rpm: Number(rpm) || 0 })
       setApiKey('')  // the key is stored daemon-side now and never comes back - don't keep it here
       // The endpoint is saved either way; only a COMPLETE measurement closes the form, since
       // an incomplete one has something the user needs to act on.
@@ -224,6 +228,14 @@ function AddForm({ onAdd, onCancel }: {
           Get a {preset.name} key ↗
         </button>
       )}
+
+      <Field label="Requests per minute" value={rpm} onChange={setRpm} type="number" mono
+        placeholder="0 - no limit" />
+      <p style={{ fontSize: 10.5, lineHeight: 1.45, color: 'var(--t-muted)' }}>
+        Free plans usually cap this - Gemini and Groq publish it on their pricing page. Set it
+        and Meridian spaces its requests to stay under the cap, including the burst it sends
+        when measuring this endpoint. Leave 0 if your plan has no limit.
+      </p>
 
       {error && <p style={{ fontSize: 10.5, lineHeight: 1.4, color: 'var(--status-error-dot)' }}>{error}</p>}
 
@@ -381,7 +393,7 @@ export function CustomProviderCard({ p, picked, probing, onPick, onProbe, onRemo
 
 /** The "+ Add custom endpoint" tile, and the form it opens in place. */
 export function AddCustomProvider({ onAdd }: {
-  onAdd: (fields: { vendor: string; name: string; base_url: string; model: string; api_key: string }) => Promise<ProbeOutcome>
+  onAdd: (fields: { vendor: string; name: string; base_url: string; model: string; api_key: string; rpm: number }) => Promise<ProbeOutcome>
 }) {
   const [open, setOpen] = useState(false)
   if (open) return <AddForm onAdd={onAdd} onCancel={() => setOpen(false)} />

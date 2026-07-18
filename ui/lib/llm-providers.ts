@@ -40,6 +40,8 @@ export interface CustomProviderView {
   name: string
   base_url: string
   model: string
+  /** Requests-per-minute ceiling; 0 = unpaced. See `CustomLlmProvider::rpm` in Rust. */
+  rpm: number
   rungs: Record<string, SchemaRung>
   effective_rung: SchemaRung
   fully_probed: boolean
