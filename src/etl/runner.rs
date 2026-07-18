@@ -1,6 +1,6 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use sqlx::SqlitePool;
 use tracing::{debug, info, warn};
 
@@ -34,14 +34,18 @@ const GAP_THRESHOLD_SECS: i64 = 300;
     )
 )]
 pub async fn run_etl(meridian: &SqlitePool) -> Result<Vec<i64>> {
-    let cursor = get_cursor(meridian).await?;
+    let cursor = get_cursor(meridian)
+        .await
+        .context("failed to read etl_cursor")?;
     let mut last_processed_id = cursor.last_frame_id;
     let run_start_cursor = last_processed_id;
 
     tracing::Span::current().record("from_frame_id", run_start_cursor);
     info!(from_frame_id = last_processed_id, "ETL run starting");
 
-    let first_batch = get_frames_since(meridian, last_processed_id, BATCH_SIZE).await?;
+    let first_batch = get_frames_since(meridian, last_processed_id, BATCH_SIZE)
+        .await
+        .context("failed to read first frame batch")?;
     if first_batch.is_empty() {
         info!("no new frames — nothing to do");
         return Ok(vec![]);
@@ -52,7 +56,9 @@ pub async fn run_etl(meridian: &SqlitePool) -> Result<Vec<i64>> {
         .map(|f| f.id)
         .unwrap_or(last_processed_id);
 
-    let run_id = insert_etl_run(meridian, run_start_cursor, approx_to_frame_id).await?;
+    let run_id = insert_etl_run(meridian, run_start_cursor, approx_to_frame_id)
+        .await
+        .context("failed to insert etl_runs row")?;
     tracing::Span::current().record("run_id", run_id);
     tracing::Span::current().record("to_frame_id", approx_to_frame_id);
     info!(run_id, "ETL run row inserted");
@@ -128,9 +134,12 @@ pub async fn run_etl(meridian: &SqlitePool) -> Result<Vec<i64>> {
                             kind,
                             run_id,
                         )
-                        .await?;
+                        .await
+                        .context("failed to insert cross-run gap row")?;
                     }
-                    close_active_session(meridian, run_id).await?;
+                    close_active_session(meridian, run_id)
+                        .await
+                        .context("failed to close stale active_session")?;
                     info!(
                         gap_secs,
                         gap_kind = kind,
@@ -274,7 +283,8 @@ pub async fn run_etl(meridian: &SqlitePool) -> Result<Vec<i64>> {
                                     kind,
                                     run_id,
                                 )
-                                .await?;
+                                .await
+                                .context("failed to insert intra-batch gap row")?;
                                 debug!(gap_secs = gap, gap_kind = kind, from = block_last_ts, to = frame.timestamp, "gap recorded");
                             }
 
@@ -296,7 +306,8 @@ pub async fn run_etl(meridian: &SqlitePool) -> Result<Vec<i64>> {
                                     idle_frame_count: block_idle_frame_count,
                                 },
                             )
-                            .await?;
+                            .await
+                            .context("failed to close pre-gap block")?;
                             info!(
                                 session_id = sid,
                                 app_name = closing_app,
@@ -378,7 +389,8 @@ pub async fn run_etl(meridian: &SqlitePool) -> Result<Vec<i64>> {
                                 idle_frame_count: block_idle_frame_count,
                             },
                         )
-                        .await?;
+                        .await
+                        .context("failed to close block on app switch")?;
                         info!(
                             session_id = sid,
                             app_name = old_app,
@@ -404,7 +416,9 @@ pub async fn run_etl(meridian: &SqlitePool) -> Result<Vec<i64>> {
 
             last_processed_id = batch.last().map(|f| f.id).unwrap_or(last_processed_id);
 
-            let next = get_frames_since(meridian, last_processed_id, BATCH_SIZE).await?;
+            let next = get_frames_since(meridian, last_processed_id, BATCH_SIZE)
+                .await
+                .context("failed to read next frame batch")?;
             if next.is_empty() {
                 break;
             }
@@ -429,7 +443,8 @@ pub async fn run_etl(meridian: &SqlitePool) -> Result<Vec<i64>> {
                         idle_frame_count: block_idle_frame_count,
                     },
                 )
-                .await?;
+                .await
+                .context("failed to upsert open block into active_session")?;
             }
         }
 
@@ -439,14 +454,22 @@ pub async fn run_etl(meridian: &SqlitePool) -> Result<Vec<i64>> {
 
     if let Err(e) = result {
         warn!(error = %e, "ETL run failed — updating cursor to last successful frame");
-        complete_etl_run(meridian, run_id, sessions_closed, Some(&e.to_string())).await?;
-        update_cursor(meridian, last_processed_id, run_id).await?;
+        complete_etl_run(meridian, run_id, sessions_closed, Some(&e.to_string()))
+            .await
+            .context("failed to mark etl_runs row failed")?;
+        update_cursor(meridian, last_processed_id, run_id)
+            .await
+            .context("failed to advance etl_cursor after failed run")?;
         return Err(e);
     }
 
-    update_cursor(meridian, last_processed_id, run_id).await?;
+    update_cursor(meridian, last_processed_id, run_id)
+        .await
+        .context("failed to advance etl_cursor")?;
     debug!(cursor = last_processed_id, run_id, "ETL cursor advanced");
-    complete_etl_run(meridian, run_id, sessions_closed, None).await?;
+    complete_etl_run(meridian, run_id, sessions_closed, None)
+        .await
+        .context("failed to mark etl_runs row successful")?;
 
     tracing::Span::current().record("sessions_closed", sessions_closed);
     info!(
