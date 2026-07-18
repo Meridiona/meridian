@@ -1,6 +1,6 @@
 # Meridian Setup
 
-**Platform:** macOS (Apple Silicon or Intel). Ships as a universal binary.
+**Platform:** macOS (Apple Silicon or Intel), or Windows 10/11 (x64). The macOS build ships as a universal binary.
 
 ---
 
