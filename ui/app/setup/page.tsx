@@ -5,15 +5,15 @@
 // design, wired to the real backend. Renders inside the Tauri "setup" window
 // (tray.rs::open_wizard_window) and talks to Rust exclusively over the `invoke`
 // bridge. Presentation comes from the design (atoms/steps/data); behaviour —
-// permission polling, MLX status + download, hardware specs, model selection,
-// OAuth — is all live. No fabricated state.
+// permission polling, integrations, sign-in, and the AI-provider choice — is all
+// live. No fabricated state.
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { invoke, load, mutate, tauri } from '@/lib/bridge'
 import { STEPS, Welcome, Completion } from './steps'
 import type { Wiz } from './steps'
-import type { DownloadProgress, MlxStatusResponse, NotifState, SystemSpecs } from './data'
+import type { NotifState } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import type { RuntimeSettings } from '@/lib/settings'
 import { DEFAULT_LLM_PROVIDER, type LlmProviderId } from '@/lib/llm-providers'
@@ -27,26 +27,9 @@ export default function SetupWizard() {
   const [step, setStep] = useState(0)
   const [done, setDone] = useState(false)
   const [err, setErr] = useState('')
-  // Provisioning errors (runtime download, server start, model prefetch) are kept
-  // separate from step errors so they only surface on the MLX body, not on the
-  // footer of every other step the user navigates back to.
-  const [mlxErr, setMlxErr] = useState('')
 
   // Step 1 — permissions (live)
   const [perms, setPerms] = useState<Wiz['perms']>({ accessibility: null, screen: null, notifications: null })
-
-  // Step 3 — local intelligence (MLX runtime + model)
-  const [specs, setSpecs] = useState<SystemSpecs | null>(null)
-  const [mlx, setMlx] = useState<MlxStatusResponse | null>(null)
-  const [downloading, setDownloading] = useState(false)
-  const [prefetching, setPrefetching] = useState(false)
-  const [modelReady, setModelReady] = useState(false)
-  const [progress, setProgress] = useState<DownloadProgress | null>(null)
-  // Onboarding auto-provisions the runtime + every model with no clicks; these
-  // one-shot guards stop each phase re-firing across poll ticks. `retryModel`
-  // re-arms them after an error.
-  const runtimeStarted = useRef(false)
-  const prefetchStarted = useRef(false)
 
   // Step 2 — integrations. The shared <ConnectTrackers> drives the actual
   // connect flows (OAuth + token save); this just holds the live connected-state
@@ -69,7 +52,7 @@ export default function SetupWizard() {
   } = useLlmProviderDetection()
 
   // Seed from settings.json rather than assuming the default — a re-run of the wizard
-  // must show what the user actually has, not reset them to on-device.
+  // must show what the user actually has, not reset them to the default.
   useEffect(() => {
     load<RuntimeSettings>('/api/settings', 'get_settings')
       .then((s) => {
@@ -95,11 +78,6 @@ export default function SetupWizard() {
   }, [provider, providerCustomId])
 
   const active = !welcome && !done
-
-  // Detect hardware once on mount.
-  useEffect(() => {
-    invoke<SystemSpecs>('detect_system_specs').then(setSpecs).catch(() => {})
-  }, [])
 
   // Poll the two required permissions + optional notifications on the
   // Permissions step. Input Monitoring is intentionally not polled — it's
@@ -131,66 +109,6 @@ export default function SetupWizard() {
     const id = setInterval(poll, 2000)
     return () => clearInterval(id)
   }, [active, step])
-
-  // Drive the Model step end-to-end with no clicks: provision the runtime tarball
-  // if missing, bring the server up, then prefetch every pipeline model — all
-  // automatically. Runs the WHOLE time the wizard is open (not just on the model
-  // step) so the ~2.4 GB downloads in the background while the user does
-  // Permissions + Integrations and is usually done by the time they reach the
-  // (last) Local-intelligence step, which gates Finish on `modelReady`.
-  // One-shot refs guard each phase; `retryModel` re-arms them after an error.
-  useEffect(() => {
-    const polling = active && !modelReady
-    if (!polling) return
-    const poll = async () => {
-      try {
-        const s = await invoke<MlxStatusResponse>('get_mlx_status')
-        setMlx(s)
-        const runtimeInstalled = s.runtime_found || s.runtime_installed
-        // Auto-install the runtime the moment we know it's missing (no click).
-        if (!runtimeInstalled && s.download_available && !downloading && !runtimeStarted.current) {
-          runtimeStarted.current = true
-          setDownloading(true)
-          setProgress({ received: 0, total: 0, speed: 0, message: 'Installing the on-device engine…' })
-          invoke('download_runtime_cmd')
-            .then(() => invoke('start_mlx_server_cmd').catch((e) => setMlxErr(String(e))))
-            .catch((e) => setMlxErr(String(e)))
-            .finally(() => setDownloading(false))
-          return
-        }
-        // Bring the server up once the runtime is present.
-        if (runtimeInstalled && s.status === 'offline') invoke('start_mlx_server_cmd').catch(() => {})
-        // Auto-prefetch the full model set once the server is running (no click).
-        if (runtimeInstalled && s.status === 'running' && !prefetchStarted.current) {
-          prefetchStarted.current = true
-          setPrefetching(true)
-          setProgress({ received: 0, total: 0, speed: 0, message: 'Preparing models…' })
-          invoke('prefetch_model_cmd')
-            .then(() => setModelReady(true))
-            // Leave the guard set on error so we don't hammer a failing download
-            // every tick; the visible Retry (retryModel) re-arms it deliberately.
-            .catch((e) => setMlxErr(String(e)))
-            .finally(() => setPrefetching(false))
-        }
-      } catch { /* server not yet available */ }
-    }
-    poll()
-    const id = setInterval(poll, 3000)
-    return () => clearInterval(id)
-  }, [active, modelReady, downloading, prefetching])
-
-  // Stream download progress (shared by the runtime download + the model prefetch).
-  useEffect(() => {
-    if (!downloading && !prefetching) return
-    let unlisten: (() => void) | undefined
-    // Guard against the listener resolving AFTER this effect has been cleaned up
-    // (downloading/prefetching flipped false): without `cancelled`, the late
-    // `unlisten` would never run and a stale listener would double-fire progress.
-    let cancelled = false
-    tauri()?.event.listen<DownloadProgress>('mlx-download-progress', (e) => setProgress(e.payload))
-      .then((un) => { if (cancelled) un(); else unlisten = un }).catch(() => {})
-    return () => { cancelled = true; if (unlisten) unlisten() }
-  }, [downloading, prefetching])
 
   // Keep the live connected-state fresh while on the Integrations step, so the
   // rail status + completion summary reflect connects made via <ConnectTrackers>
@@ -244,15 +162,6 @@ export default function SetupWizard() {
     } catch (e) { setErr(String(e)) }
   }, [])
 
-  // Retry after a runtime/model provisioning error: clear the one-shot guards so
-  // the poll re-drives install → start → prefetch from wherever it stalled.
-  const retryModel = useCallback(() => {
-    setMlxErr('')
-    runtimeStarted.current = false
-    prefetchStarted.current = false
-    setProgress({ received: 0, total: 0, speed: 0, message: 'Retrying…' })
-  }, [])
-
   // Persists the Clerk-verified email so the Rust side knows who's signed in
   // even after this webview session ends (see commands::save_account_email).
   // Best-effort: a failed write here never blocks the wizard — the widget
@@ -264,9 +173,6 @@ export default function SetupWizard() {
 
   const wiz: Wiz = {
     perms, openPane, grantScreen, grantNotifications,
-    specs, mlx, downloading, prefetching, modelReady, progress,
-    speed: progress?.speed ?? null,
-    err: mlxErr, retryModel,
     integrations, refetchIntegrations,
     signedInEmail, onSignedIn,
     provider, providerCustomId, setProvider, providers, scanningProviders,

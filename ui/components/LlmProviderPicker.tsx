@@ -6,9 +6,9 @@
 // between the wizard and the dashboard. The provider list itself lives in
 // `@/lib/llm-providers`; this only renders it and reports the choice up.
 //
-// Layout is a 2-column card GRID (not a stacked list) so the five providers read as
+// Layout is a 2-column card GRID (not a stacked list) so the providers read as
 // comparable options at a glance. Order is the recommendation: coding agents first
-// (frontier accuracy), on-device last (private fallback).
+// (frontier accuracy), then a custom OpenAI-compatible endpoint.
 //
 // It deliberately does NOT save. The wizard and Settings persist differently (the wizard
 // writes once per pick; Settings the same through useRuntimeSettings), so the owner does
@@ -131,7 +131,7 @@ function timeAgo(iso: string): string {
   return `${Math.floor(hours / 24)}d ago`
 }
 
-function ProviderGlyph({ id, on }: { id: LlmProviderId; on: boolean }) {
+function ProviderGlyph({ on }: { on: boolean }) {
   const color = on ? 'var(--color-state-proposal)' : 'var(--t-faint)'
   return (
     <span className="flex items-center justify-center shrink-0" style={{
@@ -139,15 +139,9 @@ function ProviderGlyph({ id, on }: { id: LlmProviderId; on: boolean }) {
       background: on ? 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)' : 'var(--t-box)',
       border: '0.5px solid var(--t-card-border)', color,
     }}>
-      {id === 'local' ? (
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="7" y="7" width="10" height="10" rx="2" /><path d="M10 3v3M14 3v3M10 18v3M14 18v3M3 10h3M3 14h3M18 10h3M18 14h3" />
-        </svg>
-      ) : (
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 9l3 3-3 3M13 15h4" />
-        </svg>
-      )}
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 9l3 3-3 3M13 15h4" />
+      </svg>
     </span>
   )
 }
@@ -203,13 +197,12 @@ function ProviderCard({ p, picked, missing, testing, lastTest, onPick, onTest }:
         transition: 'background .14s, border-color .14s',
       }}>
       <div className="flex items-start" style={{ gap: 10 }}>
-        <ProviderGlyph id={p.id} on={picked} />
+        <ProviderGlyph on={picked} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="flex items-center" style={{ gap: 8 }}>
             <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>{p.name}</span>
           </div>
           <div className="flex items-center flex-wrap" style={{ gap: 5, marginTop: 4 }}>
-            {p.kind === 'local' && <Badge text="PRIVATE" tone="muted" />}
             {missing && <Badge text="NOT INSTALLED" tone="warn" />}
             <TestBadge testing={testing} lastTest={lastTest} />
           </div>
@@ -367,7 +360,7 @@ export default function LlmProviderPicker({ value, selectedCustomId, onChange, s
       <div className="flex items-center justify-between">
         <p style={{ fontSize: 11, color: 'var(--t-faint)', lineHeight: 1.45, flex: 1, paddingRight: 12 }}>
           The four coding agents use the login you already have in that CLI - Meridian never asks
-          them for an API key, and an hour they can’t serve quietly falls back to on-device. A custom
+          them for an API key, and an hour they can’t serve is left pending and retried. A custom
           endpoint is the exception: it runs on a key you paste here.
         </p>
         <button onClick={rescan} disabled={busy} className="font-mono shrink-0"

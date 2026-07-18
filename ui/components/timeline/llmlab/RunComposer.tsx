@@ -33,7 +33,7 @@ export function RunComposer({ starting, error, onRun }: {
   const [day, setDay] = useState<string>(dayString(0))
   const [hour, setHour] = useState<number>(new Date().getHours() > 0 ? new Date().getHours() - 1 : 0)
   const [taskId, setTaskId] = useState<string>('')
-  const [picked, setPicked] = useState<Set<LlmProviderId>>(new Set(['local']))
+  const [picked, setPicked] = useState<Set<LlmProviderId>>(new Set(['claude']))
   const [models, setModels] = useState<Partial<Record<LlmProviderId, string>>>({})
   // Custom endpoints are picked by id, separately from the built-in providers - they aren't
   // LlmProviderIds and the Lab runs ANY measured endpoint, so there's no install/eligibility
@@ -161,7 +161,7 @@ export function RunComposer({ starting, error, onRun }: {
       <div className="grid grid-cols-2 gap-2">
         {LLM_PROVIDERS.map(p => {
           const st = status[p.id]
-          const installable = p.kind === 'local' || (st?.installed ?? true)
+          const installable = st?.installed ?? true
           const on = picked.has(p.id)
           return (
             <div key={p.id} className="rounded-xl px-3 py-2.5"
@@ -173,8 +173,7 @@ export function RunComposer({ starting, error, onRun }: {
                 <input type="checkbox" checked={on} disabled={!installable} onChange={() => toggle(p.id)} />
                 <span className="mt-card-title" style={{ color: 'var(--t-title)' }}>{p.name}</span>
                 <span className="ml-auto mt-body-sm" style={{ color: 'var(--t-faint)', fontSize: 10.5 }}>
-                  {p.kind === 'local' ? 'on-device'
-                    : scanning && !st ? 'scanning…'
+                  {scanning && !st ? 'scanning…'
                     : installable ? 'installed' : 'not installed'}
                 </span>
               </label>

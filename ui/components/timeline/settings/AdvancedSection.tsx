@@ -83,18 +83,7 @@ export function AdvancedSection({ settings, setSettings, patch, save }: {
       </SectionCard>
 
       <SectionCard>
-        <SectionHeader>Session Classification</SectionHeader>
-        <FieldRow label="Classification Enabled">
-          <Switch checked={settings.classification_enabled} onCheckedChange={v => patch({ classification_enabled: v })} />
-        </FieldRow>
-        <FieldRow label="Min Session Duration" description="Sessions shorter than this are skipped by the classifier.">
-          <NumberStepper value={settings.min_classification_duration_s} onChange={v => patch({ min_classification_duration_s: v })} min={1} />
-          <span className="text-[11px]" style={{ color: 'var(--t-faint)' }}>sec</span>
-        </FieldRow>
-        <FieldRow label="Classification Timeout" description="Maximum time allowed per classification request.">
-          <NumberStepper value={settings.classification_timeout_s} onChange={v => patch({ classification_timeout_s: v })} min={5} max={600} step={5} />
-          <span className="text-[11px]" style={{ color: 'var(--t-faint)' }}>sec</span>
-        </FieldRow>
+        <SectionHeader>Task Routing</SectionHeader>
         <FieldRow label="Auto-route Floor" description="Confidence above this → auto-link to task.">
           <NumberStepper value={settings.agent_auto_floor} onChange={v => patch({ agent_auto_floor: v })} min={0} max={1} step={0.05} />
         </FieldRow>
@@ -104,9 +93,6 @@ export function AdvancedSection({ settings, setSettings, patch, save }: {
         <SaveButton
           status={classificationStatus}
           onClick={() => save({
-            classification_enabled: settings.classification_enabled,
-            min_classification_duration_s: settings.min_classification_duration_s,
-            classification_timeout_s: settings.classification_timeout_s,
             agent_auto_floor: settings.agent_auto_floor,
             agent_queue_floor: settings.agent_queue_floor,
           }, setClassificationStatus)}
