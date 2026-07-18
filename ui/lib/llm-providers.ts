@@ -235,12 +235,12 @@ export const LLM_PROVIDERS: LlmProviderMeta[] = [
     // The claude CLI accepts both tier aliases and full model ids. Aliases are listed
     // first: they keep working across releases, where a pinned id eventually retires.
     models: [
-      { id: 'opus', label: 'Opus', note: 'Most capable - the default for hourly summaries' },
+      { id: 'opus', label: 'Opus', note: 'Most capable - follows each new Opus release' },
       { id: 'sonnet', label: 'Sonnet', note: 'Balanced speed and quality' },
       { id: 'haiku', label: 'Haiku', note: 'Fastest and cheapest' },
-      { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', note: 'Pinned version of Opus' },
-      { id: 'claude-sonnet-5', label: 'Claude Sonnet 5', note: 'Pinned version of Sonnet' },
-      { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', note: 'Pinned version of Haiku' },
+      { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', note: 'Stays on this exact model' },
+      { id: 'claude-sonnet-5', label: 'Claude Sonnet 5', note: 'Stays on this exact model' },
+      { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', note: 'Stays on this exact model' },
     ],
   },
   {
