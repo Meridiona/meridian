@@ -25,11 +25,11 @@
      face; numeric alignment comes from font-variant-numeric: tabular-nums —
      see the .font-mono/.mt-mono-sm rules below). -apple-system/system-ui
      resolve to the real SF Pro Text/Display already installed on macOS, so no
-     font file is bundled. --font-serif is the setup wizard's Instrument Serif
-     hero font, with the Georgia stack as a load-failure fallback. */
+     font file is bundled. There is deliberately no --font-serif: the setup and
+     uninstall wizards used to render their hero headings in Instrument Serif,
+     and now share the timeline's SF Pro display treatment instead. */
   --font-sans:  -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
   --font-mono:  var(--font-sans);
-  --font-serif: var(--font-instrument-serif), Georgia, 'Times New Roman', serif;
 
   /* Legacy palette → Tailwind utilities (kept for Sessions/Week/setup) */
   --color-paper:       var(--paper);

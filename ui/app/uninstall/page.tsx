@@ -22,7 +22,9 @@ import { invoke, tauri } from '@/lib/bridge'
 import type { UninstallItem, UninstallPlan, UninstallResult } from '@/lib/api-types'
 import { Btn, Check, Kicker, Row, Spinner } from '../setup/atoms'
 
-const SERIF: CSSProperties = { fontFamily: 'var(--font-instrument-serif), Georgia, serif' }
+// One voice with the timeline UI and the setup wizard: SF Pro (var(--font-sans)),
+// not Instrument Serif. Display headings just go heavier + tighter, same family.
+const DISPLAY: CSSProperties = { fontFamily: 'var(--font-sans)', fontWeight: 700, letterSpacing: '-.02em' }
 
 type Phase = 'loading' | 'plan-error' | 'select' | 'running' | 'done'
 
@@ -74,7 +76,7 @@ export default function UninstallWizard() {
       }}>
         <div style={{ padding: '26px 32px 14px' }}>
           <Kicker style={{ marginBottom: 8 }}>{phase === 'done' ? 'Done' : 'Uninstall'}</Kicker>
-          <h1 style={{ ...SERIF, fontSize: 26, lineHeight: 1.05, letterSpacing: '-.01em', color: 'var(--t-title)' }}>
+          <h1 style={{ ...DISPLAY, fontSize: 23, fontWeight: 750, lineHeight: 1.1, letterSpacing: '-.03em', color: 'var(--t-title)' }}>
             {phase === 'done' ? 'Cleaned up' : 'Uninstall Meridian'}
           </h1>
           {phase === 'select' && (
