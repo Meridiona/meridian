@@ -99,6 +99,42 @@ pub fn is_bundled() -> bool {
     }
 }
 
+/// Open `url` in the user's default browser, detached, best-effort.
+///
+/// For the few call sites that have no `AppHandle` to reach
+/// `tauri_plugin_opener` through (an OAuth device-flow helper resolved before
+/// the window exists). Every one of them is non-fatal — the UI also shows the
+/// link — so a failure is dropped, not surfaced.
+///
+/// `open` is macOS-only; the Windows counterpart is the shell builtin `start`
+/// (hence `cmd /C`, and the empty title arg `start` needs before a URL), and
+/// Linux uses `xdg-open`.
+pub fn open_url_detached(url: &str) {
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg(url);
+        c
+    };
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        // `start` treats a first quoted arg as the window title, so pass an
+        // empty title before the URL or a URL in quotes would be swallowed.
+        c.args(["/C", "start", "", url]);
+        c
+    };
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(url);
+        c
+    };
+    if let Err(e) = cmd.spawn() {
+        tracing::warn!(error = %e, url, "could not open url in browser");
+    }
+}
+
 /// The plugin state, if the plugin was registered (bundled runs only).
 /// `pub(crate)` so the setup wizard's permission probes
 /// ([`crate::commands::setup::check_notifications`]) share the one lookup.
