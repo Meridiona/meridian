@@ -8,7 +8,6 @@
 //   pm.jira       — Jira sync failing
 //   pm.linear     — Linear sync failing
 //   etl.failed    — ETL pipeline error
-//   mlx.down      — MLX classifier unreachable
 
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
