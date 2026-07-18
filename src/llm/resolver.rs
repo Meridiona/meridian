@@ -21,15 +21,24 @@
 //! | what happened | what we do |
 //! |---|---|
 //! | `Failed` (crashed, not installed, timed out) | retry once, then fall back to on-device |
-//! | `RateLimited` (subscription exhausted) | fall back **immediately** — retrying a quota is pointless — and stop routing to that provider for [`RATE_LIMIT_BACKOFF`] |
+//! | `RateLimited` (subscription exhausted) | fall back **immediately** — retrying a quota is pointless — and stop routing to that provider until it resets |
 //! | fallback also fails / model not downloaded | give up; the caller leaves the hour pending and retries next tick |
 //!
 //! The backoff lives **in memory here, not in settings.json**. The user's *choice* is
-//! sacred: being rate-limited degrades the *routing* for half an hour, it does not rewrite
-//! what they asked for. Writing it to settings would mean a quota blip silently and
-//! permanently switched them to the local model. That distinction is what keeps this from
-//! becoming Dayflow's three-settings mess.
+//! sacred: being rate-limited degrades the *routing*, it does not rewrite what they asked
+//! for. Writing it to settings would mean a quota blip silently and permanently switched
+//! them to the local model. That distinction is what keeps this from becoming Dayflow's
+//! three-settings mess.
+//!
+//! # How long the backoff actually lasts
+//!
+//! [`start_backoff`] tries [`super::reset_time::parse_backoff`] against the provider's own
+//! error message first — Claude Code and Codex both print their real reset hint ("resets
+//! 3pm", "try again in 5 hours"), so a call resumes the moment the provider says it will,
+//! not after an arbitrary wait. [`RATE_LIMIT_BACKOFF`] is only the fallback for a message
+//! shape we don't recognise (e.g. Codex's weekly-limit date format).
 
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -41,17 +50,28 @@ use tracing::Instrument;
 
 use super::{
     claude::ClaudeBackend, codex::CodexBackend, copilot::CopilotBackend, cursor::CursorBackend,
-    local::LocalBackend, LlmBackend, LlmConfig, LlmError, LlmOutput, LlmProvider, PromptRequest,
+    local::LocalBackend, openai_compat::OpenAiCompatBackend, reset_time, LlmBackend, LlmConfig,
+    LlmError, LlmOutput, LlmProvider, PromptRequest,
 };
 
-/// How long a rate-limited provider is skipped. Matches the summariser's own backoff:
-/// a quota that just refused us will still refuse us a minute later.
+/// Fallback for a rate-limit message [`reset_time::parse_backoff`] couldn't read. Matches
+/// the summariser's own backoff: a quota that just refused us will still refuse us half an
+/// hour later, and this is a safe default while we wait to actually hear otherwise.
 pub const RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(30 * 60);
 
-/// When the chosen provider may be used again. `None` = now.
+/// When each rate-limited backend may be used again, keyed by backend IDENTITY (see
+/// [`backoff_key`]) — NOT the bare [`LlmProvider`], because two custom endpoints share the
+/// `Custom` variant but must back off independently.
+///
+/// Per-backend keying is what makes "switch providers to escape a rate limit" work with no
+/// cross-process signal: the backoff lives in the DAEMON's memory while `settings.json` is
+/// written by the TRAY, so a clear-on-write could never reach here. Instead, [`resolve`] /
+/// [`complete_inner`] re-read the selected provider every call and only ever consult the key
+/// for THAT backend — a stale entry for the provider the user just left is simply never
+/// looked at, and expires on its own. There is therefore nothing to clear on a switch.
 ///
 /// Transient, in-memory, deliberately not persisted — see the module docs.
-static RATE_LIMITED_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
+static RATE_LIMITED_UNTIL: Mutex<BTreeMap<String, Instant>> = Mutex::new(BTreeMap::new());
 
 /// Bridge the summariser's error type (raised by the shared `run_capture`) into ours.
 pub(super) fn from_summariser_error(e: SummariserError) -> LlmError {
@@ -61,27 +81,43 @@ pub(super) fn from_summariser_error(e: SummariserError) -> LlmError {
     }
 }
 
-fn is_backing_off() -> bool {
+/// The backoff-map key for a resolved backend. CLI providers key by name; a custom endpoint
+/// keys by its id so two endpoints (both the `Custom` variant) back off independently. Local
+/// is never rate-limited, so it never reaches here.
+fn backoff_key(provider: LlmProvider, cfg: &LlmConfig) -> String {
+    match provider {
+        LlmProvider::Custom => format!(
+            "custom:{}",
+            cfg.custom.as_ref().map(|c| c.id.as_str()).unwrap_or("")
+        ),
+        _ => provider.as_str().to_string(),
+    }
+}
+
+fn is_backing_off(key: &str) -> bool {
     let mut guard = RATE_LIMITED_UNTIL.lock().unwrap_or_else(|e| e.into_inner());
-    match *guard {
+    match guard.get(key).copied() {
         Some(until) if Instant::now() < until => true,
         Some(_) => {
-            *guard = None; // expired — resume the user's choice
+            guard.remove(key); // expired — resume the user's choice for this backend
             false
         }
         None => false,
     }
 }
 
-fn start_backoff() {
+fn start_backoff(key: &str, duration: Duration) {
     let mut guard = RATE_LIMITED_UNTIL.lock().unwrap_or_else(|e| e.into_inner());
-    *guard = Some(Instant::now() + RATE_LIMIT_BACKOFF);
+    guard.insert(key.to_string(), Instant::now() + duration);
 }
 
-/// Clear the backoff. For tests, and for an explicit user-driven provider change.
+/// Clear all backoff state. Test-only: per-backend keying (see [`RATE_LIMITED_UNTIL`]) means
+/// a live install never needs an explicit clear — switching providers just consults a
+/// different key, and each entry expires on its own.
+#[cfg(test)]
 pub fn clear_backoff() {
     let mut guard = RATE_LIMITED_UNTIL.lock().unwrap_or_else(|e| e.into_inner());
-    *guard = None;
+    guard.clear();
 }
 
 /// The one place an [`LlmProvider`] becomes a live backend. Nothing else may match on it.
@@ -92,6 +128,11 @@ pub fn backend_for(provider: LlmProvider, cfg: LlmConfig) -> Box<dyn LlmBackend>
         LlmProvider::Cursor => Box::new(CursorBackend { cfg }),
         LlmProvider::Copilot => Box::new(CopilotBackend { cfg }),
         LlmProvider::Local => Box::new(LocalBackend { cfg }),
+        // The endpoint was resolved into `cfg` (see `LlmConfig::from_settings`), because
+        // this factory cannot fail. A `cfg.custom` of None — "custom" selected with no live
+        // row — surfaces as a clear error on the call, never as a quiet switch to another
+        // provider.
+        LlmProvider::Custom => Box::new(OpenAiCompatBackend { cfg }),
     }
 }
 
@@ -108,7 +149,7 @@ pub fn resolve() -> Box<dyn LlmBackend> {
     let cfg = LlmConfig::from_settings(&s);
     let chosen = LlmProvider::from_wire(&s.llm_provider).unwrap_or_default();
 
-    if !chosen.is_local() && is_backing_off() {
+    if !chosen.is_local() && is_backing_off(&backoff_key(chosen, &cfg)) {
         tracing::debug!(
             provider = chosen.as_str(),
             "llm: provider is rate-limited; routing to on-device until the backoff expires"
@@ -235,8 +276,9 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
     let chosen = LlmProvider::from_wire(&s.llm_provider).unwrap_or_default();
     let local_ready = s.llm_local_chat_model_ready;
 
-    // Already backing off from an earlier rate limit → straight to local.
-    let effective = if !chosen.is_local() && is_backing_off() {
+    // Already backing off from an earlier rate limit → straight to local. Keyed per-backend,
+    // so a limit on a provider the user has since switched away from doesn't divert this one.
+    let effective = if !chosen.is_local() && is_backing_off(&backoff_key(chosen, &cfg)) {
         LlmProvider::Local
     } else {
         chosen
@@ -255,16 +297,18 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
     for attempt in 1..=2u32 {
         match backend.complete(req).await {
             Ok(out) => return Ok((out, effective)),
-            Err(e @ LlmError::RateLimited(_)) => {
+            Err(LlmError::RateLimited(msg)) => {
+                let backoff = reset_time::parse_backoff(&msg, chrono::Local::now())
+                    .unwrap_or(RATE_LIMIT_BACKOFF);
                 tracing::warn!(
                     provider = effective.as_str(),
                     label = %req.label,
-                    error = %e,
-                    backoff_min = RATE_LIMIT_BACKOFF.as_secs() / 60,
+                    error = %msg,
+                    backoff_s = backoff.as_secs(),
                     "llm: provider rate-limited — falling back to on-device"
                 );
-                start_backoff();
-                last = e;
+                start_backoff(&backoff_key(effective, &cfg), backoff);
+                last = LlmError::RateLimited(msg);
                 break;
             }
             Err(e) => {
@@ -372,7 +416,7 @@ mod tests {
 
         assert_eq!(resolve().provider(), LlmProvider::Claude);
 
-        start_backoff();
+        start_backoff("claude", RATE_LIMIT_BACKOFF);
         assert_eq!(
             resolve().provider(),
             LlmProvider::Local,
@@ -402,8 +446,41 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("meridian-resolver-loc-{}", std::process::id()));
         write_settings(&dir, "local");
-        start_backoff();
+        start_backoff("claude", RATE_LIMIT_BACKOFF);
         assert_eq!(resolve().provider(), LlmProvider::Local);
+        clear_backoff();
+        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The fix for the cross-provider backoff bug: a rate limit on ONE provider must not
+    /// divert a DIFFERENT provider the user switches to. Per-backend keying makes the switch
+    /// escape the backoff with no clear-on-write signal (which couldn't cross the
+    /// tray↔daemon process boundary anyway).
+    #[test]
+    fn a_backoff_on_one_provider_does_not_divert_another() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_backoff();
+        let dir =
+            std::env::temp_dir().join(format!("meridian-resolver-perprov-{}", std::process::id()));
+        write_settings(&dir, "claude");
+
+        // Claude is rate-limited → its calls route to the on-device model.
+        start_backoff("claude", RATE_LIMIT_BACKOFF);
+        assert_eq!(
+            resolve().provider(),
+            LlmProvider::Local,
+            "the rate-limited provider routes local"
+        );
+
+        // The user switches to Codex, which was never limited — it must answer, not degrade.
+        write_settings(&dir, "codex");
+        assert_eq!(
+            resolve().provider(),
+            LlmProvider::Codex,
+            "switching to a provider that isn't rate-limited escapes the backoff"
+        );
+
         clear_backoff();
         std::env::remove_var("MERIDIAN_SETTINGS_PATH");
         let _ = std::fs::remove_dir_all(&dir);

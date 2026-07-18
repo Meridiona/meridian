@@ -19,6 +19,10 @@ mod analytics;
 mod backend_install;
 #[cfg(feature = "capture")]
 mod capture;
+// Non-gated on purpose: the ignore-list matcher is a plain data type held in
+// `AppState` and refreshed by the always-compiled `update_settings` command, so
+// it must exist in non-capture builds too (nothing reads it there — harmless).
+mod capture_ignore;
 mod commands;
 mod deep_link;
 
@@ -520,6 +524,7 @@ pub fn run() {
             commands::get_day_tasks,
             commands::get_week,
             commands::get_coding_agents,
+            commands::get_recent_capture_apps,
             commands::get_worklogs,
             commands::get_hour_text,
             commands::get_hour_reports,
@@ -537,6 +542,13 @@ pub fn run() {
             commands::get_ticket_parents,
             commands::list_task_statuses,
             commands::get_day_task_worklog,
+            // dev-only LLM Lab (refused in release builds - see commands::llm_lab)
+            commands::get_llm_experiments,
+            commands::get_llm_experiment,
+            commands::run_llm_experiment,
+            commands::draft_lab_worklog,
+            commands::get_day_summary,
+            commands::get_day_summary_data,
             commands::get_version,
             commands::get_app_info,
             commands::check_update,
@@ -546,13 +558,22 @@ pub fn run() {
             commands::mark_whats_new_seen_cmd,
             // DB writes (ported /api/* POSTs/PATCH/DELETE)
             commands::plan_action,
+            commands::get_board_tickets,
+            commands::retarget_day_task_worklog,
+            commands::dismiss_worklog_target,
             commands::plan_dismissed,
+            commands::draft_plan_task,
+            commands::create_plan_task,
+            commands::edit_plan_task,
             commands::triage_decision,
             commands::triage_ignore,
             commands::apply_ticket_fix,
             commands::set_task_status,
             commands::generate_day_task_worklog,
             commands::approve_day_task_worklog,
+            // An LLM call, so it lives with the writes despite reading nothing back
+            // but its own result.
+            commands::generate_day_summary,
             commands::dismiss_notification,
             commands::record_notification_response,
             commands::delete_notice,
@@ -597,7 +618,15 @@ pub fn run() {
             commands::download_runtime_cmd,
             commands::prefetch_model_cmd,
             commands::detect_llm_providers,
+            commands::test_llm_provider,
+            commands::test_all_llm_providers,
             commands::detect_system_specs,
+            // Custom cloud endpoints (add/probe/remove). `add` + `probe` spend real metered
+            // requests measuring the endpoint — only ever on explicit user action.
+            commands::add_custom_llm_provider,
+            commands::probe_custom_llm_provider,
+            commands::remove_custom_llm_provider,
+            commands::list_custom_llm_providers,
             // Uninstall wizard (plan + execute; see src/uninstall.rs for the CLI it drives)
             commands::get_uninstall_plan,
             commands::execute_uninstall,
@@ -924,6 +953,19 @@ pub(crate) fn start_capture(
         return;
     }
 
+    // Read settings once for this capture start: seed the ignore list (so the
+    // frame consumers enforce it from the first frame) and the streaming flag.
+    // `update_settings` refreshes the ignore list live afterwards via the same
+    // shared handle, so a Settings change never needs a capture restart.
+    let settings = meridian_core::settings::load_runtime_settings();
+    let pause_on_streaming_video = settings.pause_on_streaming_video;
+    let capture_ignore = {
+        let s = app_state.lock().unwrap();
+        *s.capture_ignore.lock().unwrap() =
+            capture_ignore::CaptureIgnore::new(&settings.ignored_apps, &settings.ignored_urls);
+        s.capture_ignore.clone()
+    };
+
     // Drop any previous cancel senders — this signals the old tasks to exit.
     {
         let mut s = app_state.lock().unwrap();
@@ -941,6 +983,7 @@ pub(crate) fn start_capture(
 
     // Frame consumer: exits when engine task finishes (tx drops → rx returns None).
     let consumer_pool = pool.clone();
+    let frame_ignore = capture_ignore.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(frame) = rx.recv().await {
             tracing::debug!(
@@ -949,6 +992,20 @@ pub(crate) fn start_capture(
                 chars = frame.text.len(),
                 "capture: frame received"
             );
+            // User ignore list (apps + website domains): drop the frame before it
+            // is ever persisted, so an ignored app/site leaves no trace on the
+            // timeline. Going forward only — history is untouched.
+            if frame_ignore
+                .lock()
+                .unwrap()
+                .should_drop_frame(frame.app_name.as_deref(), frame.browser_url.as_deref())
+            {
+                tracing::debug!(
+                    app = ?frame.app_name,
+                    "capture: frame ignored (user ignore list) — not persisted"
+                );
+                continue;
+            }
             let Some(p) = consumer_pool.as_ref() else {
                 continue;
             };
@@ -970,9 +1027,8 @@ pub(crate) fn start_capture(
     // When engine_cancel_tx is dropped, engine_cancel_rx resolves → task exits,
     // dropping tx → frame consumer loop ends naturally.
     tauri::async_runtime::spawn(async move {
-        let settings = meridian_core::settings::load_runtime_settings();
         let engine = ScreenpipeEngine {
-            pause_on_streaming_video: settings.pause_on_streaming_video,
+            pause_on_streaming_video,
         };
         tokio::select! {
             _ = &mut engine_cancel_rx => {
@@ -990,6 +1046,7 @@ pub(crate) fn start_capture(
     // the OS recorder thread to see tx.is_closed() within 500ms and exit.
     let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel::<meridian_core::CaptureUiEventInsert>(256);
     let ui_pool = pool;
+    let ui_ignore = capture_ignore;
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::select! {
@@ -997,6 +1054,11 @@ pub(crate) fn start_capture(
                 _ = &mut ui_cancel_rx => break,
                 ev = ui_rx.recv() => {
                     let Some(ev) = ev else { break };
+                    // Ignored apps leave no UI-event trace either (keystroke
+                    // counts, clipboard). App-only match — UI events carry no URL.
+                    if ui_ignore.lock().unwrap().should_drop_app(ev.app_name.as_deref()) {
+                        continue;
+                    }
                     let Some(p) = ui_pool.as_ref() else { continue };
                     if let Err(e) = meridian_core::insert_capture_ui_event(p, &ev).await {
                         tracing::warn!(error = %e, "capture: failed to persist ui event");

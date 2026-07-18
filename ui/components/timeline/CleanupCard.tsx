@@ -16,9 +16,10 @@
 
 import { useEffect, useState } from 'react'
 import { ProviderGlyph } from '@/components/atoms'
-import type { TaskSummary } from '@/lib/api-types'
+import type { TaskSummary, TaskStatusOption } from '@/lib/api-types'
 import type { HygieneIssue } from '@/lib/hygiene'
 import { load, mutate, openExternal } from '@/lib/bridge'
+import { StatusPicker } from './StatusPicker'
 
 export type CleanupGroup = 'must' | 'nice' | 'review'
 
@@ -32,6 +33,7 @@ const PRIORITIES = ['Highest', 'High', 'Medium', 'Low', 'Lowest']
 
 export function CleanupCard({
   task, issues, group, onIgnore, onApplied, onKeep, onPrev, onNext, hasPrev, hasNext,
+  onSetStatus, statusBusy,
 }: {
   task: TaskSummary
   issues: HygieneIssue[]
@@ -43,6 +45,11 @@ export function CleanupCard({
   onNext: () => void
   hasPrev: boolean
   hasNext: boolean
+  // Reuses the exact same tracker-status dropdown + write-back as the Tasks
+  // panel (StatusPicker + useTaskStatusChange) — the parent owns the mutate
+  // call and the optimistic patch, this card just renders the control.
+  onSetStatus: (task: TaskSummary, option: TaskStatusOption) => void
+  statusBusy: boolean
 }) {
   const meta = GROUP_META[group]
 
@@ -58,6 +65,7 @@ export function CleanupCard({
           <div className="flex items-center gap-2.5 flex-wrap">
             <ProviderGlyph provider={task.provider} size={18} />
             <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text">{task.key}</span>
+            <StatusPicker task={task} onPick={o => onSetStatus(task, o)} busy={statusBusy} />
             <span className="mt-chip ml-auto px-2 py-0.5 rounded" style={{ color: meta.color, border: `1px solid ${meta.color}` }}>
               {meta.label}
             </span>

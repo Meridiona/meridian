@@ -26,6 +26,12 @@ export interface RuntimeSettings {
   // Which AI runs the prose pipeline. Mirrors RuntimeSettings.llm_provider; the wire
   // forms are the ids in lib/llm-providers.ts. Validated on write by update_settings.
   llm_provider: LlmProviderId
+  // WHICH custom endpoint, when llm_provider is 'custom' — the registry may hold several,
+  // so the kind alone doesn't name one. Ignored for every other provider (a stale id left
+  // behind by switching away is inert: Rust's selected_custom_id() reads it only when
+  // llm_provider === 'custom'). The registry itself is NOT mirrored here — it is read
+  // keyless through list_custom_llm_providers, so the API keys never enter this type.
+  llm_provider_custom_id: string | null
   // Optional model override within the chosen provider. null → the provider's default.
   llm_provider_model: string | null
   // Has the on-device chat model been downloaded? Gates the setup wizard's model step
@@ -54,6 +60,12 @@ export interface RuntimeSettings {
   work_hours_end: string    // 'HH:MM' local time, exclusive
   work_days: string         // comma-separated 1–7 (Mon=1 … Sun=7), e.g. '1,2,3,4,5'
   pause_on_streaming_video: boolean
+  // Capture ignore lists — apps (exact app name) and websites (domain) Meridian
+  // must never capture. Enforced at the capture frame boundary going forward;
+  // history is left untouched. Mirrors RuntimeSettings.ignored_apps/ignored_urls
+  // in meridian-core/src/settings.rs.
+  ignored_apps: string[]
+  ignored_urls: string[]
 }
 
 export const SETTINGS_DEFAULTS: RuntimeSettings = {
@@ -71,6 +83,7 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   agent_auto_floor: 0.65,
   agent_queue_floor: 0.40,
   llm_provider: 'local',
+  llm_provider_custom_id: null,
   llm_provider_model: null,
   llm_local_chat_model_ready: false,
   llm_budget_pct: 0.5,
@@ -89,6 +102,9 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   work_days: '1,2,3,4,5',
   // On by default — must match RuntimeSettings::default() in meridian-core/src/settings.rs.
   pause_on_streaming_video: true,
+  // Nothing ignored by default.
+  ignored_apps: [],
+  ignored_urls: [],
 }
 
 // repoRoot finds the source-checkout root (nearest ancestor with Cargo.toml).

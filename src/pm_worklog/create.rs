@@ -9,7 +9,9 @@
 // approved worklog so the normal post sweep comments on the new ticket.
 //
 // Creation TARGET resolution per provider:
-//   jira   → first configured project key            (JiraConfig.project_keys)
+//   jira   → first configured project key, else the   (JiraConfig.project_keys
+//            project inferred from an existing Jira      or `sample_key` prefix)
+//            task_key (OAuth users have no project key)
 //   linear → first configured team id                (LinearConfig.team_ids)
 //   azure  → configured project                      (AzureDevOpsConfig.project)
 //   github → owner/repo parsed from `sample_key`     (an existing GitHub task)
@@ -44,7 +46,16 @@ pub async fn create_ticket(
     sample_key: Option<&str>,
 ) -> Result<String> {
     match provider {
-        "jira" => jira_create(jira_cfg(config)?, title, description, issue_type).await,
+        "jira" => {
+            jira_create(
+                jira_cfg(config)?,
+                title,
+                description,
+                issue_type,
+                sample_key,
+            )
+            .await
+        }
         "linear" => linear_create(linear_cfg(config)?, title, description).await,
         "github" => github_create(github_cfg(config)?, title, description, sample_key).await,
         "trello" => trello_create(trello_cfg(config)?, title, description).await,
@@ -131,11 +142,31 @@ async fn jira_create(
     title: &str,
     description: &str,
     issue_type: &str,
+    sample_key: Option<&str>,
 ) -> Result<String> {
-    let project = jira
-        .project_keys
-        .first()
-        .context("Jira create needs a project key (none configured)")?;
+    // Project resolution: prefer the configured `JIRA_PROJECT_KEYS`, but that's
+    // only set for token setups — an OAuth-connected Jira leaves `project_keys`
+    // empty (see intelligence/oauth/jira.rs). So fall back to inferring the
+    // project from an existing Jira task_key (`KAN-171` → `KAN`; Jira project
+    // keys never contain a hyphen), the same way GitHub derives owner/repo from
+    // a sample key. This is what makes "propose a new ticket" work for the common
+    // OAuth user, who otherwise has no project key anywhere.
+    let project: String = match jira.project_keys.first() {
+        Some(p) => p.clone(),
+        None => {
+            let sample = sample_key.context(
+                "Jira create needs a project key - none is configured and there is no \
+                 existing Jira ticket to infer one from",
+            )?;
+            sample
+                .rsplit_once('-')
+                .map(|(proj, _num)| proj)
+                .filter(|proj| !proj.is_empty())
+                .map(str::to_string)
+                .with_context(|| format!("could not infer a Jira project key from '{sample}'"))?
+        }
+    };
+    let project = project.as_str();
     let ctx = jira_resolve(jira).await.context("resolving Jira auth")?;
     // Bound the up-to-3 sequential calls (type check, self-assign, create) so a
     // slow/unresponsive tracker can't hang the approved-proposal sweep.

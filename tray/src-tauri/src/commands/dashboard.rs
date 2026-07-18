@@ -101,20 +101,48 @@ pub async fn get_week(
         })
 }
 
-/// Today's coding-agent totals, computed in Rust (the ported /api/coding-agents).
+/// A day's coding-agent totals, computed in Rust (the ported /api/coding-agents).
+/// `day` defaults to today (local) when omitted, matching [`get_today`] and
+/// [`get_day_tasks`].
+///
+/// The core reader was always day-parameterised; only this wrapper pinned it to
+/// today. That mattered once the day-summary gained day navigation: agent
+/// sessions are excluded from `get_today`'s `sessions`, so `TimeByApp` folds
+/// these totals back in — a hard-coded today here silently under-reported a past
+/// day's agent time rather than failing visibly.
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_coding_agents(
     pool: State<'_, Option<meridian_core::SqlitePool>>,
+    day: Option<String>,
 ) -> Result<meridian_core::coding_agents::CodingAgentsResponse, String> {
     let Some(pool) = pool.inner() else {
         return Err("meridian.db is not open yet".to_string());
     };
-    let date = meridian_core::date::today_string();
+    let date = day.unwrap_or_else(meridian_core::date::today_string);
     meridian_core::coding_agents::get_coding_agents(pool, &date)
         .await
         .map_err(|e| {
             tracing::warn!(error = %e, "get_coding_agents failed");
+            e.to_string()
+        })
+}
+
+/// The apps Meridian has captured recently — the picker source for Settings →
+/// Capture & Privacy → "Ignore an app". Last 30 days, most-seen first, capped at
+/// 60. No day param (this is a settings affordance, not a timeline view).
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn get_recent_capture_apps(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+) -> Result<Vec<meridian_core::capture_apps::CaptureApp>, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    meridian_core::capture_apps::recent_capture_apps(pool, 30, 60)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "get_recent_capture_apps failed");
             e.to_string()
         })
 }
@@ -200,6 +228,145 @@ pub async fn plan_action(
         .await
         .map_err(|e| {
             tracing::warn!(error = %e, "plan_action failed");
+            e.to_string()
+        })
+}
+
+/// One ticket the worklog panel's manual picker can retarget a draft at.
+/// Serialized shape for [`meridian_core::board::BoardTask`], which is a plain
+/// struct in the core (no `Serialize` — the core stays wire-agnostic).
+#[derive(serde::Serialize)]
+pub struct BoardTicket {
+    pub task_key: String,
+    pub provider: String,
+    pub title: String,
+    pub issue_type: String,
+    pub epic_title: String,
+}
+
+/// Every open ticket on the board, for the worklog panel's "match to a different
+/// ticket" picker.
+///
+/// The matcher itself never sees this list — it only compares against the day's
+/// planned tasks ([`meridian_core::plan::load_plan_candidates`]). This is the
+/// human override for when the work wasn't on the plan, or the model bound it to
+/// the wrong task. `postable_only = true`: a personal task has no tracker to post
+/// a comment to, so it can't be a target.
+///
+/// Deliberately uncapped. The old ">40 tickets, refuse" gate existed because a
+/// long list degrades a PROMPT; a searchable list a person reads has no such
+/// ceiling.
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn get_board_tickets(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+) -> Result<Vec<BoardTicket>, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let rows = meridian_core::board::fetch_open_board(pool, true)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "get_board_tickets failed");
+            e.to_string()
+        })?;
+    tracing::info!(tickets = rows.len(), "serving the board ticket picker");
+    Ok(rows
+        .into_iter()
+        .map(|t| BoardTicket {
+            task_key: t.task_key,
+            provider: t.provider,
+            title: t.title,
+            issue_type: t.issue_type,
+            epic_title: t.epic_title,
+        })
+        .collect())
+}
+
+/// The body of a [`retarget_day_task_worklog`] call.
+#[derive(Debug, serde::Deserialize)]
+pub struct RetargetBody {
+    pub day: String,
+    pub task_id: String,
+    pub task_key: String,
+}
+
+/// Point a drafted worklog at a ticket the user picked themselves.
+///
+/// A direct core call, not a CLI shell-out like `generate_day_task_worklog`:
+/// that one shells out because tracker auth and the LLM provider live in the
+/// daemon, and this touches neither — it's a DB write, so it returns instantly
+/// instead of paying a process spawn to rewrite prose that was already correct.
+///
+/// The provider comes from `pm_tasks`, never from the caller: the frontend must
+/// not be able to name the tracker a comment gets posted to.
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn retarget_day_task_worklog(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    body: RetargetBody,
+) -> Result<meridian_core::day_task_worklogs::DayTaskWorklogDraft, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let provider = meridian_core::board::provider_for_key(pool, &body.task_key)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "retarget: provider lookup failed");
+            e.to_string()
+        })?;
+    let Some(provider) = provider else {
+        return Err("that ticket is not on your board - try again after a sync".to_string());
+    };
+    if provider == meridian_core::task_create::LOCAL_PROVIDER {
+        return Err(
+            "that's a personal task, so there's no tracker to post the update to".to_string(),
+        );
+    }
+
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    meridian_core::day_task_worklogs::retarget_draft(
+        pool,
+        &body.day,
+        &body.task_id,
+        &body.task_key,
+        &provider,
+        &now,
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!(error = %e, "retarget_day_task_worklog failed");
+        e.to_string()
+    })
+}
+
+/// The body of a [`dismiss_worklog_target`] call.
+#[derive(Debug, serde::Deserialize)]
+pub struct DismissTargetBody {
+    pub day: String,
+    pub task_id: String,
+    pub task_key: String,
+}
+
+/// Drop ONE ticket from a drafted worklog's target set, keeping the rest.
+///
+/// The AI can match several planned tasks at once; this is the per-ticket "no, not
+/// that one" — cheaper than a regenerate and it preserves the written update. Like
+/// [`retarget_day_task_worklog`] it's a direct core call rather than a CLI
+/// shell-out: no tracker auth, no model, just a DB write.
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn dismiss_worklog_target(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    body: DismissTargetBody,
+) -> Result<meridian_core::day_task_worklogs::DayTaskWorklogDraft, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    meridian_core::day_task_worklogs::dismiss_target(pool, &body.day, &body.task_id, &body.task_key)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "dismiss_worklog_target failed");
             e.to_string()
         })
 }

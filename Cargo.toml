@@ -95,6 +95,7 @@ tempfile = "3"
 sha2 = "0.10"
 base64 = "0.22"
 rand = "0.8"
+jsonschema = { version = "0.48.0", default-features = false }
 
 [dev-dependencies]
 tokio       = { version = "1.15", features = ["full", "test-util"] }

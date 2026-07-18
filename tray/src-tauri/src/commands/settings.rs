@@ -34,7 +34,10 @@
 //! future re-added UI). Every end-user-facing workflow goes through Export
 //! Diagnostics instead, which needs none of these fields.
 
+use crate::capture_ignore::CaptureIgnore;
+use crate::state::AppState;
 use serde_json::Value;
+use std::sync::{Arc, Mutex};
 use tauri::State;
 
 /// Returned to the UI when a password is stored — the real value never leaves the
@@ -56,15 +59,46 @@ fn redact_password(v: &mut Value) {
     }
 }
 
+/// Redact every custom endpoint's `api_key`, per row, to the same sentinel.
+///
+/// Same contract as [`redact_password`], but over a LIST, which is the harder round trip:
+/// the UI gets N sentinels back and PUTs the whole array again after editing one field, so
+/// the restore below must match each row BY ID. Getting that wrong overwrites the key of a
+/// row the user never touched with the sentinel string itself — a silently broken endpoint
+/// whose key is gone.
+fn redact_custom_keys(v: &mut Value) {
+    let Some(rows) = v
+        .get_mut("custom_llm_providers")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for row in rows {
+        let Some(obj) = row.as_object_mut() else {
+            continue;
+        };
+        let has_key = obj
+            .get("api_key")
+            .and_then(Value::as_str)
+            .is_some_and(|k| !k.is_empty());
+        obj.insert(
+            "api_key".into(),
+            Value::String(if has_key { PASSWORD_SENTINEL } else { "" }.into()),
+        );
+    }
+}
+
 /// Runtime settings for the dashboard (the ported /api/settings GET). Reads
 /// `settings.json` via the shared meridian-core reader, coercing the nullable
 /// string fields `null → ''` (TS consumers expect strings) and redacting the
-/// stored password to a sentinel. Read-only counterpart to [`update_settings`].
+/// stored password + every custom endpoint's API key to a sentinel. Read-only
+/// counterpart to [`update_settings`].
 #[tauri::command]
 #[tracing::instrument]
 pub async fn get_settings() -> Result<Value, String> {
     let mut v = meridian_core::settings::read_settings_value();
     redact_password(&mut v);
+    redact_custom_keys(&mut v);
     Ok(v)
 }
 
@@ -74,9 +108,10 @@ pub async fn get_settings() -> Result<Value, String> {
 /// is sent, writes crash-safely, and returns the merged settings (password
 /// redacted). `body` is one payload object so the Tauri + browser paths match.
 #[tauri::command]
-#[tracing::instrument(skip(pool, body))]
+#[tracing::instrument(skip(pool, app_state, body))]
 pub async fn update_settings(
     pool: State<'_, Option<meridian_core::SqlitePool>>,
+    app_state: State<'_, Arc<Mutex<AppState>>>,
     body: Value,
 ) -> Result<Value, String> {
     // `pool` is unused (settings live in a file, not the DB) but kept in the
@@ -136,11 +171,298 @@ pub async fn update_settings(
         obj.insert("oo_password".into(), kept);
     }
 
+    // Same rule per custom endpoint, matched BY ID (see `redact_custom_keys`). The merge
+    // above is shallow, so a body carrying the registry replaces it wholesale — and the UI's
+    // copy has a sentinel in every row it read back. Without this, saving any unrelated
+    // setting would overwrite every API key with "••••••••".
+    restore_custom_keys(&current, obj)?;
+
+    // The GATE. A custom endpoint may only run the pipeline on measured evidence
+    // (`meridian_core::SchemaRung`), and it is enforced HERE rather than only in the UI:
+    // this command is the sole writer of settings.json, so a hand-edited file or an older
+    // frontend would otherwise route a user's whole day through an endpoint nobody has
+    // shown can hold a schema. An unenforced fold doesn't fail loudly — it drops the hour.
+    enforce_custom_provider_gate(&updated)?;
+
     meridian_core::settings::write_settings_value(&updated).map_err(|e| {
         tracing::warn!(error = %e, "update_settings: write failed");
         e.to_string()
     })?;
 
+    // Refresh the live capture ignore list so a Settings change takes effect on
+    // the very next captured frame — no capture restart. The frame + UI-event
+    // consumers read this same shared handle (see `crate::start_capture`).
+    let apps = str_list(&updated, "ignored_apps");
+    let urls = str_list(&updated, "ignored_urls");
+    if let Ok(mut ig) = app_state.lock().unwrap().capture_ignore.lock() {
+        *ig = CaptureIgnore::new(&apps, &urls);
+    }
+    tracing::info!(
+        ignored_apps = apps.len(),
+        ignored_urls = urls.len(),
+        "update_settings: capture ignore list refreshed"
+    );
+
     redact_password(&mut updated);
+    redact_custom_keys(&mut updated);
     Ok(updated)
+}
+
+/// Put back each endpoint's stored key wherever the body sent the sentinel (or nothing),
+/// matching on `id`.
+///
+/// A row whose id is NOT in the current settings is a genuinely new endpoint, and a new
+/// endpoint arriving with a sentinel key is rejected rather than saved keyless: it would
+/// look configured and fail on first use. (The supported way to add one is
+/// `add_custom_llm_provider`, which also measures it — this path exists for edits.)
+fn restore_custom_keys(
+    current: &Value,
+    obj: &mut serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    let Some(rows) = obj
+        .get_mut("custom_llm_providers")
+        .and_then(Value::as_array_mut)
+    else {
+        return Ok(());
+    };
+    let stored = current
+        .get("custom_llm_providers")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    for row in rows.iter_mut() {
+        let Some(o) = row.as_object_mut() else {
+            continue;
+        };
+        let id = o
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let sent = o.get("api_key").and_then(Value::as_str);
+        if sent.is_some_and(|k| !k.is_empty() && k != PASSWORD_SENTINEL) {
+            continue; // a real, newly-typed key — take it
+        }
+        let kept = stored
+            .iter()
+            .find(|s| s.get("id").and_then(Value::as_str) == Some(id.as_str()))
+            .and_then(|s| s.get("api_key"))
+            .cloned();
+        match kept {
+            Some(k) => {
+                o.insert("api_key".into(), k);
+            }
+            None => {
+                return Err(format!(
+                    "custom endpoint \"{id}\" has no API key - add it with the endpoint form"
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Refuse to select a custom endpoint that isn't configured, isn't fully measured, or was
+/// measured too weak for production. Any other provider passes untouched.
+fn enforce_custom_provider_gate(updated: &Value) -> Result<(), String> {
+    if updated.get("llm_provider").and_then(Value::as_str) != Some("custom") {
+        return Ok(());
+    }
+    let settings: meridian_core::settings::RuntimeSettings =
+        serde_json::from_value(updated.clone()).map_err(|e| format!("settings: {e}"))?;
+
+    let Some(row) = settings.active_custom_provider() else {
+        return Err(
+            "select which custom endpoint to use (llm_provider_custom_id names no configured \
+             endpoint)"
+                .to_string(),
+        );
+    };
+    if !row.is_fully_probed() {
+        return Err(format!(
+            "\"{}\" is not fully tested yet ({} still unmeasured) - press Test on its card, \
+             then select it",
+            row.name,
+            row.unmeasured_schemas().join(", ")
+        ));
+    }
+    if !row.is_production_eligible() {
+        return Err(format!(
+            "\"{}\" cannot hold the response schema reliably (measured: {:?}) - it can still be \
+             compared in the LLM Lab, but it cannot run your worklogs",
+            row.name,
+            row.effective_rung()
+        ));
+    }
+    tracing::info!(
+        endpoint_id = %row.id,
+        effective = ?row.effective_rung(),
+        "settings: custom provider selected (gate passed)"
+    );
+    Ok(())
+}
+
+/// Pull a JSON string-array field out of a settings object as `Vec<String>`,
+/// dropping non-string entries. An absent or non-array field yields an empty vec.
+fn str_list(v: &Value, key: &str) -> Vec<String> {
+    v.get(key)
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| e.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn row(id: &str, key: &str, rungs: Value) -> Value {
+        json!({"id": id, "vendor": "gemini", "name": id, "base_url": "https://x.test/v1",
+               "model": "m", "api_key": key, "rungs": rungs})
+    }
+
+    fn all_strict() -> Value {
+        let mut m = serde_json::Map::new();
+        for k in meridian_core::settings::PIPELINE_SCHEMA_KEYS {
+            m.insert(k.to_string(), json!("strict"));
+        }
+        Value::Object(m)
+    }
+
+    /// The read side: a real key must never reach the UI, and an empty one must not look
+    /// configured.
+    #[test]
+    fn redaction_hides_every_row_s_key() {
+        let mut v = json!({"custom_llm_providers": [row("a", "sk-real", json!({})),
+                                                    row("b", "", json!({}))]});
+        redact_custom_keys(&mut v);
+        let rows = v["custom_llm_providers"].as_array().unwrap();
+        assert_eq!(rows[0]["api_key"], json!(PASSWORD_SENTINEL));
+        assert_eq!(rows[1]["api_key"], json!(""));
+        assert!(!serde_json::to_string(&v).unwrap().contains("sk-real"));
+    }
+
+    /// THE round-trip bug this guard exists for: the UI reads two redacted rows, edits one
+    /// row's model, and PUTs the array back. Both rows carry a sentinel. Without a per-row
+    /// restore, both keys become "••••••••" — and the user's endpoints are silently dead.
+    #[test]
+    fn a_redacted_round_trip_keeps_every_row_s_key() {
+        let current = json!({"custom_llm_providers": [row("a", "sk-a", json!({})),
+                                                      row("b", "sk-b", json!({}))]});
+        let mut body = json!({"custom_llm_providers": [
+            row("a", PASSWORD_SENTINEL, json!({})),
+            row("b", PASSWORD_SENTINEL, json!({}))]});
+        let obj = body.as_object_mut().unwrap();
+        restore_custom_keys(&current, obj).expect("restore");
+
+        let rows = obj["custom_llm_providers"].as_array().unwrap();
+        assert_eq!(rows[0]["api_key"], json!("sk-a"));
+        assert_eq!(
+            rows[1]["api_key"],
+            json!("sk-b"),
+            "the untouched row keeps its own key"
+        );
+    }
+
+    /// Rows must match by id, not by position — reordering or deleting one in the UI must
+    /// not hand row A's key to row B.
+    #[test]
+    fn keys_are_restored_by_id_not_by_position() {
+        let current = json!({"custom_llm_providers": [row("a", "sk-a", json!({})),
+                                                      row("b", "sk-b", json!({}))]});
+        // Same rows, reversed.
+        let mut body = json!({"custom_llm_providers": [
+            row("b", PASSWORD_SENTINEL, json!({})),
+            row("a", PASSWORD_SENTINEL, json!({}))]});
+        let obj = body.as_object_mut().unwrap();
+        restore_custom_keys(&current, obj).expect("restore");
+
+        let rows = obj["custom_llm_providers"].as_array().unwrap();
+        assert_eq!(rows[0]["id"], json!("b"));
+        assert_eq!(rows[0]["api_key"], json!("sk-b"));
+        assert_eq!(rows[1]["api_key"], json!("sk-a"));
+    }
+
+    /// A newly-typed key must win over the stored one, or the key could never be changed.
+    #[test]
+    fn a_freshly_typed_key_replaces_the_stored_one() {
+        let current = json!({"custom_llm_providers": [row("a", "sk-old", json!({}))]});
+        let mut body = json!({"custom_llm_providers": [row("a", "sk-new", json!({}))]});
+        let obj = body.as_object_mut().unwrap();
+        restore_custom_keys(&current, obj).expect("restore");
+        assert_eq!(obj["custom_llm_providers"][0]["api_key"], json!("sk-new"));
+    }
+
+    /// A row with no stored key and no typed one would save as configured-but-keyless and
+    /// fail on first use. Reject it instead.
+    #[test]
+    fn a_new_row_without_a_key_is_rejected() {
+        let current = json!({"custom_llm_providers": []});
+        let mut body = json!({"custom_llm_providers": [row("new", PASSWORD_SENTINEL, json!({}))]});
+        let obj = body.as_object_mut().unwrap();
+        assert!(restore_custom_keys(&current, obj).is_err());
+    }
+
+    /// The gate: fully measured + strong enough passes.
+    #[test]
+    fn the_gate_passes_a_fully_measured_strong_endpoint() {
+        let v = json!({"llm_provider": "custom", "llm_provider_custom_id": "a",
+                       "custom_llm_providers": [row("a", "sk", all_strict())]});
+        assert!(enforce_custom_provider_gate(&v).is_ok());
+    }
+
+    /// A partial probe must not be selectable — the very case a free-tier 429 produces.
+    #[test]
+    fn the_gate_refuses_a_partially_measured_endpoint() {
+        let mut rungs = all_strict();
+        rungs.as_object_mut().unwrap().remove("plan_task_draft");
+        let v = json!({"llm_provider": "custom", "llm_provider_custom_id": "a",
+                       "custom_llm_providers": [row("a", "sk", rungs)]});
+        let err = enforce_custom_provider_gate(&v).expect_err("a half-probed endpoint");
+        assert!(err.contains("not fully tested"), "{err}");
+        assert!(
+            err.contains("plan_task_draft"),
+            "must name what is missing: {err}"
+        );
+    }
+
+    /// Measured, complete, but too weak to guarantee shape → Lab-only.
+    #[test]
+    fn the_gate_refuses_an_endpoint_measured_too_weak() {
+        let mut rungs = all_strict();
+        rungs
+            .as_object_mut()
+            .unwrap()
+            .insert("workstream".into(), json!("prompt"));
+        let v = json!({"llm_provider": "custom", "llm_provider_custom_id": "a",
+                       "custom_llm_providers": [row("a", "sk", rungs)]});
+        let err = enforce_custom_provider_gate(&v).expect_err("a weak endpoint");
+        assert!(err.contains("LLM Lab"), "must point at the Lab: {err}");
+    }
+
+    /// "custom" naming nothing configured, or nothing at all, is a mis-set provider.
+    #[test]
+    fn the_gate_refuses_custom_with_a_dangling_or_absent_id() {
+        let v = json!({"llm_provider": "custom", "llm_provider_custom_id": "gone",
+                       "custom_llm_providers": [row("a", "sk", all_strict())]});
+        assert!(enforce_custom_provider_gate(&v).is_err());
+        let v = json!({"llm_provider": "custom", "custom_llm_providers": []});
+        assert!(enforce_custom_provider_gate(&v).is_err());
+    }
+
+    /// Every other provider is untouched by the gate — including with a weak endpoint
+    /// merely configured alongside.
+    #[test]
+    fn the_gate_ignores_non_custom_providers() {
+        for p in ["local", "claude", "codex"] {
+            let v = json!({"llm_provider": p, "llm_provider_custom_id": "a",
+                           "custom_llm_providers": [row("a", "sk", json!({}))]});
+            assert!(enforce_custom_provider_gate(&v).is_ok(), "{p}");
+        }
+    }
 }

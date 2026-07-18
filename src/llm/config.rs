@@ -24,6 +24,17 @@ pub struct LlmConfig {
     pub local_timeout_s: u64,
     pub mlx_host: String,
     pub mlx_port: u16,
+    /// The resolved custom endpoint, when the user's selected provider is
+    /// [`meridian_core::LlmProvider::Custom`] and its id names a live registry row.
+    ///
+    /// Resolving it HERE is what keeps `backend_for(provider, cfg) -> Box<dyn LlmBackend>`
+    /// infallible: the fallible id→row lookup happens while building the config, and a
+    /// `None` that reaches the backend is reported as "selected but not configured" at call
+    /// time rather than silently becoming a different provider.
+    ///
+    /// Carries the API KEY — never log or serialise this field (see
+    /// [`crate::llm::openai_compat::CustomEndpoint`]).
+    pub custom: Option<crate::llm::openai_compat::CustomEndpoint>,
 }
 
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
@@ -35,7 +46,11 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
 
 impl LlmConfig {
     /// Build from the user's settings. The provider itself is read by the resolver; this
-    /// carries the rest.
+    /// carries the rest — including the ACTIVE custom endpoint, if that is what they chose.
+    ///
+    /// For a `custom:<id>` LLM-Lab variant (which addresses an endpoint the user has not
+    /// necessarily selected for production), build this and then override [`Self::custom`]
+    /// via [`Self::with_custom`].
     pub fn from_settings(s: &RuntimeSettings) -> Self {
         let home = std::env::var("MERIDIAN_HOME")
             .map(PathBuf::from)
@@ -50,7 +65,34 @@ impl LlmConfig {
             local_timeout_s: env_or("LLM_LOCAL_TIMEOUT_S", 180),
             mlx_host: std::env::var("MLX_SERVER_HOST").unwrap_or_else(|_| "127.0.0.1".into()),
             mlx_port: env_or("MLX_SERVER_PORT", 7823u16),
+            custom: s.active_custom_provider().map(endpoint_from_row),
         }
+    }
+
+    /// Point this config at a specific custom endpoint, whatever the user's saved selection
+    /// is — the LLM Lab runs a `custom:<id>` variant against an endpoint that is merely
+    /// configured, not necessarily chosen.
+    pub fn with_custom(mut self, row: &meridian_core::CustomLlmProvider) -> Self {
+        self.custom = Some(endpoint_from_row(row));
+        self
+    }
+}
+
+/// Registry row → the endpoint the backend actually needs.
+///
+/// The rung sent to the backend is [`meridian_core::CustomLlmProvider::effective_rung`] —
+/// the WEAKEST across the probed schemas, not the best. A per-schema lookup would be more
+/// generous, but it would let a call ask for a mode this endpoint only honours for *some*
+/// schemas; the weakest rung is the one it can hold for all of them.
+fn endpoint_from_row(
+    row: &meridian_core::CustomLlmProvider,
+) -> crate::llm::openai_compat::CustomEndpoint {
+    crate::llm::openai_compat::CustomEndpoint {
+        id: row.id.clone(),
+        base_url: row.base_url.clone(),
+        model: row.model.clone(),
+        api_key: row.api_key.clone(),
+        rung: row.effective_rung(),
     }
 }
 

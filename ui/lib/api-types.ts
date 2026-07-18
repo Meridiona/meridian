@@ -108,6 +108,12 @@ export interface TaskSummary {
   issue_type: string
   status: string        // verbatim provider status / column name (may be empty)
   is_terminal: boolean  // whether that status means the ticket is done/closed
+  // Whether this task is on the board. Computed in Rust by the SAME predicate
+  // that builds the worklog matcher's candidate set (meridian-core `board.rs`),
+  // so this list and what the model compares your work against are one thing.
+  // Filter on this, never on `is_terminal` - that would be a second, drifting
+  // definition of the same idea, which is the bug this replaced.
+  on_board: boolean
   provider: string
   url: string
   epic_key: string | null
@@ -247,6 +253,13 @@ export interface DayTask {
   last_hour: number        // latest local hour-of-day (0..23); -1 if none
   status: string
   linked_ticket: string | null
+  /** PM provider this task's worklog was posted to ('jira', …), or null if none
+   *  posted. Drives the "posted to {logo}" badge on the timeline card. */
+  posted_provider: string | null
+  /** Tracker key the posted worklog landed on, or null. */
+  posted_target_key: string | null
+  /** Deep link to the posted ticket, or null. */
+  posted_browse_url: string | null
 }
 
 export interface DayTasksResponse {
@@ -262,10 +275,29 @@ export interface DayTasksResponse {
 // set. On approve the draft is posted as a plain status comment (a proposed task
 // is created first) and the day-task is linked to the resulting ticket.
 
-// The chosen existing task the update will comment on (best fit found).
-export interface GeneratedWorklogMatch {
+/** One existing ticket the update will be posted to. A draft carries 0..N of these
+ *  - a strand of a day's work often advances several planned tasks, and the same
+ *  update goes on each. Each tracks its own delivery, because posting to three
+ *  tickets can succeed on two and a comment cannot be un-posted. */
+export interface WorklogTarget {
   task_key: string
+  provider: string
   confidence: number       // 0..1, the model's own fit confidence
+  /** The user picked this ticket themselves, overriding the model. `confidence` is
+   *  then meaningless - render it as their choice, NEVER as a percentage. */
+  manual: boolean
+  /** Hydrated from the tracker's task title at read time; null if unresolved. */
+  task_title: string | null
+  /** The comment is live on the tracker. Terminal - it can't be dismissed. */
+  posted: boolean
+  posted_comment_id: string | null
+  browse_url: string | null
+  /** A post was started and its outcome never recorded (a crash mid-request). The
+   *  comment may or may not be live and nothing can tell - so it is never
+   *  auto-retried, and the user has to open the ticket and look. */
+  outcome_unknown: boolean
+  /** Why this ticket failed, if it did. Its siblings may have succeeded. */
+  error: string | null
 }
 
 // A brand-new task to create when no existing task fits (created on approve).
@@ -277,33 +309,62 @@ export interface GeneratedWorklogPropose {
 
 // The high-level status update itself — decisions/architecture/status, NOT a
 // time worklog. `summary` is the one-paragraph lead; the arrays add detail.
+/** One labelled bullet group in an update. `heading` is model-chosen to fit the
+ *  work (dev "Decisions"/"Architecture", marketer "Campaigns", editor "Edits"). */
+export interface WorklogSection {
+  heading: string
+  points: string[]
+}
+
 export interface GeneratedWorklogUpdate {
   summary: string
-  decisions: string[]
-  architecture: string[]
+  /** Dynamic, work-fitting labelled bullet groups (0..N; may be empty). */
+  sections: WorklogSection[]
   status: string
 }
 
 export interface DayTaskWorklogDraft {
+  /** `posted` means EVERY target took the update; a partial delivery stays
+   *  `approved` and is retryable. */
   state: 'drafted' | 'approved' | 'posted'
+  /** The tracker a proposal would be created on. Targets carry their own. */
   provider: string
-  match: GeneratedWorklogMatch | null
+  /** The tickets this update posts to, strongest match first. Empty when the draft
+   *  is a proposal, or once every match has been dismissed. */
+  targets: WorklogTarget[]
   propose: GeneratedWorklogPropose | null
   update: GeneratedWorklogUpdate
   reasoning: string
-  target_key: string | null       // matched or created key; null until known
   created_task_key: string | null
-  posted_comment_id: string | null
+  /** The last draft-level failure. Per-ticket failures live on the target. */
+  error: string | null
+}
+
+/** One ticket the worklog picker can retarget a draft at (tray
+ *  `get_board_tickets`). The whole open board - unlike the matcher's candidates,
+ *  which are only the day's planned tasks. */
+export interface BoardTicket {
+  task_key: string
+  provider: string
+  title: string
+  issue_type: string
+  epic_title: string
+}
+
+/** One ticket's outcome in an approve. */
+export interface PostedTarget {
+  task_key: string
+  posted: boolean
   browse_url: string | null
   error: string | null
 }
 
 export interface ApproveWorklogResponse {
+  /** Every ticket took the update. A partial success is `false` and retryable. */
   posted: boolean
-  target_key: string | null
+  targets: PostedTarget[]
   created_task_key: string | null
   created: boolean
-  browse_url: string | null
   error: string | null
 }
 
@@ -421,6 +482,72 @@ export interface PlanResponse {
   available: AvailableTask[]
 }
 
+// ── User-authored tasks (`draft_plan_task` / `create_plan_task` / `edit_plan_task`) ──
+
+/** The sentinel provider for a personal task - one the user wrote that lives only in
+ *  Meridian and was never filed on a tracker. Mirrors Rust's
+ *  `meridian_core::task_create::LOCAL_PROVIDER`; compare against it rather than
+ *  hardcoding the string, since it is what decides "show a key chip / an Open link". */
+export const LOCAL_PROVIDER = 'local'
+
+/** The most tasks a day's plan may hold. Mirrors Rust's
+ *  `meridian_core::plan::MAX_PLAN_TASKS`, which is the guard that actually holds -
+ *  the UI stop is only the faster of the two, so a mismatch here degrades to a
+ *  server error rather than an overflowing plan.
+ *
+ *  It matters beyond tidiness: the plan IS the worklog matcher's candidate set, so
+ *  an eleventh task doesn't just clutter a list, it dilutes every match made
+ *  against it. */
+export const MAX_PLAN_TASKS = 10
+
+/** An AI-drafted task, for the user to review and edit before creating.
+ *  Every field may be empty: `error` set + empty fields is the honest answer when the
+ *  model was unreachable, and the composer then shows plain editable fields. It is
+ *  never a reason to block creation. */
+export interface PlanTaskDraft {
+  title: string
+  description: string
+  issue_type: string        // 'Task' | 'Bug'
+  error: string | null      // soft: "couldn't draft - write it yourself"
+}
+
+export interface CreatePlanTaskBody {
+  title: string
+  description: string
+  issue_type: string
+  /** `'local'` for a personal task, or a provider id to file a real ticket. */
+  target: string
+  /** The day to add it to; empty = today (resolved server-side). */
+  day: string
+}
+
+export interface CreatedTask {
+  task_key: string
+  provider: string
+  /** True when a real ticket was filed on a tracker. */
+  synced: boolean
+  /** A soft caveat to surface (e.g. filed, but not on your board until assigned).
+   *  Not an error - the task exists and works. */
+  note: string | null
+}
+
+export interface EditPlanTaskBody {
+  task_key: string
+  /** `null`/absent leaves the field alone. */
+  title?: string
+  description?: string
+}
+
+export interface EditPlanTaskResult {
+  task_key: string
+  provider: string
+  /** `applied` - it landed; `redirected` - this tracker has no API for it, so offer
+   *  `browse_url` instead. */
+  status: string
+  browse_url: string | null
+  reason: string | null
+}
+
 // ── Notices (`get_notices`) ──────────────────────────────────────────────────
 
 export interface Notice {
@@ -473,6 +600,54 @@ export interface AppInfo {
   channel: 'dev' | 'staging' | 'prod'
 }
 
+// ── LLM Lab (`get_llm_experiments` / `get_llm_experiment` / `run_llm_experiment`)
+// Dev-only multi-provider comparison harness: replay one prose stage from stored
+// inputs across several provider/model variants. Mirrors the Rust serde shapes in
+// meridian-core/src/readers/llm_experiments.rs and the run body in
+// tray/src-tauri/src/commands/llm_lab.rs. Never rendered outside a dev build.
+
+export type LlmExperimentProcess = 'hour_report' | 'workstream_fold' | 'worklog_generate' | 'day_fold'
+
+export interface LlmExperimentSummary {
+  id: number
+  process: string           // LlmExperimentProcess wire form
+  input_ref: string         // "YYYY-MM-DDTHH" or "YYYY-MM-DD/<task_id>"
+  status: 'running' | 'done' | 'failed'
+  n_variants: number
+  n_done: number            // variants already terminal - the progress numerator
+  created_at: string
+  finished_at: string | null
+}
+
+export interface LlmExperimentResult {
+  variant_idx: number
+  provider: string          // LlmProviderId wire form
+  model: string             // '' = the provider's default model
+  params_json: string
+  status: 'pending' | 'running' | 'ok' | 'failed' | 'rate_limited'
+  output_text: string | null      // the model's raw answer
+  output_rendered: string | null  // what the pipeline would have made of it
+  error: string | null
+  input_tokens: number | null     // CLI backends report 0 - render as "-", not 0
+  output_tokens: number | null
+  elapsed_s: number | null
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface LlmExperimentDetail extends Omit<LlmExperimentSummary, 'n_done'> {
+  input_json: string        // {"user","label","render_ctx"} - the exact request sent
+  results: LlmExperimentResult[]
+}
+
+export interface RunLlmExperimentBody {
+  process: LlmExperimentProcess
+  hour?: string             // the two hour processes
+  day?: string              // worklog_generate…
+  task_id?: string          // …with this
+  variants: string[]        // "provider" or "provider:model" tokens
+}
+
 // ── DMG auto-update (`check_update` / `install_update` / `update-progress`) ─────
 // Mirrors `tray/src-tauri/src/update.rs`'s `UpdateStatus` (serde camelCase). A
 // failed check is data (`state: 'error'` + `error`), never a thrown command, so
@@ -515,4 +690,84 @@ export interface RoadmapItem {
 export interface WhatsNewData {
   releases: ReleaseNote[]
   roadmap: RoadmapItem[]
+}
+
+// ── Daily summary (`get_day_summary` / `generate_day_summary`) ────────────────
+
+/** One visualisation the model chose for a day. */
+export interface SummaryPanel {
+  title: string
+  /** The model's reason for choosing THIS form for THIS data. */
+  why: string
+  /**
+   * A raw Vega-Lite spec. Server-validated before it ever reaches here, and its
+   * data is always bound BY NAME (`{"data": {"name": "segments"}}`) — the real
+   * rows come from `get_day_summary_data` and are injected at render, so a stored
+   * chart can never disagree with the timeline beside it. Typed `unknown` rather
+   * than `any`: nothing here should read into it, only hand it to vega-embed.
+   */
+  spec: unknown
+}
+
+/** A day's composed review. `null` from `get_day_summary` until one is generated. */
+export interface DaySummary {
+  day: string
+  /** The model's prose. Empty on the fallback path. */
+  narrative: string
+  insights: string[]
+  /**
+   * 0, 1 or 2. **Empty is a correct, common answer** — charts are optional and
+   * most days are best told in words alone, so an empty array means the model
+   * judged none worth showing, NOT that something failed (see `fallback`).
+   */
+  panels: SummaryPanel[]
+  /** Who ACTUALLY answered — the resolver degrades to local on failure. */
+  provider: string
+  /** The model override in force (`sonnet`/`haiku`), or '' for the default. */
+  model: string
+  /**
+   * The summary could not be composed at all (the call failed, or the answer was
+   * unparseable) and one deterministic chart was substituted. Not an error — the
+   * screen always renders — but it is why the narrative is empty when it is.
+   *
+   * NOT the same as `panels` being empty: a summary with no charts and a good
+   * narrative is the normal, intended outcome.
+   */
+  fallback: boolean
+  generated_at: string
+}
+
+/** The day's headline numbers, as `day_evidence` derives them. */
+export interface DaySummaryScalars {
+  /** Engaged seconds — the SAME number the home page's FOCUS card shows. */
+  focus_s: number
+  /** Coding seconds incl. folded-in agent time — the home page's CODING card. */
+  coding_s: number
+  /** Workstreams of at least `task_min_minutes`. The count worth saying out loud. */
+  task_count: number
+  /** The threshold below which a workstream is a detour, not a thing you did. */
+  task_min_minutes: number
+  workstream_count_including_brief: number
+  idle_s: number
+  agent_s: number
+  session_count: number
+  switch_count: number
+}
+
+/** What `get_day_summary_data` returns: the panels' rows plus the screen's numbers. */
+export interface DaySummaryData {
+  /** name → rows. What a panel's spec binds to by name. */
+  datasets: Record<string, Record<string, unknown>[]>
+  scalars: DaySummaryScalars
+}
+
+// ── Recent captured apps (`get_recent_capture_apps`) ─────────────────────────
+
+/** One app Meridian has captured recently — the Settings ignore-picker source.
+ *  Mirrors `meridian_core::capture_apps::CaptureApp`. */
+export interface CaptureApp {
+  /** App name exactly as captured — what `ignored_apps` matches against. */
+  app: string
+  /** Frame count over the window; a recency/volume hint, not a duration. */
+  frames: number
 }

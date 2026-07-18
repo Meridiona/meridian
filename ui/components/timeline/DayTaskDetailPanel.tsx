@@ -18,6 +18,7 @@
 
 import { useEffect, useState } from 'react'
 import { fmtDur } from '@/components/atoms'
+import { GeneratingBar } from '@/components/GeneratingBar'
 import { load } from '@/lib/bridge'
 import { connectedTrackerNames } from '@/lib/integrations'
 import type { DayTaskWorklogDraft, IntegrationsResponse } from '@/lib/api-types'
@@ -25,6 +26,8 @@ import { clockLabel, type LaidSegment } from './dayTaskLayout'
 import type { SettingsSection } from './settings/types'
 import { Bullets, Field, LinkChip } from './dayTaskKit'
 import { useWorklog, type WorklogState } from './useWorklog'
+import { WorklogTicketPicker } from './WorklogTicketPicker'
+import { DraftTargets } from './WorklogTargets'
 
 /** Join tracker names for prose: `['Jira']`→"Jira", `['Jira','Linear']`→"Jira and
  *  Linear", more →"Jira, Linear and GitHub". */
@@ -50,10 +53,11 @@ export interface DayTaskDetail {
 
 /** The selected workstream's breakdown, rendered inside the right column, with a
  *  pinned worklog action bar so Generate/Approve is always reachable. */
-export function DayTaskDetailPanel({ detail, onClose, onOpenSettings }: {
+export function DayTaskDetailPanel({ detail, onClose, onOpenSettings, onOpenTask }: {
   detail: DayTaskDetail
   onClose: () => void
   onOpenSettings: (section?: SettingsSection) => void
+  onOpenTask: (key: string, title?: string) => void
 }) {
   const { day, id, title, minutes, hue, segments, summary, footLo, footHi } = detail
   const range = segments.length > 0 ? `${clockLabel(footLo)} - ${clockLabel(footHi)}` : ''
@@ -88,7 +92,10 @@ export function DayTaskDetailPanel({ detail, onClose, onOpenSettings }: {
           <Field label="What was done"><Bullets items={summary} accent={hue} /></Field>
         )}
 
-        {wl.draft && <DraftPreview draft={wl.draft} hue={hue} linkedTicket={detail.linkedTicket} />}
+        {wl.draft && (
+          <DraftPreview draft={wl.draft} hue={hue} onOpenTask={onOpenTask}
+            busy={wl.phase === 'generating' || wl.phase === 'approving'} onDismiss={wl.dismiss} />
+        )}
       </div>
 
       {/* Pinned action bar — always visible, never scrolls out of reach. */}
@@ -164,59 +171,60 @@ function SegmentList({ segments, hue }: { segments: LaidSegment[]; hue: string }
 // ── Worklog: draft preview (scrolls) + pinned action footer ──────────────────
 
 /** The generated worklog draft — preview only; the actions live in the footer. */
-function DraftPreview({ draft, hue, linkedTicket }: {
-  draft: DayTaskWorklogDraft; hue: string; linkedTicket: string | null
+function DraftPreview({ draft, hue, busy, onOpenTask, onDismiss }: {
+  draft: DayTaskWorklogDraft; hue: string; busy: boolean
+  onOpenTask: (key: string, title?: string) => void
+  onDismiss: (taskKey: string) => void
 }) {
-  const linkKey = draft.target_key || linkedTicket
+  // No link chip here: the tickets are already named twice below — by DraftTargets
+  // ("Comment on KAN-12 · 87% match") before you post, and by the footer's
+  // "✓ Posted to KAN-12" + its chip after. A third mention beside the heading was
+  // just noise repeating the same key down the panel.
   return (
     <div>
-      <div className="flex items-center justify-between mb-2.5">
-        <p className="mt-label" style={{ color: hue, fontWeight: 700 }}>Worklog draft</p>
-        {linkKey && <LinkChip label={linkKey} url={draft.browse_url} />}
-      </div>
+      <p className="mt-label mb-2.5" style={{ color: hue, fontWeight: 700 }}>Worklog draft</p>
       <div className="rounded-xl p-4 space-y-3"
         style={{ border: `1px solid color-mix(in srgb, ${hue} 26%, transparent)`, background: `color-mix(in srgb, ${hue} 5%, var(--t-card))` }}>
-        <DraftBanner draft={draft} />
+        <DraftTargets draft={draft} busy={busy} onOpenTask={onOpenTask} onDismiss={onDismiss} />
         {draft.update.summary && (
           <p className="mt-body-sm" style={{ color: 'var(--t-title)', fontSize: 12.5, lineHeight: 1.55 }}>{draft.update.summary}</p>
         )}
-        {draft.update.decisions.length > 0 && <Field label="Decisions"><Bullets items={draft.update.decisions} size={12} /></Field>}
-        {draft.update.architecture.length > 0 && <Field label="Architecture"><Bullets items={draft.update.architecture} size={12} /></Field>}
+        {draft.update.sections
+          .filter((sec) => sec.heading.trim() && sec.points.some((p) => p.trim()))
+          .map((sec, i) => (
+            <Field key={`${sec.heading}-${i}`} label={sec.heading}>
+              <Bullets items={sec.points.filter((p) => p.trim())} size={12} />
+            </Field>
+          ))}
         {draft.update.status && (
           <Field label="Status">
             <p className="mt-body-sm" style={{ color: 'var(--t-muted)', fontSize: 12, lineHeight: 1.5 }}>{draft.update.status}</p>
           </Field>
         )}
       </div>
+      <DraftProvenance draft={draft} />
     </div>
   )
 }
 
-/** Where the update will land: comment on a matched task, or create a proposed one. */
-function DraftBanner({ draft }: { draft: DayTaskWorklogDraft }) {
-  if (draft.match) {
-    return (
-      <div className="rounded-lg px-3 py-2" style={{ background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)' }}>
-        <p className="mt-body-sm" style={{ color: 'var(--color-state-proposal)', fontSize: 12, fontWeight: 700 }}>
-          Comment on {draft.match.task_key}
-          <span style={{ opacity: 0.7, fontWeight: 400 }}> · {Math.round(draft.match.confidence * 100)}% match</span>
-        </p>
-      </div>
-    )
-  }
-  if (draft.propose) {
-    return (
-      <div className="rounded-lg px-3 py-2" style={{ background: 'color-mix(in srgb, var(--color-state-pending) 12%, transparent)' }}>
-        <p className="mt-body-sm" style={{ color: 'var(--color-state-pending)', fontSize: 12, fontWeight: 700 }}>
-          New {draft.propose.issue_type}: {draft.propose.title}
-        </p>
-        {draft.propose.description && (
-          <p className="mt-body-sm mt-1" style={{ color: 'var(--t-muted)', fontSize: 11.5, lineHeight: 1.45 }}>{draft.propose.description}</p>
-        )}
-      </div>
-    )
-  }
-  return null
+/** One line under the draft saying what it was actually compared against.
+ *
+ *  Without this a proposal is silently ambiguous: the user can't tell "your board
+ *  has nothing like this" from "this wasn't on today's list", and those call for
+ *  completely different reactions. Say which it was, and point at the fix. Stays
+ *  quiet once the user has taken over the choice - they know what they picked. */
+function DraftProvenance({ draft }: { draft: DayTaskWorklogDraft }) {
+  // Once every ticket on the draft is the user's own pick, there is nothing left to
+  // explain — they know where they sent it.
+  if (draft.targets.length > 0 && draft.targets.every((t) => t.manual)) return null
+  const text = draft.propose
+    ? 'This work didn\'t match any of today\'s tasks, so Meridian drafted a new one. Only today\'s tasks are compared - if it belongs to another ticket, pick it below.'
+    : 'Matched against today\'s tasks only, not your whole board. Remove any that don\'t fit, or pick a different ticket below.'
+  return (
+    <p className="mt-body-sm mt-2 px-1" style={{ color: 'var(--t-faint)', fontSize: 11.5, lineHeight: 1.5 }}>
+      {text}
+    </p>
+  )
 }
 
 /** The pinned footer holding the primary worklog action, with a clear time hint.
@@ -228,12 +236,18 @@ function WorklogFooter({ wl, hue, linkedTicket, integrations, trackers, onOpenSe
   trackers: string[]
   onOpenSettings: (section?: SettingsSection) => void
 }) {
-  const { draft, phase, error, posted, confirming, setConfirming, generate, approve } = wl
+  const { draft, phase, error, posted, confirming, setConfirming, generate, approve, retarget } = wl
   const busy = phase === 'generating' || phase === 'approving'
-  const linkKey = draft?.target_key || linkedTicket
+  const done = draft?.targets.filter((t) => t.posted) ?? []
   // Integrations loaded and nothing connected → the feature can't match/post, so
   // prompt to connect a tracker instead of offering a dead Generate.
   const noTracker = integrations !== null && trackers.length === 0
+
+  // The manual ticket picker. Local to the footer and reset whenever the draft's
+  // targets change, so a successful pick closes it without the caller wiring that up.
+  const [picking, setPicking] = useState(false)
+  const targetKeys = draft?.targets.map((t) => t.task_key).join(',')
+  useEffect(() => { setPicking(false) }, [targetKeys, draft?.propose?.title])
 
   return (
     <div className="shrink-0 p-4 space-y-2.5"
@@ -246,31 +260,62 @@ function WorklogFooter({ wl, hue, linkedTicket, integrations, trackers, onOpenSe
       )}
 
       {phase === 'generating' ? (
-        <GeneratingBar hue={hue} />
+        <GeneratingBar hue={hue} label="Generating your worklog…"
+          detail="Reading your work, comparing it against today's tasks and drafting the update - you can keep using Meridian while this runs." />
       ) : posted ? (
-        <div className="flex items-center justify-between">
-          <p className="mt-body-sm inline-flex items-center gap-1.5" style={{ color: 'var(--color-state-approved)', fontSize: 13, fontWeight: 700 }}>
-            <span aria-hidden>✓</span> Posted{linkKey ? ` to ${linkKey}` : ''}
-          </p>
-          {linkKey && <LinkChip label={linkKey} url={draft?.browse_url} />}
-        </div>
+        <PostedBar done={done} linkedTicket={linkedTicket} />
       ) : !draft ? (
         noTracker
           ? <ConnectTrackerCta hue={hue} onConnect={() => onOpenSettings('integrations')} />
           : <GenerateCta hue={hue} trackers={trackers} disabled={busy || phase === 'loading'} onGenerate={generate} />
+      ) : picking ? (
+        <WorklogTicketPicker current={draft.targets[0]?.task_key ?? null} busy={busy}
+          onPick={retarget} onCancel={() => setPicking(false)} />
       ) : confirming ? (
         <ConfirmPost draft={draft} busy={busy} approving={phase === 'approving'} onApprove={approve} onCancel={() => setConfirming(false)} />
       ) : (
-        <DraftActions draft={draft} hue={hue} busy={busy} onApprove={() => setConfirming(true)} onRegenerate={generate} />
+        <DraftActions draft={draft} hue={hue} busy={busy} onApprove={() => setConfirming(true)}
+          onRegenerate={generate} onPick={() => setPicking(true)} />
       )}
     </div>
   )
 }
 
-/** No draft yet, a tracker connected — the primary generate CTA. The copy names
- *  the connected tracker (e.g. Jira) and spells out what will happen, since that
- *  is clearer than a vague "generate". No time claim here — that's shown once it
- *  is actually running (GeneratingBar). */
+/** Everything posted — one link chip per ticket that took the update.
+ *
+ *  Lists every ticket rather than the day-task's `linked_ticket`: that column holds
+ *  one key, so a two-ticket update would silently report half of what it did. The
+ *  linked ticket is only the fallback for a row posted before the draft existed. */
+function PostedBar({ done, linkedTicket }: { done: PostedLink[]; linkedTicket: string | null }) {
+  const links: PostedLink[] = done.length > 0
+    ? done
+    : linkedTicket ? [{ task_key: linkedTicket, browse_url: null }] : []
+  return (
+    <div className="space-y-1.5">
+      <p className="mt-body-sm inline-flex items-center gap-1.5" style={{ color: 'var(--color-state-approved)', fontSize: 13, fontWeight: 700 }}>
+        <span aria-hidden>✓</span> Posted{links.length > 1 ? ` to ${links.length} tickets` : links[0] ? ` to ${links[0].task_key}` : ''}
+      </p>
+      {links.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {links.map((l) => <LinkChip key={l.task_key} label={l.task_key} url={l.browse_url} />)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** The slice of a posted target [`PostedBar`] links to. */
+interface PostedLink { task_key: string; browse_url: string | null }
+
+/** No draft yet, a tracker connected — the primary generate CTA.
+ *
+ *  The copy says OUT LOUD that only today's tasks are compared against. That is
+ *  not a detail: the user picked those tasks this morning, and if they don't know
+ *  that's the whole comparison set, a proposal for unplanned work reads as
+ *  Meridian failing to find an obvious match rather than doing what it said. The
+ *  second sentence is the release valve, so the limit never feels like a wall.
+ *
+ *  No time claim here - that's shown once it is actually running (GeneratingBar). */
 function GenerateCta({ hue, trackers, disabled, onGenerate }: {
   hue: string; trackers: string[]; disabled: boolean; onGenerate: () => void
 }) {
@@ -283,47 +328,73 @@ function GenerateCta({ hue, trackers, disabled, onGenerate }: {
         <span aria-hidden>✨</span> Generate worklog
       </button>
       <p className="mt-2.5 text-center" style={{ color: 'var(--t-muted)', fontSize: 13, lineHeight: 1.55 }}>
-        Meridian finds which <span style={{ fontWeight: 700, color: 'var(--t-title)' }}>{where}</span> issue this work belongs to - or proposes a new one if nothing fits - and writes a short status update. You review it here before anything is posted to {where}.
+        Meridian checks this work against <span style={{ fontWeight: 700, color: 'var(--t-title)' }}>today&apos;s tasks only</span> - not your whole board - and writes a short status update. If it doesn&apos;t belong to any of them, it proposes a new {where} issue instead, and you can pick a different ticket yourself. Nothing posts until you approve it.
       </p>
     </div>
   )
 }
 
 /** No draft yet, and no tracker connected — the feature can't match or post, so
- *  invite the user to connect a PM app instead. */
+ *  invite the user to connect a PM app instead.
+ *
+ *  Deliberately no draft on this path: a status update with nowhere to go is a
+ *  dead end dressed up as a feature. Lead with what connecting BUYS (drafting,
+ *  matching, posting), not with the fact that something is missing. */
 function ConnectTrackerCta({ hue, onConnect }: { hue: string; onConnect: () => void }) {
   return (
     <div>
       <button onClick={onConnect}
         className="w-full inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3"
         style={{ fontSize: 14, fontWeight: 700, color: '#fff', background: hue, cursor: 'pointer', boxShadow: `0 8px 22px -10px ${hue}` }}>
-        <span aria-hidden>🔗</span> Connect a project tracker
+        <span aria-hidden>🔗</span> Connect a tracker to auto-log this
       </button>
       <p className="mt-2.5 text-center" style={{ color: 'var(--t-muted)', fontSize: 13, lineHeight: 1.55 }}>
-        Connect Jira, Linear, GitHub, Trello, or Azure DevOps and Meridian will automatically match this work to the right issue and keep your tracker in sync - drafting status updates you approve before they post.
+        Connect Jira, Linear, GitHub, Trello, or Azure DevOps and Meridian drafts this work into a status update, matches it to the right issue, and posts it for you - so your tickets stay current without you writing them up. You approve every post.
       </p>
     </div>
   )
 }
 
-/** Draft ready — approve (primary) or regenerate (overwrites). Clicking
- *  Regenerate flips the footer straight to the GeneratingBar, so this control
- *  itself never needs an in-progress label. */
-function DraftActions({ draft, hue, busy, onApprove, onRegenerate }: {
-  draft: DayTaskWorklogDraft; hue: string; busy: boolean; onApprove: () => void; onRegenerate: () => void
+/** Draft ready — approve (primary), regenerate (overwrites), or pick the ticket
+ *  yourself. Clicking Regenerate flips the footer straight to the GeneratingBar,
+ *  so that control itself never needs an in-progress label.
+ *
+ *  The pick affordance is ALWAYS offered, not just when nothing matched. Meridian
+ *  only compares against today's planned tasks, so it can be confidently wrong
+ *  about a day that went off-plan, and there'd be nothing the user could do about
+ *  it. The wording changes with the draft, since "a different ticket" is
+ *  nonsense when no ticket was chosen. Picking replaces every matched ticket with
+ *  the one chosen; to drop just one of several, use the ✕ on its row. */
+function DraftActions({ draft, hue, busy, onApprove, onRegenerate, onPick }: {
+  draft: DayTaskWorklogDraft; hue: string; busy: boolean
+  onApprove: () => void; onRegenerate: () => void; onPick: () => void
 }) {
+  // Nothing to post to (every match dismissed, no proposal) — approve would only
+  // fail, so don't offer it. The picker below is the way out.
+  const nowhere = !draft.propose && draft.targets.length === 0
   return (
-    <div className="flex items-center gap-2">
-      <button onClick={onApprove} disabled={busy}
-        className="mt-body-sm flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5"
-        style={{ fontWeight: 700, color: '#fff', background: hue, opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer', boxShadow: `0 8px 22px -10px ${hue}` }}>
-        {draft.propose ? 'Create & post' : 'Approve & post'}
-      </button>
-      <button onClick={onRegenerate} disabled={busy}
-        className="mt-body-sm inline-flex items-center gap-1.5 rounded-xl px-4 py-2.5"
-        style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)', opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer' }}
-        title="Regenerate - overwrites this draft">
-        <span aria-hidden>↻</span> Regenerate
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <button onClick={onApprove} disabled={busy || nowhere}
+          className="mt-body-sm flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5"
+          style={{ fontWeight: 700, color: '#fff', background: hue, opacity: busy || nowhere ? 0.55 : 1, cursor: busy || nowhere ? 'default' : 'pointer', boxShadow: `0 8px 22px -10px ${hue}` }}>
+          {draft.propose ? 'Create & post' : draft.targets.length > 1 ? `Approve & post to ${draft.targets.length}` : 'Approve & post'}
+        </button>
+        <button onClick={onRegenerate} disabled={busy}
+          className="mt-body-sm inline-flex items-center gap-1.5 rounded-xl px-4 py-2.5"
+          style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)', opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer' }}
+          title="Regenerate - overwrites this draft">
+          <span aria-hidden>↻</span> Regenerate
+        </button>
+      </div>
+      <button onClick={onPick} disabled={busy}
+        className="mt-body-sm w-full rounded-lg px-3 py-2"
+        style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)', fontSize: 12.5, opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer' }}>
+        {draft.propose || draft.targets.length === 0
+          ? 'Match to one of my tickets instead'
+          : draft.targets.length > 1
+            ? 'Post to just one ticket instead'
+            : 'Match to a different ticket'}
       </button>
     </div>
   )
@@ -333,10 +404,16 @@ function DraftActions({ draft, hue, busy, onApprove, onRegenerate }: {
 function ConfirmPost({ draft, busy, approving, onApprove, onCancel }: {
   draft: DayTaskWorklogDraft; busy: boolean; approving: boolean; onApprove: () => void; onCancel: () => void
 }) {
+  // Name every ticket, not a count: this is the last screen before a comment goes
+  // on someone else's board, and "post to 3 tickets?" is not something you can
+  // meaningfully say yes to.
+  const where = draft.targets.map((t) => t.task_key).join(', ')
   return (
     <div className="space-y-2">
       <p className="mt-body-sm text-center" style={{ color: 'var(--t-muted)', fontSize: 12.5 }}>
-        {draft.propose ? `Create a new ${draft.propose.issue_type} and post this update?` : `Post this update to ${draft.match?.task_key ?? 'the tracker'}?`}
+        {draft.propose
+          ? `Create a new ${draft.propose.issue_type} and post this update?`
+          : `Post this update to ${where || 'the tracker'}?`}
       </p>
       <div className="flex items-center gap-2">
         <button onClick={onApprove} disabled={busy}
@@ -354,22 +431,3 @@ function ConfirmPost({ draft, busy, approving, onApprove, onCancel }: {
   )
 }
 
-/** The in-progress state: an indeterminate bar + a plain time expectation. */
-function GeneratingBar({ hue }: { hue: string }) {
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <p className="mt-body-sm inline-flex items-center gap-2" style={{ color: 'var(--t-title)', fontSize: 12.5, fontWeight: 600 }}>
-          <span aria-hidden>✨</span> Generating your worklog…
-        </p>
-        <span className="mt-body-sm animate-pulse" style={{ color: 'var(--t-faint)', fontSize: 11 }}>this might take a minute or so</span>
-      </div>
-      <div className="rounded-full overflow-hidden" style={{ height: 4, background: 'var(--t-hair)' }}>
-        <div className="h-full rounded-full animate-pulse" style={{ width: '55%', background: hue }} />
-      </div>
-      <p className="mt-body-sm" style={{ color: 'var(--t-faint)', fontSize: 11, lineHeight: 1.5 }}>
-        Reading your work, matching it to a task and drafting the update - you can keep using Meridian while this runs.
-      </p>
-    </div>
-  )
-}

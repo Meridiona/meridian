@@ -1,8 +1,9 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// The hour-row status indicators:
-//   - `HourTakeover` — takes over the ENTIRE row (not a small badge) whenever
-//     an hour is on the worklog pipeline's radar. Renders the SAME purple
+// The hour status indicators:
+//   - `HourTakeover` — the live-hour card: an unmistakable strip, not a badge
+//     tucked in a corner, saying this hour is on the pipeline's radar. Renders
+//     the SAME purple
 //     shimmering card shape in both modes (ported from the Claude Design mock,
 //     Meridian Timeline.dc.html — its `showGenerating` card is the only
 //     current-hour treatment the design defines, there's no separate muted
@@ -14,12 +15,20 @@
 //         `pending` to `done`). Steady icon, no dot row, "● Tracking" badge.
 //       * `generating` — the real live-generation window. Pulsing icon + ring,
 //         staggered 3-dot "typing" row, "◷ In progress" badge.
-//     Replaces the row's normal content (cards/Quiet/solo-strip) for either
-//     mode — TimelineColumn renders this INSTEAD of them.
-//   - `HourBadges` — the small "Paused" pill for tracking gaps, used on every
-//     OTHER (non-current, non-generating) hour — blinking when paused THIS
-//     instant (the toolbar/now-dot's `live-dot` pulse), static/dimmed when
-//     it's a historical pause the hour merely overlapped.
+//     Rendered by DayTaskColumn, once, at the foot of the day's timeline when
+//     the day is today — the hour in progress, after the bands for the hours
+//     that have finished. (It was built for the old 24-row TimelineColumn, which
+//     no longer renders and where it replaced a whole row's content; the card is
+//     self-contained, so the move cost it nothing.)
+//   - `HourBadges` — the small "Paused" pill for tracking gaps: blinking when
+//     paused THIS instant (the toolbar/now-dot's `live-dot` pulse),
+//     static/dimmed when it's a historical pause the hour merely overlapped.
+//     NOT CURRENTLY RENDERED ANYWHERE. Its only caller was TimelineColumn's
+//     per-hour row, and TimelineColumn is itself dead (DayTaskColumn replaced
+//     it and nothing imports it). Kept, not deleted, because the day-task
+//     timeline has no paused treatment at all yet and this is the design for
+//     one — but it is dead code today, and worth knowing that before trusting
+//     it works.
 
 'use client'
 

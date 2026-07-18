@@ -28,10 +28,14 @@ import { PlanModal } from './PlanModal'
 import { TasksModal } from './TasksModal'
 import { TaskDetailDialog } from './TaskDetailDialog'
 import { ReportModal } from './ReportModal'
+import { LlmLabScreen } from './llmlab/LlmLabScreen'
 import { WhatsNewModal } from './WhatsNewModal'
+import { DaySummaryOverlay } from '@/components/summary/DaySummaryOverlay'
+import type { AppInfo } from '@/lib/api-types'
 import type { SettingsSection } from './settings/types'
 
-export type ActiveModal = 'review' | 'cleanup' | 'settings' | 'plan' | 'tasks' | 'report' | 'whats-new' | null
+export type ActiveModal =
+  | 'review' | 'cleanup' | 'settings' | 'plan' | 'tasks' | 'report' | 'llmlab' | 'whats-new' | 'summary' | null
 
 export default function MeridianTimelineShell() {
   const [day, setDay] = useState<string>(dayString(0))
@@ -59,6 +63,12 @@ export default function MeridianTimelineShell() {
   // from the timeline/Overview panel.
   const [openTask, setOpenTask] = useState<{ key: string; title?: string } | null>(null)
 
+  // Build channel, for dev-only surfaces (the LLM Lab). 'dev' only under
+  // `tauri dev`/`cargo run` (cfg!(debug_assertions) via get_app_info) - staging
+  // and prod builds never see the Lab button or modal, and its backing commands
+  // are additionally refused there (commands/llm_lab.rs).
+  const [channel, setChannel] = useState<string | null>(null)
+
   const data = useTimelineData(day)
   const { items, isSolo, connectedProviderName, connectedProviderId, isToday } = data
   const pendingCount = items.filter(isPending).length
@@ -67,6 +77,9 @@ export default function MeridianTimelineShell() {
   useEffect(() => {
     load<RuntimeSettings>('/api/settings', 'get_settings')
       .then(s => applyTheme(s.theme))
+      .catch(() => {})
+    load<AppInfo>('/api/version', 'get_app_info')
+      .then(info => setChannel(info.channel))
       .catch(() => {})
   }, [])
 
@@ -167,13 +180,17 @@ export default function MeridianTimelineShell() {
         connectedProviderId={connectedProviderId}
         onOpenSettings={(section) => { setSettingsSection(section); setActiveModal('settings') }}
         onOpenReport={() => setActiveModal('report')}
+        showLlmLab={channel === 'dev'}
+        onOpenLlmLab={() => setActiveModal('llmlab')}
         onOpenWhatsNew={() => setActiveModal('whats-new')}
+        onOpenSummary={() => setActiveModal('summary')}
       />
 
       <div className="flex flex-1 min-h-0">
         <div className="relative flex-1 min-w-0 min-h-0 flex flex-col">
           <DayTaskColumn day={day} isToday={isToday}
-            selectedId={selectedDayTask?.id ?? null} onSelect={selectDayTask} />
+            selectedId={selectedDayTask?.id ?? null} onSelect={selectDayTask}
+            hourStatus={data.hourStatus} capturing={data.capturing} isSolo={isSolo} />
 
           {!isSolo && (
             <FloatingDraftsPill count={pendingCount}
@@ -200,12 +217,30 @@ export default function MeridianTimelineShell() {
         <ReviewModal items={items} actions={data.actions} focusKey={reviewFocusKey}
           onClose={() => { setActiveModal(null); setReviewFocusKey(null) }} />
       )}
-      {activeModal === 'cleanup' && <CleanupModal onClose={() => setActiveModal(null)} />}
+      {activeModal === 'cleanup' && (
+        <CleanupModal onClose={() => { setActiveModal(null); data.refetchTasks() }} />
+      )}
       {activeModal === 'settings' && (
         <SettingsModal onClose={() => setActiveModal(null)} initialSection={settingsSection} />
       )}
       {activeModal === 'report' && <ReportModal onClose={() => setActiveModal(null)} />}
+      {activeModal === 'llmlab' && channel === 'dev' && (
+        <LlmLabScreen onClose={() => setActiveModal(null)} />
+      )}
       {activeModal === 'whats-new' && <WhatsNewModal onClose={closeWhatsNew} />}
+      {/* The summary owns the whole surface (one screen) and navigates days
+          itself, reusing the shell's own day state so closing it leaves you on
+          whatever day you read last. */}
+      {activeModal === 'summary' && (
+        <DaySummaryOverlay
+          day={day}
+          isToday={isToday}
+          onShiftDay={shift}
+          onClose={() => setActiveModal(null)}
+          onOpenSettings={(section) => { setSettingsSection(section); setActiveModal('settings') }}
+          onOpenTask={(key, title) => setOpenTask({ key, title })}
+        />
+      )}
       {activeModal === 'plan' && <PlanModal onClose={closePlan} />}
       {activeModal === 'tasks' && (
         <TasksModal onClose={() => setActiveModal(null)} onOpenTask={(key, title) => setOpenTask({ key, title })} />

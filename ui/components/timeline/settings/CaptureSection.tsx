@@ -12,6 +12,7 @@ import { Switch } from '@/components/ui/Switch'
 import { TextInput } from '@/components/ui/TextInput'
 import type { RuntimeSettings } from '@/lib/settings'
 import { SectionCard, SectionHeader, FieldRow, SaveButton, type SaveStatus } from './fields'
+import { CaptureIgnoreCards } from './CaptureIgnoreCards'
 
 export function CaptureSection({ settings, patch, save }: {
   settings: RuntimeSettings
@@ -76,6 +77,8 @@ export function CaptureSection({ settings, patch, save }: {
           }, setStreamingStatus)}
         />
       </SectionCard>
+
+      <CaptureIgnoreCards settings={settings} patch={patch} save={save} />
     </div>
   )
 }

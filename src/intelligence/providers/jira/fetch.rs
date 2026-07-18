@@ -67,6 +67,29 @@ pub(super) async fn discover_start_date_field(ctx: &JiraReqCtx) -> Option<String
 // Fetch
 // ---------------------------------------------------------------------------
 
+/// The active-task scope: everything assigned to you that isn't Done.
+///
+/// `Bug` belongs here for the same reason `Task` does — a bug you are assigned
+/// and working on is work, and Meridian's whole job is to notice work and log it
+/// against the right ticket. It was missing, and because this JQL is the ONLY
+/// thing that puts a Jira ticket into `pm_tasks`, a bug was invisible everywhere
+/// downstream: absent from the Tasks page, absent from the worklog matcher's
+/// candidates (so hours spent on it could only ever come back "no match"), and —
+/// worst — a bug filed through the plan composer got mirrored as a `'local'`
+/// shadow row, because `plan_tasks::create` reads "not in pm_tasks after a sync"
+/// as "self-assign failed". That shadow is meant to be temporary, healed by the
+/// next sync's UPSERT; for a bug the heal could never arrive, so a real Jira
+/// ticket sat in Meridian as a personal task forever.
+///
+/// Jira is the only provider that filtered by type at all (Linear/GitHub/Trello
+/// fetch everything assigned to you; Azure's WIQL is `AssignedTo = @me` alone),
+/// so this one clause was the whole discrepancy.
+///
+/// Sub-tasks stay out deliberately — see the note in `CLAUDE.md`/memory: we
+/// track tasks/features/bugs and their epics, never subtasks.
+const ACTIVE_TASK_JQL: &str = "assignee = currentUser() AND statusCategory != Done \
+     AND type IN (Task, Feature, Bug) ORDER BY updated DESC";
+
 #[tracing::instrument(
     skip(ctx),
     fields(
@@ -79,12 +102,7 @@ pub(super) async fn fetch(
     ctx: &JiraReqCtx,
     start_date_field: Option<&str>,
 ) -> Result<Vec<(JiraIssue, serde_json::Value)>> {
-    search(
-        ctx,
-        start_date_field,
-        "assignee = currentUser() AND statusCategory != Done AND type IN (Task, Feature) ORDER BY updated DESC",
-    )
-    .await
+    search(ctx, start_date_field, ACTIVE_TASK_JQL).await
 }
 
 /// Fetch specific issues by key regardless of assignee/status/type — used to
@@ -207,5 +225,26 @@ mod tests {
     fn key_in_jql_strips_embedded_quotes() {
         let keys = vec!["KAN\"-1".to_string()];
         assert_eq!(key_in_jql(&keys), r#"key IN ("KAN-1")"#);
+    }
+
+    /// This JQL is the ONLY door a Jira ticket enters `pm_tasks` through, so a
+    /// type missing from it is invisible everywhere downstream — Tasks page,
+    /// worklog candidates, plan. `Bug` was missing for exactly that reason and
+    /// bugs could never be worklogged. Assert each type explicitly: dropping one
+    /// is a silent, product-wide data loss with no error anywhere.
+    #[test]
+    fn active_task_jql_covers_tasks_features_and_bugs() {
+        assert!(ACTIVE_TASK_JQL.contains("Task"));
+        assert!(ACTIVE_TASK_JQL.contains("Feature"));
+        assert!(ACTIVE_TASK_JQL.contains("Bug"));
+    }
+
+    /// The scope is "mine, and not finished". Both halves matter: without the
+    /// assignee clause we would mirror the whole project; without the status one
+    /// every closed ticket would crowd the matcher's candidate list.
+    #[test]
+    fn active_task_jql_is_scoped_to_my_unfinished_work() {
+        assert!(ACTIVE_TASK_JQL.contains("assignee = currentUser()"));
+        assert!(ACTIVE_TASK_JQL.contains("statusCategory != Done"));
     }
 }

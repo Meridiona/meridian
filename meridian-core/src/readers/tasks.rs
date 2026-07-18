@@ -41,6 +41,13 @@ pub struct TaskSummary {
     pub issue_type: String,
     pub status: String,
     pub is_terminal: bool,
+    /// Is this task on the board — the same question, answered by the same code,
+    /// that decides the worklog matcher's candidate set
+    /// ([`crate::board::is_on_board`]). The Tasks page filters on THIS, not on
+    /// `is_terminal`, so what the page shows and what the model compares your
+    /// work against cannot drift apart. `is_terminal` stays on the wire because
+    /// the page renders finished work's time and its "Done" affordances.
+    pub on_board: bool,
     pub provider: String,
     pub url: String,
     pub epic_key: Option<String>,
@@ -336,12 +343,19 @@ pub async fn get_tasks(
         .map(|t| {
             let k = t.task_key;
             let agg = today_by_task.get(&k);
+            let hygiene = hygiene_by_key.get(&k).cloned();
+            let is_terminal = t.is_terminal.unwrap_or(0) != 0;
             TaskSummary {
                 title: t.title.unwrap_or_default(),
                 description: t.description_text.unwrap_or_default(),
                 issue_type: t.issue_type,
                 status: t.status_raw.unwrap_or_default(),
-                is_terminal: t.is_terminal.unwrap_or(0) != 0,
+                is_terminal,
+                // Same predicate the worklog matcher's candidate query runs on.
+                on_board: crate::board::is_on_board(
+                    is_terminal,
+                    hygiene.as_ref().and_then(|h| h.decision.as_deref()),
+                ),
                 provider: t
                     .provider
                     .filter(|s| !s.is_empty())
@@ -362,7 +376,7 @@ pub async fn get_tasks(
                 week_s: week_by_task.get(&k).copied().unwrap_or(0),
                 session_count: agg.map(|a| a.sessions).unwrap_or(0),
                 cats: agg.map(|a| a.cats.clone()).unwrap_or_default(),
-                hygiene: hygiene_by_key.get(&k).cloned(),
+                hygiene,
                 key: k,
             }
         })

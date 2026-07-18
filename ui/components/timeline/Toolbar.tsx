@@ -30,7 +30,8 @@ import { ProviderIcon } from '@/components/ProviderIcon'
 import type { SettingsSection } from './settings/types'
 
 export function Toolbar({
-  day, isToday, onShiftDay, isSolo, connectedProviderName, connectedProviderId, onOpenSettings, onOpenReport, onOpenWhatsNew,
+  day, isToday, onShiftDay, isSolo, connectedProviderName, connectedProviderId, onOpenSettings, onOpenReport, onOpenWhatsNew, onOpenSummary,
+  showLlmLab = false, onOpenLlmLab,
 }: {
   day: string
   isToday: boolean
@@ -41,6 +42,10 @@ export function Toolbar({
   onOpenSettings: (section?: SettingsSection) => void
   onOpenReport: () => void
   onOpenWhatsNew: () => void
+  onOpenSummary: () => void
+  /** Dev builds only ('dev' channel) - shows the LLM Lab flask button. */
+  showLlmLab?: boolean
+  onOpenLlmLab?: () => void
 }) {
   const [running, setRunning] = useState<boolean | null>(null)
 
@@ -70,6 +75,17 @@ export function Toolbar({
           </span>
           <NavBtn glyph="›" label="Next day" onClick={() => onShiftDay(1)} disabled={isToday} />
         </div>
+
+        {/* Daily summary — sits with the date nav because it is about the day
+            being viewed, not about the app. */}
+        <button onClick={onOpenSummary}
+          className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 bg-ctrl shrink-0 transition-transform hover:-translate-y-px"
+          style={{ border: '1px solid var(--t-ctrl-border)' }}
+          title="How this day went">
+          <span aria-hidden="true" className="inline-block rounded-full"
+            style={{ width: 6, height: 6, background: 'var(--accent)' }} />
+          <span className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>Daily summary</span>
+        </button>
       </div>
 
       {/* nav pill — centered regardless of left/right content width. */}
@@ -78,6 +94,15 @@ export function Toolbar({
       </div>
 
       <div className="ml-auto flex items-center gap-4">
+        {/* dev-only LLM Lab opener - never rendered on staging/prod channels */}
+        {showLlmLab && onOpenLlmLab && (
+          <button onClick={onOpenLlmLab} aria-label="LLM Lab (dev only)" title="LLM Lab (dev only)"
+            className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 bg-ctrl"
+            style={{ border: '1px dashed var(--t-ctrl-border)', cursor: 'pointer' }}>
+            <span aria-hidden="true" style={{ fontSize: 12, lineHeight: 1 }}>⚗</span>
+            <span className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>Lab</span>
+          </button>
+        )}
         <ThemeSwatches />
         <span className="w-px h-5" style={{ background: 'var(--t-hair)' }} />
         <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 bg-ctrl"

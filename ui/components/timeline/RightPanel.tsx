@@ -31,7 +31,7 @@ export function RightPanel({ data, selectedHour, selectedCardKey, dayTaskDetail,
   onOpenSettings: (section?: SettingsSection) => void
 }) {
   if (dayTaskDetail) {
-    return <DayTaskDetailPanel detail={dayTaskDetail} onClose={onCloseDayTask} onOpenSettings={onOpenSettings} />
+    return <DayTaskDetailPanel detail={dayTaskDetail} onClose={onCloseDayTask} onOpenSettings={onOpenSettings} onOpenTask={onOpenTask} />
   }
   if (selectedHour === null) {
     return <OverviewPanel data={data} onOpen={onOpen} onOpenTask={onOpenTask} onOpenSettings={onOpenSettings} />

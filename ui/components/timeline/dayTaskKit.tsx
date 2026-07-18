@@ -33,7 +33,7 @@ export function taskHue(id: string, idx: number): string {
 // ── Shared atoms ─────────────────────────────────────────────────────────────
 
 /** A bulleted list — the one bullet renderer for every day-task list (the panel's
- *  "What was done", and a worklog draft's decisions/architecture). `accent` tints
+ *  "What was done", and a worklog draft's update sections). `accent` tints
  *  the bullet marker; `size` sets the text size; `clamp` truncates each line to a
  *  single row (the space-constrained card preview). Renders nothing when empty. */
 export function Bullets({ items, accent = 'var(--t-faint)', size = 12.5, clamp = false }: {

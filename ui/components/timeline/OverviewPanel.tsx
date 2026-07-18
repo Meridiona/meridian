@@ -17,7 +17,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { fmtDur } from '@/components/atoms'
 import { load as loadData, mutate as mutateData, openExternal } from '@/lib/bridge'
-import type { PlanItem, PlanResponse, CodingAgentsResponse } from '@/lib/api-types'
+import { usePlan, refreshPlan } from '@/components/plan/planStore'
+import type { PlanItem, CodingAgentsResponse } from '@/lib/api-types'
 import { formatDayLabel, isPending } from './types'
 import { TimeByApp, appTotals } from './TimeByApp'
 import { TimeByCategory, categoryRows } from './TimeByCategory'
@@ -35,6 +36,9 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
 }) {
   const { today, isSolo, items, cleanupIssueCount, tasks, isToday, day } = data
   const dayLabel = isToday ? 'Today' : formatDayLabel(day)
+  // "Today's focus" only reads right on today; a past date shows that day's plan
+  // under a neutral "Focus" heading (the day itself is already named above).
+  const focusLabel = isToday ? "Today's focus" : 'Focus'
   const pendingCount = items.filter(isPending).length
   // Per-tool coding-agent breakdown (Claude Code/Codex/GitHub Copilot/Cursor
   // Agent) — get_coding_agents, polled independently of get_today since it's
@@ -42,11 +46,11 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
   // instead of one generic bucket.
   const [codingAgents, setCodingAgents] = useState<CodingAgentsResponse | null>(null)
   useEffect(() => {
-    const fetchAgents = () => loadData<CodingAgentsResponse>('/api/coding-agents', 'get_coding_agents').then(setCodingAgents).catch(() => {})
+    const fetchAgents = () => loadData<CodingAgentsResponse>('/api/coding-agents', 'get_coding_agents', { day }).then(setCodingAgents).catch(() => {})
     fetchAgents()
     const id = setInterval(fetchAgents, 30_000)
     return () => clearInterval(id)
-  }, [])
+  }, [day])
   // "Focus" is inclusive of ALL engaged time, not just foreground presence —
   // today.engaged_s (= focus_s + autonomous_s, computed server-side in
   // meridian-core/src/readers/today/mod.rs) folds in autonomous agent time
@@ -69,11 +73,12 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
   // the underlying today.autonomous_s data is still computed server-side,
   // this just stops surfacing it in the UI while the framing gets rethought).
   // const autonomous_s = today?.autonomous_s ?? 0
-  // get_coding_agents has no date param (it always reads today's totals —
-  // tray/src-tauri/src/commands/dashboard.rs hardcodes today_string()), so
-  // only fold it in while viewing today; on a past day it would inject
-  // TODAY's coding time into that day's app breakdown.
-  const appTops = today ? appTotals(today.sessions, isToday ? (codingAgents?.agents ?? []) : []) : []
+  // get_coding_agents is day-scoped now (it takes the same `day` this panel
+  // shows), so its totals are folded in on every day. It used to hardcode
+  // today's date, which forced this to drop agent rows entirely on a past day
+  // rather than inject the wrong day's coding time — a past day simply showed
+  // no agent time at all. Both halves now read the same date.
+  const appTops = today ? appTotals(today.sessions, codingAgents?.agents ?? []) : []
   const appCount = appTops.length
   const catTops = today ? categoryRows(today.sessions, agent_s) : []
   // Pull the "Coding" number straight out of the SAME merged rows the
@@ -98,17 +103,24 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
   // result of an in-flight/just-applied toggle until the next `get_plan` poll
   // confirms it — avoids a flicker back to the stale state between the write
   // landing and the 30s poll picking it up.
-  const [plan, setPlan] = useState<PlanResponse | null>(null)
   const [toggling, setToggling] = useState<Record<string, boolean>>({})
   const [overrideTerminal, setOverrideTerminal] = useState<Record<string, boolean>>({})
   const [toggleError, setToggleError] = useState<Record<string, string>>({})
+  // Read through the SHARED plan store rather than a private useState: the
+  // planner (PlanView) is a sibling overlay that never unmounts this panel, so a
+  // confirm/skip/save there has no way to reach local state and used to sit
+  // stale here until the next poll. The store publishes every write to all
+  // readers at once. It's keyed by calendar day (daily_plan is keyed by
+  // plan_date), so viewing a past date shows THAT day's committed focus and
+  // correctly ignores edits to today's plan — and a day with nothing fetched
+  // reads EMPTY, so a day switch never flashes the previous day's items.
+  const { data: plan } = usePlan(day)
   useEffect(() => {
     if (isSolo) return
-    const fetchPlan = () => loadData<PlanResponse>('/api/plan', 'get_plan').then(setPlan).catch(() => {})
-    fetchPlan()
-    const id = setInterval(fetchPlan, 30_000)
+    refreshPlan(day)
+    const id = setInterval(() => refreshPlan(day), 30_000)
     return () => clearInterval(id)
-  }, [isSolo])
+  }, [isSolo, day])
   const focusItems = useMemo(() => (plan?.confirmed ? plan.plan : []), [plan])
 
   // Toggle a focus item's done state on its real tracker. `close`/`reopen` are
@@ -125,7 +137,7 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
     ).then(data => {
       if (data.result.status === 'applied') {
         setOverrideTerminal(s => ({ ...s, [t.task_key]: !currentlyTerminal }))
-        loadData<PlanResponse>('/api/plan', 'get_plan').then(setPlan).catch(() => {})
+        refreshPlan(day)
       } else {
         const url = data.result.browse_url || t.url
         if (url) openExternal(url)
@@ -135,7 +147,7 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
     }).finally(() => {
       setToggling(s => { const n = { ...s }; delete n[t.task_key]; return n })
     })
-  }, [])
+  }, [day])
 
   const greetingEyebrow = isToday ? 'Today at a glance' : `${dayLabel} at a glance`
   const greetingTitle = isSolo ? 'Your day, in progress' : "You're having a solid day"
@@ -200,7 +212,11 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
 
       {!isSolo && (
         <div>
-          {focusItems.length === 0 && (
+          {/* Editing is a today-only action — you plan the day you're in, not
+              the past. On a past date the section is read-only: it shows that
+              day's committed focus (or a quiet empty note), with no Edit/Add
+              affordances. `focusLabel` relabels the heading off "Today's". */}
+          {focusItems.length === 0 && isToday && (
             <div className="flex items-center justify-between mb-2.5">
               <SectionHeading>Today&apos;s focus</SectionHeading>
               <button onClick={() => onOpen('plan')} className="mt-body-sm" style={{ color: 'var(--color-state-proposal)', fontWeight: 700 }}>Edit plan</button>
@@ -209,8 +225,8 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
           {focusItems.length > 0 ? (
             <div className="rounded-xl overflow-hidden bg-card" style={{ border: '1px solid var(--t-card-border)' }}>
               <div className="flex items-center justify-between px-4 py-3">
-                <SectionHeading>Today&apos;s focus</SectionHeading>
-                <button onClick={() => onOpen('plan')} className="mt-body-sm" style={{ color: 'var(--color-state-proposal)', fontWeight: 700 }}>Edit plan</button>
+                <SectionHeading>{focusLabel}</SectionHeading>
+                {isToday && <button onClick={() => onOpen('plan')} className="mt-body-sm" style={{ color: 'var(--color-state-proposal)', fontWeight: 700 }}>Edit plan</button>}
               </div>
               {(() => {
                 const doneCount = focusItems.filter(t => overrideTerminal[t.task_key] ?? t.is_terminal).length
@@ -257,12 +273,19 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
                 )
               })}
             </div>
-          ) : (
+          ) : isToday ? (
             <button onClick={() => onOpen('plan')}
               className="w-full text-left rounded-xl px-4 py-3.5" style={{ border: '1px dashed var(--t-hair)' }}>
               <p className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>Nothing planned yet for today.</p>
               <p className="mt-body-sm mt-0.5" style={{ color: 'var(--color-state-proposal)', fontWeight: 700 }}>Add tasks to your plan →</p>
             </button>
+          ) : (
+            <div>
+              <div className="mb-2.5"><SectionHeading>{focusLabel}</SectionHeading></div>
+              <div className="rounded-xl px-4 py-3.5" style={{ border: '1px dashed var(--t-hair)' }}>
+                <p className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>No focus was planned for {dayLabel}.</p>
+              </div>
+            </div>
           )}
         </div>
       )}

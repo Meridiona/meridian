@@ -6,6 +6,12 @@ import {
   taskWindow,
   taskRangeLabel,
   layoutDayTasks,
+  timelineScale,
+  buildTimelineScale,
+  hourHasWork,
+  MIN_PX_PER_MIN,
+  MAX_PX_PER_MIN,
+  MIN_WINDOW_MIN,
 } from '../components/timeline/dayTaskLayout'
 import type { DayTask } from '../lib/api-types'
 
@@ -139,5 +145,97 @@ describe('taskWindow', () => {
   })
   it('has a working-hours default when empty', () => {
     expect(taskWindow([])).toEqual({ lo: 480, hi: 1140 })
+  })
+})
+
+describe('timelineScale', () => {
+  it('leaves a day already taller than the pane at the floor rate, so it scrolls', () => {
+    // This is the actual regression case: a `clamp(paneH / windowMin)` formula
+    // solves pxPerMin so colHeight always lands exactly on paneH, so a normal
+    // day never overflows and never scrolls, no matter how the bounds are tuned.
+    const windowMin = 900 // taller than any of these panes at the floor rate
+    for (const paneH of [400, 480, 560]) {
+      const { pxPerMin, colHeight } = timelineScale(windowMin, paneH)
+      expect(pxPerMin).toBe(MIN_PX_PER_MIN)
+      expect(colHeight).toBe(windowMin * MIN_PX_PER_MIN)
+      expect(colHeight).toBeGreaterThan(paneH)
+    }
+  })
+
+  it('grows a day shorter than the pane to fill it exactly', () => {
+    const windowMin = MIN_WINDOW_MIN // taskWindow's own floor for a single short task
+    const { colHeight } = timelineScale(windowMin, 560)
+    expect(colHeight).toBeCloseTo(560, 0)
+  })
+
+  it('a shorter pane gets a genuinely smaller render, not the same pane-fitted size — proves growth is real, not self-cancelling', () => {
+    const windowMin = 300 // natural = 300px, shorter than either pane below
+    const a = timelineScale(windowMin, 500)
+    const b = timelineScale(windowMin, 800)
+    expect(a.colHeight).toBeCloseTo(500, 0)
+    expect(b.colHeight).toBeCloseTo(800, 0)
+    expect(b.colHeight).toBeGreaterThan(a.colHeight)
+  })
+
+  it('caps the grow-to-fill factor at MAX_PX_PER_MIN so a tiny window on a huge pane stays sane', () => {
+    const { pxPerMin } = timelineScale(MIN_WINDOW_MIN, 100_000)
+    expect(pxPerMin).toBe(MAX_PX_PER_MIN)
+  })
+})
+
+describe('hourHasWork', () => {
+  it('is true only for the exact clock hour real work falls in', () => {
+    const laid = layoutDayTasks([task('T1', [{ start: '08:46', end: '08:59' }])])
+    const win = { lo: 0, hi: 1440 }
+    expect(hourHasWork(laid, win, 8)).toBe(true)
+    expect(hourHasWork(laid, win, 7)).toBe(false)
+    expect(hourHasWork(laid, win, 9)).toBe(false)
+  })
+})
+
+describe('buildTimelineScale', () => {
+  it('collapses a run of fully-idle whole hours to one hour worth of space, however many real hours it spans', () => {
+    // Sittings at 12:27 AM and 8:46 AM — hours 1-7 have zero real work in them
+    // (whole-hour granularity: no sub-minute sliver hidden inside), so that
+    // 7-hour idle run must draw no taller than a single real active hour.
+    const laid = layoutDayTasks([
+      task('T1', [
+        { start: '00:27', end: '00:59' },
+        { start: '08:46', end: '08:59' },
+      ]),
+    ])
+    const win = taskWindow(laid)
+    const { pxPerMin, toPx } = buildTimelineScale(laid, win, 100_000) // huge pane: rules out grow-to-fill masking the cap
+    const idleRunPx = toPx(7 * 60) - toPx(1 * 60) // start of hour 1 to start of hour 7
+    const oneActiveHourPx = 60 * pxPerMin
+    expect(idleRunPx).toBeLessThanOrEqual(oneActiveHourPx + 0.01)
+  })
+
+  it('never compresses an active hour — a real sitting always draws at the full honest rate', () => {
+    const laid = layoutDayTasks([task('T1', [{ start: '08:00', end: '08:30' }])])
+    const win = taskWindow(laid)
+    const { pxPerMin, toPx } = buildTimelineScale(laid, win, 100_000)
+    expect(toPx(8 * 60 + 30) - toPx(8 * 60)).toBeCloseTo(30 * pxPerMin, 5)
+  })
+
+  it('a day that is still tall after idle-hour collapsing scrolls rather than compressing further', () => {
+    const laid = layoutDayTasks([
+      task('T1', [{ start: '08:00', end: '10:00' }]),
+      task('T2', [{ start: '10:00', end: '12:30' }]),
+      task('T3', [{ start: '13:00', end: '15:00' }]),
+      task('T4', [{ start: '15:00', end: '17:00' }]),
+    ])
+    const win = taskWindow(laid)
+    for (const paneH of [400, 480, 560]) {
+      const { colHeight } = buildTimelineScale(laid, win, paneH)
+      expect(colHeight).toBeGreaterThan(paneH)
+    }
+  })
+
+  it('a short day still grows to fill the pane', () => {
+    const laid = layoutDayTasks([task('T1', [{ start: '08:00', end: '08:30' }])])
+    const win = taskWindow(laid)
+    const { colHeight } = buildTimelineScale(laid, win, 560)
+    expect(colHeight).toBeCloseTo(560, 0)
   })
 })

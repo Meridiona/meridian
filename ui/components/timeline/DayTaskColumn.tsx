@@ -9,33 +9,45 @@
 // between them reading as a break in the same workstream. Data is `get_day_tasks`,
 // folded hour by hour by the worklog pipeline.
 //
-// Self-contained (fetches + polls its own data, like OverviewPanel's plan) so the
-// shell only passes the day. Clicking a task opens a detail card with its time
-// breakdown and running summary; the whole point is the day reads as a handful of
-// workstreams placed where the time actually went, not 24 rows.
+// Mostly self-contained (fetches + polls its own tasks, like OverviewPanel's plan)
+// so the shell passes little more than the day. The exception is the live-hour
+// strip's inputs (hourStatus/capturing/isSolo), which the shell already polls —
+// see the props. Clicking a task opens a detail card with its time breakdown and
+// running summary; the whole point is the day reads as a handful of workstreams
+// placed where the time actually went, not 24 rows.
+//
+// On today, an HourTakeover strip closes the column out: the hour in progress,
+// which by construction has no finished task band of its own yet. See the
+// `liveMode` block for why it sits below the timeline rather than on it.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { fmtDur } from '@/components/atoms'
+import { fmtDur, PROVIDER_META } from '@/components/atoms'
+import { ProviderIcon } from '@/components/ProviderIcon'
 import { load } from '@/lib/bridge'
-import type { DayTask, DayTasksResponse } from '@/lib/api-types'
+import type { DayTask, DayTasksResponse, HourStatus } from '@/lib/api-types'
+import { HourTakeover } from './HourBadges'
 import {
   layoutDayTasks,
   taskWindow,
   taskRangeLabel,
   hourClock,
+  hourHasWork,
+  buildTimelineScale,
   type LaidOutTask,
 } from './dayTaskLayout'
 import type { DayTaskDetail } from './DayTaskDetailPanel'
 import { taskHue, Bullets } from './dayTaskKit'
 
-// The vertical scale (px per minute) is DYNAMIC — the timeline fits itself to the
-// pane. A sparse day (one short task, the first hour after a fresh fold) would
-// collapse to a few unreadable pixels at a fixed scale, so instead we stretch the
-// content window to fill the available height. Bounds keep it honest: a dense full
-// day floors at MIN_PX_PER_MIN and scrolls; a near-empty day caps at MAX_PX_PER_MIN
-// so a single task fills the pane without becoming absurd.
-const MIN_PX_PER_MIN = 0.55 // ~33 px/hr — a long day stays compact, scrolls if needed
-const MAX_PX_PER_MIN = 9 // ~540 px/hr — a lone short task still reads big
+// The vertical scale (px per minute) is DYNAMIC — the timeline fits itself to
+// the pane (see buildTimelineScale in dayTaskLayout.ts), up to a comfortable
+// minimum row height. Every ACTIVE clock hour gets the same honest pixel
+// height as every other; a run of consecutive fully-idle hours collapses to
+// one hour's worth of space, however many real hours it actually spans, so
+// every visible hour-to-hour gap in the UI reads as the same size. That
+// collapse is safe specifically because it only ever applies to whole hours
+// with zero real work in them (see hourHasWork) — there's nothing there to
+// misalign. A sparse day still grows to fill the pane; a day that's naturally
+// tall even after idle collapsing simply scrolls.
 const FALLBACK_PANE_PX = 560 // used before the pane is measured (first paint / SSR)
 const GUTTER = 58 // px reserved on the left for hour labels
 // A task card never draws thinner than this, so even a few-minute workstream stays
@@ -57,7 +69,7 @@ const META_MIN_PX = 62
 const SUMMARY_MIN_PX = 104
 const SUMMARY_LINE_PX = 17 // approx line height of a preview line
 
-export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
+export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, hourStatus = [], capturing = null, isSolo = false }: {
   day: string
   isToday: boolean
   // Selection is owned by the shell so the clicked task's detail can render in
@@ -65,6 +77,19 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
   // selected card and dims the rest.
   selectedId: string | null
   onSelect: (detail: DayTaskDetail | null) => void
+  // Injected task set (the dev-only LLM Lab feeds each model's simulated day
+  // straight into this real timeline). When set, the column renders exactly
+  // these tasks and never fetches or polls — the caller owns the data.
+  tasks?: DayTask[]
+  // The live-hour strip's inputs. Passed down rather than fetched here (this
+  // column otherwise reads its own data): useTimelineData already loads and
+  // polls get_hour_status for the shell, and a second poller for the same rows
+  // would be pure duplication. Optional: the injected-tasks path (LLM Lab) is
+  // never "today", so it has no live hour and omits them.
+  hourStatus?: HourStatus[]
+  /** `false` = tracking is paused RIGHT NOW. `null` while unknown. */
+  capturing?: boolean | null
+  isSolo?: boolean
 }) {
   const [resp, setResp] = useState<DayTasksResponse | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -91,6 +116,8 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
   }, [loaded])
 
   useEffect(() => {
+    // Injected data: no fetch, no poll — render what the caller provided.
+    if (tasks) { setResp({ day, tasks }); setLoaded(true); return }
     let alive = true
     const fetchTasks = () =>
       load<DayTasksResponse>('/api/day-tasks', 'get_day_tasks', { day })
@@ -100,7 +127,7 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
     // Only the live day keeps changing; a past day is settled.
     const id = isToday ? setInterval(fetchTasks, 30_000) : undefined
     return () => { alive = false; if (id) clearInterval(id) }
-  }, [day, isToday])
+  }, [day, isToday, tasks])
 
   // Two-pass layout: the window (and thus the pixel scale) depends only on the
   // tasks' real footprints, so lay out once lane-agnostically to size the column,
@@ -108,12 +135,10 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
   // — that is what keeps near-touching short cards in separate side-by-side lanes.
   const laidBase = useMemo(() => layoutDayTasks(resp?.tasks ?? []), [resp])
   const win = useMemo(() => taskWindow(laidBase), [laidBase])
-  const windowMin = Math.max(1, win.hi - win.lo)
-  const pxPerMin = Math.max(
-    MIN_PX_PER_MIN,
-    Math.min(MAX_PX_PER_MIN, paneH / windowMin),
+  const { pxPerMin, colHeight, toPx } = useMemo(
+    () => buildTimelineScale(laidBase, win, paneH),
+    [laidBase, win, paneH],
   )
-  const colHeight = windowMin * pxPerMin
   // A card visually occupies at least MIN_SEG_PX; add a hair of separation so
   // adjacent lanes read as distinct. Convert that pixel floor back into minutes.
   const minGapMin = (MIN_SEG_PX + CARD_SEP_PX) / pxPerMin
@@ -123,13 +148,70 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
   )
   const firstHour = Math.floor(win.lo / 60)
   const lastHour = Math.ceil(win.hi / 60)
-  const hourLines = useMemo(
-    () => Array.from({ length: lastHour - firstHour + 1 }, (_, i) => firstHour + i),
-    [firstHour, lastHour],
-  )
+  // Whole-hour ticks (7 AM, 8 AM, ...) — an idle run only keeps the hour work
+  // just stopped in (e.g. "1 AM" right after a 12 AM sitting ends); it does
+  // NOT also keep the idle hour right before work resumes, since the resumed
+  // hour's own tick already says "work picked back up here" — showing both
+  // (e.g. "7 AM" AND "8 AM" back to back) is the same fact twice. The hours
+  // strictly inside a run are pure repetition of "still nothing" and are
+  // dropped. The same logic applies at the very end of the window: if the
+  // day's last real work already stopped a few hours ago, the trailing idle
+  // hours don't get a second, redundant "nothing happened" tick just because
+  // one of them happens to be the last hour in the window — only firstHour is
+  // unconditionally anchored, so the column always has a top label. Positions
+  // come from the same buildTimelineScale as the cards, whose idle-hour
+  // collapsing (see dayTaskLayout.ts) keeps every visible hour-to-hour gap
+  // the same size, active or collapsed.
+  const hourLines = useMemo(() => {
+    const shown = new Set<number>([firstHour])
+    for (let h = firstHour; h <= lastHour; h++) {
+      if (hourHasWork(laidBase, win, h) || (h > firstHour && hourHasWork(laidBase, win, h - 1))) {
+        shown.add(h)
+      }
+    }
+    const out: { hour: number; top: number }[] = []
+    for (const h of Array.from(shown).sort((a, b) => a - b)) {
+      const top = toPx(h * 60)
+      if (top >= -1 && top <= colHeight + 1) out.push({ hour: h, top })
+    }
+    return out
+  }, [firstHour, lastHour, toPx, colHeight, laidBase, win])
 
   const dayLabel = isToday ? 'Today' : day
   const taskCount = laid.length
+
+  // ── The live hour ─────────────────────────────────────────────────────────
+  // The current hour's status strip, restored from the old 24-row TimelineColumn
+  // (which no longer renders — this column replaced it, and HourTakeover was
+  // orphaned with it).
+  //
+  // It sits BELOW the timeline rather than at the current hour's position on it,
+  // because that position cannot hold it. Two measured reasons, both live on a
+  // real day:
+  //   1. The current hour is usually ALREADY OCCUPIED. Work is folded into tasks
+  //      continuously, so a task band is typically drawn inside the live hour
+  //      right up to a minute or two ago; a takeover placed there lands on top of
+  //      the card showing what is being worked on right now.
+  //   2. Most of the hour has no pixel space anyway. `taskWindow` ends 20 minutes
+  //      past the last segment and `toPx` CLAMPS past `win.hi` — so at 16:26 the
+  //      window ended 16:22 and 38 of the hour's 60 minutes map to no pixels at
+  //      all. There is no band to draw into.
+  // Below the last card it reads as what it actually is: the day so far, and then
+  // the hour still in progress.
+  const nowHour = isToday ? new Date().getHours() : -1
+  const liveStatus = isToday ? hourStatus.find(s => s.hour === nowHour) : undefined
+  // The current hour hasn't ended, so it is almost never `generating` — the DB
+  // only flips that for the seconds the /worklog_hour call is in flight. `queued`
+  // is what the user sees essentially always, which is exactly why the strip is
+  // worth showing: it is the only thing that says the hour is being tracked at
+  // all. (See HourBadges' doc comment.)
+  const liveMode = !isToday ? null : liveStatus?.generating ? 'generating' as const : 'queued' as const
+  // Whether to print the strip's own hour label in the gutter. When the live
+  // hour is ALREADY a gridline label on the timeline above (work was folded into
+  // it a moment ago — the common case), repeating "9 PM" here just reads as a
+  // duplicate. Only label the strip when the hour isn't already on the rail —
+  // e.g. the last real work stopped hours ago, so the strip needs its own anchor.
+  const showLiveHourLabel = liveMode !== null && !hourLines.some(h => h.hour === nowHour)
 
   return (
     // A click anywhere in the column that isn't on a card clears the selection
@@ -154,23 +236,24 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
       {!loaded ? null : taskCount === 0 ? (
         <EmptyState isToday={isToday} />
       ) : (
-        <div className="px-6 pb-8">
+        // The live strip below supplies the bottom padding when it is there, so
+        // the two don't stack into a large dead gap.
+        <div className={liveMode ? 'px-6 pb-4' : 'px-6 pb-8'}>
           <div className="relative" style={{ height: colHeight }}>
-            {/* Hour gridlines + labels */}
-            {hourLines.map(h => {
-              const top = (h * 60 - win.lo) * pxPerMin
-              if (top < -1 || top > colHeight + 1) return null
-              return (
-                <div key={h} className="absolute left-0 right-0 flex items-start"
-                  style={{ top, height: 0 }}>
-                  <span className="mt-mono-sm shrink-0 -translate-y-1/2"
-                    style={{ width: GUTTER - 12, fontSize: 10.5, color: 'var(--t-faint)', textAlign: 'right' }}>
-                    {h < 24 ? hourClock(h) : ''}
-                  </span>
-                  <span className="flex-1 border-t" style={{ borderColor: 'var(--t-hair)', opacity: 0.6 }} />
-                </div>
-              )
-            })}
+            {/* Hour gridlines + labels — positioned via the same scale as the
+                cards beneath them (see hourLines) so a label always sits at its
+                real hour on the rail, decluttered for runs of hours inside one
+                compressed gap segment. */}
+            {hourLines.map(({ hour, top }) => (
+              <div key={hour} className="absolute left-0 right-0 flex items-start"
+                style={{ top, height: 0 }}>
+                <span className="mt-mono-sm shrink-0 -translate-y-1/2"
+                  style={{ width: GUTTER - 12, fontSize: 10.5, color: 'var(--t-faint)', textAlign: 'right' }}>
+                  {hourClock(hour)}
+                </span>
+                <span className="flex-1 border-t" style={{ borderColor: 'var(--t-hair)', opacity: 0.6 }} />
+              </div>
+            ))}
 
             {/* Task workstreams */}
             <div className="absolute top-0 bottom-0" style={{ left: GUTTER, right: 6 }}>
@@ -181,8 +264,7 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
                     key={l.task.id}
                     laid={l}
                     hue={hue}
-                    winLo={win.lo}
-                    pxPerMin={pxPerMin}
+                    toPx={toPx}
                     selected={selected === l.task.id}
                     dimmed={selected !== null && selected !== l.task.id}
                     onSelect={() =>
@@ -210,6 +292,36 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
           </div>
         </div>
       )}
+
+      {/* The hour in progress. Rendered on today only, and on the empty day too
+          — a day with nothing folded yet is exactly when "Meridian is watching
+          this hour" is the most useful thing on the screen. The gutter reserves
+          the same label width as the gridlines above (GUTTER - 12, then 12px) so
+          the strip lines up with the task cards; the hour text itself is only
+          drawn when the timeline isn't already labelling this hour above
+          (see showLiveHourLabel) — otherwise it just duplicates that label. */}
+      {loaded && liveMode && (
+        <div className="px-6 pb-8 flex items-start">
+          <span className="mt-mono-sm shrink-0" style={{
+            width: GUTTER - 12, fontSize: 10.5, textAlign: 'right',
+            color: 'var(--color-state-pending)',
+          }}>
+            {showLiveHourLabel ? hourClock(nowHour) : ''}
+          </span>
+          {/* 12px would carry the label's GUTTER - 12 width up to GUTTER, where
+              the task cards' rail sits — less HourTakeover's own mx-2, so its
+              visible edge lands on that rail rather than 8px inside it. */}
+          <div className="flex-1 min-w-0" style={{ marginLeft: 12 - 8 }}>
+            <HourTakeover
+              hour={nowHour}
+              mode={liveMode}
+              paused={capturing === false}
+              nextHourLabel={hourClock(nowHour + 1)}
+              isSolo={isSolo}
+            />
+          </div>
+        </div>
+      )}
       </div>
     </div>
   )
@@ -221,28 +333,60 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect }: {
  *  fragmenting the card. The body is filled top-down by available height: always a
  *  title, then a meta row, then as many summary lines as fit — a tall card shows
  *  what was done rather than sitting empty. */
-function TaskBand({ laid, hue, winLo, pxPerMin, selected, dimmed, onSelect }: {
+/** The "synced to {tracker}" pill on a posted task card: the tracker's brand mark
+ *  + a check, in a soft approved-green pill. Sits in-flow at the end of the title
+ *  row so it scales and is never clipped by the card's rounded corner. */
+function PostedPill({ provider, targetKey, alignTop }: { provider: string; targetKey: string | null; alignTop: boolean }) {
+  const label = PROVIDER_META[provider]?.label ?? provider
+  return (
+    <span
+      className="shrink-0 inline-flex items-center gap-1 rounded-full"
+      title={`Synced to ${label}${targetKey ? ` · ${targetKey}` : ''}`}
+      style={{
+        alignSelf: alignTop ? 'flex-start' : 'center',
+        marginTop: alignTop ? 1 : 0,
+        padding: '2px 6px 2px 5px',
+        background: 'color-mix(in srgb, var(--color-state-approved) 13%, var(--t-card))',
+        border: '1px solid color-mix(in srgb, var(--color-state-approved) 32%, transparent)',
+      }}>
+      <ProviderIcon provider={provider} size={11} />
+      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" aria-hidden
+        style={{ color: 'var(--color-state-approved)' }}>
+        <path d="M20 6 9 17l-5-5" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </span>
+  )
+}
+
+function TaskBand({ laid, hue, toPx, selected, dimmed, onSelect }: {
   laid: LaidOutTask
   hue: string
-  winLo: number
-  pxPerMin: number
+  toPx: (min: number) => number
   selected: boolean
   dimmed: boolean
   onSelect: () => void
 }) {
-  const top = (laid.footLo - winLo) * pxPerMin
-  const height = Math.max((laid.footHi - laid.footLo) * pxPerMin, MIN_SEG_PX)
+  const cardTop = toPx(laid.footLo)
+  const height = Math.max(toPx(laid.footHi) - cardTop, MIN_SEG_PX)
   const left = (laid.laneIndex / laid.laneCount) * 100
   const width = 100 / laid.laneCount
   const hasBreak = laid.segments.length > 1
   const compact = height < COMPACT_MAX_PX
   const showMeta = height >= META_MIN_PX
   // How many summary lines can we show under the header without overflowing?
+  // If not every line fits, one of those slots has to go to the "+N more"
+  // caption itself — otherwise the caption is an EXTRA row tacked on below
+  // however many bullets fit exactly, pushing the card past its own height
+  // and getting silently clipped by overflow:hidden (a half-cut-off bullet
+  // line with no "+more" to explain it).
   const summary = laid.task.summary ?? []
+  const summarySlots = height >= SUMMARY_MIN_PX ? Math.floor((height - (showMeta ? 74 : 52)) / SUMMARY_LINE_PX) : 0
   const previewLines =
-    height >= SUMMARY_MIN_PX && summary.length > 0
-      ? Math.max(0, Math.min(summary.length, Math.floor((height - (showMeta ? 74 : 52)) / SUMMARY_LINE_PX)))
-      : 0
+    summary.length === 0
+      ? 0
+      : summarySlots >= summary.length
+        ? summary.length // everything fits — no caption needed
+        : Math.max(0, Math.min(summary.length, summarySlots - 1)) // reserve a slot for "+N more"
 
   return (
     <button
@@ -250,7 +394,7 @@ function TaskBand({ laid, hue, winLo, pxPerMin, selected, dimmed, onSelect }: {
       title={laid.task.title || 'Activity'}
       className="dt-card absolute text-left transition-all"
       style={{
-        top,
+        top: cardTop,
         height,
         left: `calc(${left}% + ${left > 0 ? 5 : 0}px)`,
         width: `calc(${width}% - ${left > 0 ? 5 : 0}px - 2px)`,
@@ -276,8 +420,8 @@ function TaskBand({ laid, hue, winLo, pxPerMin, selected, dimmed, onSelect }: {
         // so cap it at a quarter of the height — the rail stays visible and
         // still floats off both edges.
         const inset = Math.min(RAIL_INSET, height * 0.25)
-        const rawTop = (s.startMin - laid.footLo) * pxPerMin
-        const rawBot = (s.endMin - laid.footLo) * pxPerMin
+        const rawTop = toPx(s.startMin) - cardTop
+        const rawBot = toPx(s.endMin) - cardTop
         const top = Math.max(rawTop, inset)
         const bot = Math.min(rawBot, height - inset)
         const rh = Math.max(bot - top, 4)
@@ -304,6 +448,18 @@ function TaskBand({ laid, hue, winLo, pxPerMin, selected, dimmed, onSelect }: {
             style={{ color: 'var(--t-title)', lineHeight: 1.25, display: '-webkit-box', WebkitLineClamp: compact ? 1 : 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
             {laid.task.title || 'Activity'}
           </span>
+          {/* "Synced to {tracker}" pill — shown once this task's worklog is posted,
+              so the timeline itself flags which cards are on the PM board. In-flow
+              at the row's end (never clipped by the card's rounded corner) and
+              vertically centred on compact cards. Non-interactive; the detail
+              panel carries the clickable link. */}
+          {laid.task.posted_provider && (
+            <PostedPill
+              provider={laid.task.posted_provider}
+              targetKey={laid.task.posted_target_key}
+              alignTop={!compact}
+            />
+          )}
         </div>
 
         {showMeta && (

@@ -276,6 +276,37 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `meridian llm-experiment run|create|exec|list|get …` — the dev-only LLM Lab
+    // harness: replay one prose stage (hour report / workstream fold / worklog
+    // generate) across several provider/model variants and record every outcome in
+    // the llm_experiment* tables. Never writes production tables.
+    if std::env::args().nth(1).as_deref() == Some("llm-experiment") {
+        let cfg = Config::from_env();
+        // Init observability so each variant emits its llm.experiment.variant span.
+        let obs_guard = observability::init("meridian-rust").ok();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                let result = meridian::llm_experiment::cli::run(&pool).await;
+                pool.close().await;
+                if let Err(e) = result {
+                    if let Some(g) = obs_guard {
+                        g.shutdown().await;
+                    }
+                    eprintln!("llm-experiment: {e:#}");
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                eprintln!("llm-experiment: open db: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
+        }
+        return Ok(());
+    }
+
     // `meridian worklog-post-approved` — post every worklog the user approved in
     // the dashboard to Jira now (the same sweep the daemon runs every ~60s). This
     // is the only path that writes to real Jira.
@@ -465,6 +496,141 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `meridian plan-task-{draft,create,edit}` — the daily plan's task composer:
+    // shape a rough note into a task with the user's LLM, create it (personal or
+    // filed on a tracker) into today's plan, and edit it afterwards. Each prints ONE
+    // JSON line. The blocks live in `plan_tasks::cli` rather than here — they share a
+    // preamble, and this file is long enough already.
+    if meridian::plan_tasks::cli::try_handle().await? {
+        return Ok(());
+    }
+
+    // `meridian day-summary --day YYYY-MM-DD` — compose the day's summary: ONE
+    // provider-agnostic LLM call that reads the day's evidence and answers with a
+    // narrative, a few insights, and the Vega-Lite specs it chose. Prints ONE JSON
+    // line: the summary object. Regenerate = the same command (UPSERT overwrites).
+    // Never fails on a bad answer — it falls back to a deterministic panel set, so
+    // a non-zero exit here means the DB or the day's data, not the model.
+    if std::env::args().nth(1).as_deref() == Some("day-summary") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let day = flag("--day").unwrap_or_default();
+        if day.is_empty() {
+            eprintln!("day-summary: --day is required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        // Init observability so the LLM call emits its llm.request/infer/response
+        // subspans under day_summary.generate; flush before exit.
+        let obs_guard = observability::init("meridian-rust").ok();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                match meridian::day_summary::generate::generate(&pool, &day).await {
+                    Ok(summary) => {
+                        println!("{}", serde_json::to_string(&summary).unwrap_or_default())
+                    }
+                    Err(e) => {
+                        pool.close().await;
+                        if let Some(g) = obs_guard {
+                            g.shutdown().await;
+                        }
+                        eprintln!("day-summary: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+                pool.close().await;
+            }
+            Err(e) => {
+                eprintln!("day-summary: open db: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
+        }
+        return Ok(());
+    }
+
+    // `meridian day-summary-get --day YYYY-MM-DD` — read the stored summary for a
+    // day, or print JSON `null` if none exists. Read-only, no LLM.
+    if std::env::args().nth(1).as_deref() == Some("day-summary-get") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let day = flag("--day").unwrap_or_default();
+        if day.is_empty() {
+            eprintln!("day-summary-get: --day is required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                match meridian_core::day_summaries::get_day_summary(&pool, &day).await {
+                    Ok(s) => println!("{}", serde_json::to_string(&s).unwrap_or_default()),
+                    Err(e) => {
+                        pool.close().await;
+                        eprintln!("day-summary-get: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+                pool.close().await;
+            }
+            Err(e) => {
+                eprintln!("day-summary-get: open db: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    // `meridian day-summary-data --day YYYY-MM-DD` — the named datasets a
+    // summary's panels bind to, as one JSON object. Read-only, no LLM. The tray
+    // reads these straight from meridian-core rather than spawning this; it exists
+    // for debugging a chart (`meridian day-summary-data --day X | jq .segments`),
+    // which is otherwise invisible — a stored spec carries no data at all.
+    if std::env::args().nth(1).as_deref() == Some("day-summary-data") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let day = flag("--day").unwrap_or_default();
+        if day.is_empty() {
+            eprintln!("day-summary-data: --day is required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                // Through `panel_data`, NOT `collect` directly: this command's only
+                // job is to show what the screen is given, and it is worth nothing
+                // if it shapes the answer itself and shows something else.
+                match meridian::day_summary::generate::panel_data(&pool, &day).await {
+                    Ok(v) => println!("{}", serde_json::to_string(&v).unwrap_or_default()),
+                    Err(e) => {
+                        pool.close().await;
+                        eprintln!("day-summary-data: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+                pool.close().await;
+            }
+            Err(e) => {
+                eprintln!("day-summary-data: open db: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
     // `meridian worklog-generate --day YYYY-MM-DD --task-id T1` — the day-task
     // "Generate worklog" action: ONE provider-agnostic LLM call that matches the
     // day-task's workstream to an existing ticket (or proposes a new one) and
@@ -490,7 +656,12 @@ async fn main() -> Result<()> {
         match setup_db(&cfg.meridian_db_uri()).await {
             Ok(pool) => {
                 match meridian::pm_worklog::generate(&pool, &cfg, &day, &task_id).await {
-                    Ok(draft) => println!("{}", serde_json::to_string(&draft).unwrap_or_default()),
+                    Ok(mut draft) => {
+                        // A matched draft carries a target_key we can link even
+                        // before posting; fill browse_url deterministically.
+                        meridian::pm_worklog::generate::hydrate_browse_url(&cfg, &mut draft);
+                        println!("{}", serde_json::to_string(&draft).unwrap_or_default())
+                    }
                     Err(e) => {
                         pool.close().await;
                         if let Some(g) = obs_guard {
@@ -534,7 +705,15 @@ async fn main() -> Result<()> {
                 match meridian_core::day_task_worklogs::get_day_task_worklog(&pool, &day, &task_id)
                     .await
                 {
-                    Ok(draft) => println!("{}", serde_json::to_string(&draft).unwrap_or_default()),
+                    Ok(mut draft) => {
+                        // Repair a stored-empty browse_url (e.g. an OAuth-Jira row
+                        // posted before URL resolution read the site URL from the
+                        // token store) so the "Linked to …" chip is a live link.
+                        if let Some(d) = draft.as_mut() {
+                            meridian::pm_worklog::generate::hydrate_browse_url(&cfg, d);
+                        }
+                        println!("{}", serde_json::to_string(&draft).unwrap_or_default())
+                    }
                     Err(e) => {
                         pool.close().await;
                         eprintln!("worklog-generate-get: {e:#}");
@@ -679,6 +858,29 @@ async fn main() -> Result<()> {
         let args: Vec<String> = std::env::args().collect();
         meridian::telemetry_spool::render::run(&args).await;
         return Ok(());
+    }
+
+    // 1b. Anything left in argv[1] that isn't a flag is a subcommand NO block above
+    //     claimed — a typo, or (the real case) a caller newer than this binary. Falling
+    //     through to the daemon is a trap: `meridian plan-task-draft` on a stale binary
+    //     silently booted a SECOND daemon, which the single-instance guard then killed
+    //     with a warning on stdout, and the tray reported "could not parse result" —
+    //     a message that names neither the stale binary nor the unknown subcommand.
+    //     Exit 2 (the CLI's bad-args code) and say the word we didn't recognise, so the
+    //     next person sees the cause instead of a mystery. Bare `meridian` (no args) and
+    //     flags like `--version` still start the daemon, which is the documented entry.
+    if let Some(arg) = std::env::args().nth(1) {
+        if !arg.starts_with('-') {
+            eprintln!(
+                "meridian: unknown subcommand {arg:?}\n\
+                 If you expected this to exist, this binary is older than whatever called it \
+                 ({}). Reinstall or rebuild it.",
+                std::env::current_exe()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "the meridian binary".to_string()),
+            );
+            std::process::exit(2);
+        }
     }
 
     // 2. Tracing — layered subscriber (OTLP-only: spool traces + logs; see

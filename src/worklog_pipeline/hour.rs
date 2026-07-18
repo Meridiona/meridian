@@ -36,21 +36,15 @@ use crate::pm_worklog::PmWorklogConfig;
 
 use super::hour_db;
 use super::hour_input::{
-    assemble_report, format_coding_block, format_timeline_block, hour_span_minutes,
-    parse_activities, CodingRow, TimelineRow,
+    assemble_report, compose_report_input, hour_span_minutes, parse_activities,
 };
 use super::{task_db, workstream};
 
 /// Token ceiling for the single report call: "under 300 words" of prose plus a short
 /// per-activity minutes list, as one JSON object. Generous enough not to truncate.
-const REPORT_MAX_TOKENS: u32 = 1536;
-
-/// A session shorter than this is a burst — a brief alt-tab into an app, a one-line
-/// coding-agent exchange — that clutters the report without representing reportable
-/// work. Such sessions are dropped from the REPORT INPUT (both the screen timeline and
-/// the coding-agent blocks). The span / time math keeps the full set, so excluding a
-/// burst from the prose never removes its measured minutes from the deterministic totals.
-const REPORT_MIN_DURATION_S: i64 = 180;
+/// `pub(crate)` so the LLM-Lab replay ([`crate::llm_experiment`]) rebuilds the identical
+/// request contract for this process.
+pub(crate) const REPORT_MAX_TOKENS: u32 = 1536;
 
 /// What `/distill_hour` returns (the embedder-compressed hour body + metrics).
 struct Distilled {
@@ -121,7 +115,19 @@ async fn build_report(
     std::collections::BTreeMap<usize, String>,
     LlmProvider,
 )> {
-    let req = PromptRequest {
+    let req = report_request(report_input, label);
+    let (out, provider) = llm::complete(&req)
+        .await
+        .map_err(|e| anyhow::anyhow!("activity report failed: {e}"))?;
+    let (activities, minutes, stamps) = parse_report(&out.text);
+    Ok((activities, minutes, stamps, provider))
+}
+
+/// The hour report's exact [`PromptRequest`] — extracted from [`build_report`] so the
+/// LLM-Lab replay ([`crate::llm_experiment`]) fans the byte-identical request across
+/// arbitrary providers.
+pub(crate) fn report_request(report_input: String, label: &str) -> PromptRequest {
+    PromptRequest {
         system: prompts::ACTIVITY_REPORT,
         user: report_input,
         // No schema: the report is plain text now — one "<minutes> min  <activity>" line
@@ -131,12 +137,7 @@ async fn build_report(
         schema: None,
         max_tokens: REPORT_MAX_TOKENS,
         label: format!("activity-report {label}"),
-    };
-    let (out, provider) = llm::complete(&req)
-        .await
-        .map_err(|e| anyhow::anyhow!("activity report failed: {e}"))?;
-    let (activities, minutes, stamps) = parse_report(&out.text);
-    Ok((activities, minutes, stamps, provider))
+    }
 }
 
 /// Parse the plain-text report into ordered activity prose + a 1-based `position -> minutes`
@@ -148,7 +149,7 @@ async fn build_report(
 /// (a header, blank line, or trailing note). If NOTHING parses, falls back to reading the
 /// text as numbered prose (minutes/stamps empty, so [`assemble_report`] even-splits the
 /// span) — the hour never fails outright.
-fn parse_report(
+pub(crate) fn parse_report(
     text: &str,
 ) -> (
     Vec<String>,
@@ -183,9 +184,13 @@ fn parse_report(
 /// prose)`. The leading time is optional (older/looser answers omit it → `None`) and may be
 /// a single `HH:MM` start or a `HH:MM-HH:MM` range.
 /// Tolerates a leading list marker the model may add against instructions ("1. ", "1) ",
-/// "- ", "* "), the unit written as `min` / `mins` / `minutes`, and arbitrary surrounding
-/// whitespace. Returns `None` for any line without a leading minute count so headers and
-/// notes drop.
+/// "- ", "* "), a literal `<...>` wrapped around the timestamp (the prompt's
+/// `<HH:MM-HH:MM>` is prompt-writing notation for "fill this in" — Claude omits the
+/// brackets, but cursor-agent 2026.06.04 was observed emitting them literally) — the
+/// bracket tolerance lives inside [`take_hhmm`] and fires ONLY around a real stamp, so a
+/// bracketed non-time aside is not turned into a phantom entry — the unit written as
+/// `min` / `mins` / `minutes`, and arbitrary surrounding whitespace. Returns `None` for
+/// any line without a leading minute count so headers and notes drop.
 fn parse_report_line(raw: &str) -> Option<(Option<String>, i64, String)> {
     let s = strip_list_marker(raw.trim());
     let (stamp, s) = take_hhmm(s);
@@ -215,23 +220,42 @@ fn parse_report_line(raw: &str) -> Option<(Option<String>, i64, String)> {
 
 /// Split a leading local time off the front of a line: either a single `HH:MM` or a
 /// `HH:MM-HH:MM` start-end range (1-2 digit hour, `:`, 2-digit minute each). Returns
-/// `(Some(span), rest)` with `span` the matched string verbatim, or `(None, original)` if
-/// the line doesn't start with one. The `-HH:MM` end is optional — a looser answer that
-/// gives only a start still parses. Purely lexical — it does not validate the clock values
-/// (a rough time is all downstream needs).
+/// `(Some(span), rest)` with `span` the matched string verbatim (brackets stripped), or
+/// `(None, original)` if the line doesn't start with one. The `-HH:MM` end is optional — a
+/// looser answer that gives only a start still parses. Purely lexical — it does not
+/// validate the clock values (a rough time is all downstream needs).
+///
+/// A literal `<…>` wrapper is tolerated but ONLY when it actually wraps a real `HH:MM`:
+/// the leading `<` is consumed only if an `HH:MM` follows it, and the trailing `>` only if
+/// the `<` was consumed. This is deliberately gated so a bracketed non-time aside such as
+/// `"<15 min gap, no activity>"` is returned untouched (`None`, original) instead of being
+/// unwrapped into something the minute parser below would misread as an entry.
 fn take_hhmm(s: &str) -> (Option<String>, &str) {
-    let Some(start_end) = hhmm_len(s) else {
+    let had_open = s.starts_with('<');
+    let body = if had_open { &s[1..] } else { s };
+    let Some(start_end) = hhmm_len(body) else {
+        // No real stamp — leave the original untouched, brackets and all.
         return (None, s);
     };
     // Optional "-HH:MM" end.
-    let tail = &s[start_end..];
-    if let Some(rest) = tail.strip_prefix('-') {
-        if let Some(end_len) = hhmm_len(rest) {
+    let tail = &body[start_end..];
+    let (stamp, rest) = match tail
+        .strip_prefix('-')
+        .and_then(|r| hhmm_len(r).map(|l| (r, l)))
+    {
+        Some((_, end_len)) => {
             let end = start_end + 1 + end_len;
-            return (Some(s[..end].to_string()), &s[end..]);
+            (body[..end].to_string(), &body[end..])
         }
-    }
-    (Some(s[..start_end].to_string()), &s[start_end..])
+        None => (body[..start_end].to_string(), &body[start_end..]),
+    };
+    // Consume the closing bracket only if we consumed the opening one.
+    let rest = if had_open {
+        rest.strip_prefix('>').unwrap_or(rest)
+    } else {
+        rest
+    };
+    (Some(stamp), rest)
 }
 
 /// Byte length of a leading `HH:MM` (1-2 digit hour, `:`, 2-digit minute), or `None` if `s`
@@ -299,28 +323,16 @@ pub async fn run_hour(
     let timeline = hour_db::fetch_hour_timeline(pool, hs, he).await;
     sess_span.record("body_chars", d.body.len());
 
-    // Drop sub-REPORT_MIN_DURATION_S bursts from the report input only — `timeline`
-    // (full set) still feeds the span/time math below, so a burst loses its place in
-    // the prose without losing its measured minutes.
-    let report_timeline: Vec<TimelineRow> = timeline
-        .iter()
-        .filter(|r| r.duration_s > REPORT_MIN_DURATION_S)
-        .cloned()
-        .collect();
-    let report_coding: Vec<CodingRow> = coding
-        .iter()
-        .filter(|c| c.duration_s > REPORT_MIN_DURATION_S)
-        .cloned()
-        .collect();
-
-    let coding_block = format_coding_block(&report_coding);
-    let timeline_block = format_timeline_block(&report_timeline);
+    // Burst filter + block rendering + the 3-part join live in `compose_report_input`
+    // (shared with the LLM-Lab replay); `timeline` (full set) still feeds the span/time
+    // math below, so a burst loses its place in the prose without losing its minutes.
+    let composed = compose_report_input(&d.body, &timeline, &coding);
     tracing::info!(
         hour,
         ocr_nsess = d.nsess,
-        coding_nsess = report_coding.len(),
-        coding_dropped_short = coding.len() - report_coding.len(),
-        timeline_dropped_short = timeline.len() - report_timeline.len(),
+        coding_nsess = composed.coding_kept,
+        coding_dropped_short = composed.coding_dropped,
+        timeline_dropped_short = composed.timeline_dropped,
         body_chars = d.body.len(),
         "worklog: hour distilled"
     );
@@ -330,7 +342,7 @@ pub async fn run_hour(
     hour_db::persist_hour_text(pool, hs, &d.body, d.out_chars, d.reduction_pct).await?;
 
     // A truly empty hour: nothing to summarise. Persist an empty report and finish clean.
-    if d.body.trim().is_empty() && coding_block.is_empty() {
+    if d.body.trim().is_empty() && composed.coding_block_empty {
         tracing::info!(hour, "worklog: hour has no sessions — skipping report");
         hour_db::persist_hour_report(pool, hs, "").await?;
         return Ok(());
@@ -346,18 +358,9 @@ pub async fn run_hour(
         // child `llm.call` spans under this one.
         n_calls = tracing::field::Empty
     );
+    let coding_folded = !composed.coding_block_empty;
+    let report_input = composed.text;
     let report = async {
-        let report_input = [
-            timeline_block.as_str(),
-            d.body.as_str(),
-            coding_block.as_str(),
-        ]
-        .iter()
-        .filter(|p| !p.trim().is_empty())
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n\n");
-
         if report_input.trim().is_empty() {
             return Ok::<String, anyhow::Error>(String::new());
         }
@@ -381,19 +384,23 @@ pub async fn run_hour(
     tracing::info!(
         hour,
         report_chars = report.chars().count(),
-        coding_folded = !coding_block.is_empty(),
+        coding_folded,
         "worklog: hour report built"
     );
     hour_db::persist_hour_report(pool, hs, &report).await?;
 
     // ── Workstream Builder (global provider) ─────────────────────────────────
-    // Record this hour's measured active minutes (the deterministic time source),
-    // then fold its report into the running 1-5 day tasks (workstreams). `hour` is
-    // the local `YYYY-MM-DDTHH` label; its date prefix is the local day key.
+    // Fold this hour's report into the running 1-5 day tasks (workstreams), THEN record its
+    // per-hour marker row. `hour` is the local `YYYY-MM-DDTHH` label; its date prefix is the
+    // local day key. Order matters: `upsert_hour_span`'s row is the fold's idempotency
+    // marker (`task_db::hour_folded_marker_exists`), so it must land only *after* the fold
+    // succeeds — a fold that errors short-circuits here via `?`, writes no marker, and the
+    // driver retries the whole hour. `span_min` itself is write-only now (minutes come from
+    // segments), so nothing reads it back on the failed-fold path.
     let day_local = hour.get(..10).unwrap_or(hour);
     let span_min = hour_span_minutes(&timeline);
-    task_db::upsert_hour_span(pool, day_local, hour, span_min).await?;
     workstream::run(pool, day_local, hour, &report).await?;
+    task_db::upsert_hour_span(pool, day_local, hour, span_min).await?;
     Ok(())
 }
 
@@ -429,6 +436,43 @@ mod tests {
         assert_eq!(mins, 3);
         // A header line with no minute count is dropped.
         assert!(parse_report_line("## Summary of the hour").is_none());
+    }
+
+    #[test]
+    fn parse_report_line_tolerates_a_literal_angle_bracket_wrapper() {
+        // Verbatim output from a live cursor-agent 2026.06.04 call against the real
+        // ACTIVITY_REPORT prompt: it took the prompt's "<HH:MM-HH:MM>" notation literally
+        // and emitted the brackets, instead of writing a bare "HH:MM-HH:MM" like Claude
+        // does. Before this fix the leading '<' isn't a digit, so the line dropped and the
+        // whole hour's report came out empty with no error anywhere in the path.
+        let (stamp, mins, prose) = parse_report_line(
+            "<12:43-12:53>  10 min  Launched the staging macOS release on pre-main (PR #443), \
+             monitoring the GitHub Actions pipeline through Apple signing and notarization \
+             until the staging DMG is ready for team testing.",
+        )
+        .unwrap();
+        assert_eq!(
+            stamp.as_deref(),
+            Some("12:43-12:53"),
+            "brackets must not leak into the stamp"
+        );
+        assert_eq!(mins, 10);
+        assert!(prose.starts_with("Launched the staging macOS release"));
+
+        // A single HH:MM (no range) wrapped the same way.
+        let (stamp, mins, _) = parse_report_line("<08:20>  5 min  Watched YouTube").unwrap();
+        assert_eq!(stamp.as_deref(), Some("08:20"));
+        assert_eq!(mins, 5);
+
+        // A stray leading '<' with no real timestamp behind it must not swallow real
+        // prose or otherwise misparse — it still requires digits right after.
+        assert!(parse_report_line("<not a timestamp>  Did a thing").is_none());
+
+        // A bracketed aside shaped like a duration ("<15 min gap, no activity>") is NOT a
+        // timestamped entry. The bracket strip is now gated on a real HH:MM, so the '<'
+        // stays put and the line drops — where an unconditional strip would have unwrapped
+        // it and let the minute parser read "15 min" as a phantom entry with a leaked '>'.
+        assert!(parse_report_line("<15 min gap, no activity>").is_none());
     }
 
     #[test]

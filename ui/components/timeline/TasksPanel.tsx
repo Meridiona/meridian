@@ -12,31 +12,17 @@
 
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ProviderGlyph, fmtDur } from '@/components/atoms'
-import type { TaskSummary, TasksResponse, TodayResponse, IntegrationsResponse, TaskStatusOption, SetStatusResponse } from '@/lib/api-types'
-import { load, mutate, openExternal } from '@/lib/bridge'
+import type { TaskSummary, TasksResponse, TodayResponse, IntegrationsResponse } from '@/lib/api-types'
+import { load, mutate } from '@/lib/bridge'
 import { filterByConnectedProviders } from '@/lib/integrations'
 import HygieneDialog from '@/components/HygieneDialog'
 import ConnectTrackers from '@/components/IntegrationConnect'
 import { TasksDetailPane } from './TasksDetailPane'
+import { useTaskStatusChange, StatusBanner } from './useTaskStatusChange'
 
 const TASKS_POLL_INTERVAL_MS = 60_000
-// How long the Undo affordance lingers after a status change before it fades.
-const UNDO_LINGER_MS = 10_000
-
-// What a status change captured, so Undo can put it back.
-interface UndoEntry {
-  taskKey: string
-  provider: string
-  prevStatus: string   // the status name before the change (set accepts id-or-name)
-  prevTerminal: boolean
-  newName: string
-}
-
-function isTerminalCategory(category: string): boolean {
-  return category === 'done' || category === 'cancelled'
-}
 
 const EPIC_PALETTE = ['#8B5CF6', '#3B82F6', '#F97316', '#10B981', '#EF4444', '#EC4899', '#0EA5A0', '#EAB308']
 
@@ -57,83 +43,14 @@ export function TasksPanel({ onOpenTask }: { onOpenTask: (key: string, title?: s
   const [providerFilter, setProviderFilter] = useState<string>('all')
   const [showIntegrations, setShowIntegrations] = useState(false)
   const [fixTask, setFixTask] = useState<TaskSummary | null>(null)
-  // Status-change UX: which task's write is in flight, a lingering Undo entry,
-  // and a transient note (for redirected/errored changes that carry no undo).
-  const [statusBusyKey, setStatusBusyKey] = useState<string | null>(null)
-  const [undo, setUndo] = useState<UndoEntry | null>(null)
-  const [note, setNote] = useState<string | null>(null)
-  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const noteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  useEffect(() => () => {
-    if (undoTimer.current) clearTimeout(undoTimer.current)
-    if (noteTimer.current) clearTimeout(noteTimer.current)
-  }, [])
 
   // Optimistically reflect a status change in the local list (a done/cancelled
   // status makes the task terminal, which drops it from the board).
   const patchTaskStatus = (key: string, status: string, isTerminal: boolean) =>
     setData(d => d ? { ...d, tasks: d.tasks.map(t => t.key === key ? { ...t, status, is_terminal: isTerminal } : t) } : d)
 
-  const flashNote = (msg: string) => {
-    setNote(msg)
-    if (noteTimer.current) clearTimeout(noteTimer.current)
-    noteTimer.current = setTimeout(() => setNote(null), UNDO_LINGER_MS)
-  }
-
-  const dismissUndo = () => {
-    if (undoTimer.current) clearTimeout(undoTimer.current)
-    setUndo(null)
-  }
-
-  // Change a task's status on its tracker, capturing an Undo.
-  const handleSetStatus = (task: TaskSummary, option: TaskStatusOption) => {
-    if (statusBusyKey) return
-    const prevStatus = task.status
-    const prevTerminal = task.is_terminal
-    setStatusBusyKey(task.key)
-    setNote(null)
-    mutate<SetStatusResponse>('/api/tasks/status', 'set_task_status',
-      { provider: task.provider, key: task.key, status_id: option.id })
-      .then(res => {
-        if (res.result.status === 'applied') {
-          const ns = res.new_status
-          const name = ns?.name ?? option.name
-          const terminal = ns ? isTerminalCategory(ns.category) : isTerminalCategory(option.category)
-          patchTaskStatus(task.key, name, terminal)
-          if (undoTimer.current) clearTimeout(undoTimer.current)
-          setUndo({ taskKey: task.key, provider: task.provider, prevStatus, prevTerminal, newName: name })
-          undoTimer.current = setTimeout(() => setUndo(null), UNDO_LINGER_MS)
-        } else {
-          // Tracker couldn't do it in-app — the browser was opened to finish.
-          if (res.result.browse_url) openExternal(res.result.browse_url)
-          flashNote(res.result.reason || `Finish the change in ${task.provider} - opened in your browser.`)
-        }
-      })
-      .catch(e => flashNote(e instanceof Error ? e.message : typeof e === 'string' ? e : 'Could not change status'))
-      .finally(() => setStatusBusyKey(null))
-  }
-
-  // Put the status back to what it was before the last change.
-  const handleUndo = () => {
-    const u = undo
-    if (!u || statusBusyKey) return
-    dismissUndo()
-    setStatusBusyKey(u.taskKey)
-    // set accepts id-or-name; the previous status NAME is what we captured.
-    mutate<SetStatusResponse>('/api/tasks/status', 'set_task_status',
-      { provider: u.provider, key: u.taskKey, status_id: u.prevStatus })
-      .then(res => {
-        if (res.result.status === 'applied') {
-          patchTaskStatus(u.taskKey, u.prevStatus, u.prevTerminal)
-        } else {
-          if (res.result.browse_url) openExternal(res.result.browse_url)
-          flashNote(res.result.reason || `Finish the undo in ${u.provider} - opened in your browser.`)
-        }
-      })
-      .catch(e => flashNote(e instanceof Error ? e.message : typeof e === 'string' ? e : 'Could not undo'))
-      .finally(() => { setStatusBusyKey(null); fetchTasks() })
-  }
+  const { statusBusyKey, undo, note, handleSetStatus, handleUndo, dismissUndo, dismissNote } =
+    useTaskStatusChange(patchTaskStatus, { onUndoSettled: () => fetchTasks() })
 
   const fetchTasks = () => {
     load<TasksResponse>('/api/tasks', 'get_tasks').then((d) => {
@@ -222,10 +139,15 @@ export function TasksPanel({ onOpenTask }: { onOpenTask: (key: string, title?: s
     return <div>{header}<ConnectTrackers integrations={integrations} onChanged={fetchIntegrations} /></div>
   }
 
-  // Done/terminal tasks are hidden from the board — a completed ticket isn't
-  // something you act on here. (It still counts toward "touched today" and stays
-  // available to the classifier/worklog matching; it's just not listed.)
-  const activeTasks = connectedTasks.filter(t => !t.is_terminal)
+  // What's on the board — a completed or cleaned-up ticket isn't something you
+  // act on here. It still counts toward "touched today"; it's just not listed.
+  //
+  // `on_board` is computed in Rust by the same predicate that builds the worklog
+  // matcher's candidate set, so this list IS that list. Do not substitute
+  // `!t.is_terminal`: that was the old filter, and it disagreed with the matcher
+  // (which also drops cleanup-excluded tickets), so a task could sit here and be
+  // invisible to the model with nothing saying so.
+  const activeTasks = connectedTasks.filter(t => t.on_board)
   if (activeTasks.length === 0) {
     return (
       <div>
@@ -234,7 +156,7 @@ export function TasksPanel({ onOpenTask }: { onOpenTask: (key: string, title?: s
           All your tasks are done - nothing active right now. Completed tickets are hidden here.
         </p>
         <StatusBanner undo={undo} note={note} busy={!!statusBusyKey}
-          onUndo={handleUndo} onDismissUndo={dismissUndo} onDismissNote={() => setNote(null)} />
+          onUndo={handleUndo} onDismissUndo={dismissUndo} onDismissNote={dismissNote} />
       </div>
     )
   }
@@ -301,45 +223,7 @@ export function TasksPanel({ onOpenTask }: { onOpenTask: (key: string, title?: s
 
       {fixTask && <HygieneDialog task={fixTask} onClose={() => setFixTask(null)} onApplied={fetchTasks} />}
       <StatusBanner undo={undo} note={note} busy={!!statusBusyKey}
-        onUndo={handleUndo} onDismissUndo={dismissUndo} onDismissNote={() => setNote(null)} />
-    </div>
-  )
-}
-
-// Lingering status-change feedback: an Undo bar (10s) after a successful change,
-// or a transient note when the change was redirected to the tracker / errored.
-function StatusBanner({ undo, note, busy, onUndo, onDismissUndo, onDismissNote }: {
-  undo: UndoEntry | null
-  note: string | null
-  busy: boolean
-  onUndo: () => void
-  onDismissUndo: () => void
-  onDismissNote: () => void
-}) {
-  if (!undo && !note) return null
-  return (
-    <div className="fixed left-1/2 -translate-x-1/2 z-[60]" style={{ bottom: 24 }}>
-      {undo ? (
-        <div className="flex items-center gap-3 rounded-xl px-4 py-2.5"
-          style={{ background: 'var(--t-card)', border: '1px solid var(--t-card-border)', boxShadow: '0 14px 40px -14px rgba(0,0,0,0.5)' }}>
-          <span className="mt-body-sm" style={{ color: 'var(--t-title)' }}>
-            <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text mr-1.5">{undo.taskKey}</span>
-            moved to <span style={{ fontWeight: 700 }}>{undo.newName}</span>
-          </span>
-          <button onClick={onUndo} disabled={busy}
-            className="mt-body-sm px-2.5 py-1 rounded-md"
-            style={{ color: 'var(--color-state-proposal)', fontWeight: 700, border: '1px solid color-mix(in srgb, var(--color-state-proposal) 40%, transparent)', opacity: busy ? 0.6 : 1 }}>
-            {busy ? 'Undoing…' : 'Undo'}
-          </button>
-          <button onClick={onDismissUndo} aria-label="Dismiss" className="mt-body-sm" style={{ color: 'var(--t-faint)', padding: '0 2px' }}>✕</button>
-        </div>
-      ) : (
-        <div className="flex items-center gap-3 rounded-xl px-4 py-2.5"
-          style={{ background: 'var(--t-card)', border: '1px solid color-mix(in srgb, var(--color-state-pending) 35%, var(--t-card-border))', boxShadow: '0 14px 40px -14px rgba(0,0,0,0.5)' }}>
-          <span className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>{note}</span>
-          <button onClick={onDismissNote} aria-label="Dismiss" className="mt-body-sm" style={{ color: 'var(--t-faint)', padding: '0 2px' }}>✕</button>
-        </div>
-      )}
+        onUndo={handleUndo} onDismissUndo={dismissUndo} onDismissNote={dismissNote} />
     </div>
   )
 }

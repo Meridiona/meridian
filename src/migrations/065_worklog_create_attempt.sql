@@ -1,0 +1,43 @@
+-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+--
+-- The "we called create_ticket and never learned the outcome" marker, for the
+-- parent draft row. The create-step analog of 063's per-target post_attempt_at.
+--
+-- WHY THIS EXISTS. When a draft is a proposal (no target ticket yet), approve
+-- files a REAL ticket with create_ticket and only then records its key in
+-- created_task_key. Two things can make that fire twice, each leaving a second
+-- unwanted ticket on a shared board:
+--   1. Two concurrent approves (the tray shells out `worklog-generate-approve`
+--      per click, so two processes can race) both see created_task_key IS NULL
+--      and both create.
+--   2. A single retry after a crash BETWEEN create_ticket returning and
+--      created_task_key reaching disk: the ticket is live, nothing remembers it,
+--      and the retry creates again.
+-- create_ticket carries no dedup marker to catch either after the fact, so - like
+-- post_attempt_at - the claim has to be written down BEFORE the call, not after.
+--
+-- create_attempt_at is that write-ahead claim. It is set immediately before the
+-- create call (begin_create) and cleared the moment the outcome is known: on a
+-- definite failure (revert_create) so a retry may try again, or on success when
+-- created_task_key is recorded (mark_created).
+--
+--   create_attempt_at        | created_task_key | meaning
+--   -------------------------|------------------|--------------------------------
+--   NULL                     | NULL             | not attempted - safe to create
+--   set, within stale window | NULL             | create IN FLIGHT - refuse
+--   set, older than window   | NULL             | owner crashed mid-create - reclaimable
+--   (any)                    | NOT NULL         | created - never create again
+--
+-- This DIVERGES from post_attempt_at on the middle rows. A dangling POST marker is a
+-- permanent, human-resolved dead end (its target surfaces `outcome_unknown` in the
+-- UI). A dangling CREATE marker has neither escape: an approved row has no regenerate
+-- path (upsert_draft only overwrites `drafted` rows) and creates aren't surfaced for
+-- manual resolution - so a pure dead end would silently wedge the draft forever.
+-- Instead begin_create auto-reclaims a claim once it is older than the stale window
+-- (`stale_before`, ~CREATE_CLAIM_STALE_MINS), which is safely beyond any live
+-- create_ticket. Consciously-accepted cost: if a create SUCCEEDED but the process
+-- died before recording the key, a re-approve AFTER the window files a second ticket.
+-- That needs a crash at an exact instant and a retry minutes later; a wedged-forever
+-- draft is the worse everyday failure, so the bounded auto-reclaim wins here.
+
+ALTER TABLE day_task_worklogs ADD COLUMN create_attempt_at TEXT;
