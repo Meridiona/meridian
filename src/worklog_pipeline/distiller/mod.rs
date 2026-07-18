@@ -336,7 +336,7 @@ async fn embed_lex(lex: &[Span]) -> (Vec<Vec<f32>>, bool) {
         let start = Instant::now();
         let vecs = if embedder::is_ready() && !lex.is_empty() {
             let texts: Vec<String> = lex.iter().map(|s| s.line.clone()).collect();
-            match embedder::embed_batch(&texts).await {
+            match embedder::embed_batch(texts).await {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!(error = %e, "distil: embed failed — degrading to lexical-only");

@@ -56,18 +56,25 @@ pub async fn ensure_weights() -> Result<()> {
 /// cosine similarity is a plain dot product. Lazily loads (and caches) the model on first
 /// use; compute runs on a blocking thread. Errors when the model can't load; callers MUST
 /// gate on [`is_ready`] and take the lexical-degrade path on failure.
-pub async fn embed_batch(texts: &[String]) -> Result<Vec<Vec<f32>>> {
-    let owned: Vec<String> = texts.to_vec();
-    tokio::task::spawn_blocking(move || embed_blocking(&owned))
+///
+/// Takes ownership rather than `&[String]`: `spawn_blocking` needs a `'static` closure, so
+/// a borrowed slice would still have to be cloned here. The one caller
+/// ([`crate::worklog_pipeline::distiller`]) already builds a fresh owned `Vec<String>`
+/// immediately before calling, so taking it directly saves that clone.
+pub async fn embed_batch(texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+    tokio::task::spawn_blocking(move || embed_blocking(&texts))
         .await
         .map_err(|e| anyhow::anyhow!("embedder task panicked: {e}"))?
 }
 
 /// The blocking body: lazily load the model under the mutex, then embed each text.
+///
+/// Recovers from a poisoned lock rather than propagating the poison forever: a panic
+/// during one embed (a candle shape mismatch, say) must not permanently strand the
+/// distiller on its lexical-only degrade path for the rest of the daemon's lifetime.
+/// Matches [`crate::llm::rate_limit`]'s `NEXT_SLOT` handling of the same hazard.
 fn embed_blocking(texts: &[String]) -> Result<Vec<Vec<f32>>> {
-    let mut guard = EMBEDDER
-        .lock()
-        .map_err(|_| anyhow::anyhow!("embedder mutex poisoned"))?;
+    let mut guard = EMBEDDER.lock().unwrap_or_else(|e| e.into_inner());
     if guard.is_none() {
         *guard = Some(Embedder::load()?);
     }
@@ -98,7 +105,7 @@ mod tests {
             "Wrote the new session distiller in Rust".to_string(),
             "Cooked pasta and watched a film in the evening".to_string(),
         ];
-        let v = embed_batch(&texts).await.expect("embed");
+        let v = embed_batch(texts).await.expect("embed");
         assert_eq!(v.len(), 3);
         assert_eq!(v[0].len(), 384, "bge-small is 384-dim");
 

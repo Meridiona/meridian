@@ -7,6 +7,7 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
+use meridian_core::date::utc_to_local_hhmm as local_hhmm;
 use sqlx::{Row, SqlitePool};
 
 use super::config::PmWorklogConfig;
@@ -16,15 +17,6 @@ use super::models::JiraUpdate;
 /// considered genuinely stuck rather than merely settling. Mirrors the driver's
 /// default `PM_WORKLOG_READINESS_AGING_MIN`.
 const STUCK_AFTER_MIN: f64 = 90.0;
-
-/// Render `window_start` (`...+00:00`) as a local `HH:MM`, or the raw string if
-/// it can't be parsed.
-fn local_hhmm(iso: &str) -> String {
-    match DateTime::parse_from_rfc3339(iso) {
-        Ok(dt) => dt.with_timezone(&Local).format("%H:%M").to_string(),
-        Err(_) => iso.chars().take(5).collect(),
-    }
-}
 
 fn fmt_secs(s: i64) -> String {
     let m = s / 60;
