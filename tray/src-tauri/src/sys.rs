@@ -106,10 +106,21 @@ pub fn is_bundled() -> bool {
 /// the window exists). Every one of them is non-fatal — the UI also shows the
 /// link — so a failure is dropped, not surfaced.
 ///
-/// `open` is macOS-only; the Windows counterpart is the shell builtin `start`
-/// (hence `cmd /C`, and the empty title arg `start` needs before a URL), and
-/// Linux uses `xdg-open`.
+/// # Safety of the argument
+///
+/// The URL is only ever passed as a **direct process argument**, never to a
+/// shell. In particular the Windows path uses `explorer.exe`, a real
+/// executable spawned via `CreateProcess`, **not** `cmd /C start`: `start` is
+/// a `cmd` builtin, so it would re-parse the URL and let a `&`/`|` in it inject
+/// a second command. As belt-and-braces the scheme is checked first, so only
+/// `http(s)` URLs reach any launcher — nothing here can run an arbitrary
+/// program even if a call site is ever fed an untrusted string.
 pub fn open_url_detached(url: &str) {
+    if !is_web_url(url) {
+        tracing::warn!(url, "refusing to open a non-http(s) url");
+        return;
+    }
+
     #[cfg(target_os = "macos")]
     let mut cmd = {
         let mut c = std::process::Command::new("open");
@@ -118,10 +129,10 @@ pub fn open_url_detached(url: &str) {
     };
     #[cfg(target_os = "windows")]
     let mut cmd = {
-        let mut c = std::process::Command::new("cmd");
-        // `start` treats a first quoted arg as the window title, so pass an
-        // empty title before the URL or a URL in quotes would be swallowed.
-        c.args(["/C", "start", "", url]);
+        // explorer.exe hands the URL to the default protocol handler and is a
+        // real .exe, so std spawns it directly with no shell in between.
+        let mut c = std::process::Command::new("explorer.exe");
+        c.arg(url);
         c
     };
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
@@ -133,6 +144,13 @@ pub fn open_url_detached(url: &str) {
     if let Err(e) = cmd.spawn() {
         tracing::warn!(error = %e, url, "could not open url in browser");
     }
+}
+
+/// Whether `url` is an `http(s)` URL — the only thing [`open_url_detached`]
+/// will hand to a launcher. Extracted so the gate can be tested without
+/// spawning a process.
+fn is_web_url(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://")
 }
 
 /// The plugin state, if the plugin was registered (bundled runs only).
@@ -310,6 +328,25 @@ mod tests {
     /// make these assertions vacuous on whichever OS is not being spelled.
     fn path_of(parts: &[&str]) -> std::path::PathBuf {
         parts.iter().collect()
+    }
+
+    /// The gate that keeps `open_url_detached` from ever handing a launcher
+    /// anything but an http(s) URL — the belt to the braces of not using a
+    /// shell. A `javascript:`, `file:`, or shell-metacharacter payload must be
+    /// refused outright.
+    #[test]
+    fn only_web_urls_pass_the_open_gate() {
+        assert!(super::is_web_url("https://github.com/login/device"));
+        assert!(super::is_web_url("http://localhost:3939/x"));
+        assert!(!super::is_web_url("javascript:alert(1)"));
+        assert!(!super::is_web_url("file:///etc/passwd"));
+        assert!(!super::is_web_url("ftp://x"));
+        assert!(!super::is_web_url(""));
+        // A metacharacter-laden URL still passes the scheme gate — it IS
+        // http — which is exactly why the scheme check is not the real
+        // defense: the launcher is never a shell, so `& calc.exe` is just an
+        // (invalid) part of the argument, not a second command.
+        assert!(super::is_web_url("https://example.com/x?a=1&b=2"));
     }
 
     #[test]
