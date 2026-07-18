@@ -336,7 +336,12 @@ async fn embed_lex(lex: &[Span]) -> (Vec<Vec<f32>>, bool) {
         let start = Instant::now();
         let vecs = if embedder::is_ready() && !lex.is_empty() {
             let texts: Vec<String> = lex.iter().map(|s| s.line.clone()).collect();
-            match embedder::embed_batch(texts).await {
+            let result = embedder::embed_batch(texts).await;
+            // This is the only embed_batch call in the hour's whole run (one distil
+            // pass = one batch), so the model has no more work until next hour —
+            // drop it now rather than leaving it resident in memory until then.
+            embedder::unload();
+            match result {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!(error = %e, "distil: embed failed — degrading to lexical-only");

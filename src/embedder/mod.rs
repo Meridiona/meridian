@@ -67,6 +67,17 @@ pub async fn embed_batch(texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
         .map_err(|e| anyhow::anyhow!("embedder task panicked: {e}"))?
 }
 
+/// Drop the cached model, freeing its weights/tensors. The distiller calls this
+/// right after its one `embed_batch` call for the hour (see
+/// [`crate::worklog_pipeline::distiller::embed_lex`]) — the model is used once
+/// per hour, so there is nothing gained by keeping ~130 MB of weights resident in
+/// a background daemon for the other 55-ish minutes until the next hour. The next
+/// call to [`embed_batch`] reloads it from disk exactly like the first-ever call.
+pub fn unload() {
+    let mut guard = EMBEDDER.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = None;
+}
+
 /// The blocking body: lazily load the model under the mutex, then embed each text.
 ///
 /// Recovers from a poisoned lock rather than propagating the poison forever: a panic
