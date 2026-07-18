@@ -59,9 +59,8 @@ EOF
         cat <<'EOF'
 
 Dev (source checkout — builds from this repo):
-  dev                Daemon (bg) + UI dev server in foreground (hot reload)
-  dev ui             UI dev server only — hot reload, foreground (Ctrl-C to stop)
-  dev daemon         Rebuild Rust + restart the daemon (bg)   ← backend loop (2nd terminal)
+  dev                Start the full dev environment: Rust daemon (cargo-watch,
+                     rebuilds on save) + Tauri tray (hot reload) in 2 windows
   dev build          Production build of daemon + UI (verify the shipped build; no run)
 EOF
     fi
@@ -492,47 +491,8 @@ cmd_daemon_passthrough() {
 # ~/.meridian/app) has no source, so these are hidden/disabled there.
 _is_source_checkout() { [[ -f "${REPO_ROOT}/Cargo.toml" ]]; }
 
-# Bring a service up-to-date: ensure it's loaded (enable + bootstrap), then
-# (re)start it so a fresh build is picked up. Works whether it was stopped,
-# booted out, or already running — the same sequence cmd_start uses.
-_dev_up() {
-    local label="$1"
-    local plist="${LAUNCH_AGENTS}/${label}.plist"
-    if [[ ! -f "$plist" ]]; then
-        warn "${label} not installed — run ./install.sh"
-        return 0
-    fi
-    set +e
-    launchctl enable "${GUI_TARGET}/${label}" 2>/dev/null
-    launchctl bootstrap "${GUI_TARGET}" "$plist" 2>/dev/null
-    launchctl kickstart -k "${GUI_TARGET}/${label}" 2>/dev/null
-    local rc=$?
-    set -e
-    if [[ $rc -eq 0 ]]; then
-        ok "(re)started ${label}"
-    else
-        warn "${label} failed to start — check: meridian logs ${label#com.meridiona.}"
-    fi
-}
-
 _dev_build_daemon() { info "building daemon (cargo --release)…"; ( cd "${REPO_ROOT}" && cargo build --release ); }
 _dev_build_ui()     { info "building UI (npm run build)…";       ( cd "${REPO_ROOT}/ui" && npm run build ); }
-
-# Run the Next.js dev server in the FOREGROUND (hot reload). Replaces this shell
-# (exec), so Ctrl-C stops just the UI server — backing services keep running.
-_dev_ui_server() {
-    local port="${MERIDIAN_UI_PORT:-3939}"
-    echo
-    info "UI dev server (hot reload) → http://localhost:${port}   ·   Ctrl-C to stop"
-    info "edit-and-save reflects instantly; backing services keep running in the background"
-    echo
-    cd "${REPO_ROOT}/ui" || { err "ui/ not found at ${REPO_ROOT}/ui"; exit 1; }
-    if [[ -x ./node_modules/.bin/next ]]; then
-        exec ./node_modules/.bin/next dev --turbopack -p "${port}"
-    else
-        warn "next not found — run 'cd ui && npm install' first"; exec npm run dev
-    fi
-}
 
 cmd_migrate_db() {
     local db="${HOME}/.meridian/meridian.db"
@@ -600,17 +560,17 @@ cmd_dev() {
     local target="${1:-all}"
     case "$target" in
         all)
-            # Dev session: rebuild + (re)start the daemon in the background, then
-            # the UI dev server in the FOREGROUND (hot reload).
-            _dev_build_daemon
-            _dev_up "${LABEL_DAEMON}"
-            _dev_ui_server      # foreground (exec) — runs until Ctrl-C
+            # The full dev environment: stops any previous dev/installed daemon,
+            # then opens 2 Terminal windows — the Rust daemon under cargo-watch
+            # (rebuilds + restarts on save) and the Tauri tray via `npm run tauri
+            # dev` (which starts the Next.js hot-reload server itself). This is
+            # the single source of truth for a dev session; `bash dev-start.sh`
+            # runs the exact same script.
+            exec bash "${REPO_ROOT}/dev-start.sh"
             ;;
-        ui)         _dev_ui_server ;;                 # UI dev server only (foreground, hot reload)
-        daemon)     _dev_build_daemon; _dev_up "${LABEL_DAEMON}" ;;
         build)      _dev_build_daemon; _dev_build_ui; ok "built production bundles (no run)" ;;
         *) err "unknown dev target: ${target}";
-           echo "  targets: all | ui | daemon | build"; exit 1 ;;
+           echo "  targets: (none) | build"; exit 1 ;;
     esac
 }
 

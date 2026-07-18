@@ -251,15 +251,13 @@ bash scripts/setup-hooks.sh
 
 ### Development
 
-After `./install.sh`, the services run under launchd. `meridian dev` starts a dev session from your checkout — backing services in the background, the UI hot-reloading in your terminal (source-checkout only).
+After `./install.sh` (or `./install-dev.sh`), `meridian dev` starts the whole product from your checkout in watch/hot-reload mode (source-checkout only). It stops any previous dev run and the installed launchd daemon, then opens two Terminal windows: the Rust daemon under `cargo-watch` (rebuilds + restarts on every `.rs` save) and the Tauri tray via `npm run tauri dev` (which starts the Next.js hot-reload server itself). Capture runs in-process inside the tray - nothing else to start.
 
 ```bash
-meridian dev            # backing services (bg) + UI dev server foreground (hot reload)
-meridian dev daemon     # rebuild Rust + restart the daemon (bg)
-meridian dev ui         # UI dev server only — hot reload
-meridian dev build      # production build of daemon + UI (no run)
+meridian dev            # start the full dev environment (daemon + tray, hot reload)
+meridian dev build      # production build of daemon + UI (verify the shipped build; no run)
 ```
 
-Typical loop: `meridian dev` in one terminal; when you change Rust, `meridian dev daemon` in a second.
+`meridian dev` is exactly `bash dev-start.sh`. Editing Rust auto-rebuilds the daemon; editing the UI hot-reloads live - no second command needed. Stop with Ctrl-C in each window; re-enable the installed daemon later with `meridian start`.
 
 See `CLAUDE.md` for architecture, conventions, and common-task recipes.
