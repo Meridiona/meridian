@@ -20,10 +20,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   to set credentials manually at any time).
 bash "${REPO_ROOT}/install.sh" --dev --no-daemon --skip-env "$@"
 
-# Suppress the update-available banner in dev mode.
-mkdir -p "${HOME}/.meridian/app"
-echo "dev" > "${HOME}/.meridian/app/VERSION"
-echo "  ✓ ~/.meridian/app/VERSION set to 'dev' (suppresses update banner)"
+# The update-available banner is already suppressed in a dev build: version.rs's
+# read_current_version() returns "dev" under debug_assertions, so is_newer() is
+# always false. (No VERSION file to write — the tray reads its baked
+# package_info().version, not ~/.meridian/app/VERSION.)
 
 # OpenObserve — local OTLP backend for traces + logs. Optional but recommended
 # if you're iterating on the pipeline (query at http://localhost:5080).

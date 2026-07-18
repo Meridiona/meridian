@@ -114,7 +114,7 @@ jobs:
           # stale snapshot and its `git push HEAD:main` is rejected once a newer
           # commit lands ("fetch first"). Checking out the tip means the first
           # queued run releases everything on main and later runs find nothing
-          # new to release (clean no-op) — no failures, npm always == main.
+          # new to release (clean no-op) — no failures, the release always == main.
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0          # full history — semantic-release needs commits
           fetch-tags: true        # explicitly fetch tags so the v0.0.0 baseline is seen

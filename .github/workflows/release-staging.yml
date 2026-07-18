@@ -7,7 +7,7 @@ name: Release (staging)
 #   • bakes the STAGING updater endpoint (…/releases/download/updater-staging/
 #     latest.json) into the .app at build time via a --config overlay — never
 #     committed, so it cannot leak to `main`;
-#   • is GitHub-only (NO npm publish, NO version-bump commit back to pre-main);
+#   • publishes to GitHub only, with NO version-bump commit back to pre-main;
 #   • mirrors latest.json onto the rolling `updater-staging` prerelease so an
 #     installed staging app self-updates staging→staging.
 #

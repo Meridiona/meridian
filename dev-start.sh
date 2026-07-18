@@ -53,7 +53,7 @@ fi
 # killing it here is enough.
 #
 # Also stops the CANONICAL launchd-managed daemon (com.meridiona.daemon), if
-# a packaged/npm install of Meridian is also present on this machine. Without
+# a packaged (.app) install of Meridian is also present on this machine. Without
 # this, both the launchd daemon and the dev-build daemon started below run
 # concurrently against the same meridian.db, each independently firing the
 # clock-aligned worklog-hour trigger — producing two worklog runs (two
