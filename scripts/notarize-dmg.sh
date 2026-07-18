@@ -29,7 +29,11 @@ VERSION="${VERSION#v}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
-DMG="target/release/bundle/dmg/Meridian_${VERSION}_aarch64.dmg"
+# `--target universal-apple-darwin` bundles under target/universal-apple-darwin/
+# (not plain target/release/) and its DMG filename suffix isn't the fixed
+# "_aarch64" a single-arch build used — glob for it rather than hardcode.
+DMG_DIR="target/universal-apple-darwin/release/bundle/dmg"
+DMG="$(ls "${DMG_DIR}"/Meridian_${VERSION}_*.dmg 2>/dev/null | head -1)"
 IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
 
 case "${IDENTITY}" in
@@ -40,7 +44,7 @@ case "${IDENTITY}" in
         ;;
 esac
 
-[[ -f "${DMG}" ]] || { echo "✗ notarize-dmg: ${DMG} not found" >&2; exit 1; }
+[[ -n "${DMG}" && -f "${DMG}" ]] || { echo "✗ notarize-dmg: no Meridian_${VERSION}_*.dmg found in ${DMG_DIR}" >&2; exit 1; }
 
 : "${APPLE_API_KEY:?notarize-dmg: APPLE_API_KEY (the 10-char Key ID) is unset}"
 : "${APPLE_API_ISSUER:?notarize-dmg: APPLE_API_ISSUER (the issuer UUID) is unset}"

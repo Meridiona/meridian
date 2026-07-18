@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/Meridiona/meridian/actions/workflows/ci.yml/badge.svg)](https://github.com/Meridiona/meridian/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Platform: macOS Apple Silicon](https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-111111.svg)](#install)
+[![Platform: macOS](https://img.shields.io/badge/platform-macOS-111111.svg)](#install)
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-dea584.svg)](https://www.rust-lang.org/)
 
 </div>
@@ -49,9 +49,9 @@ A dashboard inside the Meridian app (open it from the menu-bar tray icon) shows 
 
 ## Install
 
-**Requirements:** macOS on Apple Silicon (M1+).
+**Requirements:** macOS (Apple Silicon or Intel).
 
-> Meridian is **Apple Silicon only** — the in-process capture stack and the Metal-accelerated local embedder are arm64/macOS-only, so **Intel Macs are not supported** (the installer checks the hardware and refuses cleanly), and **Windows and Linux are not supported** either. A Rosetta x86_64 terminal or Homebrew on an Apple Silicon Mac is fine — Meridian's own binaries are native arm64 regardless of what's on your `PATH`.
+> Meridian ships as a universal binary — Apple Silicon and Intel Macs are both supported. **Windows and Linux are not supported.** The local embedder is CPU-only (not Metal-accelerated), so it behaves identically on both architectures. A Rosetta x86_64 terminal or Homebrew on an Apple Silicon Mac is fine — Meridian's own binaries carry native code for both architectures regardless of what's on your `PATH`.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Meridiona/meridian/main/scripts/bootstrap.sh | bash

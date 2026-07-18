@@ -2,8 +2,8 @@ name: Release (staging)
 
 # Staging-channel releases via semantic-release, on the `pre-main` branch.
 # Each run cuts a PRERELEASE version (X.Y.Z-staging.N, computed from main's
-# reachable v* tags) that builds the SAME signed DMG + updater artifacts as the
-# production flow, but:
+# reachable v* tags) that builds the SAME signed universal (arm64 + x86_64)
+# DMG + updater artifacts as the production flow, but:
 #   • bakes the STAGING updater endpoint (…/releases/download/updater-staging/
 #     latest.json) into the .app at build time via a --config overlay — never
 #     committed, so it cannot leak to `main`;
@@ -103,6 +103,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.93.1"
+          targets: "aarch64-apple-darwin,x86_64-apple-darwin"
       - uses: Swatinem/rust-cache@v2
 
       - name: Set up Node.js

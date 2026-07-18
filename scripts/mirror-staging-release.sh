@@ -23,8 +23,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
 TAG="updater-staging"
-MAC="target/release/bundle/macos"
-DMG="target/release/bundle/dmg/Meridian.dmg"
+# `--target universal-apple-darwin` bundles under target/universal-apple-darwin/,
+# not plain target/release/.
+MAC="target/universal-apple-darwin/release/bundle/macos"
+DMG="target/universal-apple-darwin/release/bundle/dmg/Meridian.dmg"
 LATEST="${MAC}/latest.json"
 
 # package-updater.sh skips latest.json when updater artifacts weren't signed

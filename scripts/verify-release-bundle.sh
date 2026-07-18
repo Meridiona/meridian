@@ -39,12 +39,26 @@ echo "→ Pre-publish smoke test (v${VERSION})"
 #     `codesign --verify --deep --strict` PASSES on an ad-hoc nested binary, so it
 #     canNOT be relied on here — the Team ID must be asserted explicitly.
 #   • un-notarized/un-stapled → first launch is blocked or needs an online check.
-APP="target/release/bundle/macos/Meridian.app"
-DMG="target/release/bundle/dmg/Meridian.dmg"
+# `--target universal-apple-darwin` bundles under target/universal-apple-darwin/,
+# not plain target/release/.
+BUNDLE_DIR="target/universal-apple-darwin/release/bundle"
+APP="${BUNDLE_DIR}/macos/Meridian.app"
+DMG="${BUNDLE_DIR}/dmg/Meridian.dmg"
 DAEMON_IN_APP="${APP}/Contents/Resources/backend/meridian"
 TEAM_ID="AQTYN9PZ83"   # Meridiona LLP
 
 [[ -d "${APP}" ]] || fail "${APP} not found — the tauri build did not produce an .app"
+
+# 3z. Both the tray binary and the bundled daemon must actually carry both
+#     architectures — catches a silent fallback to a single-arch build (e.g.
+#     the universal-apple-darwin target flag getting dropped) before it ships.
+for _target in "${APP}/Contents/MacOS/meridian-tray:tray binary" "${DAEMON_IN_APP}:bundled daemon"; do
+    _path="${_target%%:*}"; _what="${_target##*:}"
+    _archs="$(lipo -archs "${_path}" 2>/dev/null || true)"
+    [[ "${_archs}" == *arm64* && "${_archs}" == *x86_64* ]] \
+        || fail "${_what} at ${_path} is not universal (lipo -archs: '${_archs}') — expected both arm64 and x86_64"
+done
+pass "tray binary + bundled daemon: universal (arm64 + x86_64)"
 
 # 3a. Both Mach-Os must carry a Developer ID signature under Meridiona's Team ID
 #     with the Hardened Runtime flag set (notarization requires all three).
@@ -86,12 +100,21 @@ fi
 # with auto-update dead. Assert the artifacts exist rather than trusting exit
 # codes. (A wrong/absent TAURI_SIGNING_PRIVATE_KEY_PASSWORD is the usual cause.)
 for _art in \
-    "target/release/bundle/macos/Meridian.app.tar.gz:updater payload" \
-    "target/release/bundle/macos/Meridian.app.tar.gz.sig:updater signature" \
-    "target/release/bundle/macos/latest.json:updater manifest"; do
+    "${BUNDLE_DIR}/macos/Meridian.app.tar.gz:updater payload" \
+    "${BUNDLE_DIR}/macos/Meridian.app.tar.gz.sig:updater signature" \
+    "${BUNDLE_DIR}/macos/latest.json:updater manifest"; do
     _p="${_art%%:*}"; _w="${_art##*:}"
     [[ -s "${_p}" ]] || fail "${_w} missing/empty at ${_p} — auto-update would be dead for every installed user. Check TAURI_SIGNING_PRIVATE_KEY / _PASSWORD (tauri build logs the failure but exits 0)."
 done
 pass "updater artifacts present: payload + minisign signature + latest.json"
+
+# latest.json must carry BOTH platform keys (pointing at the same universal
+# payload) — package-updater.sh dropping one silently would leave that arch's
+# installs never seeing an update.
+for _plat in darwin-aarch64 darwin-x86_64; do
+    python3 -c "import json,sys; sys.exit(0 if '${_plat}' in json.load(open('${BUNDLE_DIR}/macos/latest.json'))['platforms'] else 1)" \
+        || fail "latest.json is missing the '${_plat}' platform key"
+done
+pass "latest.json covers both darwin-aarch64 and darwin-x86_64"
 
 echo "✓ Smoke test passed — safe to publish v${VERSION}"
