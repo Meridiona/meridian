@@ -14,8 +14,10 @@ monospace face for ticket keys/times/durations; numeric alignment comes from
 `font-variant-numeric: tabular-nums` on the same family (the `.font-mono` /
 `.mt-mono-sm` classes in `globals.css` and `tray/src/style.css`), matching how
 Apple's own type system handles numeric columns — no dedicated mono face there
-either. (`Instrument_Serif` remains, unrelated — it's a legacy face used only by
-the setup wizard, not part of this type scale.)
+either. There is no serif face at all: the setup and uninstall wizards used to
+set their hero headings in `Instrument_Serif`, but both now share the same SF Pro
+display treatment (`DISPLAY` in `app/setup/atoms.tsx`), and the `next/font`
+loader plus the `--font-serif` token were removed with it.
 
 | Role | Size | Weight | Line / Tracking |
 |---|---|---|---|

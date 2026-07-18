@@ -8,6 +8,28 @@
 
 import type { CSSProperties, ReactNode } from 'react'
 
+/**
+ * Display-heading treatment shared by every wizard hero + card header — the
+ * setup wizard's step headers and Welcome/Completion heroes, and the uninstall
+ * wizard's header. One voice with the timeline UI: SF Pro (var(--font-sans)),
+ * not the Instrument Serif these headings used to be set in.
+ *
+ * Lives here rather than in each page so the two wizards can't drift apart —
+ * they previously carried three verbatim copies of this object, which is
+ * exactly the divergence that made uninstall keep its serif heading after
+ * setup had moved off it.
+ *
+ * Carries the weight and tracking too, not just the family: every call site was
+ * overriding the old 700/-.02em with 750/-.03em, so those defaults were dead
+ * values that described no heading actually rendered. Call sites now set only
+ * what genuinely varies - fontSize, lineHeight, and color.
+ */
+export const DISPLAY: CSSProperties = {
+  fontFamily: 'var(--font-sans)',
+  fontWeight: 750,
+  letterSpacing: '-.03em',
+}
+
 // ── Rounded mono glyph mark (apps / integrations) ────────────────────────────
 export function Mark({ mono, color, size = 34, radius }: {
   mono: string; color: string; size?: number; radius?: number
