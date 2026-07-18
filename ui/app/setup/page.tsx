@@ -9,7 +9,7 @@
 // live. No fabricated state.
 
 import { useState, useEffect, useCallback } from 'react'
-import type { CSSProperties, ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { invoke, load, mutate, tauri } from '@/lib/bridge'
 import { STEPS, Welcome, Completion } from './steps'
 import type { Wiz } from './steps'
@@ -18,10 +18,7 @@ import type { IntegrationsResponse } from '@/lib/api-types'
 import type { RuntimeSettings } from '@/lib/settings'
 import { DEFAULT_LLM_PROVIDER, type LlmProviderId } from '@/lib/llm-providers'
 import { useLlmProviderDetection } from '@/components/LlmProviderPicker'
-import { Btn, Check, Kicker } from './atoms'
-
-// One voice with the timeline UI: SF Pro (var(--font-sans)), not Instrument Serif.
-const DISPLAY: CSSProperties = { fontFamily: 'var(--font-sans)', fontWeight: 700, letterSpacing: '-.02em' }
+import { Btn, Check, DISPLAY, Kicker } from './atoms'
 
 export default function SetupWizard() {
   const [welcome, setWelcome] = useState(true)
@@ -241,7 +238,7 @@ export default function SetupWizard() {
                 <>
                   <div style={{ padding: '26px 32px 16px' }}>
                     <Kicker style={{ marginBottom: 9 }}>{meta.kicker}</Kicker>
-                    <h1 style={{ ...DISPLAY, fontSize: 23, fontWeight: 750, lineHeight: 1.1, letterSpacing: '-.03em', color: 'var(--t-title)' }}>{meta.title}</h1>
+                    <h1 style={{ ...DISPLAY, fontSize: 23, lineHeight: 1.1, color: 'var(--t-title)' }}>{meta.title}</h1>
                     <p style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--t-muted)', marginTop: 8, maxWidth: 460, textWrap: 'pretty' }}>{meta.subtitle}</p>
                   </div>
                   <div className="nice-scroll flex flex-col" style={{ flex: 1, overflowY: 'auto', padding: '18px 32px 22px' }}>

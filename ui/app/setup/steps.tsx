@@ -6,8 +6,8 @@
 // page.tsx — permissions, integrations, sign-in, and the AI-provider choice are
 // all real. Nothing here fabricates data.
 
-import type { CSSProperties, ReactNode } from 'react'
-import { Btn, Check, Kicker, PermIcon, Row } from './atoms'
+import type { ReactNode } from 'react'
+import { Btn, Check, DISPLAY, Kicker, PermIcon, Row } from './atoms'
 import { PERMISSIONS } from './data'
 import type { NotifState } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
@@ -16,10 +16,6 @@ import { llmProvider, type LlmProviderId } from '@/lib/llm-providers'
 import ConnectTrackers from '@/components/IntegrationConnect'
 import LlmProviderPicker, { type ProviderStatus } from '@/components/LlmProviderPicker'
 import { SignInWidget } from './signin'
-
-// One voice with the timeline UI: SF Pro (var(--font-sans)), not the old
-// Instrument Serif. Display headings just go heavier + tighter, same family.
-const DISPLAY: CSSProperties = { fontFamily: 'var(--font-sans)', fontWeight: 700, letterSpacing: '-.02em' }
 
 /** The live wizard handle page.tsx builds and threads to every step body. */
 export interface Wiz {
@@ -199,7 +195,7 @@ export function Welcome({ onBegin }: { onBegin: () => void }) {
         <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 19, lineHeight: 1, letterSpacing: '-.01em', color: 'var(--t-title)' }}>meridian</span>
       </div>
       <Kicker style={{ marginBottom: 14 }}>First-run setup</Kicker>
-      <h1 style={{ ...DISPLAY, fontSize: 33, fontWeight: 750, lineHeight: 1.08, letterSpacing: '-.03em', color: 'var(--t-title)', maxWidth: 400, textWrap: 'balance' }}>
+      <h1 style={{ ...DISPLAY, fontSize: 33, lineHeight: 1.08, color: 'var(--t-title)', maxWidth: 400, textWrap: 'balance' }}>
         Your work, <span style={{ color: 'var(--color-state-proposal)' }}>remembered accurately.</span>
       </h1>
       <p style={{ fontSize: 13.5, lineHeight: 1.55, color: 'var(--t-muted)', marginTop: 13, maxWidth: 384, textWrap: 'pretty' }}>
@@ -238,7 +234,7 @@ export function Completion({ wiz }: { wiz: Wiz }) {
         <Check size={28} color="var(--color-state-proposal)" w={2.2} />
       </span>
       <Kicker style={{ marginBottom: 10 }}>Setup complete</Kicker>
-      <h1 style={{ ...DISPLAY, fontSize: 31, fontWeight: 750, lineHeight: 1.05, letterSpacing: '-.03em', color: 'var(--t-title)', marginBottom: 10 }}>You&apos;re all set.</h1>
+      <h1 style={{ ...DISPLAY, fontSize: 31, lineHeight: 1.05, color: 'var(--t-title)', marginBottom: 10 }}>You&apos;re all set.</h1>
       <p style={{ fontSize: 13.5, lineHeight: 1.5, color: 'var(--t-muted)', maxWidth: 340, textWrap: 'pretty', marginBottom: 22 }}>
         Meridian is now tracking quietly in your menu bar - on-device, private, and matched to your work.
       </p>
