@@ -369,6 +369,7 @@ mod tests {
             // resume path still works when a real free tier cuts us off partway. Pacing it
             // would make the very case it covers unreachable.
             rpm: 0,
+            rpd: 0,
             rungs: BTreeMap::new(),
         };
 
