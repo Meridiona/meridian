@@ -46,7 +46,7 @@ pub(crate) fn build_tray_menu<R: Runtime>(
     // source/dev run; the real swap+relaunch only happens for a packaged `.app`.
     let update_item = MenuItemBuilder::with_id("check_updates", "Check for Updates…").build(app)?;
     // Opens the in-app uninstall wizard — the safe way to tear Meridian down
-    // (stops every launchd agent + the MLX server, offers to remove data/
+    // (stops every launchd agent, offers to remove data plus any legacy
     // runtime/models, and points at System Settings for the permission grants
     // deleting the app never revokes). Separated from the rest of the menu
     // since it's a destructive action, same grouping convention as Quit.

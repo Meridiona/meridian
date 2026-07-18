@@ -587,7 +587,7 @@ pub fn run() {
             commands::open_external_url,
             commands::quit_app,
             commands::hide_popover,
-            // Setup wizard (first-run, permissions, MLX)
+            // Setup wizard (first-run, permissions, providers)
             commands::is_first_run,
             commands::mark_setup_complete,
             commands::save_account_email,

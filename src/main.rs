@@ -40,8 +40,8 @@ async fn daemon_already_running(sock_path: &std::path::Path) -> bool {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 1. Load the repo-local .env — the single source of config, shared by this
-    //    daemon and the Python services. Nothing is read from outside the repo.
+    // 1. Load the repo-local .env — the single source of config for the daemon.
+    //    Nothing is read from outside the repo.
     //    The launchd plist sets WorkingDirectory to the repo root, so
     //    dotenv_override reads <repo>/.env and its values beat any empty
     //    defaults injected by the plist. (CLI subcommands invoked from elsewhere

@@ -30,7 +30,6 @@
 //!   would keep the count non-zero forever and silently disable it.
 //! - `src/intelligence/mod.rs` `pm_tasks_present` — a non-zero count there means
 //!   "a tracker actually works", which a personal task must not fake.
-//! - `services/agents/worklog_pipeline/db.py` — the Python candidate fetch.
 //!
 //! Everything else reads `pm_tasks` unscoped ON PURPOSE — that is the payoff:
 //! `plan::build_available`, `plan::load_plan`, `task_detail`, `today`, `tasks` and
