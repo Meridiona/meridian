@@ -128,11 +128,17 @@ jobs:
       # out of the blocking steps above means it cannot take the portability
       # gate red for an unrelated reason, while still reporting.
       #
-      # It needs the daemon binary present because tauri.conf.json embeds it via
-      # bundle.resources at a fixed path, so the build script fails without it.
-      - name: build daemon binary (tray bundle resource)
-        continue-on-error: true
-        run: cargo build --release --bin meridian
+      # Tauri's build script validates that every bundle.resources path EXISTS,
+      # but `cargo check` never reads the contents — so a placeholder satisfies
+      # it. A real `cargo build --release --bin meridian` here took ~9 minutes
+      # (release-optimised candle/tokenizers/sqlx) purely to produce a file the
+      # check only stats. The release daemon genuinely building on Windows is
+      # covered by the release pipeline, not needed for a compile check.
+      - name: Stub the tray bundle resource
+        shell: bash
+        run: |
+          mkdir -p target/release
+          : > target/release/meridian.exe
 
       - name: check tray
         continue-on-error: true
