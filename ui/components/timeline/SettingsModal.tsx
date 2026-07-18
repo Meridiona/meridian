@@ -16,6 +16,7 @@ import type { IntegrationsResponse } from '@/lib/api-types'
 import { ModalShell } from './ModalShell'
 import { SettingsSidebar } from './settings/SettingsSidebar'
 import { IntegrationsSection } from './settings/IntegrationsSection'
+import { IntelligenceSection } from './settings/IntelligenceSection'
 import { CaptureSection } from './settings/CaptureSection'
 import { NotificationsSection } from './settings/NotificationsSection'
 import { AppearanceSection } from './settings/AppearanceSection'
@@ -69,6 +70,8 @@ export function SettingsModal({ onClose, initialSection }: {
                   <IntegrationsSection integrations={integrations} onChanged={fetchIntegrations} />
                 )
               )}
+              {/* No `patch`: Intelligence stages its pick locally and writes only on Save. */}
+              {section === 'intelligence' && <IntelligenceSection settings={settings} save={save} />}
               {section === 'capture' && <CaptureSection settings={settings} patch={patch} save={save} />}
               {section === 'notifications' && <NotificationsSection settings={settings} patch={patch} save={save} />}
               {section === 'appearance' && <AppearanceSection />}

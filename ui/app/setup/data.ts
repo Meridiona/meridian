@@ -4,66 +4,6 @@
 // ported from the Meridian Setup design). Data only — no React, no side effects.
 // Everything the wizard renders that ISN'T live machine state lives here.
 
-// ── Live backend response shapes (mirror tray/src-tauri/src/commands/setup.rs) ──
-
-/** MLX server status — polled on the Model step (`get_mlx_status`). */
-export type MlxStatus = 'offline' | 'starting' | 'running' | { error: string }
-
-export interface MlxStatusResponse {
-  status: MlxStatus
-  port: number
-  runtime_found: boolean
-  runtime_installed: boolean
-  download_available: boolean
-}
-
-/** Streamed by both the runtime download and the model prefetch. */
-export interface DownloadProgress {
-  received: number
-  total: number
-  /** Live transfer rate in bytes/sec (measured server-side by HF; 0 when idle/stalled). */
-  speed: number
-  message: string
-}
-
-/** Detected hardware (`detect_system_specs`). All-zero on non-macOS / probe failure. */
-export interface SystemSpecs {
-  chip: string
-  macos: string
-  cpu_cores: number
-  gpu_cores: number
-  ram_gb: number
-  free_disk_gb: number
-}
-
-// ── On-device models ─────────────────────────────────────────────────────────
-// Meridian runs a fixed set of three models — the Qwen3.5-2B generative LLM
-// (which also does classification/matching), a reranker, and an embedder. They
-// load one at a time (single-slot), so peak resident memory is the LLM
-// (MODEL_RAM_GB). No user selection; the wizard auto-downloads the whole set and
-// shows live aggregate progress.
-
-export const MODEL_ID = 'mlx-community/Qwen3.5-2B-OptiQ-4bit'
-export const MODEL_RAM_GB = 1.5
-
-/**
- * Human label for a model id, e.g. 'mlx-community/Qwen3.5-2B-OptiQ-4bit' →
- * 'Qwen3.5 2B · 4-bit'. Derived (not hand-typed) so the Completion summary
- * line can't drift from MODEL_ID or duplicate a segment by hand-editing error.
- */
-export function fmtModelLabel(id: string): string {
-  const name = id.split('/').pop() ?? id
-  const bits = name.match(/(\d+)-?bit$/i)?.[1]
-  const base = name
-    .replace(/-?\d+-?bit$/i, '')
-    .replace(/-OptiQ$/i, '')
-    .replace(/-/g, ' ')
-  return bits ? `${base} · ${bits}-bit` : base
-}
-
-/** Meridian's own resident footprint (background service), separate from the model. */
-export const APP = { diskGB: 0.18, ramGB: 0.15 }
-
 // ── macOS permissions — two required TCC grants + optional notifications ─────
 // (The design's Launch-at-login toggle is intentionally omitted: no backend
 // exists for it. Input Monitoring is omitted too: the signals the daemon
@@ -109,7 +49,3 @@ export const PERMISSIONS: PermissionMeta[] = [
 // `@/lib/integrations` (`TRACKERS`), rendered by the shared <ConnectTrackers>
 // component in both the wizard (step 3) and the dashboard. The old wizard-only
 // `INTEGRATIONS` list was removed in the centralisation.
-
-/** Whole-GB / MB size label, matching the design's `fmtSize`. */
-export const fmtSize = (gb: number): string =>
-  gb < 1 ? `${Math.round(gb * 1000)} MB` : gb < 100 ? `${gb.toFixed(1)} GB` : `${Math.round(gb)} GB`

@@ -13,18 +13,35 @@ use meridian::observability;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::Notify;
 
-/// User-facing remediation hint for the `mlx.down` notice. The tray auto-restarts
-/// the MLX server (see `tray/src-tauri/src/poll/mod.rs::supervise_mlx`), so an
-/// installed user has nothing to type — the only manual fallback is relaunching
-/// Meridian. Deliberately NOT the dev `cd services && .venv/bin/python …` command,
-/// which is meaningless on a packaged install (no `services/` or `.venv`).
-const MLX_DOWN_FIX_HINT: &str =
-    "Meridian restarts the classifier automatically. If it keeps happening, quit and reopen Meridian.";
+/// Single-instance probe for the daemon socket. Returns `true` only when a live
+/// daemon answers `~/.meridian/daemon.sock` with its greeting — i.e. one is already
+/// running for this data dir. A missing/stale socket with no listener (previous
+/// crash) connects-refused or times out → `false`, so this instance may take over.
+/// Mirrors the tray's `probe_socket`; kept deliberately short (800 ms) so startup
+/// isn't stalled when the socket is genuinely stale.
+async fn daemon_already_running(sock_path: &std::path::Path) -> bool {
+    use tokio::io::AsyncReadExt as _;
+    use tokio::time::timeout;
+
+    let connect = timeout(
+        Duration::from_millis(800),
+        tokio::net::UnixStream::connect(sock_path),
+    )
+    .await;
+    let Ok(Ok(mut stream)) = connect else {
+        return false; // no listener (absent or stale socket) — safe to take over
+    };
+    // A live daemon writes `{"running":true,"pid":…}` on connect. A non-empty read
+    // confirms a real daemon is there, not just a leftover socket file.
+    let mut buf = Vec::new();
+    let _ = timeout(Duration::from_millis(800), stream.read_to_end(&mut buf)).await;
+    !buf.is_empty()
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 1. Load the repo-local .env — the single source of config, shared by this
-    //    daemon and the Python services. Nothing is read from outside the repo.
+    // 1. Load the repo-local .env — the single source of config for the daemon.
+    //    Nothing is read from outside the repo.
     //    The launchd plist sets WorkingDirectory to the repo root, so
     //    dotenv_override reads <repo>/.env and its values beat any empty
     //    defaults injected by the plist. (CLI subcommands invoked from elsewhere
@@ -77,9 +94,9 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         let commands_dir = home.join(".claude/commands");
         let skill_path = commands_dir.join("session-summary.md");
-        // Keep in sync with services/skills/coding-agent/session-summary/SKILL.md
-        // (install.sh and install-from-bundle.sh copy that file directly; this
-        // path is the fallback for `meridian doctor --fix` and `meridian coding-agent-install-skill`)
+        // Keep in sync with assets/skills/coding-agent/session-summary/SKILL.md.
+        // install.sh runs this command; it is also the fallback for
+        // `meridian doctor --fix` and direct `meridian coding-agent-install-skill`.
         let content = concat!(
             "---\n",
             "description: Summarise a coding-agent session transcript for a Jira work-log.\n",
@@ -194,37 +211,6 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // `meridian pm-worklog [--day YYYY-MM-DD]` — one-shot Stage 4: walk the day's
-    // hours and DRAFT one worklog per task per ready hour (never posts — posting
-    // is approval-gated). Opens via setup_db so migrations (incl. the pm_worklog
-    // tables) are applied even when run standalone.
-    if std::env::args().nth(1).as_deref() == Some("pm-worklog") {
-        let args: Vec<String> = std::env::args().collect();
-        let day = args
-            .iter()
-            .position(|a| a == "--day")
-            .and_then(|i| args.get(i + 1).cloned());
-        let cfg = Config::from_env();
-        // Initialise observability so this one-shot emits the SAME worklog_draft
-        // trace the daemon does (lineage child spans + the active span whose
-        // traceparent propagates to the MLX synth, nesting worklog_input/output
-        // inside the worklog trace). Without this the CLI emitted no spans and the
-        // synth landed as an orphan root. Flushed explicitly before exit so the
-        // batch processor's final spans reach the telemetry spool.
-        let obs_guard = observability::init("meridian-rust").ok();
-        match setup_db(&cfg.meridian_db_uri()).await {
-            Ok(pool) => {
-                meridian::pm_worklog::cli_run(&pool, day.as_deref()).await;
-                pool.close().await;
-            }
-            Err(e) => eprintln!("pm-worklog: open db: {e}"),
-        }
-        if let Some(g) = obs_guard {
-            g.shutdown().await;
-        }
-        return Ok(());
-    }
-
     // `meridian worklog-hour <YYYY-MM-DDTHH>` — force-run the hour-level worklog
     // pipeline for one explicit local hour (bypasses the activity gate + done-check,
     // still waits for coding summarisation). Manual runs / testing the clock driver.
@@ -244,6 +230,37 @@ async fn main() -> Result<()> {
                 pool.close().await;
             }
             Err(e) => eprintln!("worklog-hour: open db: {e}"),
+        }
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
+        }
+        return Ok(());
+    }
+
+    // `meridian llm-experiment run|create|exec|list|get …` — the dev-only LLM Lab
+    // harness: replay one prose stage (hour report / workstream fold / worklog
+    // generate) across several provider/model variants and record every outcome in
+    // the llm_experiment* tables. Never writes production tables.
+    if std::env::args().nth(1).as_deref() == Some("llm-experiment") {
+        let cfg = Config::from_env();
+        // Init observability so each variant emits its llm.experiment.variant span.
+        let obs_guard = observability::init("meridian-rust").ok();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                let result = meridian::llm_experiment::cli::run(&pool).await;
+                pool.close().await;
+                if let Err(e) = result {
+                    if let Some(g) = obs_guard {
+                        g.shutdown().await;
+                    }
+                    eprintln!("llm-experiment: {e:#}");
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                eprintln!("llm-experiment: open db: {e:#}");
+                std::process::exit(1);
+            }
         }
         if let Some(g) = obs_guard {
             g.shutdown().await;
@@ -362,6 +379,363 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `meridian ticket-statuses --provider P --key K` — list the statuses a
+    // ticket can move to (each normalised to the canonical lifecycle taxonomy)
+    // plus its current status, for the dashboard's status control. Prints ONE
+    // JSON line {"statuses":[{id,name,category}],"current_id":..,"current_name":..}.
+    // Read-only.
+    if std::env::args().nth(1).as_deref() == Some("ticket-statuses") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let provider = flag("--provider").unwrap_or_default();
+        let key = flag("--key").unwrap_or_default();
+        if provider.is_empty() || key.is_empty() {
+            eprintln!("ticket-statuses: --provider and --key are required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        match meridian::intelligence::ticket_update::statuses::list_statuses(&cfg, &provider, &key)
+            .await
+        {
+            Ok(result) => println!("{}", result.to_json()),
+            Err(e) => {
+                eprintln!("ticket-statuses: {e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    // `meridian ticket-set-status --provider P --key K --status ID_OR_NAME` —
+    // move a ticket to a status (id, or name case-insensitively — the UI's Undo
+    // passes the previous status NAME). Prints ONE JSON line
+    // {"result":{"status":"applied"|"redirected","browse_url":..,"reason":..},
+    //  "new_status":{id,name,category}|null}. On an applied move it triggers a
+    // force sync so the local mirror's status_raw/is_terminal reflect the change.
+    if std::env::args().nth(1).as_deref() == Some("ticket-set-status") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let provider = flag("--provider").unwrap_or_default();
+        let key = flag("--key").unwrap_or_default();
+        let status = flag("--status").unwrap_or_default();
+        if provider.is_empty() || key.is_empty() || status.is_empty() {
+            eprintln!("ticket-set-status: --provider, --key and --status are required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        match meridian::intelligence::ticket_update::statuses::set_status(
+            &cfg, &provider, &key, &status,
+        )
+        .await
+        {
+            Ok(result) => {
+                // Reflect an applied move back into our mirror + hygiene verdicts.
+                if matches!(
+                    result.status,
+                    meridian::intelligence::ticket_update::ApplyStatus::Applied
+                ) {
+                    if let Ok(pool) = setup_db(&cfg.meridian_db_uri()).await {
+                        let _ = run_pm_force_sync(&pool, &cfg).await;
+                        pool.close().await;
+                    }
+                }
+                println!("{}", result.to_json());
+            }
+            Err(e) => {
+                eprintln!("ticket-set-status: {e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    // `meridian plan-task-{draft,create,edit}` — the daily plan's task composer:
+    // shape a rough note into a task with the user's LLM, create it (personal or
+    // filed on a tracker) into today's plan, and edit it afterwards. Each prints ONE
+    // JSON line. The blocks live in `plan_tasks::cli` rather than here — they share a
+    // preamble, and this file is long enough already.
+    if meridian::plan_tasks::cli::try_handle().await? {
+        return Ok(());
+    }
+
+    // `meridian day-summary --day YYYY-MM-DD` — compose the day's summary: ONE
+    // provider-agnostic LLM call that reads the day's evidence and answers with a
+    // narrative, a few insights, and the Vega-Lite specs it chose. Prints ONE JSON
+    // line: the summary object. Regenerate = the same command (UPSERT overwrites).
+    // Never fails on a bad answer — it falls back to a deterministic panel set, so
+    // a non-zero exit here means the DB or the day's data, not the model.
+    if std::env::args().nth(1).as_deref() == Some("day-summary") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let day = flag("--day").unwrap_or_default();
+        if day.is_empty() {
+            eprintln!("day-summary: --day is required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        // Init observability so the LLM call emits its llm.request/infer/response
+        // subspans under day_summary.generate; flush before exit.
+        let obs_guard = observability::init("meridian-rust").ok();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                match meridian::day_summary::generate::generate(&pool, &day).await {
+                    Ok(summary) => {
+                        println!("{}", serde_json::to_string(&summary).unwrap_or_default())
+                    }
+                    Err(e) => {
+                        pool.close().await;
+                        if let Some(g) = obs_guard {
+                            g.shutdown().await;
+                        }
+                        eprintln!("day-summary: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+                pool.close().await;
+            }
+            Err(e) => {
+                eprintln!("day-summary: open db: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
+        }
+        return Ok(());
+    }
+
+    // `meridian day-summary-get --day YYYY-MM-DD` — read the stored summary for a
+    // day, or print JSON `null` if none exists. Read-only, no LLM.
+    if std::env::args().nth(1).as_deref() == Some("day-summary-get") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let day = flag("--day").unwrap_or_default();
+        if day.is_empty() {
+            eprintln!("day-summary-get: --day is required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                match meridian_core::day_summaries::get_day_summary(&pool, &day).await {
+                    Ok(s) => println!("{}", serde_json::to_string(&s).unwrap_or_default()),
+                    Err(e) => {
+                        pool.close().await;
+                        eprintln!("day-summary-get: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+                pool.close().await;
+            }
+            Err(e) => {
+                eprintln!("day-summary-get: open db: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    // `meridian day-summary-data --day YYYY-MM-DD` — the named datasets a
+    // summary's panels bind to, as one JSON object. Read-only, no LLM. The tray
+    // reads these straight from meridian-core rather than spawning this; it exists
+    // for debugging a chart (`meridian day-summary-data --day X | jq .segments`),
+    // which is otherwise invisible — a stored spec carries no data at all.
+    if std::env::args().nth(1).as_deref() == Some("day-summary-data") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let day = flag("--day").unwrap_or_default();
+        if day.is_empty() {
+            eprintln!("day-summary-data: --day is required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                // Through `panel_data`, NOT `collect` directly: this command's only
+                // job is to show what the screen is given, and it is worth nothing
+                // if it shapes the answer itself and shows something else.
+                match meridian::day_summary::generate::panel_data(&pool, &day).await {
+                    Ok(v) => println!("{}", serde_json::to_string(&v).unwrap_or_default()),
+                    Err(e) => {
+                        pool.close().await;
+                        eprintln!("day-summary-data: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+                pool.close().await;
+            }
+            Err(e) => {
+                eprintln!("day-summary-data: open db: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    // `meridian worklog-generate --day YYYY-MM-DD --task-id T1` — the day-task
+    // "Generate worklog" action: ONE provider-agnostic LLM call that matches the
+    // day-task's workstream to an existing ticket (or proposes a new one) and
+    // drafts a high-level status update. Prints ONE JSON line: the draft object.
+    // Regenerate = the same command (UPSERT overwrites the drafted row).
+    if std::env::args().nth(1).as_deref() == Some("worklog-generate") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let day = flag("--day").unwrap_or_default();
+        let task_id = flag("--task-id").unwrap_or_default();
+        if day.is_empty() || task_id.is_empty() {
+            eprintln!("worklog-generate: --day and --task-id are required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        // Init observability so the LLM call emits its llm.request/infer/response
+        // subspans under a worklog.generate span; flush before exit.
+        let obs_guard = observability::init("meridian-rust").ok();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                match meridian::pm_worklog::generate(&pool, &cfg, &day, &task_id).await {
+                    Ok(mut draft) => {
+                        // A matched draft carries a target_key we can link even
+                        // before posting; fill browse_url deterministically.
+                        meridian::pm_worklog::generate::hydrate_browse_url(&cfg, &mut draft);
+                        println!("{}", serde_json::to_string(&draft).unwrap_or_default())
+                    }
+                    Err(e) => {
+                        pool.close().await;
+                        if let Some(g) = obs_guard {
+                            g.shutdown().await;
+                        }
+                        eprintln!("worklog-generate: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+                pool.close().await;
+            }
+            Err(e) => {
+                eprintln!("worklog-generate: open db: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
+        }
+        return Ok(());
+    }
+
+    // `meridian worklog-generate-get --day YYYY-MM-DD --task-id T1` — read the
+    // current draft for a day-task, or print JSON `null` if none exists. Read-only.
+    if std::env::args().nth(1).as_deref() == Some("worklog-generate-get") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let day = flag("--day").unwrap_or_default();
+        let task_id = flag("--task-id").unwrap_or_default();
+        if day.is_empty() || task_id.is_empty() {
+            eprintln!("worklog-generate-get: --day and --task-id are required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                match meridian_core::day_task_worklogs::get_day_task_worklog(&pool, &day, &task_id)
+                    .await
+                {
+                    Ok(mut draft) => {
+                        // Repair a stored-empty browse_url (e.g. an OAuth-Jira row
+                        // posted before URL resolution read the site URL from the
+                        // token store) so the "Linked to …" chip is a live link.
+                        if let Some(d) = draft.as_mut() {
+                            meridian::pm_worklog::generate::hydrate_browse_url(&cfg, d);
+                        }
+                        println!("{}", serde_json::to_string(&draft).unwrap_or_default())
+                    }
+                    Err(e) => {
+                        pool.close().await;
+                        eprintln!("worklog-generate-get: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+                pool.close().await;
+            }
+            Err(e) => {
+                eprintln!("worklog-generate-get: open db: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    // `meridian worklog-generate-approve --day YYYY-MM-DD --task-id T1` — approve
+    // the current draft: create the proposed ticket if any, post the status update
+    // as a comment, link the day-task. Idempotent. Prints ONE JSON line
+    // {"posted":..,"target_key":..,"created_task_key":..,"created":..,"browse_url":..,"error":..}.
+    if std::env::args().nth(1).as_deref() == Some("worklog-generate-approve") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let day = flag("--day").unwrap_or_default();
+        let task_id = flag("--task-id").unwrap_or_default();
+        if day.is_empty() || task_id.is_empty() {
+            eprintln!("worklog-generate-approve: --day and --task-id are required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        let obs_guard = observability::init("meridian-rust").ok();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                match meridian::pm_worklog::approve(&pool, &cfg, &day, &task_id).await {
+                    Ok(res) => println!("{}", serde_json::to_string(&res).unwrap_or_default()),
+                    Err(e) => {
+                        pool.close().await;
+                        if let Some(g) = obs_guard {
+                            g.shutdown().await;
+                        }
+                        eprintln!("worklog-generate-approve: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+                pool.close().await;
+            }
+            Err(e) => {
+                eprintln!("worklog-generate-approve: open db: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
+        }
+        return Ok(());
+    }
+
     // `meridian worklog-status [--day YYYY-MM-DD]` — a human-readable report of
     // the day's worklogs (hours done/pending/stuck, rows by state, per-ticket
     // comments + flagged ones). Read-only; no daemon init.
@@ -447,6 +821,29 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // 1b. Anything left in argv[1] that isn't a flag is a subcommand NO block above
+    //     claimed — a typo, or (the real case) a caller newer than this binary. Falling
+    //     through to the daemon is a trap: `meridian plan-task-draft` on a stale binary
+    //     silently booted a SECOND daemon, which the single-instance guard then killed
+    //     with a warning on stdout, and the tray reported "could not parse result" —
+    //     a message that names neither the stale binary nor the unknown subcommand.
+    //     Exit 2 (the CLI's bad-args code) and say the word we didn't recognise, so the
+    //     next person sees the cause instead of a mystery. Bare `meridian` (no args) and
+    //     flags like `--version` still start the daemon, which is the documented entry.
+    if let Some(arg) = std::env::args().nth(1) {
+        if !arg.starts_with('-') {
+            eprintln!(
+                "meridian: unknown subcommand {arg:?}\n\
+                 If you expected this to exist, this binary is older than whatever called it \
+                 ({}). Reinstall or rebuild it.",
+                std::env::current_exe()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "the meridian binary".to_string()),
+            );
+            std::process::exit(2);
+        }
+    }
+
     // 2. Tracing — layered subscriber (OTLP-only: spool traces + logs; see
     //    observability.rs's module doc for why there's no stdout/file mirror).
     //    Guard must outlive the program; we shut it down explicitly at the end
@@ -467,10 +864,10 @@ async fn main() -> Result<()> {
 
     // 4b. Open / create meridian pool and run migrations FIRST — before any
     //     preflight that can block or fail. The UI and MCP server read this DB
-    //     directly, so it must exist even when an optional component (MLX
-    //     server, screenpipe) is down; ordering it after the MLX preflight left
-    //     machines with a broken MLX install running a daemon that never
-    //     created its own database.
+    //     directly, so it must exist even when an optional component (capture,
+    //     an agent CLI) is degraded; ordering it after a preflight that could
+    //     block once left machines running a daemon that never created its own
+    //     database.
     let meridian = setup_db(&initial_cfg.meridian_db_uri()).await?;
 
     // 4c. Capture-layer (L1) preflight: surface degraded in-process capture
@@ -481,13 +878,29 @@ async fn main() -> Result<()> {
     meridian::health::Report::new(meridian::health::capture::checks(&meridian).await)
         .log("startup");
 
-    // 5b. Unix domain socket — health endpoint for the tray / UI.
-    //     ~/.meridian/daemon.sock: connecting succeeds = daemon is running.
-    //     Stale socket from a previous crash is removed before binding.
+    // 5b. Unix domain socket — health endpoint for the tray / UI, AND the
+    //     single-instance guard. ~/.meridian/daemon.sock: a successful connect that
+    //     gets a greeting means ANOTHER daemon already owns this data dir. That
+    //     happens routinely — a leftover packaged install's launchd agent
+    //     (KeepAlive=true) respawning next to a dev build, two `meridian` invocations
+    //     racing — and two daemons on one meridian.db double every ETL pass and fire
+    //     the worklog trigger twice (near-duplicate day_tasks, clobbering folds). So
+    //     if one is already answering, exit cleanly here rather than delete its socket
+    //     and become a second writer. Only a stale socket (no listener) is removed
+    //     before we bind our own. Whoever starts second bows out; dev-start.sh stops
+    //     the installed daemon first so the dev build wins, and any KeepAlive respawn
+    //     self-terminates on the next line.
     let sock_path = {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
         std::path::PathBuf::from(format!("{}/.meridian/daemon.sock", home))
     };
+    if daemon_already_running(&sock_path).await {
+        tracing::warn!(
+            path = %sock_path.display(),
+            "another meridian daemon already owns this data dir — exiting (single-instance guard)"
+        );
+        return Ok(());
+    }
     let _ = std::fs::remove_file(&sock_path);
     let sock_path_cleanup = sock_path.clone();
     {
@@ -545,7 +958,22 @@ async fn main() -> Result<()> {
         Err(e) => tracing::error!("cleanup_incomplete_runs failed: {}", e),
     }
 
-    // 7b. A background task drains the classification queue without blocking the
+    // 7a-bis. Same recovery, for the worklog pipeline's own ledger: an hour left
+    // `generating` by a crash mid-`/worklog_hour` call would otherwise never
+    // retry and would silently block every hour after it from ever getting a
+    // ledger row (see reset_stuck_generating_hours's doc comment).
+    match meridian::pm_worklog::ledger::reset_stuck_generating_hours(&meridian).await {
+        Ok(0) => {
+            tracing::info!("no stuck-generating worklog hours found");
+        }
+        Ok(n) => tracing::warn!(
+            reset_count = n,
+            "reset worklog hour(s) stuck in generating from a previous crash"
+        ),
+        Err(e) => tracing::error!("reset_stuck_generating_hours failed: {}", e),
+    }
+
+    // 7b. Shared handles the poll loop uses to signal ETL ticks to observers.
     let etl_notify: Arc<Notify> = Arc::new(Notify::new());
     let etl_tick_span: Arc<std::sync::Mutex<Option<tracing::Span>>> =
         Arc::new(std::sync::Mutex::new(None));
@@ -605,9 +1033,9 @@ async fn main() -> Result<()> {
         });
     }
 
-    // 7d. PM-worklog driver: hour-level pipeline — clock-aligned (HH:03 local), POSTs
-    //     /worklog_hour to the MLX server once per completed hour; Python does the
-    //     full distil→classify→draft. Drafts only; posting is run_post_loop's job.
+    // 7d. PM-worklog driver: hour-level pipeline — clock-aligned (HH:03 local), runs
+    //     once per completed hour fully in-process (distil → report → workstream fold
+    //     → draft). Drafts only; posting is run_post_loop's job.
     {
         let pool_pm = meridian.clone();
         let db_path_pm = initial_cfg.meridian_db.clone();
@@ -643,6 +1071,20 @@ async fn main() -> Result<()> {
     {
         tokio::spawn(async move {
             meridian::telemetry_spool::shipper::run_shipper(shipper_shutdown_rx).await;
+        });
+    }
+
+    // 7g. Embedder weight provisioning: first-run download of the session distiller's
+    //     on-device embedding model (~130 MB). Fire-and-forget — `embedder::is_ready()`
+    //     gates every caller, so a slow or failed download just means the distiller keeps
+    //     taking its lexical-only degrade path until this succeeds (retried next start).
+    //     Idempotent (`ensure_weights` skips files already on disk), so this is safe to run
+    //     unconditionally on every boot rather than only once at setup time.
+    {
+        tokio::spawn(async move {
+            if let Err(e) = meridian::embedder::ensure_weights().await {
+                tracing::warn!(error = %e, "embedder: weight provisioning failed — distiller stays on lexical-only until this succeeds");
+            }
         });
     }
 
@@ -712,33 +1154,6 @@ async fn main() -> Result<()> {
                     tracing::debug!(error = %e, "notification response consume skipped");
                 }
 
-                // Proactive classifier health probe. Detect a down/wedged MLX
-                // server every tick via a fast /health check (NOT reactively, only
-                // when a classify happens to fail) so the fault surfaces promptly
-                // on the dashboard banner AND — via the notices→outbox bridge — as
-                // a desktop toast + in-app banner. Auto-clears when it recovers.
-                // Suppress this alarm during first-run onboarding: the MLX server
-                // is still being provisioned (runtime downloading), so "offline" is
-                // expected, not a fault — surfacing it (banner + desktop toast) in
-                // the setup wizard is just noise. Only raise once setup is complete.
-                // A genuine post-setup outage still surfaces reactively via the
-                // task-linker's mlx.down notice above, so this gate hides nothing.
-                let onboarded = std::env::var("HOME")
-                    .map(|h| std::path::Path::new(&h).join(".meridian/onboarded").exists())
-                    .unwrap_or(true);
-                if meridian::intelligence::mlx_ready(&cfg).await || !onboarded {
-                    let _ = meridian::notices::clear(&meridian, "mlx.down").await;
-                } else {
-                    let _ = meridian::notices::raise(
-                        &meridian,
-                        "mlx.down",
-                        "warning",
-                        "Classifier offline",
-                        "The MLX classifier server isn't responding — new sessions are recorded but won't be tagged until it's back.",
-                        Some(MLX_DOWN_FIX_HINT),
-                    )
-                    .await;
-                }
                 // Refresh the PM task cache (pm_tasks) every tick — interval-gated
                 // per provider (~5 min), so this is a cheap no-op most ticks. The
                 // legacy drafting driver that used to trigger this before every

@@ -1,100 +1,11 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// Data models for the pm-worklog stage (Stage 4). These mirror the Python
-// `pm_worklog_update/models.py` field-for-field so the JSON contract with the
-// MLX server's `/synthesise_worklog` endpoint stays exact: Rust SERIALISES a
-// `SessionBundle` to send, and DESERIALISES the `JiraUpdate` the agno synth
-// returns. Everything else (collect, ground, route, post) is Rust.
+// Data models for the pm-worklog stage — the `JiraUpdate` shape (a summary +
+// evidence-bearing bullets) that the worklog row stores and the status CLI reads.
+// (The old `SessionBundle` synth-request contract went with the removed Stage-4
+// chain.)
 
 use serde::{Deserialize, Serialize};
-
-/// One classified session, condensed for the synth prompt.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionDigest {
-    pub id: i64,
-    pub app_name: String,
-    pub started_at: String,
-    pub ended_at: String,
-    pub duration_s: i64,
-    #[serde(default)]
-    pub idle_frame_s: i64,
-    #[serde(default)]
-    pub top_titles: Vec<String>,
-    #[serde(default)]
-    pub dimensions: std::collections::BTreeMap<String, Vec<String>>,
-    #[serde(default)]
-    pub excerpt: String,
-    #[serde(default)]
-    pub category: Option<String>,
-    #[serde(default)]
-    pub text_source: Option<String>,
-    /// Lineage trace contexts — NOT part of the Python synth contract
-    /// (`skip_serializing` keeps the bundle JSON byte-identical), used only
-    /// Rust-side to add OTel span Links from the worklog_draft trace back to
-    /// each session's formation (ETL close) and classification traces.
-    #[serde(skip_serializing, default)]
-    pub formation_traceparent: Option<String>,
-    #[serde(skip_serializing, default)]
-    pub classify_traceparent: Option<String>,
-    /// Classification verdict scalars — also `skip_serializing` (Rust-only).
-    /// Reconstructed into clickable child spans under each session node in the
-    /// worklog_draft trace, so the classification CONTENT (what task, why, the
-    /// summary, the category) shows inline without re-fetching the original
-    /// classifier trace (which the span Link still points to for raw LLM I/O).
-    #[serde(skip_serializing, default)]
-    pub task_confidence: f64,
-    #[serde(skip_serializing, default)]
-    pub task_session_type: Option<String>,
-    #[serde(skip_serializing, default)]
-    pub task_reasoning: Option<String>,
-    #[serde(skip_serializing, default)]
-    pub category_explanation: Option<String>,
-    #[serde(skip_serializing, default)]
-    pub session_summary: Option<String>,
-}
-
-/// The collected input for one (task, hour) window — what Rust sends to the
-/// synth endpoint.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionBundle {
-    pub task_key: String,
-    pub window_start: String,
-    pub window_end: String,
-    #[serde(default)]
-    pub cycle_index: i64,
-    pub sessions: Vec<SessionDigest>,
-    pub total_seconds: i64,
-    pub real_seconds: i64,
-    #[serde(default)]
-    pub raw_text_bytes: i64,
-    #[serde(default)]
-    pub is_heavy: bool,
-    /// Verbatim provider status name (e.g. "In Review") — context for the synth.
-    #[serde(default)]
-    pub pm_task_status: Option<String>,
-    /// Normalized "is this ticket done/closed?" signal — drives the ticket-closed
-    /// risk flag. Derived by the status resolver, not by string-matching.
-    #[serde(default)]
-    pub pm_task_is_terminal: bool,
-    #[serde(default)]
-    pub pm_task_title: Option<String>,
-    #[serde(default)]
-    pub pm_task_description: Option<String>,
-    #[serde(default)]
-    pub assignee_name: Option<String>,
-    #[serde(default)]
-    pub earlier_today_summaries: Vec<String>,
-}
-
-impl SessionBundle {
-    /// Min/max session id in the bundle — stored on the worklog row for the
-    /// evidence panel and for backfill bookkeeping.
-    pub fn session_id_bounds(&self) -> (Option<i64>, Option<i64>) {
-        let min = self.sessions.iter().map(|s| s.id).min();
-        let max = self.sessions.iter().map(|s| s.id).max();
-        (min, max)
-    }
-}
 
 /// One worklog bullet plus the session ids that prove it.
 #[derive(Debug, Clone, Serialize, Deserialize)]

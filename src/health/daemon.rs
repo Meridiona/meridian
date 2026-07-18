@@ -119,7 +119,7 @@ async fn queue_depth(pool: &SqlitePool, method: &str, label: &'static str) -> Ch
     {
         Ok(0) => Check::ok(label, "L2", "empty"),
         Ok(n) if n >= QUEUE_WARN => Check::warn(label, "L2", format!("{n} sessions backed up"))
-            .with_remedy("check the MLX server / claude+codex CLIs are reachable"),
+            .with_remedy("check the claude/codex/cursor CLIs are installed and reachable"),
         Ok(n) => Check::info(label, "L2", format!("{n} pending")),
         Err(e) => Check::warn(label, "L2", format!("could not read queue ({e})")),
     }
@@ -136,9 +136,11 @@ async fn subprocess_errors(pool: &SqlitePool) -> Check {
         Ok(n) => Check::warn(
             "classify errors",
             "L2",
-            format!("{n} sessions sentinelled — usually a sustained MLX outage, not the model"),
+            format!("{n} sessions sentinelled — usually a sustained provider/CLI outage"),
         )
-        .with_remedy("verify the MLX server, then re-classify those sessions"),
+        .with_remedy(
+            "verify the agent CLIs (claude/codex/cursor), then re-classify those sessions",
+        ),
         Err(e) => Check::warn("classify errors", "L2", format!("could not read ({e})")),
     }
 }

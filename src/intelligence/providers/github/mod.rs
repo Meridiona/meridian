@@ -135,6 +135,13 @@ async fn prune(pool: &SqlitePool, fetched_keys: &[String]) -> Result<usize> {
         q = q.bind(key.as_str());
     }
     let result = q.execute(pool).await.context("pruning github pm_tasks")?;
+
+    // Worklog-retained rows the DELETE above kept but that are no longer in the
+    // active fetch (closed, reassigned, out-of-scope) must leave the board.
+    let flagged = super::mark_retained_offboard(pool, "github", fetched_keys).await?;
+    if flagged > 0 {
+        tracing::info!(flagged, "flagged retained github tasks off-board");
+    }
     Ok(result.rows_affected() as usize)
 }
 

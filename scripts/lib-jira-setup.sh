@@ -1,6 +1,6 @@
 # ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 #
-# Shared Jira credential-collection helper for install.sh + install-from-bundle.sh.
+# Shared Jira credential-collection helper for install.sh.
 # OAuth-first: when a runnable meridian binary is available, connect Jira in the
 # browser now (writes ~/.meridian/oauth/jira.json — no .env creds, auto-refreshed,
 # and the daemon picks it up on its next start/restart with no extra command). The

@@ -1,6 +1,6 @@
 # Meridian Setup
 
-**Platform:** macOS, Apple Silicon (M1 or later). Intel Macs are not supported.
+**Platform:** macOS (Apple Silicon or Intel). Ships as a universal binary.
 
 ---
 
@@ -10,11 +10,11 @@
 curl -fsSL https://raw.githubusercontent.com/Meridiona/meridian/main/scripts/bootstrap.sh | bash
 ```
 
-This downloads the Meridian `.app`, installs the `meridian` CLI, then runs `meridian setup` automatically.
+This downloads the latest signed Meridian `.app`, installs it to `/Applications`, and launches it. The app stages its own background daemon on first run and opens the setup wizard automatically. (Prefer to do it by hand? Download `Meridian.dmg` from the [latest release](https://github.com/Meridiona/meridian/releases/latest) and drag Meridian to Applications.)
 
 `meridian setup` will walk you through:
 1. Granting **Screen Recording** and **Accessibility** permissions to **Meridian** (required)
-2. Downloading the on-device MLX runtime (~6 GB, first run only)
+2. Choosing the AI that writes your summaries (a coding-agent CLI you already use, or a cloud endpoint)
 3. Connecting your issue tracker (Jira, Linear, GitHub, Trello, or Azure DevOps)
 
 ---
@@ -164,7 +164,7 @@ meridian update             # update to the latest release
 meridian uninstall          # stop services and remove the CLI
 ```
 
-**Log targets:** `daemon`, `daemon-error`, `mlx-server`, `mlx-server-error`, `tray`, `tray-error`
+**Log targets:** `daemon`, `daemon-error`, `tray`, `tray-error`
 
 ---
 
@@ -172,14 +172,14 @@ meridian uninstall          # stop services and remove the CLI
 
 | Service | Role |
 |---|---|
-| **Meridian tray** | In-process screen/a11y capture; serves the embedded dashboard; supervises the MLX server; drives the live data streams |
+| **Meridian tray** | In-process screen/a11y capture; serves the embedded dashboard; drives the live data streams |
 | **meridian daemon** | ETL pipeline — reads `capture_frames` from `meridian.db`, produces `app_sessions`; coding-agent ingest; worklog drafting |
-| **MLX server** | On-device model for classification and worklog synthesis (provisioned to `~/.meridian/runtime/` on first run) |
 
-> **8 GB M1/M2 Air (macOS 26+):** the MLX server uses Apple Intelligence — no model download needed.
-> Requires macOS 26 and Apple Intelligence enabled in System Settings.
->
-> **16 GB+:** the first MLX start downloads the classifier model (~6 GB). Follow progress with `meridian logs mlx-server -f`.
+> Summarising your work and matching it to tickets runs through the AI CLI you
+> choose during setup (Claude / Codex / Cursor / Copilot) or a cloud endpoint - on
+> your own account, so nothing generative runs on-device. The only model Meridian
+> downloads is a small text-embedding model (~130 MB, first run only) used to
+> de-duplicate similar activity before summarising.
 
 ---
 
@@ -198,7 +198,7 @@ meridian uninstall          # stop services and remove the CLI
 
 - **Dashboard not loading** — the dashboard is bundled inside the tray app; quit and relaunch the Meridian tray (a stale instance can show blank)
 - **Empty Tasks board** — connect a tracker (see above), confirm with `meridian doctor`
-- **No categories** — model still loading; run `meridian logs mlx-server -f` and wait for `server: MLX model ready`
+- **No categories / no summaries** — check the AI CLI you chose is installed and signed in (`meridian doctor`); a failed or rate-limited provider leaves that hour pending and retries automatically
 - **`meridian: command not found`** — open a new terminal or run `source ~/.zshrc`
 - **Gatekeeper blocks the binary** — run `xattr -dr com.apple.quarantine ~/.meridian/app`, then `meridian restart`
 
@@ -212,9 +212,6 @@ All settings are environment variables in `~/.meridian/app/.env`; defaults work 
 |---|---|---|
 | `MERIDIAN_DB` | `~/.meridian/meridian.db` | Where Meridian writes its database |
 | `POLL_INTERVAL_SECS` | `60` | How often to check for new activity |
-| `CLASSIFICATION_ENABLED` | `true` | Enable session → task classification (set `false` to run capture + categorisation only, no model needed) |
-| `MLX_SERVER_PORT` | `7823` | Port the on-device model server listens on |
-| `CLASSIFICATION_TIMEOUT_S` | `120` | Per-session inference timeout |
 | `MERIDIAN_UI_PORT` | `3939` | Dev-only: `next dev` / Tauri devUrl port (no effect on installed builds — the dashboard is bundled in the tray) |
 
 Edit with `meridian config edit`, then `meridian restart`.
@@ -254,16 +251,13 @@ bash scripts/setup-hooks.sh
 
 ### Development
 
-After `./install.sh`, the services run under launchd. `meridian dev` starts a dev session from your checkout — backing services in the background, the UI hot-reloading in your terminal (source-checkout only).
+After `./install.sh` (or `./install-dev.sh`), `meridian dev` starts the whole product from your checkout in watch/hot-reload mode (source-checkout only). It stops any previous dev run and the installed launchd daemon, then opens two Terminal windows: the Rust daemon under `cargo-watch` (rebuilds + restarts on every `.rs` save) and the Tauri tray via `npm run tauri dev` (which starts the Next.js hot-reload server itself). Capture runs in-process inside the tray - nothing else to start.
 
 ```bash
-meridian dev            # backing services (bg) + UI dev server foreground (hot reload)
-meridian dev daemon     # rebuild Rust + restart the daemon (bg)
-meridian dev ui         # UI dev server only — hot reload
-meridian dev mlx        # restart only the model server (reloads the model, ~30s)
-meridian dev build      # production build of daemon + UI (no run)
+meridian dev            # start the full dev environment (daemon + tray, hot reload)
+meridian dev build      # production build of daemon + UI (verify the shipped build; no run)
 ```
 
-Typical loop: `meridian dev` in one terminal; when you change Rust, `meridian dev daemon` in a second. Avoid `meridian restart` in a tight loop — it reloads the model.
+`meridian dev` is exactly `bash dev-start.sh`. Editing Rust auto-rebuilds the daemon; editing the UI hot-reloads live - no second command needed. Stop with Ctrl-C in each window; re-enable the installed daemon later with `meridian start`.
 
 See `CLAUDE.md` for architecture, conventions, and common-task recipes.

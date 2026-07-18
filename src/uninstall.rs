@@ -58,10 +58,14 @@ use std::path::{Path, PathBuf};
 /// touches a model the user downloaded separately for another tool (Ollama,
 /// LM Studio, etc).
 ///
-/// The last two entries are the reranker + embedder roles from
-/// `services/agents/model_registry.py`'s `RERANKER`/`EMBEDDER` `ModelSpec`s —
-/// that module is the authoritative source for the pipeline's active model
-/// ids; keep these two in sync with its defaults if they ever change.
+/// The embedder entry mirrors `crate::embedder::provision`'s model repo — keep it
+/// in sync if the embedding model id changes.
+///
+/// The Qwen3-Reranker entry is DELIBERATELY still here even though the reranker was
+/// removed from the pipeline. Machines that ran an older build downloaded its ~700 MB
+/// of weights, and this catalog is the only thing that ever cleans them up — dropping
+/// the name would silently strand them on disk forever. Same reasoning as the older
+/// generative models above, none of which we ship either.
 const MODEL_CATALOG: &[&str] = &[
     "models--mlx-community--Llama-3.3-70B-Instruct-4bit",
     "models--mlx-community--DeepSeek-R1-Distill-Llama-70B-4bit",

@@ -34,16 +34,15 @@ pub struct SyncResult {
 #[tracing::instrument]
 pub async fn sync_tasks() -> Result<SyncResult, String> {
     let bin = crate::install::meridian_bin();
-    // Run from ~/.meridian so dotenvy finds the canonical .env (AZURE_DEVOPS_PAT,
-    // JIRA_API_TOKEN, etc. all live there). Without this the spawn inherits the
-    // tray's cwd, dotenvy walks up and may find the repo .env instead — which
-    // lacks provider credentials, silently dropping those providers from the sync.
-    let home = std::env::var("HOME")
-        .map_err(|_| "HOME env var not set — cannot locate ~/.meridian".to_string())?;
-    let cwd = std::path::PathBuf::from(&home).join(".meridian");
-    if !cwd.exists() {
-        std::fs::create_dir_all(&cwd).map_err(|e| format!("could not create ~/.meridian: {e}"))?;
-    }
+    // The cwd picks the credentials, because dotenvy walks up from it: a release
+    // build lands on the canonical ~/.meridian/.env (AZURE_DEVOPS_PAT, JIRA_URL, …),
+    // a dev build on the checkout's own. Never inherit the tray's cwd — under a
+    // packaged .app that is inside the bundle, and dotenvy finds no .env at all.
+    let cwd = crate::install::cli_cwd()?;
+    // WHICH binary ran, and from where, are the two facts that make a failure here
+    // legible: a stale installed CLI against a DB the dev daemon migrated ahead
+    // exits non-zero with nothing but `status=Some(1)` in the log otherwise.
+    tracing::debug!(bin = %bin, cwd = %cwd.display(), "tasks-sync: spawning");
     let child = tokio::process::Command::new(&bin)
         .arg("tasks-sync")
         .current_dir(&cwd)
@@ -75,7 +74,15 @@ pub async fn sync_tasks() -> Result<SyncResult, String> {
         Ok(SyncResult { ok: true, detail })
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        tracing::warn!(status = ?output.status.code(), "tasks-sync non-zero");
+        // Log the CLI's own reason, not just the exit code. `status=Some(1)` alone
+        // says nothing — the failure is always explained in stderr, and dropping it
+        // turned a one-line diagnosis into a manual re-run of the subcommand.
+        tracing::warn!(
+            status = ?output.status.code(),
+            bin = %bin,
+            stderr = %stderr,
+            "tasks-sync non-zero"
+        );
         Err(if stderr.is_empty() {
             "tasks-sync failed".to_string()
         } else {

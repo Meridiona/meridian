@@ -20,16 +20,12 @@
 //! `invoke_handler!`; invoked from `ui/app/uninstall/page.tsx`.
 //!
 //! # Related
-//! - [`crate::mlx_server::stop_server`] — stopped before deleting the runtime
-//!   out from under it.
 //! - [`crate::tray::open_uninstall_window`] — the menu entry that opens the wizard.
 //! - [`crate::commands::system::open_permission_pane`] — the wizard's "revoke
 //!   permissions" step reuses this to deep-link System Settings.
 
-use crate::mlx_server::{self, SharedMlxManager};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tauri::State;
 
 /// One removable item — a human label plus the path it names. Mirrors
 /// `src/uninstall.rs`'s `Item`.
@@ -130,18 +126,13 @@ pub async fn get_uninstall_plan() -> UninstallPlan {
 /// `remove_runtime`/`remove_models` widen the scope to the wizard's three
 /// checkboxes.
 ///
-/// Stops the tray's in-process MLX server FIRST: deleting the runtime out from
-/// under a still-running server would leave it holding deleted files open.
 #[tauri::command]
-#[tracing::instrument(skip(mlx))]
+#[tracing::instrument]
 pub async fn execute_uninstall(
     remove_data: bool,
     remove_runtime: bool,
     remove_models: bool,
-    mlx: State<'_, SharedMlxManager>,
 ) -> Result<UninstallResult, String> {
-    mlx_server::stop_server(&mlx).await;
-
     let mut args = vec!["uninstall", "--yes", "--json"];
     if remove_data {
         args.push("--remove-data");

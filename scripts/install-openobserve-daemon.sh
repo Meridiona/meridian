@@ -221,7 +221,7 @@ _otlp_enabled() {
     return 1
 }
 
-# Provision the bundled dashboards (services/observability/dashboards/*.json)
+# Provision the bundled dashboards (ops/openobserve-dashboards/*.json)
 # into OpenObserve via its REST API. Idempotent: a dashboard is created only if
 # no dashboard with the same title already exists (create endpoint always mints
 # a fresh dashboardId, so a blind POST on every install would duplicate). Runs
@@ -229,7 +229,7 @@ _otlp_enabled() {
 # install) when OpenObserve is unreachable or export is off.
 _import_dashboards() {
     local dash_dir
-    dash_dir="$(cd "${SCRIPT_DIR}/.." && pwd)/services/observability/dashboards"
+    dash_dir="$(cd "${SCRIPT_DIR}/.." && pwd)/ops/openobserve-dashboards"
     [[ -d "${dash_dir}" ]] || return 0
     OO_EMAIL="${OO_EMAIL}" OO_PASSWORD="${OO_PASSWORD}" python3 - "${dash_dir}" <<'PYEOF'
 import base64, glob, json, os, sys, time, urllib.request, urllib.error

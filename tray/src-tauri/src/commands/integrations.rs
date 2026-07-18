@@ -25,8 +25,8 @@
 //! resolver — never write creds to one file and read status from another.
 //!
 //! Deliberate divergence from the route: the Next route's prod `activeEnvPath()`
-//! still points at the legacy `~/.meridian/app/.env`. The installer migrated
-//! creds to `~/.meridian/.env` (`meridian-npm-setup.sh`), so the route path is
+//! still points at the legacy `~/.meridian/app/.env`. The install now writes
+//! creds to the canonical `~/.meridian/.env`, so the route path is
 //! stale; this port uses the post-migration canonical location for both read and
 //! write — and [`save_integration_token`] writes through the SAME resolver.
 //!

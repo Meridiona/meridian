@@ -1,0 +1,15 @@
+-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+--
+-- The worklog matcher now only ever compares a day's work against that day's
+-- PLANNED tasks, not the whole board. That is a much better prior, but it means
+-- work on something unplanned can only ever come back as a proposal - so the
+-- user needs a way to say "no, file this against THAT ticket" over the full
+-- board. `target_manual` records that they did.
+--
+-- Why a column and not a sentinel: the obvious shortcut is to read
+-- `match_confidence = 1.0` as "a human chose this". It doesn't work.
+-- `parse_answer` in src/pm_worklog/generate.rs CLAMPS model confidence to 1.0,
+-- so a very confident model is indistinguishable from a human pick. The UI must
+-- never label the user's own deliberate choice "100% match" - that reads as the
+-- AI bragging about a decision it did not make.
+ALTER TABLE day_task_worklogs ADD COLUMN target_manual INTEGER NOT NULL DEFAULT 0;

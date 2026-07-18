@@ -2,7 +2,7 @@
 # ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 #
 # Shared GitHub setup helpers, sourced by both install.sh (source installs) and
-# scripts/install-from-bundle.sh (bundle installs). The sourcing script must
+# install.sh. The sourcing script must
 # already define: info, ok, warn, get_env_value, set_env_value (resolved at
 # call time, so definition order across files does not matter).
 

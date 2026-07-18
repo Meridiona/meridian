@@ -40,6 +40,15 @@ const DUE_SOON_DAYS: i64 = 14; // due within this many days counts as a soon sig
 const SUGGESTION_CAP: usize = 5; // how many tasks to pre-fill in the morning
 const EXCERPT_LEN: usize = 130; // description excerpt length for card display
 
+/// The most tasks a day's plan may hold.
+///
+/// A product limit, not a technical one. A plan is a statement of intent for one
+/// day, and a day that claims eleven tasks isn't a plan — it's a backlog, which
+/// makes the plan useless as the prior the worklog matcher now leans on
+/// ([`load_plan_candidates`]). Most focused days land on 1-3; the existing
+/// advisory nag in `PlanTodayColumn.tsx` fires at 5. This is the hard stop.
+pub const MAX_PLAN_TASKS: usize = 10;
+
 // ── Types (field names match the TS interfaces byte-for-byte) ─────────────────
 
 /// One committed plan row, joined with its LIVE `pm_tasks` state (snapshot
@@ -501,6 +510,118 @@ fn parse_snapshot(s: Option<&str>) -> Option<TaskSnapshot> {
     serde_json::from_str(s?).ok()
 }
 
+/// One planned task resolved to its best-known board fields — the shape the
+/// worklog matcher compares a day's work against.
+///
+/// Deliberately NOT [`PlanItem`]. `PlanItem` is a card, so its `description` is
+/// [`excerpt`]-ed to ~130 chars for display; handing that to the matcher would
+/// silently shrink its prompt context to under half of what `render_doc` allows,
+/// and nothing anywhere would say so. This carries the FULL description, and the
+/// card shape is derived from it — so the two can't drift.
+#[derive(Debug, Clone)]
+pub struct PlanCandidate {
+    pub task_key: String,
+    pub position: i64,
+    pub origin: String,
+    pub provider: String,
+    pub url: String,
+    pub title: String,
+    pub issue_type: String,
+    pub epic: Option<String>,
+    /// Full, untruncated — see the type doc.
+    pub description: String,
+    pub status: String,
+    pub is_terminal: bool,
+    pub due_date: Option<String>,
+    pub priority: Option<String>,
+    pub story_points: Option<String>,
+}
+
+/// Resolve one joined row to its best-known fields: the live `pm_tasks` columns
+/// when the ticket is still on the board, else the snapshot captured onto the
+/// plan row at write time (044).
+///
+/// `on_board` here means only "a `pm_tasks` row still exists for this key" — it
+/// is NOT [`crate::board::is_on_board`], which asks whether a ticket is open and
+/// not cleanup-excluded. Same words, different question; don't substitute one for
+/// the other.
+fn resolve_row(r: PlanJoinRow) -> PlanCandidate {
+    let on_board = r.on_board != 0;
+    // Live board row wins; otherwise fall back to the captured snapshot.
+    let snap = if on_board {
+        None
+    } else {
+        parse_snapshot(r.task_snapshot.as_deref())
+    };
+    let s = snap.as_ref();
+    // pick: live column when on-board, else the snapshot's field.
+    let pick = |live: Option<String>, snap_val: Option<String>| {
+        if on_board {
+            live
+        } else {
+            snap_val
+        }
+    };
+    PlanCandidate {
+        title: pick(r.title, s.and_then(|x| x.title.clone())).unwrap_or_else(|| r.task_key.clone()),
+        provider: pick(r.provider, s.and_then(|x| x.provider.clone()))
+            .unwrap_or_else(|| "jira".to_string()),
+        url: pick(r.url, s.and_then(|x| x.url.clone())).unwrap_or_default(),
+        status: if on_board {
+            r.status_raw
+        } else {
+            s.and_then(|x| x.status_raw.clone()).unwrap_or_default()
+        },
+        // Off the active board ⇒ completed for the day's plan; on board ⇒ live flag.
+        is_terminal: if on_board { r.is_terminal != 0 } else { true },
+        due_date: pick(r.due_date, s.and_then(|x| x.due_date.clone())),
+        description: pick(
+            r.description_text,
+            s.and_then(|x| x.description_text.clone()),
+        )
+        .unwrap_or_default(),
+        epic: trimmed(pick(r.epic_title, s.and_then(|x| x.epic_title.clone())))
+            .or_else(|| trimmed(pick(r.parent_key, s.and_then(|x| x.parent_key.clone())))),
+        priority: trimmed(pick(r.priority, s.and_then(|x| x.priority.clone()))),
+        issue_type: trimmed(pick(r.issue_type, s.and_then(|x| x.issue_type.clone())))
+            .unwrap_or_default(),
+        story_points: trimmed(pick(r.story_points, s.and_then(|x| x.story_points.clone()))),
+        task_key: r.task_key,
+        position: r.position,
+        origin: r.origin,
+    }
+}
+
+/// The day's committed plan, resolved. This is the worklog matcher's candidate
+/// set: what the dev actually said they'd work on today, not the whole board.
+///
+/// Two things it deliberately does NOT filter:
+/// - **Terminal tasks stay.** Checking a task off the plan closes the real ticket
+///   (`OverviewPanel.tsx`'s `toggleDone` → `apply_ticket_fix`), which drops it off
+///   the board — so filtering terminal here would delete exactly the task the dev
+///   just finished from the set used to log the work they finished it with. The
+///   `task_snapshot` fallback is what keeps its text available afterwards.
+/// - **Personal (`'local'`) tasks stay.** They belong to the plan. It's the
+///   *matcher* that can't use them (nothing to post a comment to), so that filter
+///   lives at its call site, not here.
+///
+/// # Who calls this
+/// `meridian::pm_worklog::generate::fetch_plan_candidates` — the matcher.
+#[tracing::instrument(skip(pool))]
+pub async fn load_plan_candidates(
+    pool: &SqlitePool,
+    date: &str,
+) -> anyhow::Result<Vec<PlanCandidate>> {
+    if !table_exists(pool, "daily_plan").await {
+        return Ok(Vec::new());
+    }
+    Ok(plan_join_rows(pool, date)
+        .await?
+        .into_iter()
+        .map(resolve_row)
+        .collect())
+}
+
 /// Committed plan rows joined with their LIVE `pm_tasks` state; an off-board
 /// planned ticket falls back to its captured snapshot and is treated as
 /// completed (it left the active board, almost always by being Done). Mirrors
@@ -513,6 +634,35 @@ async fn load_plan(
     if !table_exists(pool, "daily_plan").await {
         return Ok(Vec::new());
     }
+    // The card shape is the candidate shape, excerpted for display + dated.
+    Ok(plan_join_rows(pool, date)
+        .await?
+        .into_iter()
+        .map(resolve_row)
+        .map(|c| PlanItem {
+            due_days: crate::date::due_days_from(c.due_date.as_deref(), today),
+            description: excerpt(Some(&c.description)),
+            task_key: c.task_key,
+            position: c.position,
+            origin: c.origin,
+            title: c.title,
+            provider: c.provider,
+            url: c.url,
+            status: c.status,
+            is_terminal: c.is_terminal,
+            due_date: c.due_date,
+            epic: c.epic,
+            priority: c.priority,
+            issue_type: c.issue_type,
+            story_points: c.story_points,
+        })
+        .collect())
+}
+
+/// The raw `daily_plan LEFT JOIN pm_tasks` for one day. The single place this
+/// join is written — [`load_plan`] (cards) and [`load_plan_candidates`] (the
+/// matcher) both resolve from it via [`resolve_row`].
+async fn plan_join_rows(pool: &SqlitePool, date: &str) -> anyhow::Result<Vec<PlanJoinRow>> {
     // 041 created daily_plan; 044 added task_snapshot. A DB stuck between them
     // lacks the column — select a NULL literal instead of erroring on it.
     let has_snapshot = sqlx::query_scalar::<_, i64>(
@@ -549,62 +699,7 @@ async fn load_plan(
         .instrument(tracing::debug_span!("plan.read.daily_plan.join"))
         .await?;
     tracing::debug!(rows = rows.len(), "plan.read.daily_plan.join");
-
-    Ok(rows
-        .into_iter()
-        .map(|r| {
-            let on_board = r.on_board != 0;
-            // Live board row wins; otherwise fall back to the captured snapshot.
-            let snap = if on_board {
-                None
-            } else {
-                parse_snapshot(r.task_snapshot.as_deref())
-            };
-            let s = snap.as_ref();
-            // pick: live column when on-board, else the snapshot's field.
-            let pick = |live: Option<String>, snap_val: Option<String>| {
-                if on_board {
-                    live
-                } else {
-                    snap_val
-                }
-            };
-            let due_date = pick(r.due_date, s.and_then(|x| x.due_date.clone()));
-            let status = if on_board {
-                r.status_raw
-            } else {
-                s.and_then(|x| x.status_raw.clone()).unwrap_or_default()
-            };
-            PlanItem {
-                title: pick(r.title, s.and_then(|x| x.title.clone()))
-                    .unwrap_or_else(|| r.task_key.clone()),
-                provider: pick(r.provider, s.and_then(|x| x.provider.clone()))
-                    .unwrap_or_else(|| "jira".to_string()),
-                url: pick(r.url, s.and_then(|x| x.url.clone())).unwrap_or_default(),
-                status,
-                // Off the active board ⇒ completed for the day's plan; on board ⇒ live flag.
-                is_terminal: if on_board { r.is_terminal != 0 } else { true },
-                due_days: crate::date::due_days_from(due_date.as_deref(), today),
-                due_date,
-                description: excerpt(
-                    pick(
-                        r.description_text,
-                        s.and_then(|x| x.description_text.clone()),
-                    )
-                    .as_deref(),
-                ),
-                epic: trimmed(pick(r.epic_title, s.and_then(|x| x.epic_title.clone())))
-                    .or_else(|| trimmed(pick(r.parent_key, s.and_then(|x| x.parent_key.clone())))),
-                priority: trimmed(pick(r.priority, s.and_then(|x| x.priority.clone()))),
-                issue_type: trimmed(pick(r.issue_type, s.and_then(|x| x.issue_type.clone())))
-                    .unwrap_or_default(),
-                story_points: trimmed(pick(r.story_points, s.and_then(|x| x.story_points.clone()))),
-                task_key: r.task_key,
-                position: r.position,
-                origin: r.origin,
-            }
-        })
-        .collect())
+    Ok(rows)
 }
 
 /// Full plan payload for a day. `available` is supplied by the caller (the
@@ -664,6 +759,8 @@ pub enum PlanWriteError {
     TaskKeyRequired,
     /// The `daily_plan` table doesn't exist yet (pre-migration-041 DB).
     StorageNotReady,
+    /// The write would push the day's plan past [`MAX_PLAN_TASKS`].
+    TooManyTasks(usize),
     /// An unknown action string.
     UnknownAction(String),
 }
@@ -676,11 +773,35 @@ impl std::fmt::Display for PlanWriteError {
             Self::StorageNotReady => {
                 write!(f, "plan storage not ready — restart the meridian daemon")
             }
+            // App text - surfaces verbatim in the planner. Plain hyphens only.
+            Self::TooManyTasks(n) => write!(
+                f,
+                "You can plan up to {MAX_PLAN_TASKS} tasks for a day - this would make {n}. \
+                 Remove one before adding another. Most focused days land on 1-3."
+            ),
             Self::UnknownAction(a) => write!(f, "unknown action: {a}"),
         }
     }
 }
 impl std::error::Error for PlanWriteError {}
+
+/// Reject a whole-list write that would exceed [`MAX_PLAN_TASKS`].
+///
+/// Counts DISTINCT keys: `replace_plan` UPSERTs, so a payload repeating a key
+/// writes one row, and counting the raw array would refuse a plan that is
+/// actually legal.
+///
+/// This is the live path — the planner never sends `add`/`remove`, it edits its
+/// list locally and persists the whole thing as `set`/`confirm`
+/// (`PlanView.tsx`). The UI stops the user at ten first; this is the guard that
+/// actually holds.
+fn check_plan_size(keys: &[String]) -> Result<(), PlanWriteError> {
+    let distinct: HashSet<&String> = keys.iter().collect();
+    if distinct.len() > MAX_PLAN_TASKS {
+        return Err(PlanWriteError::TooManyTasks(distinct.len()));
+    }
+    Ok(())
+}
 
 /// JSON snapshot of a ticket's board fields, or `None` when it isn't on the
 /// board (so an `add`/`confirm` of an off-board key keeps any earlier snapshot —
@@ -742,6 +863,7 @@ pub async fn apply_plan_action(
                 .task_keys
                 .as_ref()
                 .ok_or(PlanWriteError::TaskKeysRequired)?;
+            check_plan_size(keys)?;
             let mut tx = pool.begin().await?;
             replace_plan(&mut tx, date, keys, &origin_for, now).await?;
             upsert_meta(&mut tx, date, Some(now), 0, now).await?;
@@ -753,6 +875,7 @@ pub async fn apply_plan_action(
                 .task_keys
                 .as_ref()
                 .ok_or(PlanWriteError::TaskKeysRequired)?;
+            check_plan_size(keys)?;
             let mut tx = pool.begin().await?;
             replace_plan(&mut tx, date, keys, &origin_for, now).await?;
             tx.commit().await?;
@@ -763,27 +886,52 @@ pub async fn apply_plan_action(
                 .as_deref()
                 .filter(|k| !k.is_empty())
                 .ok_or(PlanWriteError::TaskKeyRequired)?;
-            let max: i64 = sqlx::query_scalar(
-                "SELECT COALESCE(MAX(position), -1) FROM daily_plan WHERE plan_date = ?",
-            )
-            .bind(date)
-            .fetch_one(pool)
-            .await?;
             let snapshot = snapshot_for(pool, key).await?;
-            sqlx::query(
+            // Cap check, position (MAX+1) and INSERT are ONE atomic statement, so two
+            // concurrent adds can't both read count=9 and both land (a TOCTOU that
+            // breached the cap and duplicated positions — the sibling arms avoid it by
+            // being pure writes; this one decides on a COUNT, so it must decide and write
+            // under the same write lock). SQLite serialises writers, so the aggregate the
+            // second add sees already includes the first. `HAVING COUNT(*) < cap` gates
+            // the row on the current size; the aggregate SELECT over zero rows still
+            // yields one row (NULL max, 0 count), so an empty plan inserts at position 0.
+            // `ON CONFLICT DO NOTHING` keeps re-adding an existing key a no-op even at the
+            // cap (HAVING may exclude it, but it's already present, so nothing is lost).
+            let res = sqlx::query(
                 r#"INSERT INTO daily_plan (plan_date, task_key, position, origin, task_snapshot, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   SELECT ?, ?, COALESCE(MAX(position), -1) + 1, ?, ?, ?, ?
+                     FROM daily_plan
+                    WHERE plan_date = ?
+                   HAVING COUNT(*) < ?
                    ON CONFLICT(plan_date, task_key) DO NOTHING"#,
             )
             .bind(date)
             .bind(key)
-            .bind(max + 1)
             .bind(origin_for(key))
             .bind(snapshot)
             .bind(now)
             .bind(now)
+            .bind(date)
+            .bind(MAX_PLAN_TASKS as i64)
             .execute(pool)
             .await?;
+
+            // No row inserted means EITHER the key was already in the plan (a no-op by
+            // design, even at the cap) OR the cap blocked a NEW key. Only the latter is an
+            // error, so disambiguate with an existence check — never insert past the cap.
+            if res.rows_affected() == 0 {
+                let already: bool = sqlx::query_scalar::<_, i64>(
+                    "SELECT 1 FROM daily_plan WHERE plan_date = ? AND task_key = ?",
+                )
+                .bind(date)
+                .bind(key)
+                .fetch_optional(pool)
+                .await?
+                .is_some();
+                if !already {
+                    return Err(PlanWriteError::TooManyTasks(MAX_PLAN_TASKS + 1).into());
+                }
+            }
         }
         "remove" => {
             let key = body

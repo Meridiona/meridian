@@ -1,0 +1,345 @@
+{
+  "version": 8,
+  "title": "Activity Summary",
+  "description": "The hourly activity summary + time estimate, Rust-owned (span `worklog.report`, service meridian-rust). One row per hour: 'When (local)' is when the call ran, 'Hour (local)' is the hour of the day it summarised, 'Calls' is 1 or 2 (activity-summary always runs; activity-time runs only when there are activities against a measured timeline). CLICK A ROW -> the trace shows the `worklog.report` span with its `llm.call` children (one per call), each carrying the exact `llm_prompt` (system prompt), `llm_input` (what was sent) and `llm_output` (the model's answer), plus provider, tokens and elapsed.",
+  "tabs": [
+    {
+      "tabId": "default",
+      "name": "Default",
+      "panels": [
+        {
+          "id": "m_total",
+          "type": "metric",
+          "title": "Hours summarised",
+          "description": "Total worklog.report spans in range",
+          "config": {
+            "show_legends": false,
+            "no_value_replacement": "0",
+            "decimals": 0.0
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(*) as y_axis_1 FROM \"default\" WHERE operation_name='worklog.report'",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Hours summarised",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "color": "#5960b2",
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 0,
+            "w": 48,
+            "h": 18,
+            "i": 1
+          }
+        },
+        {
+          "id": "m_avg",
+          "type": "metric",
+          "title": "Avg activities",
+          "description": "Mean activities parsed per hour",
+          "config": {
+            "show_legends": false,
+            "no_value_replacement": "0",
+            "decimals": 1.0
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT histogram(_timestamp) as x_axis_1, round(avg(CAST(n_activities AS DOUBLE)),1) as y_axis_1 FROM \"default\" WHERE operation_name='worklog.report' AND n_activities IS NOT NULL GROUP BY x_axis_1",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Avg activities",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "color": "#59b27a",
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 48,
+            "y": 0,
+            "w": 48,
+            "h": 18,
+            "i": 2
+          }
+        },
+        {
+          "id": "m_elapsed",
+          "type": "metric",
+          "title": "Avg elapsed (s)",
+          "description": "Mean span wall-clock",
+          "config": {
+            "show_legends": false,
+            "no_value_replacement": "0",
+            "decimals": 1.0,
+            "unit": "seconds"
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT histogram(_timestamp) as x_axis_1, round(avg(CAST(duration AS DOUBLE)/1000000),1) as y_axis_1 FROM \"default\" WHERE operation_name='worklog.report' GROUP BY x_axis_1",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Avg elapsed (s)",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "color": "#59a0b2",
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 96,
+            "y": 0,
+            "w": 48,
+            "h": 18,
+            "i": 3
+          }
+        },
+        {
+          "id": "m_providers",
+          "type": "metric",
+          "title": "Distinct providers",
+          "description": "How many LLM providers served this stage",
+          "config": {
+            "show_legends": false,
+            "no_value_replacement": "0",
+            "decimals": 0.0
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT count(DISTINCT llm_provider) as y_axis_1 FROM \"default\" WHERE operation_name='worklog.report' AND llm_provider IS NOT NULL",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [],
+                "y": [
+                  {
+                    "label": "Distinct providers",
+                    "alias": "y_axis_1",
+                    "column": "y_axis_1",
+                    "color": "#b29959",
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 144,
+            "y": 0,
+            "w": 48,
+            "h": 18,
+            "i": 4
+          }
+        },
+        {
+          "id": "t_all",
+          "type": "table",
+          "title": "All runs — newest first",
+          "description": "One row per hour. 'When (local)' = when the call ran; 'Hour (local)' = the hour it covers. Click a row to open its full trace tree (the per-call llm.call spans with input/prompt/output).",
+          "config": {
+            "show_legends": false,
+            "wrap_table_cells": false,
+            "drilldown": [
+              {
+                "name": "Open this trace's spans",
+                "type": "byUrl",
+                "targetBlank": true,
+                "findBy": "name",
+                "data": {
+                  "url": "/web/traces?org_identifier=default&stream=default&search_type=ui&search_mode=spans&period=30d&query=${row.field.trace_filter}",
+                  "folder": "",
+                  "dashboard": "",
+                  "tab": "",
+                  "passAllVariables": false,
+                  "variables": []
+                }
+              }
+            ]
+          },
+          "queryType": "sql",
+          "queries": [
+            {
+              "query": "SELECT\n  to_char(to_timestamp_micros(_timestamp + 19800000000),'%Y-%m-%d %H:%M') as \"When (local)\",\n  concat(substr(hour,1,10),' ',substr(hour,12,2),':00-',lpad(CAST((CAST(substr(hour,12,2) AS BIGINT)+1)%24 AS VARCHAR),2,'0'),':00') as \"Hour (local)\",\n  llm_provider as \"Provider\",\n  CAST(n_calls AS BIGINT) as \"Calls\",\n  CAST(n_activities AS BIGINT) as \"Activities\",\n  round(CAST(duration AS DOUBLE)/1000000,1) as \"Elapsed (s)\",\n  trace_id,\n  encode(concat('trace_id=''', trace_id, ''''),'base64') as trace_filter\nFROM \"default\" WHERE operation_name='worklog.report' AND hour IS NOT NULL AND length(hour) >= 13 ORDER BY _timestamp DESC",
+              "customQuery": true,
+              "fields": {
+                "stream": "default",
+                "stream_type": "traces",
+                "x": [
+                  {
+                    "label": "When (local)",
+                    "alias": "When (local)",
+                    "column": "When (local)",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Hour (local)",
+                    "alias": "Hour (local)",
+                    "column": "Hour (local)",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Provider",
+                    "alias": "Provider",
+                    "column": "Provider",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Calls",
+                    "alias": "Calls",
+                    "column": "Calls",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Activities",
+                    "alias": "Activities",
+                    "column": "Activities",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Elapsed (s)",
+                    "alias": "Elapsed (s)",
+                    "column": "Elapsed (s)",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "trace_id",
+                    "alias": "trace_id",
+                    "column": "trace_id",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "trace_filter",
+                    "alias": "trace_filter",
+                    "column": "trace_filter",
+                    "isDerived": false,
+                    "havingConditions": []
+                  }
+                ],
+                "y": [],
+                "z": [],
+                "breakdown": [],
+                "filter": {
+                  "filterType": "group",
+                  "logicalOperator": "AND",
+                  "conditions": []
+                }
+              },
+              "config": {
+                "promql_legend": "",
+                "layer_type": "scatter",
+                "weight_fixed": 1.0
+              }
+            }
+          ],
+          "layout": {
+            "x": 0,
+            "y": 18,
+            "w": 192,
+            "h": 42,
+            "i": 9
+          }
+        }
+      ]
+    }
+  ],
+  "variables": {
+    "list": [],
+    "showDynamicFilters": true
+  },
+  "defaultDatetimeDuration": {
+    "type": "relative",
+    "relativeTimePeriod": "24h"
+  }
+}

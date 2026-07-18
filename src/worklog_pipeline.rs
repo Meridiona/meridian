@@ -26,13 +26,24 @@ use std::time::Duration as StdDuration;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Local, NaiveDateTime, TimeZone, Timelike, Utc};
-use serde_json::json;
 use sqlx::SqlitePool;
 use tokio::sync::watch;
-use tokio::time::Instant;
 use tracing::Instrument;
 
 use crate::pm_worklog::{ledger, PmWorklogConfig};
+
+// `pub(crate)` where the LLM-Lab replay ([`crate::llm_experiment`]) reuses the request
+// builders / parsers / DB fetchers to rebuild a past hour's exact model input.
+pub(crate) mod distiller;
+pub(crate) mod hour;
+pub(crate) mod hour_db;
+pub(crate) mod hour_input;
+pub(crate) mod segment;
+pub(crate) mod task_db;
+pub(crate) mod workstream;
+pub(crate) mod workstream_parse;
+pub(crate) mod workstream_sanitize;
+pub(crate) mod workstream_state;
 
 /// Seconds past the top of the hour at which a completed hour is processed (HH:03).
 const WAKE_OFFSET_SECS: i64 = 3 * 60;
@@ -43,9 +54,18 @@ const MIN_SESSION_DURATION_S: i64 = 15;
 const MIN_SESSIONS: i64 = 5;
 /// Poll cadence while waiting for coding-agent summarisation to finish.
 const CODING_POLL: StdDuration = StdDuration::from_secs(30);
-/// Hard cap on the coding-summarisation wait, so it can never bleed into the next
-/// HH:03 tick (~57 min away). The indexer's hour-boundary seal makes hitting this rare.
+/// Hard cap on the coding-summarisation wait, measured from the END OF THE HOUR (not
+/// from when the daemon happened to start), so it can never bleed into the next HH:03
+/// tick (~57 min away). The indexer's hour-boundary seal makes hitting this rare.
 const CODING_MAX_WAIT: StdDuration = StdDuration::from_secs(20 * 60);
+/// A sealed coding row shorter than this is too trivial to be worth blocking the fold
+/// for: it carries essentially no content to summarise (e.g. a 0-3s Claude Code session
+/// slice, common when the developer's OWN agent conversations get ingested), yet a
+/// pending one would otherwise gate the whole hour for [`CODING_MAX_WAIT`]. Waiting on
+/// it buys nothing — its (absent) summary would fold into the report as nothing. So the
+/// readiness gate ignores trivial pending rows; a genuinely short-but-real session still
+/// summarises on the indexer tick and lands in a later fold.
+const MIN_CODING_READY_S: i64 = 20;
 
 /// Canonical `+00:00` ISO bound (matches stored `started_at`).
 fn iso_bound(dt: DateTime<Utc>) -> String {
@@ -123,15 +143,20 @@ async fn hour_has_coding(pool: &SqlitePool, hs: &str, he: &str) -> Result<bool> 
 
 /// Count coding-agent rows overlapping the hour still moving through the pipeline
 /// (`coding_agent_live` / `pending_summariser`). Terminal states (`summarised`,
-/// `subprocess_error`, `mlx_direct`) are NOT counted — so a dead-lettered row can
-/// never make us wait forever.
+/// `subprocess_error`) are NOT counted — so a dead-lettered row can never make us
+/// wait forever.
 async fn coding_in_flight(pool: &SqlitePool, hs: &str, he: &str) -> Result<i64> {
+    // Wait for every LIVE coding row (still being written), but among sealed rows
+    // awaiting summarisation only the non-trivial ones — a 0-3s slice carries nothing
+    // to fold, so blocking the hour on it just wastes the CODING_MAX_WAIT budget.
     sqlx::query_scalar(&format!(
         "SELECT COUNT(*) FROM app_sessions \
          WHERE coding_agent_session_uuid IS NOT NULL \
-           AND task_method IN ('coding_agent_live', 'pending_summariser') \
+           AND ( task_method = 'coding_agent_live' \
+                 OR (task_method = 'pending_summariser' AND duration_s >= ?) ) \
            AND {OVERLAP_PRED}"
     ))
+    .bind(MIN_CODING_READY_S)
     .bind(hs)
     .bind(he)
     .bind(hs)
@@ -151,15 +176,41 @@ enum WaitOutcome {
     Shutdown,
 }
 
-/// Poll until no coding row overlapping the hour is in flight, up to `CODING_MAX_WAIT`.
-/// On a query error we return `Ready` (never block the worklog on a bad read).
+/// Wall-clock instant past which the coding wait gives up: `CODING_MAX_WAIT` after the
+/// hour ended. `None` when `he` is not a parseable bound.
+///
+/// Anchored to the hour's end rather than to process start so the cap survives a
+/// restart — see [`await_coding_ready`] for why that matters.
+fn coding_deadline(he: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(he)
+        .ok()
+        .map(|end| end.with_timezone(&Utc) + Duration::seconds(CODING_MAX_WAIT.as_secs() as i64))
+}
+
+/// Poll until no coding row overlapping the hour is in flight, until `CODING_MAX_WAIT`
+/// past the hour's END — a wall-clock deadline, not a per-process one.
+///
+/// The anchor is the whole point. `Instant::now() + CODING_MAX_WAIT` restarts the cap
+/// from zero on every process start, so a daemon that restarts more often than
+/// `CODING_MAX_WAIT` — a dev machine rebuilding on save, a crash loop, a run of updates
+/// — never reaches the cap and the hour is never processed AT ALL. Anchoring to
+/// `hour_end` makes the cap mean what `ledger.rs` already documents it to mean:
+/// "process best-effort once the hour has been over longer than the aging window."
+/// The wait now resumes across restarts, and an hour already past its cap (a backlog
+/// after downtime) proceeds immediately instead of buying another full wait per attempt.
+///
+/// On a query error we return `Ready` (never block the worklog on a bad read); an
+/// unparseable `he` takes the same escape rather than stalling the hour forever.
 async fn await_coding_ready(
     pool: &SqlitePool,
     hs: &str,
     he: &str,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) -> WaitOutcome {
-    let deadline = Instant::now() + CODING_MAX_WAIT;
+    let Some(deadline) = coding_deadline(he) else {
+        tracing::warn!(hour_end = %he, "worklog: unparseable hour end — proceeding");
+        return WaitOutcome::Ready;
+    };
     loop {
         match coding_in_flight(pool, hs, he).await {
             Ok(0) => return WaitOutcome::Ready,
@@ -169,7 +220,7 @@ async fn await_coding_ready(
                 return WaitOutcome::Ready;
             }
         }
-        if Instant::now() >= deadline {
+        if Utc::now() >= deadline {
             return WaitOutcome::CapHit;
         }
         tokio::select! {
@@ -180,49 +231,6 @@ async fn await_coding_ready(
 }
 
 // ──────────────────────── Firing one hour ────────────────────────────────────────
-
-/// POST one hour to `/worklog_hour`. Holds the global LLM permit for the whole call
-/// so the pipeline's many model phases (embedder / reranker / 2B) never interleave
-/// with a summarise call — preserving the one-model-at-a-time rule.
-async fn post_worklog_hour(
-    cfg: &PmWorklogConfig,
-    db_path: &str,
-    hour: &str,
-    cycle_index: i64,
-) -> Result<()> {
-    let _llm_permit = crate::llm_gate::acquire().await;
-
-    let url = format!("http://{}:{}/worklog_hour", cfg.mlx_host, cfg.mlx_port);
-    let client = reqwest::Client::builder()
-        .connect_timeout(StdDuration::from_secs(5))
-        // The full pipeline can run for several minutes on a busy hour.
-        .timeout(StdDuration::from_secs(900))
-        .build()
-        .context("building worklog_hour http client")?;
-
-    let traceparent = crate::observability::current_traceparent();
-    let resp = client
-        .post(&url)
-        .json(&json!({
-            "hour": hour,
-            "db_path": db_path,
-            "cycle_index": cycle_index,
-            "traceparent": traceparent,
-        }))
-        .send()
-        .await
-        .with_context(|| {
-            format!("worklog_hour endpoint unreachable at {url} — is the MLX server running?")
-        })?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        let preview: String = body.chars().take(200).collect();
-        anyhow::bail!("/worklog_hour returned {status}: {preview}");
-    }
-    Ok(())
-}
 
 /// Process one completed hour: idempotency check → activity gate → wait for coding →
 /// fire. Returns `true` if shutdown was observed (caller should stop).
@@ -306,10 +314,11 @@ async fn process_hour(
         tracing::warn!(hour = %label, error = %e, "worklog: mark_hour_generating failed");
     }
 
-    // Wrap the POST in a span so `current_traceparent()` nests the hour's trace under
-    // `worklog.hour` (one connected OpenObserve trace).
+    // Wrap the run in a span so `current_traceparent()` nests the hour's trace under
+    // `worklog.hour` (one connected OpenObserve trace). The hour is orchestrated in Rust
+    // now (`hour::run_hour`): distil locally, then summarise through the user's chosen AI.
     let span = tracing::info_span!("worklog.hour", hour = %label, cycle_index);
-    let result = post_worklog_hour(cfg, db_path, label, cycle_index)
+    let result = hour::run_hour(pool, cfg, db_path, label, hs, he)
         .instrument(span)
         .await;
     match result {
@@ -330,9 +339,111 @@ async fn process_hour(
     false
 }
 
+/// How far back [`retry_unfinished`] will chase an hour that never finished.
+///
+/// Sized to survive an outage that spans a day boundary — a provider rate-limited
+/// from mid-afternoon until midnight, which before the on-device fallback was
+/// removed would have been silently absorbed by MLX and is now a real hole. Two
+/// days is also the natural give-up point: it bounds the retry so a permanently
+/// broken hour stops costing an LLM call every tick, and a quota that has not
+/// reset in 48 hours is not going to be fixed by asking again.
+const CATCH_UP_LOOKBACK_DAYS: i64 = 2;
+
+/// Retry hours from EARLIER days that were attempted and left unfinished.
+///
+/// The companion to [`catch_up_today`], which only ever walks the current local
+/// day: an hour still pending at local midnight used to fall off the end of the
+/// world, recoverable only by a manual `cli_run_hour`. That was invisible while
+/// the on-device model backstopped every failed call, because an hour almost
+/// never STAYED pending; with the fallback gone, "the provider was limited for
+/// the rest of the day" is an ordinary occurrence and those hours must survive
+/// the date change.
+///
+/// Only hours with an existing non-`done` ledger row are considered (see
+/// [`ledger::unfinished_hours_between`]), so this retries real failures and never
+/// backfills a day the daemon did not run.
+///
+/// Returns `true` if shutdown was observed mid-walk.
+async fn retry_unfinished(
+    pool: &SqlitePool,
+    cfg: &PmWorklogConfig,
+    db_path: &str,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> bool {
+    let local_day = Local::now().date_naive();
+    let midnight_local = match local_day
+        .and_hms_opt(0, 0, 0)
+        .and_then(|naive| Local.from_local_datetime(&naive).single())
+    {
+        Some(m) => m,
+        None => return false, // DST ambiguity — today's walk still runs
+    };
+    let since = midnight_local - Duration::days(CATCH_UP_LOOKBACK_DAYS);
+
+    let hours = match ledger::unfinished_hours_between(
+        pool,
+        &iso_bound(since.with_timezone(&Utc)),
+        &iso_bound(midnight_local.with_timezone(&Utc)),
+    )
+    .await
+    {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!(error = %e, "worklog: unfinished-hours query failed — skipping retry pass");
+            return false;
+        }
+    };
+    if hours.is_empty() {
+        return false;
+    }
+    tracing::info!(
+        count = hours.len(),
+        lookback_days = CATCH_UP_LOOKBACK_DAYS,
+        "worklog: retrying hours left unfinished on an earlier day"
+    );
+
+    for (i, (day_local, hs, he)) in hours.iter().enumerate() {
+        // `process_hour` re-checks done-ness and the activity gate, so a row that
+        // finished by another route since the query is skipped, not redone.
+        let label = format!("{hs} (retry)");
+        if process_hour(
+            pool,
+            cfg,
+            db_path,
+            day_local,
+            hs,
+            he,
+            &label,
+            i as i64,
+            false,
+            shutdown_rx,
+        )
+        .await
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// One full catch-up pass: stranded earlier-day hours first, then today's completed
+/// ones. Returns `true` if shutdown was observed mid-pass.
+async fn catch_up_pass(
+    pool: &SqlitePool,
+    cfg: &PmWorklogConfig,
+    db_path: &str,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> bool {
+    if retry_unfinished(pool, cfg, db_path, shutdown_rx).await {
+        return true;
+    }
+    catch_up_today(pool, cfg, db_path, shutdown_rx).await
+}
+
 /// Process every COMPLETED local hour of today not yet done. Walks chronologically
 /// from local midnight; stops at the first hour that hasn't ended yet. Returns `true`
-/// if shutdown was observed mid-walk. No yesterday / multi-day backfill.
+/// if shutdown was observed mid-walk. Earlier days are handled by
+/// [`retry_unfinished`], not here.
 async fn catch_up_today(
     pool: &SqlitePool,
     cfg: &PmWorklogConfig,
@@ -388,14 +499,18 @@ async fn catch_up_today(
 // ──────────────────────── Daemon loop ────────────────────────────────────────────
 
 /// Daemon task: catch up today's hours on startup, then wake at every local HH:03 to
-/// process the hour that just ended (plus any earlier today hour still pending — the
+/// process the hour that just ended (plus any earlier hour still pending — the
 /// error-retry path). Drafts only; posting stays with pm_worklog::run_post_loop.
+///
+/// Each pass runs the earlier-day retry FIRST, then today, so hours are processed in
+/// chronological order and an hour stranded by a provider outage that spanned local
+/// midnight is picked up before the current day's work.
 pub async fn run_loop(pool: SqlitePool, db_path: String, mut shutdown_rx: watch::Receiver<bool>) {
     let cfg = PmWorklogConfig::from_env();
     tracing::info!("worklog-pipeline driver starting (clock-aligned HH:03; drafts only)");
 
-    // Startup catch-up — process any completed hour of today not yet done.
-    if catch_up_today(&pool, &cfg, &db_path, &mut shutdown_rx).await {
+    // Startup catch-up — retry stranded earlier-day hours, then today's completed ones.
+    if catch_up_pass(&pool, &cfg, &db_path, &mut shutdown_rx).await {
         tracing::info!("worklog-pipeline driver stopped");
         return;
     }
@@ -405,7 +520,7 @@ pub async fn run_loop(pool: SqlitePool, db_path: String, mut shutdown_rx: watch:
         tokio::select! {
             _ = shutdown_rx.changed() => break,
             _ = tokio::time::sleep(dur) => {
-                if catch_up_today(&pool, &cfg, &db_path, &mut shutdown_rx).await {
+                if catch_up_pass(&pool, &cfg, &db_path, &mut shutdown_rx).await {
                     break;
                 }
             }
@@ -420,42 +535,59 @@ pub async fn run_loop(pool: SqlitePool, db_path: String, mut shutdown_rx: watch:
 /// fires) but still waits for coding summarisation. For manual runs / testing.
 pub async fn cli_run_hour(pool: &SqlitePool, db_path: &str, label: &str) {
     let cfg = PmWorklogConfig::from_env();
-    let naive = match NaiveDateTime::parse_from_str(&format!("{label}:00:00"), "%Y-%m-%dT%H:%M:%S")
-    {
-        Ok(n) => n,
+    let b = match hour_bounds(label) {
+        Ok(b) => b,
         Err(e) => {
-            eprintln!("worklog-hour: invalid hour label {label:?} (want YYYY-MM-DDTHH): {e}");
+            // `:#` keeps the chrono parse detail behind the context line.
+            eprintln!("worklog-hour: {e:#}");
             return;
         }
     };
-    let hs_local = match Local.from_local_datetime(&naive).single() {
-        Some(d) => d,
-        None => {
-            eprintln!("worklog-hour: ambiguous local hour {label:?} (DST transition)");
-            return;
-        }
-    };
-    let he_local = hs_local + Duration::hours(1);
-    let hs = iso_bound(hs_local.with_timezone(&Utc));
-    let he = iso_bound(he_local.with_timezone(&Utc));
-    let day_local = hs_local.format("%Y-%m-%d").to_string();
-    let cycle_index = hs_local.hour() as i64;
 
     let (_tx, mut rx) = watch::channel(false);
     process_hour(
         pool,
         &cfg,
         db_path,
-        &day_local,
-        &hs,
-        &he,
+        &b.day_local,
+        &b.hs,
+        &b.he,
         label,
-        cycle_index,
+        b.cycle_index,
         true,
         &mut rx,
     )
     .await;
     println!("worklog-hour: processed {label}");
+}
+
+/// Everything an `YYYY-MM-DDTHH` local hour label resolves to: its UTC bounds
+/// (`…+00:00`, the `pm_worklog_hours` key form), the local day, and the hour-of-day
+/// cycle index. Extracted from [`cli_run_hour`] so the LLM-Lab replay
+/// ([`crate::llm_experiment`]) resolves an hour identically.
+pub(crate) struct HourBounds {
+    pub hs: String,
+    pub he: String,
+    pub day_local: String,
+    pub cycle_index: i64,
+}
+
+/// Resolve a local `YYYY-MM-DDTHH` label to [`HourBounds`]. Errors on a malformed label
+/// or an hour that doesn't exist locally (DST transition).
+pub(crate) fn hour_bounds(label: &str) -> Result<HourBounds> {
+    let naive = NaiveDateTime::parse_from_str(&format!("{label}:00:00"), "%Y-%m-%dT%H:%M:%S")
+        .with_context(|| format!("invalid hour label {label:?} (want YYYY-MM-DDTHH)"))?;
+    let hs_local = Local
+        .from_local_datetime(&naive)
+        .single()
+        .with_context(|| format!("ambiguous local hour {label:?} (DST transition)"))?;
+    let he_local = hs_local + Duration::hours(1);
+    Ok(HourBounds {
+        hs: iso_bound(hs_local.with_timezone(&Utc)),
+        he: iso_bound(he_local.with_timezone(&Utc)),
+        day_local: hs_local.format("%Y-%m-%d").to_string(),
+        cycle_index: hs_local.hour() as i64,
+    })
 }
 
 #[cfg(test)]
@@ -476,6 +608,34 @@ mod tests {
         assert_eq!(wake_delay_secs(210), 3570); // 11:03:30 → next hour's :03
         assert_eq!(wake_delay_secs(180), 3600); // exactly :03 → next hour's :03
         assert_eq!(wake_delay_secs(3599), 181); // 11:59:59 → 12:03
+    }
+
+    /// The cap is 20 min past the hour's END, and is a pure function of the bound —
+    /// NOT of when the process started. This is what lets the wait survive a restart:
+    /// the same `he` yields the same deadline in every process, forever.
+    #[test]
+    fn coding_deadline_is_anchored_to_hour_end() {
+        let he = "2026-07-17T13:00:00+00:00";
+        let deadline = coding_deadline(he).expect("parseable bound");
+        assert_eq!(iso_bound(deadline), "2026-07-17T13:20:00+00:00");
+        // Stable across calls — no process-relative component.
+        assert_eq!(coding_deadline(he), Some(deadline));
+    }
+
+    /// An hour long past its cap must be already-expired, so a restarted daemon
+    /// proceeds best-effort immediately instead of buying a fresh 20-minute wait
+    /// on every attempt (the bug: it then never generates at all).
+    #[test]
+    fn coding_deadline_for_a_stale_hour_is_in_the_past() {
+        let long_ago = iso_bound(Utc::now() - Duration::hours(3));
+        assert!(coding_deadline(&long_ago).expect("parseable bound") < Utc::now());
+    }
+
+    /// A bad bound must not yield a deadline — the caller escapes to `Ready` rather
+    /// than stalling the hour forever.
+    #[test]
+    fn coding_deadline_rejects_an_unparseable_bound() {
+        assert_eq!(coding_deadline("not-a-timestamp"), None);
     }
 
     async fn fresh_db() -> SqlitePool {

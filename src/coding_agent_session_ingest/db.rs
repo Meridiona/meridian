@@ -30,8 +30,8 @@ const EMPTY_JSON_LIST: &str = "[]";
 const CATEGORY: &str = "coding"; // we are sure: this IS coding work
 const CATEGORY_METHOD: &str = "coding_agent_indexer";
 
-/// `task_method` is non-NULL in BOTH states so the MLX classifier (which
-/// selects `WHERE task_method IS NULL`) skips these rows whether live or
+/// `task_method` is non-NULL in BOTH states so the classify-candidate query
+/// (which selects `WHERE task_method IS NULL`) skips these rows whether live or
 /// sealed. The summariser queue is `WHERE task_method = 'pending_summariser'`.
 pub const TASK_METHOD_LIVE: &str = "coding_agent_live";
 pub const TASK_METHOD_PENDING: &str = "pending_summariser";

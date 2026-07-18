@@ -20,6 +20,7 @@ import { filterByConnectedProviders } from '@/lib/integrations'
 import HygieneDialog from '@/components/HygieneDialog'
 import ConnectTrackers from '@/components/IntegrationConnect'
 import { TasksDetailPane } from './TasksDetailPane'
+import { useTaskStatusChange, StatusBanner } from './useTaskStatusChange'
 
 const TASKS_POLL_INTERVAL_MS = 60_000
 
@@ -42,6 +43,14 @@ export function TasksPanel({ onOpenTask }: { onOpenTask: (key: string, title?: s
   const [providerFilter, setProviderFilter] = useState<string>('all')
   const [showIntegrations, setShowIntegrations] = useState(false)
   const [fixTask, setFixTask] = useState<TaskSummary | null>(null)
+
+  // Optimistically reflect a status change in the local list (a done/cancelled
+  // status makes the task terminal, which drops it from the board).
+  const patchTaskStatus = (key: string, status: string, isTerminal: boolean) =>
+    setData(d => d ? { ...d, tasks: d.tasks.map(t => t.key === key ? { ...t, status, is_terminal: isTerminal } : t) } : d)
+
+  const { statusBusyKey, undo, note, handleSetStatus, handleUndo, dismissUndo, dismissNote } =
+    useTaskStatusChange(patchTaskStatus, { onUndoSettled: () => fetchTasks() })
 
   const fetchTasks = () => {
     load<TasksResponse>('/api/tasks', 'get_tasks').then((d) => {
@@ -123,9 +132,33 @@ export function TasksPanel({ onOpenTask }: { onOpenTask: (key: string, title?: s
     )
   }
 
-  const activeTasks = filterByConnectedProviders(data.tasks, integrations)
-  if (activeTasks.length === 0 && integrations !== null) {
+  // Tasks belonging to a connected tracker — empty here means "no connected-provider
+  // tasks", which is the ConnectTrackers prompt below.
+  const connectedTasks = filterByConnectedProviders(data.tasks, integrations)
+  if (connectedTasks.length === 0 && integrations !== null) {
     return <div>{header}<ConnectTrackers integrations={integrations} onChanged={fetchIntegrations} /></div>
+  }
+
+  // What's on the board — a completed or cleaned-up ticket isn't something you
+  // act on here. It still counts toward "touched today"; it's just not listed.
+  //
+  // `on_board` is computed in Rust by the same predicate that builds the worklog
+  // matcher's candidate set, so this list IS that list. Do not substitute
+  // `!t.is_terminal`: that was the old filter, and it disagreed with the matcher
+  // (which also drops cleanup-excluded tickets), so a task could sit here and be
+  // invisible to the model with nothing saying so.
+  const activeTasks = connectedTasks.filter(t => t.on_board)
+  if (activeTasks.length === 0) {
+    return (
+      <div>
+        {header}
+        <p className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>
+          All your tasks are done - nothing active right now. Completed tickets are hidden here.
+        </p>
+        <StatusBanner undo={undo} note={note} busy={!!statusBusyKey}
+          onUndo={handleUndo} onDismissUndo={dismissUndo} onDismissNote={dismissNote} />
+      </div>
+    )
   }
 
   const presentProviders = Array.from(new Set(activeTasks.map(t => t.provider))).sort()
@@ -181,12 +214,16 @@ export function TasksPanel({ onOpenTask }: { onOpenTask: (key: string, title?: s
               epicColor={epicColor(sel.epic_key)}
               onFix={() => setFixTask(sel)}
               onOpenDetail={() => onOpenTask(sel.key, sel.title)}
+              onSetStatus={handleSetStatus}
+              statusBusy={statusBusyKey === sel.key}
             />
           </div>
         )}
       </div>
 
       {fixTask && <HygieneDialog task={fixTask} onClose={() => setFixTask(null)} onApplied={fetchTasks} />}
+      <StatusBanner undo={undo} note={note} busy={!!statusBusyKey}
+        onUndo={handleUndo} onDismissUndo={dismissUndo} onDismissNote={dismissNote} />
     </div>
   )
 }

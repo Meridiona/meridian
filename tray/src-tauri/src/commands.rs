@@ -21,36 +21,47 @@
 //! - [`notifications`] — the in-app banner dismiss write.
 //! - [`parents`]   — valid parent tickets for the hygiene "link a parent" fix.
 //! - [`settings`]  — runtime settings read + write (`/api/settings` GET/PUT).
+//! - [`statuses`]  — ticket status list + set (spawns `meridian ticket-statuses`
+//!   / `ticket-set-status`) for the dashboard's status control.
 //! - [`tasks`]     — board re-sync action (`/api/tasks/sync`, spawns `meridian`).
 //! - [`triage`]    — cleanup working set + the decision/ignore DB writes.
-//! - [`setup`]     — first-run detection, permission probes, MLX status/start.
+//! - [`setup`]     — first-run detection, permission probes, provider detection.
 //! - [`uninstall`] — the in-app uninstall wizard's plan + execute commands.
+//! - [`day_summary`] — the AI-composed end-of-day review (generate / read / its data).
 //! - [`version`]   — installed vs. published version (`/api/version`).
+//! - [`whats_new`] — curated changelog + roadmap for the "What's New" modal.
 //! - [`worklogs`]  — worklog review read + edit/approve/reject/unapprove writes.
 //!
 //! # Related
 //! - [`crate::install`] — install-mode + db-path resolution the commands consume.
 //! - [`crate::sys`] — shared uid / notify / ui_base helpers.
-//! - [`crate::mlx_server`] — the MLX process manager the setup commands drive.
 
 pub mod account;
 pub mod app_icons;
+pub mod cli_exec;
+pub mod custom_llm;
 pub mod daemon;
 pub mod dashboard;
+pub mod day_summary;
 pub mod diagnostics;
 pub mod health;
 pub mod integrations;
+pub mod llm_lab;
 pub mod notices;
 pub mod notifications;
 pub mod parents;
 pub mod pause;
+pub mod plan_tasks;
 pub mod settings;
 pub mod setup;
+pub mod statuses;
 pub mod system;
 pub mod tasks;
 pub mod triage;
 pub mod uninstall;
 pub mod version;
+pub mod whats_new;
+pub mod worklog_generate;
 pub mod worklogs;
 
 // Glob re-exports so callers use `crate::commands::<fn>` regardless of submodule.
@@ -59,20 +70,27 @@ pub mod worklogs;
 // this path, and only a glob carries them along with the command fn.
 pub use account::*;
 pub use app_icons::*;
+pub use custom_llm::*;
 pub use daemon::*;
 pub use dashboard::*;
+pub use day_summary::*;
 pub use diagnostics::*;
 pub use health::*;
 pub use integrations::*;
+pub use llm_lab::*;
 pub use notices::*;
 pub use notifications::*;
 pub use parents::*;
 pub use pause::*;
+pub use plan_tasks::*;
 pub use settings::*;
 pub use setup::*;
+pub use statuses::*;
 pub use system::*;
 pub use tasks::*;
 pub use triage::*;
 pub use uninstall::*;
 pub use version::*;
+pub use whats_new::*;
+pub use worklog_generate::*;
 pub use worklogs::*;

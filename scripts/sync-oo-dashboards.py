@@ -1,4 +1,4 @@
-"""Push every dashboard JSON in services/observability/dashboards/ to the local
+"""Push every dashboard JSON in ops/openobserve-dashboards/ to the local
 OpenObserve instance.
 
 Credentials are read from ~/.meridian/settings.json (oo_email / oo_password),

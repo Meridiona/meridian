@@ -29,8 +29,6 @@ pub(crate) const LAUNCHD_LOG_NAMES: &[&str] = &[
     "daemon-error.log",
     "tray.log",
     "tray-error.log",
-    "mlx-server.log",
-    "mlx-server-error.log",
     "a11y-helper.log",
     "a11y-helper-error.log",
 ];

@@ -306,6 +306,7 @@ async fn pending_native_carries_category_and_survives_pre_057() {
 }
 
 #[tokio::test]
+#[allow(clippy::type_complexity)] // test fixture: a flat (id, delivered, responded, expires) table
 async fn expired_unanswered_selects_only_delivered_unanswered_past_expiry() {
     let pool = interactive_pool().await;
     let now = "2026-07-06T12:00:00Z";

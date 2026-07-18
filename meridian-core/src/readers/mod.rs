@@ -14,8 +14,16 @@
 /// The `/api/active` dashboard view of the active session (ported from active/route.ts).
 pub mod active;
 
+/// The ONE definition of "what is on your board", shared by the Tasks page and
+/// the worklog matcher so the two can never disagree. No route — new work.
+pub mod board;
+
 /// The `/api/coding-agents` daily agent totals (ported from coding-agents/route.ts).
 pub mod coding_agents;
+
+/// The apps recently seen in `capture_frames` — the picker source for the
+/// Settings capture-ignore control. No route; new work.
+pub mod capture_apps;
 
 /// The menu-bar pill's "current task" + progress-ring fill (tray-only; no route).
 pub mod current_task;
@@ -26,8 +34,27 @@ pub mod integrations;
 /// Per-hour distilled activity text from `pm_worklog_hours` (migration 053; no route — new work).
 pub mod hour_text;
 
+/// The rolling day-level tasks (`day_tasks`, migration 058; no route — new work).
+pub mod day_tasks;
+
+/// The generated-worklog ledger behind the day-task "Generate worklog" action
+/// (`day_task_worklogs`, migration 060; no route — new work).
+pub mod day_task_worklogs;
+
+/// The AI-composed end-of-day review (`day_summaries`, migration 064; no route —
+/// new work). The DB shape only; the LLM call lives in the daemon's `day_summary`.
+pub mod day_summaries;
+
+/// A day's evidence as named, chartable datasets — what a summary is composed from
+/// and what its stored specs bind to at render. No route; new work.
+pub mod day_evidence;
+
 /// Per-hour generating/paused badge state for the timeline; no route — new work.
 pub mod hour_status;
+
+/// Reads for the dev-only LLM-Lab comparison harness (`llm_experiments`,
+/// migration 064; no route — new work).
+pub mod llm_experiments;
 
 /// The `/api/tasks` per-task time + hygiene payload (ported from tasks/route.ts).
 pub mod tasks;
@@ -40,6 +67,10 @@ pub mod plan;
 
 /// The `/api/plan/task` single-ticket detail (ported from plan/task/route.ts).
 pub mod task_detail;
+
+/// Writing user-authored tasks into `pm_tasks` (the `'local'` sentinel provider).
+/// New backend work — no route to port.
+pub mod task_create;
 
 /// The `/api/today` dashboard payload, computed in Rust (ported from today/route.ts).
 pub mod today;

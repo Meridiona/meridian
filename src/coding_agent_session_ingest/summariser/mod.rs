@@ -5,10 +5,13 @@
 // picks up summarised rows by querying session_summary IS NOT NULL directly.
 //
 // Engine routing per segment: Codex sessions → `codex exec`, else → `claude -p`
-// (both Rust subprocesses on the user's subscription). Each primary engine is
-// tried up to `primary_attempts` times; a rate-limit short-circuits straight to
-// the local MLX server (`/summarise`, the only remaining Python hop). Sequential
-// (one transcript in flight) keeps memory flat and avoids bursting rate limits.
+// (both Rust subprocesses on the user's subscription). Each engine is tried up to
+// `primary_attempts` times; a rate-limit short-circuits. There is no fallback
+// engine — the local MLX server used to catch every failure here, and with it
+// deprecated a row its own agent cannot summarise stays pending and is retried
+// on later ticks, then dead-lettered to 'subprocess_error' after
+// MAX_ROW_ATTEMPTS so it cannot churn forever. Sequential (one transcript in
+// flight) keeps memory flat and avoids bursting rate limits.
 //
 // Cadence: woken in-process by the indexer's own seals (near-instant) plus a
 // short catch-up sweep for hook-sealed rows — no listener (local-only rule).
@@ -19,7 +22,6 @@ pub mod config;
 pub mod copilot;
 pub mod cursor_agent;
 pub mod db;
-pub mod mlx;
 pub mod prompts;
 
 use std::collections::HashMap;
@@ -41,8 +43,8 @@ use db::PendingRow;
 
 // ──────────────────────── Errors / engine output ────────────────────────────
 
-/// A summariser engine failure. `RateLimited` means switch to MLX now;
-/// `Failed` is anything else (retry the primary, then MLX).
+/// A summariser engine failure. `RateLimited` means stop now — the quota will not
+/// refill between attempts; `Failed` is anything else and earns a retry.
 #[derive(Debug, Clone)]
 pub enum SummariserError {
     RateLimited(String),
@@ -65,7 +67,11 @@ pub struct EngineOutput {
 }
 
 /// Captured result of a subprocess run.
-pub(super) struct Capture {
+///
+/// `pub(crate)` (not `pub(super)`): `crate::llm`'s CLI backends run the very same
+/// subprocess dance for the prose calls, so they share this runner rather than
+/// growing a second copy of the spawn/timeout/kill-on-drop logic.
+pub(crate) struct Capture {
     pub success: bool,
     pub code: Option<i32>,
     pub stdout: String,
@@ -76,7 +82,7 @@ pub(super) struct Capture {
 /// timeout. `kill_on_drop` guarantees a timed-out child is reaped (no leak);
 /// stdin is written from a concurrent task so a large prompt can't deadlock the
 /// pipe. Summariser stdout is small (a JSON envelope), so no read-side deadlock.
-pub(super) async fn run_capture(
+pub(crate) async fn run_capture(
     program: &str,
     args: &[String],
     stdin_text: &str,
@@ -146,6 +152,12 @@ pub enum Source {
     Codex,
     Copilot,
     CursorAgent,
+    /// Historical only — nothing produces this any more.
+    ///
+    /// MLX used to be the shared fallback for every agent; that was removed with the
+    /// on-device deprecation. The variant stays because `summary_source` is a PERSISTED
+    /// vocabulary: rows summarised before the removal still read `"mlx"` on disk, and
+    /// dropping it would make those rows undescribable.
     Mlx,
     None,
 }
@@ -268,10 +280,12 @@ async fn summarise_one_inner(
 
     let mut errors: Vec<String> = Vec::new();
 
-    // 1. Primary: the session's own agent, up to `primary_attempts` tries.
-    // Each agent's transcripts go to its own CLI (codex→codex, copilot→copilot,
-    // cursor→cursor-agent, claude/unknown→claude); MLX is the shared fallback
-    // for all of them.
+    // The session's own agent summarises it, up to `primary_attempts` tries
+    // (codex→codex, copilot→copilot, cursor→cursor-agent, claude/unknown→claude).
+    // There is no fallback engine: MLX used to catch every failure here. A row the
+    // agent can't summarise is left `pending_summariser` for a later tick rather
+    // than written with a weaker answer, and `drain`'s attempt ledger dead-letters
+    // it after MAX_ROW_ATTEMPTS so a permanently-broken row cannot churn.
     let agent = row.agent.trim();
     let primary_source = if agent.eq_ignore_ascii_case("codex") {
         Source::Codex
@@ -284,16 +298,15 @@ async fn summarise_one_inner(
     };
 
     // Debug child span: the operational story of one summarisation — which engine
-    // ran, how many attempts, whether it fell back to MLX, and wall-clock. Mirrors
-    // the classifier's `llm_inference` span; the per-attempt warn! logs below
-    // attach to it, so a degraded-to-MLX state is never silent.
+    // ran, how many attempts, and wall-clock. Mirrors the classifier's
+    // `llm_inference` span; the per-attempt warn! logs below attach to it, so a row
+    // that failed to summarise is never silent.
     let infer_span = tracing::info_span!(
         "summariser_inference",
         primary_engine = primary_source.as_str(),
         engine_used = tracing::field::Empty,
         model = tracing::field::Empty,
         attempts_made = tracing::field::Empty,
-        fell_back_to_mlx = tracing::field::Empty,
         rate_limited = tracing::field::Empty,
         elapsed_s = tracing::field::Empty,
         is_error = tracing::field::Empty,
@@ -320,17 +333,17 @@ async fn summarise_one_inner(
                 }
                 Err(SummariserError::RateLimited(m)) => {
                     rate_limited = true;
-                    // Log the primary failure even though MLX will likely save the
-                    // row — otherwise a degraded-to-MLX state is invisible (exactly
-                    // how the missing-PATH outage hid: every row silently → mlx).
+                    // Log the primary failure explicitly — with no fallback, a
+                    // rate-limited engine means this row simply waits for a later
+                    // drain, and that state must be visible, not silent.
                     tracing::warn!(
                         row_id = row.id,
                         engine = primary_source.as_str(),
                         error = %m,
-                        "primary summariser rate-limited — falling back to MLX"
+                        "summariser rate-limited — leaving the row pending for a later tick"
                     );
                     errors.push(format!("{} rate-limited: {m}", primary_source.as_str()));
-                    break; // retrying a limit is pointless → fall through to MLX
+                    break; // retrying a limit is pointless
                 }
                 Err(SummariserError::Failed(m)) => {
                     tracing::warn!(
@@ -348,21 +361,9 @@ async fn summarise_one_inner(
             }
         }
 
-        // 2. Fallback: local MLX (on any primary failure).
-        if summary.is_none() {
-            match mlx::run_mlx(&stdin_text, cfg).await {
-                Ok(s) => {
-                    tracing::warn!(
-                        row_id = row.id,
-                        primary = primary_source.as_str(),
-                        "summarised via MLX fallback — primary engine unavailable"
-                    );
-                    summary = Some(s);
-                    source = Source::Mlx;
-                }
-                Err(e) => errors.push(format!("mlx failed: {e}")),
-            }
-        }
+        // No fallback: a coding-agent transcript is summarised by ITS OWN CLI, so routing
+        // a Codex session to some other engine would be wrong. On primary failure the row
+        // is left pending and the drain loop retries it on a later tick.
         (summary, source, rate_limited, attempts_made)
     }
     .instrument(infer_span.clone())
@@ -376,13 +377,14 @@ async fn summarise_one_inner(
         Source::CursorAgent if !cfg.cursor_model.is_empty() => cfg.cursor_model.clone(),
         Source::CursorAgent => "cursor-agent-default".into(),
         Source::Copilot => "copilot-default".into(),
+        // Unreachable now that nothing sets `Source::Mlx`; kept so the match stays total
+        // and reads correctly against rows written before the fallback was removed.
         Source::Mlx => "mlx-server".into(),
         Source::None => String::new(),
     };
     infer_span.record("engine_used", source.as_str());
     infer_span.record("model", model_used.as_str());
     infer_span.record("attempts_made", attempts_made as i64);
-    infer_span.record("fell_back_to_mlx", matches!(source, Source::Mlx));
     infer_span.record("rate_limited", rate_limited);
     infer_span.record("elapsed_s", t_infer.elapsed().as_secs_f64());
     infer_span.record("is_error", summary.is_none());
@@ -462,7 +464,7 @@ fn build_prompt(transcript: &str, prior: Option<&str>, cap: usize) -> String {
 /// Bound transcript size: keep the head (task setup) and tail (outcome). Most
 /// bursts pass through untouched. Char-counted to match the Python original.
 /// Also used by copilot.rs to re-cap for argv embedding (no stdin support).
-fn cap_transcript(transcript: &str, cap: usize) -> String {
+pub(crate) fn cap_transcript(transcript: &str, cap: usize) -> String {
     let chars: Vec<char> = transcript.chars().collect();
     if chars.len() <= cap {
         return transcript.to_string();
@@ -478,8 +480,8 @@ fn cap_transcript(transcript: &str, cap: usize) -> String {
 // ──────────────────────── Loop ──────────────────────────────────────────────
 
 /// The summariser task: drain the queue, then wait for an indexer notify or the
-/// catch-up sweep. Dormant if no coding agent is present. Backs off when both
-/// the primary engine and MLX are unavailable.
+/// catch-up sweep. Dormant if no coding agent is present. Backs off when the
+/// primary engine is unavailable (a failed row stays pending for a later drain).
 pub async fn run_loop(
     pool: SqlitePool,
     notify: Arc<Notify>,
@@ -527,10 +529,14 @@ pub async fn run_loop(
 /// Per-daemon-lifetime failure ledger: a row that fails this many drain
 /// passes is dead-lettered (skipped with a warn) instead of retried forever.
 /// The churn this prevents was observed live 2026-06-07: rows whose capped
-/// prompt exceeds claude's 200k context AND whose MLX answer is empty cycled
-/// every drain, each burning 2 claude calls + 1 MLX call, indefinitely. The
+/// prompt exceeds claude's 200k context cycled every drain, each burning two
+/// claude calls (plus, at the time, an MLX fallback call), indefinitely. The
 /// ledger is in-memory by design: a daemon restart (or `--day` backfill after
 /// fixing the engine) retries cleanly.
+///
+/// This is what makes removing the MLX fallback safe rather than a hot loop:
+/// MLX used to terminate a row the primary engine could never summarise, and
+/// this ledger is now the only thing that does.
 const MAX_ROW_ATTEMPTS: u32 = 3;
 
 /// One drain pass: summarise pending rows from a bounded recent window
@@ -539,8 +545,8 @@ const MAX_ROW_ATTEMPTS: u32 = 3;
 /// signalling the caller to wait longer rather than spinning.
 ///
 /// Rate-limit backoff is per-source (keyed on `app_name`): if Claude Code is
-/// rate-limited, Codex / Cursor / Copilot rows continue draining via MLX or
-/// their own primary. The old global 30-minute freeze is gone.
+/// rate-limited, Codex / Cursor / Copilot rows continue draining via their own
+/// primary. The old global 30-minute freeze is gone.
 ///
 /// Why the yesterday+today window: today-only strands rows sealed just before
 /// midnight; all-days walks the full historical backlog. Yesterday+today

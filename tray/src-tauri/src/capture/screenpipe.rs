@@ -36,6 +36,7 @@ use screenpipe_a11y::tree::{
 use screenpipe_screen::capture_screenshot_by_window::{capture_all_visible_windows, WindowFilters};
 use tracing::{debug, info, warn};
 
+use super::drm_detector::{self, StreamingGate};
 use super::{CaptureEngine, CapturedFrame, FrameTx, TextSource};
 
 /// Seconds between capture passes. Conservative fixed cadence for v1;
@@ -57,10 +58,14 @@ enum A11yOutcome {
 
 /// In-process capture backed by the forked `screenpipe-screen` + `screenpipe-a11y`.
 #[derive(Default)]
-pub struct ScreenpipeEngine;
+pub struct ScreenpipeEngine {
+    /// Whether to pause capture when streaming video is detected
+    pub pause_on_streaming_video: bool,
+}
 
 impl CaptureEngine for ScreenpipeEngine {
     async fn run(self, tx: FrameTx) -> anyhow::Result<()> {
+        let pause_on_streaming = self.pause_on_streaming_video;
         // Register with TCC + drive both prompts ourselves. Neither library
         // prompts on its own: screen-capture enumeration only PREFLIGHTS, and
         // the AX tree reads nothing until this process is a trusted AX client.
@@ -73,6 +78,12 @@ impl CaptureEngine for ScreenpipeEngine {
         // `Box<dyn TreeWalkerPlatform>` is `Send` (supertrait bound), so owning
         // it across the loop's awaits is sound.
         let walker = create_tree_walker(TreeWalkerConfig::default());
+
+        // Sticky per-app streaming state — carries a streaming classification
+        // across ticks where the AX tree fails to re-expose the URL/title
+        // (see `StreamingGate` docs: Safari's caption overlay is the
+        // motivating case). Lives for the whole engine run, single-threaded.
+        let mut streaming_gate = StreamingGate::new();
 
         info!(
             interval_s = CAPTURE_INTERVAL.as_secs(),
@@ -87,8 +98,33 @@ impl CaptureEngine for ScreenpipeEngine {
             // and MUST finish before any await: `&dyn TreeWalkerPlatform` is
             // `Send` but not `Sync`, so the reference cannot cross an await
             // point. Returning an owned outcome keeps the borrow local to here.
-            let outcome = try_walk_a11y(walker.as_ref());
-            if let Err(e) = dispatch(&tx, outcome).await {
+            // Pooled: the AX calls autorelease bridged values into the current
+            // thread's pool, and tokio worker threads never drain one — see
+            // `with_autorelease_pool`.
+            let outcome = with_autorelease_pool(|| try_walk_a11y(walker.as_ref()));
+            // Pre-capture gate: macOS blanks/flickers DRM video whenever ANY
+            // ScreenCaptureKit session is active on the display — regardless
+            // of which window it targets — so the OCR fallback's SCK call
+            // must never fire while streaming content is on screen, even if
+            // it's for a completely unrelated app. Checked with process
+            // existence + AppleScript only (never SCK) — see
+            // `drm_detector::any_streaming_content_visible`.
+            // `any_streaming_content_visible` shells out to `pgrep`/`osascript`
+            // (up to 9 process spawns) — run it on the blocking pool rather
+            // than stalling this tokio worker thread every tick.
+            let skip_ocr_for_streaming = pause_on_streaming
+                && tokio::task::spawn_blocking(drm_detector::any_streaming_content_visible)
+                    .await
+                    .unwrap_or(false);
+            if let Err(e) = dispatch(
+                &tx,
+                outcome,
+                pause_on_streaming,
+                &mut streaming_gate,
+                skip_ocr_for_streaming,
+            )
+            .await
+            {
                 warn!(error = %e, "capture: tick failed (will retry)");
             }
             tokio::time::sleep(CAPTURE_INTERVAL).await;
@@ -265,14 +301,33 @@ fn a11y_content_is_thin(snap: &TreeSnapshot) -> bool {
 /// Route one tick's [`A11yOutcome`]: send the a11y frame, drop a privacy-skip,
 /// or run the OCR fallback. Best-effort — a failed OCR pass is logged and
 /// retried, never fatal (capture must not crash the tray).
-async fn dispatch(tx: &FrameTx, outcome: A11yOutcome) -> anyhow::Result<()> {
+///
+/// `skip_ocr_for_streaming`: when true, the OCR fallback is skipped entirely
+/// for this tick — never invoking ScreenCaptureKit — because streaming
+/// content is on screen somewhere and any SCK call would trigger macOS's
+/// DRM blank/flicker regardless of which window OCR was targeting.
+async fn dispatch(
+    tx: &FrameTx,
+    outcome: A11yOutcome,
+    pause_on_streaming: bool,
+    streaming_gate: &mut StreamingGate,
+    skip_ocr_for_streaming: bool,
+) -> anyhow::Result<()> {
     match outcome {
         A11yOutcome::Frame(frame) => {
-            send_frame(tx, *frame);
+            send_frame(tx, *frame, pause_on_streaming, streaming_gate).await;
             Ok(())
         }
         A11yOutcome::Skip => Ok(()),
-        A11yOutcome::FallBackToOcr => capture_once_ocr(tx).await,
+        A11yOutcome::FallBackToOcr => {
+            if skip_ocr_for_streaming {
+                debug!(
+                    "capture: skipping OCR fallback this tick — streaming content on screen (avoiding DRM blank/flicker)"
+                );
+                return Ok(());
+            }
+            capture_once_ocr(tx, pause_on_streaming, streaming_gate).await
+        }
     }
 }
 
@@ -280,7 +335,11 @@ async fn dispatch(tx: &FrameTx, outcome: A11yOutcome) -> anyhow::Result<()> {
 /// window(s)** of the primary monitor. Per-window (not monitor-level) so each
 /// frame carries the app/window/url the classifier keys on — matching
 /// meridian's per-app ETL model.
-async fn capture_once_ocr(tx: &FrameTx) -> anyhow::Result<()> {
+async fn capture_once_ocr(
+    tx: &FrameTx,
+    pause_on_streaming: bool,
+    streaming_gate: &mut StreamingGate,
+) -> anyhow::Result<()> {
     let monitors = screenpipe_screen::monitor::list_monitors().await;
     let Some(monitor) = monitors.into_iter().next() else {
         anyhow::bail!("no monitors enumerated (Screen Recording not granted yet?)");
@@ -298,7 +357,14 @@ async fn capture_once_ocr(tx: &FrameTx) -> anyhow::Result<()> {
         if is_self_app(&win.app_name.to_lowercase()) {
             continue;
         }
-        let (text, _json, _confidence) = screenpipe_screen::perform_ocr_apple(&win.image, &[]);
+        // Pooled: Apple Vision autoreleases its request/observation objects and
+        // intermediate CGImages into the current thread's pool on every call.
+        // This is the hottest allocation site in the engine (a full retina
+        // window bitmap per tick for canvas apps like Figma that always take
+        // the OCR path), so without a per-call drain the process grows without
+        // bound — see `with_autorelease_pool`.
+        let (text, _json, _confidence) =
+            with_autorelease_pool(|| screenpipe_screen::perform_ocr_apple(&win.image, &[]));
         if text.trim().is_empty() {
             continue; // nothing legible in this window — skip it
         }
@@ -311,7 +377,7 @@ async fn capture_once_ocr(tx: &FrameTx) -> anyhow::Result<()> {
             text,
             text_source: TextSource::Ocr,
         };
-        if !send_frame(tx, frame) {
+        if !send_frame(tx, frame, pause_on_streaming, streaming_gate).await {
             break; // consumer backpressure / gone — end this tick
         }
     }
@@ -321,7 +387,47 @@ async fn capture_once_ocr(tx: &FrameTx) -> anyhow::Result<()> {
 /// Non-blocking send: under backpressure drop the frame rather than stall the
 /// capture loop (frames are sampled, not transactional). Returns `false` when
 /// the frame was dropped (channel full or consumer gone).
-fn send_frame(tx: &FrameTx, frame: CapturedFrame) -> bool {
+///
+/// When `pause_on_streaming_video` is enabled, skips frames from known streaming
+/// services (Netflix, Disney+, etc.) to avoid capturing black/protected screens
+/// or their caption/subtitle text. If the AX-derived `browser_url` is missing,
+/// falls back to a direct AppleScript query for scriptable browsers (Safari,
+/// Arc) — Safari stops re-exposing `AXDocument` for the rest of the session
+/// once playback focus moves into the video subtree, so this is the only
+/// reliable signal after the first few seconds of a stream. Also uses
+/// `streaming_gate` to stay sticky for browsers/cases the AppleScript fallback
+/// doesn't cover (see [`drm_detector::StreamingGate`]).
+async fn send_frame(
+    tx: &FrameTx,
+    frame: CapturedFrame,
+    pause_on_streaming_video: bool,
+    streaming_gate: &mut StreamingGate,
+) -> bool {
+    if pause_on_streaming_video {
+        let app_name = frame.app_name.as_deref().unwrap_or("").to_string();
+        let resolved_url = match frame.browser_url.clone() {
+            Some(u) => Some(u),
+            // `resolve_url_via_applescript` shells out to `osascript` — a
+            // blocking process spawn that can take real wall-clock time. Run
+            // it on the blocking pool rather than stalling this tokio worker
+            // thread (and every other task scheduled on it) for the duration.
+            None => tokio::task::spawn_blocking(move || {
+                drm_detector::resolve_url_via_applescript(&app_name)
+            })
+            .await
+            .unwrap_or(None),
+        };
+
+        if streaming_gate.should_skip(frame.app_name.as_deref(), resolved_url.as_deref()) {
+            debug!(
+                app = ?frame.app_name,
+                url = ?resolved_url,
+                "capture: streaming video detected — skipping frame"
+            );
+            return true; // Treat as successful send (frame intentionally dropped)
+        }
+    }
+
     match tx.try_send(frame) {
         Ok(()) => true,
         Err(e) => {
@@ -329,6 +435,44 @@ fn send_frame(tx: &FrameTx, frame: CapturedFrame) -> bool {
             false
         }
     }
+}
+
+/// Run `f` inside a fresh Objective-C autorelease pool, draining it on return.
+///
+/// The capture loop runs on tokio worker threads. Unlike the main thread —
+/// whose run loop drains an autorelease pool every cycle — a tokio worker
+/// lives for the whole process and never drains one, so every object the
+/// Apple frameworks autorelease during a tick (Vision text observations and
+/// their backing CGImages, AX attribute values, bridged NSStrings) stays
+/// referenced by the thread's pool forever. At one tick every 2 s that is
+/// unbounded multi-GB growth over a workday — worst for canvas apps (Figma),
+/// which take the image-grab + Vision-OCR path on every tick.
+///
+/// `objc_autoreleasePoolPush`/`Pop` is the stable libobjc pair that an
+/// `@autoreleasepool` block compiles down to.
+///
+/// `f` must be synchronous — never hold a pool across an `.await` (the task
+/// can resume on a different worker thread, unbalancing push/pop). Taking a
+/// non-async closure enforces that at the call site.
+fn with_autorelease_pool<R>(f: impl FnOnce() -> R) -> R {
+    #[link(name = "objc")]
+    extern "C" {
+        fn objc_autoreleasePoolPush() -> *mut std::ffi::c_void;
+        fn objc_autoreleasePoolPop(pool: *mut std::ffi::c_void);
+    }
+    // Drop guard so the pool is popped even if `f` panics (unwinding past a
+    // pushed pool would otherwise leak it and everything in it).
+    struct PoolGuard(*mut std::ffi::c_void);
+    impl Drop for PoolGuard {
+        fn drop(&mut self) {
+            // Safety: pops the pool pushed below, on the same thread, exactly once.
+            unsafe { objc_autoreleasePoolPop(self.0) }
+        }
+    }
+    // Safety: push/pop are balanced by the guard; no other pool operations
+    // interleave from this scope.
+    let _pool = PoolGuard(unsafe { objc_autoreleasePoolPush() });
+    f()
 }
 
 /// Register for Screen Recording, but **only prompt when it isn't already

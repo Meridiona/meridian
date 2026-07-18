@@ -193,16 +193,17 @@ fn dev_start_no_separate_nextjs_window() {
     );
 }
 
-/// GUARD: `dev-start.sh` must open exactly 3 Terminal windows (daemon, MLX,
-/// tray). The old 4-window setup had a redundant Next.js window; the new fold
-/// topology has 3. Counts `do script` calls in the embedded AppleScript block.
+/// GUARD: `dev-start.sh` must open exactly 2 Terminal windows (daemon, tray).
+/// The MLX-server window was removed with the on-device model; capture is
+/// in-process and generation runs through the user's chosen CLI. Counts
+/// `do script` calls in the embedded AppleScript block.
 #[test]
-fn dev_start_opens_three_terminal_windows() {
+fn dev_start_opens_two_terminal_windows() {
     let src = read_text("dev-start.sh");
     let count = src.matches("do script \"").count();
     assert_eq!(
-        count, 3,
-        "dev-start.sh must open exactly 3 Terminal windows (daemon, MLX, tray). \
+        count, 2,
+        "dev-start.sh must open exactly 2 Terminal windows (daemon, tray). \
          Found {count} `do script` calls. If you added a new service window, \
          update this test to reflect the new expected count."
     );

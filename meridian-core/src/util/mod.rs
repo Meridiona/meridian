@@ -3,8 +3,8 @@
 //! local-day boundaries, and board-hygiene reason mapping.
 //!
 //! These modules are re-exported at the crate root (`meridian_core::intervals`,
-//! `::date`, `::hygiene`) so the public API is unchanged; `util` is internal
-//! organization only.
+//! `::date`, `::hygiene`, `::llm_capacity`) so the public API is unchanged; `util`
+//! is internal organization only.
 
 /// Wall-clock interval math shared by the dashboard routes (ported from intervals.ts).
 pub mod intervals;
@@ -14,3 +14,6 @@ pub mod date;
 
 /// Board-hygiene reason → hint/fix mapping (ported from lib/hygiene.ts).
 pub mod hygiene;
+
+/// Is a custom endpoint's configured quota big enough to run the app for a day?
+pub mod llm_capacity;

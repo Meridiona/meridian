@@ -30,7 +30,8 @@ import { ProviderIcon } from '@/components/ProviderIcon'
 import type { SettingsSection } from './settings/types'
 
 export function Toolbar({
-  day, isToday, onShiftDay, isSolo, connectedProviderName, connectedProviderId, onOpenSettings, onOpenReport,
+  day, isToday, onShiftDay, isSolo, connectedProviderName, connectedProviderId, onOpenSettings, onOpenReport, onOpenWhatsNew, onOpenSummary,
+  showLlmLab = false, onOpenLlmLab,
 }: {
   day: string
   isToday: boolean
@@ -40,6 +41,11 @@ export function Toolbar({
   connectedProviderId: string | null
   onOpenSettings: (section?: SettingsSection) => void
   onOpenReport: () => void
+  onOpenWhatsNew: () => void
+  onOpenSummary: () => void
+  /** Dev builds only ('dev' channel) - shows the LLM Lab flask button. */
+  showLlmLab?: boolean
+  onOpenLlmLab?: () => void
 }) {
   const [running, setRunning] = useState<boolean | null>(null)
 
@@ -69,14 +75,34 @@ export function Toolbar({
           </span>
           <NavBtn glyph="›" label="Next day" onClick={() => onShiftDay(1)} disabled={isToday} />
         </div>
+
+        {/* Daily summary — sits with the date nav because it is about the day
+            being viewed, not about the app. */}
+        <button onClick={onOpenSummary}
+          className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 bg-ctrl shrink-0 transition-transform hover:-translate-y-px"
+          style={{ border: '1px solid var(--t-ctrl-border)' }}
+          title="How this day went">
+          <span aria-hidden="true" className="inline-block rounded-full"
+            style={{ width: 6, height: 6, background: 'var(--accent)' }} />
+          <span className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>Daily summary</span>
+        </button>
       </div>
 
       {/* nav pill — centered regardless of left/right content width. */}
       <div className="justify-self-center">
-        <MeridianNavPill onOpenSettings={onOpenSettings} onOpenReport={onOpenReport} />
+        <MeridianNavPill onOpenSettings={onOpenSettings} onOpenReport={onOpenReport} onOpenWhatsNew={onOpenWhatsNew} />
       </div>
 
       <div className="ml-auto flex items-center gap-4">
+        {/* dev-only LLM Lab opener - never rendered on staging/prod channels */}
+        {showLlmLab && onOpenLlmLab && (
+          <button onClick={onOpenLlmLab} aria-label="LLM Lab (dev only)" title="LLM Lab (dev only)"
+            className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 bg-ctrl"
+            style={{ border: '1px dashed var(--t-ctrl-border)', cursor: 'pointer' }}>
+            <span aria-hidden="true" style={{ fontSize: 12, lineHeight: 1 }}>⚗</span>
+            <span className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>Lab</span>
+          </button>
+        )}
         <ThemeSwatches />
         <span className="w-px h-5" style={{ background: 'var(--t-hair)' }} />
         <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 bg-ctrl"
@@ -167,9 +193,10 @@ function SettingsGlyph() {
  *  ReportModal get-in-touch card (see MeridianTimelineShell). Solid dark
  *  lockup, unaffected by the light/blush/ink surface theme — ported from the
  *  design mock's pill navbar (`pillBarStyle`/`pillBrandStyle`/`pillSettingsStyle`). */
-function MeridianNavPill({ onOpenSettings, onOpenReport }: {
+function MeridianNavPill({ onOpenSettings, onOpenReport, onOpenWhatsNew }: {
   onOpenSettings: (section?: SettingsSection) => void
   onOpenReport: () => void
+  onOpenWhatsNew: () => void
 }) {
   return (
     <div className="flex items-center" style={{
@@ -185,6 +212,7 @@ function MeridianNavPill({ onOpenSettings, onOpenReport }: {
       <NavPillItem active>Timeline</NavPillItem>
       <NavPillItem active={false} onClick={() => onOpenSettings('integrations')}>Integrations</NavPillItem>
       <NavPillItem active={false} onClick={onOpenReport}>Report</NavPillItem>
+      <NavPillItem active={false} onClick={onOpenWhatsNew}>What's New</NavPillItem>
       <button onClick={() => onOpenSettings()} aria-label="Settings" className="mt-navpill-item"
         style={{
           display: 'flex', alignItems: 'center', gap: 6, borderRadius: 999,

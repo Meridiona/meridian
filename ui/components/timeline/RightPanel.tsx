@@ -7,14 +7,19 @@
 
 import { OverviewPanel } from './OverviewPanel'
 import { HourDetailPanel } from './HourDetailPanel'
+import { DayTaskDetailPanel, type DayTaskDetail } from './DayTaskDetailPanel'
 import type { TimelineData } from './useTimelineData'
 import type { ActiveModal } from './MeridianTimelineShell'
 import type { SettingsSection } from './settings/types'
 
-export function RightPanel({ data, selectedHour, selectedCardKey, onSelectHour, onOpen, onOpenTask, onEditWorklog, onOpenSettings }: {
+export function RightPanel({ data, selectedHour, selectedCardKey, dayTaskDetail, onCloseDayTask, onSelectHour, onOpen, onOpenTask, onEditWorklog, onOpenSettings }: {
   data: TimelineData
   selectedHour: number | null
   selectedCardKey: string | null
+  // A day-task selected in the timeline column — when set, its detail replaces
+  // the overview here (same swap the hour detail uses).
+  dayTaskDetail: DayTaskDetail | null
+  onCloseDayTask: () => void
   onSelectHour: (hour: number | null) => void
   onOpen: (modal: ActiveModal) => void
   onOpenTask: (key: string, title?: string) => void
@@ -25,6 +30,9 @@ export function RightPanel({ data, selectedHour, selectedCardKey, onSelectHour, 
   // tracker" CTAs in OverviewPanel/HourDetailPanel use this.
   onOpenSettings: (section?: SettingsSection) => void
 }) {
+  if (dayTaskDetail) {
+    return <DayTaskDetailPanel detail={dayTaskDetail} onClose={onCloseDayTask} onOpenSettings={onOpenSettings} onOpenTask={onOpenTask} />
+  }
   if (selectedHour === null) {
     return <OverviewPanel data={data} onOpen={onOpen} onOpenTask={onOpenTask} onOpenSettings={onOpenSettings} />
   }

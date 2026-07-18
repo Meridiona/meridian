@@ -18,6 +18,7 @@ import type { SettingsSection } from './types'
 
 const NAV: { id: SettingsSection; label: string; glyph: string }[] = [
   { id: 'integrations', label: 'Integrations', glyph: '⚡' },
+  { id: 'intelligence', label: 'Intelligence', glyph: '◈' },
   { id: 'capture', label: 'Capture & Privacy', glyph: '◉' },
   { id: 'notifications', label: 'Notifications', glyph: '◔' },
   { id: 'appearance', label: 'Appearance', glyph: '◑' },

@@ -11,6 +11,7 @@
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
+use super::statuses::{resolve_choice, SetStatusResult, StatusList, StatusOption};
 use super::{ApplyResult, WriteField};
 use crate::config::GitHubConfig;
 use crate::pm_worklog::github::{parse_task_key, IssueRef};
@@ -83,6 +84,95 @@ pub async fn apply(cfg: &GitHubConfig, key: &str, write: &WriteField) -> Result<
     }
 
     Ok(ApplyResult::applied("github", key, field_name(write)))
+}
+
+/// GitHub Issues have no board workflow — the only states are open / closed
+/// (completed) / closed-as-not-planned. Return that FIXED set + the issue's
+/// current state, derived from `state` + `state_reason`.
+#[tracing::instrument(skip(cfg))]
+pub(super) async fn list_statuses(cfg: &GitHubConfig, key: &str) -> Result<StatusList> {
+    let issue = parse_task_key(key)?;
+    let client = reqwest::Client::new();
+    let statuses = fixed_statuses();
+
+    let resp = gh(cfg, client.get(issue_url(&issue)))
+        .send()
+        .await
+        .context("GET issue for status")?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("GitHub GET issue returned {status}: {text}");
+    }
+    let v: Value = serde_json::from_str(&text).context("parsing issue")?;
+    let state = v.get("state").and_then(|s| s.as_str()).unwrap_or("");
+    let reason = v.get("state_reason").and_then(|s| s.as_str()).unwrap_or("");
+    let current_id = current_status_id(state, reason);
+    let current_name = current_id
+        .as_deref()
+        .and_then(|id| statuses.iter().find(|o| o.id == id).map(|o| o.name.clone()));
+    tracing::debug!(
+        key,
+        current = current_id.as_deref().unwrap_or(""),
+        "github status list"
+    );
+
+    Ok(StatusList {
+        statuses,
+        current_id,
+        current_name,
+    })
+}
+
+/// Move the issue open/closed via `PATCH /issues/{n}` with the state + reason for
+/// the chosen pseudo-status (id or name, case-insensitive).
+#[tracing::instrument(skip(cfg))]
+pub(super) async fn set_status(
+    cfg: &GitHubConfig,
+    key: &str,
+    choice: &str,
+) -> Result<SetStatusResult> {
+    let issue = parse_task_key(key)?;
+    let client = reqwest::Client::new();
+    let statuses = fixed_statuses();
+    let target = resolve_choice(&statuses, choice)
+        .with_context(|| format!("no GitHub status matches {choice:?} (open|closed|not_planned)"))?
+        .clone();
+
+    let body = match target.id.as_str() {
+        "open" => json!({ "state": "open", "state_reason": "reopened" }),
+        "closed" => json!({ "state": "closed", "state_reason": "completed" }),
+        "not_planned" => json!({ "state": "closed", "state_reason": "not_planned" }),
+        other => bail!("unexpected GitHub status id {other:?}"),
+    };
+    patch(cfg, &client, &issue_url(&issue), body).await?;
+    Ok(SetStatusResult::applied(target))
+}
+
+/// GitHub's three fixed pseudo-statuses (no board workflow).
+fn fixed_statuses() -> Vec<StatusOption> {
+    [
+        ("open", "Open", "in_progress"),
+        ("closed", "Done", "done"),
+        ("not_planned", "Won't do", "cancelled"),
+    ]
+    .into_iter()
+    .map(|(id, name, category)| StatusOption {
+        id: id.to_string(),
+        name: name.to_string(),
+        category: category.to_string(),
+    })
+    .collect()
+}
+
+/// Derive the current pseudo-status id from the issue's `state` + `state_reason`.
+fn current_status_id(state: &str, reason: &str) -> Option<String> {
+    match state {
+        "open" => Some("open".to_string()),
+        "closed" if reason == "not_planned" => Some("not_planned".to_string()),
+        "closed" => Some("closed".to_string()),
+        _ => None,
+    }
 }
 
 fn issue_url(i: &IssueRef) -> String {
@@ -238,6 +328,33 @@ mod tests {
                 "field_name mismatch for {expected}"
             );
         }
+    }
+
+    #[test]
+    fn fixed_statuses_shape() {
+        let s = fixed_statuses();
+        assert_eq!(s.len(), 3);
+        assert_eq!(s[0].id, "open");
+        assert_eq!(s[0].category, "in_progress");
+        assert_eq!(s[1].id, "closed");
+        assert_eq!(s[1].category, "done");
+        assert_eq!(s[2].id, "not_planned");
+        assert_eq!(s[2].category, "cancelled");
+    }
+
+    #[test]
+    fn derives_current_status_id() {
+        assert_eq!(current_status_id("open", ""), Some("open".into()));
+        assert_eq!(current_status_id("open", "reopened"), Some("open".into()));
+        assert_eq!(
+            current_status_id("closed", "completed"),
+            Some("closed".into())
+        );
+        assert_eq!(
+            current_status_id("closed", "not_planned"),
+            Some("not_planned".into())
+        );
+        assert_eq!(current_status_id("", ""), None);
     }
 
     // DueDate / Priority / StoryPoints are redirected for GitHub (Projects v2 only).

@@ -132,7 +132,7 @@ meridian/
 > `tray/src-tauri/src/commands/parents.rs`. The dashboard ships **embedded in the tray binary** (`tauri
 > build` → `generate_context!` bundles `ui/out`); the standalone-Node-server release machinery (the
 > `com.meridiona.ui` plist, `ui-start.sh`, the `ui.tar.gz` packing, the pinned Node runtime + better-sqlite3
-> ABI dance) was retired, and `install-from-bundle.sh` boots out any leftover `com.meridiona.ui` agent on
+> ABI dance) was retired, and `backend_install.rs` boots out any leftover `com.meridiona.ui` agent on
 > update. Dev-only `--features otel` on the tray exports spans to OpenObserve
 > (`service.name = meridian-tray`) — release builds omit it. Rationale + full scope: Obsidian
 > `Decisions/Dashboard frontend - keep Next in Tauri.md`, `~/.claude/plans/meridian-next-fold.md`.
@@ -210,13 +210,12 @@ There are no JS/TS test suites yet. When adding them, place them under `ui/__tes
 | `RUST_LOG` | `meridian=info` | Tracing filter |
 | `SQLX_OFFLINE` | `true` (via `.cargo/config.toml`) | Prevents sqlx from hitting the DB at compile time |
 | `MERIDIAN_OTLP_ENDPOINT` | (unset → default `http://localhost:5080/api/default/v1/traces`) | OpenObserve OTLP/HTTP traces endpoint override — only consulted for shipping (dev/bare installs; a Canonical/packaged install never ships, see "Telemetry: local-only capture, dev-only shipping" below) |
-| `MERIDIAN_OO_AUTH` | DEPRECATED — ignored everywhere | OO credentials live in `settings.json` (`oo_email`/`oo_password`); Python no longer reads this either |
-| `MERIDIAN_TELEMETRY_DISABLED` | (unset → capture always on) | Hard kill switch for OTel span/log capture to the local spool (Rust + Python) — the sole log/trace sink; disabling it leaves only launchd's raw stdout/stderr crash-safety-net files. |
-| `MERIDIAN_LAUNCHD_LOG_MAX_MB` | `10` | Size cap for each launchd-redirected raw log file (`daemon.log`, `mlx-server.log`, etc.); capped via copytruncate on the telemetry shipper's tick (`src/telemetry_spool/shipper.rs`). |
-| `MLX_SERVER_URL` | (unset → in-process load) | URL of a running MLX classifier server (eval pipeline) |
-| `MLX_IDLE_EVICT_S` | `120` (secs) | Idle-eviction window for the MLX model. The current generative model (`Qwen3.5-2B-OptiQ-4bit`, ~1.4 GB on disk) holds ~1.5 GB of Metal unified memory while resident (measured live via `mx.get_active_memory()` / the `/info` endpoint — it's invisible to `ps`/Activity Monitor), so the server lazy-loads it on first request and unloads it after this many seconds idle (~3s cold reload). (The ~7 GB figure quoted previously was the older `Qwen3.5-9B-OptiQ-4bit`, no longer the default.) `0` disables eviction (pins the model). Avoid values below ~30s — a TTL shorter than the gap between sessions in a classification burst causes repeated mid-burst evict+reload thrash. See `services/agents/server.py` `_idle_evictor` + `run_task_linker_mlx.py` `maybe_evict_idle`. |
-| `EVAL_DATASET_PATH` | `services/tests/evals/data/generated/goldens_real.json` | Override Goldens file for the eval pipeline |
-| `SESSION_TEXT_CAP` | `2500` (chars) | Per-session OCR/a11y excerpt cap in the classifier prompt. Set to `0` to disable truncation for eval experiments (caller is then responsible for not blowing the model's context window — phi-4 = 16k tokens). |
+| `MERIDIAN_OO_AUTH` | DEPRECATED — ignored everywhere | OO credentials live in `settings.json` (`oo_email`/`oo_password`) |
+| `MERIDIAN_TELEMETRY_DISABLED` | (unset → capture always on) | Hard kill switch for OTel span/log capture to the local spool — the sole log/trace sink; disabling it leaves only launchd's raw stdout/stderr crash-safety-net files. |
+| `MERIDIAN_LAUNCHD_LOG_MAX_MB` | `10` | Size cap for each launchd-redirected raw log file (`daemon.log`, etc.); capped via copytruncate on the telemetry shipper's tick (`src/telemetry_spool/shipper.rs`). |
+| `MERIDIAN_EMBEDDER_DIR` | `~/.meridian/models/<repo-basename>/` | Override the on-disk directory the session-distiller embedding weights live in (`src/embedder/provision.rs`). |
+| `MERIDIAN_EMBEDDER_REPO` | `BAAI/bge-small-en-v1.5` | Override the HuggingFace repo the embedder weights are fetched from. |
+| `DISTILLER_SEM_DEDUP_THR` | `0.86` | Cosine threshold for the distiller's semantic dedup (`src/worklog_pipeline/distiller/`). |
 
 Tilde expansion is handled by `Config::from_env()`. Never hardcode paths.
 
@@ -329,13 +328,13 @@ The fold replaces every `ui/app/api/*` route with a Rust command the frontend ca
 
 ### Observability (logs & traces — local-only capture, dev-only shipping to OpenObserve)
 
-Any new or changed code path that does real work (daemon stages, the MLX server, the classifier, agents, ingest) **must emit structured logs and traces** — not just `println!`/`print()` to a terminal. Add proper logs and traces as you write the code, not as an afterthought.
+Any new or changed code path that does real work (daemon stages, the distiller/embedder, the worklog pipeline, coding-agent ingest) **must emit structured logs and traces** — not just `println!` to a terminal. Add proper logs and traces as you write the code, not as an afterthought.
 
 **One pipeline, no duplicates.** The local OTel telemetry spool
 (`~/.meridian/telemetry/{pending,sent,quarantine}/`, raw OTLP protobuf) is the
 **sole** log/trace sink — there is no separate JSONL file and no
-`tracing`/`logging`-driven stdout/stderr mirror. Every `tracing::*!` call
-(Rust) / `logging.*` call (Python) goes through this one pipeline, unconditionally
+`tracing`-driven stdout/stderr mirror. Every `tracing::*!` call goes through this
+one pipeline, unconditionally
 (a local disk write, not a network call, so it never depends on `otlp_enabled`
 or OpenObserve being reachable — the only escape hatch is
 `MERIDIAN_TELEMETRY_DISABLED`, a dev/test kill switch). `meridian logs
@@ -369,14 +368,8 @@ hand with `meridian telemetry import <bundle> --endpoint <url> --auth
 <base64>`. Retention (default 7 days, `MERIDIAN_TELEMETRY_RETENTION_DAYS`)
 applies to both `pending/` and `sent/`, regardless of shipping status.
 
-Agno's Workflow/Agent spans ride this SAME global pipeline
-(`observability.setup_agno_tracing()` calls `AgnoInstrumentor().instrument()`
-with no explicit provider) — there is no separate agno SQLite trace store or
-standalone viewer script; that was removed as a second, redundant pipeline.
-
-- **Python (`services/`)**: use the module logger created via `observability.setup("<service>")` (`log = logging.getLogger(...)`). `log.info/warning/error` are always captured to the spool, correlated to the active span by `trace_id`/`span_id` — never `print()`. Pass structured fields with `extra={...}` so they're queryable attributes, not interpolated into the message string.
 - **Rust**: `tracing::info!/warn!/error!/debug!` with **structured fields** — never format data values into the message string (already enforced).
-- **Wrap discrete operations in spans** (`tracer.start_as_current_span(...)`) and put the meaningful inputs, outputs, and metrics as **span attributes**, not buried in log lines. For an LLM/model call, capture the EXACT input as sent and output as received (post-cap/post-template — reflect any truncation that actually happened), plus real token counts/latency from the model's own metadata (e.g. MLX `GenerationResponse`) rather than re-deriving them. See `services/agents/routes/classify.py`'s `classify_tasks` span tree for the reference shape.
+- **Wrap discrete operations in spans** (`tracing::info_span!` / `debug_span!`) and put the meaningful inputs, outputs, and metrics as **span attributes**, not buried in log lines. For an LLM/model call, capture the EXACT input as sent and output as received (post-cap/post-template — reflect any truncation that actually happened), plus real token counts/latency. See `src/llm/resolver.rs`'s `llm.call` span tree (request → infer → response) and `src/worklog_pipeline/distiller`'s `distil.run` span for the reference shape.
 - **No duplication, no truncation of debug data**: emit each fact once, on the span that owns it; don't truncate the values you'd actually need to debug a misclassification. Keep static/identical-every-call blobs (e.g. the full system prompt) out of every trace where a size + a single archived copy suffices.
 - **Set span status `ERROR`** (with a message) on failures, and log a `warning`/`error` with `.context`/`extra` at the failure boundary.
 - **Shipping degrades silently**: code must never crash because OpenObserve is unreachable or export is disabled — capture (the only thing every install can rely on) is unaffected either way.
@@ -431,48 +424,15 @@ the packaged-build test recipe). In short:
 2. Edit the TypeScript source in `packages/meridian-mcp/src/`
 3. Run `npm run build` in `packages/meridian-mcp/` and verify `dist/index.js` is updated
 
-### Add a Golden to the classifier eval dataset
+### Add a What's New entry per release
 
-Goldens are hand-authored seed sessions that target specific failure modes of the MLX classifier. The eval pipeline scores the classifier against them on every model swap, prompt edit, or temperature change.
+The dashboard's "What's New" modal (`ui/components/timeline/WhatsNewModal.tsx`, opened via the toolbar nav pill or auto-opened once per app version by the tray's `poll::whats_new_auto_open`) is **hand-curated**, deliberately separate from the auto-generated `CHANGELOG.md` — that file is commit-level and too internal to show end users (e.g. `hf-proxy: bake MERIDIAN_HF_ENDPOINT into the staging channel`).
 
-1. Open `services/tests/evals/data/seeds/sessions_<persona>.json` — `sessions_a_meridian.json` for the Meridian dev persona, `sessions_b_generic.json` for the generic SaaS dev persona.
-2. Append a new session object inside the `sessions` array. Required fields: `id` (next int), `app_name`, `started_at`, `ended_at`, `duration_s`, `category`, `confidence`, `session_text_source`, `window_titles`, `session_text` (the realistic OCR/a11y capture the classifier will see), `audio_snippets`, and a `ground_truth` block with `task_key`, `session_type`, `reasoning`, `difficulty` (`easy`/`medium`/`hard`/`hard-decoy`/`overhead`/`untracked`/`context-only`), `scoreable` (bool — `false` = timeline density only, excluded from Goldens and the recent-context block).
-3. Add a `design_notes` field explaining the specific failure mode this case targets — required for future maintainers debugging regression diffs.
-4. Re-render the Goldens: `services/.venv/bin/python services/tests/evals/render_seeds.py <persona>`
-5. Re-run the eval (see `TESTING.md` §9): the new Golden appears in the OpenObserve trace tree as one more `eval.classify` child span.
-
-The dataset's value lives in **what it discriminates**, not how many cases it has. Each Golden should target a documented failure mode (keyword-mention false positive, same-app context switch, decoy resistance, untracked-with-tempting-candidate, etc.). 95% on easy cases hides the failures that matter.
-
-### Ship a `services/` Python change to users (rebuild + publish the MLX runtime)
-
-**A change under `services/` reaches NO existing user until you publish a new MLX runtime — an app release does not rebuild it.** The MLX server runs from `~/.meridian/runtime/` (a CPython + venv + the `agents` package), which is downloaded and **versioned independently of the app**. So `server.py`, anything in `agents/` (classifier, prompts, model registry, `routes/prefetch.py`, summariser), and the model set only update when the runtime tarball is republished. This is exactly how prod once ran app `1.66.2` against a stale runtime `1.60.0`.
-
-The runtime version is `services/pyproject.toml`'s `version`, bumped in lockstep with the app by `scripts/set-version.sh` on each release. Two channels, two audiences:
-
-| Audience | Branch (auto) | Manual tag (escape hatch) | Rolling release the app pins |
-|---|---|---|---|
-| Test machines (staging builds) | `pre-main` | `runtime-staging-v*` | `runtime-staging` |
-| Production DMG users | `main` | `runtime-v*` | `runtime-latest` |
-
-**Primary path — auto-publish on merge (`.github/workflows/build-mlx-runtime.yml`).** A merge to `pre-main` publishes `runtime-staging`; a merge to `main` publishes `runtime-latest`. The **`gate`** job (`scripts/runtime-publish-gate.sh`) is the single source of truth: it compares `services/pyproject.toml` against the channel's live `runtime-manifest.json` and builds/publishes only when the local version is **strictly greater** than the channel's live version. So a merge that lands a *stale* version simply doesn't ship — it never downgrades and never republishes an equal version. A manifest-fetch error is fail-closed.
-
-1. Land your `services/` change on the target branch **with a `pyproject.toml` version greater than the channel's live runtime**. The `services-version-bump.yml` PR check (`scripts/check-runtime-version-bump.sh`) enforces this before merge — a PR to `main` must beat `runtime-latest`, a PR to `pre-main` must beat `runtime-staging`. Check live with `gh release download <channel> -p runtime-manifest.json -O -`.
-2. On merge the workflow runs gate → build (macos-14) → smoke (macos 14/15/26) → publish. **Production (`main` → `runtime-latest`) runs in the `production-runtime` GitHub Environment, so a required reviewer must approve the publish job** before customers get it. Staging is unattended.
-3. Each machine's tray (`auto_upgrade_runtime` in `tray/src-tauri/src/mlx_server.rs`) sees `manifest.version != installed` on next launch, re-downloads, and swaps the runtime in.
-
-**Manual escape hatch (rollback / re-pin).** Tag a commit to publish out-of-band — tags publish on *any* version difference (trusting the human), so this is how you ship an older runtime to undo a bad one:
-```bash
-VER=$(grep -m1 '^version' services/pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
-git tag "runtime-staging-v${VER}" <commit> && git push origin "runtime-staging-v${VER}"   # → runtime-staging
-git tag "runtime-v${VER}"         <commit> && git push origin "runtime-v${VER}"           # → runtime-latest
-```
-`workflow_dispatch` builds + smoke-tests without publishing.
-
-**Gotchas:**
-- **Version-skip is an equality check** (`installed_version() == manifest.version` → skip). The gate's strict-greater rule enforces this for branch publishes; for manual tags it's on you — always ship a **new** version, never reuse one.
-- **Branch versions must stay ahead of their channel.** `pre-main` legitimately trails `main`'s release version under `set-version` lockstep, so a `pre-main → main` promotion must reconcile `services/pyproject.toml` to a version **above `runtime-latest`** (the version-bump PR check fails the promotion otherwise, and the gate would skip the publish).
-- **Two channels, two audiences.** A fix that must reach everyone has to land on **both** `pre-main` and `main` (or both tags) — one channel never feeds the other.
-- **It is not the app binary.** Updating the `.app` alone ships nothing under `services/`; only a runtime republish does.
+1. Edit `tray/src-tauri/resources/whats-new.json` (compiled into the tray binary via `include_str!`, not Tauri resource-bundling — a rebuild always picks up the change).
+2. Add a new object to the front of `releases` (newest-first): `version`, `date`, `highlights` (features, user-facing language), `fixes`. Rewrite each bullet in plain user terms — never paste a commit message verbatim.
+3. Update `roadmap` if upcoming plans changed — `status` is `in-progress` | `planned` | `considering`.
+4. Every string in this file is user-facing app text — plain hyphen `-` only, no em-dash, per the Hard Rules at the top of this file.
+5. `cargo test -p meridian-tray` (from `tray/src-tauri/`) covers `whats_new_json_parses`, which fails the build if the JSON doesn't match the expected shape.
 
 ### Make a DMG release mandatory (force-install on old versions)
 
@@ -483,13 +443,13 @@ DMG auto-updates are consent-based (in-app banner + click) with one exception: w
 3. Installed apps below the floor force-update via `update::enforce_minimum_version` (`tray/src-tauri/src/update.rs`) — checked 30 s after launch and every 6 h thereafter, so long-running trays catch it without a relaunch. A failed forced install falls back to the consent banner and retries next cycle.
 4. Empty or remove `tray/minimum-version` afterwards if later releases should go back to consent-based — the floor ships with **every** release while the file has content.
 
-Only affects the DMG channel; npm/CLI installs still update via `meridian update`, and the MLX runtime has its own always-automatic upgrade (see the runtime task above).
+Only affects the DMG channel; npm/CLI installs still update via `meridian update`.
 
 ---
 
 ## Coding-agent pipeline (`src/coding_agent_session_ingest/`)
 
-The coding-agent indexer + summariser run **inside the Rust daemon** (`src/coding_agent_session_ingest/`), spawned as gated tokio tasks from `main.rs`. They turn coding-agent conversations into segmented `app_sessions` rows, summarise sealed segments **with each agent's own CLI** (MLX as the shared fallback), and write the summary for the agno worklog pipeline to pick up. Lifecycle is the `task_method` column: `coding_agent_live → pending_summariser → summarised`.
+The coding-agent indexer + summariser run **inside the Rust daemon** (`src/coding_agent_session_ingest/`), spawned as gated tokio tasks from `main.rs`. They turn coding-agent conversations into segmented `app_sessions` rows, summarise sealed segments **with each agent's own CLI** (no cross-engine fallback), and write the summary for the worklog pipeline to pick up. Lifecycle is the `task_method` column: `coding_agent_live → pending_summariser → summarised`.
 
 ### Ingested agents
 
@@ -507,32 +467,31 @@ New sources plug into the `AgentSource` enum in `sources/mod.rs` and are swept b
 
 - **Indexer** (`indexer.rs`): per tick (`INDEXER_POLL_INTERVAL_S`, 600 s) seals settled rows, re-parses changed stores, sweeps the source adapters. Backfill is today-only. `meridian coding-agent-hook` is the Claude SessionEnd entry (seals one session immediately).
 - **Session completion**: Claude seals via hook; CLI agents (codex / copilot / cursor-agent) seal promptly on **Ctrl+C / exit** (Copilot's `session.shutdown` marker force-seals at registration; otherwise a per-tick `ps -axo args=` probe seals every live row of a CLI whose process is gone) and on **/clear · /new** (a newer session of the same source supersedes older live rows). IDE chats and crashes fall back to the idle seal (`INDEXER_SEAL_IDLE_S`, 1 h). All acceleration paths only hasten what the idle backstop would do — a wrong call costs a segment split, never data.
-- **Summariser** (`summariser/`): routes each row to its own agent CLI — `claude.rs` / `codex.rs` / `copilot.rs` / `cursor_agent.rs` (2 attempts) → `mlx.rs` fallback (`/summarise`); writes `session_summary` + `summary_source`, flips `task_method` to `summarised`. cursor-agent is auth-probed lazily on first use, and auto-installed only behind the `CURSOR_AGENT_AUTO_INSTALL=1` opt-in (`cursor_agent_init.rs`). CLI: `meridian coding-agent-summarise`. See `summariser/README.md`.
+- **Summariser** (`summariser/`): routes each row to its own agent CLI — `claude.rs` / `codex.rs` / `copilot.rs` / `cursor_agent.rs` (2 attempts, no cross-engine fallback; a failed row is left pending for a later drain); writes `session_summary` + `summary_source`, flips `task_method` to `summarised`. cursor-agent is auth-probed lazily on first use, and auto-installed only behind the `CURSOR_AGENT_AUTO_INSTALL=1` opt-in (`cursor_agent_init.rs`). CLI: `meridian coding-agent-summarise`. See `summariser/README.md`.
 - **Self-ingest guard**: copilot/cursor-agent persist their own summary runs into stores we ingest; `sources::sweep()` drops any conversation whose first user prompt carries `SUMMARY_PROMPT_MARKER` (log: `skipping summariser-artifact session`). This is the loop cut — do not remove it.
-- **Worklog trigger**: `summarised` rows are picked up by the agno worklog pipeline (`worklog_pipeline/`) via `session_summary IS NOT NULL` — folded verbatim into the hour's activity summary alongside the distilled OCR sessions, then matched to tasks and drafted.
+- **Worklog trigger**: `summarised` rows are picked up by the worklog pipeline (`src/worklog_pipeline/`) via `session_summary IS NOT NULL` — folded verbatim into the hour's activity summary alongside the distilled OCR sessions, then matched to tasks and drafted.
 
 Source-adapter env overrides: `COPILOT_SESSION_STATE_DIR`, `VSCODE_USER_DIR`, `CURSOR_STATE_VSCDB`, `CURSOR_CLI_CHATS_DIR`, `ANTIGRAVITY_APP_DIR`.
 
-> **Daemon config gotcha:** the daemon loads env via `dotenvy::dotenv_override()`, which walks UP from its launchd `WorkingDirectory` and stops at the first `.env`. All install types converge on the **canonical `~/.meridian/.env`** (the same file the tray writes tracker creds to): the **npm bundle**'s `WorkingDirectory` is `~/.meridian/app` but no `~/.meridian/app/.env` is written (the installer creates `~/.meridian/.env`), so dotenvy walks up to it; the **`.app` DMG** (the tray stages the daemon via `tray/src-tauri/src/backend_install.rs`) sets `WorkingDirectory` to `~/.meridian` and reads it directly; **source/dev** reads the repo `.env`. Edit `~/.meridian/.env` (then `meridian restart`) to tune daemon env on an installed system.
+> **Daemon config gotcha:** the daemon loads env via `dotenvy::dotenv_override()`, which walks UP from its launchd `WorkingDirectory` and stops at the first `.env`. Both install types converge on the **canonical `~/.meridian/.env`** (the same file the tray writes tracker creds to): the **`.app` DMG** (the tray stages the daemon via `tray/src-tauri/src/backend_install.rs`) sets `WorkingDirectory` to `~/.meridian` and reads it directly; **source/dev** reads the repo `.env`. (The old npm bundle install was retired - the DMG is the only packaged distribution now.) Edit `~/.meridian/.env` (then `meridian restart`) to tune daemon env on an installed system.
 
-The pipeline is fully ported to Rust; the former Python `coding_agent_indexer` + `coding_agent_summariser` packages have been removed. The MLX server (`agents/server.py`) is the only remaining Python hop (it serves `/summarise`, `/distill_hour`, `/activity_report`, `/rerank`, `/worklog_hour`, and OpenAI-compatible `/v1/chat/completions`).
+The pipeline is fully in Rust. The former Python `coding_agent_indexer` +
+`coding_agent_summariser` packages **and the entire Python `services/` tree (the MLX
+server, agents, eval harness, runtime packaging) have been removed.** Generation runs
+only through the user's chosen third-party CLI provider (`src/llm/`), and the session
+distiller's embedder now runs in-process via candle (`src/embedder/`,
+`src/worklog_pipeline/distiller/`). There is no Python and no on-device generative model
+anymore; a failing/rate-limited provider leaves work pending for the next cycle.
 
-## Python agent service (`services/`)
+## DB write invariants (enforced in the Rust path)
 
-These Python services still run alongside the Rust daemon:
-
-1. **MLX server** (`agents/server.py`) — the persistent FastAPI model server (`com.meridiona.mlx-server.plist`). Exposes `/summarise`, `/activity_report`, `/distill_hour`, `/rerank`, `/worklog_hour`, and OpenAI-compatible `/v1/chat/completions`. The one Python piece the pipeline can't replace (outlines + mlx-lm are Python-only).
-2. **Jira updater** (`agents/pm_worklog_update/`) — agno-powered synthesis workflow that generates Jira comments + worklogs from classified sessions. Runs on an office-hours slot schedule.
-
-For the deep technical reference (classification logic, scoring formulas, recipes for tuning prompts / debugging misclassifications), see `services/agents/README.md`.
-
-### Hard rules
-
-- **A `services/` change ships NOTHING to users until the MLX runtime is rebuilt + published.** The runtime (`~/.meridian/runtime/`) is downloaded and versioned independently of the app; an app release does not rebuild it, and the app's runtime version-skip is an equality check — so the new runtime must carry a version different from the deployed one or every machine silently keeps the old code. After landing a `services/` change, cut a runtime release — see Common Tasks → "Ship a `services/` Python change to users (rebuild + publish the MLX runtime)".
-- **Every `.py` file in `services/agents/` must start with a `"""…"""` module docstring** describing its purpose. The Rust/TS file-header convention does not apply — Python uses docstrings. Match the prose style of existing modules (terse, opinionated).
-- **`ticket_links` and `session_dimensions` writes must be idempotent.** Both tables have UNIQUE / composite-PK constraints with explicit `ON CONFLICT … DO UPDATE` policies. New writers must use the same UPSERT pattern. Never `DELETE` then `INSERT` from the daemon path.
-- **Coding-agent segment idempotency:** the `(claude_session_uuid, segment_started_at)` unique index is the key (migration 027; `day_utc` was dropped in 028). The UPSERT refreshes a LIVE row but carries `WHERE sealed_at IS NULL`, so a SEALED row is immutable — the summariser/classifier only ever read sealed rows.
-- **Eval-only strategies live in `services/tests/evals/strategies.py`, NOT in `services/agents/`.** `services/agents/` is for production code (the running daemon, the MLX server, `run_task_linker_mlx.py`). The `EvalStrategy` abstraction + `DirectHttpStrategy` + future `ExtractThenClassifyStrategy` / retrieval-augmented / agentic variants belong with the eval harness. A strategy that proves out in eval is **promoted** into `services/agents/` as a deliberate, separate productionization step — it is NOT silently shared. Adding experimental strategies to `services/agents/` pollutes the production surface with code the tagger never executes. See `services/tests/evals/README.md` § "Architecture convention" for the rationale.
+- **`ticket_links` and `session_dimensions` writes must be idempotent.** Both tables have
+  UNIQUE / composite-PK constraints with explicit `ON CONFLICT … DO UPDATE` policies. New
+  writers must use the same UPSERT pattern. Never `DELETE` then `INSERT`.
+- **Coding-agent segment idempotency:** the `(claude_session_uuid, segment_started_at)`
+  unique index is the key (migration 027; `day_utc` was dropped in 028). The UPSERT refreshes
+  a LIVE row but carries `WHERE sealed_at IS NULL`, so a SEALED row is immutable — the
+  summariser only ever reads sealed rows.
 
 ### Quick command reference
 
@@ -540,11 +499,6 @@ For the deep technical reference (classification logic, scoring formulas, recipe
 # coding-agent ingest — runs inside the daemon; these are the one-shot CLIs
 echo '{"transcript_path":"~/.claude/projects/.../<uuid>.jsonl"}' | meridian coding-agent-hook  # SessionEnd: seal one session
 meridian coding-agent-summarise [--dry-run] [--day YYYY-MM-DD] [--limit N]                     # summarise the pending queue
-
-# Classifier eval pipeline (see TESTING.md §9, services/tests/evals/README.md)
-services/.venv/bin/python services/tests/evals/render_seeds.py            # seeds → Goldens
-EVAL_DATASET_PATH=services/tests/evals/data/generated/goldens_a_meridian.json \
-services/.venv/bin/python services/tests/evals/eval_classifier.py         # run, emits traces to OpenObserve
 ```
 
 ---
@@ -562,6 +516,6 @@ services/.venv/bin/python services/tests/evals/eval_classifier.py         # run,
 ### PR target branch — `pre-main`, not `main`
 
 - **Every feature/fix PR targets `pre-main`** (`gh pr create --base pre-main`), regardless of what any older doc or habit says — `pre-main` is the staging branch and is where all day-to-day work lands.
-- `pre-main` is deployed to staging and gets exercised end-to-end there (including the staging DMG auto-update channel and `runtime-staging`) before anything reaches production.
+- `pre-main` is deployed to staging and gets exercised end-to-end there (including the staging DMG auto-update channel) before anything reaches production.
 - **Only a maintainer** opens the `pre-main → main` release PR, and only once everything currently on `pre-main` has been verified working end-to-end on staging. Contributors should not open `main`-targeted PRs.
-- This mirrors the runtime-publish model (`runtime-staging` vs `runtime-latest` — see "Ship a `services/` Python change to users" above): `pre-main` is the staging/test channel, `main` is production.
+- `pre-main` is the staging/test channel, `main` is production.

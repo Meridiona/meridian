@@ -10,7 +10,6 @@
 //! - [`poll`]     — the background health/active/today/worklogs poll loop.
 //! - [`state`]    — the shared [`state::AppState`] the poll loop maintains.
 //! - [`install`]     — install-mode + db-path resolution.
-//! - [`mlx_server`]  — MLX child-process manager (Approach A bundled venv).
 //! - [`sys`]         — shared uid / notify / dashboard-URL helpers.
 //! - [`format`]      — duration formatting for the popover.
 //! - [`analytics`]   — PostHog product-analytics capture (DMG installs only).
@@ -19,6 +18,10 @@ mod analytics;
 mod backend_install;
 #[cfg(feature = "capture")]
 mod capture;
+// Non-gated on purpose: the ignore-list matcher is a plain data type held in
+// `AppState` and refreshed by the always-compiled `update_settings` command, so
+// it must exist in non-capture builds too (nothing reads it there — harmless).
+mod capture_ignore;
 mod commands;
 mod deep_link;
 
@@ -33,7 +36,6 @@ pub(crate) const SELF_PRODUCT_NAME_LOWER: &str = "meridian";
 pub(crate) const SELF_BINARY_NAME: &str = "meridian-tray";
 pub(crate) mod format;
 mod install;
-pub(crate) mod mlx_server;
 mod poll;
 mod state;
 mod sys;
@@ -83,8 +85,6 @@ pub fn run() {
     }
 
     let app_state = Arc::new(Mutex::new(AppState::default()));
-    let mlx_manager: mlx_server::SharedMlxManager =
-        Arc::new(tokio::sync::Mutex::new(mlx_server::MlxManager::new(7823)));
 
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_positioner::init())
@@ -133,7 +133,6 @@ pub fn run() {
     }
     builder
         .manage(app_state.clone())
-        .manage(mlx_manager.clone())
         // Pending dashboard navigation target (e.g. "/plan") — set by tray-side
         // openers, pulled by the dashboard shell on mount. See `deep_link`.
         .manage(deep_link::PendingDeepLink(std::sync::Mutex::new(None)))
@@ -442,16 +441,6 @@ pub fn run() {
                 poll::run_poll_loop(app_handle, state_clone).await;
             });
 
-            // Adopt any MLX server that survived from a previous tray run so we
-            // don't spawn a duplicate.
-            {
-                let mlx = mlx_manager.clone();
-                tauri::async_runtime::spawn(async move {
-                    let home = std::env::var("HOME").unwrap_or_default();
-                    mlx_server::reclaim_orphan(&home, 7823, &mlx).await;
-                });
-            }
-
             // Stage + register the bundled daemon on the self-contained .app DMG
             // path (also retires any leftover a11y-helper agent from an older
             // install — see backend_install's module docs). No-op under
@@ -517,8 +506,10 @@ pub fn run() {
             // dashboard DB reads (ported /api/* GETs)
             commands::get_active,
             commands::get_today,
+            commands::get_day_tasks,
             commands::get_week,
             commands::get_coding_agents,
+            commands::get_recent_capture_apps,
             commands::get_worklogs,
             commands::get_hour_text,
             commands::get_hour_reports,
@@ -534,17 +525,40 @@ pub fn run() {
             commands::get_health,
             commands::export_diagnostics_bundle,
             commands::get_ticket_parents,
+            commands::list_task_statuses,
+            commands::get_day_task_worklog,
+            // dev-only LLM Lab (refused in release builds - see commands::llm_lab)
+            commands::get_llm_experiments,
+            commands::get_llm_experiment,
+            commands::run_llm_experiment,
+            commands::draft_lab_worklog,
+            commands::get_day_summary,
+            commands::get_day_summary_data,
             commands::get_version,
             commands::get_app_info,
             commands::check_update,
             commands::install_update,
             commands::get_app_icon,
+            commands::get_whats_new,
+            commands::mark_whats_new_seen_cmd,
             // DB writes (ported /api/* POSTs/PATCH/DELETE)
             commands::plan_action,
+            commands::get_board_tickets,
+            commands::retarget_day_task_worklog,
+            commands::dismiss_worklog_target,
             commands::plan_dismissed,
+            commands::draft_plan_task,
+            commands::create_plan_task,
+            commands::edit_plan_task,
             commands::triage_decision,
             commands::triage_ignore,
             commands::apply_ticket_fix,
+            commands::set_task_status,
+            commands::generate_day_task_worklog,
+            commands::approve_day_task_worklog,
+            // An LLM call, so it lives with the writes despite reading nothing back
+            // but its own result.
+            commands::generate_day_summary,
             commands::dismiss_notification,
             commands::record_notification_response,
             commands::delete_notice,
@@ -573,7 +587,7 @@ pub fn run() {
             commands::open_external_url,
             commands::quit_app,
             commands::hide_popover,
-            // Setup wizard (first-run, permissions, MLX)
+            // Setup wizard (first-run, permissions, providers)
             commands::is_first_run,
             commands::mark_setup_complete,
             commands::save_account_email,
@@ -584,11 +598,16 @@ pub fn run() {
             commands::request_screen_recording,
             commands::check_notifications,
             commands::request_notifications,
-            commands::get_mlx_status,
-            commands::start_mlx_server_cmd,
-            commands::download_runtime_cmd,
-            commands::prefetch_model_cmd,
-            commands::detect_system_specs,
+            commands::detect_llm_providers,
+            commands::test_llm_provider,
+            commands::test_all_llm_providers,
+            // Custom cloud endpoints (add/probe/remove). `add` + `probe` spend real metered
+            // requests measuring the endpoint — only ever on explicit user action.
+            commands::add_custom_llm_provider,
+            commands::assess_llm_capacity,
+            commands::probe_custom_llm_provider,
+            commands::remove_custom_llm_provider,
+            commands::list_custom_llm_providers,
             // Uninstall wizard (plan + execute; see src/uninstall.rs for the CLI it drives)
             commands::get_uninstall_plan,
             commands::execute_uninstall,
@@ -915,6 +934,19 @@ pub(crate) fn start_capture(
         return;
     }
 
+    // Read settings once for this capture start: seed the ignore list (so the
+    // frame consumers enforce it from the first frame) and the streaming flag.
+    // `update_settings` refreshes the ignore list live afterwards via the same
+    // shared handle, so a Settings change never needs a capture restart.
+    let settings = meridian_core::settings::load_runtime_settings();
+    let pause_on_streaming_video = settings.pause_on_streaming_video;
+    let capture_ignore = {
+        let s = app_state.lock().unwrap();
+        *s.capture_ignore.lock().unwrap() =
+            capture_ignore::CaptureIgnore::new(&settings.ignored_apps, &settings.ignored_urls);
+        s.capture_ignore.clone()
+    };
+
     // Drop any previous cancel senders — this signals the old tasks to exit.
     {
         let mut s = app_state.lock().unwrap();
@@ -932,6 +964,7 @@ pub(crate) fn start_capture(
 
     // Frame consumer: exits when engine task finishes (tx drops → rx returns None).
     let consumer_pool = pool.clone();
+    let frame_ignore = capture_ignore.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(frame) = rx.recv().await {
             tracing::debug!(
@@ -940,6 +973,20 @@ pub(crate) fn start_capture(
                 chars = frame.text.len(),
                 "capture: frame received"
             );
+            // User ignore list (apps + website domains): drop the frame before it
+            // is ever persisted, so an ignored app/site leaves no trace on the
+            // timeline. Going forward only — history is untouched.
+            if frame_ignore
+                .lock()
+                .unwrap()
+                .should_drop_frame(frame.app_name.as_deref(), frame.browser_url.as_deref())
+            {
+                tracing::debug!(
+                    app = ?frame.app_name,
+                    "capture: frame ignored (user ignore list) — not persisted"
+                );
+                continue;
+            }
             let Some(p) = consumer_pool.as_ref() else {
                 continue;
             };
@@ -961,11 +1008,14 @@ pub(crate) fn start_capture(
     // When engine_cancel_tx is dropped, engine_cancel_rx resolves → task exits,
     // dropping tx → frame consumer loop ends naturally.
     tauri::async_runtime::spawn(async move {
+        let engine = ScreenpipeEngine {
+            pause_on_streaming_video,
+        };
         tokio::select! {
             _ = &mut engine_cancel_rx => {
                 tracing::info!("capture: engine stopped (pause)");
             }
-            result = ScreenpipeEngine.run(tx) => {
+            result = engine.run(tx) => {
                 if let Err(e) = result {
                     tracing::error!(error = %e, "capture: engine exited with error");
                 }
@@ -977,6 +1027,7 @@ pub(crate) fn start_capture(
     // the OS recorder thread to see tx.is_closed() within 500ms and exit.
     let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel::<meridian_core::CaptureUiEventInsert>(256);
     let ui_pool = pool;
+    let ui_ignore = capture_ignore;
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::select! {
@@ -984,6 +1035,11 @@ pub(crate) fn start_capture(
                 _ = &mut ui_cancel_rx => break,
                 ev = ui_rx.recv() => {
                     let Some(ev) = ev else { break };
+                    // Ignored apps leave no UI-event trace either (keystroke
+                    // counts, clipboard). App-only match — UI events carry no URL.
+                    if ui_ignore.lock().unwrap().should_drop_app(ev.app_name.as_deref()) {
+                        continue;
+                    }
                     let Some(p) = ui_pool.as_ref() else { continue };
                     if let Err(e) = meridian_core::insert_capture_ui_event(p, &ev).await {
                         tracing::warn!(error = %e, "capture: failed to persist ui event");

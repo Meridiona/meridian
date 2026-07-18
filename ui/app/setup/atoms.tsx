@@ -150,8 +150,10 @@ export function MemoryGauge({ pct, size = 96, strokeWidth = 9 }: {
 }
 
 // ── Kicker / eyebrow label ───────────────────────────────────────────────────
-export function Kicker({ children, color = 'var(--t-faint)', style }: { children: ReactNode; color?: string; style?: CSSProperties }) {
-  return (<p className="font-mono" style={{ fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color, ...style }}>{children}</p>)
+// Same class + accent color as the Settings → Intelligence "Your AI" eyebrow
+// (IntelligenceSection.tsx) — the one shared eyebrow style, not a wizard-only one.
+export function Kicker({ children, color = 'var(--color-state-proposal)', style }: { children: ReactNode; color?: string; style?: CSSProperties }) {
+  return (<p className="mt-label" style={{ color, ...style }}>{children}</p>)
 }
 
 // ── Bordered row tile (permission + integration + runtime rows) ──────────────

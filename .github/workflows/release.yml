@@ -2,15 +2,18 @@ name: Release
 
 # semantic-release: on every push to main it analyzes conventional commits and,
 # when a release is warranted, bumps the version across all manifests, builds
-# the prebuilt macOS arm64 payload, publishes both npm packages
-# (@meridiona/meridian + @meridiona/meridian-darwin-arm64), creates the GitHub
-# release + tag + CHANGELOG, and commits the version bump back to main.
+# the signed + notarized macOS universal (arm64 + x86_64) .app/DMG, publishes
+# it (plus the updater artifacts) to the GitHub release, creates the tag +
+# CHANGELOG, and commits the version bump back to main.
 #
 # Runs on macos-26 (arm64) because the prepare step compiles the Swift
-# Foundation Models bridge — which needs the macOS 26 SDK — plus the
-# Metal/MLX daemon and the dashboard. The bridge is weak-linked, so the
-# resulting binary still launches on older macOS (Foundation Models simply
-# reports unavailable there).
+# Foundation Models bridge — which needs the macOS 26 SDK — plus the Rust
+# daemon and the dashboard. The bridge is weak-linked, so the resulting binary
+# still launches on older macOS (Foundation Models simply reports unavailable
+# there). The x86_64 slice is cross-compiled from this same arm64 runner
+# (`rustup target add x86_64-apple-darwin` below) — Tauri's
+# `--target universal-apple-darwin` builds + lipos both archs itself, no
+# second runner needed.
 
 on:
   push:
@@ -21,7 +24,6 @@ permissions:
   contents: write       # tags, release, the version-bump commit
   issues: write
   pull-requests: write
-  id-token: write        # REQUIRED for npm OIDC trusted publishing (no NPM_TOKEN)
 
 concurrency:
   group: release-${{ github.ref }}
@@ -115,7 +117,7 @@ jobs:
           # stale snapshot and its `git push HEAD:main` is rejected once a newer
           # commit lands ("fetch first"). Checking out the tip means the first
           # queued run releases everything on main and later runs find nothing
-          # new to release (clean no-op) — no failures, npm always == main.
+          # new to release (clean no-op) — no failures, the release always == main.
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0          # full history — semantic-release needs commits
           fetch-tags: true        # explicitly fetch tags so the v0.0.0 baseline is seen
@@ -125,14 +127,13 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.93.1"
+          targets: "aarch64-apple-darwin,x86_64-apple-darwin"
       - uses: Swatinem/rust-cache@v2
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          # Node 24 satisfies semantic-release v25 (engines: ^22.14 || >=24.10)
-          # and ships npm 11.x (OIDC trusted publishing needs npm >= 11.5.1).
-          # No registry-url: it writes an .npmrc that breaks OIDC auth.
+          # Node 24 satisfies semantic-release v25 (engines: ^22.14 || >=24.10).
           node-version: "24"
           # Cache ~/.npm for the root npm ci plus the ui/ and tray/ npm ci inside prepareCmd.
           cache: "npm"
@@ -140,13 +141,6 @@ jobs:
             package-lock.json
             ui/package-lock.json
             tray/package-lock.json
-
-      - name: Cache uv packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/uv
-          key: uv-${{ hashFiles('services/uv.lock') }}
-          restore-keys: uv-
 
       - name: Cache Next.js build
         uses: actions/cache@v4
@@ -190,12 +184,9 @@ jobs:
       - name: semantic-release
         env:
           # GitHub PAT (repo scope) to push the version commit to main past
-          # branch protection; falls back to GITHUB_TOKEN. Unrelated to npm.
+          # branch protection; falls back to GITHUB_TOKEN. The release publishes
+          # only to the GitHub release (the DMG + updater artifacts) — no npm.
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
-          # No NPM_TOKEN — both publishes (the @semantic-release/npm main
-          # package and the exec `npm publish` of the arch package) authenticate
-          # via OIDC trusted publishing using the id-token above. Requires a
-          # Trusted Publisher to be configured on npm for BOTH packages.
         run: npx semantic-release
 
       - name: Clean up signing material

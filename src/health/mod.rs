@@ -18,7 +18,6 @@ pub mod daemon;
 pub mod diagnose;
 pub mod fix;
 pub mod jira;
-pub mod mlx;
 pub mod observability;
 pub mod platform;
 pub mod ui;
@@ -326,26 +325,6 @@ pub async fn run_all(cfg: &Config) -> Report {
             )],
         };
         checks.extend(tag("capture", g));
-    }
-
-    // mlx-server — service + HTTP readiness probes. Hardware that can never
-    // run MLX (Intel Macs — mlx ships arm64-only wheels) is recorded by the
-    // installers; report that as fact instead of an unfixable "server down".
-    {
-        if platform::mlx_unsupported() {
-            checks.extend(tag(
-                "mlx-server",
-                vec![Check::info(
-                    "mlx",
-                    "L2",
-                    "unsupported on this hardware (Intel Mac) — summaries use the agent CLIs; local classification is unavailable",
-                )],
-            ));
-        } else {
-            let mut g = platform::mlx_service(cfg);
-            g.extend(mlx::checks(cfg).await);
-            checks.extend(tag("mlx-server", g));
-        }
     }
 
     // jira — auth, sync freshness, candidate completeness.

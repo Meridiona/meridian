@@ -2,7 +2,7 @@
   "name": "meridian-release-tooling",
   "private": true,
   "version": "0.0.0",
-  "description": "Release tooling for Meridian (semantic-release). Not published — see npm/meridian for the distributed package.",
+  "description": "Release tooling for Meridian (semantic-release). Not published — the app ships as a signed macOS DMG (see .releaserc.json).",
   "license": "MIT",
   "devDependencies": {
     "@semantic-release/changelog": "^6.0.3",

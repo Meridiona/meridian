@@ -267,7 +267,7 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
-        assert!(!write_summary(&pool, id, "again", "mlx").await.unwrap());
+        assert!(!write_summary(&pool, id, "again", "codex").await.unwrap());
     }
 
     #[tokio::test]

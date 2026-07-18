@@ -22,6 +22,7 @@ import { hasMustFix, type HygieneIssue } from '@/lib/hygiene'
 import { load as loadData, mutate } from '@/lib/bridge'
 import { filterByConnectedProviders } from '@/lib/integrations'
 import { CleanupCard, type CleanupGroup } from './CleanupCard'
+import { useTaskStatusChange, StatusBanner } from './useTaskStatusChange'
 
 interface Stats { must: number; nice: number; review: number; ready: number; total: number }
 
@@ -40,6 +41,18 @@ export function CleanupOverlay({ onClose }: { onClose: () => void }) {
   const [queue, setQueue] = useState<TaskSummary[] | null>(null)
   const [stats, setStats] = useState<Stats | null>(null)
 
+  // Optimistically reflect a status change in both the snapshotted queue (what
+  // the card reads) and the raw task list (kept in sync for consistency) —
+  // same shape of patch TasksPanel applies to its own list.
+  const patchTaskStatus = useCallback((key: string, status: string, isTerminal: boolean) => {
+    const patch = (t: TaskSummary) => (t.key === key ? { ...t, status, is_terminal: isTerminal } : t)
+    setQueue(q => q ? q.map(patch) : q)
+    setTasks(ts => ts.map(patch))
+  }, [])
+
+  const { statusBusyKey, undo, note, handleSetStatus, handleUndo, dismissUndo, dismissNote } =
+    useTaskStatusChange(patchTaskStatus)
+
   useEffect(() => {
     Promise.allSettled([
       loadData<TasksResponse>('/api/tasks', 'get_tasks').then(res => setTasks(res.tasks ?? [])),
@@ -50,7 +63,9 @@ export function CleanupOverlay({ onClose }: { onClose: () => void }) {
   // Snapshot the queue + composition stats once the first load lands.
   useEffect(() => {
     if (loading || queue !== null) return
-    const live = filterByConnectedProviders(tasks, integrations).filter(t => t.hygiene)
+    // Off-board (done/reassigned) tasks are excluded — same active-task filter
+    // the board uses, so the cleanup queue never surfaces a hidden ticket.
+    const live = filterByConnectedProviders(tasks, integrations).filter(t => !t.is_terminal).filter(t => t.hygiene)
     const must: TaskSummary[] = []
     const nice: TaskSummary[] = []
     const review: TaskSummary[] = []
@@ -195,6 +210,8 @@ export function CleanupOverlay({ onClose }: { onClose: () => void }) {
                   onNext={() => { if (canAdvance) setIndex(i => Math.min((queue?.length ?? 1) - 1, i + 1)) }}
                   hasPrev={index > 0}
                   hasNext={!!queue && index < queue.length - 1 && canAdvance}
+                  onSetStatus={handleSetStatus}
+                  statusBusy={statusBusyKey === current.key}
                 />
               </motion.div>
             )}
@@ -206,6 +223,10 @@ export function CleanupOverlay({ onClose }: { onClose: () => void }) {
             ‹ › or arrow keys to browse · fix inline, Keep to move on
           </p>
         )}
+      </div>
+      <div onClick={e => e.stopPropagation()}>
+        <StatusBanner undo={undo} note={note} busy={!!statusBusyKey}
+          onUndo={handleUndo} onDismissUndo={dismissUndo} onDismissNote={dismissNote} />
       </div>
     </div>
   )
