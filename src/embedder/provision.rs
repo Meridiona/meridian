@@ -1,6 +1,6 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-//! First-run weight provisioning for the embedder — the slim Rust replacement for the
-//! old MLX runtime downloader.
+//! First-run weight provisioning for the embedder — a slim, self-contained Rust
+//! weight downloader.
 //!
 //! The BGE model is three files (`config.json`, `tokenizer.json`, `model.safetensors`,
 //! ~130 MB total) fetched from the HuggingFace CDN via the existing `reqwest` (rustls) —

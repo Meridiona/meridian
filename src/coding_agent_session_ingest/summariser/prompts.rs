@@ -1,11 +1,9 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Shared summary contract — the rules, the schema, and limit detection. Lives in
-// one place so the three engines stay consistent: Claude loads the
-// `session-summary` skill (same rules, in SKILL.md); Codex gets
-// SUMMARY_INSTRUCTION as its prompt; MLX gets SUMMARY_RULES as its system
-// message. All three target SUMMARY_SCHEMA. Port of
-// the former Python summariser/prompts.py.
+// one place so every agent CLI stays consistent: Claude loads the
+// `session-summary` skill (same rules, in SKILL.md); Codex/Copilot/cursor-agent
+// get SUMMARY_INSTRUCTION as their prompt. All target SUMMARY_SCHEMA.
 
 use serde_json::json;
 
@@ -20,7 +18,7 @@ pub const SUMMARY_PROMPT_MARKER: &str =
 
 /// The shared rules, without an output-format clause (engines append their own).
 /// Single source of truth lives in assets/skills/coding-agent/session-summary/SKILL.md —
-/// edit that file, rebuild, and all three engines (Claude, Codex, MLX) pick up the change.
+/// edit that file, rebuild, and every agent CLI picks up the change.
 pub const SUMMARY_RULES: &str =
     include_str!("../../../assets/skills/coding-agent/session-summary/SKILL.md");
 

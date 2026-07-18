@@ -39,7 +39,7 @@ pub async fn pm_tasks_present(pool: &SqlitePool) -> bool {
 /// pipeline; it resumes automatically once a tracker syncs, because the driving
 /// loops re-check each cycle.
 ///
-/// (This was once ANDed with an MLX-classifier readiness probe; with generation now
+/// (This was once ANDed with a local-classifier readiness probe; with generation now
 /// running through the user's CLI provider there is no local server to gate on.)
 pub async fn pipeline_ready(pool: &SqlitePool, _cfg: &Config) -> bool {
     pm_tasks_present(pool).await

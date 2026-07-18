@@ -140,7 +140,7 @@ fn log_noise_rust_tracing() {
         "WARN sqlx::query: summary=\"SELECT app_name\" rows_returned=4"
     ));
     assert!(is_log_noise(
-        "DEBUG meridian::intelligence::task_linker: calling mlx server"
+        "DEBUG meridian::intelligence::task_linker: dispatching request"
     ));
     // Must NOT filter plain English sentences that happen to start with INFO
     assert!(!is_log_noise(
@@ -154,7 +154,9 @@ fn log_noise_rust_tracing() {
 fn log_noise_model_server() {
     assert!(is_log_noise("Active mem: 7.23 GB"));
     assert!(is_log_noise("Peak mem: 8.11 GB"));
-    assert!(is_log_noise("Loading weights from mlx-community/Qwen3..."));
+    assert!(is_log_noise(
+        "Loading weights from BAAI/bge-small-en-v1.5..."
+    ));
     assert!(is_log_noise("Compiling FSM for constrained decoding"));
     assert!(is_log_noise("FSM ready (3.2s)"));
     assert!(is_log_noise("Fetching 10 files: 100%"));

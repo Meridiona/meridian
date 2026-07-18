@@ -193,7 +193,7 @@ pub fn format_line(r: &RenderedRecord) -> String {
 // architecture already uses, so there is exactly one place logs live, not two.
 //
 //   meridian logs [--service <name>] [--min-severity LEVEL] [-n N] [-f]
-//     --service       filter to one service.name (e.g. meridian-rust, meridian-mlx-server)
+//     --service       filter to one service.name (e.g. meridian-rust, meridian-tray)
 //     --min-severity  only show log records at/above this level (TRACE|DEBUG|
 //                     INFO|WARN|ERROR|FATAL) — spans are excluded when this is
 //                     set, matching the old `*-error.log` targets, which were

@@ -2,7 +2,7 @@
 //! The centralised LLM layer — one choice, one factory, every prose call obeys it.
 //!
 //! The user picks their AI once (setup wizard, changeable in Settings): their own
-//! Claude / Codex / Cursor / Copilot CLI subscription, or the on-device MLX model.
+//! Claude / Codex / Cursor / Copilot CLI subscription, or a custom cloud endpoint.
 //! [`resolver::resolve`] turns that stored choice into a live [`LlmBackend`], and
 //! **every** prose LLM call in the product goes through it.
 //!

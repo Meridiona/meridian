@@ -315,18 +315,15 @@ mod tests {
         // the installed package.
         let installed =
             std::fs::read_to_string("ui/node_modules/vega-lite/build/vega-lite-schema.json");
-        match installed {
-            Ok(text) => {
-                let live: Value = serde_json::from_str(&text).unwrap();
-                assert_eq!(
-                    schema, live,
-                    "assets/schemas/vega-lite-schema.json is stale — re-copy it from \
-                     ui/node_modules/vega-lite/build/vega-lite-schema.json (vega-lite {dep})"
-                );
-            }
-            // node_modules absent (CI without an npm install) — nothing to compare
-            // against, and failing here would be a false alarm about the schema.
-            Err(_) => {}
+        // node_modules absent (CI without an npm install) — nothing to compare
+        // against, and failing there would be a false alarm about the schema.
+        if let Ok(text) = installed {
+            let live: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(
+                schema, live,
+                "assets/schemas/vega-lite-schema.json is stale — re-copy it from \
+                 ui/node_modules/vega-lite/build/vega-lite-schema.json (vega-lite {dep})"
+            );
         }
     }
 

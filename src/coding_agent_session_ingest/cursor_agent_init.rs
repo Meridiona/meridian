@@ -7,7 +7,7 @@
 // a daemon must not run that as an automatic side effect). If
 // unauthenticated, auto-login (status-probed, non-interactive). Runs
 // on-demand (only when Cursor Agent sessions are summarised); non-fatal —
-// the summariser falls back to MLX if any step fails.
+// if any step fails the Cursor row is left pending for a later drain.
 //
 // Field-tested 2026-06-06: `cursor-agent login` returned in ~16s when it
 // could adopt the IDE's auth, but a SECOND login while already authenticated
@@ -31,7 +31,7 @@ static INIT_RESULT: OnceCell<Result<(), String>> = OnceCell::const_new();
 
 /// Hard ceilings — the daemon runs unattended; neither the installer (network
 /// fetch) nor auth probes may hang the summariser. On timeout the init fails
-/// → cached as failed → every Cursor segment falls back to MLX.
+/// → cached as failed → every Cursor segment is left pending for a later drain.
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(30);
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(120);
@@ -64,7 +64,7 @@ async fn try_install_and_login() -> anyhow::Result<()> {
             // Running a remote install script must be an explicit user
             // decision, never an automatic daemon side effect (the installer
             // is `curl https://cursor.com/install | bash` — unpinned remote
-            // code). Without the opt-in, Cursor summaries fall back to MLX.
+            // code). Without the opt-in, Cursor summaries stay pending.
             anyhow::bail!(
                 "cursor-agent not in PATH; install it (`curl https://cursor.com/install -fsS | bash`) \
                  or set CURSOR_AGENT_AUTO_INSTALL=1 to let the daemon install it"
@@ -163,8 +163,8 @@ async fn is_authenticated(cursor_agent_path: &Path) -> bool {
 
 /// Attempt auto-login. NO_OPEN_BROWSER stops the CLI from popping a browser
 /// tab on the user's desktop; if the IDE's auth can't be adopted
-/// non-interactively the run fails (or times out) and the summariser falls
-/// back to MLX — login is then deferred to a manual `cursor-agent login`.
+/// non-interactively the run fails (or times out) and the Cursor row stays
+/// pending — login is then deferred to a manual `cursor-agent login`.
 async fn try_auto_login(cursor_agent_path: &Path) -> anyhow::Result<()> {
     let output = run_with_timeout(
         Command::new(cursor_agent_path)

@@ -7,8 +7,8 @@
 // The live surface is the per-card engine ([`generate`]/[`approve`] → [`create`] →
 // [`post_comment`]) plus the ~60s approved-poster sweep ([`post::run_post_loop`], the ONLY
 // path to real Jira/Linear/GitHub — approval-gated, never unattended). The old hourly
-// Stage-4 driver (collect → synthesise via the MLX `/synthesise_worklog` → ground → draft)
-// was superseded by the Rust-owned per-card generate path and has been removed.
+// Stage-4 driver (collect → synthesise → ground → draft) was superseded by the
+// Rust-owned per-card generate path and has been removed.
 
 pub mod azure_devops;
 pub mod comment;

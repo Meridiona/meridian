@@ -11,9 +11,8 @@
 //! its own posted flag and a retry only posts the ones still outstanding. That is
 //! why [`meridian_core::day_task_worklogs::targets`] is a table.
 //!
-//! This re-implements centrally, in Rust and through the user's chosen LLM
-//! provider, the match/propose logic that previously lived only in an orphaned
-//! MLX-bound Python pipeline — so it runs with first-class tracing
+//! This implements the match/propose logic centrally, in Rust and through the
+//! user's chosen LLM provider — so it runs with first-class tracing
 //! ([`crate::llm::complete`]'s free `llm.*` subspans) and posts through the same
 //! provider write-back the rest of the pipeline uses.
 //!

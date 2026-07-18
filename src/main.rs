@@ -864,10 +864,10 @@ async fn main() -> Result<()> {
 
     // 4b. Open / create meridian pool and run migrations FIRST — before any
     //     preflight that can block or fail. The UI and MCP server read this DB
-    //     directly, so it must exist even when an optional component (MLX
-    //     server, screenpipe) is down; ordering it after the MLX preflight left
-    //     machines with a broken MLX install running a daemon that never
-    //     created its own database.
+    //     directly, so it must exist even when an optional component (capture,
+    //     an agent CLI) is degraded; ordering it after a preflight that could
+    //     block once left machines running a daemon that never created its own
+    //     database.
     let meridian = setup_db(&initial_cfg.meridian_db_uri()).await?;
 
     // 4c. Capture-layer (L1) preflight: surface degraded in-process capture
@@ -958,7 +958,7 @@ async fn main() -> Result<()> {
         Err(e) => tracing::error!("cleanup_incomplete_runs failed: {}", e),
     }
 
-    // 7b. A background task drains the classification queue without blocking the
+    // 7b. Shared handles the poll loop uses to signal ETL ticks to observers.
     let etl_notify: Arc<Notify> = Arc::new(Notify::new());
     let etl_tick_span: Arc<std::sync::Mutex<Option<tracing::Span>>> =
         Arc::new(std::sync::Mutex::new(None));
@@ -1018,9 +1018,9 @@ async fn main() -> Result<()> {
         });
     }
 
-    // 7d. PM-worklog driver: hour-level pipeline — clock-aligned (HH:03 local), POSTs
-    //     /worklog_hour to the MLX server once per completed hour; Python does the
-    //     full distil→classify→draft. Drafts only; posting is run_post_loop's job.
+    // 7d. PM-worklog driver: hour-level pipeline — clock-aligned (HH:03 local), runs
+    //     once per completed hour fully in-process (distil → report → workstream fold
+    //     → draft). Drafts only; posting is run_post_loop's job.
     {
         let pool_pm = meridian.clone();
         let db_path_pm = initial_cfg.meridian_db.clone();

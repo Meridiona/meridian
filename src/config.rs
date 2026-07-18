@@ -98,24 +98,6 @@ pub struct Config {
     pub poll_interval_secs: u64,
     /// All configured PM providers. Empty = intelligence silently disabled.
     pub pm_providers: Vec<PmProviderConfig>,
-    /// Whether to run MLX task classification after each ETL tick.
-    /// CLASSIFICATION_ENABLED — default true
-    pub classification_enabled: bool,
-    /// Seconds to wait for the Python classification subprocess before killing it.
-    /// CLASSIFICATION_TIMEOUT_S — default 120
-    pub classification_timeout_s: u64,
-    /// Minimum session duration in seconds to classify (shorter = overhead/skip).
-    /// MIN_LLM_DURATION_S — default 10
-    pub min_classification_duration_s: i64,
-    /// Path to the meridian services/ directory containing agents/run_task_linker.py.
-    /// MERIDIAN_SERVICES_DIR — optional, auto-detected if not set
-    pub classification_services_dir: Option<String>,
-    /// Whether to classify sessions that existed before the first run.
-    /// CLASSIFICATION_BACKFILL — default false (skip historical sessions)
-    pub classification_backfill: bool,
-    /// Number of recent classified sessions included as temporal context in each prompt.
-    /// CLASSIFICATION_CONTEXT_WINDOW — default 5
-    pub classification_context_window: usize,
     /// Whether to post Jira progress updates. Auto-enabled when JIRA_BASE_URL is set.
     /// JIRA_UPDATE_ENABLED — default true if Jira is configured
     pub jira_update_enabled: bool,
@@ -354,18 +336,9 @@ impl Config {
         // defaults equal the env-var defaults, so the merge is a no-op.
         let runtime = load_runtime_settings();
 
-        // poll_interval_secs, classification_timeout_s, min_classification_duration_s
-        // come entirely from settings.json (runtime). The equivalent env vars are
-        // intentionally ignored when settings.json is present.
+        // poll_interval_secs comes entirely from settings.json (runtime). The
+        // equivalent env var is intentionally ignored when settings.json is present.
         let poll_interval_secs = runtime.poll_interval_secs;
-        let classification_timeout_s = runtime.classification_timeout_s;
-        let min_classification_duration_s = runtime.min_classification_duration_s;
-
-        // Boolean guards: env var can only further disable, never re-enable.
-        let classification_enabled_env = std::env::var("CLASSIFICATION_ENABLED")
-            .map(|v| !matches!(v.to_lowercase().trim(), "0" | "false" | "no" | "off"))
-            .unwrap_or(true);
-        let classification_enabled = runtime.classification_enabled && classification_enabled_env;
 
         // Jira is "configured" for update-gating purposes under either auth path:
         // legacy basic auth (JIRA_BASE_URL), browser OAuth env var (JIRA_OAUTH_CLIENT_ID),
@@ -377,14 +350,6 @@ impl Config {
             .map(|v| !matches!(v.to_lowercase().trim(), "0" | "false" | "no" | "off"))
             .unwrap_or(jira_configured);
         let jira_update_enabled = runtime.jira_update_enabled && jira_update_enabled_env;
-
-        let classification_services_dir = std::env::var("MERIDIAN_SERVICES_DIR")
-            .ok()
-            .map(|v| expand_tilde(&v));
-
-        let classification_backfill = std::env::var("CLASSIFICATION_BACKFILL")
-            .map(|v| matches!(v.to_lowercase().trim(), "1" | "true" | "yes" | "on"))
-            .unwrap_or(false);
 
         let jira_update_interval_s = std::env::var("JIRA_UPDATE_INTERVAL_HOURS")
             .ok()
@@ -402,18 +367,12 @@ impl Config {
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(17);
 
-        let classification_context_window = std::env::var("CLASSIFICATION_CONTEXT_WINDOW")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(5);
-
         let pm_providers = parse_providers();
         let provider_names: Vec<&str> = pm_providers.iter().map(|p| p.provider_name()).collect();
 
         tracing::info!(
             meridian_db = %meridian_db,
             poll_interval_secs,
-            classification_enabled,
             pm_providers = ?provider_names,
             "config loaded"
         );
@@ -422,12 +381,6 @@ impl Config {
             meridian_db,
             poll_interval_secs,
             pm_providers,
-            classification_enabled,
-            classification_timeout_s,
-            min_classification_duration_s,
-            classification_services_dir,
-            classification_backfill,
-            classification_context_window,
             jira_update_enabled,
             jira_update_interval_s,
             jira_office_start_hour,
@@ -487,9 +440,6 @@ mod tests {
     fn test_runtime_settings_defaults() {
         let rt = RuntimeSettings::default();
         assert_eq!(rt.poll_interval_secs, 60);
-        assert_eq!(rt.classification_timeout_s, 120);
-        assert_eq!(rt.min_classification_duration_s, 10);
-        assert!(rt.classification_enabled);
         assert!(rt.jira_update_enabled);
     }
 

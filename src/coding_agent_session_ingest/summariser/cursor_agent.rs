@@ -1,11 +1,12 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Run `cursor-agent` to summarise a Cursor session (symmetry with claude.rs /
-// codex.rs / copilot.rs — each agent's transcripts go to its own CLI, MLX as
-// the shared fallback). Flags pinned against cursor-agent 2026.06.04 live:
+// codex.rs / copilot.rs — each agent's transcripts go to its own CLI, with no
+// cross-engine fallback). Flags pinned against cursor-agent 2026.06.04 live:
 // `-p --output-format text --trust` (without --trust headless runs die with
 // "Workspace Trust Required"). The transcript rides in the prompt argument,
-// and any failure degrades cleanly — Failed → primary_attempts → MLX.
+// and any failure leaves the row pending for a later drain (Failed → retried up
+// to primary_attempts, then left pending).
 // Persistence probed: `-p` runs write to ~/.cursor/chats/, NOT the vscdb we
 // ingest from — so a summariser run cannot re-enter the indexer (the
 // SUMMARY_PROMPT_MARKER guard in sources/mod.rs backstops this anyway).
@@ -29,7 +30,7 @@ pub async fn run_cursor_agent(
         .await
         .map_err(|e| {
             SummariserError::Failed(format!(
-                "cursor-agent init failed (falling back to MLX): {}",
+                "cursor-agent init failed (row left pending): {}",
                 e
             ))
         })?;

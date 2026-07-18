@@ -291,7 +291,7 @@ mod tests {
             PAST_BOUNDARY,
             120,
             None,
-            Some("mlx"),
+            Some("summarised"),
             Some("task"),
         )
         .await;
@@ -315,7 +315,7 @@ mod tests {
         assert!(!upstream_settled(&pool, HS, HE, MIN_DUR).await.unwrap());
     }
 
-    /// A coding-agent row that reached the terminal `mlx_direct` is settled even
+    /// A coding-agent row that reached a terminal task_method is settled even
     /// before its task_session_type is read (the task_method terminal path).
     #[tokio::test]
     async fn coding_terminal_settles() {
@@ -326,7 +326,7 @@ mod tests {
             PAST_BOUNDARY,
             120,
             Some("uuid-1"),
-            Some("mlx_direct"),
+            Some("summarised"),
             None,
         )
         .await;
@@ -346,7 +346,7 @@ mod tests {
             "2026-05-30T05:45:00+00:00",
             120,
             None,
-            Some("mlx"),
+            Some("summarised"),
             Some("task"),
         )
         .await;

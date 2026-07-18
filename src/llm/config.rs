@@ -2,9 +2,9 @@
 //! Config for the LLM backends — resolved from settings.json, with env for the knobs.
 //!
 //! The *provider* comes from settings (the user's choice, see [`meridian_core::settings`]);
-//! the timeouts and the MLX address come from env, matching how the summariser already
-//! configures itself. There is no env override for the provider on purpose: settings.json
-//! is the single source of truth, or we are back to two.
+//! the timeouts come from env, matching how the summariser already configures itself.
+//! There is no env override for the provider on purpose: settings.json is the single
+//! source of truth, or we are back to two.
 
 use std::path::PathBuf;
 

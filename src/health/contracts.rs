@@ -26,7 +26,7 @@ pub fn checks(cfg: &Config) -> Vec<Check> {
     vec![db_path_contract(cfg), settings_contract(), dead_poll_env()]
 }
 
-/// C1 — the daemon/MCP/MLX open MERIDIAN_DB; the UI opens MERIDIAN_DB_PATH. If
+/// C1 — the daemon/MCP open MERIDIAN_DB; the UI opens MERIDIAN_DB_PATH. If
 /// they diverge the dashboard silently reads a different (stale/empty) database.
 fn db_path_contract(cfg: &Config) -> Check {
     let daemon_db = cfg.meridian_db.clone(); // already tilde-expanded by Config

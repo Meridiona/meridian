@@ -4,10 +4,9 @@
 //! # What this is
 //! A small, self-contained embedding subsystem (candle + BGE) used by the session
 //! distiller ([`crate::worklog_pipeline::distiller`]) for **semantic dedup** (SemDeDup)
-//! and facility-location diversity selection of on-screen text spans. It is the sole
-//! survivor of the Python/MLX removal: every *generative* task goes through the CLI
-//! provider layer ([`crate::llm`]), but no third-party CLI offers embeddings, so this
-//! stays on-device — now in pure Rust instead of the old MLX server.
+//! and facility-location diversity selection of on-screen text spans. Every *generative*
+//! task goes through the CLI provider layer ([`crate::llm`]), but no third-party CLI
+//! offers embeddings, so this one model stays on-device — in pure Rust (candle).
 //!
 //! # Degradation contract
 //! When the model is not yet provisioned (first-run weights still downloading) or fails

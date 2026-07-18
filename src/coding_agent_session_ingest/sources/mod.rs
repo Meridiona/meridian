@@ -382,7 +382,7 @@ mod tests {
         };
 
         // A session opened by the summariser's own prompt is an artifact —
-        // whether the marker leads (codex/mlx style) or is prefixed by the
+        // whether the marker leads (codex style) or is prefixed by the
         // skill preamble (cursor-agent embeds the instruction mid-prompt).
         let own = vec![prompt_rec(&prompts::summary_instruction())];
         assert!(is_summariser_artifact(&own));

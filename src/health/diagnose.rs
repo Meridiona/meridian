@@ -212,23 +212,12 @@ mod tests {
         let report = Report::new(vec![
             Check::warn("summariser queue", "L2", "293 backed up").in_group("meridian daemon"),
             Check::warn("hour ledger", "L4", "5 stuck").in_group("worklog"),
-            Check::ok("reachable", "L2", "ok").in_group("mlx-server"),
         ]);
         let dx = root_causes(&report);
         assert_eq!(dx.len(), 1);
         assert!(dx[0].title.contains("summariser"));
         // both symptoms attributed to the one cause
         assert_eq!(dx[0].contributing.len(), 2);
-    }
-
-    #[test]
-    fn mlx_down_supersedes_the_queue_symptom() {
-        let report = Report::new(vec![
-            Check::critical("reachable", "L2", "down").in_group("mlx-server"),
-            Check::warn("summariser queue", "L2", "293").in_group("meridian daemon"),
-        ]);
-        let dx = root_causes(&report);
-        assert!(dx[0].title.contains("MLX"));
     }
 
     #[test]

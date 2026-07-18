@@ -173,9 +173,6 @@ pub struct RuntimeSettings {
     #[serde(default = "default_theme")]
     pub theme: String,
     pub log_level: String,
-    pub classification_enabled: bool,
-    pub min_classification_duration_s: i64,
-    pub classification_timeout_s: u64,
     pub agent_auto_floor: f64,
     pub agent_queue_floor: f64,
     // Which AI runs the user's prose LLM calls — the wire form of
@@ -258,12 +255,9 @@ impl Default for RuntimeSettings {
         Self {
             theme: default_theme(),
             log_level: "INFO".to_string(),
-            classification_enabled: true,
-            min_classification_duration_s: 10,
-            classification_timeout_s: 120,
             agent_auto_floor: 0.65,
             agent_queue_floor: 0.40,
-            // On-device by default — nothing leaves the machine unless the user opts in.
+            // The user's chosen AI CLI runs every prose LLM call (default: Claude).
             llm_provider: crate::llm_provider::LlmProvider::default()
                 .as_str()
                 .to_string(),

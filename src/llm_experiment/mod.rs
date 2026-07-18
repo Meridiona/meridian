@@ -20,7 +20,7 @@
 //! * The workstream fold replays with *today's* stored prior task state, not the
 //!   state as it was at the original fold time (that state isn't archived).
 //! * Only hours whose distilled `hour_text` is stored can be replayed — the local
-//!   MLX distillation is provider-independent and is not re-run.
+//!   distillation is provider-independent and is not re-run.
 //!
 //! # Who calls this
 //! The `meridian llm-experiment` CLI ([`cli`], dispatched from `main.rs`) and,

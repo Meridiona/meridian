@@ -372,16 +372,15 @@ mod tests {
         // Deliberately ONE example now, not three. Every example is a suggestion the
         // model takes, and a prompt that showed a pie chart got a pie chart back —
         // so what remains teaches the binding contract and nothing about the answer.
-        for name in ["segments"] {
-            assert!(
-                DAILY_SUMMARY.contains(&format!("\"name\": \"{name}\"")),
-                "prompt example references dataset {name}"
-            );
-            assert!(
-                meridian_core::day_evidence::datasets::by_name(name).is_some(),
-                "prompt example names dataset '{name}', which no longer exists"
-            );
-        }
+        let name = "segments";
+        assert!(
+            DAILY_SUMMARY.contains(&format!("\"name\": \"{name}\"")),
+            "prompt example references dataset {name}"
+        );
+        assert!(
+            meridian_core::day_evidence::datasets::by_name(name).is_some(),
+            "prompt example names dataset '{name}', which no longer exists"
+        );
         // Every field the example encodes must be real, for the same reason.
         for (ds, field) in [
             ("segments", "start_min"),

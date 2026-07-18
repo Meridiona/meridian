@@ -8,7 +8,7 @@
 //!
 //! **Distillation runs fully in-process** ([`super::distiller`]): a pure-Rust embedder
 //! ([`crate::embedder`]) compresses the hour's screen OCR before the summary call — no
-//! external service, no HTTP hop. (It replaced the Python `/distill_hour` MLX call.)
+//! external service, no HTTP hop.
 //!
 //! The report is a SINGLE generative call (see [`crate::llm::prompts::ACTIVITY_REPORT`]):
 //! the model returns the activities as prose (no clock times in the words) AND a minute
@@ -271,7 +271,7 @@ fn strip_list_marker(s: &str) -> &str {
 pub async fn run_hour(
     pool: &SqlitePool,
     // `_cfg` / `_db_path` are retained only for signature stability with the driver; the
-    // in-process distiller uses `pool`/`hs`/`he`. Removed in the mlx-config cleanup (P3).
+    // in-process distiller uses `pool`/`hs`/`he` (they were needed by the old HTTP call).
     _cfg: &PmWorklogConfig,
     _db_path: &str,
     hour: &str,
