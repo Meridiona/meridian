@@ -81,7 +81,7 @@ pub(crate) const ENTITY_RESCUE_CAP: usize = 4;
 /// behind it. Timing out degrades this one hour to lexical-only (same degrade path as a load
 /// failure) rather than blocking the queue — see [`embed_lex`].
 static EMBED_TIMEOUT: Lazy<Duration> =
-    Lazy::new(|| Duration::from_secs_f64(env_num("DISTILLER_EMBED_TIMEOUT_SECS", 45.0)));
+    Lazy::new(|| Duration::from_secs_f64(env_num("DISTILLER_EMBED_TIMEOUT_SECS", 210.0)));
 
 fn env_num(key: &str, default: f64) -> f64 {
     std::env::var(key)
@@ -337,17 +337,61 @@ async fn distil(
     (body, stats)
 }
 
+/// One retry after a real (non-timeout) error — covers transient failures (a momentary
+/// file-read glitch loading weights, a poisoned-mutex hiccup on first touch) that a second
+/// attempt can plausibly clear. Deliberately NOT retried on the caller's timeout branch:
+/// a timeout means the computation itself is too slow for the input size, and an identical
+/// retry would just re-run the same slow computation and cost another full timeout budget
+/// for no chance of a different outcome — that path degrades immediately instead.
+const EMBED_MAX_ATTEMPTS: u32 = 2;
+const EMBED_RETRY_BACKOFF: Duration = Duration::from_millis(500);
+
 /// Embed the lexically-deduped span lines. Gated on [`embedder::is_ready`]; a failure
 /// degrades to empty vectors (SemDeDup + floc become lexical-only). Times the stage under
-/// a `distil.embed` child span.
+/// a `distil.embed` child span. An empty `lex` short-circuits to empty vectors without
+/// touching the embedder at all — nothing to embed is not a failure, so it's excluded from
+/// the `degraded` flag below.
 async fn embed_lex(lex: &[Span]) -> (Vec<Vec<f32>>, bool) {
     let span = tracing::debug_span!("distil.embed", n_spans = lex.len());
     async {
         let start = Instant::now();
-        let vecs = if embedder::is_ready() && !lex.is_empty() {
+        if lex.is_empty() {
+            tracing::debug!(
+                n_spans = 0,
+                elapsed_ms = 0,
+                degraded = false,
+                "distil: embedded spans"
+            );
+            return (Vec::new(), false);
+        }
+        let vecs = if embedder::is_ready() {
             let n = lex.len();
-            let texts: Vec<String> = lex.iter().map(|s| s.line.clone()).collect();
-            match tokio::time::timeout(*EMBED_TIMEOUT, embedder::embed_batch(texts)).await {
+            // Retries share ONE outer timeout budget rather than each getting their own —
+            // a retry that would blow past EMBED_TIMEOUT is still bounded by it, so the
+            // worst case for this hour is exactly EMBED_TIMEOUT, never attempts * timeout.
+            let attempts = async {
+                let mut last_err = None;
+                for attempt in 1..=EMBED_MAX_ATTEMPTS {
+                    let texts: Vec<String> = lex.iter().map(|s| s.line.clone()).collect();
+                    match embedder::embed_batch(texts).await {
+                        Ok(v) => return Ok(v),
+                        Err(e) => {
+                            tracing::warn!(
+                                attempt,
+                                max_attempts = EMBED_MAX_ATTEMPTS,
+                                error = %e,
+                                "distil: embed attempt failed"
+                            );
+                            last_err = Some(e);
+                            if attempt < EMBED_MAX_ATTEMPTS {
+                                tokio::time::sleep(EMBED_RETRY_BACKOFF).await;
+                            }
+                        }
+                    }
+                }
+                Err(last_err.expect("loop ran at least once"))
+            };
+            match tokio::time::timeout(*EMBED_TIMEOUT, attempts).await {
                 Ok(result) => {
                     // This is the only embed_batch call in the hour's whole run (one
                     // distil pass = one batch), so the model has no more work until
@@ -357,7 +401,11 @@ async fn embed_lex(lex: &[Span]) -> (Vec<Vec<f32>>, bool) {
                     match result {
                         Ok(v) => v,
                         Err(e) => {
-                            tracing::warn!(error = %e, "distil: embed failed — degrading to lexical-only");
+                            tracing::warn!(
+                                error = %e,
+                                attempts = EMBED_MAX_ATTEMPTS,
+                                "distil: embed failed after all retries — degrading to lexical-only"
+                            );
                             Vec::new()
                         }
                     }
@@ -435,4 +483,112 @@ fn record_run(s: &DistilStats, body: &str) {
         distil_body_preview = %preview,
         "session_distiller: distilled hour"
     );
+}
+
+#[cfg(test)]
+mod bench {
+    //! Manual diagnostic, not part of CI — measures the embedder's own memory/time cost
+    //! against REAL session data for one hour on this machine, to compare against the
+    //! Python predecessor's ~1 GB / batch_size=32 behaviour after the chunking fix.
+    //! Run: `cargo test --release -p meridian distiller::bench::embed_only_bench -- \
+    //! --ignored --nocapture` (optionally with `HOUR_START`/`HOUR_END`/`MERIDIAN_DB` env
+    //! overrides; defaults to the heavy hour this fix was diagnosed against).
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    fn rss_kb(pid: u32) -> u64 {
+        std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &pid.to_string()])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn embed_only_bench() {
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .try_init();
+
+        let db_path = std::env::var("MERIDIAN_DB").unwrap_or_else(|_| {
+            format!(
+                "{}/.meridian/meridian.db",
+                std::env::var("HOME").expect("HOME set")
+            )
+        });
+        let hs =
+            std::env::var("HOUR_START").unwrap_or_else(|_| "2026-07-18T10:30:00+00:00".to_string());
+        let he =
+            std::env::var("HOUR_END").unwrap_or_else(|_| "2026-07-18T11:30:00+00:00".to_string());
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect(&format!("sqlite://{db_path}"))
+            .await
+            .expect("connect to real meridian.db");
+
+        embedder::ensure_weights()
+            .await
+            .expect("embedder weights present");
+        assert!(embedder::is_ready(), "embedder must be ready to bench it");
+
+        let rows = rows::load_sessions(&pool, &hs, &he).await;
+        assert!(
+            !rows.is_empty(),
+            "no sessions in [{hs}, {he}) — pick an hour that has data via HOUR_START/HOUR_END"
+        );
+        println!("loaded {} sessions for [{hs}, {he})", rows.len());
+
+        // The model unloads again (inside embed_lex) before distil() returns, so a
+        // point-in-time RSS sample taken after the call would miss the peak — poll in
+        // a background thread for the call's duration and track the high-water mark.
+        let pid = std::process::id();
+        let peak_kb = Arc::new(AtomicU64::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (peak_clone, stop_clone) = (Arc::clone(&peak_kb), Arc::clone(&stop));
+        let sampler = std::thread::spawn(move || {
+            while !stop_clone.load(Ordering::Relaxed) {
+                peak_clone.fetch_max(rss_kb(pid), Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+
+        let rss_before = rss_kb(pid);
+        let t0 = Instant::now();
+        let (body, stats) = distil(rows, "HOUR 10:00", "bench").await;
+        let elapsed = t0.elapsed();
+
+        stop.store(true, Ordering::Relaxed);
+        sampler.join().ok();
+        let rss_after = rss_kb(pid);
+
+        println!("=== embed-only bench ===");
+        println!(
+            "nsess={} n_after_junk={} n_after_df={} n_after_lex={} n_after_sem={} n_selected={}",
+            stats.nsess,
+            stats.n_after_junk,
+            stats.n_after_df,
+            stats.n_after_lex,
+            stats.n_after_sem,
+            stats.n_selected
+        );
+        println!(
+            "total distil() time (all stages, embed included): {:.2}s",
+            elapsed.as_secs_f64()
+        );
+        println!(
+            "rss before: {} MB, peak during: {} MB (delta {} MB), after (post-unload): {} MB",
+            rss_before / 1024,
+            peak_kb.load(Ordering::Relaxed) / 1024,
+            (peak_kb.load(Ordering::Relaxed).saturating_sub(rss_before)) / 1024,
+            rss_after / 1024
+        );
+        println!(
+            "body preview: {}",
+            &body.chars().take(200).collect::<String>()
+        );
+    }
 }
