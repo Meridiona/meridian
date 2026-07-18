@@ -26,7 +26,7 @@
  * `RunComposer` (multi), `IntelligenceSection` (single), `CustomProviders` (single).
  */
 
-import { useId } from 'react'
+import { useId, useState } from 'react'
 import type { LlmModelOption } from '@/lib/llm-providers'
 
 /** The sentinel `<option>` value meaning "the user wants to type their own". */
@@ -70,8 +70,15 @@ export function ModelSelect({
 }: ModelSelectProps) {
   const id = useId()
   const known = models.some(m => m.id === value)
-  // Free text whenever we have nothing to offer, or the stored value isn't in what we offer.
-  const freeText = models.length === 0 || (value !== '' && !known)
+  // Picking "Custom model…" has to be held explicitly. Deriving it from the value alone
+  // cannot work: that choice clears the value, and an empty value against a non-empty list
+  // is indistinguishable from "nothing chosen yet" - so the text input would never appear
+  // and the escape hatch this component promises would be unreachable.
+  const [customMode, setCustomMode] = useState(false)
+  // Also free text when there is nothing to offer, or the stored value is one we don't list
+  // (which is how an already-saved unlisted model keeps rendering instead of being snapped
+  // to something else).
+  const freeText = customMode || models.length === 0 || (value !== '' && !known)
   const selected = freeText ? FREE_TEXT : value
   const note = models.find(m => m.id === value)?.note
 
@@ -90,9 +97,10 @@ export function ModelSelect({
           id={id}
           value={selected}
           onChange={e => {
-            // Switching TO free text clears the value so the field starts empty and the
-            // control doesn't flip straight back to the dropdown on the next render.
-            onChange(e.target.value === FREE_TEXT ? '' : e.target.value)
+            const custom = e.target.value === FREE_TEXT
+            setCustomMode(custom)
+            // Switching TO free text clears the value so the field starts empty.
+            onChange(custom ? '' : e.target.value)
           }}
           className="rounded-lg px-2.5 py-1.5 bg-ctrl min-w-0"
           style={{

@@ -81,21 +81,23 @@ fn parse_models_body(body: &str) -> Result<Vec<String>, LlmError> {
         .get("data")
         .or_else(|| parsed.get("models"))
         .unwrap_or(&parsed);
+    // A non-array envelope is a FAILURE, not an empty list. Some endpoints answer 200 with
+    // an error object (`{"error":"invalid key"}`); treating that as "listed no models" would
+    // report a working endpoint serving nothing and hide the real reason from the user.
+    let items = items.as_array().ok_or_else(|| {
+        LlmError::Failed("custom provider models response was not a list".to_string())
+    })?;
     let mut ids: Vec<String> = items
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|m| {
-                    // An entry is either {"id": "…"} or, on some servers, a bare string.
-                    m.get("id")
-                        .and_then(Value::as_str)
-                        .or_else(|| m.as_str())
-                        .map(str::to_string)
-                })
-                .filter(|s| !s.is_empty())
-                .collect()
+        .iter()
+        .filter_map(|m| {
+            // An entry is either {"id": "…"} or, on some servers, a bare string.
+            m.get("id")
+                .and_then(Value::as_str)
+                .or_else(|| m.as_str())
+                .map(str::to_string)
         })
-        .unwrap_or_default();
+        .filter(|s| !s.is_empty())
+        .collect();
     // Sorted and deduped so the picker's order doesn't depend on the server's, and a vendor
     // that lists the same id twice doesn't render it twice.
     ids.sort();
@@ -107,6 +109,36 @@ fn parse_models_body(body: &str) -> Result<Vec<String>, LlmError> {
 /// runs while a user watches a dropdown, and a slow endpoint should fall back to free text
 /// quickly rather than freeze the picker.
 const MODELS_TIMEOUT_S: u64 = 10;
+
+/// Ceiling on a `/models` body. Generous for the use case — the longest real listing is a
+/// few hundred entries, well under 100 KB — while still bounded.
+const MODELS_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+
+/// Read a response body with a hard byte ceiling.
+///
+/// `resp.text()` buffers without limit, and the URL here is **user-supplied**: a faulty or
+/// hostile endpoint could stream indefinitely and exhaust tray memory, which the request
+/// timeout does not prevent (a steady trickle never times out). Chunks are accumulated and
+/// the read is abandoned the moment it exceeds the cap.
+async fn read_capped_body(mut resp: reqwest::Response) -> Result<String, LlmError> {
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| LlmError::Failed(format!("custom provider models response: {e}")))?
+    {
+        if buf.len() + chunk.len() > MODELS_MAX_BODY_BYTES {
+            return Err(LlmError::Failed(format!(
+                "custom provider models response exceeded {} KB",
+                MODELS_MAX_BODY_BYTES / 1024
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    // Lossy rather than strict: a body that is almost-JSON with one bad byte should reach
+    // the parser and fail there with a useful message, not die as an encoding error.
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
 
 /// Ask an OpenAI-compatible endpoint what models it serves — `GET <base_url>/models`.
 ///
@@ -155,7 +187,7 @@ pub async fn list_models(
 
     let status = resp.status();
     let headers = resp.headers().clone();
-    let body = resp.text().await.unwrap_or_default();
+    let body = read_capped_body(resp).await?;
     if !status.is_success() {
         return Err(classify_error(status, &headers, &body, endpoint_id));
     }
@@ -490,6 +522,15 @@ mod models_listing_tests {
     #[test]
     fn rejects_a_non_json_body() {
         assert!(parse_models_body("<html>502 Bad Gateway</html>").is_err());
+    }
+
+    /// Valid JSON that isn't a list must fail for the same reason. Some endpoints answer
+    /// **200** with an error object, and reporting that as "no models" would blame the
+    /// endpoint for serving nothing while hiding the actual cause (a bad key, usually).
+    #[test]
+    fn rejects_a_non_array_envelope() {
+        assert!(parse_models_body(r#"{"error":"invalid key"}"#).is_err());
+        assert!(parse_models_body(r#"{"data":{"id":"a"}}"#).is_err());
     }
 }
 

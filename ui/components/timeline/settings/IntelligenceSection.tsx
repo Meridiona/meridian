@@ -197,12 +197,26 @@ export function IntelligenceSection({ settings, save }: {
       {pending && (
         <div className="sticky bottom-0 flex flex-col gap-2 pb-1"
           style={{ background: 'var(--t-panel)' }}>
+          {/* A staged change is now either a provider switch OR a model-only edit, and the
+              guidance has to match: telling someone who changed the model that a provider
+              "isn't in use yet" describes a switch that isn't happening. */}
           <p className="mt-body-sm" style={{
             color: saveStatus === 'error' ? 'var(--status-error-dot)' : 'var(--color-state-pending)',
           }}>
-            {saveStatus === 'error'
-              ? `Couldn't switch to ${llmProvider(pending.id).name} - it's still selected here, so you can press Save to try again.`
-              : `${llmProvider(pending.id).name} isn't in use yet - Save to switch to it.`}
+            {(() => {
+              const name = llmProvider(pending.id).name
+              const providerChanged = pending.id !== savedId
+                || (pending.id === 'custom' && pending.customId !== savedCustomId)
+              const target = pending.model === '' ? `the ${name} default model` : pending.model
+              if (saveStatus === 'error') {
+                return providerChanged
+                  ? `Couldn't switch to ${name} - it's still selected here, so you can press Save to try again.`
+                  : `Couldn't change the model to ${target} - it's still selected here, so you can press Save to try again.`
+              }
+              return providerChanged
+                ? `${name} isn't in use yet - Save to switch to it.`
+                : `${name} is still using its current model - Save to switch to ${target}.`
+            })()}
           </p>
           <SaveButton status={saveStatus} onClick={onSave} />
         </div>

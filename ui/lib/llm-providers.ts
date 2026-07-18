@@ -294,8 +294,16 @@ export const LLM_PROVIDERS: LlmProviderMeta[] = [
   },
 ]
 
-/** Look up one provider's metadata, or undefined for an unknown id. */
+/**
+ * Look up one provider's metadata, or undefined for an unknown id.
+ *
+ * `LLM_PROVIDERS` holds only the built-ins that get a card in the grid, so 'custom' has to
+ * be answered from [`CUSTOM_PROVIDER_META`] - exactly as `llmProvider` does. Without that,
+ * `supportsModelOverride('custom')` would answer false even though a custom endpoint does
+ * carry a model, which is the wrong answer for any caller that asks by id.
+ */
 export function providerMeta(id: LlmProviderId): LlmProviderMeta | undefined {
+  if (id === 'custom') return CUSTOM_PROVIDER_META
   return LLM_PROVIDERS.find((p) => p.id === id)
 }
 

@@ -15,7 +15,7 @@
 //     selects an ineligible endpoint, so the UI must not offer one as selectable - a
 //     rejected save would silently roll the choice back with nothing to explain it.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke, openExternal } from '@/lib/bridge'
 import {
   CUSTOM_PROVIDER_COST_NOTE,
@@ -178,11 +178,28 @@ function AddForm({ onAdd, onCancel }: {
   const [models, setModels] = useState<LlmModelOption[] | null>(null)
   const [listing, setListing] = useState(false)
   const [listError, setListError] = useState<string | null>(null)
+  // Bumped whenever the endpoint being described changes. A listing carries the generation
+  // it started in and is DISCARDED if that no longer matches, so a slow answer for the old
+  // URL/key can't repopulate the picker after the user has retargeted the form - which would
+  // otherwise let a model that doesn't exist on the new endpoint be selected and saved.
+  const listGen = useRef(0)
+
+  /** Drop everything discovered about the previous endpoint. */
+  const resetModelDiscovery = useCallback(() => {
+    listGen.current += 1
+    setModels(null)
+    setListError(null)
+    setListing(false)
+    // The chosen model belonged to the old endpoint; keeping it would submit a model the
+    // new one may not serve.
+    setModel('')
+  }, [])
 
   // Both are needed for the call: the key authenticates it, the URL addresses it.
   const canList = baseUrl.trim() !== '' && apiKey.trim() !== ''
 
   async function listModels() {
+    const gen = listGen.current
     setListing(true)
     setListError(null)
     try {
@@ -192,14 +209,16 @@ function AddForm({ onAdd, onCancel }: {
         baseUrl,
         apiKey,
       })
+      if (gen !== listGen.current) return
       setModels(ids.map((m) => ({ id: m, label: m })))
       if (ids.length === 0) setListError('This endpoint listed no models - type one instead.')
     } catch (e) {
+      if (gen !== listGen.current) return
       // Degrade, never block: the model field is still a text box.
       setModels(null)
       setListError(String(e))
     } finally {
-      setListing(false)
+      if (gen === listGen.current) setListing(false)
     }
   }
 
@@ -213,6 +232,9 @@ function AddForm({ onAdd, onCancel }: {
     const p = customVendorPreset(id)
     setBaseUrl(p?.baseUrl ?? '')
     if (!name.trim() && p && id !== 'other') setName(p.name)
+    // A different vendor is a different endpoint - anything discovered about the last one
+    // is now wrong.
+    resetModelDiscovery()
   }
 
   async function submit() {
@@ -256,7 +278,7 @@ function AddForm({ onAdd, onCancel }: {
 
       <Field label="Name" value={name} onChange={setName} placeholder="Gemini Flash" />
       {urlEditable && (
-        <Field label="Base URL" value={baseUrl} onChange={setBaseUrl} mono
+        <Field label="Base URL" value={baseUrl} onChange={(v) => { setBaseUrl(v); resetModelDiscovery() }} mono
           placeholder="https://host/v1" />
       )}
       {/* The cost warning sits with the key field, because that is where the money decision
@@ -270,7 +292,9 @@ function AddForm({ onAdd, onCancel }: {
         <p style={{ fontSize: 10.5, lineHeight: 1.45, color: 'var(--t-muted)' }}>{CUSTOM_PROVIDER_COST_NOTE}</p>
       </div>
 
-      <Field label="API key" value={apiKey} onChange={setApiKey} type="password" mono
+      {/* A different key can address a different account, and therefore a different set of
+          models - so it invalidates a listing just as the URL does. */}
+      <Field label="API key" value={apiKey} onChange={(v) => { setApiKey(v); resetModelDiscovery() }} type="password" mono
         placeholder="pasted once - never shown again" />
       {preset?.keyUrl && (
         <button onClick={() => preset.keyUrl && openExternal(preset.keyUrl)}

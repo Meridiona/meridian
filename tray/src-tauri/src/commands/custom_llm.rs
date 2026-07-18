@@ -194,6 +194,29 @@ fn make_id(name: &str, existing: &[CustomLlmProvider]) -> String {
         .unwrap()
 }
 
+/// The checks every outbound request needs, whatever it is being sent for.
+///
+/// Shared by [`validate`] (adding an endpoint) and
+/// [`list_custom_llm_provider_models`] (listing one that isn't saved yet) so the two cannot
+/// drift — a rule enforced on the add path but not the listing path would be a rule with a
+/// hole in it.
+fn validate_transport_inputs(base_url: &str, api_key: &str) -> Result<(), String> {
+    if api_key.trim().is_empty() {
+        return Err("API key is required".into());
+    }
+    if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+        return Err("base URL must start with http:// or https://".into());
+    }
+    // The key becomes an Authorization header and the URL becomes a request line: a newline
+    // in either is header injection, exactly as `oo_email`/`oo_password` guard against.
+    for (field, v) in [("API key", api_key), ("base URL", base_url)] {
+        if v.contains('\n') || v.contains('\r') {
+            return Err(format!("{field} contains invalid characters"));
+        }
+    }
+    Ok(())
+}
+
 /// Reject what would break the request or the file. Kept strict at the door: the alternative
 /// is discovering it hours later as a failed fold.
 fn validate(name: &str, base_url: &str, model: &str, api_key: &str) -> Result<(), String> {
@@ -204,22 +227,11 @@ fn validate(name: &str, base_url: &str, model: &str, api_key: &str) -> Result<()
         // Unlike a CLI provider there is no "the provider's default model" to fall back to.
         return Err("model is required - a custom endpoint has no default".into());
     }
-    if api_key.trim().is_empty() {
-        return Err("API key is required".into());
-    }
-    if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
-        return Err("base URL must start with http:// or https://".into());
-    }
-    // The key becomes an Authorization header and the URL becomes a request line: a newline
-    // in either is header injection, exactly as `oo_email`/`oo_password` guard against.
-    for (field, v) in [
-        ("API key", api_key),
-        ("base URL", base_url),
-        ("model", model),
-    ] {
-        if v.contains('\n') || v.contains('\r') {
-            return Err(format!("{field} contains invalid characters"));
-        }
+    validate_transport_inputs(base_url, api_key)?;
+    // The model rides in the request BODY rather than a header or the request line, so it is
+    // checked here rather than in the shared transport helper.
+    if model.contains('\n') || model.contains('\r') {
+        return Err("model contains invalid characters".into());
     }
     Ok(())
 }
@@ -447,7 +459,11 @@ pub async fn remove_custom_llm_provider(id: String) -> Result<Vec<CustomProvider
 ///
 /// [`meridian::llm::openai_compat::list_models`] does the request and response shaping.
 #[tauri::command]
-#[tracing::instrument(skip(api_key))]
+// `base_url` is skipped alongside the key, not just the key: a base URL can carry a
+// credential in a query string, and this span goes to the telemetry spool that ships inside
+// a diagnostics bundle. The endpoint id is the one safe thing to record - the same rule the
+// backend follows (see the logging note in src/llm/openai_compat.rs).
+#[tracing::instrument(skip(base_url, api_key))]
 pub async fn list_custom_llm_provider_models(
     id: Option<String>,
     base_url: Option<String>,
@@ -467,18 +483,8 @@ pub async fn list_custom_llm_provider_models(
         None => {
             let url = base_url.unwrap_or_default();
             let key = api_key.unwrap_or_default();
-            if key.trim().is_empty() {
-                return Err("API key is required to list models".into());
-            }
-            if !url.starts_with("http://") && !url.starts_with("https://") {
-                return Err("base URL must start with http:// or https://".into());
-            }
-            // Same header-injection guard `validate` applies before storing these.
-            for (field, v) in [("API key", &key), ("base URL", &url)] {
-                if v.contains('\n') || v.contains('\r') {
-                    return Err(format!("{field} contains invalid characters"));
-                }
-            }
+            // The same door the add path uses - see `validate_transport_inputs`.
+            validate_transport_inputs(&url, &key)?;
             (url, key, "unsaved".to_string())
         }
     };

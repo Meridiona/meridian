@@ -168,6 +168,33 @@ describe('free text is always reachable', () => {
     expect(multi).toContain('<input')
   })
 
+  // The escape hatch was BROKEN on first submission and the string-scan guards above did
+  // not catch it: picking "Custom model…" clears the value, and an empty value against a
+  // non-empty list is indistinguishable from "nothing chosen yet", so the derived flag went
+  // straight back to false and the text input never rendered. Model the derivation to pin
+  // the behaviour, not just the presence of the option.
+  const isFreeText = (customMode: boolean, models: string[], value: string) =>
+    customMode || models.length === 0 || (value !== '' && !models.includes(value))
+
+  it('stays in free text after picking Custom model on a non-empty list', () => {
+    // customMode must be held explicitly - this is the case that regressed.
+    expect(isFreeText(true, ['opus', 'sonnet'], '')).toBe(true)
+  })
+
+  it('would NOT stay in free text if the mode were derived from the value alone', () => {
+    // Documents why the explicit flag exists: without it this is the failing case.
+    expect(isFreeText(false, ['opus', 'sonnet'], '')).toBe(false)
+  })
+
+  it('leaves free text once a listed model is picked', () => {
+    expect(isFreeText(false, ['opus', 'sonnet'], 'opus')).toBe(false)
+  })
+
+  it('holds the explicit custom-entry flag in component state', () => {
+    expect(code).toContain('customMode')
+    expect(code).toMatch(/setCustomMode\(custom\)/)
+  })
+
   it('shows an unlisted stored model rather than snapping it to a listed one', () => {
     // A value we don't carry must switch the control to free text, or revisiting the
     // page would silently rewrite the user's model.
