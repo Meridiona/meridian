@@ -31,8 +31,8 @@ pub struct SummariserConfig {
     pub cursor_model: String,
     pub cursor_timeout_s: u64,
 
-    /// How many times to attempt the primary engine before giving up (leaving the
-    /// row pending). Rate-limit short-circuits.
+    /// How many times to attempt the session's own agent CLI before giving up and
+    /// leaving the row pending for a later tick. A rate-limit short-circuits.
     pub primary_attempts: u32,
 
     pub transcript_cap_chars: usize,

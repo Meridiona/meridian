@@ -46,6 +46,46 @@ pub async fn ensure_hour(
     Ok(())
 }
 
+/// Hours from an EARLIER day that were attempted but never finished, newest-first
+/// cutoff `since_hour_start` (inclusive) and strictly before `before_hour_start`.
+///
+/// Returns `(day_utc, hour_start, hour_end)` for every row whose status is not
+/// `done`. Deliberately reads only rows that ALREADY EXIST: a ledger row is
+/// written by [`ensure_hour`] when the driver first walks an hour, so this can
+/// only ever return hours the pipeline genuinely tried and failed to finish. It
+/// will not conjure hours for a day the daemon was switched off — that would turn
+/// a retry into an unbounded multi-day backfill, spending an LLM call per hour on
+/// a day the user never expected to be processed.
+///
+/// `before_hour_start` is today's local midnight, so this never overlaps the
+/// same-day walk and no hour is processed twice in one pass.
+pub async fn unfinished_hours_between(
+    pool: &SqlitePool,
+    since_hour_start: &str,
+    before_hour_start: &str,
+) -> Result<Vec<(String, String, String)>> {
+    let rows = sqlx::query(
+        "SELECT day_utc, hour_start, hour_end FROM pm_worklog_hours \
+         WHERE status != 'done' AND hour_start >= ? AND hour_start < ? \
+         ORDER BY hour_start ASC",
+    )
+    .bind(since_hour_start)
+    .bind(before_hour_start)
+    .fetch_all(pool)
+    .await
+    .context("read unfinished pm_worklog_hours")?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            (
+                r.get::<String, _>("day_utc"),
+                r.get::<String, _>("hour_start"),
+                r.get::<String, _>("hour_end"),
+            )
+        })
+        .collect())
+}
+
 /// Has this hour already been marked done?
 pub async fn hour_is_done(pool: &SqlitePool, hour_start: &str) -> Result<bool> {
     let row = sqlx::query("SELECT status FROM pm_worklog_hours WHERE hour_start = ?")
@@ -223,6 +263,89 @@ mod tests {
         let pool = SqlitePool::connect_with(opts).await.unwrap();
         sqlx::migrate!("src/migrations").run(&pool).await.unwrap();
         pool
+    }
+
+    /// The retry pass must chase only REAL failures, and only within its window.
+    ///
+    /// Each assertion here maps to a way the earlier-day retry could go wrong: pick
+    /// up finished work (wasted LLM calls), re-do today (double-processing, since
+    /// `catch_up_today` already walks it), or reach back indefinitely (a broken hour
+    /// billing a call every tick forever).
+    #[tokio::test]
+    async fn unfinished_hours_excludes_done_today_and_out_of_window() {
+        let pool = fresh_db().await;
+
+        // Two days back — inside the window, left pending. The case the whole pass exists for.
+        ensure_hour(
+            &pool,
+            "2026-05-28",
+            "2026-05-28T05:00:00+00:00",
+            "2026-05-28T06:00:00+00:00",
+        )
+        .await
+        .unwrap();
+        // Same day, but finished — must not be redone.
+        ensure_hour(
+            &pool,
+            "2026-05-28",
+            "2026-05-28T07:00:00+00:00",
+            "2026-05-28T08:00:00+00:00",
+        )
+        .await
+        .unwrap();
+        mark_hour_done(&pool, "2026-05-28T07:00:00+00:00", 3)
+            .await
+            .unwrap();
+        // Older than the lookback — deliberately abandoned rather than retried forever.
+        ensure_hour(
+            &pool,
+            "2026-05-01",
+            "2026-05-01T05:00:00+00:00",
+            "2026-05-01T06:00:00+00:00",
+        )
+        .await
+        .unwrap();
+        // Today — `catch_up_today` owns this one; returning it would process it twice.
+        ensure_hour(
+            &pool,
+            "2026-05-30",
+            "2026-05-30T05:00:00+00:00",
+            "2026-05-30T06:00:00+00:00",
+        )
+        .await
+        .unwrap();
+
+        let got = unfinished_hours_between(
+            &pool,
+            "2026-05-28T00:00:00+00:00",
+            "2026-05-30T00:00:00+00:00",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            got.iter().map(|(_, hs, _)| hs.as_str()).collect::<Vec<_>>(),
+            vec!["2026-05-28T05:00:00+00:00"],
+        );
+    }
+
+    /// The guard against turning a retry into a multi-day backfill: an hour the
+    /// driver never attempted has no ledger row, so it can never be returned. A day
+    /// the daemon was switched off stays untouched instead of costing 24 LLM calls.
+    #[tokio::test]
+    async fn an_hour_never_attempted_is_never_returned() {
+        let pool = fresh_db().await;
+        let got = unfinished_hours_between(
+            &pool,
+            "2026-05-28T00:00:00+00:00",
+            "2026-05-30T00:00:00+00:00",
+        )
+        .await
+        .unwrap();
+        assert!(
+            got.is_empty(),
+            "no ledger rows exist, so nothing to retry: {got:?}"
+        );
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -5,11 +5,13 @@
 // picks up summarised rows by querying session_summary IS NOT NULL directly.
 //
 // Engine routing per segment: Codex sessions → `codex exec`, else → `claude -p`
-// (both Rust subprocesses on the user's subscription). Each primary engine is
-// tried up to `primary_attempts` times; there is no cross-engine fallback (a
-// transcript is summarised by its own agent's CLI), so a failed/rate-limited row
-// is left pending for a later drain. Sequential (one transcript in flight) keeps
-// memory flat and avoids bursting rate limits.
+// (both Rust subprocesses on the user's subscription). Each engine is tried up to
+// `primary_attempts` times; a rate-limit short-circuits. There is no fallback
+// engine — the local MLX server used to catch every failure here, and with it
+// deprecated a row its own agent cannot summarise stays pending and is retried
+// on later ticks, then dead-lettered to 'subprocess_error' after
+// MAX_ROW_ATTEMPTS so it cannot churn forever. Sequential (one transcript in
+// flight) keeps memory flat and avoids bursting rate limits.
 //
 // Cadence: woken in-process by the indexer's own seals (near-instant) plus a
 // short catch-up sweep for hook-sealed rows — no listener (local-only rule).
@@ -41,8 +43,8 @@ use db::PendingRow;
 
 // ──────────────────────── Errors / engine output ────────────────────────────
 
-/// A summariser engine failure. `RateLimited` means the quota is exhausted (stop
-/// retrying); `Failed` is anything else (retry the primary up to `primary_attempts`).
+/// A summariser engine failure. `RateLimited` means stop now — the quota will not
+/// refill between attempts; `Failed` is anything else and earns a retry.
 #[derive(Debug, Clone)]
 pub enum SummariserError {
     RateLimited(String),
@@ -150,6 +152,13 @@ pub enum Source {
     Codex,
     Copilot,
     CursorAgent,
+    /// Historical only — nothing produces this any more.
+    ///
+    /// MLX used to be the shared fallback for every agent; that was removed with the
+    /// on-device deprecation. The variant stays because `summary_source` is a PERSISTED
+    /// vocabulary: rows summarised before the removal still read `"mlx"` on disk, and
+    /// dropping it would make those rows undescribable.
+    Mlx,
     None,
 }
 
@@ -160,6 +169,7 @@ impl Source {
             Source::Codex => "codex",
             Source::Copilot => "copilot",
             Source::CursorAgent => "cursor",
+            Source::Mlx => "mlx",
             Source::None => "none",
         }
     }
@@ -270,10 +280,12 @@ async fn summarise_one_inner(
 
     let mut errors: Vec<String> = Vec::new();
 
-    // The session's own agent, up to `primary_attempts` tries. Each agent's transcripts
-    // go to its own CLI (codex→codex, copilot→copilot, cursor→cursor-agent,
-    // claude/unknown→claude). There is no cross-engine fallback: a failed row is left
-    // pending for a later drain.
+    // The session's own agent summarises it, up to `primary_attempts` tries
+    // (codex→codex, copilot→copilot, cursor→cursor-agent, claude/unknown→claude).
+    // There is no fallback engine: MLX used to catch every failure here. A row the
+    // agent can't summarise is left `pending_summariser` for a later tick rather
+    // than written with a weaker answer, and `drain`'s attempt ledger dead-letters
+    // it after MAX_ROW_ATTEMPTS so a permanently-broken row cannot churn.
     let agent = row.agent.trim();
     let primary_source = if agent.eq_ignore_ascii_case("codex") {
         Source::Codex
@@ -287,8 +299,8 @@ async fn summarise_one_inner(
 
     // Debug child span: the operational story of one summarisation — which engine
     // ran, how many attempts, and wall-clock. Mirrors the classifier's
-    // `llm_inference` span; the per-attempt warn! logs below attach to it, so a
-    // failed row is never silent.
+    // `llm_inference` span; the per-attempt warn! logs below attach to it, so a row
+    // that failed to summarise is never silent.
     let infer_span = tracing::info_span!(
         "summariser_inference",
         primary_engine = primary_source.as_str(),
@@ -328,7 +340,7 @@ async fn summarise_one_inner(
                         row_id = row.id,
                         engine = primary_source.as_str(),
                         error = %m,
-                        "primary summariser rate-limited — leaving row pending for a later drain"
+                        "summariser rate-limited — leaving the row pending for a later tick"
                     );
                     errors.push(format!("{} rate-limited: {m}", primary_source.as_str()));
                     break; // retrying a limit is pointless
@@ -365,6 +377,9 @@ async fn summarise_one_inner(
         Source::CursorAgent if !cfg.cursor_model.is_empty() => cfg.cursor_model.clone(),
         Source::CursorAgent => "cursor-agent-default".into(),
         Source::Copilot => "copilot-default".into(),
+        // Unreachable now that nothing sets `Source::Mlx`; kept so the match stays total
+        // and reads correctly against rows written before the fallback was removed.
+        Source::Mlx => "mlx-server".into(),
         Source::None => String::new(),
     };
     infer_span.record("engine_used", source.as_str());
@@ -514,9 +529,14 @@ pub async fn run_loop(
 /// Per-daemon-lifetime failure ledger: a row that fails this many drain
 /// passes is dead-lettered (skipped with a warn) instead of retried forever.
 /// The churn this prevents was observed live 2026-06-07: rows whose capped
-/// prompt exceeds claude's 200k context cycled every drain, burning 2 claude
-/// calls each, indefinitely. The ledger is in-memory by design: a daemon
-/// restart (or `--day` backfill after fixing the engine) retries cleanly.
+/// prompt exceeds claude's 200k context cycled every drain, each burning two
+/// claude calls (plus, at the time, an MLX fallback call), indefinitely. The
+/// ledger is in-memory by design: a daemon restart (or `--day` backfill after
+/// fixing the engine) retries cleanly.
+///
+/// This is what makes removing the MLX fallback safe rather than a hot loop:
+/// MLX used to terminate a row the primary engine could never summarise, and
+/// this ledger is now the only thing that does.
 const MAX_ROW_ATTEMPTS: u32 = 3;
 
 /// One drain pass: summarise pending rows from a bounded recent window

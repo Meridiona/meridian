@@ -1,5 +1,5 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-//! The single factory — settings in, live backend out — plus the fallback chain.
+//! The single factory — settings in, live backend out — plus the retry and backoff rules.
 //!
 //! # Re-read on every call, never cached
 //!
@@ -16,24 +16,38 @@
 //! provider settings and a generator that bypassed its own factory). Route everything
 //! through here.
 //!
-//! # The fallback chain ([`complete`])
+//! # What happens when a call fails ([`complete`])
 //!
 //! | what happened | what we do |
 //! |---|---|
-//! | `Failed` (crashed, not installed, timed out) | retry once, then give up |
-//! | `RateLimited` (subscription exhausted) | give up **immediately** — retrying a quota is pointless — and stop routing to that provider until it resets |
-//! | provider gives up | return the error; the caller leaves the work pending and retries next tick |
+//! | `Failed` (crashed, not installed, timed out) | retry once, then return the error |
+//! | `RateLimited` (quota exhausted) | return **immediately** — retrying a quota is pointless — and stop calling that provider until it resets |
+//! | a call arrives while the backoff is live | return the rate-limit error without dialling out at all |
 //!
-//! There is **no on-device fallback** — generation runs only through the user's chosen
-//! third-party provider. When it's unavailable, the LLM-driven step simply idles and the
-//! hourly ledger re-runs it next cycle. (A dedicated auto-retry/backoff-aware scheduler is
-//! a planned follow-up.)
+//! In every case the caller leaves the hour pending and retries on the next tick. That is
+//! the whole error contract now.
 //!
-//! The backoff lives **in memory here, not in settings.json**. The user's *choice* is
-//! sacred: being rate-limited pauses the *routing* for that provider, it does not rewrite
-//! what they asked for. Writing it to settings would mean a quota blip silently and
-//! permanently changed their provider. That distinction is what keeps this from becoming
-//! Dayflow's three-settings mess.
+//! # There is no on-device fallback (deliberately removed)
+//!
+//! This used to substitute the on-device MLX model whenever the chosen provider failed or
+//! was backing off. MLX — and the whole Python/services stack it ran in — has been removed
+//! entirely, so that substitution is gone along with the "Local" provider it substituted:
+//! generation now runs only through a third-party CLI or a custom endpoint.
+//!
+//! Losing it costs less than it looks. The substitution was already refused whenever the
+//! local weights were not on disk (the old `llm_local_chat_model_ready` gate), so
+//! "propagate the error, leave the hour pending, retry next tick" was an established path
+//! that every caller already handled — it is now simply the only path. And an hour is not
+//! lost by being deferred: the work is durable, the next tick picks it up, and by then the
+//! backoff has usually expired. What the fallback really bought was *sooner*, at the price
+//! of a materially weaker answer from a 2B model attributed to a provider the user never
+//! picked.
+//!
+//! The backoff still lives **in memory here, not in settings.json**. The user's *choice* is
+//! sacred: being rate-limited degrades the *timing*, it does not rewrite what they asked
+//! for. Writing it to settings would mean a quota blip silently and permanently changed
+//! their provider. That distinction is what keeps this from becoming Dayflow's
+//! three-settings mess.
 //!
 //! # How long the backoff actually lasts
 //!
@@ -143,8 +157,11 @@ pub fn backend_for(provider: LlmProvider, cfg: LlmConfig) -> Box<dyn LlmBackend>
 ///
 /// An unrecognised stored value degrades to the default rather than failing —
 /// `update_settings` rejects bad values at the door, so this is belt and braces for a
-/// hand-edited file or a downgrade. This always returns the chosen provider; backoff is
-/// handled in [`complete_inner`] (a backing-off provider errors, it is not re-routed).
+/// hand-edited file or a downgrade.
+///
+/// Purely a factory: it returns the user's provider whatever its backoff state, because a
+/// `Box<dyn LlmBackend>` has no way to say "backing off, don't call". Rate limits are
+/// handled by [`complete`], which is what callers actually use.
 pub fn resolve() -> Box<dyn LlmBackend> {
     let s = load_runtime_settings();
     let cfg = LlmConfig::from_settings(&s);
@@ -152,23 +169,23 @@ pub fn resolve() -> Box<dyn LlmBackend> {
     backend_for(chosen, cfg)
 }
 
-/// Run one prose call through the user's provider, with the full fallback chain.
+/// Run one prose call through the user's provider, with retry and rate-limit handling.
 ///
-/// This — not [`resolve`] — is what callers should use. It owns the retry, the backoff and
-/// the degrade-to-local rule, so no caller has to reimplement them (and get them subtly
-/// different, which is how a fallback becomes a silent data-loss bug).
+/// This — not [`resolve`] — is what callers should use. It owns the retry and the backoff,
+/// so no caller has to reimplement them (and get them subtly different, which is how a
+/// shared rule becomes a silent data-loss bug).
 ///
-/// Returns the output and the provider that actually answered — which may not be the one
-/// the user chose. Callers should record it on their span: an hour summarised by the local
-/// model when the user picked Claude is not a failure, but it is a fact worth seeing.
+/// Returns the output and the provider that answered. That is always the provider the user
+/// chose — nothing substitutes for it any more — but the value is still returned so callers
+/// can record it on their span, and so the signature survives a future second provider.
 ///
 /// Every logical call is one `llm.call` span with THREE sub-spans, so the trace waterfall
 /// reads left-to-right as request → think → response:
 /// * `llm.request` — the EXACT prompt (`llm_prompt`, the system prompt) and input
 ///   (`llm_input`, the user message) sent, FTS-indexed in OpenObserve.
 /// * `llm.infer` — the actual backend call; its duration is the model's real think time,
-///   and it carries the provider that answered, token counts and elapsed. The retry /
-///   rate-limit / on-device fallback all live inside this one sub-span.
+///   and it carries the provider that answered, token counts and elapsed. The retry and the
+///   rate-limit handling both live inside this one sub-span.
 /// * `llm.response` — the model's EXACT answer (`llm_output`).
 ///
 /// A parent stage (`worklog.report`, `worklog.workstream.build`) therefore shows one child
@@ -271,16 +288,19 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
     let cfg = LlmConfig::from_settings(&s);
     let chosen = LlmProvider::from_wire(&s.llm_provider).unwrap_or_default();
 
-    // Already backing off from an earlier rate limit → don't spend an attempt. Keyed
-    // per-backend, so a limit on a provider the user has since switched away from doesn't
-    // block the one they're on now.
+    // Still inside an earlier rate limit's window. Refuse without dialling out: the quota
+    // has not refilled, so the call would spend a round-trip to earn the same 429 and, on a
+    // metered endpoint, could count against the very quota we are waiting on. Keyed
+    // per-backend, so a limit on a provider the user has since switched away from does not
+    // block this one.
     if is_backing_off(&backoff_key(chosen, &cfg)) {
         tracing::debug!(
             provider = chosen.as_str(),
-            "llm: provider is backing off from an earlier rate limit — skipping this call"
+            label = %req.label,
+            "llm: provider is rate-limited; skipping until the backoff expires"
         );
         return Err(LlmError::RateLimited(format!(
-            "{} is backing off from an earlier rate limit",
+            "{} is rate-limited; waiting for the quota to reset",
             chosen.as_str()
         )));
     }
@@ -301,10 +321,11 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
                     label = %req.label,
                     error = %msg,
                     backoff_s = backoff.as_secs(),
-                    "llm: provider rate-limited — pausing it until the backoff expires"
+                    "llm: provider rate-limited — skipping it until the quota resets"
                 );
                 start_backoff(&backoff_key(chosen, &cfg), backoff);
-                return Err(LlmError::RateLimited(msg));
+                last = LlmError::RateLimited(msg);
+                break;
             }
             Err(e) => {
                 tracing::warn!(
@@ -319,11 +340,14 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
         }
     }
 
+    // Out of options: no provider answers on the user's behalf. The caller leaves its unit
+    // of work pending and retries next tick, by which time a rate-limit window has usually
+    // expired and a transient failure has usually cleared.
     tracing::error!(
         provider = chosen.as_str(),
         label = %req.label,
         error = %last,
-        "llm: provider failed with no fallback — leaving the work pending for next cycle"
+        "llm: provider call did not succeed — leaving the work pending for the next tick"
     );
     Err(last)
 }
@@ -378,11 +402,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A backoff pauses the ROUTING for that provider but never rewrites the user's choice:
-    /// `resolve()` still returns the chosen provider (backoff is enforced in
-    /// `complete_inner`, which errors), and the stored setting is untouched.
+    /// A rate limit degrades the TIMING, never the user's choice. With the on-device
+    /// fallback gone there is nothing to route *to*, so what has to hold is narrower and
+    /// more important: the backoff is recorded, the stored setting is untouched, and
+    /// [`resolve`] keeps handing back the provider they picked.
     #[test]
-    fn a_backoff_does_not_rewrite_the_users_choice() {
+    fn a_rate_limit_backoff_never_rewrites_the_users_choice() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_backoff();
         let dir =
@@ -390,37 +415,45 @@ mod tests {
         let path = write_settings(&dir, "claude");
 
         start_backoff("claude", RATE_LIMIT_BACKOFF);
+        assert!(
+            is_backing_off("claude"),
+            "the limit is recorded so `complete` can refuse without dialling out"
+        );
         assert_eq!(
             resolve().provider(),
             LlmProvider::Claude,
-            "resolve still returns the chosen provider; the setting is sacred"
+            "the factory still reports the user's provider — nothing substitutes for it"
         );
         let on_disk = std::fs::read_to_string(&path).unwrap();
         assert!(
             on_disk.contains("claude"),
-            "stored choice untouched: {on_disk}"
+            "and the stored choice is untouched: {on_disk}"
         );
 
         clear_backoff();
+        assert!(!is_backing_off("claude"), "calls resume once it expires");
+
         std::env::remove_var("MERIDIAN_SETTINGS_PATH");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Per-backend keying: a rate limit on ONE provider must not block a DIFFERENT provider
-    /// the user switches to. This is the invariant `complete_inner` relies on to skip a
-    /// backing-off provider without touching the one now selected.
+    /// The fix for the cross-provider backoff bug: a rate limit on ONE provider must not
+    /// stall a DIFFERENT provider the user switches to. Per-backend keying makes the switch
+    /// escape the backoff with no clear-on-write signal (which couldn't cross the
+    /// tray↔daemon process boundary anyway).
     #[test]
-    fn backoff_is_keyed_per_provider() {
+    fn a_backoff_on_one_provider_does_not_stall_another() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_backoff();
+
         start_backoff("claude", RATE_LIMIT_BACKOFF);
+        assert!(is_backing_off("claude"));
         assert!(
-            is_backing_off("claude"),
-            "the limited provider is backing off"
+            !is_backing_off("codex"),
+            "switching to a provider that isn't rate-limited escapes the backoff"
         );
-        assert!(!is_backing_off("codex"), "a different provider is not");
+
         clear_backoff();
-        assert!(!is_backing_off("claude"), "and it clears");
     }
 
     #[test]
