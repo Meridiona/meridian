@@ -18,11 +18,41 @@ fn home() -> PathBuf {
     meridian_core::paths::home_dir_or_cwd()
 }
 
+/// Is `p` a file this OS would actually execute?
+///
+/// Unix answers with the execute bits. Windows has no such bit — what makes a
+/// file runnable there is its extension appearing in `PATHEXT` — so the
+/// question becomes "is it a file whose extension is executable".
 fn is_exec(p: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(p)
-        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p)
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(windows)]
+    {
+        p.is_file()
+            && p.extension().and_then(|e| e.to_str()).is_some_and(|ext| {
+                let dotted = format!(".{}", ext.to_ascii_uppercase());
+                pathext().iter().any(|e| *e == dotted)
+            })
+    }
+}
+
+/// The `PATHEXT` entries, upper-cased, as `.EXE`-style strings.
+///
+/// Windows-only. The documented default is used when the variable is unset,
+/// which happens in stripped service environments.
+#[cfg(windows)]
+fn pathext() -> Vec<String> {
+    std::env::var("PATHEXT")
+        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
+        .split(';')
+        .filter(|e| !e.is_empty())
+        .map(|e| e.to_ascii_uppercase())
+        .collect()
 }
 
 /// Repo root via the running binary (the CLI wrapper may run from anywhere, so
@@ -36,11 +66,46 @@ pub fn repo_root() -> Option<PathBuf> {
 }
 
 /// Find an executable on PATH (no `which` crate).
+///
+/// On Windows the bare name is not enough: `node` is installed as `node.exe`
+/// and npm-installed CLIs (including the coding-agent CLIs this probes for) as
+/// `.cmd` shims. Probing only the bare name — which is what this did before —
+/// reports every one of them as missing, so the health checks and provider
+/// detection would say "not installed" on a machine where they all are.
 pub fn which(bin: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
-        .map(|dir| dir.join(bin))
+        .flat_map(|dir| {
+            candidate_names(bin)
+                .into_iter()
+                .map(move |name| dir.join(name))
+        })
         .find(|c| c.is_file())
+}
+
+/// The filenames to probe for `bin`, in priority order.
+///
+/// Unix: the name as given. Windows: each `PATHEXT` suffix first (that is what
+/// the shell would actually run), then the bare name as a last resort for the
+/// unusual extension-less case.
+fn candidate_names(bin: &str) -> Vec<String> {
+    #[cfg(unix)]
+    {
+        vec![bin.to_string()]
+    }
+    #[cfg(windows)]
+    {
+        // A name that already carries an extension is taken at face value.
+        if Path::new(bin).extension().is_some() {
+            return vec![bin.to_string()];
+        }
+        let mut names: Vec<String> = pathext()
+            .iter()
+            .map(|e| format!("{bin}{}", e.to_ascii_lowercase()))
+            .collect();
+        names.push(bin.to_string());
+        names
+    }
 }
 
 fn launchd_pid(label: &str) -> Option<i64> {
@@ -206,5 +271,66 @@ fn disk_check(name: &'static str, path: &Path) -> Check {
             .with_remedy("free disk space"),
         Some(gb) => Check::ok(name, "system", format!("{gb:.0} GB free")),
         None => Check::info(name, "system", "usage unknown"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The binary every supported OS ships, used as a known-present probe.
+    /// Named per-platform so these tests are meaningful on the Windows CI job
+    /// rather than silently unix-only.
+    #[cfg(unix)]
+    const PROBE: &str = "sh";
+    #[cfg(windows)]
+    const PROBE: &str = "cmd";
+
+    #[test]
+    fn which_finds_a_binary_that_is_always_present() {
+        assert!(
+            which(PROBE).is_some(),
+            "expected to resolve {PROBE:?} on PATH"
+        );
+    }
+
+    #[test]
+    fn which_returns_none_for_a_binary_that_does_not_exist() {
+        assert!(which("meridian-definitely-not-a-real-binary-xyz").is_none());
+    }
+
+    /// Regression guard for the bug where `which` probed only the bare name:
+    /// on Windows the shell resolves `cmd` through PATHEXT to `cmd.exe`, and a
+    /// bare `cmd` is not a file — so node and every npm-installed CLI shim was
+    /// reported missing on machines where they were all installed.
+    #[cfg(windows)]
+    #[test]
+    fn which_resolves_through_pathext() {
+        let resolved = which(PROBE).expect("cmd must resolve on Windows");
+        assert_eq!(
+            resolved
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase),
+            Some("exe".to_string()),
+            "expected PATHEXT resolution to land on cmd.exe, got {resolved:?}"
+        );
+    }
+
+    /// `is_exec` must agree with `which`: anything `which` returns is by
+    /// definition something this OS would run.
+    #[test]
+    fn is_exec_agrees_with_which() {
+        let resolved = which(PROBE).expect("probe binary must resolve");
+        assert!(
+            is_exec(&resolved),
+            "{resolved:?} came from which() but is_exec() rejected it"
+        );
+    }
+
+    #[test]
+    fn is_exec_rejects_a_directory_and_a_missing_path() {
+        assert!(!is_exec(Path::new("/")));
+        assert!(!is_exec(Path::new("/meridian-no-such-path-xyz")));
     }
 }
