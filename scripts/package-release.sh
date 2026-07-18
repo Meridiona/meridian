@@ -27,7 +27,7 @@ TRAY_BIN="target/release/meridian-tray"
 
 DEST="npm/meridian-darwin-arm64"
 echo "→ populating ${DEST} (v${VERSION})"
-rm -rf "${DEST}/bin" "${DEST}/services" "${DEST}/scripts" "${DEST}/.env.example" "${DEST}/VERSION"
+rm -rf "${DEST}/bin" "${DEST}/scripts" "${DEST}/.env.example" "${DEST}/VERSION"
 mkdir -p "${DEST}/bin" "${DEST}/scripts"
 
 echo "→ daemon binary"
@@ -40,15 +40,6 @@ echo "→ tray app binary"
 # Node runtime, and no better-sqlite3 ABI dance any more.
 cp "${TRAY_BIN}" "${DEST}/bin/meridian-tray"
 chmod +x "${DEST}/bin/meridian-tray"
-
-echo "→ Python services (source only — venv built from PyPI at install time)"
-mkdir -p "${DEST}/services"
-tar cf - \
-  --exclude='.venv' --exclude='.venv*' --exclude='__pycache__' --exclude='*.pyc' \
-  --exclude='logs' --exclude='.hermes' --exclude='.pytest_cache' --exclude='tests/evals/results' \
-  --exclude='.claude' --exclude='.claude-flow' --exclude='.git' --exclude='node_modules' \
-  --exclude='*.log' --exclude='dist' --exclude='.DS_Store' \
-  -C services . | tar xf - -C "${DEST}/services"
 
 echo "→ scripts + plists + CLI"
 cp scripts/meridian-cli.sh scripts/install-from-bundle.sh scripts/meridian-npm-setup.sh \

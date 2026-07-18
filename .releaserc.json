@@ -40,7 +40,6 @@
         "CHANGELOG.md",
         "Cargo.toml",
         "Cargo.lock",
-        "services/pyproject.toml",
         "ui/package.json",
         "packages/meridian-mcp/package.json",
         "npm/meridian/package.json",

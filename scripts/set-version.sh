@@ -6,7 +6,7 @@
 #
 #   scripts/set-version.sh <version>
 #
-# Updates: Cargo.toml, services/pyproject.toml, ui/package.json,
+# Updates: Cargo.toml, ui/package.json,
 # packages/meridian-mcp/package.json, the two npm packages, the main npm
 # package's optionalDependencies pin, and tray/src-tauri/tauri.conf.json (the
 # version the DMG auto-updater compares against — MUST be bumped BEFORE the tray
@@ -21,7 +21,6 @@ cd "${ROOT}"
 
 # TOML: the single top-level `version = "..."` line ([package] / [project]).
 sed -i '' -E "s/^version = \"[^\"]*\"/version = \"${VER}\"/" Cargo.toml
-sed -i '' -E "s/^version = \"[^\"]*\"/version = \"${VER}\"/" services/pyproject.toml
 
 # JSON manifests via python (reliable; preserves structure).
 python3 - "${VER}" <<'PY'

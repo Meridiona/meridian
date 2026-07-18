@@ -7,10 +7,10 @@ name: Release
 # release + tag + CHANGELOG, and commits the version bump back to main.
 #
 # Runs on macos-26 (arm64) because the prepare step compiles the Swift
-# Foundation Models bridge — which needs the macOS 26 SDK — plus the
-# Metal/MLX daemon and the dashboard. The bridge is weak-linked, so the
-# resulting binary still launches on older macOS (Foundation Models simply
-# reports unavailable there).
+# Foundation Models bridge — which needs the macOS 26 SDK — plus the Rust
+# daemon and the dashboard. The bridge is weak-linked, so the resulting binary
+# still launches on older macOS (Foundation Models simply reports unavailable
+# there).
 
 on:
   push:
@@ -140,13 +140,6 @@ jobs:
             package-lock.json
             ui/package-lock.json
             tray/package-lock.json
-
-      - name: Cache uv packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/uv
-          key: uv-${{ hashFiles('services/uv.lock') }}
-          restore-keys: uv-
 
       - name: Cache Next.js build
         uses: actions/cache@v4
