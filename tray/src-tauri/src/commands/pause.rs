@@ -18,10 +18,11 @@
 //! - [`crate::commands::daemon`] — daemon lifecycle/status; the sibling module
 //!   this was split from.
 //! - [`crate::state::PauseSource`] — the pause-kind enum these commands set.
-//! - [`crate::poll::notifications_allowed`] — quiet-hours gate for the pause toast.
+//! - [`meridian::notices`] — the fault-bus the pause/resume notice routes through
+//!   (id `tray.paused`, event_key `system.pause`); quiet-hours/master-switch/the
+//!   `notify_system_pause` toggle are all enforced there, not by these commands.
 
 use crate::state::{AppState, PauseSource};
-use crate::sys;
 use chrono::{DateTime, SecondsFormat, Utc};
 use meridian_core::SqlitePool;
 use std::sync::atomic::Ordering;
@@ -141,9 +142,24 @@ pub async fn pause_for_duration(
 
     tracing::info!(seconds, until, "capture paused for duration");
 
-    if crate::poll::notifications_allowed("system.pause").await {
-        let label = pause_label(seconds);
-        sys::notify(&app, "Tracking paused", &format!("Paused for {}.", label));
+    if let Some(p) = pool.as_ref() {
+        let detail = format!("Paused for {}.", pause_label(seconds));
+        if let Err(e) = meridian::notices::raise_typed(
+            p,
+            meridian::notices::Notice {
+                id: "tray.paused",
+                severity: "info",
+                title: "Tracking paused",
+                detail: &detail,
+                remedy: None,
+                event_key: "system.pause",
+                deep_link: None,
+            },
+        )
+        .await
+        {
+            tracing::warn!(error = %e, "pause notice raise failed");
+        }
     }
 
     // Spawn the auto-resume task. Checks `pause_until` on wake to detect early
@@ -197,8 +213,23 @@ pub async fn pause_indefinitely(
 
     tracing::info!("capture paused indefinitely");
 
-    if crate::poll::notifications_allowed("system.pause").await {
-        sys::notify(&app, "Tracking paused", "Paused until you resume.");
+    if let Some(p) = pool.as_ref() {
+        if let Err(e) = meridian::notices::raise_typed(
+            p,
+            meridian::notices::Notice {
+                id: "tray.paused",
+                severity: "info",
+                title: "Tracking paused",
+                detail: "Paused until you resume.",
+                remedy: None,
+                event_key: "system.pause",
+                deep_link: None,
+            },
+        )
+        .await
+        {
+            tracing::warn!(error = %e, "pause notice raise failed");
+        }
     }
 
     Ok(())
@@ -293,8 +324,29 @@ pub(crate) async fn resume_capture(
     }
 
     tracing::info!(auto, "capture resumed");
-    if !auto && crate::poll::notifications_allowed("system.pause").await {
-        sys::notify(app, "Resumed", "Meridian is back tracking.");
+    if let Some(p) = pool {
+        // The pause condition is over either way — clear the "you're paused"
+        // notice/banner regardless of who resumed it.
+        if let Err(e) = meridian::notices::clear_typed(p, "tray.paused", "system.pause").await {
+            tracing::warn!(error = %e, "pause notice clear failed");
+        }
+        // The "Resumed" confirmation is a discrete one-shot event, not a
+        // state to clear later — only for a manual resume (matches the prior
+        // behavior of staying silent on auto-resume, e.g. after a schedule
+        // window or an expired timed pause, to avoid over-notifying).
+        if !auto {
+            let dedup = format!("system.pause:resumed:{}", now_secs());
+            let n = meridian::notifications::NewNotification::event(
+                &dedup,
+                "system.pause",
+                "Resumed",
+                "Meridian is back tracking.",
+            )
+            .via(meridian::notifications::CHANNEL_NATIVE);
+            if let Err(e) = meridian::notifications::enqueue(p, n).await {
+                tracing::warn!(error = %e, "resume notification enqueue failed");
+            }
+        }
     }
 }
 

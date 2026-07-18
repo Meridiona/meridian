@@ -51,6 +51,21 @@ export function NotificationsSection({ settings, patch, save }: {
             <FieldRow label="System faults" description="When a tracker sync or the classifier stack fails (also shown as a banner).">
               <Switch checked={settings.notify_system_fault} onCheckedChange={v => patch({ notify_system_fault: v })} />
             </FieldRow>
+            <FieldRow label="Pause / resume" description="When tracking is paused or resumes, manually or on a schedule.">
+              <Switch checked={settings.notify_system_pause} onCheckedChange={v => patch({ notify_system_pause: v })} />
+            </FieldRow>
+            <FieldRow label="Daemon health" description="When Meridian's background daemon goes quiet or comes back online.">
+              <Switch checked={settings.notify_system_health} onCheckedChange={v => patch({ notify_system_health: v })} />
+            </FieldRow>
+            <FieldRow label="Updates" description="When a new version is available, installing, or fails to install.">
+              <Switch checked={settings.notify_system_update} onCheckedChange={v => patch({ notify_system_update: v })} />
+            </FieldRow>
+            <FieldRow label="Summarisation issues" description="A daily digest if any coding-agent sessions couldn't be summarised.">
+              <Switch checked={settings.notify_summariser_digest} onCheckedChange={v => patch({ notify_summariser_digest: v })} />
+            </FieldRow>
+            <FieldRow label="Board hygiene" description="A daily digest if tickets on your board need attention.">
+              <Switch checked={settings.notify_board_hygiene} onCheckedChange={v => patch({ notify_board_hygiene: v })} />
+            </FieldRow>
             <FieldRow label="Quiet hours" description="Hold back desktop toasts during this window (banners still appear). Wraps past midnight.">
               <Switch checked={settings.quiet_hours_enabled} onCheckedChange={v => patch({ quiet_hours_enabled: v })} />
             </FieldRow>
@@ -71,6 +86,11 @@ export function NotificationsSection({ settings, patch, save }: {
             notify_plan_nudge: settings.notify_plan_nudge,
             notify_worklog_ready: settings.notify_worklog_ready,
             notify_system_fault: settings.notify_system_fault,
+            notify_system_pause: settings.notify_system_pause,
+            notify_system_health: settings.notify_system_health,
+            notify_system_update: settings.notify_system_update,
+            notify_summariser_digest: settings.notify_summariser_digest,
+            notify_board_hygiene: settings.notify_board_hygiene,
             quiet_hours_enabled: settings.quiet_hours_enabled,
             quiet_hours_start: settings.quiet_hours_start,
             quiet_hours_end: settings.quiet_hours_end,

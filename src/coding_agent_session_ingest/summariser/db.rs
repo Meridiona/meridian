@@ -188,6 +188,24 @@ pub async fn write_dead_letter(pool: &SqlitePool, row_id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Count sessions dead-lettered "today" for the digest notice
+/// ([`super::maybe_notify_dead_letters`]). Scoped by `ended_at` (the session's
+/// own end time, not the moment it was dead-lettered — there's no separate
+/// dead-letter timestamp column, so a row dead-lettered on a later day than it
+/// ended can undercount on the day it actually happened; accepted drift rather
+/// than adding a migration for one notice).
+pub async fn count_dead_lettered_since(pool: &SqlitePool, since_utc: &str) -> Result<i64> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM app_sessions WHERE task_method = ? AND ended_at >= ?",
+    )
+    .bind(TASK_METHOD_DEAD_LETTER)
+    .bind(since_utc)
+    .fetch_one(pool)
+    .await
+    .context("count dead-lettered sessions")?;
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

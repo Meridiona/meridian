@@ -45,6 +45,14 @@ export interface RuntimeSettings {
   auto_open_plan: boolean
   notify_worklog_ready: boolean
   notify_system_fault: boolean
+  // Folded from direct tray-side toasts (pause/resume, daemon health,
+  // updates) into the outbox — each has its own toggle.
+  notify_system_pause: boolean
+  notify_system_health: boolean
+  notify_system_update: boolean
+  // Daily batched digests.
+  notify_summariser_digest: boolean
+  notify_board_hygiene: boolean
   quiet_hours_enabled: boolean
   quiet_hours_start: string // 'HH:MM' local time, inclusive
   quiet_hours_end: string   // 'HH:MM' local time, exclusive
@@ -82,6 +90,11 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   auto_open_plan: true,
   notify_worklog_ready: true,
   notify_system_fault: true,
+  notify_system_pause: true,
+  notify_system_health: true,
+  notify_system_update: true,
+  notify_summariser_digest: true,
+  notify_board_hygiene: true,
   quiet_hours_enabled: false,
   quiet_hours_start: '22:00',
   quiet_hours_end: '08:00',

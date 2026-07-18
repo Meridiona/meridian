@@ -163,6 +163,62 @@ pub fn retract_toast(app: &tauri::AppHandle, id: i64) {
     }
 }
 
+/// Current macOS notification authorization, shared by the setup wizard's
+/// probe ([`crate::commands::setup::check_notifications`]) and the background
+/// re-check ([`crate::poll::permissions`]) so the two never drift. `None`
+/// covers both "plugin absent" (unbundled run) and a probe error — callers
+/// that need to distinguish those log separately; both mean "can't toast".
+pub async fn notification_permission_state(
+    app: &tauri::AppHandle,
+) -> Option<tauri_plugin_notifications::PermissionState> {
+    let nf = notifier(app)?;
+    match nf.permission_state().await {
+        Ok(state) => Some(state),
+        Err(e) => {
+            tracing::warn!(error = %e, "notification permission probe failed");
+            None
+        }
+    }
+}
+
+/// Whether the tray process holds macOS Accessibility trust
+/// (`AXIsProcessTrusted`) — a pure status read, no prompt. Shared by the setup
+/// wizard's probe ([`crate::commands::setup::check_accessibility`]) and the
+/// background re-check ([`crate::poll::permissions`]).
+pub fn accessibility_trusted() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "ApplicationServices", kind = "framework")]
+        #[allow(improper_ctypes)]
+        extern "C" {
+            fn AXIsProcessTrusted() -> bool;
+        }
+        // Safety: AXIsProcessTrusted is a pure status read with no side effects or UB.
+        unsafe { AXIsProcessTrusted() }
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
+/// Whether the tray process holds macOS Screen Recording permission
+/// (`CGPreflightScreenCaptureAccess`) — a pure status read, no prompt. Shared
+/// by the setup wizard's probe
+/// ([`crate::commands::setup::check_screen_recording`]) and the background
+/// re-check ([`crate::poll::permissions`]).
+pub fn screen_recording_trusted() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" {
+            fn CGPreflightScreenCaptureAccess() -> bool;
+        }
+        // Safety: preflight is a pure status read — no prompt, no side effects.
+        unsafe { CGPreflightScreenCaptureAccess() }
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
 /// Register the fixed interactive-category set (`meridian_core`'s
 /// [`meridian_core::notifications::categories`]) with the OS. Called once at
 /// startup from `lib.rs` on bundled runs; a failure downgrades every

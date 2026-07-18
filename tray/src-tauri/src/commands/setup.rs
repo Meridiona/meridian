@@ -48,23 +48,7 @@ pub async fn mark_setup_complete() -> Result<(), String> {
 #[tauri::command]
 #[tracing::instrument]
 pub async fn check_accessibility() -> bool {
-    #[cfg(target_os = "macos")]
-    return ax_is_trusted();
-    #[cfg(not(target_os = "macos"))]
-    false
-}
-
-#[cfg(target_os = "macos")]
-fn ax_is_trusted() -> bool {
-    // ApplicationServices.framework is a system framework present on all macOS
-    // versions; no additional Cargo dep required.
-    #[link(name = "ApplicationServices", kind = "framework")]
-    #[allow(improper_ctypes)]
-    extern "C" {
-        fn AXIsProcessTrusted() -> bool;
-    }
-    // Safety: AXIsProcessTrusted is a pure status read with no side effects or UB.
-    unsafe { AXIsProcessTrusted() }
+    crate::sys::accessibility_trusted()
 }
 
 /// Returns `true` when the tray itself holds macOS Screen Recording permission.
@@ -78,17 +62,7 @@ fn ax_is_trusted() -> bool {
 #[tauri::command]
 #[tracing::instrument]
 pub async fn check_screen_recording() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        #[link(name = "CoreGraphics", kind = "framework")]
-        extern "C" {
-            fn CGPreflightScreenCaptureAccess() -> bool;
-        }
-        // Safety: preflight is a pure status read — no prompt, no side effects.
-        unsafe { CGPreflightScreenCaptureAccess() }
-    }
-    #[cfg(not(target_os = "macos"))]
-    false
+    crate::sys::screen_recording_trusted()
 }
 
 /// Surface the macOS Screen Recording prompt **and register the app** so it
@@ -154,15 +128,9 @@ fn notification_state_label(state: tauri_plugin_notifications::PermissionState) 
 #[tauri::command]
 #[tracing::instrument(skip(app))]
 pub async fn check_notifications(app: tauri::AppHandle) -> String {
-    let Some(nf) = crate::sys::notifier(&app) else {
-        return "unavailable".into();
-    };
-    match nf.permission_state().await {
-        Ok(state) => notification_state_label(state).into(),
-        Err(e) => {
-            tracing::warn!(error = %e, "setup: notification permission probe failed");
-            "unavailable".into()
-        }
+    match crate::sys::notification_permission_state(&app).await {
+        Some(state) => notification_state_label(state).into(),
+        None => "unavailable".into(),
     }
 }
 

@@ -190,13 +190,31 @@ registered`, `outbox toast delivered`, `notification action event: {...}`,
 | event_key | category | buttons | consumer arm |
 |---|---|---|---|
 | `plan.nudge` | `plan_nudge` | Open Plan · Snooze 1h | snooze → re-enqueue +1h |
-| `worklog.ready` | `worklog_ready` | Open Worklogs · Snooze 1h | snooze → re-enqueue +1h |
+| `worklog.ready` | `worklog_ready` | Open Worklogs · Snooze 1h | snooze → re-enqueue +1h — **registered but no producer fires it yet** (needs its own scoping: worklog generation is currently on-demand/user-clicked, not scheduled) |
 | `system.fault` | `system_fault` | View | — (stamp only) |
+| `system.pause` | `system_fault` | View | — (stamp only) — pause/resume, folded off the `sys::notify` bypass |
+| `system.health` | `system_fault` | View | — (stamp only) — daemon went-quiet/back-online, folded off the bypass |
+| `system.update` | `system_fault`\* | View\* | — (stamp only) — update check/download/failure, folded off the bypass. \*Discrete one-shot events (not raise/clear state), so these go through `notifications::enqueue` directly rather than `notices::raise_typed` — see `tray/src-tauri/src/update.rs::notify_update` |
+| `system.notif_permission` | `system_fault` | View | — (stamp only) — macOS notification permission revoked; the one notice guaranteed to reach the user via the dashboard banner even when toasts themselves are broken |
+| `system.capture_permission` | `system_fault` | View | — (stamp only) — Accessibility/Screen Recording revoked mid-session |
+| `system.disk_low` | `system_fault` | View | — (stamp only) — `~/.meridian`'s volume below 2 GB free |
+| `pm_worklog.{provider}` | `system_fault` | View | — (stamp only) — a worklog post to the tracker failed permanently |
+| `summariser.dead_letter` | `generic_link` | Open | — (stamp only) — daily digest of permanently-failed coding-agent summarisation, `dedup_key` scoped per day |
+| `board.hygiene` | `generic_link` | Open | — (stamp only) — daily digest of tickets needing attention, `dedup_key` scoped per day |
 | *(reserved)* | `verify_switch` | Yes · No · Reply… | — (PR 2: task-switch verification) |
 | *(generic)* | `generic_link` | Open | — (stamp only) |
+
+`system.notif_permission` / `system.capture_permission` / `system.disk_low`
+are deliberately ungated by a per-type settings toggle (`type_enabled`
+defaults unknown keys to allowed) — a user shouldn't be able to silence the
+one alert explaining why everything else went quiet. Every other new event_key
+above has a `notify_<type>` toggle in `RuntimeSettings` /
+`NotificationsSection.tsx`.
 
 Deferred (same rails, thin slices when needed): task-switch verify producer +
 rate cap + `notify_task_verify` toggle (PR 2), goal check-in / distraction
 producers, LLM-generated copy (routed through the chosen CLI provider, `src/llm/`), APNs/phone
-delivery, folding the direct `sys::notify` bypass callers (pause/update/health
-toasts) into the outbox.
+delivery, a `worklog.ready` producer (needs a decision: build a real scheduler
+for unattended draft generation, or repoint the event at something already
+autonomous), an onboarding-stuck reminder (needs a resumable
+wizard-progress timestamp — today's `~/.meridian/onboarded` flag is one-shot).

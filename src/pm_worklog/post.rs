@@ -69,7 +69,14 @@ pub async fn post_approved(
 
     for w in approved {
         match post_one(pool, config, cfg, &w).await {
-            Ok(true) => summary.posted += 1,
+            Ok(true) => {
+                summary.posted += 1;
+                // Clear any standing "posts to this provider are failing"
+                // notice — this row made it through, so whatever tripped a
+                // prior permanent failure for this provider is no longer
+                // universally true.
+                let _ = crate::notices::clear(pool, &format!("pm_worklog.{}", w.provider)).await;
+            }
             Ok(false) => {} // ineligible/skipped — already recorded
             Err(e) if is_permanent_provider_error(&e) => {
                 // A retry can never succeed (e.g. Jira's hard per-issue
@@ -84,6 +91,21 @@ pub async fn post_approved(
                 db::fail_worklog(pool, w.id, &format!("{e:#}"))
                     .await
                     .context("marking worklog failed permanently")?;
+                // Terminal failures are the only ones that notify — a
+                // transient retry-next-sweep error (below) would otherwise
+                // spam a toast every 60s.
+                let _ = crate::notices::raise(
+                    pool,
+                    &format!("pm_worklog.{}", w.provider),
+                    "warning",
+                    "Worklog post failed",
+                    &format!("{e:#}"),
+                    Some(&format!(
+                        "Check your {} connection in Settings.",
+                        w.provider
+                    )),
+                )
+                .await;
             }
             Err(e) => {
                 summary.failed += 1;
