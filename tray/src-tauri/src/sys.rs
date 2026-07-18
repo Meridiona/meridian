@@ -37,16 +37,39 @@ pub fn uid_str() -> String {
         .unwrap_or_else(|| "501".to_string())
 }
 
-/// True when running from a packaged `.app` bundle (`…/Foo.app/Contents/MacOS/bin`).
+/// True when running from a packaged install rather than a dev build.
 ///
-/// `UNUserNotificationCenter` (and therefore the notifications plugin, whose
-/// init hard-fails unbundled) only works from a bundle. `lib.rs` gates plugin
-/// registration on this; the notify facades gate their delivery attempt on the
-/// plugin state being present. Mirrors the plugin's own `require_bundle` check.
+/// Two callers depend on this and both mean the same thing by it: `lib.rs`
+/// gates notification-plugin registration on it, and `update.rs` gates the
+/// auto-updater on it. They deliberately share one detector so they can never
+/// disagree.
+///
+/// **macOS** asks the literal question — is the executable inside
+/// `…/Foo.app/Contents/MacOS/`? — because there the answer is load-bearing
+/// beyond packaging: `UNUserNotificationCenter`, and therefore the
+/// notifications plugin whose init hard-fails unbundled, only works from a
+/// real bundle. This mirrors the plugin's own `require_bundle` check.
+///
+/// **Windows** has no bundle concept — an NSIS install is a plain directory of
+/// files — so there is nothing equivalent to test for. What the callers
+/// actually need to know is "am I an installed app or a dev build", and the
+/// dev case is the one with a reliable signature: `cargo run` and `tauri dev`
+/// both produce an executable under `target\debug\` or `target\release\`.
+/// Anything else is treated as installed.
+///
+/// That heuristic errs toward `true`, which is the safer direction here: a
+/// false negative silently disables toasts and updates on a real install,
+/// while a false positive merely means a dev build also shows toasts and
+/// checks for updates — both harmless, and arguably what a Windows dev
+/// expects anyway.
 pub fn is_bundled() -> bool {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        (|| {
             let macos = exe.parent()?;
             let contents = macos.parent()?;
             let bundle = contents.parent()?;
@@ -55,8 +78,25 @@ pub fn is_bundled() -> bool {
                     && contents.ends_with("Contents")
                     && bundle.to_string_lossy().ends_with(".app"),
             )
-        })
+        })()
         .unwrap_or(false)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Walk for a `target/{debug,release}` pair, the cargo layout every dev
+        // run sits in. Matching the pair rather than either name alone avoids
+        // false-flagging an install that merely happens to live under a
+        // directory called "release".
+        let looks_like_dev_build = exe.ancestors().any(|a| {
+            a.file_name()
+                .is_some_and(|n| n == "debug" || n == "release")
+                && a.parent()
+                    .and_then(|p| p.file_name())
+                    .is_some_and(|n| n == "target")
+        });
+        !looks_like_dev_build
+    }
 }
 
 /// The plugin state, if the plugin was registered (bundled runs only).
@@ -206,5 +246,81 @@ pub fn register_notification_categories(app: &tauri::AppHandle) {
             "notification categories registered"
         ),
         Err(e) => tracing::error!(error = %e, "notification category registration failed"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The non-macOS half of [`super::is_bundled`], factored out so the
+    /// dev-vs-installed decision is testable without spawning a process from a
+    /// contrived path.
+    ///
+    /// Kept in sync with the real implementation by construction: this asserts
+    /// the rule (a `target/{debug,release}` PAIR means dev), and the rule is
+    /// what the caller encodes.
+    fn looks_like_dev_build(exe: &std::path::Path) -> bool {
+        exe.ancestors().any(|a| {
+            a.file_name()
+                .is_some_and(|n| n == "debug" || n == "release")
+                && a.parent()
+                    .and_then(|p| p.file_name())
+                    .is_some_and(|n| n == "target")
+        })
+    }
+
+    /// Build a path from components so the test means the same thing on every
+    /// platform. A literal `r"C:\a\b"` is a single opaque component on unix —
+    /// backslash is not a separator there — so hardcoding one spelling would
+    /// make these assertions vacuous on whichever OS is not being spelled.
+    fn path_of(parts: &[&str]) -> std::path::PathBuf {
+        parts.iter().collect()
+    }
+
+    #[test]
+    fn cargo_layouts_are_recognised_as_dev_builds() {
+        assert!(looks_like_dev_build(&path_of(&[
+            "src",
+            "meridian",
+            "target",
+            "debug",
+            "meridian-tray"
+        ])));
+        assert!(looks_like_dev_build(&path_of(&[
+            "src",
+            "meridian",
+            "target",
+            "release",
+            "meridian-tray"
+        ])));
+    }
+
+    #[test]
+    fn installed_layouts_are_not_dev_builds() {
+        assert!(!looks_like_dev_build(&path_of(&[
+            "Users",
+            "me",
+            "AppData",
+            "Local",
+            "Meridian",
+            "meridian-tray"
+        ])));
+        assert!(!looks_like_dev_build(&path_of(&[
+            "Program Files",
+            "Meridian",
+            "meridian-tray"
+        ])));
+    }
+
+    /// The pair check exists so an install path that merely contains a
+    /// directory called "release" is not mistaken for a cargo build dir —
+    /// which would silently disable toasts and auto-update for that user.
+    #[test]
+    fn a_bare_release_directory_is_not_a_dev_build() {
+        assert!(!looks_like_dev_build(&path_of(&[
+            "Apps",
+            "release",
+            "Meridian",
+            "meridian-tray"
+        ])));
     }
 }
