@@ -62,6 +62,66 @@ jobs:
       - name: test
         run: cargo test
 
+  # Windows portability burn-down. The daemon is currently unconditionally Unix
+  # (`tokio::signal::unix`, a `UnixListener` single-instance guard), so this job
+  # STARTS RED ON PURPOSE and is non-blocking until the port lands. Its value is
+  # as a visible, per-PR measure of what is left — and, once green, as the gate
+  # that stops Windows support from silently rotting again.
+  #
+  # `continue-on-error: true` is temporary. Remove it (and this paragraph) the
+  # moment `cargo check` passes, so a regression fails CI like any other.
+  #
+  # This job is also the ONLY way to validate Windows: `cargo check --target
+  # x86_64-pc-windows-msvc` from macOS dies in `ring`'s build script (its C
+  # sources need the Windows SDK headers), which is the same reason Tauri
+  # documents that meaningful cross-compilation is not possible. There is no
+  # local shortcut — push and read this job.
+  #
+  # Only the `meridian` package is checked for now: `cargo check` from the root
+  # selects it alone (the workspace declares no `default-members` and the root
+  # IS a package), and the tray is a separate, later phase — it has never been
+  # compiled in CI on any platform, so folding it in here would conflate "not
+  # ported to Windows yet" with "never built in CI at all".
+  windows-portability:
+    name: Windows portability (burn-down, non-blocking)
+    runs-on: windows-latest
+    continue-on-error: true
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        # Same mechanism as the Rust job above — cargo resolves the whole
+        # workspace, so the private git dep must be fetchable even though this
+        # job never compiles the crate that uses it.
+        # `shell: bash` (Git Bash ships on windows-latest) so this is character-
+        # for-character the same command as the Rust job's, rather than a
+        # PowerShell transliteration that could drift from it.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          # x86_64-pc-windows-msvc is this runner's host target, so no `targets:`
+          # entry is needed. It is deliberately NOT added to rust-toolchain.toml
+          # either — that would make every macOS dev machine download the Windows
+          # std for a target they never build.
+          components: clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: check
+        run: cargo check -p meridian -p meridian-core --all-targets
+
   ui:
     name: UI
     runs-on: ubuntu-latest
