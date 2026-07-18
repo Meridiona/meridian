@@ -72,14 +72,10 @@ jobs:
   # documents that meaningful cross-compilation is not possible. There is no
   # local shortcut — push and read this job.
   #
-  # Scope is the `meridian` + `meridian-core` packages. The tray is a later
-  # phase and has never been compiled in CI on any platform, so folding it in
-  # here would conflate "not ported to Windows yet" with "never built in CI at
-  # all" — and would take this gate red for a reason unrelated to portability.
-  #
-  # NOTE: passing here means the daemon COMPILES and its tests pass on a CI
-  # runner. It does not mean Meridian works on Windows: capture, the tray, and
-  # the installer are not covered, and nothing here exercises a real desktop.
+  # NOTE: passing here means the code COMPILES and its tests pass on a CI
+  # runner. It does not mean Meridian works on Windows — nothing here
+  # exercises a real desktop, so capture producing frames, the tray rendering,
+  # and the installer registering a service are all still unverified.
   windows-portability:
     name: Windows portability
     runs-on: windows-latest
@@ -125,6 +121,22 @@ jobs:
       # job so the burn-down stays one signal rather than two.
       - name: test
         run: cargo test -p meridian -p meridian-core
+
+      # The tray is checked separately and non-blocking: unlike the daemon it
+      # has never been compiled in CI on ANY platform, so a failure here may
+      # well be latent breakage that has nothing to do with Windows. Keeping it
+      # out of the blocking steps above means it cannot take the portability
+      # gate red for an unrelated reason, while still reporting.
+      #
+      # It needs the daemon binary present because tauri.conf.json embeds it via
+      # bundle.resources at a fixed path, so the build script fails without it.
+      - name: build daemon binary (tray bundle resource)
+        continue-on-error: true
+        run: cargo build --release --bin meridian
+
+      - name: check tray
+        continue-on-error: true
+        run: cargo check -p meridian-tray --all-targets
 
   ui:
     name: UI
