@@ -253,13 +253,30 @@ fn node_check() -> Check {
     }
 }
 
+/// GB free space below which `~/.meridian`'s volume counts as "low" — shared
+/// by [`disk_check`] (the `meridian doctor` sweep) and [`meridian_data_low_gb`]
+/// (the daemon's background poll check).
+const DISK_LOW_THRESHOLD_GB: f64 = 2.0;
+
 fn disk_check(name: &'static str, path: &Path) -> Check {
     match crate::platform::disk_free_gb(path) {
-        Some(gb) if gb < 2.0 => Check::warn(name, "system", format!("{gb:.1} GB free — low"))
-            .with_remedy("free disk space"),
+        Some(gb) if gb < DISK_LOW_THRESHOLD_GB => {
+            Check::warn(name, "system", format!("{gb:.1} GB free — low"))
+                .with_remedy("free disk space")
+        }
         Some(gb) => Check::ok(name, "system", format!("{gb:.0} GB free")),
         None => Check::info(name, "system", "usage unknown"),
     }
+}
+
+/// Free space in GB on `~/.meridian`'s volume when it has dropped below
+/// [`DISK_LOW_THRESHOLD_GB`], `None` otherwise (including "couldn't read it" —
+/// fail open, don't alarm on a transient `df` failure). Used by the daemon's
+/// background poll tick to raise/clear a `system.disk_low` notice; the
+/// on-demand `meridian doctor` sweep uses [`disk_check`] directly instead.
+pub fn meridian_data_low_gb() -> Option<f64> {
+    crate::platform::disk_free_gb(&home().join(".meridian"))
+        .filter(|gb| *gb < DISK_LOW_THRESHOLD_GB)
 }
 
 #[cfg(test)]

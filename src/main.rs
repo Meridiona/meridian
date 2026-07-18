@@ -1077,6 +1077,46 @@ async fn main() -> Result<()> {
                     tracing::debug!(error = %e, "plan nudge check skipped");
                 }
 
+                // Coding-agent summariser dead-letter digest — idempotent per day.
+                if let Err(e) =
+                    meridian::coding_agent_session_ingest::summariser::maybe_notify_dead_letters(
+                        &meridian,
+                    )
+                    .await
+                {
+                    tracing::debug!(error = %e, "summariser dead-letter digest check skipped");
+                }
+
+                // Disk space on ~/.meridian's volume — raise/clear every tick,
+                // same idempotent pattern as etl.failed above.
+                match meridian::health::platform::meridian_data_low_gb() {
+                    Some(gb) => {
+                        let _ = meridian::notices::raise_typed(
+                            &meridian,
+                            meridian::notices::Notice {
+                                id: "system.disk_low",
+                                severity: "warning",
+                                title: "Disk space is low",
+                                detail: &format!(
+                                    "Only {gb:.1} GB free — Meridian's database may stop writing."
+                                ),
+                                remedy: Some("Free up disk space to keep tracking running."),
+                                event_key: "system.disk_low",
+                                deep_link: None,
+                            },
+                        )
+                        .await;
+                    }
+                    None => {
+                        let _ = meridian::notices::clear_typed(
+                            &meridian,
+                            "system.disk_low",
+                            "system.disk_low",
+                        )
+                        .await;
+                    }
+                }
+
                 // Interactive-notification responses — act on the user's answers
                 // (snooze re-enqueues an hour out). Idempotent end-to-end, so the
                 // same cadence as the nudge above is safe.

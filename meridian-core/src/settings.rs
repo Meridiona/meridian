@@ -250,6 +250,16 @@ pub struct RuntimeSettings {
     pub auto_open_plan: bool,
     pub notify_worklog_ready: bool,
     pub notify_system_fault: bool,
+    // Folded from direct tray-side toasts (pause/resume, daemon health,
+    // updates) into the outbox — each now has its own toggle instead of
+    // sharing `notify_system_fault` or being ungated entirely.
+    pub notify_system_pause: bool,
+    pub notify_system_health: bool,
+    pub notify_system_update: bool,
+    // Daily batched digests — see src/coding_agent_session_ingest and
+    // src/intelligence::triage_after_sync.
+    pub notify_summariser_digest: bool,
+    pub notify_board_hygiene: bool,
     pub quiet_hours_enabled: bool,
     pub quiet_hours_start: String,
     pub quiet_hours_end: String,
@@ -310,6 +320,11 @@ impl Default for RuntimeSettings {
             auto_open_plan: true,
             notify_worklog_ready: true,
             notify_system_fault: true,
+            notify_system_pause: true,
+            notify_system_health: true,
+            notify_system_update: true,
+            notify_summariser_digest: true,
+            notify_board_hygiene: true,
             quiet_hours_enabled: false,
             quiet_hours_start: "22:00".to_string(),
             quiet_hours_end: "08:00".to_string(),

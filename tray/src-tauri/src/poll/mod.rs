@@ -8,8 +8,8 @@
 //!
 //! - [`refresh`] — the per-tick fetch-and-store functions (also emits
 //!   `health-update`, the ported `/api/health/stream`).
-//! - [`notifications`] — outbox drain + the quiet-hours policy check
-//!   ([`notifications_allowed`], re-exported here for [`crate::commands::daemon`]).
+//! - [`notifications`] — the daemon's outbox drain (own policy check happens
+//!   server-side per row).
 //! - [`live`] — the live data → Tauri events that replace the dashboard's SSE
 //!   streams: `notices-update`, `notifications-update`.
 //!
@@ -17,11 +17,10 @@
 
 mod live;
 mod notifications;
+mod permissions;
 mod plan_auto_open;
 mod refresh;
 mod whats_new_auto_open;
-
-pub(crate) use notifications::notifications_allowed;
 
 use crate::state::{AppState, HealthStatus, PauseSource};
 use chrono::{Datelike, Local, Timelike};
@@ -59,7 +58,7 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
             .and_then(|s| s.inner().clone());
 
         if do_health {
-            refresh_health(&app, &state).await;
+            refresh_health(&app, &state, pool.as_ref()).await;
         }
         if let Some(pool) = &pool {
             refresh_active(pool, &state).await;
@@ -79,6 +78,9 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
             }
             if do_worklogs {
                 refresh_worklogs(pool, &state).await;
+            }
+            if do_health {
+                permissions::check_permissions(&app, pool).await;
             }
         }
         // Work-hours schedule enforcement: auto-pause capture outside the
