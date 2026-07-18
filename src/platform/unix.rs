@@ -142,6 +142,35 @@ pub fn service_manifest(label: &str) -> super::ServiceManifest {
     }
 }
 
+/// Every running process's argv line, via `ps -axo args=` (argv **only**).
+///
+/// `pgrep -f` is useless for the caller's purpose: on macOS it matches the
+/// environment block too, and `PATH` / `CODEX_*` vars put agent names into half
+/// the processes on the box.
+///
+/// Moved here verbatim, including the hard timeout and `kill_on_drop`: reading
+/// proc info can wedge in the kernel on a stuck process, and an un-timed await
+/// parks the whole indexer loop (observed live 2026-06-06). `None` means "could
+/// not tell", which the caller treats as every-CLI-running — deferring to the
+/// idle backstop rather than sealing something prematurely.
+pub async fn list_process_argvs() -> Option<Vec<String>> {
+    let mut cmd = tokio::process::Command::new("ps");
+    cmd.args(["-axo", "args="]).kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(5), cmd.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
 /// Free space on the volume holding `path`, in GB, via `df -Pk`.
 pub fn disk_free_gb(path: &std::path::Path) -> Option<f64> {
     use std::process::Command;

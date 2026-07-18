@@ -138,6 +138,49 @@ pub fn service_manifest(_label: &str) -> super::ServiceManifest {
     super::ServiceManifest::Unknown
 }
 
+/// Every running process's full command line, via PowerShell's CIM provider.
+///
+/// There is no `ps` on Windows, and `tasklist` reports image names without
+/// arguments — useless here, since the caller has to tell an interactive
+/// `claude` from the summariser's own `claude -p` subprocess, and a
+/// `cursor-agent login` from a real chat session. `Win32_Process.CommandLine`
+/// is the one readily available source that carries arguments.
+///
+/// `wmic` would be the lighter call but is deprecated and absent from current
+/// Windows builds, so PowerShell it is. The ~200-500 ms startup cost is
+/// irrelevant at this call site: the indexer ticks every 10 minutes.
+///
+/// Same contract as the Unix arm — `None` means "could not tell", which the
+/// caller treats as every-CLI-running and defers to the idle backstop, so a
+/// failure here can never seal a live session early.
+pub async fn list_process_argvs() -> Option<Vec<String>> {
+    let mut cmd = tokio::process::Command::new("powershell");
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Get-CimInstance Win32_Process | ForEach-Object { $_.CommandLine }",
+    ])
+    .kill_on_drop(true);
+    // Longer than the Unix budget: PowerShell start-up plus a CIM query is
+    // genuinely slower than `ps`, and this runs once every ten minutes.
+    let output = tokio::time::timeout(std::time::Duration::from_secs(15), cmd.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
 /// Free space is not reported on Windows yet.
 ///
 /// `None` is already the "usage unknown" path the health check handles

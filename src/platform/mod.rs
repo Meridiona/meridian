@@ -41,16 +41,16 @@
 mod unix;
 #[cfg(unix)]
 pub use unix::{
-    daemon_already_running, disk_free_gb, endpoint_display, release_endpoint, service_manifest,
-    service_status, spawn_health_listener, wait_for_shutdown,
+    daemon_already_running, disk_free_gb, endpoint_display, list_process_argvs, release_endpoint,
+    service_manifest, service_status, spawn_health_listener, wait_for_shutdown,
 };
 
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
 pub use windows::{
-    daemon_already_running, disk_free_gb, endpoint_display, release_endpoint, service_manifest,
-    service_status, spawn_health_listener, wait_for_shutdown,
+    daemon_already_running, disk_free_gb, endpoint_display, list_process_argvs, release_endpoint,
+    service_manifest, service_status, spawn_health_listener, wait_for_shutdown,
 };
 
 /// What the health report can say about the service's on-disk definition.
