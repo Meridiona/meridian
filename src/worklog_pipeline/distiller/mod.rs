@@ -30,7 +30,7 @@ mod segment;
 mod select;
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -72,6 +72,16 @@ static DF_FRAC: Lazy<f64> = Lazy::new(|| env_num("DISTILLER_DF_FRAC", 0.25));
 const FLOOR: usize = 3;
 const CEIL: usize = 14;
 pub(crate) const ENTITY_RESCUE_CAP: usize = 4;
+
+/// Hard bound on the single in-process embedding forward pass. An hour with an unusually
+/// large volume of on-screen text (many sessions, little repetition) can push the lexically-
+/// deduped span batch well beyond a typical hour's size; on CPU-only inference the forward
+/// pass cost grows with batch size, so an outsized hour can take minutes rather than seconds.
+/// Hours run strictly sequentially, so an unbounded embed here would stall every later hour
+/// behind it. Timing out degrades this one hour to lexical-only (same degrade path as a load
+/// failure) rather than blocking the queue — see [`embed_lex`].
+static EMBED_TIMEOUT: Lazy<Duration> =
+    Lazy::new(|| Duration::from_secs_f64(env_num("DISTILLER_EMBED_TIMEOUT_SECS", 45.0)));
 
 fn env_num(key: &str, default: f64) -> f64 {
     std::env::var(key)
@@ -335,16 +345,35 @@ async fn embed_lex(lex: &[Span]) -> (Vec<Vec<f32>>, bool) {
     async {
         let start = Instant::now();
         let vecs = if embedder::is_ready() && !lex.is_empty() {
+            let n = lex.len();
             let texts: Vec<String> = lex.iter().map(|s| s.line.clone()).collect();
-            let result = embedder::embed_batch(texts).await;
-            // This is the only embed_batch call in the hour's whole run (one distil
-            // pass = one batch), so the model has no more work until next hour —
-            // drop it now rather than leaving it resident in memory until then.
-            embedder::unload();
-            match result {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(error = %e, "distil: embed failed — degrading to lexical-only");
+            match tokio::time::timeout(*EMBED_TIMEOUT, embedder::embed_batch(texts)).await {
+                Ok(result) => {
+                    // This is the only embed_batch call in the hour's whole run (one
+                    // distil pass = one batch), so the model has no more work until
+                    // next hour — drop it now rather than leaving it resident in
+                    // memory until then.
+                    embedder::unload();
+                    match result {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "distil: embed failed — degrading to lexical-only");
+                            Vec::new()
+                        }
+                    }
+                }
+                Err(_) => {
+                    // The abandoned spawn_blocking task keeps running to completion on
+                    // its own thread (not cancelled) and will release the embedder mutex
+                    // when done — the NEXT hour's embed_batch call just waits on it like
+                    // any other lock contention. What matters is THIS hour's async
+                    // pipeline is freed to continue rather than stalling the sequential
+                    // hour queue behind an outsized batch.
+                    tracing::warn!(
+                        n_spans = n,
+                        timeout_s = EMBED_TIMEOUT.as_secs_f64(),
+                        "distil: embed timed out — degrading to lexical-only"
+                    );
                     Vec::new()
                 }
             }
