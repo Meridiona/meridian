@@ -17,7 +17,7 @@
 //!   on the DMG path and points its WorkingDirectory at `~/.meridian`, so the
 //!   daemon self-loads the canonical `~/.meridian/.env` ([`InstallMode::Canonical`]).
 //! - The daemon's env layering differs by install type: DMG → `~/.meridian/.env`,
-//!   npm bundle → `~/.meridian/app/.env`, source → repo `.env`.
+//!   source → repo `.env`.
 
 /// Which install mode the tray is running in, inferred from the user's `.env` location.
 ///
@@ -183,10 +183,11 @@ fn dev_env(repo: &std::path::Path) -> std::path::PathBuf {
 /// succeeding against the wrong binary.
 ///
 /// **Release**: mirrors the Node `selectMeridianBinary(meridianCandidates())`.
-/// The native binary (`~/.meridian/app/bin/meridian`) has NO runtime deps, so it
-/// works under launchd's minimal PATH; the user-local `~/.local/bin/meridian` is
-/// a `#!/usr/bin/env node` wrapper that dies when launchd's PATH lacks `node`, so
-/// it's only the fallback; bare `meridian` (relies on `$PATH`) is the last resort.
+/// The native binary (`~/.meridian/bin/meridian`, staged by `backend_install`) has
+/// NO runtime deps, so it works under launchd's minimal PATH; the user-local
+/// `~/.local/bin/meridian` is a `#!/usr/bin/env node` wrapper that dies when
+/// launchd's PATH lacks `node`, so it's only the fallback; bare `meridian`
+/// (relies on `$PATH`) is the last resort.
 pub(crate) fn meridian_bin() -> String {
     // Checked in BOTH profiles, before anything else: an explicit, logged opt-in
     // beats every rule below. Ignored (with a warning) when it points at nothing,
@@ -206,15 +207,10 @@ pub(crate) fn meridian_bin() -> String {
     #[cfg(not(debug_assertions))]
     {
         if let Ok(home) = std::env::var("HOME") {
-            // `~/.meridian/bin/meridian` is the DMG path (staged by `backend_install`);
-            // `~/.meridian/app/bin/meridian` is the npm bundle. Both are native (no
-            // runtime deps) so they work under launchd's minimal PATH; the
+            // `~/.meridian/bin/meridian` is the DMG path (staged by `backend_install`) —
+            // native, no runtime deps, so it works under launchd's minimal PATH; the
             // `~/.local/bin` node wrapper is the last resort.
-            for rel in [
-                "/.meridian/bin/meridian",
-                "/.meridian/app/bin/meridian",
-                "/.local/bin/meridian",
-            ] {
+            for rel in ["/.meridian/bin/meridian", "/.local/bin/meridian"] {
                 let p = std::path::PathBuf::from(format!("{home}{rel}"));
                 if p.exists() {
                     return p.to_string_lossy().into_owned();

@@ -76,15 +76,14 @@ pkill -f 'next dev --turbopack -p 3939' 2>/dev/null || true   # orphaned Next.js
 # firing the HH:03 worklog trigger + ETL against the same meridian.db. So: `disable`
 # (launchd won't re-launch it at login / kickstart), `bootout` (stop the live one),
 # then pkill the installed binary BY PATH as a backstop (the dev pkills above only
-# match `target/debug/meridian`, never `~/.meridian/**/bin/meridian`). Re-enable the
+# match `target/debug/meridian`, never `~/.meridian/bin/meridian`). Re-enable the
 # installed daemon later with `meridian start`.
 DAEMON_LABEL="gui/$(id -u)/com.meridiona.daemon"
 launchctl disable "$DAEMON_LABEL" 2>/dev/null || true
 launchctl bootout "$DAEMON_LABEL" 2>/dev/null || true
-pkill -f '\.meridian/bin/meridian$'     2>/dev/null || true   # DMG-staged installed daemon
-pkill -f '\.meridian/app/bin/meridian$' 2>/dev/null || true   # npm-bundle installed daemon
-if pgrep -f '\.meridian/.*bin/meridian$' >/dev/null 2>&1; then
-    echo "  ⚠ an installed daemon (~/.meridian/**/bin/meridian) is STILL running — quit the Meridian app and re-run" >&2
+pkill -f '\.meridian/bin/meridian$' 2>/dev/null || true   # DMG-staged installed daemon
+if pgrep -f '\.meridian/bin/meridian$' >/dev/null 2>&1; then
+    echo "  ⚠ an installed daemon (~/.meridian/bin/meridian) is STILL running — quit the Meridian app and re-run" >&2
 else
     echo "  ✓ canonical launchd daemon stopped + disabled (re-enable later with: meridian start)"
 fi

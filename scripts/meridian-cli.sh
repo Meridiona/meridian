@@ -160,13 +160,12 @@ cmd_status() {
 # --- logs ---
 # Resolve the compiled `meridian` binary (distinct from THIS bash wrapper,
 # which is what gets invoked as `meridian` on PATH). Mirrors
-# tray/src-tauri/src/install.rs's `meridian_bin()`: packaged native locations
+# tray/src-tauri/src/install.rs's `meridian_bin()`: the packaged native location
 # first, a dev build only for a source checkout.
 _meridian_native_bin() {
     local p
-    for p in "${HOME}/.meridian/bin/meridian" "${HOME}/.meridian/app/bin/meridian"; do
-        [[ -x "$p" ]] && { echo "$p"; return 0; }
-    done
+    p="${HOME}/.meridian/bin/meridian"   # DMG-staged native binary
+    [[ -x "$p" ]] && { echo "$p"; return 0; }
     if _is_source_checkout; then
         for p in "${REPO_ROOT}/target/release/meridian" "${REPO_ROOT}/target/debug/meridian"; do
             [[ -x "$p" ]] && { echo "$p"; return 0; }

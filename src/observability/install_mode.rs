@@ -18,8 +18,8 @@
 //!   dependency between the two).
 
 /// True when THIS PROCESS is a canonical packaged install — its own
-/// executable lives at one of the DMG/npm installer's staged locations
-/// (`~/.meridian/bin/meridian` or `~/.meridian/app/bin/meridian`; see
+/// executable lives at the DMG installer's staged location
+/// (`~/.meridian/bin/meridian`; see
 /// `tray/src-tauri/src/backend_install.rs`). A packaged install must never
 /// attempt live delivery to OpenObserve — telemetry capture stays fully
 /// local, and the only path to a developer's OpenObserve is a user-initiated
@@ -44,7 +44,6 @@ pub(super) fn is_canonical_install() -> bool {
         Ok(exe) => std::env::var("HOME").is_ok_and(|home| {
             let home = std::path::Path::new(&home);
             exe == home.join(".meridian/bin/meridian")
-                || exe == home.join(".meridian/app/bin/meridian")
         }),
         // `current_exe()` failing is rare (permissions, exotic sandboxing) —
         // fall back to the machine-wide marker file rather than guessing.
