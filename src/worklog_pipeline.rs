@@ -338,9 +338,111 @@ async fn process_hour(
     false
 }
 
+/// How far back [`retry_unfinished`] will chase an hour that never finished.
+///
+/// Sized to survive an outage that spans a day boundary — a provider rate-limited
+/// from mid-afternoon until midnight, which before the on-device fallback was
+/// removed would have been silently absorbed by MLX and is now a real hole. Two
+/// days is also the natural give-up point: it bounds the retry so a permanently
+/// broken hour stops costing an LLM call every tick, and a quota that has not
+/// reset in 48 hours is not going to be fixed by asking again.
+const CATCH_UP_LOOKBACK_DAYS: i64 = 2;
+
+/// Retry hours from EARLIER days that were attempted and left unfinished.
+///
+/// The companion to [`catch_up_today`], which only ever walks the current local
+/// day: an hour still pending at local midnight used to fall off the end of the
+/// world, recoverable only by a manual `cli_run_hour`. That was invisible while
+/// the on-device model backstopped every failed call, because an hour almost
+/// never STAYED pending; with the fallback gone, "the provider was limited for
+/// the rest of the day" is an ordinary occurrence and those hours must survive
+/// the date change.
+///
+/// Only hours with an existing non-`done` ledger row are considered (see
+/// [`ledger::unfinished_hours_between`]), so this retries real failures and never
+/// backfills a day the daemon did not run.
+///
+/// Returns `true` if shutdown was observed mid-walk.
+async fn retry_unfinished(
+    pool: &SqlitePool,
+    cfg: &PmWorklogConfig,
+    db_path: &str,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> bool {
+    let local_day = Local::now().date_naive();
+    let midnight_local = match local_day
+        .and_hms_opt(0, 0, 0)
+        .and_then(|naive| Local.from_local_datetime(&naive).single())
+    {
+        Some(m) => m,
+        None => return false, // DST ambiguity — today's walk still runs
+    };
+    let since = midnight_local - Duration::days(CATCH_UP_LOOKBACK_DAYS);
+
+    let hours = match ledger::unfinished_hours_between(
+        pool,
+        &iso_bound(since.with_timezone(&Utc)),
+        &iso_bound(midnight_local.with_timezone(&Utc)),
+    )
+    .await
+    {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!(error = %e, "worklog: unfinished-hours query failed — skipping retry pass");
+            return false;
+        }
+    };
+    if hours.is_empty() {
+        return false;
+    }
+    tracing::info!(
+        count = hours.len(),
+        lookback_days = CATCH_UP_LOOKBACK_DAYS,
+        "worklog: retrying hours left unfinished on an earlier day"
+    );
+
+    for (i, (day_local, hs, he)) in hours.iter().enumerate() {
+        // `process_hour` re-checks done-ness and the activity gate, so a row that
+        // finished by another route since the query is skipped, not redone.
+        let label = format!("{hs} (retry)");
+        if process_hour(
+            pool,
+            cfg,
+            db_path,
+            day_local,
+            hs,
+            he,
+            &label,
+            i as i64,
+            false,
+            shutdown_rx,
+        )
+        .await
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// One full catch-up pass: stranded earlier-day hours first, then today's completed
+/// ones. Returns `true` if shutdown was observed mid-pass.
+async fn catch_up_pass(
+    pool: &SqlitePool,
+    cfg: &PmWorklogConfig,
+    db_path: &str,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> bool {
+    if retry_unfinished(pool, cfg, db_path, shutdown_rx).await {
+        return true;
+    }
+    catch_up_today(pool, cfg, db_path, shutdown_rx).await
+}
+
 /// Process every COMPLETED local hour of today not yet done. Walks chronologically
 /// from local midnight; stops at the first hour that hasn't ended yet. Returns `true`
-/// if shutdown was observed mid-walk. No yesterday / multi-day backfill.
+/// if shutdown was observed mid-walk. Earlier days are handled by
+/// [`retry_unfinished`], not here.
 async fn catch_up_today(
     pool: &SqlitePool,
     cfg: &PmWorklogConfig,
@@ -396,14 +498,18 @@ async fn catch_up_today(
 // ──────────────────────── Daemon loop ────────────────────────────────────────────
 
 /// Daemon task: catch up today's hours on startup, then wake at every local HH:03 to
-/// process the hour that just ended (plus any earlier today hour still pending — the
+/// process the hour that just ended (plus any earlier hour still pending — the
 /// error-retry path). Drafts only; posting stays with pm_worklog::run_post_loop.
+///
+/// Each pass runs the earlier-day retry FIRST, then today, so hours are processed in
+/// chronological order and an hour stranded by a provider outage that spanned local
+/// midnight is picked up before the current day's work.
 pub async fn run_loop(pool: SqlitePool, db_path: String, mut shutdown_rx: watch::Receiver<bool>) {
     let cfg = PmWorklogConfig::from_env();
     tracing::info!("worklog-pipeline driver starting (clock-aligned HH:03; drafts only)");
 
-    // Startup catch-up — process any completed hour of today not yet done.
-    if catch_up_today(&pool, &cfg, &db_path, &mut shutdown_rx).await {
+    // Startup catch-up — retry stranded earlier-day hours, then today's completed ones.
+    if catch_up_pass(&pool, &cfg, &db_path, &mut shutdown_rx).await {
         tracing::info!("worklog-pipeline driver stopped");
         return;
     }
@@ -413,7 +519,7 @@ pub async fn run_loop(pool: SqlitePool, db_path: String, mut shutdown_rx: watch:
         tokio::select! {
             _ = shutdown_rx.changed() => break,
             _ = tokio::time::sleep(dur) => {
-                if catch_up_today(&pool, &cfg, &db_path, &mut shutdown_rx).await {
+                if catch_up_pass(&pool, &cfg, &db_path, &mut shutdown_rx).await {
                     break;
                 }
             }

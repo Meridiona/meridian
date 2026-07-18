@@ -309,16 +309,24 @@ export function CustomProviderCard({ p, picked, probing, onPick, onProbe, onRemo
       style={{
         gap: 8, padding: '13px 14px', borderRadius: 13,
         cursor: selectable ? 'pointer' : 'default',
-        background: picked ? 'color-mix(in srgb, var(--color-state-proposal) 7%, transparent)' : 'var(--t-box)',
-        border: `1px solid ${picked ? 'var(--color-state-proposal)' : 'var(--t-card-border)'}`,
+        // Surfaces match <ProviderCard> exactly - these tiles share its grid, so any
+        // divergence reads as one of the two being broken. See the layering note there
+        // (card on --t-card, inner elements on --t-box).
+        background: picked
+          ? 'color-mix(in srgb, var(--color-state-proposal) 12%, var(--t-card))'
+          : 'var(--t-card)',
+        border: `1px solid ${picked ? 'var(--color-state-proposal)' : 'var(--t-ctrl-border)'}`,
+        boxShadow: picked
+          ? 'inset 0 0 0 1px color-mix(in srgb, var(--color-state-proposal) 30%, transparent)'
+          : '0 1px 2px rgba(0,0,0,.04)',
         opacity: selectable ? 1 : 0.72,
       }}>
       <div className="flex items-start" style={{ gap: 10 }}>
         <span className="flex items-center justify-center shrink-0" style={{
           width: 30, height: 30, borderRadius: 9,
-          background: picked ? 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)' : 'var(--t-box)',
-          border: '0.5px solid var(--t-card-border)',
-          color: picked ? 'var(--color-state-proposal)' : 'var(--t-faint)',
+          background: picked ? 'color-mix(in srgb, var(--color-state-proposal) 16%, transparent)' : 'var(--t-box)',
+          border: '1px solid var(--t-ctrl-border)',
+          color: picked ? 'var(--color-state-proposal)' : 'var(--t-muted)',
         }}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
             <path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6 6 0 0 0 6.1 9.4 4.5 4.5 0 0 0 6.5 19z" />
@@ -327,11 +335,13 @@ export function CustomProviderCard({ p, picked, probing, onPick, onProbe, onRemo
         <div style={{ flex: 1, minWidth: 0 }}>
           <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>{p.name}</span>
           <div className="flex items-center flex-wrap" style={{ gap: 5, marginTop: 4 }}>
+            {/* Sizing/weight kept in step with <Badge> in LlmProviderPicker. */}
             <span className="font-mono" style={{
-              fontSize: 8.5, letterSpacing: '.1em',
+              fontSize: 9.5, letterSpacing: '.09em',
               color: p.production_eligible ? 'var(--color-state-approved)' : 'var(--color-state-pending)',
-              border: `0.5px solid ${p.production_eligible ? 'var(--color-state-approved)' : 'var(--color-state-pending)'}`,
-              borderRadius: 4, padding: '1px 5px', whiteSpace: 'nowrap', textTransform: 'uppercase',
+              border: `1px solid ${p.production_eligible ? 'var(--color-state-approved)' : 'var(--color-state-pending)'}`,
+              background: `color-mix(in srgb, ${p.production_eligible ? 'var(--color-state-approved)' : 'var(--color-state-pending)'} 10%, transparent)`,
+              borderRadius: 4, padding: '1.5px 5px', whiteSpace: 'nowrap', textTransform: 'uppercase',
             }}>
               {probing ? 'TESTING…' : rungLabel(p.effective_rung)}
             </span>
@@ -348,7 +358,7 @@ export function CustomProviderCard({ p, picked, probing, onPick, onProbe, onRemo
         )}
       </div>
 
-      <p className="font-mono" style={{ fontSize: 10, lineHeight: 1.4, color: 'var(--t-faint)', wordBreak: 'break-all' }}>
+      <p className="font-mono" style={{ fontSize: 10, lineHeight: 1.4, color: 'var(--t-muted)', wordBreak: 'break-all' }}>
         {p.model}
       </p>
 
@@ -370,9 +380,10 @@ export function CustomProviderCard({ p, picked, probing, onPick, onProbe, onRemo
           disabled={probing}
           className="font-mono"
           style={{
-            fontSize: 9.5, letterSpacing: '.08em', textTransform: 'uppercase',
-            color: 'var(--t-title)', border: '0.5px solid var(--t-title)',
-            borderRadius: 5, padding: '3px 7px', background: 'transparent',
+            // Filled controls, matching the Test button in <ProviderCard>.
+            fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase',
+            color: 'var(--t-title)', border: '1px solid var(--t-ctrl-border)',
+            borderRadius: 5, padding: '4px 8px', background: 'var(--t-box)',
             cursor: probing ? 'default' : 'pointer', opacity: probing ? 0.55 : 1,
           }}>
           {probing ? 'Testing…' : p.fully_probed ? 'Re-test' : 'Test'}
@@ -380,9 +391,9 @@ export function CustomProviderCard({ p, picked, probing, onPick, onProbe, onRemo
         <button onClick={remove} disabled={probing}
           className="font-mono"
           style={{
-            fontSize: 9.5, letterSpacing: '.08em', textTransform: 'uppercase',
-            color: 'var(--t-faint)', border: '0.5px solid var(--t-card-border)',
-            borderRadius: 5, padding: '3px 7px', background: 'transparent', cursor: 'pointer',
+            fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase',
+            color: 'var(--t-muted)', border: '1px solid var(--t-ctrl-border)',
+            borderRadius: 5, padding: '4px 8px', background: 'var(--t-box)', cursor: 'pointer',
           }}>
           Remove
         </button>
@@ -396,14 +407,28 @@ export function AddCustomProvider({ onAdd }: {
   onAdd: (fields: { vendor: string; name: string; base_url: string; model: string; api_key: string; rpm: number }) => Promise<ProbeOutcome>
 }) {
   const [open, setOpen] = useState(false)
-  if (open) return <AddForm onAdd={onAdd} onCancel={() => setOpen(false)} />
+  // The form is wide (URL, model, key), so it takes the whole grid row; the closed tile
+  // is just one more cell. The span lives here because only this component knows which
+  // of the two is showing.
+  if (open) {
+    return (
+      <div style={{ gridColumn: '1 / -1' }}>
+        <AddForm onAdd={onAdd} onCancel={() => setOpen(false)} />
+      </div>
+    )
+  }
   return (
     <button onClick={() => setOpen(true)}
       className="flex items-center justify-center h-full"
       style={{
+        // Same wrap as <ProviderCard>/<CustomProviderCard> - padding, radius, surface and
+        // border weight all match, so it sits in the grid as a peer rather than an
+        // afterthought. Only the border stays DASHED, which is what still reads it as an
+        // "add" affordance instead of a selectable option.
         gap: 7, padding: '13px 14px', borderRadius: 13, minHeight: 76,
-        background: 'transparent', border: '1px dashed var(--t-card-border)',
-        color: 'var(--t-faint)', cursor: 'pointer', fontSize: 12,
+        background: 'var(--t-card)', border: '1px dashed var(--t-ctrl-border)',
+        boxShadow: '0 1px 2px rgba(0,0,0,.04)',
+        color: 'var(--t-muted)', cursor: 'pointer', fontSize: 12,
       }}>
       + Add a custom endpoint
     </button>

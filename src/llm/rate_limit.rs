@@ -4,8 +4,8 @@
 //!
 //! # Why this exists alongside the backoff that was already here
 //! [`super::resolver`] already handles a rate limit REACTIVELY: eat the 429, park the
-//! backend, fall back to the on-device model. That is the right backstop and it stays. But
-//! it is strictly after-the-fact — something must fail before anything slows down, and on a
+//! backend, stop calling it until the quota resets. That is the right backstop and it
+//! stays. But it is strictly after-the-fact — something must fail before anything slows down, and on a
 //! free tier the first thing that fails is the endpoint probe, which fires up to
 //! `schemas × rungs` (16) requests back-to-back. A 15-RPM key cannot survive that, so a
 //! free-tier endpoint could never finish being measured, and an unmeasured endpoint is
@@ -47,7 +47,7 @@
 //! measures rate limits as data, and pacing would corrupt the measurement.
 //!
 //! # Related
-//! - [`super::resolver`] — the reactive half: backoff, fallback, and the priority chain that
+//! - [`super::resolver`] — the reactive half: the backoff and the priority chain that
 //!   turns a `Retry-After` header into a park duration.
 //! - [`meridian_core::CustomLlmProvider::rpm`] — where the ceiling is configured.
 

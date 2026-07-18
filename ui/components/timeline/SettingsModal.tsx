@@ -70,7 +70,8 @@ export function SettingsModal({ onClose, initialSection }: {
                   <IntegrationsSection integrations={integrations} onChanged={fetchIntegrations} />
                 )
               )}
-              {section === 'intelligence' && <IntelligenceSection settings={settings} patch={patch} save={save} />}
+              {/* No `patch`: Intelligence stages its pick locally and writes only on Save. */}
+              {section === 'intelligence' && <IntelligenceSection settings={settings} save={save} />}
               {section === 'capture' && <CaptureSection settings={settings} patch={patch} save={save} />}
               {section === 'notifications' && <NotificationsSection settings={settings} patch={patch} save={save} />}
               {section === 'appearance' && <AppearanceSection />}
