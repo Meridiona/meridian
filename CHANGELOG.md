@@ -1,3 +1,80 @@
+## [1.71.0](https://github.com/Meridiona/meridian/compare/v1.70.0...v1.71.0) (2026-07-15)
+
+### 🚀 Features
+
+* **daemon:** hold the plan nudge for 1h after the planner auto-open ([4f0f90b](https://github.com/Meridiona/meridian/commit/4f0f90be2a0549cf7b5622dd433b1f9b5ce7e3c6))
+* **design-system:** migrate to SF Pro + single violet accent, real per-app brand colors ([b193c8f](https://github.com/Meridiona/meridian/commit/b193c8f51bd8698e3a8ae947bd726a31c8e09bd1)), closes [#7C3AED](https://github.com/Meridiona/meridian/issues/7C3AED)
+* **design-system:** scaffold meridian-design-system package ([d1ea322](https://github.com/Meridiona/meridian/commit/d1ea3227fd90c7ac74e13d1347ac2c8d41101886))
+* **design-system:** sync meridian-design-system to Claude Design ([dc64395](https://github.com/Meridiona/meridian/commit/dc643951e7ba0f7faf348c87f514cb806e467e18)), closes [#421](https://github.com/Meridiona/meridian/issues/421)
+* **dmg:** themed drag-to-Applications background with a curved arrow ([cd299fb](https://github.com/Meridiona/meridian/commit/cd299fb692373549cbf4c97b9df5399655280b88))
+* **plan:** restart the reminder clock when the planner is dismissed ([83cec62](https://github.com/Meridiona/meridian/commit/83cec62006921a773e6ccf54dcb2137727073cb9))
+* **release:** sign + notarize the macOS bundle with the Developer ID cert ([a6f90b8](https://github.com/Meridiona/meridian/commit/a6f90b8dea04406ecafb17bc901292299fb28432))
+* **setup:** notifications permission card in the onboarding wizard ([ea621a9](https://github.com/Meridiona/meridian/commit/ea621a9b9d000c46f076520527bcb79171d6a8e0))
+* **setup:** semi-circular gauge for expected-memory panel ([7997cbc](https://github.com/Meridiona/meridian/commit/7997cbc8af6e2fd976c33abce042c3d765bfd16c))
+* **tray,ui:** show app version + build channel in dashboard and popover ([e8655c1](https://github.com/Meridiona/meridian/commit/e8655c10a41ed27d444a1dafe7db6c6040843749))
+* **tray:** add PostHog product analytics for DMG installs ([#427](https://github.com/Meridiona/meridian/issues/427)) ([88e2567](https://github.com/Meridiona/meridian/commit/88e2567fd019ce4d1f1ca640c6b583cc0e4adab9))
+* **tray:** auto-open the Plan your day view once per day ([3f1c9c4](https://github.com/Meridiona/meridian/commit/3f1c9c428b11b8799995d3c251339e237c7cb57f))
+* **tray:** capture PostHog analytics in dev mode too, identify on sign-in ([7f6af98](https://github.com/Meridiona/meridian/commit/7f6af985ea89fc6689be9733a1ec81389a0d7206))
+* **tray:** email one-time-code sign-in via Clerk ([4104138](https://github.com/Meridiona/meridian/commit/4104138b96543f95c97cf5f25a4d333a1969d82c))
+* **tray:** force-install updates below a manifest-declared minimum version ([77becab](https://github.com/Meridiona/meridian/commit/77becabd6d0ac2b77c2fd3441656d8da6a80d9e0))
+* **ui:** Settings → Account sign-in/sign-out control ([270d7da](https://github.com/Meridiona/meridian/commit/270d7da2b1845bd3464732de7f5412d12e48b0f2))
+* **uninstall:** add an in-app uninstall wizard ([14e3786](https://github.com/Meridiona/meridian/commit/14e378673d53967fd2b89e660746b6a7e927b5c4))
+
+### 🐛 Bug Fixes
+
+* **ci:** force Tauri's DMG Finder decoration step on GitHub-hosted runners ([46cea89](https://github.com/Meridiona/meridian/commit/46cea89e59a42b80f771aa8ba0d6bc1fb6b48b9c)), closes [tauri-apps/tauri#1731](https://github.com/tauri-apps/tauri/issues/1731)
+* **design-system:** drop dead atoms.tsx re-exports, hard-fail on missing styles ([00e46dc](https://github.com/Meridiona/meridian/commit/00e46dc49f6734344e0f890a478d8e659f2e9f09)), closes [#421](https://github.com/Meridiona/meridian/issues/421)
+* **design-system:** fix broken WhatsApp brand-color lookup, add ChatGPT/VS Code colors ([cf5fc48](https://github.com/Meridiona/meridian/commit/cf5fc4809cd21eaefd6941f7cb104d0cb888cd49))
+* **design-system:** fix CSS comment breaking Turbopack build ([fd45511](https://github.com/Meridiona/meridian/commit/fd45511ed9152c0a61057966aa836cfa9d178661))
+* **design-system:** fix ink-theme white-text contrast, stale .gitignore ref, em-dash ([b75bf14](https://github.com/Meridiona/meridian/commit/b75bf14b77ee1574dc103d641a7884340f064eca)), closes [#DCCFFB](https://github.com/Meridiona/meridian/issues/DCCFFB)
+* **dmg:** lighten the drag-to-Applications arrow color ([931b7ce](https://github.com/Meridiona/meridian/commit/931b7ce9b5f7aa8d8101c746521b89c5756b9b18)), closes [#8B5CF6](https://github.com/Meridiona/meridian/issues/8B5CF6) [#C4B5FD](https://github.com/Meridiona/meridian/issues/C4B5FD)
+* **dmg:** properly crop and center the brand mark above the wordmark ([abd2c16](https://github.com/Meridiona/meridian/commit/abd2c16a055a7bb0f05bc754789167ae7f612f14))
+* **intelligence:** gate jira worklog backfill behind the sync cache ([fff7e9c](https://github.com/Meridiona/meridian/commit/fff7e9c27e237d3abdf95e17d9fa83d6f650ae06)), closes [#440](https://github.com/Meridiona/meridian/issues/440)
+* **release:** notarize and staple the DMG, not just the .app ([c3fc27f](https://github.com/Meridiona/meridian/commit/c3fc27fbfd96cdf72923e98661d5f4ccd736f8dc))
+* **release:** reject a minimum-version floor above the release that ships it ([1db2c27](https://github.com/Meridiona/meridian/commit/1db2c27cd8ac572d4bb01e8b0cfb9df1e8ff989c)), closes [#438](https://github.com/Meridiona/meridian/issues/438)
+* **review:** address CodeRabbit findings on PR [#440](https://github.com/Meridiona/meridian/issues/440) ([58bdea9](https://github.com/Meridiona/meridian/commit/58bdea95a0d4d18a1065c175e5716185fc06b630))
+* **review:** address second-round CodeRabbit findings on the [#440](https://github.com/Meridiona/meridian/issues/440) fixes ([00b0159](https://github.com/Meridiona/meridian/commit/00b0159d8c6be2d132451eec3ac653347409ceab))
+* **setup:** derive the Completion model label instead of hand-typing it ([72c35a9](https://github.com/Meridiona/meridian/commit/72c35a97d934139087593b1143f060cba6e0a307))
+* **setup:** notification pane deep-link opens Meridian's own settings, skip redundant re-request ([f0b1fbb](https://github.com/Meridiona/meridian/commit/f0b1fbbcfc9bf6f0004da5402da5e8a2770132d7))
+* **setup:** polish first-run wizard copy, permissions, and window chrome ([e4dcac6](https://github.com/Meridiona/meridian/commit/e4dcac6f2cbd86912c3bc405a699e0fff3bc0673))
+* **setup:** stop notifications card flicker, drop OPTIONAL chip, fix dash style ([4bc2dec](https://github.com/Meridiona/meridian/commit/4bc2dec20bb012c45df739007644bc74a2a72504))
+* **tray:** allow the production Clerk domain in the HTTP capability ([19a469d](https://github.com/Meridiona/meridian/commit/19a469d238b129ef66d4ae7ca7abbab2cbb41048))
+* **tray:** bake the PostHog key at build time instead of hardcoding it ([#430](https://github.com/Meridiona/meridian/issues/430)) ([4a25e9a](https://github.com/Meridiona/meridian/commit/4a25e9a334c138ed1f8fc69e29cd5e4bc2342742))
+* **tray:** dismiss tooltip on right-click, dismiss popover on other-window focus, drop popover border ([42e67ce](https://github.com/Meridiona/meridian/commit/42e67ce3453a4f5b28fcbf6c164f41cb2ec5ba88))
+* **tray:** don't park a deep link the open dashboard already received ([bf120cd](https://github.com/Meridiona/meridian/commit/bf120cd6c8405c40f2f519bd93ed8e93870db604)), closes [#437](https://github.com/Meridiona/meridian/issues/437)
+* **tray:** retire the redundant meridian-a11y-helper Accessibility entry ([0eeef5b](https://github.com/Meridiona/meridian/commit/0eeef5b41a4382526c00bd059cb4b762dc158b52))
+* **tray:** use a plain hyphen in the dashboard window title ([662e243](https://github.com/Meridiona/meridian/commit/662e2438e2b69aeec73442fdd74157639f4e98c8))
+* **uninstall:** apply rustfmt to tray.rs ([fa1a53f](https://github.com/Meridiona/meridian/commit/fa1a53fb820e264ff3493616970c76adcfd40a3b))
+* **worklog:** fall back to Task when a project has no Bug issue type ([#442](https://github.com/Meridiona/meridian/issues/442)) ([fdb390e](https://github.com/Meridiona/meridian/commit/fdb390ee1979a9f1d26447c894401d38b18dc8e0))
+* **worklog:** stop retrying posts that hit Jira's per-issue worklog cap ([#441](https://github.com/Meridiona/meridian/issues/441)) ([7300e34](https://github.com/Meridiona/meridian/commit/7300e34a7580b54911536d15621efc970b96228b))
+
+### ♻️ Refactoring
+
+* **dmg:** address review nits in make-dmg-background.py ([e90d03a](https://github.com/Meridiona/meridian/commit/e90d03ae6cbd0c8011cc451d65434788e40ed0e8))
+
+### 🤖 CI
+
+* bake the production Clerk key into every packaged build ([b4d3890](https://github.com/Meridiona/meridian/commit/b4d389084d08f4bba99721c95adc387cc6a40d0e))
+* **release:** extract Apple cert import into a shared composite action ([21ae1a4](https://github.com/Meridiona/meridian/commit/21ae1a42f33d21366984ce96d98f2b68c07997e6))
+
+### ✅ Tests
+
+* **tray:** add regression coverage for a11y-helper leftover cleanup ([fcf8c7c](https://github.com/Meridiona/meridian/commit/fcf8c7c4a3fde1bd6c65db4dceaafd27b0b3452e))
+
+### 📝 Documentation
+
+* clarify PRs target pre-main, main is maintainer-only release ([ac27b79](https://github.com/Meridiona/meridian/commit/ac27b794c4e481b510d13f83673fa428399fde21))
+* document the mandatory-update floor in CLAUDE.md Common Tasks ([1312927](https://github.com/Meridiona/meridian/commit/131292745520419a1a1bd9d5bc1df14d9619fe1f))
+* **notifications:** fix test recipe — expires_at must be RFC-3339, not datetime() ([7c680ff](https://github.com/Meridiona/meridian/commit/7c680ff602b4f0a09c979f0b40a5e21755b619ab))
+* **ui:** add color & gradient rules to STYLESHEET.md ([47a0c08](https://github.com/Meridiona/meridian/commit/47a0c086b18f4f4c1decda059a3123c4c22bd076))
+* **ui:** drop stale MustFixBanner/NotificationBanner refs in globals.css ([33b0b6c](https://github.com/Meridiona/meridian/commit/33b0b6ceb99873c4aecb0e88350ed963ee1e870d)), closes [#433](https://github.com/Meridiona/meridian/issues/433)
+* **ui:** resolve categorical color mapping — no brand exception ([5664cfa](https://github.com/Meridiona/meridian/commit/5664cface0a8b77f563d1297f2298bbdd40f9227))
+
+### 🔧 Chores
+
+* **ui:** dashboard style cleanup — fonts, shadows, dead code (Phase 1) ([6803651](https://github.com/Meridiona/meridian/commit/6803651248714ed8c286b3d3c42271a596895291)), closes [#419](https://github.com/Meridiona/meridian/issues/419)
+* **ui:** remove top-of-app nudge banners, keep sidebar equivalents ([0070e0a](https://github.com/Meridiona/meridian/commit/0070e0a554fbb2f12f0411eeb932c3b7c528b360))
+
 ## [1.70.0](https://github.com/Meridiona/meridian/compare/v1.69.1...v1.70.0) (2026-07-09)
 
 ### 🚀 Features
