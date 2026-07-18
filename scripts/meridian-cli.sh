@@ -485,10 +485,10 @@ cmd_daemon_passthrough() {
 }
 
 # --- dev (source checkout only) ---
-# Build from THIS repo and restart only what changed. The daemon's launchd plist
-# runs ~/.local/bin/meridian-daemon -> target/release/meridian, so a release
-# build is picked up in place. Gated on Cargo.toml: a prebuilt install (bundle at
-# ~/.meridian/app) has no source, so these are hidden/disabled there.
+# `meridian dev` runs the full watch/hot-reload environment (dev-start.sh:
+# cargo-watch daemon + `tauri dev` tray, debug builds, no launchd). `dev build`
+# does a one-off release build to verify the shipped bundle. Gated on Cargo.toml:
+# a prebuilt install has no source, so these are hidden/disabled there.
 _is_source_checkout() { [[ -f "${REPO_ROOT}/Cargo.toml" ]]; }
 
 _dev_build_daemon() { info "building daemon (cargo --release)…"; ( cd "${REPO_ROOT}" && cargo build --release ); }
