@@ -235,8 +235,8 @@ fn write_and_open(script_path: &std::path::Path, script: &str) -> std::io::Resul
 /// Build channel this binary was compiled for — lets a user tell a local dev
 /// run apart from a staging or production build at a glance. `dev` is a
 /// runtime check (`tauri dev` / unbundled `cargo run`); `staging` is baked in
-/// at compile time via `MERIDIAN_CHANNEL` (same `option_env!` pattern as
-/// [`crate::mlx_server::manifest_url`]) by the staging release workflow;
+/// at compile time via `MERIDIAN_CHANNEL` (an `option_env!` baked in by the
+/// staging release workflow);
 /// anything else (a plain release build with no channel baked in) is `prod`.
 /// `pub(crate)` — also read by [`crate::analytics::base_properties`] to tag
 /// every PostHog event with the same dev/staging/prod distinction.

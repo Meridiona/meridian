@@ -35,7 +35,6 @@
 //! # Related
 //! - [`crate::install`] — install-mode + db-path resolution the commands consume.
 //! - [`crate::sys`] — shared uid / notify / ui_base helpers.
-//! - [`crate::mlx_server`] — the MLX process manager the setup commands drive.
 
 pub mod account;
 pub mod app_icons;

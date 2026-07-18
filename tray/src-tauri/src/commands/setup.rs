@@ -1,5 +1,6 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-//! Setup wizard Tauri commands — first-run detection, permission probes, MLX status.
+//! Setup wizard Tauri commands — first-run detection, permission probes, provider
+//! detection.
 //!
 //! Every interactive step of `ui/app/setup/page.tsx` calls one or more commands
 //! from this module. No stubs — all commands return live state so the wizard can
@@ -9,28 +10,9 @@
 //! Command: registered in `lib.rs`; invoked from `ui/app/setup/page.tsx`.
 //!
 //! # Related
-//! - [`crate::mlx_server`] — the MLX child-process manager these commands expose
 //! - [`crate::commands::system::open_permission_pane`] — opens System Settings panes
 
-use crate::mlx_server::{self, MlxStatus, SharedMlxManager};
 use serde::Serialize;
-use serde_json::Value;
-use tauri::Emitter;
-
-/// Response shape for the wizard's Model step poll.
-#[derive(Debug, Serialize)]
-pub struct MlxStatusResponse {
-    /// Current server status.
-    pub status: MlxStatus,
-    /// Port the server listens on (7823).
-    pub port: u16,
-    /// Whether a resolvable Python binary was found on this machine.
-    pub runtime_found: bool,
-    /// Whether the downloadable runtime is provisioned in `~/.meridian/runtime/`.
-    pub runtime_installed: bool,
-    /// Whether a runtime tarball URL is configured (download is possible).
-    pub download_available: bool,
-}
 
 /// Returns `true` on the first launch — no `~/.meridian/onboarded` flag exists.
 /// The wizard auto-opens when `true` and is skipped on subsequent launches.
@@ -215,100 +197,6 @@ pub async fn request_notifications(app: tauri::AppHandle) -> String {
     }
 }
 
-/// Query the current MLX server status. Polled every 3 seconds by the wizard's
-/// Model step. Returns `runtime_found` alongside status so the UI can distinguish
-/// "not installed" from "installed but offline".
-#[tauri::command]
-#[tracing::instrument(skip(mlx))]
-pub async fn get_mlx_status(
-    mlx: tauri::State<'_, SharedMlxManager>,
-) -> Result<MlxStatusResponse, String> {
-    mlx_server::sync_status(&mlx).await;
-    let m = mlx.lock().await;
-    let runtime_found = mlx_server::resolve_mlx_command().is_some();
-    let runtime_installed = mlx_server::runtime_installed();
-    let download_available = mlx_server::manifest_url().is_some();
-    tracing::debug!(
-        status = ?m.status,
-        runtime_found,
-        runtime_installed,
-        download_available,
-        "mlx: status queried"
-    );
-    Ok(MlxStatusResponse {
-        status: m.status.clone(),
-        port: m.port,
-        runtime_found,
-        runtime_installed,
-        download_available,
-    })
-}
-
-/// Download, verify, and provision the MLX runtime into `~/.meridian/runtime/`
-/// (Approach C). Manifest-driven: skips the download when the installed version
-/// already matches, and verifies the tarball's SHA-256 before extracting.
-///
-/// Streams progress to the frontend via the `mlx-download-progress` Tauri event
-/// (payload: [`crate::mlx_server::DownloadProgress`]). On success the wizard's
-/// next `get_mlx_status` poll sees `runtime_installed = true` and can start the
-/// server. A checksum mismatch returns an error and installs nothing.
-#[tauri::command]
-#[tracing::instrument(skip(app))]
-pub async fn download_runtime_cmd(app: tauri::AppHandle) -> Result<(), String> {
-    let handle = app.clone();
-    let outcome = mlx_server::download_runtime(move |p| {
-        let _ = handle.emit("mlx-download-progress", p);
-    })
-    .await
-    .inspect_err(|e| tracing::warn!(error = %e, "mlx: runtime download failed"))?;
-    tracing::info!(?outcome, "mlx: runtime download finished");
-    Ok(())
-}
-
-/// Eager-download every pipeline model (llm + embedder — the server's
-/// model registry) into the HF cache so the first worklog run doesn't pay a
-/// silent download mid-pipeline. The model set is fixed server-side, so this
-/// prefetches exactly what each `load()` resolves. Streams aggregate progress via
-/// the same `mlx-download-progress` event the runtime download uses (the wizard's
-/// Model step listens for both phases). Requires the MLX server to be running —
-/// the wizard calls this after `start_mlx_server_cmd` reports the server up.
-/// Idempotent server-side.
-#[tauri::command]
-#[tracing::instrument(skip(app, mlx))]
-pub async fn prefetch_model_cmd(
-    app: tauri::AppHandle,
-    mlx: tauri::State<'_, SharedMlxManager>,
-) -> Result<(), String> {
-    let port = mlx.lock().await.port;
-    let handle = app.clone();
-    mlx_server::prefetch_model(port, move |p| {
-        let _ = handle.emit("mlx-download-progress", p);
-    })
-    .await
-    .inspect_err(|e| tracing::warn!(error = %e, "mlx: model prefetch failed"))?;
-    mark_local_chat_model_ready();
-    tracing::info!("mlx: model prefetch finished");
-    Ok(())
-}
-
-/// Record that the on-device chat model is on disk.
-///
-/// This is what `llm::resolver` consults before it dares fall back to the local model
-/// when a CLI provider fails: falling back to a model that was never downloaded would
-/// turn one broken hour into a hang. The prefetch is the only thing that knows the
-/// weights landed, so it is the only honest place to set this.
-///
-/// Best-effort: a failed write costs a conservative "no local fallback", never a failed
-/// setup — so it warns rather than propagating.
-fn mark_local_chat_model_ready() {
-    let mut v = meridian_core::settings::read_settings_value();
-    let Some(obj) = v.as_object_mut() else { return };
-    obj.insert("llm_local_chat_model_ready".into(), Value::Bool(true));
-    if let Err(e) = meridian_core::settings::write_settings_value(&v) {
-        tracing::warn!(error = %e, "mlx: could not record llm_local_chat_model_ready");
-    }
-}
-
 /// Which AI provider CLIs are installed on this Mac (`claude`, `codex`, `cursor-agent`,
 /// `copilot`). Drives the wizard's Intelligence step, which lets the user pick one - and
 /// says plainly when the CLI they picked isn't here yet.
@@ -378,21 +266,6 @@ pub async fn test_all_llm_providers(
         "llm: provider rescan-test complete"
     );
     Ok(results)
-}
-
-/// Start the MLX server if it isn't already running. The wizard's Model step
-/// calls this when `get_mlx_status` reports `offline` and `runtime_found = true`.
-/// Safe to call when the server is already up — health check short-circuits spawn.
-#[tauri::command]
-#[tracing::instrument(skip(mlx))]
-pub async fn start_mlx_server_cmd(mlx: tauri::State<'_, SharedMlxManager>) -> Result<(), String> {
-    let port = mlx.lock().await.port;
-    if mlx_server::health_check(port).await {
-        let mut m = mlx.lock().await;
-        m.status = MlxStatus::Running;
-        return Ok(());
-    }
-    mlx_server::start(port, &mlx).await
 }
 
 /// Detected hardware specs for the wizard's "Local intelligence" step. Drives the

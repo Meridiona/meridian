@@ -38,9 +38,6 @@
 //! # Related
 //! - [`crate::install`] — resolves where data lives; [`crate::install::meridian_bin`]
 //!   prefers the `~/.meridian/bin/meridian` this module stages.
-//! - [`crate::mlx_server`] — the *other* backend service (provisioned via Approach C,
-//!   not bundled); [`crate::mlx_server::sha256_hex_of`] is reused here for the
-//!   update-detection marker.
 //! - `scripts/install-from-bundle.sh`, `scripts/install-daemon.sh` — the shell
 //!   flow this ports.
 
@@ -48,7 +45,13 @@ use std::path::{Path, PathBuf};
 
 use tauri::Manager;
 
-use crate::mlx_server;
+/// SHA-256 of a file as a lowercase hex string — the bundled-daemon update marker.
+fn sha256_hex_of(path: &Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(path)?;
+    let digest = Sha256::digest(&bytes);
+    Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
+}
 
 /// launchd agents this stages, paired with their bundled plist template.
 const AGENTS: &[(&str, &str)] = &[("com.meridiona.daemon", "com.meridiona.daemon.plist")];
@@ -81,7 +84,7 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
     };
 
     let daemon_src = backend.join("meridian");
-    let bundled_hash = match mlx_server::sha256_hex_of(&daemon_src) {
+    let bundled_hash = match sha256_hex_of(&daemon_src) {
         Ok(h) => h,
         Err(e) => {
             tracing::warn!(error = %e, src = %daemon_src.display(), "backend_install: cannot hash bundled daemon");
@@ -194,15 +197,11 @@ async fn cleanup_legacy_screenpipe(home: &Path) {
         .await;
 }
 
-/// Purge a leftover **bundle MLX launchd agent**. The npm/curl bundle registers
-/// the MLX inference server as `com.meridiona.mlx-server` (via
-/// `install-mlx-server-daemon.sh`) on port 7823. The DMG instead supervises MLX
-/// **in-process** through [`crate::mlx_server::MlxManager`] on that *same* port,
-/// so a leftover launchd agent contends for :7823 — the tray's spawn hits
-/// `EADDRINUSE` and the agent's `KeepAlive` keeps respawning, producing retry
-/// churn + log spam. Boot it out and remove its plist so the tray owns the port.
-/// We do **not** `pkill` by name — the tray's own MLX child also listens on 7823,
-/// and `bootout` already stops only the launchd-spawned one. Best-effort.
+/// Purge a leftover **MLX launchd agent** from an older install. Earlier builds
+/// registered a local MLX inference server as `com.meridiona.mlx-server` (via
+/// `install-mlx-server-daemon.sh`) on port 7823. That whole subsystem has been
+/// removed (generation runs through the user's CLI provider now), so on update we
+/// boot out any surviving agent and remove its plist. Best-effort.
 async fn cleanup_legacy_mlx_server(home: &Path) {
     let label = "com.meridiona.mlx-server";
     let target = format!("gui/{}/{label}", crate::sys::uid_str());
