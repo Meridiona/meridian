@@ -101,20 +101,48 @@ pub async fn get_week(
         })
 }
 
-/// Today's coding-agent totals, computed in Rust (the ported /api/coding-agents).
+/// A day's coding-agent totals, computed in Rust (the ported /api/coding-agents).
+/// `day` defaults to today (local) when omitted, matching [`get_today`] and
+/// [`get_day_tasks`].
+///
+/// The core reader was always day-parameterised; only this wrapper pinned it to
+/// today. That mattered once the day-summary gained day navigation: agent
+/// sessions are excluded from `get_today`'s `sessions`, so `TimeByApp` folds
+/// these totals back in — a hard-coded today here silently under-reported a past
+/// day's agent time rather than failing visibly.
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_coding_agents(
     pool: State<'_, Option<meridian_core::SqlitePool>>,
+    day: Option<String>,
 ) -> Result<meridian_core::coding_agents::CodingAgentsResponse, String> {
     let Some(pool) = pool.inner() else {
         return Err("meridian.db is not open yet".to_string());
     };
-    let date = meridian_core::date::today_string();
+    let date = day.unwrap_or_else(meridian_core::date::today_string);
     meridian_core::coding_agents::get_coding_agents(pool, &date)
         .await
         .map_err(|e| {
             tracing::warn!(error = %e, "get_coding_agents failed");
+            e.to_string()
+        })
+}
+
+/// The apps Meridian has captured recently — the picker source for Settings →
+/// Capture & Privacy → "Ignore an app". Last 30 days, most-seen first, capped at
+/// 60. No day param (this is a settings affordance, not a timeline view).
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn get_recent_capture_apps(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+) -> Result<Vec<meridian_core::capture_apps::CaptureApp>, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    meridian_core::capture_apps::recent_capture_apps(pool, 30, 60)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "get_recent_capture_apps failed");
             e.to_string()
         })
 }

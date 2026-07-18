@@ -691,3 +691,83 @@ export interface WhatsNewData {
   releases: ReleaseNote[]
   roadmap: RoadmapItem[]
 }
+
+// ── Daily summary (`get_day_summary` / `generate_day_summary`) ────────────────
+
+/** One visualisation the model chose for a day. */
+export interface SummaryPanel {
+  title: string
+  /** The model's reason for choosing THIS form for THIS data. */
+  why: string
+  /**
+   * A raw Vega-Lite spec. Server-validated before it ever reaches here, and its
+   * data is always bound BY NAME (`{"data": {"name": "segments"}}`) — the real
+   * rows come from `get_day_summary_data` and are injected at render, so a stored
+   * chart can never disagree with the timeline beside it. Typed `unknown` rather
+   * than `any`: nothing here should read into it, only hand it to vega-embed.
+   */
+  spec: unknown
+}
+
+/** A day's composed review. `null` from `get_day_summary` until one is generated. */
+export interface DaySummary {
+  day: string
+  /** The model's prose. Empty on the fallback path. */
+  narrative: string
+  insights: string[]
+  /**
+   * 0, 1 or 2. **Empty is a correct, common answer** — charts are optional and
+   * most days are best told in words alone, so an empty array means the model
+   * judged none worth showing, NOT that something failed (see `fallback`).
+   */
+  panels: SummaryPanel[]
+  /** Who ACTUALLY answered — the resolver degrades to local on failure. */
+  provider: string
+  /** The model override in force (`sonnet`/`haiku`), or '' for the default. */
+  model: string
+  /**
+   * The summary could not be composed at all (the call failed, or the answer was
+   * unparseable) and one deterministic chart was substituted. Not an error — the
+   * screen always renders — but it is why the narrative is empty when it is.
+   *
+   * NOT the same as `panels` being empty: a summary with no charts and a good
+   * narrative is the normal, intended outcome.
+   */
+  fallback: boolean
+  generated_at: string
+}
+
+/** The day's headline numbers, as `day_evidence` derives them. */
+export interface DaySummaryScalars {
+  /** Engaged seconds — the SAME number the home page's FOCUS card shows. */
+  focus_s: number
+  /** Coding seconds incl. folded-in agent time — the home page's CODING card. */
+  coding_s: number
+  /** Workstreams of at least `task_min_minutes`. The count worth saying out loud. */
+  task_count: number
+  /** The threshold below which a workstream is a detour, not a thing you did. */
+  task_min_minutes: number
+  workstream_count_including_brief: number
+  idle_s: number
+  agent_s: number
+  session_count: number
+  switch_count: number
+}
+
+/** What `get_day_summary_data` returns: the panels' rows plus the screen's numbers. */
+export interface DaySummaryData {
+  /** name → rows. What a panel's spec binds to by name. */
+  datasets: Record<string, Record<string, unknown>[]>
+  scalars: DaySummaryScalars
+}
+
+// ── Recent captured apps (`get_recent_capture_apps`) ─────────────────────────
+
+/** One app Meridian has captured recently — the Settings ignore-picker source.
+ *  Mirrors `meridian_core::capture_apps::CaptureApp`. */
+export interface CaptureApp {
+  /** App name exactly as captured — what `ignored_apps` matches against. */
+  app: string
+  /** Frame count over the window; a recency/volume hint, not a duration. */
+  frames: number
+}

@@ -1,8 +1,9 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+use crate::capture_ignore::CaptureIgnore;
 use crate::format;
 use serde::Serialize;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::tray::TrayIconId;
 use tokio::sync::oneshot;
@@ -108,6 +109,12 @@ pub struct AppState {
     /// `capture_frames`. The flag is unconditional (not feature-gated) so the
     /// `pause_for_duration` command can always reference `AppState` cleanly.
     pub capture_paused: Arc<AtomicBool>,
+    /// The user's capture ignore list (apps + website domains). Shared with the
+    /// capture frame + UI-event consumers, which drop a matching frame before it
+    /// is written to `capture_frames`/`capture_ui_events`. Unconditional (not
+    /// feature-gated) so the always-compiled `update_settings` command can
+    /// refresh it live on save; seeded from settings in `crate::start_capture`.
+    pub capture_ignore: Arc<Mutex<CaptureIgnore>>,
     /// Unix timestamp (secs) when the current timed pause expires.
     /// `None` when not timed-paused. Set by `pause_for_duration`, cleared on resume.
     pub pause_until: Option<u64>,
@@ -159,6 +166,7 @@ impl Default for AppState {
             tray_id: None,
             health: HealthStatus::Unknown,
             capture_paused: Arc::new(AtomicBool::new(false)),
+            capture_ignore: Arc::new(Mutex::new(CaptureIgnore::default())),
             pause_until: None,
             pause_source: None,
             pause_started_at: None,

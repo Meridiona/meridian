@@ -237,6 +237,18 @@ pub struct RuntimeSettings {
     pub work_days: String,        // comma-separated 1–7 (Mon=1 … Sun=7), e.g. "1,2,3,4,5"
     // Pause capture when streaming video (Netflix, Disney+, etc.) is playing.
     pub pause_on_streaming_video: bool,
+    // User capture ignore lists. `ignored_apps` matches an incoming frame's
+    // `app_name` exactly (case-insensitive); `ignored_urls` matches the focused
+    // tab's `browser_url` HOST at domain granularity (a domain also matches its
+    // subdomains, e.g. "youtube.com" covers "www.youtube.com"). A match is
+    // dropped before it is written to `capture_frames`/`capture_ui_events`, so
+    // the app/site never appears on the timeline — GOING FORWARD ONLY; already
+    // captured history is left untouched. Empty = nothing ignored. Enforced by
+    // `tray::capture_ignore::CaptureIgnore` at the frame consumer. The
+    // struct-level `#[serde(default)]` upgrades an existing settings.json that
+    // predates these keys to empty lists. Mirrors ui/lib/settings.ts.
+    pub ignored_apps: Vec<String>,
+    pub ignored_urls: Vec<String>,
 }
 
 /// Default surface palette when `settings.json` predates the `theme` key. Must
@@ -290,6 +302,10 @@ impl Default for RuntimeSettings {
             // services black out the screen for any recorder anyway. Must
             // match SETTINGS_DEFAULTS in ui/lib/settings.ts.
             pause_on_streaming_video: true,
+            // Nothing ignored by default. Must match SETTINGS_DEFAULTS in
+            // ui/lib/settings.ts.
+            ignored_apps: Vec::new(),
+            ignored_urls: Vec::new(),
         }
     }
 }
