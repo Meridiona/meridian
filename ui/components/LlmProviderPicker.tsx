@@ -243,6 +243,10 @@ function ProviderCard({ p, picked, missing, testing, lastTest, onPick, onTest }:
       {testable && (
         <button
           onClick={(e) => { e.stopPropagation(); onTest() }}
+          // Also stop keydown: Enter/Space fires this button natively, but without
+          // this the same keypress bubbles to the card's role="button" onKeyDown and
+          // switches the selected provider too.
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation() }}
           disabled={testing}
           className="font-mono self-start"
           style={{

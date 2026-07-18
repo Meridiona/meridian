@@ -128,7 +128,8 @@ pub async fn run_llm_experiment(body: RunLlmExperimentBody) -> Result<i64, Strin
     Ok(ack.experiment_id)
 }
 
-/// The past-runs list (newest first). Empty on a pre-061 DB.
+/// The past-runs list (newest first). Empty on a pre-064 DB (the migration that adds
+/// the llm_experiment* tables).
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_llm_experiments(

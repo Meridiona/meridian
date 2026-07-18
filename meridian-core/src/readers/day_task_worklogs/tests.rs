@@ -1,7 +1,7 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //! Unit tests for the generated-worklog ledger. The schema here is hand-rolled
 //! rather than migrated (this crate has no migration runner) — it must mirror
-//! migrations 060 + 062 as they stand AFTER 062's DROP COLUMNs.
+//! migrations 060 + 062 (after 062's DROP COLUMNs) + 065's create_attempt_at.
 
 use super::*;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -18,7 +18,7 @@ async fn seeded() -> SqlitePool {
             propose_issue_type TEXT, propose_title TEXT, propose_description TEXT, \
             update_summary TEXT NOT NULL DEFAULT '', update_json TEXT NOT NULL DEFAULT '{}', \
             reasoning TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT 'drafted', \
-            created_task_key TEXT, last_error TEXT, \
+            created_task_key TEXT, last_error TEXT, create_attempt_at TEXT, \
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL, \
             PRIMARY KEY (day_local, task_id))",
     )
@@ -759,4 +759,161 @@ fn legacy_lift_skips_empty_groups_and_never_overrides_sections() {
     .unwrap();
     assert_eq!(u.sections.len(), 1);
     assert_eq!(u.sections[0].heading, "Edits");
+}
+
+// ── begin_create / revert_create: the ticket-create CAS (finding #2b) ─────────
+
+/// Stand up an approved proposal row (no target ticket yet, created_task_key NULL) -
+/// the exact state approve() reaches before it would call create_ticket.
+async fn approved_proposal() -> SqlitePool {
+    let pool = seeded().await;
+    upsert_draft(&pool, "2026-07-16", "T1", propose_upsert(), "t0")
+        .await
+        .unwrap();
+    mark_approved(&pool, "2026-07-16", "T1", "t1")
+        .await
+        .unwrap();
+    pool
+}
+
+/// #2b: begin_create is a CAS, so two racing approves both try to claim the create
+/// but only one wins - create_ticket fires exactly once. The loser is refused by the
+/// same predicate a post-crash retry hits. (stale_before is BEFORE the claim, so the
+/// second call can't reclaim it.)
+#[tokio::test]
+async fn begin_create_hands_the_create_to_exactly_one_caller() {
+    let pool = approved_proposal().await;
+    let claimed = begin_create(
+        &pool,
+        "2026-07-16",
+        "T1",
+        "2026-07-16T10:00:00+00:00",
+        "2026-07-16T09:00:00+00:00",
+    )
+    .await
+    .unwrap();
+    assert!(claimed, "the first approve owns the create");
+
+    let second = begin_create(
+        &pool,
+        "2026-07-16",
+        "T1",
+        "2026-07-16T10:00:01+00:00",
+        "2026-07-16T09:00:00+00:00",
+    )
+    .await
+    .unwrap();
+    assert!(
+        !second,
+        "a concurrent approve is refused - only one real ticket gets filed"
+    );
+}
+
+/// A DEFINITE create failure releases the claim so a later retry may try again - the
+/// create analog of revert_post.
+#[tokio::test]
+async fn revert_create_frees_the_claim_for_a_retry() {
+    let pool = approved_proposal().await;
+    assert!(begin_create(
+        &pool,
+        "2026-07-16",
+        "T1",
+        "2026-07-16T10:00:00+00:00",
+        "2026-07-16T09:00:00+00:00"
+    )
+    .await
+    .unwrap());
+
+    revert_create(&pool, "2026-07-16", "T1").await.unwrap();
+
+    assert!(
+        begin_create(
+            &pool,
+            "2026-07-16",
+            "T1",
+            "2026-07-16T10:05:00+00:00",
+            "2026-07-16T09:00:00+00:00"
+        )
+        .await
+        .unwrap(),
+        "after a definite failure the claim is free again"
+    );
+}
+
+/// A claim left dangling by a crash mid-create is NOT a permanent dead end: once it
+/// is older than the stale window a much-later retry reclaims it automatically (any
+/// live create would long since have resolved). This is the recovery path.
+#[tokio::test]
+async fn a_stale_create_claim_is_reclaimable() {
+    let pool = approved_proposal().await;
+    // A claim taken long ago whose owner never resolved it (a crash mid-create).
+    assert!(begin_create(
+        &pool,
+        "2026-07-16",
+        "T1",
+        "2026-07-16T10:00:00+00:00",
+        "2026-07-16T00:00:00+00:00"
+    )
+    .await
+    .unwrap());
+
+    // A fresh claim two hours later, with a stale cutoff AFTER the dangling one.
+    assert!(
+        begin_create(
+            &pool,
+            "2026-07-16",
+            "T1",
+            "2026-07-16T12:00:00+00:00",
+            "2026-07-16T11:45:00+00:00"
+        )
+        .await
+        .unwrap(),
+        "a claim older than the stale window is reclaimable, not stuck forever"
+    );
+}
+
+/// A successful create resolves its claim: mark_created records the key and clears
+/// the claim, so no later approve re-creates - even a stale cutoff can't reclaim a
+/// row whose key is already set.
+#[tokio::test]
+async fn a_successful_create_resolves_its_claim() {
+    let pool = approved_proposal().await;
+    assert!(begin_create(
+        &pool,
+        "2026-07-16",
+        "T1",
+        "2026-07-16T10:00:00+00:00",
+        "2026-07-16T09:00:00+00:00"
+    )
+    .await
+    .unwrap());
+
+    mark_created(
+        &pool,
+        "2026-07-16",
+        "T1",
+        "KAN-99",
+        "jira",
+        "2026-07-16T10:00:01+00:00",
+    )
+    .await
+    .unwrap();
+
+    let d = get_day_task_worklog(&pool, "2026-07-16", "T1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(d.created_task_key.as_deref(), Some("KAN-99"));
+    assert!(
+        !begin_create(
+            &pool,
+            "2026-07-16",
+            "T1",
+            "2026-07-16T20:00:00+00:00",
+            "2026-07-16T19:00:00+00:00"
+        )
+        .await
+        .unwrap(),
+        "a recorded create is never re-claimed"
+    );
 }

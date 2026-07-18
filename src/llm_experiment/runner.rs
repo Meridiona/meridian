@@ -34,7 +34,13 @@ use crate::worklog_pipeline::workstream_state::build_state_json;
 use super::{day_state, request, store, ExperimentProcess};
 
 /// Run every not-yet-terminal variant of `experiment_id`, then close the ledger.
-/// Resumable: a killed run's `running` rows are simply re-run.
+///
+/// Resumable: a killed run's `running` rows are simply re-run. The deliberate cost is
+/// that a variant whose provider call SUCCEEDED but crashed before [`store::finish_variant`]
+/// recorded it is re-issued on resume — one more paid completion. That is accepted here
+/// because the Lab is a dev-only harness (the whole `run/create/exec` surface is
+/// dev-gated; see [`super::cli`]), so a stray resume costs a developer one call, never a
+/// user anything; getting the missing result back is worth more than avoiding it.
 #[tracing::instrument(skip(pool))]
 pub async fn exec(pool: &SqlitePool, experiment_id: i64) -> Result<()> {
     let (exp, pending) = store::load_pending(pool, experiment_id).await?;

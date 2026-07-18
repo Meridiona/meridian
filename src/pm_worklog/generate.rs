@@ -292,22 +292,69 @@ async fn approve_inner(
         (true, Some(p)) => {
             let provider = &draft.provider;
             let mut created = false;
+            let now = chrono::Utc::now();
+            let now_iso = now.to_rfc3339();
             let key = match &draft.created_task_key {
                 Some(existing) => existing.clone(),
                 None => {
-                    let sample = fetch_sample_task_key(pool, provider).await;
-                    let key = crate::pm_worklog::create::create_ticket(
-                        config,
-                        provider,
-                        &p.title,
-                        &p.description,
-                        &p.issue_type,
-                        sample.as_deref(),
+                    // create_ticket files a REAL ticket and has no dedup marker, so a
+                    // write-ahead claim goes down BEFORE it: without one, two concurrent
+                    // approves (the tray shells out `worklog-generate-approve` per click)
+                    // or a retry after a crash mid-create would each file a second ticket
+                    // (finding #2b). This mirrors begin_post for the post step.
+                    let stale_before = (now
+                        - chrono::Duration::minutes(day_task_worklogs::CREATE_CLAIM_STALE_MINS))
+                    .to_rfc3339();
+                    if day_task_worklogs::begin_create(
+                        pool,
+                        day_local,
+                        task_id,
+                        &now_iso,
+                        &stale_before,
                     )
                     .await
-                    .context("creating the proposed ticket on the tracker")?;
-                    created = true;
-                    key
+                    .context("claiming the ticket create")?
+                    {
+                        // We own the create.
+                        let sample = fetch_sample_task_key(pool, provider).await;
+                        match crate::pm_worklog::create::create_ticket(
+                            config,
+                            provider,
+                            &p.title,
+                            &p.description,
+                            &p.issue_type,
+                            sample.as_deref(),
+                        )
+                        .await
+                        {
+                            Ok(key) => {
+                                created = true;
+                                key
+                            }
+                            // Definite failure: nothing was filed, so release the claim
+                            // and let a later retry try again.
+                            Err(e) => {
+                                let _ = day_task_worklogs::revert_create(pool, day_local, task_id)
+                                    .await;
+                                return Err(e)
+                                    .context("creating the proposed ticket on the tracker");
+                            }
+                        }
+                    } else {
+                        // Another approve owns the create (or a prior attempt's outcome is
+                        // unknown). Re-read: if the key has landed, use it; otherwise refuse
+                        // rather than risk a duplicate ticket on someone's board.
+                        let fresh =
+                            day_task_worklogs::get_day_task_worklog(pool, day_local, task_id)
+                                .await?
+                                .context("draft vanished mid-approve")?;
+                        match fresh.created_task_key {
+                            Some(key) => key,
+                            None => anyhow::bail!(
+                                "this worklog's ticket is already being created - try again in a moment"
+                            ),
+                        }
+                    }
                 }
             };
             // Called on BOTH paths, not just after a fresh create, and idempotent
@@ -318,8 +365,7 @@ async fn approve_inner(
             // to post to — and the retry, seeing the key already there, used to skip
             // straight past this and find no targets at all. Re-running it repairs
             // that instead of stranding the row forever.
-            let now = chrono::Utc::now().to_rfc3339();
-            day_task_worklogs::mark_created(pool, day_local, task_id, &key, provider, &now)
+            day_task_worklogs::mark_created(pool, day_local, task_id, &key, provider, &now_iso)
                 .await
                 .context("persisting the created ticket key")?;
             // Re-read so the created ticket comes back as an ordinary target,

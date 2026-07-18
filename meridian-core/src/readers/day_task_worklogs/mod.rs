@@ -297,6 +297,14 @@ pub async fn upsert_draft(
         None => (None, None, None),
     };
 
+    // One transaction for the guard-write + target replace: the guard INSERT below
+    // takes the write lock up front, so a concurrent approve() can't slip a
+    // comment-post between the guard matching and replace()'s DELETE (which would
+    // erase a live posted_comment_id and let the next approve re-post it).
+    let mut tx = pool
+        .begin()
+        .await
+        .context("opening the worklog draft upsert")?;
     let res = sqlx::query(
         "INSERT INTO day_task_worklogs \
             (day_local, task_id, provider, propose_issue_type, propose_title, \
@@ -313,6 +321,7 @@ pub async fn upsert_draft(
             reasoning = excluded.reasoning, \
             state = 'drafted', \
             created_task_key = NULL, \
+            create_attempt_at = NULL, \
             last_error = NULL, \
             updated_at = excluded.updated_at \
          WHERE day_task_worklogs.state = 'drafted'",
@@ -328,13 +337,16 @@ pub async fn upsert_draft(
     .bind(&upsert.reasoning)
     .bind(now)
     .bind(now)
-    .execute(pool)
+    .execute(&mut *tx)
     .instrument(tracing::debug_span!("day_task_worklogs.write.upsert"))
     .await?;
 
     if res.rows_affected() > 0 {
-        targets::replace(pool, day_local, task_id, &upsert.targets, now).await?;
+        targets::replace(&mut tx, day_local, task_id, &upsert.targets, now).await?;
     }
+    tx.commit()
+        .await
+        .context("committing the worklog draft upsert")?;
 
     // Read back whatever now owns the key — either the fresh draft, or the
     // preserved approved/posted row the guard protected.
@@ -367,6 +379,10 @@ pub async fn retarget_draft(
     provider: &str,
     now: &str,
 ) -> anyhow::Result<DayTaskWorklogDraft> {
+    // One transaction for the guard-write + target replace — same reason as
+    // upsert_draft: the UPDATE takes the write lock, so a concurrent approve() can't
+    // slip a comment-post between the guard matching and replace()'s DELETE.
+    let mut tx = pool.begin().await.context("opening the worklog retarget")?;
     let res = sqlx::query(
         "UPDATE day_task_worklogs SET \
             propose_issue_type = NULL, \
@@ -379,7 +395,7 @@ pub async fn retarget_draft(
     .bind(now)
     .bind(day_local)
     .bind(task_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .instrument(tracing::debug_span!("day_task_worklogs.write.retarget"))
     .await
     .context("retargeting the worklog draft")?;
@@ -390,7 +406,7 @@ pub async fn retarget_draft(
         );
     }
     targets::replace(
-        pool,
+        &mut tx,
         day_local,
         task_id,
         &[TargetInput {
@@ -402,6 +418,9 @@ pub async fn retarget_draft(
         now,
     )
     .await?;
+    tx.commit()
+        .await
+        .context("committing the worklog retarget")?;
     tracing::info!(task_key, provider, "worklog: draft retargeted by the user");
 
     read_back(pool, day_local, task_id).await
@@ -475,8 +494,11 @@ pub async fn mark_created(
     provider: &str,
     now: &str,
 ) -> anyhow::Result<()> {
+    // Clears create_attempt_at alongside recording the key: the create is resolved
+    // (its outcome is now on disk in created_task_key), exactly as mark_posted clears
+    // post_attempt_at. See [`begin_create`].
     let res = sqlx::query(
-        "UPDATE day_task_worklogs SET created_task_key = ?, updated_at = ? \
+        "UPDATE day_task_worklogs SET created_task_key = ?, create_attempt_at = NULL, updated_at = ? \
          WHERE day_local = ? AND task_id = ? AND state = 'approved'",
     )
     .bind(created_task_key)
@@ -508,6 +530,83 @@ pub async fn mark_created(
         now,
     )
     .await
+}
+
+/// How long a `create_attempt_at` claim is honoured before it is treated as dead and
+/// reclaimable. Generously beyond any real `create_ticket` call (an API POST, seconds;
+/// even the slowest CLI create path is bounded well under this), so a still-live create
+/// is never reclaimed — only one whose owner crashed mid-call is.
+pub const CREATE_CLAIM_STALE_MINS: i64 = 15;
+
+/// Claim the right to create a proposed row's ticket, write-ahead, immediately
+/// BEFORE calling the tracker. Returns `true` iff this caller now owns the create.
+///
+/// The create-step analog of [`targets::begin_post`], and the guard #2b needs:
+/// `create_ticket` files a REAL ticket and has no dedup marker, so without this two
+/// concurrent approves (the tray shells out `worklog-generate-approve` per click, so
+/// two processes can race) both see `created_task_key IS NULL` and both file one, and
+/// a single retry after a crash between the create returning and [`mark_created`]
+/// committing does the same. The CAS (`created_task_key IS NULL` AND the claim is
+/// either unset or [stale][`CREATE_CLAIM_STALE_MINS`]) hands the create to exactly one
+/// caller; every loser (concurrent approve, post-crash retry) is refused by the same
+/// predicate.
+///
+/// The winner MUST resolve its claim: [`mark_created`] on success, [`revert_create`]
+/// on a DEFINITE failure. If the owner instead CRASHES mid-create the claim is left
+/// set with no key; `stale_before` then lets a much-later retry reclaim it once the
+/// claim is older than the stale window (by which point any live create has long since
+/// resolved), rather than wedging the row forever. Migration 065 explains why this
+/// bounded auto-reclaim is chosen over post_attempt_at's permanent dead end, and the
+/// narrow duplicate risk it accepts. `stale_before` is the cutoff the caller passes as
+/// `now - CREATE_CLAIM_STALE_MINS`, compared via SQLite `datetime()` so RFC3339
+/// formatting differences don't skew the comparison.
+#[tracing::instrument(skip(pool))]
+pub async fn begin_create(
+    pool: &SqlitePool,
+    day_local: &str,
+    task_id: &str,
+    now: &str,
+    stale_before: &str,
+) -> anyhow::Result<bool> {
+    let res = sqlx::query(
+        "UPDATE day_task_worklogs SET create_attempt_at = ? \
+         WHERE day_local = ? AND task_id = ? AND state = 'approved' \
+           AND created_task_key IS NULL \
+           AND (create_attempt_at IS NULL OR datetime(create_attempt_at) < datetime(?))",
+    )
+    .bind(now)
+    .bind(day_local)
+    .bind(task_id)
+    .bind(stale_before)
+    .execute(pool)
+    .await
+    .context("claiming the worklog ticket create")?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Release a claim taken by [`begin_create`] after a DEFINITE failure — the create
+/// call returned an error, so no ticket was filed and a later retry is known-safe.
+///
+/// Only ever called when the failure is confirmed. It must NOT be called for the
+/// "we don't know what happened" case: leaving `create_attempt_at` set is what stops
+/// the retry from filing a second ticket. Guarded to a still-unfilled row so a create
+/// that actually landed (key recorded) is never un-claimed.
+#[tracing::instrument(skip(pool))]
+pub async fn revert_create(
+    pool: &SqlitePool,
+    day_local: &str,
+    task_id: &str,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE day_task_worklogs SET create_attempt_at = NULL \
+         WHERE day_local = ? AND task_id = ? AND created_task_key IS NULL",
+    )
+    .bind(day_local)
+    .bind(task_id)
+    .execute(pool)
+    .await
+    .context("releasing a worklog create claim after a failed create")?;
+    Ok(())
 }
 
 /// Record that `task_key`'s comment is live, then move the row to `posted` IF every

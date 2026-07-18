@@ -214,15 +214,20 @@ async fn probe_one_schema(
 /// and then record a confident, wrong `None`.
 ///
 /// This is a substring contract on the messages [`crate::llm::openai_compat`] produces —
-/// "rejected the API key", "unreachable", "selected but not configured". It is deliberately
-/// prose-matching (not a structured `LlmError` variant) for now; the guard against a
-/// producer reword silently breaking classification is two-sided coverage: `openai_compat`'s
-/// own tests pin that it emits those substrings, and
+/// "rejected the API key", "custom provider unreachable", "selected but not configured". It
+/// matches those PRODUCER PHRASES, not bare fragments like "API key": a rung refusal is an
+/// ordinary 400 whose raw vendor body can incidentally mention an API key, and treating that
+/// as endpoint-fatal would abort the ladder and record a confident, wrong `None`. It is
+/// deliberately prose-matching (not a structured `LlmError` variant) for now; the guard
+/// against a producer reword silently breaking classification is two-sided coverage:
+/// `openai_compat`'s own tests pin that it emits those substrings, and
 /// [`tests::endpoint_level_failures_are_fatal_but_rung_refusals_are_not`] pins that this fn
 /// treats them as fatal. Promoting `LlmError::Failed` to carry a reason enum would remove
 /// the guessing entirely and is tracked as a follow-up.
 fn is_fatal(msg: &str) -> bool {
-    msg.contains("API key") || msg.contains("unreachable") || msg.contains("not configured")
+    msg.contains("rejected the API key")
+        || msg.contains("custom provider unreachable")
+        || msg.contains("selected but not configured")
 }
 
 /// One real request at one rung. `Ok(())` means the endpoint accepted the mode AND returned
@@ -316,6 +321,11 @@ mod tests {
         ));
         assert!(!is_fatal(
             "custom provider 400: response_format is not supported"
+        ));
+        // A 400 whose raw vendor body merely mentions an API key is still a rung
+        // refusal, not an endpoint failure — matching bare "API key" would misfire.
+        assert!(!is_fatal(
+            "custom provider 400: this model requires an API key with the beta header for schemas"
         ));
     }
 

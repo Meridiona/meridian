@@ -109,6 +109,10 @@ impl LlmBackend for OpenAiCompatBackend {
 
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(self.cfg.cli_timeout_s))
+            // The Bearer key goes to a user-supplied host, so never follow a redirect:
+            // a 3xx to another origin would forward the Authorization header (and the
+            // key) somewhere the user never configured.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| LlmError::Failed(format!("custom provider client: {e}")))?;
 

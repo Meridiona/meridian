@@ -180,7 +180,7 @@ export async function startOAuth(tracker: Tracker): Promise<void> {
       if (ctl.stopped) return
       if (Date.now() > deadline) {
         stopPoll(provider)
-        oauthStore.set(provider, { status: 'error', error: 'Timed out — try again' })
+        oauthStore.set(provider, { status: 'error', error: 'Timed out - try again' })
         return
       }
       // A terminal error from the flow surfaces immediately (no full-window wait).

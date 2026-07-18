@@ -16,12 +16,16 @@
 //!   to the paragraph below: an ephemeral, on-demand worklog draft for a single
 //!   inline task that fires a REAL, metered LLM completion (see [`draft_task`]).
 //!
-//! `run`/`create`/`exec`/`list`/`get` are deliberately ungated in release binaries:
-//! they are useful for field debugging and **only ever write the experiment
-//! tables** — no network, no cost — so an unattended run is harmless. `draft-task`
-//! is different (it calls a live provider and can incur cost), so it alone is
-//! **dev-gated** here too — a release binary refuses it, matching the tray's
-//! `draft_lab_worklog` gate. The UI surface as a whole is the gated part.
+//! `list`/`get` are deliberately ungated in release binaries: they only READ the
+//! experiment tables (via `meridian_core::llm_experiments`) — no network, no cost
+//! — so they stay open for field debugging. `run`/`create`/`exec` are **dev-gated**:
+//! `run`/`exec` drive real, metered provider completions (`runner::exec` →
+//! `resolver::backend_for`, the same live Claude/Codex/custom-endpoint backends the
+//! production pipeline uses), and `create` is gated alongside them so the whole
+//! experiment lifecycle is dev-only rather than half-usable in release. `draft-task`
+//! is likewise dev-gated (it fires a live completion; see [`draft_task`]). A release
+//! binary refuses all four, matching the tray's `dev_only()`/`draft_lab_worklog`
+//! gates — the UI surface and this CLI are gated in lockstep.
 //!
 //! # Who calls this
 //! `main.rs`'s `llm-experiment` dispatch block; the tray's `run_llm_experiment`
@@ -46,6 +50,17 @@ run|create --process hour-report|workstream-fold|worklog-generate|day-fold \
 pub async fn run(pool: &SqlitePool) -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let verb = args.get(2).map(String::as_str).unwrap_or("");
+
+    // run/create/exec drive the experiment lifecycle that ends in real, metered
+    // provider completions (run/exec → runner::exec → resolver::backend_for), so
+    // - like draft-task below - they are dev-only; a release binary refuses them.
+    // list/get only read the experiment tables and stay open for field debugging.
+    if matches!(verb, "run" | "create" | "exec") && !cfg!(debug_assertions) {
+        bail!(
+            "`meridian llm-experiment {verb}` is a dev-only subcommand - it drives \
+             real, metered LLM completions, so a release binary refuses it"
+        );
+    }
 
     match verb {
         "run" => {

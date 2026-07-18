@@ -122,8 +122,25 @@ fn take_number(s: &str) -> Option<(u64, &str)> {
 /// weekly-limit shape. That's out of scope here; the caller falls back to its flat backoff
 /// rather than this function guessing at a date format that varies by locale.
 fn parse_absolute(low: &str, now: DateTime<Local>) -> Option<Duration> {
-    let pos = low.find("reset")?;
-    let rest = low[pos..].trim_start_matches(|c: char| c.is_alphabetic());
+    // Try EVERY "reset" occurrence, not just the first: "resetting" contains "reset"
+    // but isn't the marker, so "resetting soon; reset at 3pm" must skip the false lead
+    // (which parses to nothing) and find the real one.
+    let mut from = 0;
+    while let Some(rel) = low[from..].find("reset") {
+        let pos = from + rel;
+        from = pos + "reset".len();
+        if let Some(d) = parse_reset_at(&low[pos..], now) {
+            return Some(d);
+        }
+    }
+    None
+}
+
+/// Parse "reset(s) [at] H[:MM] [am|pm]" from a slice `s` that begins at a "reset"
+/// occurrence, resolving against `now`. Returns `None` if this occurrence isn't a real
+/// reset-time phrase, so [`parse_absolute`] can move on to the next one.
+fn parse_reset_at(s: &str, now: DateTime<Local>) -> Option<Duration> {
+    let rest = s.trim_start_matches(|c: char| c.is_alphabetic());
     let rest = rest.trim_start();
     let rest = rest.strip_prefix("at ").unwrap_or(rest).trim_start();
 
@@ -309,6 +326,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(wait, Duration::from_secs(4 * 3600 + 40 * 60 + 60));
+    }
+
+    #[test]
+    fn a_word_containing_reset_does_not_shadow_a_real_reset_time() {
+        // "resetting" contains "reset" but parses to nothing; the real "resets at 3pm"
+        // comes later in the string and must still be found.
+        let now = at(13, 0);
+        let wait = parse_backoff("limit resetting soon; resets at 3pm", now).unwrap();
+        assert_eq!(wait, Duration::from_secs(2 * 3600 + 60));
     }
 
     #[test]

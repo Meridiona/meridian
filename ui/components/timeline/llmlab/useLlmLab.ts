@@ -31,7 +31,7 @@ export function useLlmLab() {
     try {
       setRuns(await load<LlmExperimentSummary[]>('/llm-lab', 'get_llm_experiments', { limit: 30 }))
     } catch {
-      // A pre-061 DB or a closed pool reads as "no runs yet" - the composer
+      // A pre-064 DB or a closed pool reads as "no runs yet" - the composer
       // still works, so don't block the modal on the list.
     }
   }, [])

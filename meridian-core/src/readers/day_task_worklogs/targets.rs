@@ -29,7 +29,7 @@
 use crate::SqlitePool;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use sqlx::{FromRow, SqliteConnection};
 use tracing::Instrument;
 
 /// One ticket this draft's status update posts to, as the CLI prints it and the
@@ -154,8 +154,15 @@ pub async fn load(
 /// and deleting the row would lose the only record that it must never be posted
 /// to again. Both callers ([`super::upsert_draft`], [`super::retarget_draft`])
 /// gate on their `WHERE state = 'drafted'` guard actually matching a row.
+///
+/// Takes a `&mut SqliteConnection` rather than the pool so it runs in the SAME
+/// transaction as that guard write — otherwise a concurrent `approve()` could land
+/// between the guard matching and this DELETE, post a comment, and have its
+/// `posted_comment_id` erased here (then re-posted on the next approve). The delete
+/// and the re-inserts are several statements, exactly the child-table
+/// DELETE-then-INSERT pattern that must be atomic.
 pub async fn replace(
-    pool: &SqlitePool,
+    conn: &mut SqliteConnection,
     day_local: &str,
     task_id: &str,
     targets: &[TargetInput],
@@ -164,7 +171,7 @@ pub async fn replace(
     sqlx::query("DELETE FROM day_task_worklog_targets WHERE day_local = ? AND task_id = ?")
         .bind(day_local)
         .bind(task_id)
-        .execute(pool)
+        .execute(&mut *conn)
         .instrument(tracing::debug_span!(
             "day_task_worklogs.write.targets_clear"
         ))
@@ -172,7 +179,7 @@ pub async fn replace(
         .context("clearing the worklog's previous targets")?;
 
     for (i, t) in targets.iter().enumerate() {
-        insert_at(pool, day_local, task_id, t, i as i64, now).await?;
+        insert_at(&mut *conn, day_local, task_id, t, i as i64, now).await?;
     }
     tracing::debug!(
         targets = targets.len(),
@@ -190,22 +197,25 @@ pub async fn insert(
     target: &TargetInput,
     now: &str,
 ) -> anyhow::Result<()> {
+    // The MAX(position) read and the INSERT run on one connection so they stay
+    // consistent with each other.
+    let mut conn = pool.acquire().await.context("acquiring a connection")?;
     let next: i64 = sqlx::query_scalar(
         "SELECT COALESCE(MAX(position) + 1, 0) FROM day_task_worklog_targets \
          WHERE day_local = ? AND task_id = ?",
     )
     .bind(day_local)
     .bind(task_id)
-    .fetch_one(pool)
+    .fetch_one(&mut *conn)
     .await
     .context("finding the next target position")?;
-    insert_at(pool, day_local, task_id, target, next, now).await
+    insert_at(&mut conn, day_local, task_id, target, next, now).await
 }
 
 /// `INSERT OR IGNORE` one target at `position`. Ignore-on-conflict keeps a repeat
 /// key a no-op rather than resetting a target that may already be posted.
 async fn insert_at(
-    pool: &SqlitePool,
+    conn: &mut SqliteConnection,
     day_local: &str,
     task_id: &str,
     t: &TargetInput,
@@ -225,7 +235,7 @@ async fn insert_at(
     .bind(i64::from(t.manual))
     .bind(position)
     .bind(now)
-    .execute(pool)
+    .execute(&mut *conn)
     .instrument(tracing::debug_span!(
         "day_task_worklogs.write.targets_insert"
     ))

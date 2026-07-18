@@ -10,8 +10,8 @@
 //! A row is returned to the UI as a [`CustomProviderView`], which has no key field at all —
 //! keyless by construction rather than by remembering to redact. The one other path that
 //! serialises a row, `get_settings`, redacts per row on the way out. Every command here
-//! `skip`s the key in its span: spans reach the telemetry spool, which ships inside a
-//! diagnostics bundle.
+//! `skip`s the key (and the `base_url`, which can carry a key in a query string) in its
+//! span: spans reach the telemetry spool, which ships inside a diagnostics bundle.
 //!
 //! # Who calls this
 //! Registered in `lib.rs`'s `invoke_handler!`; consumed by the Intelligence panel's custom
@@ -25,6 +25,15 @@
 use meridian_core::{settings, CustomLlmProvider, SchemaRung};
 use serde::Serialize;
 use serde_json::Value;
+
+/// Serializes the whole registry read-modify-write across concurrent commands (two
+/// "Test" clicks, an add racing a remove). Each command does read_settings_value →
+/// mutate → write_settings_value, and without this those cycles interleave and
+/// lost-update each other — the same bug class 2104c030 fixed for the provider-test
+/// cache. The daemon only READS `custom_llm_providers` (via the resolver), so these
+/// tray commands are the only writers and a tray-process lock is sufficient. It is a
+/// `tokio` mutex because the critical section spans a probe's `.await`.
+static REGISTRY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// A registry row as the UI sees it: everything except the key, plus the verdicts the UI
 /// must not re-derive (the gate lives in one place — `meridian-core` — and this carries its
@@ -200,7 +209,11 @@ fn validate(name: &str, base_url: &str, model: &str, api_key: &str) -> Result<()
 /// production provider until the measurement is complete and strong enough — the gate reads
 /// the row, so a half-measured one is safe on disk.
 #[tauri::command]
-#[tracing::instrument(skip(api_key), fields(has_key = !api_key.is_empty()))]
+// `base_url` is skipped too: `#[instrument]` auto-captures every un-skipped param as a
+// span field, and a base URL can carry a key in a query string (see `openai_compat`) -
+// spans ship inside diagnostics bundles, so the URL never reaches one. `endpoint_id` +
+// `vendor` in the info! line below give enough identity to debug without it.
+#[tracing::instrument(skip(api_key, base_url), fields(has_key = !api_key.is_empty()))]
 pub async fn add_custom_llm_provider(
     vendor: String,
     name: String,
@@ -210,6 +223,9 @@ pub async fn add_custom_llm_provider(
 ) -> Result<ProbeOutcome, String> {
     validate(&name, &base_url, &model, &api_key)?;
 
+    // Held across the whole read-probe-write so a concurrent add/probe/remove can't
+    // lose this update. See [`REGISTRY_LOCK`].
+    let _guard = REGISTRY_LOCK.lock().await;
     let mut settings_v = settings::read_settings_value();
     let mut rows = read_rows(&settings_v);
     if rows
@@ -286,6 +302,9 @@ pub async fn add_custom_llm_provider(
 #[tauri::command]
 #[tracing::instrument]
 pub async fn probe_custom_llm_provider(id: String, refresh: bool) -> Result<ProbeOutcome, String> {
+    // Held across the whole read-probe-write so a concurrent add/probe/remove can't
+    // lose this update. See [`REGISTRY_LOCK`].
+    let _guard = REGISTRY_LOCK.lock().await;
     let mut settings_v = settings::read_settings_value();
     let mut rows = read_rows(&settings_v);
     let idx = rows
@@ -333,6 +352,9 @@ pub async fn probe_custom_llm_provider(id: String, refresh: bool) -> Result<Prob
 #[tauri::command]
 #[tracing::instrument]
 pub async fn remove_custom_llm_provider(id: String) -> Result<Vec<CustomProviderView>, String> {
+    // Held across the read-modify-write so a concurrent add/probe/remove can't lose
+    // this update. See [`REGISTRY_LOCK`].
+    let _guard = REGISTRY_LOCK.lock().await;
     let mut settings_v = settings::read_settings_value();
     let mut rows = read_rows(&settings_v);
 

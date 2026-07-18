@@ -886,48 +886,52 @@ pub async fn apply_plan_action(
                 .as_deref()
                 .filter(|k| !k.is_empty())
                 .ok_or(PlanWriteError::TaskKeyRequired)?;
-            // The INSERT below is ON CONFLICT DO NOTHING, so re-adding a key
-            // already in the plan is a no-op and must stay one even at the cap —
-            // only a NEW key grows the day.
-            let already: bool = sqlx::query_scalar::<_, i64>(
-                "SELECT 1 FROM daily_plan WHERE plan_date = ? AND task_key = ?",
-            )
-            .bind(date)
-            .bind(key)
-            .fetch_optional(pool)
-            .await?
-            .is_some();
-            if !already {
-                let n: i64 =
-                    sqlx::query_scalar("SELECT COUNT(*) FROM daily_plan WHERE plan_date = ?")
-                        .bind(date)
-                        .fetch_one(pool)
-                        .await?;
-                if n as usize >= MAX_PLAN_TASKS {
-                    return Err(PlanWriteError::TooManyTasks(n as usize + 1).into());
-                }
-            }
-            let max: i64 = sqlx::query_scalar(
-                "SELECT COALESCE(MAX(position), -1) FROM daily_plan WHERE plan_date = ?",
-            )
-            .bind(date)
-            .fetch_one(pool)
-            .await?;
             let snapshot = snapshot_for(pool, key).await?;
-            sqlx::query(
+            // Cap check, position (MAX+1) and INSERT are ONE atomic statement, so two
+            // concurrent adds can't both read count=9 and both land (a TOCTOU that
+            // breached the cap and duplicated positions — the sibling arms avoid it by
+            // being pure writes; this one decides on a COUNT, so it must decide and write
+            // under the same write lock). SQLite serialises writers, so the aggregate the
+            // second add sees already includes the first. `HAVING COUNT(*) < cap` gates
+            // the row on the current size; the aggregate SELECT over zero rows still
+            // yields one row (NULL max, 0 count), so an empty plan inserts at position 0.
+            // `ON CONFLICT DO NOTHING` keeps re-adding an existing key a no-op even at the
+            // cap (HAVING may exclude it, but it's already present, so nothing is lost).
+            let res = sqlx::query(
                 r#"INSERT INTO daily_plan (plan_date, task_key, position, origin, task_snapshot, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   SELECT ?, ?, COALESCE(MAX(position), -1) + 1, ?, ?, ?, ?
+                     FROM daily_plan
+                    WHERE plan_date = ?
+                   HAVING COUNT(*) < ?
                    ON CONFLICT(plan_date, task_key) DO NOTHING"#,
             )
             .bind(date)
             .bind(key)
-            .bind(max + 1)
             .bind(origin_for(key))
             .bind(snapshot)
             .bind(now)
             .bind(now)
+            .bind(date)
+            .bind(MAX_PLAN_TASKS as i64)
             .execute(pool)
             .await?;
+
+            // No row inserted means EITHER the key was already in the plan (a no-op by
+            // design, even at the cap) OR the cap blocked a NEW key. Only the latter is an
+            // error, so disambiguate with an existence check — never insert past the cap.
+            if res.rows_affected() == 0 {
+                let already: bool = sqlx::query_scalar::<_, i64>(
+                    "SELECT 1 FROM daily_plan WHERE plan_date = ? AND task_key = ?",
+                )
+                .bind(date)
+                .bind(key)
+                .fetch_optional(pool)
+                .await?
+                .is_some();
+                if !already {
+                    return Err(PlanWriteError::TooManyTasks(MAX_PLAN_TASKS + 1).into());
+                }
+            }
         }
         "remove" => {
             let key = body
