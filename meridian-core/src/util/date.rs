@@ -46,6 +46,37 @@ pub fn today_string() -> String {
     Local::now().format("%Y-%m-%d").to_string()
 }
 
+/// A UTC ISO datetime string → local `HH:MM`. Accepts a trailing `Z`, a `+00:00`
+/// offset, or a bare naive datetime (treated as UTC), with or without fractional
+/// seconds. Falls back to the raw `[11..16]` slice on any parse error.
+///
+/// A faithful port of the Python services' `time_utils.utc_to_local_hhmm`, used by
+/// the session distiller to stamp each on-screen span with its local clock time.
+pub fn utc_to_local_hhmm(utc_iso: &str) -> String {
+    fn parse(s: &str) -> Option<DateTime<Utc>> {
+        if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+            return Some(dt.with_timezone(&Utc));
+        }
+        // No offset (e.g. a reattached `YYYY-MM-DDTHH:MM:SS` marker time) → treat as UTC.
+        let t = s.trim_end_matches('Z');
+        let t = t.strip_suffix("+00:00").unwrap_or(t);
+        for fmt in [
+            "%Y-%m-%dT%H:%M:%S%.f",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M",
+        ] {
+            if let Ok(n) = NaiveDateTime::parse_from_str(t, fmt) {
+                return Some(Utc.from_utc_datetime(&n));
+            }
+        }
+        None
+    }
+    match parse(utc_iso) {
+        Some(dt) => dt.with_timezone(&Local).format("%H:%M").to_string(),
+        None => utc_iso.get(11..16).unwrap_or(utc_iso).to_string(),
+    }
+}
+
 /// Whole calendar days from `today` to a due date (`YYYY-MM-DD` or a full
 /// datetime), or `None` if absent/unparseable. Mirrors the JS `dueDaysFrom`:
 /// "due today" → 0, "due yesterday" → -1, overdue → negative. The single shared
@@ -123,6 +154,38 @@ mod tests {
         // absent / unparseable → None
         assert_eq!(due_days_from(None, today), None);
         assert_eq!(due_days_from(Some("nope"), today), None);
+    }
+
+    #[test]
+    fn utc_to_local_hhmm_parses_offset_z_and_naive() {
+        // Round-trip: take a known UTC instant, convert, and compare to what chrono
+        // itself renders in local time — so the assertion is timezone-independent.
+        let expect = |s: &str| {
+            DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&Local)
+                .format("%H:%M")
+                .to_string()
+        };
+        assert_eq!(
+            utc_to_local_hhmm("2026-06-16T04:30:00+00:00"),
+            expect("2026-06-16T04:30:00+00:00")
+        );
+        assert_eq!(
+            utc_to_local_hhmm("2026-06-16T04:30:00Z"),
+            expect("2026-06-16T04:30:00Z")
+        );
+        assert_eq!(
+            utc_to_local_hhmm("2026-06-16T04:30:00.000Z"),
+            expect("2026-06-16T04:30:00Z")
+        );
+        // Bare naive (a reattached marker time) is treated as UTC.
+        assert_eq!(
+            utc_to_local_hhmm("2026-06-16T04:30:00"),
+            expect("2026-06-16T04:30:00Z")
+        );
+        // Unparseable + too short for the [11..16] slice → returned unchanged.
+        assert_eq!(utc_to_local_hhmm("garbage"), "garbage");
     }
 
     #[test]

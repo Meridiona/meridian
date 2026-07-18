@@ -34,6 +34,7 @@ use crate::pm_worklog::{ledger, PmWorklogConfig};
 
 // `pub(crate)` where the LLM-Lab replay ([`crate::llm_experiment`]) reuses the request
 // builders / parsers / DB fetchers to rebuild a past hour's exact model input.
+pub(crate) mod distiller;
 pub(crate) mod hour;
 pub(crate) mod hour_db;
 pub(crate) mod hour_input;
