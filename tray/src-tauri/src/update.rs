@@ -42,6 +42,7 @@ use meridian_core::SqlitePool;
 use semver::Version;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
 
@@ -277,25 +278,75 @@ pub async fn download_and_apply(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Delay before the first mandatory-update check after launch.
+const ENFORCE_FIRST_DELAY: Duration = Duration::from_secs(30);
+/// Steady-state cadence for the mandatory-update check. One network round trip
+/// per hour per install — cheap enough to be unnoticeable, and it bounds how
+/// long a machine can keep running a version the manifest has retired.
+const ENFORCE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+/// First retry delay after a *failed* forced install, doubling up to
+/// [`ENFORCE_INTERVAL`]. A transient network blip must not cost a full cycle on
+/// a machine we are actively trying to evict.
+const ENFORCE_RETRY_BASE: Duration = Duration::from_secs(2 * 60);
+/// Timer granularity. The loop wakes this often and compares a **wall-clock**
+/// deadline rather than sleeping one long stretch, so a machine that suspends
+/// mid-interval re-checks promptly on wake instead of resuming a timer that
+/// stood still. No network happens on a tick that isn't due.
+const ENFORCE_TICK: Duration = Duration::from_secs(60);
+
+/// The next retry delay after a failed forced install: double, capped at the
+/// steady-state interval so a persistently failing install settles into the
+/// normal cadence instead of retrying forever at speed.
+fn next_retry(current: Duration) -> Duration {
+    (current * 2).min(ENFORCE_INTERVAL)
+}
+
 /// Mandatory-update enforcement — the one path that installs without consent.
-/// Spawned once at launch; checks shortly after startup and then every 6 h
-/// (the tray runs for weeks between relaunches, so a launch-only check would
-/// never catch a mandatory release published mid-run). When the manifest marks
-/// the running version as below its minimum, it notifies and installs; on
-/// failure it just waits for the next cycle (the consent banner stays available
-/// as the fallback), and on success [`download_and_apply`] never returns.
+/// Spawned once at launch; checks [`ENFORCE_FIRST_DELAY`] after startup and
+/// then every [`ENFORCE_INTERVAL`] (the tray runs for weeks between relaunches,
+/// so a launch-only check would never catch a mandatory release published
+/// mid-run). When the manifest marks the running version as below its minimum,
+/// it notifies and installs; on success [`download_and_apply`] never returns.
+///
+/// Two properties the naive "sleep the whole interval" loop did not have:
+///
+/// - **Survives suspend.** The deadline is wall-clock ([`SystemTime`]), and the
+///   loop wakes every [`ENFORCE_TICK`] to compare against it. tokio's timer runs
+///   on a monotonic clock that does not advance while macOS is asleep, so a
+///   single long sleep silently stretched by however long the lid was shut — the
+///   common case for a laptop we are trying to evict.
+/// - **Retries a failed install quickly.** A failure previously waited the full
+///   cycle; it now retries from [`ENFORCE_RETRY_BASE`], backing off via
+///   [`next_retry`] to the steady interval. The consent banner remains the
+///   fallback throughout.
+///
+/// The "no longer supported" toast fires once per mandatory episode, not once
+/// per retry — notifying on every attempt would be a notification loop on a
+/// machine that is simply offline.
 pub fn enforce_minimum_version(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let mut delay = std::time::Duration::from_secs(30);
+        let mut due = SystemTime::now() + ENFORCE_FIRST_DELAY;
+        let mut retry = ENFORCE_RETRY_BASE;
+        let mut notified = false;
         loop {
-            tokio::time::sleep(delay).await;
-            delay = std::time::Duration::from_secs(6 * 60 * 60);
+            // Wake at most a tick at a time; `due` is the real gate below.
+            let wait = due
+                .duration_since(SystemTime::now())
+                .unwrap_or(Duration::ZERO);
+            tokio::time::sleep(wait.min(ENFORCE_TICK)).await;
+            if SystemTime::now() < due {
+                continue;
+            }
+
             let status = check_status(&app).await;
             // `unsupported` (dev run) never flips to packaged mid-run, so the
             // loop is pure idle there; keep it anyway — it costs one no-op
             // check per cycle and avoids a second is_packaged() code path.
             if status.state != "available" || !status.mandatory {
+                due = SystemTime::now() + ENFORCE_INTERVAL;
+                retry = ENFORCE_RETRY_BASE;
+                notified = false;
                 continue;
             }
             let v = status.version.clone().unwrap_or_default();
@@ -304,15 +355,26 @@ pub fn enforce_minimum_version(app: &AppHandle) {
                 minimum = status.minimum_version.as_deref().unwrap_or(""),
                 "update: running version is below the minimum supported - forcing install"
             );
-            notify_update(
-                &app,
-                "mandatory",
-                "Updating Meridian",
-                &format!("This version is no longer supported - installing v{v}"),
-            )
-            .await;
+            if !notified {
+                notify_update(
+                    &app,
+                    "mandatory",
+                    "Updating Meridian",
+                    &format!("This version is no longer supported - installing v{v}"),
+                )
+                .await;
+                notified = true;
+            }
             if let Err(e) = download_and_apply(&app).await {
-                tracing::warn!(error = %e, "update: forced install failed - retrying next cycle");
+                due = SystemTime::now() + retry;
+                tracing::warn!(
+                    error = %e,
+                    retry_s = retry.as_secs(),
+                    "update: forced install failed - retrying"
+                );
+                retry = next_retry(retry);
+            } else {
+                due = SystemTime::now() + ENFORCE_INTERVAL;
             }
         }
     });
@@ -384,6 +446,29 @@ pub fn check_for_updates(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_doubles_then_caps_at_the_steady_interval() {
+        // Doubles while below the cap …
+        assert_eq!(next_retry(ENFORCE_RETRY_BASE), ENFORCE_RETRY_BASE * 2);
+        assert_eq!(next_retry(ENFORCE_RETRY_BASE * 2), ENFORCE_RETRY_BASE * 4);
+        // … and never exceeds the steady-state cadence, so a persistently
+        // failing install settles into the normal rhythm instead of hammering.
+        assert_eq!(next_retry(ENFORCE_INTERVAL), ENFORCE_INTERVAL);
+        assert_eq!(next_retry(ENFORCE_INTERVAL * 4), ENFORCE_INTERVAL);
+    }
+
+    #[test]
+    fn retry_backoff_reaches_the_cap_from_the_base() {
+        // The base must actually climb to the cap in a bounded number of
+        // failures — a base that divided the interval unevenly would otherwise
+        // sit just under it forever.
+        let mut d = ENFORCE_RETRY_BASE;
+        for _ in 0..16 {
+            d = next_retry(d);
+        }
+        assert_eq!(d, ENFORCE_INTERVAL);
+    }
 
     #[test]
     fn no_marker_keeps_notes_verbatim() {
