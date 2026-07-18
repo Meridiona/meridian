@@ -212,9 +212,6 @@ All settings are environment variables in `~/.meridian/app/.env`; defaults work 
 |---|---|---|
 | `MERIDIAN_DB` | `~/.meridian/meridian.db` | Where Meridian writes its database |
 | `POLL_INTERVAL_SECS` | `60` | How often to check for new activity |
-| `CLASSIFICATION_ENABLED` | `true` | Enable session → task classification (set `false` to run capture + categorisation only, no model needed) |
-| `MLX_SERVER_PORT` | `7823` | Port the on-device model server listens on |
-| `CLASSIFICATION_TIMEOUT_S` | `120` | Per-session inference timeout |
 | `MERIDIAN_UI_PORT` | `3939` | Dev-only: `next dev` / Tauri devUrl port (no effect on installed builds — the dashboard is bundled in the tray) |
 
 Edit with `meridian config edit`, then `meridian restart`.
