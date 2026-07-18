@@ -48,11 +48,16 @@ pub struct CopilotVscodeSource {
 
 impl CopilotVscodeSource {
     pub fn from_env() -> Self {
-        let raw = std::env::var("VSCODE_USER_DIR")
-            .unwrap_or_else(|_| "~/Library/Application Support/Code/User".to_string());
-        Self {
-            user_dir: PathBuf::from(shellexpand::tilde(&raw).into_owned()),
-        }
+        // VS Code's user dir sits under the platform's app-support root:
+        // ~/Library/Application Support on macOS, %APPDATA% on Windows,
+        // ~/.config on Linux — which is where VS Code itself puts it.
+        let user_dir = match std::env::var("VSCODE_USER_DIR") {
+            Ok(raw) => PathBuf::from(shellexpand::tilde(&raw).into_owned()),
+            Err(_) => meridian_core::paths::app_support_dir("Code")
+                .map(|d| d.join("User"))
+                .unwrap_or_default(),
+        };
+        Self { user_dir }
     }
 
     pub fn present(&self) -> bool {

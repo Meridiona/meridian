@@ -30,11 +30,11 @@ pub struct AntigravitySource {
 
 impl AntigravitySource {
     pub fn from_env() -> Self {
-        let raw = std::env::var("ANTIGRAVITY_APP_DIR")
-            .unwrap_or_else(|_| "~/Library/Application Support/Antigravity".to_string());
-        Self {
-            app_dir: PathBuf::from(shellexpand::tilde(&raw).into_owned()),
-        }
+        let app_dir = match std::env::var("ANTIGRAVITY_APP_DIR") {
+            Ok(raw) => PathBuf::from(shellexpand::tilde(&raw).into_owned()),
+            Err(_) => meridian_core::paths::app_support_dir("Antigravity").unwrap_or_default(),
+        };
+        Self { app_dir }
     }
 
     /// Antigravity is installed on this machine. Presence only gates the

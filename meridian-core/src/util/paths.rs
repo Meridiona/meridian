@@ -95,6 +95,25 @@ pub fn meridian_dir() -> Option<PathBuf> {
     home_dir().map(|h| h.join(".meridian"))
 }
 
+/// Where desktop apps keep their per-user state, for `app` — the directory
+/// VS Code, Cursor, and friends write their `User/` trees into.
+///
+/// | OS      | Location                              |
+/// |---------|---------------------------------------|
+/// | macOS   | `~/Library/Application Support/<app>`  |
+/// | Windows | `%APPDATA%\<app>` (Roaming)            |
+/// | Linux   | `~/.config/<app>`                      |
+///
+/// These are exactly the paths the editors themselves use, and exactly what
+/// [`dirs::config_dir`] returns per platform — so this is a lookup, not a
+/// guess. The macOS answer is byte-identical to the
+/// `~/Library/Application Support/...` literals it replaced.
+///
+/// Returns `None` when the base directory cannot be resolved.
+pub fn app_support_dir(app: &str) -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join(app))
+}
+
 /// Whether `path` contains `needle` as a **whole path component**, compared
 /// with the platform's own separator rules.
 ///
