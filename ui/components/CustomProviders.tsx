@@ -22,6 +22,8 @@ import {
   CUSTOM_VENDOR_PRESETS,
   customVendorPreset,
   rungLabel,
+  capacityNotice,
+  type CapacityAssessment,
   type CustomProviderView,
   type ProbeOutcome,
 } from '@/lib/llm-providers'
@@ -55,7 +57,7 @@ export function useCustomProviders() {
 
   /** Add + measure one endpoint. Throws the tray's message for the form to show verbatim. */
   const add = useCallback(async (fields: {
-    vendor: string; name: string; base_url: string; model: string; api_key: string; rpm: number
+    vendor: string; name: string; base_url: string; model: string; api_key: string; rpm: number; rpd: number
   }): Promise<ProbeOutcome> => {
     // Tauri maps the Rust command's snake_case params to camelCase JS keys, so the invoke
     // args must be camelCase - `base_url`/`api_key` would be rejected as missing `baseUrl`.
@@ -66,6 +68,7 @@ export function useCustomProviders() {
       model: fields.model,
       apiKey: fields.api_key,
       rpm: fields.rpm,
+      rpd: fields.rpd,
     })
     await refresh()
     return outcome
@@ -132,7 +135,7 @@ function Field({ label, value, onChange, placeholder, type = 'text', mono }: {
  * actually made, not buried in docs read after a billing-enabled key is already pasted.
  */
 function AddForm({ onAdd, onCancel }: {
-  onAdd: (fields: { vendor: string; name: string; base_url: string; model: string; api_key: string; rpm: number }) => Promise<ProbeOutcome>
+  onAdd: (fields: { vendor: string; name: string; base_url: string; model: string; api_key: string; rpm: number; rpd: number }) => Promise<ProbeOutcome>
   onCancel: () => void
 }) {
   const [vendor, setVendor] = useState(CUSTOM_VENDOR_PRESETS[0].id)
@@ -143,12 +146,29 @@ function AddForm({ onAdd, onCancel }: {
   // Held as a string because the number input reports one; coerced at submit. Empty or
   // unparseable means 0, i.e. unpaced - the same as the field never being touched.
   const [rpm, setRpm] = useState('0')
+  const [rpd, setRpd] = useState('0')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   /** A probe that stopped early - the endpoint IS saved, so this is a "resume it" notice,
    *  not a failure. Keeping the form open to say so beats making the user infer it from a
    *  card that merely isn't fully tested. */
   const [incomplete, setIncomplete] = useState<string | null>(null)
+
+  // The quota verdict for what is CURRENTLY typed. Asked of Rust rather than computed
+  // here so the form and the saved card can never disagree - see `assess_llm_capacity`.
+  const [capacity, setCapacity] = useState<CapacityAssessment | null>(null)
+  useEffect(() => {
+    let live = true
+    invoke<CapacityAssessment>('assess_llm_capacity', {
+      rpm: Number(rpm) || 0,
+      rpd: Number(rpd) || 0,
+    })
+      .then(c => { if (live) setCapacity(c) })
+      .catch(() => { if (live) setCapacity(null) })
+    // Guards against a slow answer for old input overwriting a newer one.
+    return () => { live = false }
+  }, [rpm, rpd])
+  const addNotice = capacity ? capacityNotice(capacity) : null
 
   const preset = customVendorPreset(vendor)
   // Only the escape hatch types its own URL; a preset's URL is fixed so a typo can't turn
@@ -167,7 +187,7 @@ function AddForm({ onAdd, onCancel }: {
     setError(null)
     setIncomplete(null)
     try {
-      const outcome = await onAdd({ vendor, name, base_url: baseUrl, model, api_key: apiKey, rpm: Number(rpm) || 0 })
+      const outcome = await onAdd({ vendor, name, base_url: baseUrl, model, api_key: apiKey, rpm: Number(rpm) || 0, rpd: Number(rpd) || 0 })
       setApiKey('')  // the key is stored daemon-side now and never comes back - don't keep it here
       // The endpoint is saved either way; only a COMPLETE measurement closes the form, since
       // an incomplete one has something the user needs to act on.
@@ -237,6 +257,27 @@ function AddForm({ onAdd, onCancel }: {
         when measuring this endpoint. Leave 0 if your plan has no limit.
       </p>
 
+      <Field label="Requests per day" value={rpd} onChange={setRpd} type="number" mono
+        placeholder="0 - not sure" />
+      <p style={{ fontSize: 10.5, lineHeight: 1.45, color: 'var(--t-muted)' }}>
+        The one that usually bites. Nothing can pace around a daily cap, so Meridian uses this
+        only to tell you up front whether the plan covers a working day. Leave 0 if you
+        don&apos;t know it.
+      </p>
+
+      {/* The verdict BEFORE the key is spent. Adding an endpoint costs real requests from the
+          very quota being judged, so someone with a 20-a-day key should learn it is hopeless
+          while they can still choose a different model. */}
+      {addNotice && (
+        <p style={{
+          fontSize: 10.5, lineHeight: 1.45,
+          color: addNotice.tone === 'error' ? 'var(--status-error-dot)'
+            : addNotice.tone === 'warn' ? 'var(--color-state-pending)' : 'var(--t-muted)',
+        }}>
+          {addNotice.text}
+        </p>
+      )}
+
       {error && <p style={{ fontSize: 10.5, lineHeight: 1.4, color: 'var(--status-error-dot)' }}>{error}</p>}
 
       {/* Saved, but not fully measured - say so plainly, because the card alone would only
@@ -287,6 +328,7 @@ export function CustomProviderCard({ p, picked, probing, onPick, onProbe, onRemo
 }) {
   const [removeError, setRemoveError] = useState<string | null>(null)
   const selectable = p.production_eligible
+  const cardNotice = capacityNotice(p.capacity)
 
   async function remove(e: React.MouseEvent) {
     e.stopPropagation()
@@ -371,6 +413,19 @@ export function CustomProviderCard({ p, picked, probing, onPick, onProbe, onRemo
         </p>
       )}
 
+      {/* Quota verdict. Kept on the card, not just the add form, because a plan's limits
+          can change under a key that was fine when it was added - and because a user who
+          skipped the daily limit at add time still gets one chance to fill it in. */}
+      {cardNotice && (
+        <p style={{
+          fontSize: 10.5, lineHeight: 1.4,
+          color: cardNotice.tone === 'error' ? 'var(--status-error-dot)'
+            : cardNotice.tone === 'warn' ? 'var(--color-state-pending)' : 'var(--t-faint)',
+        }}>
+          {cardNotice.text}
+        </p>
+      )}
+
       {removeError && <p style={{ fontSize: 10.5, lineHeight: 1.4, color: 'var(--status-error-dot)' }}>{removeError}</p>}
 
       <div className="flex items-center" style={{ gap: 6 }}>
@@ -404,7 +459,7 @@ export function CustomProviderCard({ p, picked, probing, onPick, onProbe, onRemo
 
 /** The "+ Add custom endpoint" tile, and the form it opens in place. */
 export function AddCustomProvider({ onAdd }: {
-  onAdd: (fields: { vendor: string; name: string; base_url: string; model: string; api_key: string; rpm: number }) => Promise<ProbeOutcome>
+  onAdd: (fields: { vendor: string; name: string; base_url: string; model: string; api_key: string; rpm: number; rpd: number }) => Promise<ProbeOutcome>
 }) {
   const [open, setOpen] = useState(false)
   // The form is wide (URL, model, key), so it takes the whole grid row; the closed tile

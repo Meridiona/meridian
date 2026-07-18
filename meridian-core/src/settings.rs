@@ -127,6 +127,21 @@ pub struct CustomLlmProvider {
     /// `x-ratelimit-reset-tokens` header on a 429. See `src/llm/rate_limit.rs`.
     #[serde(default)]
     pub rpm: u32,
+    /// Requests-per-DAY ceiling this endpoint's plan allows. `0` (the default) means
+    /// "not known" — never "zero allowed" — so a user who leaves it blank is told we
+    /// cannot judge, not that their key is bad.
+    ///
+    /// Advisory only: nothing paces against it. Unlike [`Self::rpm`], a daily quota has no
+    /// remedy in software — pacing can spread requests across a minute, but it cannot
+    /// conjure a 21st request out of a 20-a-day key. All this field buys is the ability to
+    /// TELL the user before they rely on the endpoint, which is why it feeds
+    /// [`crate::llm_capacity::assess`] and nothing else.
+    ///
+    /// User-entered because it is not discoverable: RPM occasionally arrives in an
+    /// `x-ratelimit-limit-requests` header, but a daily ceiling essentially never does, and
+    /// inferring one from a 429 would mean learning it only after burning the day's quota.
+    #[serde(default)]
+    pub rpd: u32,
     /// The rung measured for EACH pipeline schema, keyed by schema name — not one scalar.
     /// The schemas differ in what they demand (`worklog_generate` carries a union type and
     /// deeper nesting than `workstream`), and a vendor's support is not guaranteed uniform

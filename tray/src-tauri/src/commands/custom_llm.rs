@@ -22,6 +22,7 @@
 //!   the `llm_provider` write.
 //! - `meridian::llm::probe` — the measurement; `meridian_core::SchemaRung` — what it means.
 
+use meridian_core::llm_capacity::{self, CapacityAssessment};
 use meridian_core::{settings, CustomLlmProvider, SchemaRung};
 use serde::Serialize;
 use serde_json::Value;
@@ -48,6 +49,12 @@ pub struct CustomProviderView {
     /// Requests-per-minute ceiling, `0` = unpaced. Safe to surface: unlike the key it is a
     /// user-entered plan limit, not a secret.
     pub rpm: u32,
+    /// Requests-per-day ceiling, `0` = not known. Same safety note as `rpm`.
+    pub rpd: u32,
+    /// Whether these limits can actually run the app for a day, computed in
+    /// `meridian-core` so the frontend renders a verdict rather than deriving a second,
+    /// drifting one from the raw numbers.
+    pub capacity: CapacityAssessment,
     /// Measured rung per schema key. Missing key = never measured.
     pub rungs: std::collections::BTreeMap<String, SchemaRung>,
     /// The weakest measured rung — what the endpoint can actually be trusted to hold.
@@ -69,6 +76,8 @@ impl CustomProviderView {
             base_url: row.base_url.clone(),
             model: row.model.clone(),
             rpm: row.rpm,
+            rpd: row.rpd,
+            capacity: llm_capacity::assess(row.rpm, row.rpd),
             rungs: row.rungs.clone(),
             effective_rung: row.effective_rung(),
             fully_probed: row.is_fully_probed(),
@@ -76,6 +85,19 @@ impl CustomProviderView {
             selected: selected_id == Some(row.id.as_str()),
         }
     }
+}
+
+/// Judge a prospective endpoint's limits WITHOUT saving or contacting anything.
+///
+/// Exists so the add form can warn before the user commits. It could not just do this
+/// arithmetic in TypeScript: adding an endpoint spends real requests from the very quota
+/// being judged, so the warning has to be right the first time, and a second
+/// implementation of [`llm_capacity::assess`] in the frontend would be free to drift
+/// from the one the saved card then shows.
+#[tauri::command]
+#[tracing::instrument]
+pub fn assess_llm_capacity(rpm: u32, rpd: u32) -> CapacityAssessment {
+    llm_capacity::assess(rpm, rpd)
 }
 
 /// What `add`/`probe` report back: the row plus what the measurement cost and whether it
@@ -225,6 +247,7 @@ pub async fn add_custom_llm_provider(
     model: String,
     api_key: String,
     rpm: u32,
+    rpd: u32,
 ) -> Result<ProbeOutcome, String> {
     validate(&name, &base_url, &model, &api_key)?;
 
@@ -251,6 +274,7 @@ pub async fn add_custom_llm_provider(
         model: model.trim().to_string(),
         api_key: api_key.trim().to_string(),
         rpm,
+        rpd,
         rungs: Default::default(),
     };
 
