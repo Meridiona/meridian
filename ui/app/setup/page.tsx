@@ -244,13 +244,8 @@ export default function SetupWizard() {
                     <h1 style={{ ...DISPLAY, fontSize: 23, fontWeight: 750, lineHeight: 1.1, letterSpacing: '-.03em', color: 'var(--t-title)' }}>{meta.title}</h1>
                     <p style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--t-muted)', marginTop: 8, maxWidth: 460, textWrap: 'pretty' }}>{meta.subtitle}</p>
                   </div>
-                  <div className="nice-scroll flex flex-col" style={{ flex: 1, overflowY: 'auto', padding: '4px 32px 22px' }}>
-                    {/* marginBlock:auto vertically centres a short step body (no more
-                        top-loaded content + empty bottom) while a tall body — the
-                        provider list — still scrolls from the top without clipping. */}
-                    <div style={{ marginBlock: 'auto', width: '100%' }}>
-                      <meta.Body wiz={wiz} />
-                    </div>
+                  <div className="nice-scroll flex flex-col" style={{ flex: 1, overflowY: 'auto', padding: '18px 32px 22px' }}>
+                    <meta.Body wiz={wiz} />
                   </div>
                   <Footer step={step} last={last} canNext={meta.canNext(wiz)} err={err}
                     onBack={() => { setErr(''); setStep(Math.max(0, step - 1)) }}
@@ -299,14 +294,14 @@ function Rail({ step, done, wiz, goStep }: { step: number; done: boolean; wiz: W
               }}>{ok ? <Check size={13} color="#fff" /> : s.n}</span>
               <div style={{ minWidth: 0, paddingTop: 1 }}>
                 <p style={{ fontSize: 13, fontWeight: isCur ? 600 : 450, color: reached ? 'var(--t-title)' : 'var(--t-muted)' }}>{s.label}</p>
-                <p className="font-mono" style={{ fontSize: 10, color: ok ? 'var(--color-state-approved)' : 'var(--t-faint)', marginTop: 2, letterSpacing: '.02em' }}>{s.status(wiz)}</p>
+                <p className="mt-mono-sm" style={{ fontSize: 10, color: ok ? 'var(--color-state-approved)' : 'var(--t-faint)', marginTop: 2 }}>{s.status(wiz)}</p>
               </div>
             </button>
           )
         })}
       </div>
       <div style={{ flex: 1 }} />
-      <p className="font-mono" style={{ fontSize: 10, letterSpacing: '.12em', color: 'var(--t-faint)', padding: '0 8px', textTransform: 'uppercase' }}>First-run setup</p>
+      <p className="mt-chip" style={{ color: 'var(--t-faint)', padding: '0 8px' }}>First-run setup</p>
     </div>
   )
 }

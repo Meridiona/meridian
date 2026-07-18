@@ -1,7 +1,7 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 
 import type { Metadata } from 'next'
-import { Instrument_Serif } from 'next/font/google'
+import { Instrument_Serif, JetBrains_Mono } from 'next/font/google'
 import './globals.css'
 import { ThemeProvider } from '@/lib/theme-context'
 import ExternalLinks from '@/components/ExternalLinks'
@@ -12,6 +12,18 @@ const instrumentSerif = Instrument_Serif({
   style: ['normal', 'italic'],
   subsets: ['latin'],
   variable: '--font-instrument-serif',
+  display: 'swap',
+})
+
+// One-off exception: --font-jetbrains-mono, used ONLY by the day-task
+// timeline's hour-rail labels (DayTaskColumn.tsx), to match the marketing
+// site's product demo (meridiona-website/assets/css/demo.css .hour-label),
+// which sets real JetBrains Mono rather than the app's aliased --font-mono.
+// Scoped deliberately, not a reversal of the decision below.
+const jetbrainsMono = JetBrains_Mono({
+  weight: ['500', '600'],
+  subsets: ['latin'],
+  variable: '--font-jetbrains-mono',
   display: 'swap',
 })
 
@@ -29,7 +41,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html
       lang="en"
-      className={instrumentSerif.variable}
+      className={`${instrumentSerif.variable} ${jetbrainsMono.variable}`}
     >
       <body className="min-h-screen font-sans">
         <ThemeProvider>

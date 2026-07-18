@@ -17,7 +17,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { fmtDur } from '@/components/atoms'
+import { fmtDur, PROVIDER_META, ProviderGlyph } from '@/components/atoms'
 import { GeneratingBar } from '@/components/GeneratingBar'
 import { load } from '@/lib/bridge'
 import { connectedTrackerNames } from '@/lib/integrations'
@@ -263,7 +263,7 @@ function WorklogFooter({ wl, hue, linkedTicket, integrations, trackers, onOpenSe
         <GeneratingBar hue={hue} label="Generating your worklog…"
           detail="Reading your work, comparing it against today's tasks and drafting the update - you can keep using Meridian while this runs." />
       ) : posted ? (
-        <PostedBar done={done} linkedTicket={linkedTicket} />
+        <PostedBar done={done} linkedTicket={linkedTicket} provider={draft?.provider ?? ''} />
       ) : !draft ? (
         noTracker
           ? <ConnectTrackerCta hue={hue} onConnect={() => onOpenSettings('integrations')} />
@@ -286,15 +286,23 @@ function WorklogFooter({ wl, hue, linkedTicket, integrations, trackers, onOpenSe
  *  Lists every ticket rather than the day-task's `linked_ticket`: that column holds
  *  one key, so a two-ticket update would silently report half of what it did. The
  *  linked ticket is only the fallback for a row posted before the draft existed. */
-function PostedBar({ done, linkedTicket }: { done: PostedLink[]; linkedTicket: string | null }) {
+function PostedBar({ done, linkedTicket, provider }: { done: PostedLink[]; linkedTicket: string | null; provider: string }) {
   const links: PostedLink[] = done.length > 0
     ? done
-    : linkedTicket ? [{ task_key: linkedTicket, browse_url: null }] : []
+    : linkedTicket ? [{ task_key: linkedTicket, browse_url: null, provider }] : []
+  // All of a draft's targets share one tracker, so the first link's provider (or
+  // the draft's own, for the linkedTicket-only fallback with no targets at all)
+  // is the one to badge.
+  const meta = PROVIDER_META[links[0]?.provider ?? provider]
   return (
     <div className="space-y-1.5">
-      <p className="mt-body-sm inline-flex items-center gap-1.5" style={{ color: 'var(--color-state-approved)', fontSize: 13, fontWeight: 700 }}>
-        <span aria-hidden>✓</span> Posted{links.length > 1 ? ` to ${links.length} tickets` : links[0] ? ` to ${links[0].task_key}` : ''}
-      </p>
+      <span className="inline-flex items-center gap-1.5 rounded-full py-1 pl-1 pr-3"
+        style={{ background: `color-mix(in srgb, ${meta?.color ?? 'var(--color-state-approved)'} 14%, transparent)` }}>
+        <ProviderGlyph provider={links[0]?.provider ?? provider} size={18} />
+        <span className="mt-body-sm" style={{ color: meta?.color ?? 'var(--color-state-approved)', fontSize: 12.5, fontWeight: 700 }}>
+          Posted{links.length > 1 ? ` to ${links.length} tickets` : links[0] ? ` to ${links[0].task_key}` : ''}
+        </span>
+      </span>
       {links.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
           {links.map((l) => <LinkChip key={l.task_key} label={l.task_key} url={l.browse_url} />)}
@@ -305,7 +313,7 @@ function PostedBar({ done, linkedTicket }: { done: PostedLink[]; linkedTicket: s
 }
 
 /** The slice of a posted target [`PostedBar`] links to. */
-interface PostedLink { task_key: string; browse_url: string | null }
+interface PostedLink { task_key: string; browse_url: string | null; provider: string }
 
 /** No draft yet, a tracker connected — the primary generate CTA.
  *
