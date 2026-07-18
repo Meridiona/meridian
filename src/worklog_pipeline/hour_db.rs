@@ -30,7 +30,8 @@ pub async fn fetch_hour_timeline(pool: &SqlitePool, hs: &str, he: &str) -> Vec<T
         "SELECT app_name, started_at, ended_at, \
                 CAST(COALESCE(duration_s, 0) AS INTEGER) AS duration_s, \
                 COALESCE(window_titles, '') AS window_titles, \
-                (coding_agent_session_uuid IS NOT NULL) AS is_coding \
+                (coding_agent_session_uuid IS NOT NULL) AS is_coding, \
+                traceparent \
          FROM app_sessions \
          WHERE started_at >= ? AND started_at < ? AND COALESCE(duration_s, 0) >= ? \
          ORDER BY started_at",
@@ -53,6 +54,9 @@ pub async fn fetch_hour_timeline(pool: &SqlitePool, hs: &str, he: &str) -> Vec<T
                     duration_s: r.try_get::<i64, _>("duration_s").unwrap_or(0),
                     window_titles: r.try_get::<String, _>("window_titles").unwrap_or_default(),
                     is_coding: r.try_get::<i64, _>("is_coding").unwrap_or(0) != 0,
+                    traceparent: r
+                        .try_get::<Option<String>, _>("traceparent")
+                        .unwrap_or(None),
                 })
                 .collect();
             tracing::debug!(rows = out.len(), "worklog: fetched hour timeline");

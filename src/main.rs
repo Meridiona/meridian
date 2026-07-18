@@ -51,9 +51,18 @@ async fn main() -> Result<()> {
     // 1b. Subcommand dispatch. `meridian coding-agent-hook` is the Claude Code
     //     SessionEnd hook entry point: one-shot, reads a JSON payload on stdin,
     //     seals that session, exits 0. It must stay light (no daemon init, no
-    //     OTLP) and must never block Claude, so it always exits 0.
+    //     network) and must never block Claude, so it always exits 0.
+    //     `observability::init` is still cheap here: capture is a local-disk
+    //     write only (see `telemetry_spool::spool_client::SpoolClient`), never
+    //     a network call, so it doesn't violate the "must never block" contract
+    //     — without it, hook failures were only visible on Claude Code's own
+    //     stderr, never in `meridian logs` or an exported diagnostics bundle.
     if std::env::args().nth(1).as_deref() == Some("coding-agent-hook") {
+        let obs_guard = observability::init("meridian-rust").ok();
         meridian::coding_agent_session_ingest::hook::run_hook().await;
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
+        }
         return Ok(());
     }
 
@@ -69,6 +78,7 @@ async fn main() -> Result<()> {
         let dry_run = args.iter().any(|a| a == "--dry-run");
         let day = flag("--day");
         let limit: i64 = flag("--limit").and_then(|v| v.parse().ok()).unwrap_or(8);
+        let obs_guard = observability::init("meridian-rust").ok();
         match meridian::coding_agent_session_ingest::open_meridian_pool().await {
             Ok(pool) => {
                 meridian::coding_agent_session_ingest::summariser::cli_summarise(
@@ -80,7 +90,10 @@ async fn main() -> Result<()> {
                 .await;
                 pool.close().await;
             }
-            Err(e) => eprintln!("coding-agent-summarise: open db: {e}"),
+            Err(e) => tracing::error!(error = %e, "coding-agent-summarise: failed to open db"),
+        }
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
         }
         return Ok(());
     }
