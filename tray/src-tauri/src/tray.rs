@@ -11,7 +11,6 @@
 //! - [`crate::commands::daemon`] — `toggle_daemon`, invoked by the toggle menu item.
 
 use crate::state::{AppState, HealthStatus};
-use crate::sys;
 use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
@@ -151,16 +150,19 @@ fn toggle_from_menu(app: &tauri::AppHandle) {
     }
 }
 
-/// Restart the daemon from the menu via `launchctl kickstart -k`.
+/// Restart the daemon from the menu.
+///
+/// Routes through [`crate::commands::daemon_control::restart`] (launchd on
+/// macOS, the scheduled task on Windows) rather than shelling `launchctl`
+/// directly — the direct call would silently do nothing on Windows. Spawned
+/// onto the async runtime because the menu handler is synchronous; the result
+/// is best-effort, matching the previous fire-and-forget behaviour.
 fn restart_from_menu() {
-    let uid = sys::uid_str();
-    let _ = std::process::Command::new("launchctl")
-        .args([
-            "kickstart",
-            "-k",
-            &format!("gui/{}/com.meridiona.daemon", uid),
-        ])
-        .spawn();
+    tauri::async_runtime::spawn(async {
+        if let Err(e) = crate::commands::daemon_control::restart().await {
+            tracing::warn!(error = %e, "menu restart_daemon failed");
+        }
+    });
 }
 
 /// Open (or focus) the in-app onboarding wizard window. Loads the Next `/setup`
