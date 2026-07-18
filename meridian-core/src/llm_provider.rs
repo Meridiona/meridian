@@ -2,9 +2,10 @@
 //! Which AI runs the user's pipeline — the single, centralised provider choice.
 //!
 //! The user picks this once during setup (and can change it in Settings): their own
-//! coding-agent CLI subscription (Claude / Codex / Cursor / Copilot), the on-device
-//! MLX model, or a [`LlmProvider::Custom`] cloud endpoint they configured themselves.
-//! One enum, one setting, one factory — every prose LLM call obeys it.
+//! coding-agent CLI subscription (Claude / Codex / Cursor / Copilot) or a
+//! [`LlmProvider::Custom`] cloud endpoint they configured themselves. One enum, one
+//! setting, one factory — every prose LLM call obeys it. (There is no on-device model:
+//! the daemon runs generation only through third-party providers.)
 //!
 //! # Why `Custom` carries no data
 //!
@@ -45,7 +46,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Wire forms deliberately match the coding-agent summariser's own `Source::as_str()`
 /// (`"claude"`, `"codex"`, `"cursor"`, `"copilot"`), so the two can be mapped without a
-/// translation table. `Local` is the on-device MLX model.
+/// translation table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LlmProvider {
@@ -53,20 +54,19 @@ pub enum LlmProvider {
     Codex,
     Cursor,
     Copilot,
-    /// The on-device MLX model. Nothing leaves the machine.
-    Local,
     /// A user-configured cloud endpoint (OpenAI-compatible), identified by a registry row
-    /// rather than by this variant — see the module docs. The first provider that is
-    /// neither on-device nor a CLI: it is a direct HTTP call on the user's own API key,
-    /// and the only one that spends metered money rather than a flat subscription.
+    /// rather than by this variant — see the module docs. The only provider that is not a
+    /// CLI subprocess: a direct HTTP call on the user's own API key, and the only one that
+    /// spends metered money rather than a flat subscription.
     Custom,
 }
 
 impl Default for LlmProvider {
-    /// On-device. Privacy by default is the product's pitch, and it is the only backend
-    /// guaranteed to be present — every other one needs a CLI the user may not have.
+    /// Claude Code — the flagship CLI provider, and the friendliest default when one is
+    /// installed. If no provider is configured/installed, the LLM-driven steps simply idle
+    /// (there is no on-device fallback), which is an accepted, non-fatal state.
     fn default() -> Self {
-        Self::Local
+        Self::Claude
     }
 }
 
@@ -78,7 +78,6 @@ impl LlmProvider {
             LlmProvider::Codex => "codex",
             LlmProvider::Cursor => "cursor",
             LlmProvider::Copilot => "copilot",
-            LlmProvider::Local => "local",
             LlmProvider::Custom => "custom",
         }
     }
@@ -94,7 +93,6 @@ impl LlmProvider {
             "codex" => Some(LlmProvider::Codex),
             "cursor" => Some(LlmProvider::Cursor),
             "copilot" => Some(LlmProvider::Copilot),
-            "local" => Some(LlmProvider::Local),
             "custom" => Some(LlmProvider::Custom),
             _ => None,
         }
@@ -105,13 +103,12 @@ impl LlmProvider {
     /// NOT the set of cards to render: [`LlmProvider::Custom`] is a kind, not an instance,
     /// so it has no card of its own (its cards come one-per-registry-row). Use
     /// [`LlmProvider::builtins`] to enumerate the providers that ARE a single fixed thing.
-    pub fn all() -> [LlmProvider; 6] {
+    pub fn all() -> [LlmProvider; 5] {
         [
             LlmProvider::Claude,
             LlmProvider::Codex,
             LlmProvider::Cursor,
             LlmProvider::Copilot,
-            LlmProvider::Local,
             LlmProvider::Custom,
         ]
     }
@@ -119,45 +116,28 @@ impl LlmProvider {
     /// The providers that are one fixed, self-identifying thing — everything except
     /// [`LlmProvider::Custom`], whose instances live in the settings registry.
     ///
-    /// This is what enumerates install probes and picker cards. `detect` reads "no CLI
-    /// name" as "the on-device model, always installed", so handing it `Custom` would
-    /// claim an unconfigured endpoint is ready — hence the split.
-    pub fn builtins() -> [LlmProvider; 5] {
+    /// This is what enumerates install probes and picker cards.
+    pub fn builtins() -> [LlmProvider; 4] {
         [
             LlmProvider::Claude,
             LlmProvider::Codex,
             LlmProvider::Cursor,
             LlmProvider::Copilot,
-            LlmProvider::Local,
         ]
-    }
-
-    /// Does this provider run the model on this machine?
-    ///
-    /// The one place the "gate the GPU, don't gate the subscription" rule is expressed:
-    /// local calls contend for a single Metal device and must hold the LLM gate, while a
-    /// CLI call spends the user's own cloud quota and must not.
-    ///
-    /// [`LlmProvider::Custom`] is remote — it takes no gate, and (like the CLIs) it does
-    /// back off when rate-limited.
-    pub fn is_local(self) -> bool {
-        matches!(self, LlmProvider::Local)
     }
 
     /// The executable to invoke, or `None` for a provider that is an HTTP call rather than
     /// a subprocess. The single place the binary names live.
     ///
-    /// `None` means "not a subprocess" — it does NOT mean on-device: both
-    /// [`LlmProvider::Local`] (localhost MLX) and [`LlmProvider::Custom`] (a cloud
-    /// endpoint) answer `None`. Pair it with [`LlmProvider::is_local`] to tell them apart;
-    /// reading `None` alone as "local, therefore always available" is wrong for `Custom`.
+    /// `None` means "not a subprocess" — today only [`LlmProvider::Custom`] (a cloud
+    /// endpoint) answers `None`.
     pub fn cli_name(self) -> Option<&'static str> {
         match self {
             LlmProvider::Claude => Some("claude"),
             LlmProvider::Codex => Some("codex"),
             LlmProvider::Cursor => Some("cursor-agent"),
             LlmProvider::Copilot => Some("copilot"),
-            LlmProvider::Local | LlmProvider::Custom => None,
+            LlmProvider::Custom => None,
         }
     }
 }
@@ -190,6 +170,8 @@ mod tests {
         assert_eq!(LlmProvider::from_wire("gemini"), None);
         assert_eq!(LlmProvider::from_wire(""), None);
         assert_eq!(LlmProvider::from_wire("Claude"), None); // case-sensitive by design
+                                                            // `local` was the on-device model; it no longer exists.
+        assert_eq!(LlmProvider::from_wire("local"), None);
     }
 
     /// `custom` names the KIND. `custom:<id>` addresses one instance and is deliberately
@@ -213,26 +195,22 @@ mod tests {
     #[test]
     fn whitespace_is_tolerated() {
         assert_eq!(
-            LlmProvider::from_wire("  local  "),
-            Some(LlmProvider::Local)
+            LlmProvider::from_wire("  claude  "),
+            Some(LlmProvider::Claude)
         );
     }
 
     #[test]
-    fn default_is_local() {
-        assert_eq!(LlmProvider::default(), LlmProvider::Local);
-        assert!(LlmProvider::default().is_local());
+    fn default_is_claude() {
+        assert_eq!(LlmProvider::default(), LlmProvider::Claude);
     }
 
-    /// Once "not local" meant "has a CLI". `Custom` broke that: it is remote AND has no
-    /// binary, so the two questions are now genuinely independent and `cli_name().is_none()`
-    /// can no longer stand in for "runs on this machine".
+    /// Only `Custom` has no CLI binary now — every built-in provider is a subprocess.
     #[test]
-    fn only_local_is_local_but_two_providers_have_no_cli() {
+    fn only_custom_has_no_cli() {
         for p in LlmProvider::builtins() {
-            assert_eq!(p.is_local(), p.cli_name().is_none(), "{p:?}");
+            assert!(p.cli_name().is_some(), "{p:?}");
         }
-        assert!(!LlmProvider::Custom.is_local());
         assert!(LlmProvider::Custom.cli_name().is_none());
     }
 }

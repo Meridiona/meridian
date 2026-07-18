@@ -251,8 +251,8 @@ mod tests {
                     params: None,
                 },
                 Variant {
-                    provider: LlmProvider::Local,
-                    model: Some("qwen".into()),
+                    provider: LlmProvider::Cursor,
+                    model: None,
                     params: None,
                 },
             ],

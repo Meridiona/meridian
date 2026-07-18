@@ -22,8 +22,6 @@
 //! # Related
 //! - [`meridian_core::LlmProvider`] — the enum + the stored setting.
 //! - [`resolver`] — the single factory, and the rate-limit backoff.
-//! - [`crate::llm_gate`] — the GPU permit. Held by [`local`] only: a CLI call spends the
-//!   user's cloud quota, not the Metal device, so gating it would serialise for nothing.
 
 pub mod claude;
 pub mod codex;
@@ -31,7 +29,6 @@ pub mod config;
 pub mod copilot;
 pub mod cursor;
 pub mod detect;
-pub mod local;
 pub mod openai_compat;
 pub mod probe;
 pub mod prompts;
@@ -97,8 +94,8 @@ impl LlmError {
 ///
 /// `schema` means "answer in this JSON shape". How that is enforced differs per backend
 /// and the trait deliberately hides it: `claude` has `--json-schema`, `codex` has
-/// `--output-schema`, the local model has an outlines FSM, and `copilot`/`cursor` have
-/// nothing at all — for those two the contract rides in the prompt and the answer is
+/// `--output-schema`, and `copilot`/`cursor` have nothing at all — for those two the
+/// contract rides in the prompt and the answer is
 /// parsed tolerantly. The caller must therefore treat a schema as a *request*, not a
 /// guarantee, and cope with an unparseable answer (see the callers' even-split fallback).
 pub struct PromptRequest {
@@ -138,13 +135,14 @@ impl PromptRequest {
 pub struct LlmOutput {
     /// The model's answer: prose, or JSON when a schema was requested.
     pub text: String,
-    /// The CLI backends do not report token counts; 0 there, real numbers from local.
+    /// The CLI backends do not report token counts, so these are 0 for them; a custom
+    /// OpenAI-compatible endpoint returns real numbers.
     pub input_tokens: u32,
     pub output_tokens: u32,
     pub elapsed_s: f64,
 }
 
-/// One AI backend. Implemented by the four CLIs and the on-device model.
+/// One AI backend. Implemented by the four CLIs and the custom cloud endpoint.
 ///
 /// Intentionally narrow: the trait does not expose stdin-vs-argv, model flags, or
 /// schema mechanics, because the backends genuinely disagree about all three (`claude -p`

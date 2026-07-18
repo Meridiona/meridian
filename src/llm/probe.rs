@@ -244,9 +244,6 @@ async fn attempt(
         model: String::new(),
         meridian_home: std::env::temp_dir(),
         cli_timeout_s: PROBE_TIMEOUT_S,
-        local_timeout_s: PROBE_TIMEOUT_S,
-        mlx_host: String::new(),
-        mlx_port: 0,
         custom: Some(CustomEndpoint {
             id: row.id.clone(),
             base_url: row.base_url.clone(),

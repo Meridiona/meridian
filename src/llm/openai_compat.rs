@@ -372,9 +372,6 @@ mod tests {
             model: String::new(),
             meridian_home: std::path::PathBuf::from("/tmp"),
             cli_timeout_s: 5,
-            local_timeout_s: 5,
-            mlx_host: "127.0.0.1".into(),
-            mlx_port: 7823,
             custom: None,
         };
         let err = OpenAiCompatBackend { cfg }
@@ -422,9 +419,6 @@ mod tests {
             model: String::new(),
             meridian_home: std::path::PathBuf::from("/tmp"),
             cli_timeout_s: 90,
-            local_timeout_s: 90,
-            mlx_host: "127.0.0.1".into(),
-            mlx_port: 7823,
             custom: Some(CustomEndpoint {
                 id: "live".into(),
                 base_url: base,

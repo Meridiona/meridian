@@ -20,10 +20,6 @@ pub struct LlmConfig {
     /// Per-call timeout for a CLI backend. Generous: a cloud model doing a real hour of
     /// screen text can take a while, and the cost of a false timeout is a lost hour.
     pub cli_timeout_s: u64,
-    /// Per-call timeout for the on-device model.
-    pub local_timeout_s: u64,
-    pub mlx_host: String,
-    pub mlx_port: u16,
     /// The resolved custom endpoint, when the user's selected provider is
     /// [`meridian_core::LlmProvider::Custom`] and its id names a live registry row.
     ///
@@ -62,9 +58,6 @@ impl LlmConfig {
             model: s.llm_provider_model.clone().unwrap_or_default(),
             meridian_home: home,
             cli_timeout_s: env_or("LLM_CLI_TIMEOUT_S", 300),
-            local_timeout_s: env_or("LLM_LOCAL_TIMEOUT_S", 180),
-            mlx_host: std::env::var("MLX_SERVER_HOST").unwrap_or_else(|_| "127.0.0.1".into()),
-            mlx_port: env_or("MLX_SERVER_PORT", 7823u16),
             custom: s.active_custom_provider().map(endpoint_from_row),
         }
     }
