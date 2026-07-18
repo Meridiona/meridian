@@ -281,6 +281,16 @@ jobs:
             ui/package-lock.json
             tray/package-lock.json
 
+      # Explicit, because `python3` is not a reliable name on the Windows
+      # runner image — it ships Python as `python` plus the `py` launcher, and
+      # whether `python3` resolves has varied between images. The manifest
+      # merge below is the step that must not fail on something this
+      # incidental, so pin the interpreter rather than hope.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Build the dashboard
         shell: bash
         run: cd ui && npm ci --no-audit --no-fund && npm run build
