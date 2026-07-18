@@ -504,7 +504,19 @@ mod tests {
 
         // Neither record → no title.
         let p3 = write_claude_jsonl(&d, "u_untitled", &[rec(0, "user", "hello")]);
-        let (_m3, segs3) = parse_session_segments(&p3, &SegmentParams::default());
+        let (m3, segs3) = parse_session_segments(&p3, &SegmentParams::default());
+        assert_eq!(
+            segs3.len(),
+            1,
+            "expected exactly one segment, got {} (meta: total_records={}, user_turns={}, \
+             assistant_turns={}) — if this fires under `cargo test` parallel runs but not \
+             isolated, it's the long-standing intermittent flake (see git blame); rerun with \
+             `--test-threads=1` to confirm before treating as a real regression",
+            segs3.len(),
+            m3.total_records,
+            m3.user_turns,
+            m3.assistant_turns
+        );
         assert!(segs3[0].title.is_none());
     }
 
@@ -656,7 +668,19 @@ mod tests {
             "u6",
             &[rec(0, "user", "hi"), rec(30, "assistant", "yo")],
         );
-        let (_m, segs) = parse_session_segments(&p, &SegmentParams::default());
+        let (m, segs) = parse_session_segments(&p, &SegmentParams::default());
+        assert_eq!(
+            segs.len(),
+            1,
+            "expected exactly one segment, got {} (meta: total_records={}, user_turns={}, \
+             assistant_turns={}) — if this fires under `cargo test` parallel runs but not \
+             isolated, it's the long-standing intermittent flake (see git blame); rerun with \
+             `--test-threads=1` to confirm before treating as a real regression",
+            segs.len(),
+            m.total_records,
+            m.user_turns,
+            m.assistant_turns
+        );
         // Input was '...Z' (ms); output must be '...+00:00' (µs).
         assert!(segs[0].started_at.ends_with("+00:00"));
         assert!(!segs[0].started_at.contains('Z'));

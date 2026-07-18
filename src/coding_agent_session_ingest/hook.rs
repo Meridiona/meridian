@@ -32,7 +32,7 @@ pub async fn run_hook() {
     let jsonl_path = match extract_jsonl_path(&payload) {
         Some(p) => p,
         None => {
-            eprintln!("coding-agent-hook: could not determine JSONL path from payload");
+            tracing::warn!("coding-agent-hook: could not determine JSONL path from payload");
             return;
         }
     };
@@ -43,16 +43,16 @@ pub async fn run_hook() {
     let jsonl_path = match jsonl_path.canonicalize() {
         Ok(resolved) if within_accepted_roots(&resolved) => resolved,
         Ok(resolved) => {
-            eprintln!(
-                "coding-agent-hook: transcript path outside accepted roots: {}",
-                resolved.display()
+            tracing::warn!(
+                jsonl_path = %resolved.display(),
+                "coding-agent-hook: transcript path outside accepted roots"
             );
             return;
         }
         Err(_) => {
-            eprintln!(
-                "coding-agent-hook: transcript not found: {}",
-                jsonl_path.display()
+            tracing::warn!(
+                jsonl_path = %jsonl_path.display(),
+                "coding-agent-hook: transcript not found"
             );
             return;
         }
@@ -63,17 +63,17 @@ pub async fn run_hook() {
     let opts = match SqliteConnectOptions::from_str(&uri) {
         Ok(o) => o.create_if_missing(false),
         Err(e) => {
-            eprintln!("coding-agent-hook: bad db uri {}: {}", uri, e);
+            tracing::error!(uri, error = %e, "coding-agent-hook: bad db uri");
             return;
         }
     };
     let pool = match SqlitePool::connect_with(opts).await {
         Ok(p) => p,
         Err(e) => {
-            eprintln!(
-                "coding-agent-hook: open {} failed: {}",
-                db_path.display(),
-                e
+            tracing::error!(
+                db_path = %db_path.display(),
+                error = %e,
+                "coding-agent-hook: failed to open db"
             );
             return;
         }
@@ -81,10 +81,10 @@ pub async fn run_hook() {
 
     let outcome = register_session(&pool, &jsonl_path, true, Utc::now()).await;
     pool.close().await;
-    eprintln!(
-        "coding-agent-hook: {:?} for {}",
-        outcome,
-        jsonl_path.display()
+    tracing::info!(
+        outcome = ?outcome,
+        jsonl_path = %jsonl_path.display(),
+        "coding-agent-hook: session registered"
     );
 }
 

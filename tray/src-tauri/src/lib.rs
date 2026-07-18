@@ -550,6 +550,7 @@ pub fn run() {
             commands::draft_plan_task,
             commands::create_plan_task,
             commands::edit_plan_task,
+            commands::set_plan_task_done,
             commands::triage_decision,
             commands::triage_ignore,
             commands::apply_ticket_fix,

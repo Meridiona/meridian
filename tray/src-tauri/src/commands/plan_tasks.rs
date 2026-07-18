@@ -8,6 +8,7 @@
 //! - [`create_plan_task`] — create the task (personal, or filed on a tracker) and add
 //!   it to the day's plan.
 //! - [`edit_plan_task`] — rewrite a task's title/description, wherever it lives.
+//! - [`set_plan_task_done`] — tick/untick a task, wherever it lives.
 //!
 //! # Why these SHELL OUT
 //! The chosen LLM provider (`settings.json`) and tracker auth (`~/.meridian/.env`)
@@ -88,7 +89,16 @@ pub struct EditPlanTaskBody {
     pub description: Option<String>,
 }
 
-/// [`edit_plan_task`] response — mirrors `plan_tasks::edit::EditResult`.
+/// POST body for [`set_plan_task_done`].
+#[derive(Debug, Deserialize)]
+pub struct SetPlanTaskDoneBody {
+    pub task_key: String,
+    /// `true` = mark done, `false` = reopen.
+    pub done: bool,
+}
+
+/// [`edit_plan_task`] / [`set_plan_task_done`] response — mirrors
+/// `plan_tasks::edit::EditResult`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditResult {
     pub task_key: String,
@@ -176,5 +186,25 @@ pub async fn edit_plan_task(body: EditPlanTaskBody) -> Result<EditResult, String
 
     let res: EditResult = run_meridian_json(&args, WRITE_TIMEOUT, "plan-task-edit").await?;
     tracing::info!(status = %res.status, provider = %res.provider, "plan-task-edit served");
+    Ok(res)
+}
+
+/// Mark a task done / not-done. Spawns `meridian plan-task-done --key K --done B`.
+///
+/// This exists INSTEAD of the plan's checkbox calling `apply_ticket_fix` directly: that
+/// path goes straight to `ticket-update`, which only knows real trackers, so a personal
+/// (`provider = 'local'`) task failed with `provider "local" is not configured`. The
+/// CLI branches on who owns the task — see `src/plan_tasks/done.rs`.
+#[tauri::command]
+#[tracing::instrument(skip(body), fields(task_key = %body.task_key, done = body.done))]
+pub async fn set_plan_task_done(body: SetPlanTaskDoneBody) -> Result<EditResult, String> {
+    if body.task_key.trim().is_empty() {
+        return Err("a task key is required".to_string());
+    }
+    let done = if body.done { "true" } else { "false" };
+    let args: Vec<&str> = vec!["plan-task-done", "--key", &body.task_key, "--done", done];
+
+    let res: EditResult = run_meridian_json(&args, WRITE_TIMEOUT, "plan-task-done").await?;
+    tracing::info!(status = %res.status, provider = %res.provider, "plan-task-done served");
     Ok(res)
 }

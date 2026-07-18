@@ -8,15 +8,18 @@
 // shell's modal layer; it owns its own fetch, loading state, and
 // Escape/backdrop close. `inToday`/`canEdit`/`onAdd`/`onRemove` are optional
 // — only the daily-plan caller wires them, everyone else gets a read-only dialog.
+// A personal (provider 'local') task additionally gets an inline Edit affordance
+// for its title/description (see `editableTask`) — tracker-owned tickets never do.
 
 'use client'
 
 import { useEffect, useState } from 'react'
-import type { TaskDetail } from '@/lib/api-types'
+import { LOCAL_PROVIDER, type TaskDetail } from '@/lib/api-types'
 import { load, openExternal } from '@/lib/bridge'
+import { editTask } from '@/components/plan/useTaskComposer'
 
 export function TaskDetailDialog({
-  taskKey, fallbackTitle, onClose, inToday, canEdit = true, onAdd, onRemove,
+  taskKey, fallbackTitle, onClose, inToday, canEdit = true, onAdd, onRemove, day, editableTask = true,
 }: {
   taskKey: string
   fallbackTitle?: string
@@ -27,9 +30,25 @@ export function TaskDetailDialog({
   canEdit?: boolean
   onAdd?: () => void
   onRemove?: () => void
+  // The day this dialog was opened from — used to refresh that day's plan
+  // store after a title/description edit lands, so a "Today's focus" card
+  // showing this task updates without a manual poll.
+  day?: string
+  // Whether a personal (provider 'local') task's title/description can be
+  // rewritten from here. Defaults true; callers set it false when the task
+  // was opened from a PAST day's Today's-focus checklist — that day's plan
+  // is a record of what was focused on, not something to rewrite after the
+  // fact. Has no effect on tracker-owned tickets, which are never editable
+  // here regardless.
+  editableTask?: boolean
 }) {
   const [detail, setDetail] = useState<TaskDetail | null>(null)
   const [loading, setLoading] = useState(true)
+  const [editing, setEditing] = useState(false)
+  const [draftTitle, setDraftTitle] = useState('')
+  const [draftDescription, setDraftDescription] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
@@ -51,6 +70,30 @@ export function TaskDetailDialog({
     : detail.due_days < 0 ? `overdue ${-detail.due_days}d`
       : detail.due_days === 0 ? 'today' : detail.due_days === 1 ? 'tomorrow' : `in ${detail.due_days}d`
   const hasMeta = !!(detail?.epic || detail?.priority || detail?.story_points || detail?.due_date)
+  // Only a personal task's own text is ours to rewrite — a tracker-owned
+  // ticket's title/description stays read-only here (edit it in the tracker).
+  const isPersonal = detail?.provider === LOCAL_PROVIDER
+  const canEditText = isPersonal && editableTask
+
+  function startEdit() {
+    setDraftTitle(detail?.title ?? '')
+    setDraftDescription(detail?.description ?? '')
+    setSaveError(null)
+    setEditing(true)
+  }
+
+  function saveEdit() {
+    if (!draftTitle.trim() || saving) return
+    setSaving(true)
+    setSaveError(null)
+    editTask(day ?? '', taskKey, { title: draftTitle.trim(), description: draftDescription })
+      .then(() => {
+        setDetail(d => d && { ...d, title: draftTitle.trim(), description: draftDescription })
+        setEditing(false)
+      })
+      .catch(e => setSaveError(e instanceof Error ? e.message : 'Couldn’t save the task'))
+      .finally(() => setSaving(false))
+  }
 
   return (
     <div className="absolute inset-0 z-50 flex items-start justify-center p-6 sm:p-10 rise"
@@ -79,7 +122,13 @@ export function TaskDetailDialog({
               <span className="text-[16px] leading-none">×</span>
             </button>
           </div>
-          <p className="mt-modal-title text-title">{title}</p>
+          {editing ? (
+            <input autoFocus value={draftTitle} onChange={e => setDraftTitle(e.target.value)}
+              placeholder="Task title" className="mt-modal-title text-title w-full bg-transparent outline-none"
+              style={{ border: '1px solid var(--t-ctrl-border)', borderRadius: 8, padding: '4px 8px' }} />
+          ) : (
+            <p className="mt-modal-title text-title">{title}</p>
+          )}
           {hasMeta && (
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2.5">
               {detail?.epic && <MetaBit label="Epic" value={detail.epic} />}
@@ -99,10 +148,18 @@ export function TaskDetailDialog({
             <>
               <div>
                 <p className="mt-label mb-2" style={{ color: 'var(--t-faint)' }}>Description</p>
-                {detail?.description?.trim() ? (
+                {editing ? (
+                  <textarea autoFocus={false} value={draftDescription} onChange={e => setDraftDescription(e.target.value)}
+                    placeholder="Add a description…" rows={5}
+                    className="mt-body w-full bg-transparent outline-none resize-none"
+                    style={{ color: 'var(--t-muted)', border: '1px solid var(--t-ctrl-border)', borderRadius: 8, padding: '8px 10px' }} />
+                ) : detail?.description?.trim() ? (
                   <p className="mt-body whitespace-pre-wrap" style={{ color: 'var(--t-muted)' }}>{detail.description}</p>
                 ) : (
                   <p className="mt-body-sm italic" style={{ color: 'var(--t-faint-2)' }}>No description on this ticket.</p>
+                )}
+                {editing && saveError && (
+                  <p className="mt-body-sm mt-2" style={{ color: 'var(--color-state-pending)' }}>{saveError}</p>
                 )}
               </div>
               {detail?.acceptance_criteria && (
@@ -115,8 +172,28 @@ export function TaskDetailDialog({
           )}
         </div>
 
-        {(detail?.url || onAdd || onRemove) && (
+        {(detail?.url || onAdd || onRemove || canEditText) && (
           <div className="px-7 py-5 border-t shrink-0 flex items-center gap-2.5" style={{ borderColor: 'var(--t-hair)' }}>
+            {canEditText && (editing ? (
+              <>
+                <button onClick={saveEdit} disabled={saving || !draftTitle.trim()}
+                  className="mt-body-sm px-3.5 py-2 rounded-lg"
+                  style={{ background: 'var(--color-state-approved)', color: '#fff', opacity: saving || !draftTitle.trim() ? 0.6 : 1 }}>
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+                <button onClick={() => setEditing(false)} disabled={saving}
+                  className="mt-body-sm px-3.5 py-2 rounded-lg bg-ctrl"
+                  style={{ border: '1px solid var(--t-ctrl-border)', color: 'var(--t-muted)' }}>
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button onClick={startEdit}
+                className="mt-body-sm px-3.5 py-2 rounded-lg bg-ctrl"
+                style={{ border: '1px solid var(--t-ctrl-border)', color: 'var(--t-muted)' }}>
+                Edit
+              </button>
+            ))}
             {canEdit && (inToday ? (onRemove && (
               <button onClick={() => { onRemove(); onClose() }}
                 className="mt-body-sm px-3.5 py-2 rounded-lg bg-ctrl"
