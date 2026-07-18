@@ -10,9 +10,8 @@
 // What it locks in (the behaviour PR "click Capturing to show app status" added):
 //   1. The health panel is hidden until toggled.
 //   2. Clicking / toggling head-sub reveals it and flips aria-expanded.
-//   3. refreshHealth() paints the daemon / MLX / database rows + status dots
-//      from the get_daemon_status / get_mlx_status / get_health responses,
-//      including the snake_case MlxStatus contract ("running" → green "Running").
+//   3. refreshHealth() paints the daemon / database rows + status dots
+//      from the get_daemon_status / get_health responses.
 //   4. A null (unreachable) command result degrades to a "bad" dot, never throws.
 //
 // app.js self-exposes { render, toggleHealth, refreshHealth, paint* } on
@@ -59,7 +58,6 @@ interface Popover {
   toggleHealth: () => void
   refreshHealth: () => Promise<void>
   paintDaemon: (r: unknown) => void
-  paintMlx: (r: unknown) => void
   paintDb: (r: unknown) => void
 }
 
@@ -114,14 +112,11 @@ describe('popover health panel', () => {
     expect(document.getElementById('head-sub')?.getAttribute('aria-expanded')).toBe('false')
   })
 
-  it('paints all-healthy state: daemon running, MLX running (snake_case), db ready', async () => {
+  it('paints all-healthy state: daemon running, db ready', async () => {
     invokeImpl = async (cmd) => {
       switch (cmd) {
         case 'get_daemon_status':
           return { running: true, pid: 4242 }
-        case 'get_mlx_status':
-          // Mirrors MlxStatusResponse: MlxStatus serializes snake_case → "running".
-          return { status: 'running', port: 7823, runtime_installed: true }
         case 'get_health':
           return { database_ready: true }
         default:
@@ -132,8 +127,6 @@ describe('popover health panel', () => {
 
     expect(dot('hp-daemon-dot')).toBe('ok')
     expect(text('hp-daemon-val')).toBe('Running (pid 4242)')
-    expect(dot('hp-mlx-dot')).toBe('ok')
-    expect(text('hp-mlx-val')).toBe('Running (port 7823)')
     expect(dot('hp-db-dot')).toBe('ok')
     expect(text('hp-db-val')).toBe('Ready')
   })
@@ -146,23 +139,11 @@ describe('popover health panel', () => {
     expect(text('hp-daemon-val')).toBe('Not running')
   })
 
-  it('paints "Runtime not installed" (warn) when MLX is offline with no runtime', async () => {
-    invokeImpl = async (cmd) =>
-      cmd === 'get_mlx_status'
-        ? { status: 'offline', port: 7823, runtime_installed: false }
-        : null
-    await popover().refreshHealth()
-    expect(dot('hp-mlx-dot')).toBe('warn')
-    expect(text('hp-mlx-val')).toBe('Runtime not installed')
-  })
-
   it('degrades to "Unreachable" (bad dot) when a command returns null, never throws', async () => {
     invokeImpl = async () => null
     await popover().refreshHealth()
     expect(dot('hp-daemon-dot')).toBe('bad')
     expect(text('hp-daemon-val')).toBe('Unreachable')
-    expect(dot('hp-mlx-dot')).toBe('bad')
-    expect(text('hp-mlx-val')).toBe('Unreachable')
     expect(dot('hp-db-dot')).toBe('bad')
     expect(text('hp-db-val')).toBe('Unreachable')
   })
@@ -173,17 +154,5 @@ describe('popover health panel', () => {
     await popover().refreshHealth()
     expect(dot('hp-db-dot')).toBe('bad')
     expect(text('hp-db-val')).toBe('disk I/O error')
-  })
-
-  it('surfaces the MLX Error(String) message, not a bare "Error"', async () => {
-    // MlxStatus::Error(String) serializes externally-tagged snake_case →
-    // { status: { error: "<msg>" } }. The row should show the message.
-    invokeImpl = async (cmd) =>
-      cmd === 'get_mlx_status'
-        ? { status: { error: 'model failed to load' }, port: 7823, runtime_installed: true }
-        : null
-    await popover().refreshHealth()
-    expect(dot('hp-mlx-dot')).toBe('bad')
-    expect(text('hp-mlx-val')).toBe('Error: model failed to load')
   })
 })

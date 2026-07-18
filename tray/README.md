@@ -1,6 +1,6 @@
 # Meridian Tray App
 
-A Tauri-based macOS menu bar application that owns screen capture, serves the embedded dashboard, supervises the MLX runtime, and drives the live data streams the UI consumes.
+A Tauri-based macOS menu bar application that owns screen capture, serves the embedded dashboard, and drives the live data streams the UI consumes.
 
 ## Architecture (v1.64.0+)
 
@@ -14,7 +14,6 @@ Tauri tray binary
 │     └── frontend reaches Rust via Tauri invoke / events only
 ├── Poll loop (every 30 s)
 │     ├── refreshes health, active session, today stats, worklog drafts
-│     ├── supervises the MLX server (restart budget + cooling period)
 │     └── emits Tauri events: status-update, health-update, notices-update …
 └── meridian-core readers (shared with the daemon)
       └── DB reads for dashboard commands — no HTTP, no Node
@@ -24,9 +23,8 @@ Tauri tray binary
 
 | Path | What it is |
 |---|---|
-| `src-tauri/src/poll/` | Background poll loop — tick cadence, health/session/worklog refresh, MLX supervision, live Tauri event emission |
+| `src-tauri/src/poll/` | Background poll loop — tick cadence, health/session/worklog refresh, live Tauri event emission |
 | `src-tauri/src/commands/` | `#[tauri::command]` surface, grouped by domain: `dashboard.rs` (DB reads), `daemon.rs`, `setup.rs`, `system.rs`, … |
-| `src-tauri/src/mlx_server.rs` | MLX child-process lifecycle — resolve, spawn, health-check, supervise, auto-upgrade |
 | `src-tauri/src/tray.rs` | Menu builder + menu-event dispatch + window openers |
 | `src-tauri/src/capture/` | In-process screen / a11y capture wired to the forked screenpipe-screen / screenpipe-a11y crates |
 | `src/` | Popover HTML/CSS/JS (lightweight web UI rendered in the menu-bar window) |
@@ -34,10 +32,10 @@ Tauri tray binary
 ## Development
 
 ```bash
-# From repo root — starts daemon + MLX + tray with hot reload in 3 Terminal windows
+# From repo root — starts daemon + tray with hot reload in 2 Terminal windows
 bash dev-start.sh
 
-# Or run the tray alone (daemon + MLX must already be running)
+# Or run the tray alone (daemon must already be running)
 cd tray
 npm install
 npm run tauri dev
@@ -93,7 +91,3 @@ launchctl kickstart -k gui/$(id -u)/com.meridiona.tray
 **Capture not recording (no frames in `capture_frames`)**
 - Grant **Screen Recording** and **Accessibility** to **Meridian** in System Settings → Privacy & Security.
 - In dev mode, run `meridian doctor` — `capture.frames` shows the frame count and `capture.freshness` shows how recent the latest frame is.
-
-**MLX server stuck / not classifying**
-- `meridian logs mlx-server -f` — look for startup errors.
-- The tray supervises the MLX server with a 5-restart budget + 10-tick (~10 min) cooling period before retrying. A persistent failure usually means the runtime needs re-downloading: `meridian setup download-runtime`.

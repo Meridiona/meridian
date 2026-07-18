@@ -25,7 +25,7 @@
 //!   / `ticket-set-status`) for the dashboard's status control.
 //! - [`tasks`]     — board re-sync action (`/api/tasks/sync`, spawns `meridian`).
 //! - [`triage`]    — cleanup working set + the decision/ignore DB writes.
-//! - [`setup`]     — first-run detection, permission probes, MLX status/start.
+//! - [`setup`]     — first-run detection, permission probes, provider detection.
 //! - [`uninstall`] — the in-app uninstall wizard's plan + execute commands.
 //! - [`day_summary`] — the AI-composed end-of-day review (generate / read / its data).
 //! - [`version`]   — installed vs. published version (`/api/version`).
@@ -35,7 +35,6 @@
 //! # Related
 //! - [`crate::install`] — install-mode + db-path resolution the commands consume.
 //! - [`crate::sys`] — shared uid / notify / ui_base helpers.
-//! - [`crate::mlx_server`] — the MLX process manager the setup commands drive.
 
 pub mod account;
 pub mod app_icons;

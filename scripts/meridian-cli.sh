@@ -9,13 +9,12 @@ case "$SELF" in /*) ;; *) SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 REPO_ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 
 # --- constants ---
-LABEL_SCREENPIPE="com.meridiona.screenpipe"
 LABEL_DAEMON="com.meridiona.daemon"
-LABEL_MLX="com.meridiona.mlx-server"
 # Capture runs in-process in the tray (no screenpipe launchd agent since Bucket-2).
-# Jira worklogs and coding-agent ingest run inside the Rust daemon — no
-# separate launchd agents. Only these two are managed.
-readonly LABELS=("${LABEL_DAEMON}" "${LABEL_MLX}")
+# Jira worklogs and coding-agent ingest run inside the Rust daemon, and generation
+# goes through the user's chosen AI CLI — no separate launchd agents. Only the
+# daemon is managed here.
+readonly LABELS=("${LABEL_DAEMON}")
 GUI_TARGET="gui/$(id -u)"
 LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 LOG_DIR="${HOME}/.meridian/logs"
@@ -35,24 +34,23 @@ Usage:
   meridian <command> [options]
 
 Commands:
-  start              Start all daemons (screenpipe, daemon, ui, mlx-server)
-  stop               Stop all daemons (also kills orphaned mlx_lm.server processes)
+  start              Start the Rust daemon
+  stop               Stop the Rust daemon
   restart            Stop, wait 1s, start
-  status             Show running state of all daemons
+  status             Show running state
   logs [target]      Tail log files
-                     target: daemon|daemon-error|mlx-server|mlx-server-error|tray|tray-error
+                     target: daemon|daemon-error|tray|tray-error
     -f               Follow (stream)
     -n N             Last N lines (default 100)
-  doctor             Run environment health checks (includes pipeline smoke)
-  smoke              Dry-run both LLM pipeline stages — no DB writes
+  doctor             Run environment health checks
   migrate-db         Apply pending database migrations (if UI shows schema errors)
   worklog-status     Show today's PM worklogs (done/pending/drafted/posted + comments)
                      [--day YYYY-MM-DD]
   config edit        Open the repo-root .env in $EDITOR
   oauth-login jira   Connect Jira via your browser (OAuth — no API token)
-  permissions        Open macOS permission panes for screenpipe
+  permissions        Open macOS permission panes for Meridian
   update             Pull latest changes, rebuild, and restart (source checkout only)
-  uninstall          Stop daemons and remove CLI symlinks
+  uninstall          Stop the daemon and remove CLI symlinks
   version            Print installed version
   --help | -h        Show this help
 EOF
@@ -60,12 +58,9 @@ EOF
     if [[ -f "${REPO_ROOT}/Cargo.toml" ]]; then
         cat <<'EOF'
 
-Dev (source checkout — builds from this repo, MLX stays loaded):
-  dev                Backing services up (bg) + UI dev server in foreground (hot reload)
-  dev ui             UI dev server only — hot reload, foreground (Ctrl-C to stop)
-  dev daemon         Rebuild Rust + restart the daemon (bg)   ← backend loop (2nd terminal)
-  dev mlx            Restart only the MLX server (reloads the model)
-  dev screenpipe     Restart only screenpipe
+Dev (source checkout — builds from this repo):
+  dev                Start the full dev environment: Rust daemon (cargo-watch,
+                     rebuilds on save) + Tauri tray (hot reload) in 2 windows
   dev build          Production build of daemon + UI (verify the shipped build; no run)
 EOF
     fi
@@ -105,12 +100,6 @@ cmd_stop() {
         set -e
         info "stopped ${label}"
     done
-    # Kill any orphaned mlx_lm.server processes spawned by the old LLM selector
-    # script (not tracked by launchd — must be killed directly).
-    if pgrep -f "mlx_lm.server" >/dev/null 2>&1; then
-        pkill -f "mlx_lm.server" 2>/dev/null || true
-        info "killed orphaned mlx_lm.server process(es)"
-    fi
     # Kill any orphaned dev-build daemons (`cargo watch`/`cargo run --bin
     # meridian` from dev-start.sh, or a bare `cargo run`) — not tracked by
     # launchd, so `bootout` above never touches them. Closing the Terminal
@@ -171,13 +160,12 @@ cmd_status() {
 # --- logs ---
 # Resolve the compiled `meridian` binary (distinct from THIS bash wrapper,
 # which is what gets invoked as `meridian` on PATH). Mirrors
-# tray/src-tauri/src/install.rs's `meridian_bin()`: packaged native locations
+# tray/src-tauri/src/install.rs's `meridian_bin()`: the packaged native location
 # first, a dev build only for a source checkout.
 _meridian_native_bin() {
     local p
-    for p in "${HOME}/.meridian/bin/meridian" "${HOME}/.meridian/app/bin/meridian"; do
-        [[ -x "$p" ]] && { echo "$p"; return 0; }
-    done
+    p="${HOME}/.meridian/bin/meridian"   # DMG-staged native binary
+    [[ -x "$p" ]] && { echo "$p"; return 0; }
     if _is_source_checkout; then
         for p in "${REPO_ROOT}/target/release/meridian" "${REPO_ROOT}/target/debug/meridian"; do
             [[ -x "$p" ]] && { echo "$p"; return 0; }
@@ -207,8 +195,6 @@ cmd_logs() {
         ""|all)                     ;;
         daemon)                     service_args=(--service meridian-rust) ;;
         daemon-error)               service_args=(--service meridian-rust --min-severity WARN) ;;
-        mlx-server)                 service_args=(--service meridian-mlx-server) ;;
-        mlx-server-error)           service_args=(--service meridian-mlx-server --min-severity WARN) ;;
         tray)                       service_args=(--service meridian-tray) ;;
         tray-error)                 service_args=(--service meridian-tray --min-severity WARN) ;;
         screenpipe|screenpipe-error|ui|ui-error)
@@ -231,7 +217,7 @@ cmd_logs() {
             # expansion entirely when the array is empty/unset.
             exec tail -n "$lines" ${follow[@]+"${follow[@]}"} "$log_file"
             ;;
-        *) err "unknown log target: ${target} (daemon|mlx-server|tray, or omit for all)"; exit 1 ;;
+        *) err "unknown log target: ${target} (daemon|tray, or omit for all)"; exit 1 ;;
     esac
 
     local bin
@@ -243,7 +229,7 @@ cmd_logs() {
 
 # --- doctor ---
 # The daemon binary owns the comprehensive, colourised, by-daemon health table
-# (system, meridian daemon, screenpipe, mlx-server, jira, ui, mcp). The wrapper
+# (system, meridian daemon, capture, jira, coding-agent CLIs, mcp). The wrapper
 # just delegates to it; if that binary is missing or stale, a minimal bash-only
 # fallback runs so `meridian doctor` always produces something useful.
 
@@ -296,16 +282,11 @@ cmd_doctor() {
         set -e
         # 0 = healthy, 1 = critical issues found — both are real doctor runs.
         if [[ $rc -eq 0 || $rc -eq 1 ]]; then
-            # Append classification smoke (fast path, ~30s max). Failures are
-            # informational — they don't override the doctor exit code, since the
-            # doctor already surfaces the MLX health state.
-            cmd_smoke --classify-only || true
             return $rc
         fi
         warn "health engine timed out or is stale — rebuild: cargo build --release"
     fi
     _doctor_fallback
-    cmd_smoke --classify-only || true
 }
 
 # Minimal bash-only checks for when the daemon binary is unavailable.
@@ -318,177 +299,12 @@ _doctor_fallback() {
     _row "$([[ -f "${REPO_ROOT}/.env" ]] && echo ok || echo fail)" "config (.env)" ""
     _group "services (plists)"
     _plist_row "$LABEL_DAEMON" "daemon plist"
-    _plist_row "$LABEL_SCREENPIPE" "screenpipe plist"
-    _plist_row "$LABEL_MLX" "mlx plist"
     _group "builds"
     _row "$([[ -f "${REPO_ROOT}/packages/meridian-mcp/dist/index.js" ]] && echo ok || echo fail)" "mcp built" ""
     _row "$([[ -d "${REPO_ROOT}/ui/.next" ]] && echo ok || echo fail)" "ui built" ""
     echo
     _row info "next step" "cargo build --release && meridian doctor"
     [[ $DOCTOR_FAILURES -eq 0 ]]
-}
-
-# --- smoke (pipeline dry run) ---
-# Sends synthetic requests (no DB writes) to both LLM stages:
-#   --classify-only  fast path (~30s max) called automatically from cmd_doctor
-#   (no flag)        full run: classification + worklog synthesis
-
-_smoke_read_env() {
-    local key="$1" env_file="${REPO_ROOT}/.env"
-    [[ -f "$env_file" ]] || return 0
-    grep -E "^${key}=" "$env_file" 2>/dev/null | tail -1 | cut -d= -f2- || true
-}
-
-_smoke_row() {  # glyph ansi-color label detail
-    local glyph="$1" color="$2" label="$3" detail="${4:-}"
-    if [[ -t 1 ]]; then
-        printf "    \033[%sm%s\033[0m  %-26s \033[2m%s\033[0m\n" "$color" "$glyph" "$label" "$detail"
-    else
-        printf "    %s  %-26s %s\n" "$glyph" "$label" "$detail"
-    fi
-}
-
-_smoke_remedy() {
-    local msg="$1"
-    if [[ -t 1 ]]; then printf "       \033[2m→ %s\033[0m\n" "$msg"
-    else printf "       → %s\n" "$msg"; fi
-}
-
-cmd_smoke() {
-    local classify_only=0
-    [[ "${1:-}" == "--classify-only" ]] && classify_only=1
-
-    local mlx_port
-    mlx_port="$(_smoke_read_env MLX_SERVER_PORT)"
-    mlx_port="${mlx_port:-7823}"
-    local base="http://127.0.0.1:${mlx_port}"
-    local classify_timeout=180
-    [[ $classify_only -eq 1 ]] && classify_timeout=180
-    local all_ok=1
-
-    if [[ -t 1 ]]; then
-        printf "\n  \033[36m▸ smoke (pipeline dry run)\033[0m\n"
-        printf "  \033[2m%s\033[0m\n" "════════════════════════════════════════════════════════"
-    else
-        printf "\n  ▸ smoke (pipeline dry run)\n"
-        printf "  %s\n" "════════════════════════════════════════════════════════"
-    fi
-
-    # Hardware that can never run MLX (recorded by the installers): skip the
-    # probe instead of failing with a remedy that cannot work.
-    if grep -q '^mlx=unsupported_intel_hardware$' "${HOME}/.meridian/capabilities" 2>/dev/null; then
-        _smoke_row "·" "2" "mlx" "unsupported on this hardware (Intel Mac) — smoke skipped"
-        echo ""
-        return 0
-    fi
-
-    # Quick reachability probe — if the server isn't up, nothing else can run.
-    local reach_ok=0
-    set +e
-    curl -sf --max-time 5 "${base}/health" >/dev/null 2>&1 && reach_ok=1
-    set -e
-    if [[ $reach_ok -eq 0 ]]; then
-        _smoke_row "✗" "31" "mlx reachable" "server not responding at ${base}"
-        _smoke_remedy "meridian start  (or: meridian logs mlx-server)"
-        echo ""
-        return 1
-    fi
-
-    # Stage 1: classification smoke.
-    # POST /classify takes {"input":"..."} — pure model inference, zero DB access.
-    local t0 classify_resp classify_ok=0
-    t0=$SECONDS
-    set +e
-    classify_resp="$(curl -sf --max-time "${classify_timeout}" \
-        -X POST "${base}/classify" \
-        -H "Content-Type: application/json" \
-        -d '{"input":"App: Xcode\nWindow: ContentView.swift — MyApp\nOCR: func body: some View { Text(\"Hello World\") }\nDuration: 600s"}' \
-        2>/dev/null)"
-    local classify_curl_rc=$?
-    set -e
-    local classify_elapsed=$(( SECONDS - t0 ))
-
-    if [[ $classify_curl_rc -ne 0 || -z "$classify_resp" ]]; then
-        _smoke_row "✗" "31" "classification" "no response from /classify (timeout or error)"
-        _smoke_remedy "check: meridian logs mlx-server"
-        all_ok=0
-    else
-        local stype conf
-        stype="$(printf '%s' "$classify_resp" | grep -o '"session_type":"[^"]*"' | cut -d'"' -f4)" || stype=""
-        conf="$(printf '%s' "$classify_resp" | grep -o '"confidence":[0-9.]*' | cut -d: -f2)" || conf="?"
-        if [[ -n "$stype" ]]; then
-            _smoke_row "✓" "32" "classification" "${classify_elapsed}s  session_type=${stype}  conf=${conf}"
-            classify_ok=1
-        else
-            _smoke_row "✗" "31" "classification" "response did not parse — got: ${classify_resp:0:80}"
-            _smoke_remedy "restart MLX server: meridian dev mlx  (or: meridian restart)"
-            all_ok=0
-        fi
-    fi
-
-    # Fast path (called from cmd_doctor): stop here.
-    if [[ $classify_only -eq 1 ]]; then
-        echo ""
-        [[ $classify_ok -eq 1 ]]
-        return
-    fi
-
-    # Stage 2: worklog synthesis smoke.
-    # POST /synthesise_worklog with a synthetic bundle — the agno agent runs the model
-    # and returns a JiraUpdate. Nothing is written to the DB; Rust never sees this call.
-    local jira_url jira_token linear_key github_token has_pm=0
-    jira_url="$(_smoke_read_env JIRA_BASE_URL)"
-    [[ -z "$jira_url" ]] && jira_url="$(_smoke_read_env JIRA_URL)"
-    jira_token="$(_smoke_read_env JIRA_API_TOKEN)"
-    linear_key="$(_smoke_read_env LINEAR_API_KEY)"
-    github_token="$(_smoke_read_env GITHUB_TOKEN)"
-    [[ -n "$jira_url" && -n "$jira_token" ]] && has_pm=1
-    [[ -n "$linear_key" ]] && has_pm=1
-    [[ -n "$github_token" ]] && has_pm=1
-
-    if [[ $has_pm -eq 0 ]]; then
-        _smoke_row "·" "2" "worklog synthesis" "skipped — no PM credentials in .env"
-        echo ""
-        [[ $all_ok -eq 1 ]]
-        return
-    fi
-
-    # Dates are fixed to 2024-01-01 so the output is obviously synthetic.
-    local synth_bundle
-    synth_bundle='{"bundle":{"task_key":"SMOKE-1","window_start":"2024-01-01T09:00:00","window_end":"2024-01-01T09:30:00","cycle_index":0,"sessions":[{"id":1,"app_name":"Xcode","started_at":"2024-01-01T09:00:00","ended_at":"2024-01-01T09:30:00","duration_s":1800,"idle_frame_s":0,"top_titles":["ContentView.swift — MyApp"],"excerpt":"Implementing SwiftUI body layout. func body: some View { Text(\"Hello World\") }","category":"coding"}],"total_seconds":1800,"real_seconds":1800,"pm_task_title":"Implement ContentView layout"}}'
-
-    local t1 synth_resp synth_ok=0
-    t1=$SECONDS
-    set +e
-    synth_resp="$(curl -sf --max-time 120 \
-        -X POST "${base}/synthesise_worklog" \
-        -H "Content-Type: application/json" \
-        -d "$synth_bundle" \
-        2>/dev/null)"
-    local synth_curl_rc=$?
-    set -e
-    local synth_elapsed=$(( SECONDS - t1 ))
-
-    if [[ $synth_curl_rc -ne 0 || -z "$synth_resp" ]]; then
-        _smoke_row "✗" "31" "worklog synthesis" "no response from /synthesise_worklog (timeout or error)"
-        _smoke_remedy "check: meridian logs mlx-server"
-        all_ok=0
-    elif printf '%s' "$synth_resp" | grep -q '"summary"'; then
-        local bullets conf2
-        bullets="$(printf '%s' "$synth_resp" | grep -o '"text":' | wc -l | tr -d ' ')" || bullets="?"
-        conf2="$(printf '%s' "$synth_resp" | grep -o '"confidence":[0-9.]*' | cut -d: -f2)" || conf2="?"
-        _smoke_row "✓" "32" "worklog synthesis" "${synth_elapsed}s  bullets=${bullets}  conf=${conf2}"
-        synth_ok=1
-    else
-        _smoke_row "✗" "31" "worklog synthesis" "response missing summary — got: ${synth_resp:0:80}"
-        _smoke_remedy "restart MLX server: meridian dev mlx  (or: meridian restart)"
-        all_ok=0
-        synth_ok=0  # explicitly mark unused var for clarity
-        : "$synth_ok"
-    fi
-
-    echo ""
-    [[ $all_ok -eq 1 ]]
 }
 
 # --- config ---
@@ -522,8 +338,8 @@ cmd_update() {
         cmd_restart
         ok "updated to $(cat "${REPO_ROOT}/VERSION" 2>/dev/null || git -C "${REPO_ROOT}" rev-parse --short HEAD)"
     else
-        err "meridian update is not available in a source checkout context."
-        err "Run: npm install -g @meridiona/meridian@latest"
+        err "meridian update is only for a source checkout."
+        err "Packaged installs update themselves from within the Meridian app."
         exit 1
     fi
 }
@@ -531,7 +347,7 @@ cmd_update() {
 # --- uninstall ---
 cmd_uninstall() {
     local ans
-    read -r -p "This will stop all daemons, remove the app bundle, venv, npm package, and CLI symlinks. Your data (~/.meridian/*.db, logs) will NOT be deleted. Continue? [y/N] " ans
+    read -r -p "This will stop the daemon, remove the app bundle and CLI symlinks (plus any leftover runtime/models from older versions). Your data (~/.meridian/*.db, logs) will NOT be deleted. Continue? [y/N] " ans
     if [[ "$ans" != "y" && "$ans" != "Y" ]]; then
         printf "(cancelled)\n"
         exit 0
@@ -539,18 +355,19 @@ cmd_uninstall() {
 
     set +e
 
-    # 1. Stop and remove all launchd agents
-    bash "${REPO_ROOT}/scripts/uninstall-ui-daemon.sh" 2>/dev/null
-    bash "${REPO_ROOT}/services/scripts/uninstall-mlx-server-daemon.sh" 2>/dev/null
+    # 1. Stop and remove all launchd agents (incl. legacy ones from old versions:
+    #    the standalone UI server + MLX server no longer exist, but boot out any
+    #    leftover agent from an install that predates their removal).
     bash "${REPO_ROOT}/scripts/uninstall-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-screenpipe-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-tray-daemon.sh" 2>/dev/null
     bash "${REPO_ROOT}/scripts/uninstall-openobserve-daemon.sh" 2>/dev/null
-    # a11y-helper plist
-    launchctl bootout "${GUI_TARGET}/com.meridiona.a11y-helper" 2>/dev/null || true
-    rm -f "${HOME}/Library/LaunchAgents/com.meridiona.a11y-helper.plist"
+    for _legacy in com.meridiona.mlx-server com.meridiona.ui com.meridiona.a11y-helper; do
+        launchctl bootout "${GUI_TARGET}/${_legacy}" 2>/dev/null || true
+        rm -f "${HOME}/Library/LaunchAgents/${_legacy}.plist"
+    done
 
-    # 2. Kill any orphaned processes
+    # 2. Kill any orphaned processes (legacy MLX server)
     pkill -f "mlx_lm.server" 2>/dev/null || true
 
     # 3. Remove CLI symlinks
@@ -568,9 +385,11 @@ cmd_uninstall() {
           "${HOME}/.meridian/bin/meridian-a11y-helper"
     rmdir "${HOME}/.meridian/bin" 2>/dev/null || true
 
-    # 5a. Remove runtime assets (venv, Node runtime, node-runtime meta)
+    # 5a. Remove leftover runtime assets from older versions (the Python venv,
+    #     bundled Node runtime, model runtime) — no longer created, cleaned up here.
     rm -rf "${HOME}/.meridian/mlx-server-venv"
     rm -rf "${HOME}/.meridian/node-runtime"
+    rm -rf "${HOME}/.meridian/runtime"
     rm -f  "${HOME}/.meridian/py-src.sha256" \
            "${HOME}/.meridian/doctor-bundle.txt" \
            "${HOME}/.meridian/.component-hashes"
@@ -578,8 +397,8 @@ cmd_uninstall() {
     # 5b. Remove OAuth token store (user credentials — deleted on uninstall)
     rm -rf "${HOME}/.meridian/oauth"
 
-    # 6. Uninstall the npm package
-    npm uninstall -g @meridiona/meridian 2>/dev/null || true
+    # 6. Uninstall the legacy npm package, if this machine has an old npm install.
+    command -v npm >/dev/null 2>&1 && npm uninstall -g @meridiona/meridian 2>/dev/null || true
 
     # 7. Remove the Claude Code SessionEnd hook
     local settings="${HOME}/.claude/settings.json"
@@ -625,35 +444,27 @@ PYEOF
 
     ok "Meridian uninstalled"
     printf "  Kept: ~/.meridian/meridian.db, ~/.meridian/logs/ (your data)\n"
-    printf "  Removed: app bundle, venv, Node runtime, OAuth tokens, CLI\n"
-    printf "  Kept: screenpipe itself (uninstall separately if desired: brew uninstall screenpipe)\n"
+    printf "  Removed: app bundle, OAuth tokens, CLI symlinks, and any leftover runtime/models\n"
 }
 
 # --- permissions ---
 cmd_permissions() {
-    local sp_bin="${HOME}/.meridian/bin/screenpipe"
-    info "screenpipe needs three macOS permissions to record activity"
-    echo "    binary path: ${sp_bin}"
+    info "Meridian needs two macOS permissions to capture activity (granted to the"
+    info "Meridian tray app, which captures in-process):"
     echo
-    echo "    Screen Recording + Accessibility panes: click '+' → ⌘⇧G → paste"
-    echo "    the path above → Open → toggle ON."
-    echo "    Microphone pane has no '+'. screenpipe will appear there only after"
-    echo "    it tries to use the mic — then toggle it ON. If it isn't listed yet,"
-    echo "    grant Screen Recording first and screenpipe will request mic access."
+    echo "    • Screen Recording   • Accessibility"
     echo
-    read -r -p "  Press Enter to open Screen Recording pane (1/3)… " _
+    echo "    In each pane: click '+' → ⌘⇧G → paste the Meridian.app path → Open → toggle ON."
+    echo
+    read -r -p "  Press Enter to open Screen Recording pane (1/2)… " _
     open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
     read -r -p "  Press Enter when Screen Recording is granted… " _
     ok "Screen Recording acknowledged"
-    read -r -p "  Press Enter to open Accessibility pane (2/3)… " _
+    read -r -p "  Press Enter to open Accessibility pane (2/2)… " _
     open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
     read -r -p "  Press Enter when Accessibility is granted… " _
     ok "Accessibility acknowledged"
-    read -r -p "  Press Enter to open Microphone pane (3/3, optional)… " _
-    open "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
-    read -r -p "  Press Enter when Microphone is granted (or skip if screenpipe isn't listed yet)… " _
-    ok "Microphone acknowledged"
-    info "After granting permissions, restart screenpipe:"
+    info "After granting permissions, restart the daemon:"
     echo "    meridian restart"
 }
 
@@ -673,79 +484,14 @@ cmd_daemon_passthrough() {
 }
 
 # --- dev (source checkout only) ---
-# Build from THIS repo and restart only what changed. The daemon's launchd plist
-# runs ~/.local/bin/meridian-daemon -> target/release/meridian, so a release
-# build is picked up in place. Gated on Cargo.toml: a prebuilt install (bundle at
-# ~/.meridian/app) has no source, so these are hidden/disabled there.
+# `meridian dev` runs the full watch/hot-reload environment (dev-start.sh:
+# cargo-watch daemon + `tauri dev` tray, debug builds, no launchd). `dev build`
+# does a one-off release build to verify the shipped bundle. Gated on Cargo.toml:
+# a prebuilt install has no source, so these are hidden/disabled there.
 _is_source_checkout() { [[ -f "${REPO_ROOT}/Cargo.toml" ]]; }
-
-# Bring a service up-to-date: ensure it's loaded (enable + bootstrap), then
-# (re)start it so a fresh build is picked up. Works whether it was stopped,
-# booted out, or already running — the same sequence cmd_start uses.
-_dev_up() {
-    local label="$1"
-    local plist="${LAUNCH_AGENTS}/${label}.plist"
-    if [[ ! -f "$plist" ]]; then
-        warn "${label} not installed — run ./install.sh"
-        return 0
-    fi
-    set +e
-    launchctl enable "${GUI_TARGET}/${label}" 2>/dev/null
-    launchctl bootstrap "${GUI_TARGET}" "$plist" 2>/dev/null
-    launchctl kickstart -k "${GUI_TARGET}/${label}" 2>/dev/null
-    local rc=$?
-    set -e
-    if [[ $rc -eq 0 ]]; then
-        ok "(re)started ${label}"
-    else
-        warn "${label} failed to start — check: meridian logs ${label#com.meridiona.}"
-    fi
-}
-
-# Start a service ONLY if it isn't already up — never reloads a live process
-# (so the ~6 GB MLX model isn't reloaded when it's already serving).
-_dev_ensure() {
-    local label="$1"
-    if launchctl print "${GUI_TARGET}/${label}" >/dev/null 2>&1; then
-        ok "${label} already up (left as-is)"
-    else
-        _dev_up "$label"
-    fi
-}
-
-# The daemon hard-exits if the MLX server isn't reachable, so wait for /health
-# before (re)starting it. Returns immediately if MLX is already serving.
-_dev_wait_mlx() {
-    local port="${MLX_SERVER_PORT:-7823}" w=0
-    info "waiting for MLX server (port ${port}) to answer…"
-    until curl -sf "http://127.0.0.1:${port}/health" >/dev/null 2>&1; do
-        sleep 2; w=$((w+2))
-        if [[ $w -ge 120 ]]; then
-            warn "MLX not ready after 120s — daemon will retry on its own (KeepAlive)"
-            return 0
-        fi
-    done
-    ok "MLX ready (${w}s)"
-}
 
 _dev_build_daemon() { info "building daemon (cargo --release)…"; ( cd "${REPO_ROOT}" && cargo build --release ); }
 _dev_build_ui()     { info "building UI (npm run build)…";       ( cd "${REPO_ROOT}/ui" && npm run build ); }
-
-# Run the Next.js dev server in the FOREGROUND (hot reload). Replaces this shell
-# (exec), so Ctrl-C stops just the UI server — backing services keep running.
-_dev_ui_server() {
-    local port="${MERIDIAN_UI_PORT:-3939}"
-    echo
-    info "UI dev server (hot reload) → http://localhost:${port}   ·   Ctrl-C to stop"
-    info "edit-and-save reflects instantly; backing services keep running in the background"
-    echo
-    cd "${REPO_ROOT}/ui" || { err "ui/ not found at ${REPO_ROOT}/ui"; exit 1; }
-    if [[ -x ./node_modules/.bin/next ]]; then
-        exec ./node_modules/.bin/next dev --turbopack -p "${port}"
-    else
-        warn "next not found — run 'cd ui && npm install' first"; exec npm run dev
-    fi
-}
 
 cmd_migrate_db() {
     local db="${HOME}/.meridian/meridian.db"
@@ -813,24 +559,17 @@ cmd_dev() {
     local target="${1:-all}"
     case "$target" in
         all)
-            # Dev session: backing services in the background (start screenpipe/
-            # MLX only if down — don't reload a live model — rebuild & restart the
-            # daemon), then the UI dev server in the FOREGROUND (hot reload). Wait
-            # for MLX before the daemon (it hard-exits if MLX is unreachable).
-            _dev_build_daemon
-            _dev_ensure "${LABEL_SCREENPIPE}"
-            _dev_ensure "${LABEL_MLX}"
-            _dev_wait_mlx
-            _dev_up "${LABEL_DAEMON}"
-            _dev_ui_server      # foreground (exec) — runs until Ctrl-C
+            # The full dev environment: stops any previous dev/installed daemon,
+            # then opens 2 Terminal windows — the Rust daemon under cargo-watch
+            # (rebuilds + restarts on save) and the Tauri tray via `npm run tauri
+            # dev` (which starts the Next.js hot-reload server itself). This is
+            # the single source of truth for a dev session; `bash dev-start.sh`
+            # runs the exact same script.
+            exec bash "${REPO_ROOT}/dev-start.sh"
             ;;
-        ui)         _dev_ui_server ;;                 # UI dev server only (foreground, hot reload)
-        daemon)     _dev_build_daemon; _dev_wait_mlx; _dev_up "${LABEL_DAEMON}" ;;
-        mlx)        _dev_up "${LABEL_MLX}" ;;          # python — restart reloads the model
-        screenpipe) _dev_up "${LABEL_SCREENPIPE}" ;;
         build)      _dev_build_daemon; _dev_build_ui; ok "built production bundles (no run)" ;;
         *) err "unknown dev target: ${target}";
-           echo "  targets: all | ui | daemon | mlx | screenpipe | build"; exit 1 ;;
+           echo "  targets: (none) | build"; exit 1 ;;
     esac
 }
 
@@ -841,7 +580,6 @@ case "$CMD" in
     status)           cmd_status ;;
     logs)             cmd_logs "$@" ;;
     doctor)           cmd_doctor "$@" ;;
-    smoke)            cmd_smoke "$@" ;;
     migrate-db)       cmd_migrate_db "$@" ;;
     config)           cmd_config "$@" ;;
     dev)              cmd_dev "$@" ;;
@@ -849,7 +587,7 @@ case "$CMD" in
     uninstall)        cmd_uninstall ;;
     permissions)      cmd_permissions ;;
     version|--version|-v) cat "${REPO_ROOT}/VERSION" 2>/dev/null || echo "unknown" ;;
-    worklog-status|pm-worklog|coding-agent-hook|coding-agent-summarise|coding-agent-classify|coding-agent-install-skill|oauth-login|tasks-sync|ticket-update|ticket-parents|ticket-statuses|ticket-set-status|worklog-generate|worklog-generate-get|worklog-generate-approve) cmd_daemon_passthrough "$CMD" "$@" ;;
+    worklog-status|coding-agent-hook|coding-agent-summarise|coding-agent-install-skill|oauth-login|tasks-sync|ticket-update|ticket-parents|ticket-statuses|ticket-set-status|worklog-generate|worklog-generate-get|worklog-generate-approve|worklog-post-approved) cmd_daemon_passthrough "$CMD" "$@" ;;
     --help|-h|help|"") cmd_help ;;
     *) err "unknown command: ${CMD}"; echo; cmd_help; exit 1 ;;
 esac

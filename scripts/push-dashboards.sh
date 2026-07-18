@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-# Push (upsert) all dashboards from services/observability/dashboards/*.json into
+# Push (upsert) all dashboards from ops/openobserve-dashboards/*.json into
 # the local OpenObserve instance. Safe to run any time — existing dashboards are
 # updated in-place, new ones are created.
 #
@@ -32,7 +32,7 @@ if [[ -z "${OO_EMAIL}" || -z "${OO_PASSWORD}" ]]; then
     exit 0
 fi
 
-OO_EMAIL="${OO_EMAIL}" OO_PASSWORD="${OO_PASSWORD}" python3 - "${REPO_ROOT}/services/observability/dashboards" <<'PYEOF'
+OO_EMAIL="${OO_EMAIL}" OO_PASSWORD="${OO_PASSWORD}" python3 - "${REPO_ROOT}/ops/openobserve-dashboards" <<'PYEOF'
 import base64, glob, json, os, sys, urllib.request, urllib.error
 
 dash_dir = sys.argv[1]

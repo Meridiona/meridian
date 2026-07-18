@@ -20,7 +20,7 @@
 //! * The workstream fold replays with *today's* stored prior task state, not the
 //!   state as it was at the original fold time (that state isn't archived).
 //! * Only hours whose distilled `hour_text` is stored can be replayed — the local
-//!   MLX distillation is provider-independent and is not re-run.
+//!   distillation is provider-independent and is not re-run.
 //!
 //! # Who calls this
 //! The `meridian llm-experiment` CLI ([`cli`], dispatched from `main.rs`) and,
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn parse_variants_splits_and_rejects_empty() {
-        let vs = parse_variants("claude, codex:gpt-5.1 ,local").unwrap();
+        let vs = parse_variants("claude, codex:gpt-5.1 ,cursor").unwrap();
         assert_eq!(vs.len(), 3);
         assert_eq!(vs[1].model.as_deref(), Some("gpt-5.1"));
         assert!(parse_variants("").is_err());

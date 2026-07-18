@@ -30,7 +30,7 @@ Every week, hours vanish into the work *about* the work — the status updates, 
 But everything needed to do it already exists in what you just did — the code you wrote, the PRs you reviewed, the branch you're on. Meridian reads that context, works out which task it belongs to, and puts the update where it goes. The busywork doesn't get faster. It gets gone.
 
 - **Zero effort** — no timers, no forms, no prompts. It just runs.
-- **On-device by default** — capture and classification happen locally. The only things that leave your machine are the ticket updates you approve, sent to your own trackers. ([Privacy](#privacy))
+- **Local-first** — capture, OCR, and session structuring happen on your machine. The AI that summarises your work and matches it to tickets runs through the coding-agent CLI you already use (Claude, Codex, Cursor, Copilot) or a cloud LLM you choose; the ticket updates you approve go straight to your own trackers. ([Privacy](#privacy))
 - **Correct by design** — a wrong task assignment is worse than no feature. Accuracy is the point.
 
 ## How it works
@@ -38,11 +38,11 @@ But everything needed to do it already exists in what you just did — the code 
 ```
    capture            classify             sync
  your activity  →   which task is   →   your tracker
-  (on-device)        this? (on-device)   (you approve)
+  (on-device)        this?               (you approve)
 ```
 
 1. **Capture** — Meridian bounds your activity into clean, app-based work sessions, accurate across sleep, idle, and restarts.
-2. **Classify** — an on-device model labels each session and links it to the specific ticket it belongs to, using what's on screen, the branch you're on, and the tools in play.
+2. **Classify** — Meridian labels each session and links it to the specific ticket it belongs to, using what's on screen, the branch you're on, and the tools in play. The matching runs through the AI CLI you already use (or a cloud LLM you configure).
 3. **Sync** — the matching ticket in Jira / GitHub Issues / Linear is updated for you. **Nothing posts without your approval.**
 
 A dashboard inside the Meridian app (open it from the menu-bar tray icon) shows your day as a timeline and per-app breakdown. A built-in [MCP server](SETUP.md#mcp-server) makes the same data available to AI tools like Claude and Cursor.
@@ -51,20 +51,15 @@ A dashboard inside the Meridian app (open it from the menu-bar tray icon) shows 
 
 **Requirements:** macOS on Apple Silicon (M1+).
 
-> The on-device model runs on [MLX](https://github.com/ml-explore/mlx) (Metal-based, arm64-only), so **Intel Macs are not supported** — the installer checks the hardware and refuses cleanly. **Windows and Linux are not supported** either: the capture and service stack is macOS-only. Rosetta toolchains (x86_64 terminal, Homebrew, or Python) on an Apple Silicon Mac are fine — Python services are built from a pinned, uv-managed arm64 interpreter regardless of what's on your `PATH`.
+> Meridian is **Apple Silicon only** — the in-process capture stack and the Metal-accelerated local embedder are arm64/macOS-only, so **Intel Macs are not supported** (the installer checks the hardware and refuses cleanly), and **Windows and Linux are not supported** either. A Rosetta x86_64 terminal or Homebrew on an Apple Silicon Mac is fine — Meridian's own binaries are native arm64 regardless of what's on your `PATH`.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Meridiona/meridian/main/scripts/bootstrap.sh | bash
 ```
 
-This installs the `meridian` CLI and runs `meridian setup`, which brings up everything else — background services, the on-device model, and the dashboard — then walks you through macOS permissions and connecting your tracker.
+This downloads the latest signed Meridian app, installs it to `/Applications`, and launches it. The app stages its own background daemon on first run and opens the setup wizard — macOS permissions, the AI that writes your summaries, and connecting your tracker. Updates install themselves from within the app.
 
-Prefer npm:
-
-```bash
-npm install -g @meridiona/meridian
-meridian setup
-```
+Prefer to do it by hand? Download `Meridian.dmg` from the [latest release](https://github.com/Meridiona/meridian/releases/latest), open it, and drag **Meridian** to Applications.
 
 ## Supported PM tools
 
@@ -118,10 +113,10 @@ Open the dashboard from the Meridian tray icon in the menu bar. Stop everything 
 
 Meridian is built to keep your data yours:
 
-- **Capture and classification run on-device** — the local model (MLX) classifies your sessions; your screen content is not sent anywhere to do this.
+- **Capture and session structuring run on-device** — screen capture, OCR, and categorization happen locally; your screen content is not sent to Meridiana.
 - **Meridiana, the company, never receives your data.** There are no analytics servers and no default telemetry.
 - **The only outbound traffic is yours, and you control it:** approved ticket updates go directly from your machine to the trackers *you* connect (Jira, GitHub, Linear), and integration tokens are stored locally.
-- **Opt-in cloud LLM:** if you configure a cloud model instead of the local one, session text is sent to that provider — this is off by default.
+- **AI summaries use the provider you choose:** matching work to tickets and drafting worklogs run through the coding-agent CLI you already use (Claude, Codex, Cursor, Copilot) or a cloud LLM you configure, so session text is sent to that provider. There is no on-device generative model.
 
 Full detail: [docs/privacy.md](docs/privacy.md).
 
@@ -145,7 +140,7 @@ Meridian stands on excellent open-source work:
 
 - [**screenpipe**](https://screenpi.pe) — the capture crates Meridian's in-process capture is forked from (pinned at the last MIT release, 0.4.6).
 - [**Tauri**](https://tauri.app) — the framework that wraps the dashboard and tray into a single native app.
-- [**MLX**](https://github.com/ml-explore/mlx) — Apple's framework powering the on-device model.
+- [**candle**](https://github.com/huggingface/candle) — the Rust ML framework running Meridian's local text-embedding model.
 
 Thank you to these communities. 🙏
 

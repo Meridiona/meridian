@@ -91,7 +91,7 @@ export function IntelligenceSection({ settings, save }: {
         <h1 className="mt-title-lg mt-1.5" style={{ color: 'var(--t-title)' }}>Intelligence</h1>
         <p className="mt-body-sm mt-2 max-w-[520px]" style={{ color: 'var(--t-muted)' }}>
           The AI that writes your hourly summaries. Use a coding-agent CLI you already pay for, or
-          keep it entirely on-device. Pick one and hit Save - it takes effect from the next hour,
+          a custom endpoint on your own key. Pick one and hit Save - it takes effect from the next hour,
           with nothing to restart.
         </p>
       </div>

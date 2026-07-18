@@ -41,7 +41,7 @@ pub struct SummariserConfig {
     pub min_turns: i64,
     pub min_text_bytes: i64,
 
-    /// When BOTH primary and MLX fail (rate-limited + down), back off this long.
+    /// When the primary engine is rate-limited/down, back off this long.
     pub rate_limit_backoff_secs: u64,
 
     /// Neutral cwd for the agent subprocesses (no project CLAUDE.md to load).

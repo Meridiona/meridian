@@ -1,143 +1,132 @@
-# `src/pm_worklog` — Jira worklog automation (Stage 4)
+# `src/pm_worklog` — PM worklog / ticket write-back
 
-The last stage of the pipeline: turn classified `task` sessions into **Jira
-worklogs**, one per `(task, hour)`, entirely in Rust **except the single LLM hop**
-(the agno synthesiser, hosted on the MLX server's `/synthesise_worklog` endpoint).
+The PM-provider worklog + ticket layer: turn a day-task workstream into a drafted
+status update matched to (or proposing) the ticket(s) it advanced, then — on human
+approval — post it to the real tracker. **Entirely in Rust**; the single LLM hop
+runs through the user's chosen third-party CLI provider (Claude / Codex / Cursor /
+Copilot CLI, or a custom OpenAI-compatible cloud endpoint) via
+[`crate::llm::complete`] — there is no local model server and no Python.
 
-It is the consumer of every upstream stage — it reads sessions that ETL captured
-(Stage 0), the classifier mapped to a ticket (Stage 1), and the coding-agent
-ingest summarised + classified (Stages 2–3) — so it must run *after* those have
-settled for an hour.
-
----
-
-## The flow
-
-```
-collect ─▶ synthesise ─▶ ground ─▶ route
-(SQL)      (gated LLM)    (pure)     (persist + Jira POST)
-```
-
-- **collect** (`collect.rs`) — assemble the `SessionBundle` for one `(task, hour)`
-  window from `meridian.db`: classified `task` sessions + their summaries/excerpts,
-  the ticket context from `pm_tasks`, the idle-discounted `real_seconds`, and the
-  already-posted "earlier today" summaries (so the synth doesn't repeat itself).
-- **synthesise** (`synth.rs`) — the **only** LLM call. POST the bundle to the MLX
-  server's `/synthesise_worklog`, which runs the agno synth agent in-process and
-  returns a `JiraUpdate` (a 2–4 line summary + evidence-bearing bullets). Wrapped
-  in the global LLM gate (see below).
-- **ground** (`ground.rs`) — drop every bullet that cites no session, compute
-  coverage, attach risk flags (`low_confidence` / `ticket_closed_upstream` /
-  `cross_ticket_leak` / `low_evidence`). Pure logic, no LLM.
-- **route** (`route.rs`) — persist the worklog row, then (unless dry-run) post it
-  to Jira and stamp it POSTED. Idempotent: a window already posted short-circuits.
+It is the consumer of every upstream stage — it reads sessions that ETL captured,
+that the categorizer mapped to a ticket, and that the coding-agent ingest
+summarised — so it runs *after* those have settled for an hour. The old hourly
+`collect → synthesise → ground → route` Stage-4 driver was superseded by the
+per-card `generate` engine below and has been removed.
 
 ---
 
-## The hour-driven driver (`scheduler.rs`)
+## The per-card generate engine (`generate.rs`)
 
-Walks each day's hours from **local-midnight → now**:
+The "Generate worklog" action behind a day-task card. ONE provider-agnostic LLM
+call matches a day-level workstream to the existing ticket(s) it advanced — one or
+several — or proposes a new one, and writes a high-level status update:
 
 ```
-for each hour H:
-    if H is done in the ledger → skip
-    if H not over yet         → skip (current incomplete hour)
-    if H is READY:
-        for each task with classified work in H:  collect → synth → ground → route
-        mark H done (even with 0 tasks)
-    else: leave for the next pass   # does NOT block later hours
+generate ─▶ (review) ─▶ approve ─┬─ create ticket (if proposed)   `create.rs`
+(LLM match/propose)               ├─ post the update as a plain    `post_comment.rs`
+                                  │  comment on each ticket
+                                  └─ link the day-task
 ```
 
-Hours are **independent** — a not-ready hour never blocks later hours, so one
-stuck classification can't freeze the day.
+- **generate** (`generate.rs`) — the only LLM call. Matches the workstream to
+  tickets (or proposes one) and drafts the status update. Wrapped in the global
+  LLM gate (see below); `time_spent` always comes from the idle-discounted
+  `real_seconds`, never from the model.
+- **approve** (`generate::approve`) — on approval: `create.rs` creates the ticket
+  if it was a proposal (resolving the target per provider), then `post_comment.rs`
+  posts the update as a **plain status-update comment** (not a native worklog — no
+  time marker) to each matched ticket, and the day-task is linked.
+- **Partial delivery is a real state.** Approving across several tickets is not
+  atomic and a comment cannot be un-posted, so each target carries its own posted
+  flag (`meridian_core::day_task_worklogs::targets`) and a retry only posts the
+  ones still outstanding.
 
-### Readiness (`ledger.rs`)
+---
 
-An hour `H` is processed when `now ≥ H_end` **and**:
+## The approved-poster sweep (`post.rs`)
 
-- **upstream settled** — ETL has crossed the hour boundary *and* no session
-  started in the hour is still **in-flight**. "In-flight" mirrors the classifier's
-  own candidate rule, not a crude "any unclassified row" test: a row blocks only
-  if the pipeline will still advance it —
-    - regular row the classifier will pick up:
-      `task_method IS NULL AND duration_s > min_classification_duration_s`, or
-    - coding-agent row still mid-pipeline:
-      `task_method IN ('coding_agent_live','pending_summariser','pending_classifier')`.
+The **only** path that writes to a real tracker. The hourly draft driver
+(`src/worklog_pipeline/`) and the per-card engine only ever DRAFT; a human reviews,
+edits, and approves in the dashboard, which flips the row to `approved`. This sweep
+(~60 s, independent of the hourly driver so "approve in the UI" feels immediate)
+picks approved rows up and posts to whichever tracker the row belongs to:
 
-  A sub-threshold blip (`duration_s ≤ min_classification_duration_s`) is **ignored**
-  — the classifier never touches it, so its `task_session_type` stays NULL forever
-  and waiting for it would be a bug. (It also never becomes a `task` row, so
-  ignoring it loses no worklog content.) The min-duration value is sourced from the
-  same `Config.min_classification_duration_s` the classifier uses, so the two stages
-  agree by construction; **or**
+```
+jira   → native worklog endpoint          (`jira.rs`)
+linear → structured commentCreate         (`linear.rs`)  — no native worklog API
+github → structured issue comment (REST)  (`github.rs`)  — no native time tracking
+```
+
+Idempotent per-row: a row already POSTED short-circuits (`find_existing_worklog`),
+so a restart mid-sweep never double-posts. A ticket may legitimately carry more
+than one worklog for the same hour (a manual re-match creates a sibling row), so
+idempotency is scoped per-row (`id`), not per `(task, window)`.
+
+---
+
+## The hour ledger + readiness (`ledger.rs`)
+
+`pm_worklog_hours(hour_start PK, day_utc, hour_end, status, task_count,
+processed_at)` records, per `(day, hour)`, whether that hour has been processed.
+The driver walks hours from local-midnight forward and processes each READY hour,
+recording even 0-task hours as done so they are never re-scanned. Hours are
+**independent** — a not-ready hour never blocks later hours, so one stuck upstream
+row can't freeze the day.
+
+An hour `H` is READY when `now ≥ H_end` **and** either:
+
+- **upstream settled** — ETL has crossed the hour boundary *and* no session started
+  in the hour is still **in-flight**. "In-flight" mirrors the categorizer's own
+  candidate rule, not a crude "any unclassified row" test: a row blocks only if the
+  pipeline will still advance it —
+    - a regular row: `task_method IS NULL AND duration_s > min_classification_duration_s`, or
+    - a coding-agent row still mid-pipeline:
+      `task_method IN ('coding_agent_live','pending_summariser')`.
+
+  A sub-threshold blip (`duration_s ≤ min`) is ignored — the categorizer never
+  touches it, so waiting for it would be a bug; **or**
 - **aged out** — `H` has been over longer than `PM_WORKLOG_READINESS_AGING_MIN`
-  (default 90 min). This is the escape hatch: after the aging window we process
+  (default 90 min). The escape hatch: after the aging window we process
   best-effort with whatever is classified, so a genuinely-stuck row (e.g. a crashed
-  summariser) can never deadlock the day. With the in-flight predicate this is once
-  again the *rare* backstop it was designed to be — previously, any hour containing
-  a short blip could only ever fire via this path.
-
-### The ledger table
-
-`pm_worklog_hours(hour_start PK, day_utc, hour_end, status, task_count, processed_at)`
-records every hour's state. `status='done'` (incl. 0-task hours) means it's never
-re-scanned. "Where are we today?" is one `SELECT`.
+  summariser) can never deadlock the day.
 
 ---
 
 ## Known limitation: cross-hour attribution of coding segments
 
-A session is bucketed into an hour by its **`started_at`** (`tasks_in_hour` /
-`collect.rs` use `started_at >= H AND started_at < H+1`). Screen sessions are
+A session is bucketed into an hour by its **`started_at`**. Screen sessions are
 short ETL blocks, so this is exact for them. A **coding-agent segment**, however,
 can span up to an hour (the 1 h time-box), and the whole segment is billed to the
 hour it *started* in — so work that physically happened in the next clock hour is
-logged under the earlier hour's worklog.
+logged under the earlier hour.
 
 > Example: a coding segment running 2:50 → 3:50 is billed entirely to the
-> **2–3 pm** worklog, even though most of its minutes fall in the 3 pm clock hour.
+> **2–3 pm** hour, even though most of its minutes fall in the 3 pm clock hour.
 
 The **daily total per ticket stays correct** (segments sum without loss or
 double-count); only the per-hour distribution can shift by up to one segment.
-This is accepted by design for now. The clean fix, if per-hour accuracy is later
-required, is overlap-based apportionment in the collect layer (split each
-segment's time across the hours it overlaps), with the segment's narrative
-attached only to its majority hour — contained entirely to `src/pm_worklog/`,
-no change to segmentation.
+Accepted by design for now.
 
 ---
 
 ## The single LLM gate
 
-Stage 1 (classify), Stages 2–3 (summarise fallback), and Stage 4 (synth) all call
-the **one** local MLX model. They share a process-global `Semaphore(1)`
-(`crate::llm_gate`) acquired per request, so **exactly one model call is ever in
-flight** — the classifier and the worklog synthesiser can never contend on the
-GPU. (The gate is per-process; it serialises the daemon's tokio tasks. A
-standalone `pm-worklog` CLI run has its own gate, so don't run it against a live
-daemon.)
-
----
-
-## Idempotency — never double-post to Jira
-
-- `pm_worklogs` is keyed `(task_key, day_utc, cycle_index)`; a re-run UPSERTs and
-  replaces a **DRAFTED** row.
-- A partial unique index (`uq_pm_worklogs_worklog_window`) covers only **POSTED**
-  rows, and `find_existing_worklog` short-circuits a window that already has a
-  Jira worklog id — so restarts and backfills never post twice.
+All LLM work in the daemon flows through the provider-agnostic `crate::llm` layer.
+A process-global `Semaphore(1)` acquired per request keeps **exactly one LLM call
+in flight** — the categorizer and the worklog generator can never run concurrently,
+which also serialises access to the local candle embedder (the one Metal-backed
+model still resident, used only for the distiller's semantic dedup). The gate is
+per-process; a standalone CLI run has its own gate, so don't run it against a live
+daemon.
 
 ---
 
 ## Safety: nothing posts without human approval
 
-The daemon driver **only ever drafts** — it never posts to Jira. Every worklog
-lands as a `drafted` row for a human to review, edit, and approve in the dashboard
-(Worklogs view). Approval flips the row to `approved`; the `post` sweep (`post.rs`,
-~60s) is the **sole** path that writes to real Jira. There is no unattended
-auto-post.
-
-State machine:
+The draft drivers **only ever draft** — they never post. Every worklog lands as a
+`drafted` row for a human to review, edit, and approve in the dashboard (Worklogs
+view). Approval flips the row to `approved`; the `post` sweep is the **sole** path
+that writes to a real tracker. There is no unattended auto-post.
 
 ```
 drafted ──(UI edit)──▶ drafted ──(UI approve)──▶ approved ──(post sweep)──▶ posted
@@ -145,8 +134,6 @@ drafted ──(UI edit)──▶ drafted ──(UI approve)──▶ approved �
                           terminal (empty / < 60s)  └──▶ failed
 ```
 
-`time_spent` always comes from `real_seconds` (the idle-discounted figure computed
-in `collect.rs`, capped at one hour) — the LLM never decides how much time to log.
 A driver re-run can never clobber an `approved`/`posted` row (the UPSERT guard in
 `db.rs`), so a human decision is never silently overwritten.
 
@@ -156,30 +143,32 @@ A driver re-run can never clobber an `approved`/`posted` row (the UPSERT guard i
 
 | File | Role |
 |---|---|
-| `models.rs` | `SessionBundle` / `JiraUpdate` / … — the JSON contract with the endpoint |
-| `config.rs` | `PmWorklogConfig::from_env()` |
-| `collect.rs` | build the bundle (SQL read) |
-| `synth.rs` | gated POST to `/synthesise_worklog` |
-| `ground.rs` | drop un-evidenced bullets, coverage, risk flags |
-| `db.rs` | `pm_worklogs` + evidence upserts; approval-guarded upsert; find/mark/fail for idempotency |
+| `generate.rs` | the per-card "Generate worklog" engine: gated LLM match/propose + draft, and `approve` (create → post_comment → link) |
+| `create.rs` | ticket CREATE across providers, for an approved proposal |
+| `post_comment.rs` | the plain status-update comment primitive (dispatches per provider) |
+| `comment.rs` | worklog-comment formatting helpers |
+| `post.rs` | the approved-poster sweep — the sole path to a real tracker |
 | `ledger.rs` | hour ledger + readiness predicate + per-hour task discovery |
-| `route.rs` | per-task: collect → synth → ground → **draft** (never posts) |
-| `post.rs` | the approved-poster sweep — the sole path to real Jira |
-| `scheduler.rs` | the hour-driven driver + daemon loop + CLI |
+| `db.rs` | `pm_worklogs` + evidence upserts; approval-guarded upsert; find/mark/fail for idempotency |
+| `models.rs` | the worklog / update data types |
+| `config.rs` | `PmWorklogConfig::from_env()` |
 | `status.rs` | `meridian worklog-status` — human-readable day report |
+| `jira.rs` / `linear.rs` / `github.rs` / `trello.rs` / `azure_devops.rs` | per-provider create + post adapters |
 
 The UI approval surface is `ui/components/views/WorklogsView.tsx` + the
 `ui/app/api/worklogs/` routes (edit / approve / reject; DB writes only — the UI
-never calls Jira). The agno synth agent stays in Python
-(`services/agents/pm_worklog_update/` + the `/synthesise_worklog` endpoint).
+never calls a tracker). All synthesis runs in Rust via `crate::llm` — no Python.
 
 ---
 
 ## CLI
 
 ```bash
-# Draft one day's worklogs (never posts — drafts await UI approval)
-meridian pm-worklog --day 2026-05-30
+# Generate + draft the worklog for one day-task (never posts — awaits UI approval)
+meridian worklog-generate --day 2026-05-30 --task-id KAN-123
+
+# Approve a generated draft (creates the ticket if proposed, posts on the sweep)
+meridian worklog-generate-approve --day 2026-05-30 --task-id KAN-123
 
 # Post everything approved in the dashboard now (same sweep the daemon runs ~60s)
 meridian worklog-post-approved
@@ -196,8 +185,6 @@ meridian worklog-status --day 2026-05-30
 |---|---|---|
 | `PM_WORKLOG_INTERVAL_HOURS` | `1` | Driver pass cadence |
 | `PM_WORKLOG_MIN_CONFIDENCE` | `0.65` | Below this → `low_confidence` flag |
+| `PM_WORKLOG_MIN_COVERAGE` | `0.80` | Evidence-coverage floor |
 | `PM_WORKLOG_READINESS_AGING_MIN` | `90` | Aging escape — max wait for an hour to settle |
-| `PM_WORKLOG_MIN_POST_SECONDS` | `60` | Jira's worklog floor |
-| `PM_WORKLOG_SYNTH_TIMEOUT_S` | `300` | Synth HTTP timeout |
-| `MLX_SERVER_HOST` / `MLX_SERVER_PORT` | `127.0.0.1` / `7823` | synth endpoint |
-| `JIRA_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` | — | worklog POST auth (reused from the Jira provider) |
+| `PM_WORKLOG_MIN_POST_SECONDS` | `60` | Tracker worklog floor |

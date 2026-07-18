@@ -47,22 +47,12 @@ pub fn root_causes(report: &Report) -> Vec<Diagnosis> {
 
     let mut out = Vec::new();
 
-    // 1. MLX server down — the whole classify/summarise cascade.
-    if crit("mlx-server", "reachable") {
-        out.push(Diagnosis {
-            title: "MLX classifier server is down".into(),
-            cause: "All classification and summarisation run through the MLX server. With it down, sealed sessions pile up, eventually get sentinelled, and worklog hours stall behind them.".into(),
-            contributing: contributing(&[
-                ("meridian daemon", "queue"),
-                ("meridian daemon", "classify errors"),
-                ("worklog", "hour ledger"),
-            ]),
-            action: "Start it (`meridian start`), then `meridian doctor --fix` to drain the backlog.".into(),
-        });
-    } else if bad("coding-agent", "session-summary skill") {
+    // 1. Coding-agent summariser cascade — sealed sessions must be summarised
+    //    (via each agent's own CLI) before they reach the classifier and worklog.
+    if bad("coding-agent", "session-summary skill") {
         out.push(Diagnosis {
             title: "session-summary Claude Code command is missing".into(),
-            cause: "The `claude -p /session-summary` invocation that produces transcript summaries returns 'Unknown command' because ~/.claude/commands/session-summary.md doesn't exist. Every Claude Code session silently falls back to the local MLX model instead of the subscription claude CLI.".into(),
+            cause: "The `claude -p /session-summary` invocation that produces transcript summaries returns 'Unknown command' because ~/.claude/commands/session-summary.md doesn't exist, so Claude Code sessions can't be summarised.".into(),
             contributing: contributing(&[("coding-agent", "session-summary skill")]),
             action: "`meridian doctor --fix`  (or: `meridian coding-agent-install-skill`)".into(),
         });
@@ -75,7 +65,7 @@ pub fn root_causes(report: &Report) -> Vec<Diagnosis> {
                 ("meridian daemon", "classify errors"),
                 ("worklog", "hour ledger"),
             ]),
-            action: "The claude/codex CLI or MLX /summarise is likely failing — inspect with `meridian coding-agent-summarise --dry-run`, or run `meridian doctor --fix`.".into(),
+            action: "The agent's own CLI (claude/codex/cursor) is likely failing - inspect with `meridian coding-agent-summarise --dry-run`, or run `meridian doctor --fix`.".into(),
         });
     }
 
@@ -222,23 +212,12 @@ mod tests {
         let report = Report::new(vec![
             Check::warn("summariser queue", "L2", "293 backed up").in_group("meridian daemon"),
             Check::warn("hour ledger", "L4", "5 stuck").in_group("worklog"),
-            Check::ok("reachable", "L2", "ok").in_group("mlx-server"),
         ]);
         let dx = root_causes(&report);
         assert_eq!(dx.len(), 1);
         assert!(dx[0].title.contains("summariser"));
         // both symptoms attributed to the one cause
         assert_eq!(dx[0].contributing.len(), 2);
-    }
-
-    #[test]
-    fn mlx_down_supersedes_the_queue_symptom() {
-        let report = Report::new(vec![
-            Check::critical("reachable", "L2", "down").in_group("mlx-server"),
-            Check::warn("summariser queue", "L2", "293").in_group("meridian daemon"),
-        ]);
-        let dx = root_causes(&report);
-        assert!(dx[0].title.contains("MLX"));
     }
 
     #[test]

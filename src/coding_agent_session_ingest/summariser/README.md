@@ -1,12 +1,13 @@
 # `src/coding_agent_session_ingest/summariser`
 
 Turns each **sealed** coding-agent segment (`task_method = 'pending_summariser'`)
-into a factual prose summary for the PM work-log, then flips it to the
-classifier's queue (`task_method → 'pending_classifier'`).
+into a factual prose summary for the PM work-log, then flips it to the terminal
+state (`task_method → 'summarised'`). The worklog pipeline picks up summarised
+rows by querying `session_summary IS NOT NULL` directly.
 
-Why summarise before classifying? A raw transcript is huge and noisy; the
-classifier reasons over the **summary** instead, which is cheaper and sharper.
-The summary is also what the Jira updater quotes as evidence.
+Why summarise at all? A raw transcript is huge and noisy; the worklog pipeline
+folds the concise **summary** into the hour's activity instead, which is cheaper
+and sharper. The summary is also what the Jira updater quotes as evidence.
 
 ---
 
@@ -14,17 +15,17 @@ The summary is also what the Jira updater quotes as evidence.
 
 One transcript in flight at a time (sequential → flat memory, no rate-limit
 bursts). **Each agent's transcripts go to its own CLI** (routed on the row's
-`app_name`); MLX is the shared fallback:
+`app_name`); there is **no cross-engine fallback**:
 
 ```
 Codex session          ──▶  codex exec    ─┐
 GitHub Copilot session ──▶  copilot -p    ─┤
-Cursor Agent session   ──▶  cursor-agent  ─┼─ try primary up to `primary_attempts` (2) times
+Cursor Agent session   ──▶  cursor-agent  ─┼─ try that agent's CLI up to `primary_attempts` (2) times
 else (Claude/unknown)  ──▶  claude -p     ─┘        │
-                                                     ├─ rate-limited?  ──▶  short-circuit to MLX
-                                                     └─ all attempts failed?  ──▶  MLX
+                                                     ├─ rate-limited?  ──▶  leave row pending, back off this source
+                                                     └─ all attempts failed?  ──▶  leave row pending, retry next drain
                                                                                    │
-                                                     still down ──▶ leave row pending, retry next sweep
+                                            (a row that fails MAX_ROW_ATTEMPTS drains is dead-lettered)
 ```
 
 - **Claude sessions → `claude -p`** (`claude.rs`) — loads the `session-summary`
@@ -44,16 +45,12 @@ else (Claude/unknown)  ──▶  claude -p     ─┘        │
   "Workspace Trust Required"). First use runs `cursor_agent_init::ensure_ready()`:
   install via the official script if missing (ONLY when `CURSOR_AGENT_AUTO_INSTALL=1` — unpinned remote code needs an explicit opt-in), `status`-probe the auth, and
   only `login` (NO_OPEN_BROWSER, 120 s timeout, kill-on-drop) when actually
-  unauthenticated. Any init failure degrades to MLX. Its runs persist to
-  `~/.cursor/chats/` — see "Self-ingest guard" below.
-- **Fallback → MLX `/summarise`** (`mlx.rs`) — the local model server endpoint.
-  The local model is a reasoner, so it gets only the **tail** of the transcript
-  (most recent activity / outcome) plus a cheap reasoning-leak filter on top of
-  the endpoint's outlines FSM.
+  unauthenticated. Any init failure leaves the row pending for a later drain. Its
+  runs persist to `~/.cursor/chats/` — see "Self-ingest guard" below.
 
 All engines target the same `SUMMARY_SCHEMA` and share `SUMMARY_RULES`
-(`prompts.rs`): Claude via the skill's `SKILL.md`, the others via the prompt,
-MLX via its system message — kept in one place so they can't drift.
+(`prompts.rs`): Claude via the skill's `SKILL.md`, the others via the prompt —
+kept in one place so they can't drift.
 
 ### Self-ingest guard
 
@@ -79,7 +76,6 @@ session`.
 | `copilot.rs` | `copilot -p` engine |
 | `cursor_agent.rs` | `cursor-agent -p --trust` engine |
 | `../cursor_agent_init.rs` | lazy cursor-agent install + auth probe (timeouts, kill-on-drop) |
-| `mlx.rs` | MLX `/summarise` fallback |
 | `prompts.rs` | shared rules, schema, rate-limit detection, `SUMMARY_PROMPT_MARKER`, `extract_summary` (bare/fenced/prose JSON tolerance) |
 
 ---
@@ -89,9 +85,11 @@ session`.
 `run_loop` drains, then waits on **whichever fires first**: the indexer's
 in-process `Notify` (it pings on its own seals → near-instant) or a short
 catch-up sweep (`SUMMARISER_SWEEP_S`, 30 s) that covers hook-sealed rows the
-daemon itself didn't seal. If the primary engine is rate-limited **and** MLX is
-also down, `drain` returns a back-off signal and the loop sleeps
-`SUMMARISER_BACKOFF_S` (30 min) instead.
+daemon itself didn't seal. Rate-limit back-off is **per source**: a rate-limited
+agent's rows are skipped until its cooldown elapses while other sources keep
+draining. Only when **every** pending row belongs to a backed-off source does
+`drain` signal back-off and the loop sleeps `SUMMARISER_BACKOFF_S` (30 min)
+instead.
 
 > **The daemon drain is scoped to *today*.** `drain()` passes
 > `Local::now()` as the day filter, so historical sealed rows are *not* picked
@@ -117,7 +115,7 @@ On every successful write:
 INFO summarised coding-agent segment {row_id, uuid, source, written, chars}
 ```
 
-`source` = `claude` / `codex` / `copilot` / `cursor` / `mlx`; `written: true` confirms it persisted.
+`source` = `claude` / `codex` / `copilot` / `cursor`; `written: true` confirms it persisted.
 Then the batch roll-up `INFO summariser drain {summarised: N}`. Transient
 failures are logged (`summarise failed — leaving pending for retry`), never
 silent. Tail it:
@@ -146,16 +144,11 @@ standalone poll).
 | `SUMMARISER_COPILOT_TIMEOUT_S` | `240` | `copilot -p` timeout |
 | `SUMMARISER_CURSOR_MODEL` | (empty → cursor default) | cursor-agent model |
 | `SUMMARISER_CURSOR_TIMEOUT_S` | `240` | `cursor-agent` timeout |
-| `SUMMARISER_PRIMARY_ATTEMPTS` | `2` | primary tries before MLX |
-| `SUMMARISER_TRANSCRIPT_CAP` | `500000` | primary-engine transcript char cap |
+| `SUMMARISER_PRIMARY_ATTEMPTS` | `2` | tries on the agent's own CLI before leaving the row pending |
+| `SUMMARISER_TRANSCRIPT_CAP` | `500000` | transcript char cap |
 | `SUMMARISER_MIN_TURNS` | `2` | min `frame_count` to summarise |
 | `SUMMARISER_MIN_TEXT_BYTES` | `800` | min `session_text` length |
-| `SUMMARISER_BACKOFF_S` | `1800` | sleep when rate-limited + MLX down |
-| `MLX_SERVER_HOST` / `MLX_SERVER_PORT` | `127.0.0.1` / `7823` | MLX `/summarise` |
-| `SUMMARISER_MLX_TIMEOUT_S` | `180` | MLX request timeout |
-| `SUMMARISER_MLX_MAX_TOKENS` | `2048` | MLX output cap |
-| `SUMMARISER_MLX_INPUT_TOKENS` | `5000` | MLX input tail cap (× chars/token) |
-| `SUMMARISER_MLX_CHARS_PER_TOKEN` | `4` | tail-cap char estimate |
+| `SUMMARISER_BACKOFF_S` | `1800` | loop sleep when every pending row's source is rate-limit backed-off |
 | `CURSOR_AGENT_AUTO_INSTALL` | (unset → off) | opt-in: let the daemon run the cursor-agent installer |
 | `MERIDIAN_HOME` | `~/.meridian` | neutral cwd for subprocesses |
 

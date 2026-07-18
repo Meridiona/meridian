@@ -58,10 +58,8 @@ use std::path::{Path, PathBuf};
 /// touches a model the user downloaded separately for another tool (Ollama,
 /// LM Studio, etc).
 ///
-/// The embedder entry is the `EMBEDDER` role from
-/// `services/agents/model_registry.py` — that module is the authoritative source
-/// for the pipeline's active model ids; keep it in sync with its defaults if they
-/// ever change.
+/// The embedder entry mirrors `crate::embedder::provision`'s model repo — keep it
+/// in sync if the embedding model id changes.
 ///
 /// The Qwen3-Reranker entry is DELIBERATELY still here even though the reranker was
 /// removed from the pipeline. Machines that ran an older build downloaded its ~700 MB

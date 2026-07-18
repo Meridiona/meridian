@@ -227,6 +227,7 @@ mod tests {
 
     #[test]
     fn path_is_under_meridian_oauth() {
+        let _env = crate::env_test_guard();
         std::env::set_var("HOME", "/tmp/meridian_oauth_test_home");
         let p = path("jira").unwrap();
         assert!(
@@ -273,6 +274,7 @@ mod tests {
 
     #[test]
     fn save_then_load_roundtrips() {
+        let _env = crate::env_test_guard();
         let dir = std::env::temp_dir().join(format!("meridian_oauth_rt_{}", std::process::id()));
         std::env::set_var("HOME", &dir);
         let t = OAuthTokens {
@@ -306,6 +308,7 @@ mod tests {
 
     #[test]
     fn lock_provider_serialises_then_releases() {
+        let _env = crate::env_test_guard();
         // flock is per-open-file-description, so two separate opens contend even in
         // one process — enough to prove cross-process serialisation works.
         let dir = std::env::temp_dir().join(format!("meridian_oauth_lock_{}", std::process::id()));

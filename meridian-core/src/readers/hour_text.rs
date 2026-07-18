@@ -4,7 +4,7 @@
 //! human-readable /activity_report OUTPUT) columns.
 //!
 //! # What this is
-//! The worklog pipeline's distill stage (`services/agents/worklog_pipeline`)
+//! The worklog pipeline's distill stage (`crate`-side, `worklog_pipeline::distiller`)
 //! persists a compact activity body per hour it processes, and its report stage
 //! persists the LLM-authored human-readable summary of that body — both
 //! independent of whether the hour yields a worklog draft. This reader surfaces

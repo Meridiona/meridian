@@ -197,6 +197,6 @@ registered`, `outbox toast delivered`, `notification action event: {...}`,
 
 Deferred (same rails, thin slices when needed): task-switch verify producer +
 rate cap + `notify_task_verify` toggle (PR 2), goal check-in / distraction
-producers, LLM-generated copy (needs an MLX runtime republish), APNs/phone
+producers, LLM-generated copy (routed through the chosen CLI provider, `src/llm/`), APNs/phone
 delivery, folding the direct `sys::notify` bypass callers (pause/update/health
 toasts) into the outbox.

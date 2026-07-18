@@ -370,7 +370,7 @@ pub fn reload_log_level(level: &str) -> bool {
 }
 
 /// `~/.meridian/logs/` — where launchd redirects each service's raw
-/// stdout/stderr (`daemon.log`, `mlx-server.log`, etc. — see each service's
+/// stdout/stderr (`daemon.log`, `tray.log`, etc. — see each service's
 /// `com.meridiona.*.plist`). No longer written to by `tracing`/`logging`
 /// directly (the OTel spool is the sole application-log sink now); this
 /// directory holds only the crash-safety-net text launchd captures. Public so

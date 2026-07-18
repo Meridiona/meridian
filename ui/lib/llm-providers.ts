@@ -11,10 +11,10 @@
 // `update_settings` rejects anything not in this set.
 //
 // The four CLI providers run on the user's OWN subscription: Meridian shells out to a
-// coding-agent CLI that is already installed and signed in. `local` runs the on-device
-// MLX model - nothing leaves the machine.
+// coding-agent CLI that is already installed and signed in. `custom` is a user-configured
+// OpenAI-compatible cloud endpoint on the user's own key.
 
-export type LlmProviderId = 'claude' | 'codex' | 'cursor' | 'copilot' | 'local' | 'custom'
+export type LlmProviderId = 'claude' | 'codex' | 'cursor' | 'copilot' | 'custom'
 
 /**
  * How well an endpoint was MEASURED to honour a structured-output request (mirrors
@@ -168,11 +168,11 @@ export interface LlmProviderMeta {
   /** One-line "what this is", shown on the card. */
   blurb: string
   /**
-   * 'cli' → shells out to an installed binary; 'local' → the on-device model; 'custom' → a
-   * user-configured cloud endpoint (an HTTP call on their own API key).
+   * 'cli' → shells out to an installed binary; 'custom' → a user-configured cloud endpoint
+   * (an HTTP call on their own API key).
    */
-  kind: 'cli' | 'local' | 'custom'
-  /** The executable we look for. null for the on-device model (it is an HTTP call). */
+  kind: 'cli' | 'custom'
+  /** The executable we look for. null for a custom endpoint (it is an HTTP call). */
   bin: string | null
   /** Shown when the CLI is not installed - the command that installs it. */
   installHint?: string
@@ -180,16 +180,15 @@ export interface LlmProviderMeta {
   /**
    * Where the user opts their prompts OUT of model training. This is ACCOUNT-LEVEL for
    * every provider (a subprocess can't flip it - Meridian only disables telemetry per
-   * call), so the UI links it rather than pretending to toggle it. null for on-device,
-   * which never sends anything anywhere.
+   * call), so the UI links it rather than pretending to toggle it.
    */
   privacyUrl: string | null
   /** Human label for the account setting the privacyUrl leads to. */
   privacyLabel?: string
 }
 
-// Order IS the recommendation: coding agents first (frontier-model accuracy), on-device
-// last as the private, always-available fallback. The picker renders them in this order.
+// Order IS the recommendation: coding agents first (frontier-model accuracy). The picker
+// renders them in this order.
 export const LLM_PROVIDERS: LlmProviderMeta[] = [
   {
     id: 'claude',
@@ -235,23 +234,14 @@ export const LLM_PROVIDERS: LlmProviderMeta[] = [
     privacyUrl: 'https://github.com/settings/copilot/features',
     privacyLabel: 'GitHub - Copilot policies',
   },
-  {
-    id: 'local',
-    name: 'On-device',
-    blurb: 'Runs entirely on your Mac. Nothing you do leaves the machine.',
-    kind: 'local',
-    bin: null,
-    privacyUrl: null,
-  },
 ]
 
 /**
- * The stored default. On-device, because it is the only backend guaranteed present and
- * needs no login - so a fresh install always works. The picker still lists the coding
- * agents first (see the ordering comment on `LLM_PROVIDERS`), but the safe default it
- * falls back to is local.
+ * The stored default - Claude, the first/recommended coding agent (matches
+ * `LlmProvider::default()` in meridian-core/src/llm_provider.rs). An unknown or
+ * unconfigured choice resolves here.
  */
-export const DEFAULT_LLM_PROVIDER: LlmProviderId = 'local'
+export const DEFAULT_LLM_PROVIDER: LlmProviderId = 'claude'
 
 /**
  * The rough share of a plan's usage limit that Meridian's hourly summaries consume - one
@@ -265,7 +255,7 @@ export const USAGE_FOOTPRINT_NOTE =
  * The warning shown wherever a custom endpoint is added or listed.
  *
  * Every other provider is flat-rate: a CLI spends a subscription the user already pays
- * for, and on-device spends nothing. A custom endpoint is the ONLY one that bills per
+ * for. A custom endpoint is the ONLY one that bills per
  * call, on the user's own key, with no cap Meridian can enforce - the pipeline runs
  * unattended every hour, and testing an endpoint alone spends up to one request per schema.
  * So the guidance is free-tier only, stated where the key is typed rather than buried in
@@ -346,9 +336,8 @@ export function customVendorPreset(id: string): CustomVendorPreset | undefined {
  * `custom` is a KIND, not an instance: the user may have several endpoints configured, so
  * there is no single card for it (exactly why `LlmProvider::builtins()` exists in Rust).
  * But `llmProvider('custom')` is still asked for a name by everything that renders the
- * CHOSEN provider, and falling through to on-device there would tell a user running Gemini
- * that their work is being summarised on-device. So the lookup answers honestly and the
- * grid still renders only the built-ins.
+ * CHOSEN provider, so the lookup answers honestly and the grid still renders only the
+ * built-ins.
  *
  * Surfaces holding the registry should show the endpoint's own name instead of this one.
  */
@@ -364,9 +353,8 @@ export const CUSTOM_PROVIDER_META: LlmProviderMeta = {
 
 export function llmProvider(id: LlmProviderId): LlmProviderMeta {
   if (id === 'custom') return CUSTOM_PROVIDER_META
-  // Fall back to on-device, never to LLM_PROVIDERS[0] (now a CLI) - an unknown id must
-  // resolve to the always-safe default, matching the Rust resolver.
+  // An unknown id resolves to the default (Claude), matching the Rust resolver.
   return LLM_PROVIDERS.find(p => p.id === id)
-    ?? LLM_PROVIDERS.find(p => p.id === 'local')
-    ?? LLM_PROVIDERS[LLM_PROVIDERS.length - 1]
+    ?? LLM_PROVIDERS.find(p => p.id === DEFAULT_LLM_PROVIDER)
+    ?? LLM_PROVIDERS[0]
 }

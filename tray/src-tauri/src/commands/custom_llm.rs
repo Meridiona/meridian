@@ -445,6 +445,7 @@ mod tests {
             model: "m".into(),
             api_key: "secret".into(),
             rpm: 0,
+            rpd: 0,
             rungs: Default::default(),
         }
     }

@@ -77,8 +77,9 @@ pub struct ProviderStatus {
     pub last_test: Option<ProviderTestResult>,
 }
 
-/// Probe one provider. The on-device model is always "installed" — it is an HTTP call to
-/// a server we manage, not a binary the user has to have.
+/// Probe one provider. A provider with no CLI binary (only `Custom`, a cloud endpoint) has
+/// nothing to probe on disk — `detect_all` never enumerates it (its cards come from the
+/// registry), so this early-return is not reached in practice.
 pub async fn detect(provider: LlmProvider) -> ProviderStatus {
     let id = provider.as_str().to_string();
     let Some(bin) = provider.cli_name() else {
@@ -172,10 +173,6 @@ pub async fn test_provider(
     let id = provider.as_str().to_string();
     let t0 = Instant::now();
 
-    if provider.is_local() {
-        return finish_test(id, test_local_reachable(settings).await, t0);
-    }
-
     let mut cfg = LlmConfig::from_settings(settings);
     cfg.cli_timeout_s = PROBE_TIMEOUT_S;
     let is_selected = LlmProvider::from_wire(&settings.llm_provider) == Some(provider);
@@ -207,35 +204,6 @@ fn finish_test(id: String, outcome: ProviderTestOutcome, t0: Instant) -> Provide
         outcome,
         elapsed_ms: t0.elapsed().as_millis() as u64,
         tested_at: chrono::Utc::now().to_rfc3339(),
-    }
-}
-
-/// The on-device provider has no CLI/login to test — its equivalent question is "is the
-/// MLX server actually up and reachable". A plain HTTP GET, not a real generation, so this
-/// stays free and near-instant unlike the CLI probes.
-async fn test_local_reachable(settings: &RuntimeSettings) -> ProviderTestOutcome {
-    let cfg = LlmConfig::from_settings(settings);
-    let url = format!("http://{}:{}/info", cfg.mlx_host, cfg.mlx_port);
-    let client = match reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(3))
-        .timeout(Duration::from_secs(5))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return ProviderTestOutcome::Failed {
-                message: e.to_string(),
-            }
-        }
-    };
-    match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => ProviderTestOutcome::Ok,
-        Ok(resp) => ProviderTestOutcome::Failed {
-            message: format!("MLX server returned {}", resp.status()),
-        },
-        Err(e) => ProviderTestOutcome::Failed {
-            message: format!("MLX server unreachable at {url}: {e}"),
-        },
     }
 }
 
@@ -348,13 +316,6 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn the_on_device_model_is_always_available() {
-        let s = detect(LlmProvider::Local).await;
-        assert!(s.installed, "the local model needs no CLI");
-        assert_eq!(s.path, None);
-    }
-
-    #[tokio::test]
     async fn detect_all_covers_every_builtin_exactly_once() {
         let all = detect_all().await;
         assert_eq!(all.len(), LlmProvider::builtins().len());
@@ -363,10 +324,9 @@ mod tests {
         }
     }
 
-    /// `Custom` must never be probed as if it were one fixed thing. `detect` reports "no CLI
-    /// name" as the always-installed on-device model, so a `Custom` card from here would
-    /// claim an endpoint the user has not configured is ready to use. Custom cards come from
-    /// the registry, each carrying its own measured rung.
+    /// `Custom` must never be probed as if it were one fixed thing: a `Custom` card from
+    /// here would claim an endpoint the user has not configured is ready to use. Custom
+    /// cards come from the registry, each carrying its own measured rung.
     #[tokio::test]
     async fn detect_all_never_reports_a_custom_card() {
         assert!(detect_all()

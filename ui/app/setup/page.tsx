@@ -5,48 +5,32 @@
 // design, wired to the real backend. Renders inside the Tauri "setup" window
 // (tray.rs::open_wizard_window) and talks to Rust exclusively over the `invoke`
 // bridge. Presentation comes from the design (atoms/steps/data); behaviour —
-// permission polling, MLX status + download, hardware specs, model selection,
-// OAuth — is all live. No fabricated state.
+// permission polling, integrations, sign-in, and the AI-provider choice — is all
+// live. No fabricated state.
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { invoke, load, mutate, tauri } from '@/lib/bridge'
 import { STEPS, Welcome, Completion } from './steps'
 import type { Wiz } from './steps'
-import type { DownloadProgress, MlxStatusResponse, NotifState, SystemSpecs } from './data'
+import type { NotifState } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import type { RuntimeSettings } from '@/lib/settings'
 import { DEFAULT_LLM_PROVIDER, type LlmProviderId } from '@/lib/llm-providers'
 import { useLlmProviderDetection } from '@/components/LlmProviderPicker'
 import { Btn, Check, Kicker } from './atoms'
 
-const SERIF: CSSProperties = { fontFamily: 'var(--font-serif)' }
+// One voice with the timeline UI: SF Pro (var(--font-sans)), not Instrument Serif.
+const DISPLAY: CSSProperties = { fontFamily: 'var(--font-sans)', fontWeight: 700, letterSpacing: '-.02em' }
 
 export default function SetupWizard() {
   const [welcome, setWelcome] = useState(true)
   const [step, setStep] = useState(0)
   const [done, setDone] = useState(false)
   const [err, setErr] = useState('')
-  // Provisioning errors (runtime download, server start, model prefetch) are kept
-  // separate from step errors so they only surface on the MLX body, not on the
-  // footer of every other step the user navigates back to.
-  const [mlxErr, setMlxErr] = useState('')
 
   // Step 1 — permissions (live)
   const [perms, setPerms] = useState<Wiz['perms']>({ accessibility: null, screen: null, notifications: null })
-
-  // Step 3 — local intelligence (MLX runtime + model)
-  const [specs, setSpecs] = useState<SystemSpecs | null>(null)
-  const [mlx, setMlx] = useState<MlxStatusResponse | null>(null)
-  const [downloading, setDownloading] = useState(false)
-  const [prefetching, setPrefetching] = useState(false)
-  const [modelReady, setModelReady] = useState(false)
-  const [progress, setProgress] = useState<DownloadProgress | null>(null)
-  // Onboarding auto-provisions the runtime + every model with no clicks; these
-  // one-shot guards stop each phase re-firing across poll ticks. `retryModel`
-  // re-arms them after an error.
-  const runtimeStarted = useRef(false)
-  const prefetchStarted = useRef(false)
 
   // Step 2 — integrations. The shared <ConnectTrackers> drives the actual
   // connect flows (OAuth + token save); this just holds the live connected-state
@@ -69,7 +53,7 @@ export default function SetupWizard() {
   } = useLlmProviderDetection()
 
   // Seed from settings.json rather than assuming the default — a re-run of the wizard
-  // must show what the user actually has, not reset them to on-device.
+  // must show what the user actually has, not reset them to the default.
   useEffect(() => {
     load<RuntimeSettings>('/api/settings', 'get_settings')
       .then((s) => {
@@ -95,11 +79,6 @@ export default function SetupWizard() {
   }, [provider, providerCustomId])
 
   const active = !welcome && !done
-
-  // Detect hardware once on mount.
-  useEffect(() => {
-    invoke<SystemSpecs>('detect_system_specs').then(setSpecs).catch(() => {})
-  }, [])
 
   // Poll the two required permissions + optional notifications on the
   // Permissions step. Input Monitoring is intentionally not polled — it's
@@ -131,66 +110,6 @@ export default function SetupWizard() {
     const id = setInterval(poll, 2000)
     return () => clearInterval(id)
   }, [active, step])
-
-  // Drive the Model step end-to-end with no clicks: provision the runtime tarball
-  // if missing, bring the server up, then prefetch every pipeline model — all
-  // automatically. Runs the WHOLE time the wizard is open (not just on the model
-  // step) so the ~2.4 GB downloads in the background while the user does
-  // Permissions + Integrations and is usually done by the time they reach the
-  // (last) Local-intelligence step, which gates Finish on `modelReady`.
-  // One-shot refs guard each phase; `retryModel` re-arms them after an error.
-  useEffect(() => {
-    const polling = active && !modelReady
-    if (!polling) return
-    const poll = async () => {
-      try {
-        const s = await invoke<MlxStatusResponse>('get_mlx_status')
-        setMlx(s)
-        const runtimeInstalled = s.runtime_found || s.runtime_installed
-        // Auto-install the runtime the moment we know it's missing (no click).
-        if (!runtimeInstalled && s.download_available && !downloading && !runtimeStarted.current) {
-          runtimeStarted.current = true
-          setDownloading(true)
-          setProgress({ received: 0, total: 0, speed: 0, message: 'Installing the on-device engine…' })
-          invoke('download_runtime_cmd')
-            .then(() => invoke('start_mlx_server_cmd').catch((e) => setMlxErr(String(e))))
-            .catch((e) => setMlxErr(String(e)))
-            .finally(() => setDownloading(false))
-          return
-        }
-        // Bring the server up once the runtime is present.
-        if (runtimeInstalled && s.status === 'offline') invoke('start_mlx_server_cmd').catch(() => {})
-        // Auto-prefetch the full model set once the server is running (no click).
-        if (runtimeInstalled && s.status === 'running' && !prefetchStarted.current) {
-          prefetchStarted.current = true
-          setPrefetching(true)
-          setProgress({ received: 0, total: 0, speed: 0, message: 'Preparing models…' })
-          invoke('prefetch_model_cmd')
-            .then(() => setModelReady(true))
-            // Leave the guard set on error so we don't hammer a failing download
-            // every tick; the visible Retry (retryModel) re-arms it deliberately.
-            .catch((e) => setMlxErr(String(e)))
-            .finally(() => setPrefetching(false))
-        }
-      } catch { /* server not yet available */ }
-    }
-    poll()
-    const id = setInterval(poll, 3000)
-    return () => clearInterval(id)
-  }, [active, modelReady, downloading, prefetching])
-
-  // Stream download progress (shared by the runtime download + the model prefetch).
-  useEffect(() => {
-    if (!downloading && !prefetching) return
-    let unlisten: (() => void) | undefined
-    // Guard against the listener resolving AFTER this effect has been cleaned up
-    // (downloading/prefetching flipped false): without `cancelled`, the late
-    // `unlisten` would never run and a stale listener would double-fire progress.
-    let cancelled = false
-    tauri()?.event.listen<DownloadProgress>('mlx-download-progress', (e) => setProgress(e.payload))
-      .then((un) => { if (cancelled) un(); else unlisten = un }).catch(() => {})
-    return () => { cancelled = true; if (unlisten) unlisten() }
-  }, [downloading, prefetching])
 
   // Keep the live connected-state fresh while on the Integrations step, so the
   // rail status + completion summary reflect connects made via <ConnectTrackers>
@@ -244,15 +163,6 @@ export default function SetupWizard() {
     } catch (e) { setErr(String(e)) }
   }, [])
 
-  // Retry after a runtime/model provisioning error: clear the one-shot guards so
-  // the poll re-drives install → start → prefetch from wherever it stalled.
-  const retryModel = useCallback(() => {
-    setMlxErr('')
-    runtimeStarted.current = false
-    prefetchStarted.current = false
-    setProgress({ received: 0, total: 0, speed: 0, message: 'Retrying…' })
-  }, [])
-
   // Persists the Clerk-verified email so the Rust side knows who's signed in
   // even after this webview session ends (see commands::save_account_email).
   // Best-effort: a failed write here never blocks the wizard — the widget
@@ -264,9 +174,6 @@ export default function SetupWizard() {
 
   const wiz: Wiz = {
     perms, openPane, grantScreen, grantNotifications,
-    specs, mlx, downloading, prefetching, modelReady, progress,
-    speed: progress?.speed ?? null,
-    err: mlxErr, retryModel,
     integrations, refetchIntegrations,
     signedInEmail, onSignedIn,
     provider, providerCustomId, setProvider, providers, scanningProviders,
@@ -334,11 +241,16 @@ export default function SetupWizard() {
                 <>
                   <div style={{ padding: '26px 32px 16px' }}>
                     <Kicker style={{ marginBottom: 9 }}>{meta.kicker}</Kicker>
-                    <h1 style={{ ...SERIF, fontSize: 27, lineHeight: 1.04, letterSpacing: '-.01em', color: 'var(--t-title)' }}>{meta.title}</h1>
+                    <h1 style={{ ...DISPLAY, fontSize: 23, fontWeight: 750, lineHeight: 1.1, letterSpacing: '-.03em', color: 'var(--t-title)' }}>{meta.title}</h1>
                     <p style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--t-muted)', marginTop: 8, maxWidth: 460, textWrap: 'pretty' }}>{meta.subtitle}</p>
                   </div>
-                  <div className="nice-scroll" style={{ flex: 1, overflowY: 'auto', padding: '4px 32px 22px' }}>
-                    <meta.Body wiz={wiz} />
+                  <div className="nice-scroll flex flex-col" style={{ flex: 1, overflowY: 'auto', padding: '4px 32px 22px' }}>
+                    {/* marginBlock:auto vertically centres a short step body (no more
+                        top-loaded content + empty bottom) while a tall body — the
+                        provider list — still scrolls from the top without clipping. */}
+                    <div style={{ marginBlock: 'auto', width: '100%' }}>
+                      <meta.Body wiz={wiz} />
+                    </div>
                   </div>
                   <Footer step={step} last={last} canNext={meta.canNext(wiz)} err={err}
                     onBack={() => { setErr(''); setStep(Math.max(0, step - 1)) }}
@@ -360,7 +272,7 @@ function Rail({ step, done, wiz, goStep }: { step: number; done: boolean; wiz: W
       <div style={{ padding: '0 6px', marginBottom: 26 }}>
         <div className="flex items-center" style={{ gap: 8 }}>
           <span style={{ width: 8, height: 8, borderRadius: 99, background: 'var(--color-state-proposal)' }} />
-          <span style={{ ...SERIF, fontSize: 21, lineHeight: 1, letterSpacing: '.01em', color: 'var(--t-title)' }}>meridian</span>
+          <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 16, lineHeight: 1, letterSpacing: '-.01em', color: 'var(--t-title)' }}>meridian</span>
         </div>
       </div>
       <div className="flex flex-col" style={{ gap: 2 }}>
@@ -382,19 +294,19 @@ function Rail({ step, done, wiz, goStep }: { step: number; done: boolean; wiz: W
               <span className="flex items-center justify-center font-mono shrink-0" style={{
                 width: 24, height: 24, borderRadius: 99, fontSize: 11, fontWeight: 600, marginTop: 1,
                 background: ok ? 'var(--color-state-proposal)' : isCur ? 'var(--t-card)' : 'transparent',
-                color: ok ? '#fff' : isCur ? 'var(--color-state-proposal)' : 'var(--t-faint-2)',
+                color: ok ? '#fff' : isCur ? 'var(--color-state-proposal)' : 'var(--t-faint)',
                 border: ok ? 'none' : `1px solid ${isCur ? 'var(--color-state-proposal)' : 'var(--t-card-border)'}`,
               }}>{ok ? <Check size={13} color="#fff" /> : s.n}</span>
               <div style={{ minWidth: 0, paddingTop: 1 }}>
-                <p style={{ fontSize: 13, fontWeight: isCur ? 500 : 400, color: reached ? 'var(--t-title)' : 'var(--t-faint)' }}>{s.label}</p>
-                <p className="font-mono" style={{ fontSize: 10, color: ok ? 'var(--color-state-approved)' : 'var(--t-faint-2)', marginTop: 2, letterSpacing: '.02em' }}>{s.status(wiz)}</p>
+                <p style={{ fontSize: 13, fontWeight: isCur ? 600 : 450, color: reached ? 'var(--t-title)' : 'var(--t-muted)' }}>{s.label}</p>
+                <p className="font-mono" style={{ fontSize: 10, color: ok ? 'var(--color-state-approved)' : 'var(--t-faint)', marginTop: 2, letterSpacing: '.02em' }}>{s.status(wiz)}</p>
               </div>
             </button>
           )
         })}
       </div>
       <div style={{ flex: 1 }} />
-      <p className="font-mono" style={{ fontSize: 10, letterSpacing: '.12em', color: 'var(--t-faint-2)', padding: '0 8px', textTransform: 'uppercase' }}>First-run setup</p>
+      <p className="font-mono" style={{ fontSize: 10, letterSpacing: '.12em', color: 'var(--t-faint)', padding: '0 8px', textTransform: 'uppercase' }}>First-run setup</p>
     </div>
   )
 }

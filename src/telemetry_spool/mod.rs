@@ -36,7 +36,7 @@ pub mod writer;
 /// and `sent/` (optionally filtered to `micros >= since_micros`) — the OTel
 /// spool, sole source of application logs/traces — plus, when
 /// `include_launchd_logs` is set, the launchd-redirected raw stdout/stderr
-/// files (`daemon.log`, `mlx-server.log`, etc. — the crash safety net; see
+/// files (`daemon.log`, `tray.log`, etc. — the crash safety net; see
 /// `observability.rs`'s module doc) so a single bundle also carries whatever
 /// OTel structurally can't: a panic/crash from before or outside the logger.
 ///

@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 use crate::{flow, store};
 
 /// Empty sentinel — the real key is never stored in source. Set TRELLO_APP_KEY
-/// in the bundle .env at package time (scripts/package-release.sh injects it).
+/// in `~/.meridian/.env` to enable Trello OAuth.
 pub const DEFAULT_APP_KEY: &str = "";
 
 /// Fixed loopback port for the Trello token relay. Must be registered as an

@@ -10,7 +10,6 @@
 //! - [`poll`]     — the background health/active/today/worklogs poll loop.
 //! - [`state`]    — the shared [`state::AppState`] the poll loop maintains.
 //! - [`install`]     — install-mode + db-path resolution.
-//! - [`mlx_server`]  — MLX child-process manager (Approach A bundled venv).
 //! - [`sys`]         — shared uid / notify / dashboard-URL helpers.
 //! - [`format`]      — duration formatting for the popover.
 //! - [`analytics`]   — PostHog product-analytics capture (DMG installs only).
@@ -37,7 +36,6 @@ pub(crate) const SELF_PRODUCT_NAME_LOWER: &str = "meridian";
 pub(crate) const SELF_BINARY_NAME: &str = "meridian-tray";
 pub(crate) mod format;
 mod install;
-pub(crate) mod mlx_server;
 mod poll;
 mod state;
 mod sys;
@@ -87,8 +85,6 @@ pub fn run() {
     }
 
     let app_state = Arc::new(Mutex::new(AppState::default()));
-    let mlx_manager: mlx_server::SharedMlxManager =
-        Arc::new(tokio::sync::Mutex::new(mlx_server::MlxManager::new(7823)));
 
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_positioner::init())
@@ -137,7 +133,6 @@ pub fn run() {
     }
     builder
         .manage(app_state.clone())
-        .manage(mlx_manager.clone())
         // Pending dashboard navigation target (e.g. "/plan") — set by tray-side
         // openers, pulled by the dashboard shell on mount. See `deep_link`.
         .manage(deep_link::PendingDeepLink(std::sync::Mutex::new(None)))
@@ -446,16 +441,6 @@ pub fn run() {
                 poll::run_poll_loop(app_handle, state_clone).await;
             });
 
-            // Adopt any MLX server that survived from a previous tray run so we
-            // don't spawn a duplicate.
-            {
-                let mlx = mlx_manager.clone();
-                tauri::async_runtime::spawn(async move {
-                    let home = std::env::var("HOME").unwrap_or_default();
-                    mlx_server::reclaim_orphan(&home, 7823, &mlx).await;
-                });
-            }
-
             // Stage + register the bundled daemon on the self-contained .app DMG
             // path (also retires any leftover a11y-helper agent from an older
             // install — see backend_install's module docs). No-op under
@@ -602,7 +587,7 @@ pub fn run() {
             commands::open_external_url,
             commands::quit_app,
             commands::hide_popover,
-            // Setup wizard (first-run, permissions, MLX)
+            // Setup wizard (first-run, permissions, providers)
             commands::is_first_run,
             commands::mark_setup_complete,
             commands::save_account_email,
@@ -613,14 +598,9 @@ pub fn run() {
             commands::request_screen_recording,
             commands::check_notifications,
             commands::request_notifications,
-            commands::get_mlx_status,
-            commands::start_mlx_server_cmd,
-            commands::download_runtime_cmd,
-            commands::prefetch_model_cmd,
             commands::detect_llm_providers,
             commands::test_llm_provider,
             commands::test_all_llm_providers,
-            commands::detect_system_specs,
             // Custom cloud endpoints (add/probe/remove). `add` + `probe` spend real metered
             // requests measuring the endpoint — only ever on explicit user action.
             commands::add_custom_llm_provider,

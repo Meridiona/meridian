@@ -13,14 +13,6 @@ use meridian::observability;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::Notify;
 
-/// User-facing remediation hint for the `mlx.down` notice. The tray auto-restarts
-/// the MLX server (see `tray/src-tauri/src/poll/mod.rs::supervise_mlx`), so an
-/// installed user has nothing to type — the only manual fallback is relaunching
-/// Meridian. Deliberately NOT the dev `cd services && .venv/bin/python …` command,
-/// which is meaningless on a packaged install (no `services/` or `.venv`).
-const MLX_DOWN_FIX_HINT: &str =
-    "Meridian restarts the classifier automatically. If it keeps happening, quit and reopen Meridian.";
-
 /// Single-instance probe for the daemon socket. Returns `true` only when a live
 /// daemon answers `~/.meridian/daemon.sock` with its greeting — i.e. one is already
 /// running for this data dir. A missing/stale socket with no listener (previous
@@ -48,8 +40,8 @@ async fn daemon_already_running(sock_path: &std::path::Path) -> bool {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 1. Load the repo-local .env — the single source of config, shared by this
-    //    daemon and the Python services. Nothing is read from outside the repo.
+    // 1. Load the repo-local .env — the single source of config for the daemon.
+    //    Nothing is read from outside the repo.
     //    The launchd plist sets WorkingDirectory to the repo root, so
     //    dotenv_override reads <repo>/.env and its values beat any empty
     //    defaults injected by the plist. (CLI subcommands invoked from elsewhere
@@ -102,9 +94,9 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         let commands_dir = home.join(".claude/commands");
         let skill_path = commands_dir.join("session-summary.md");
-        // Keep in sync with services/skills/coding-agent/session-summary/SKILL.md
-        // (install.sh and install-from-bundle.sh copy that file directly; this
-        // path is the fallback for `meridian doctor --fix` and `meridian coding-agent-install-skill`)
+        // Keep in sync with assets/skills/coding-agent/session-summary/SKILL.md.
+        // install.sh runs this command; it is also the fallback for
+        // `meridian doctor --fix` and direct `meridian coding-agent-install-skill`.
         let content = concat!(
             "---\n",
             "description: Summarise a coding-agent session transcript for a Jira work-log.\n",
@@ -215,37 +207,6 @@ async fn main() -> Result<()> {
                 eprintln!("oauth-login: unknown provider {other:?} (supported: jira, trello)");
                 std::process::exit(1);
             }
-        }
-        return Ok(());
-    }
-
-    // `meridian pm-worklog [--day YYYY-MM-DD]` — one-shot Stage 4: walk the day's
-    // hours and DRAFT one worklog per task per ready hour (never posts — posting
-    // is approval-gated). Opens via setup_db so migrations (incl. the pm_worklog
-    // tables) are applied even when run standalone.
-    if std::env::args().nth(1).as_deref() == Some("pm-worklog") {
-        let args: Vec<String> = std::env::args().collect();
-        let day = args
-            .iter()
-            .position(|a| a == "--day")
-            .and_then(|i| args.get(i + 1).cloned());
-        let cfg = Config::from_env();
-        // Initialise observability so this one-shot emits the SAME worklog_draft
-        // trace the daemon does (lineage child spans + the active span whose
-        // traceparent propagates to the MLX synth, nesting worklog_input/output
-        // inside the worklog trace). Without this the CLI emitted no spans and the
-        // synth landed as an orphan root. Flushed explicitly before exit so the
-        // batch processor's final spans reach the telemetry spool.
-        let obs_guard = observability::init("meridian-rust").ok();
-        match setup_db(&cfg.meridian_db_uri()).await {
-            Ok(pool) => {
-                meridian::pm_worklog::cli_run(&pool, day.as_deref()).await;
-                pool.close().await;
-            }
-            Err(e) => eprintln!("pm-worklog: open db: {e}"),
-        }
-        if let Some(g) = obs_guard {
-            g.shutdown().await;
         }
         return Ok(());
     }
@@ -903,10 +864,10 @@ async fn main() -> Result<()> {
 
     // 4b. Open / create meridian pool and run migrations FIRST — before any
     //     preflight that can block or fail. The UI and MCP server read this DB
-    //     directly, so it must exist even when an optional component (MLX
-    //     server, screenpipe) is down; ordering it after the MLX preflight left
-    //     machines with a broken MLX install running a daemon that never
-    //     created its own database.
+    //     directly, so it must exist even when an optional component (capture,
+    //     an agent CLI) is degraded; ordering it after a preflight that could
+    //     block once left machines running a daemon that never created its own
+    //     database.
     let meridian = setup_db(&initial_cfg.meridian_db_uri()).await?;
 
     // 4c. Capture-layer (L1) preflight: surface degraded in-process capture
@@ -997,7 +958,7 @@ async fn main() -> Result<()> {
         Err(e) => tracing::error!("cleanup_incomplete_runs failed: {}", e),
     }
 
-    // 7b. A background task drains the classification queue without blocking the
+    // 7b. Shared handles the poll loop uses to signal ETL ticks to observers.
     let etl_notify: Arc<Notify> = Arc::new(Notify::new());
     let etl_tick_span: Arc<std::sync::Mutex<Option<tracing::Span>>> =
         Arc::new(std::sync::Mutex::new(None));
@@ -1057,9 +1018,9 @@ async fn main() -> Result<()> {
         });
     }
 
-    // 7d. PM-worklog driver: hour-level pipeline — clock-aligned (HH:03 local), POSTs
-    //     /worklog_hour to the MLX server once per completed hour; Python does the
-    //     full distil→classify→draft. Drafts only; posting is run_post_loop's job.
+    // 7d. PM-worklog driver: hour-level pipeline — clock-aligned (HH:03 local), runs
+    //     once per completed hour fully in-process (distil → report → workstream fold
+    //     → draft). Drafts only; posting is run_post_loop's job.
     {
         let pool_pm = meridian.clone();
         let db_path_pm = initial_cfg.meridian_db.clone();
@@ -1095,6 +1056,20 @@ async fn main() -> Result<()> {
     {
         tokio::spawn(async move {
             meridian::telemetry_spool::shipper::run_shipper(shipper_shutdown_rx).await;
+        });
+    }
+
+    // 7g. Embedder weight provisioning: first-run download of the session distiller's
+    //     on-device embedding model (~130 MB). Fire-and-forget — `embedder::is_ready()`
+    //     gates every caller, so a slow or failed download just means the distiller keeps
+    //     taking its lexical-only degrade path until this succeeds (retried next start).
+    //     Idempotent (`ensure_weights` skips files already on disk), so this is safe to run
+    //     unconditionally on every boot rather than only once at setup time.
+    {
+        tokio::spawn(async move {
+            if let Err(e) = meridian::embedder::ensure_weights().await {
+                tracing::warn!(error = %e, "embedder: weight provisioning failed — distiller stays on lexical-only until this succeeds");
+            }
         });
     }
 
@@ -1164,33 +1139,6 @@ async fn main() -> Result<()> {
                     tracing::debug!(error = %e, "notification response consume skipped");
                 }
 
-                // Proactive classifier health probe. Detect a down/wedged MLX
-                // server every tick via a fast /health check (NOT reactively, only
-                // when a classify happens to fail) so the fault surfaces promptly
-                // on the dashboard banner AND — via the notices→outbox bridge — as
-                // a desktop toast + in-app banner. Auto-clears when it recovers.
-                // Suppress this alarm during first-run onboarding: the MLX server
-                // is still being provisioned (runtime downloading), so "offline" is
-                // expected, not a fault — surfacing it (banner + desktop toast) in
-                // the setup wizard is just noise. Only raise once setup is complete.
-                // A genuine post-setup outage still surfaces reactively via the
-                // task-linker's mlx.down notice above, so this gate hides nothing.
-                let onboarded = std::env::var("HOME")
-                    .map(|h| std::path::Path::new(&h).join(".meridian/onboarded").exists())
-                    .unwrap_or(true);
-                if meridian::intelligence::mlx_ready(&cfg).await || !onboarded {
-                    let _ = meridian::notices::clear(&meridian, "mlx.down").await;
-                } else {
-                    let _ = meridian::notices::raise(
-                        &meridian,
-                        "mlx.down",
-                        "warning",
-                        "Classifier offline",
-                        "The MLX classifier server isn't responding — new sessions are recorded but won't be tagged until it's back.",
-                        Some(MLX_DOWN_FIX_HINT),
-                    )
-                    .await;
-                }
                 // Refresh the PM task cache (pm_tasks) every tick — interval-gated
                 // per provider (~5 min), so this is a cheap no-op most ticks. The
                 // legacy drafting driver that used to trigger this before every

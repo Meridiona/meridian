@@ -333,6 +333,9 @@ async fn summarise_one_inner(
                 }
                 Err(SummariserError::RateLimited(m)) => {
                     rate_limited = true;
+                    // Log the primary failure explicitly — with no fallback, a
+                    // rate-limited engine means this row simply waits for a later
+                    // drain, and that state must be visible, not silent.
                     tracing::warn!(
                         row_id = row.id,
                         engine = primary_source.as_str(),
@@ -358,6 +361,9 @@ async fn summarise_one_inner(
             }
         }
 
+        // No fallback: a coding-agent transcript is summarised by ITS OWN CLI, so routing
+        // a Codex session to some other engine would be wrong. On primary failure the row
+        // is left pending and the drain loop retries it on a later tick.
         (summary, source, rate_limited, attempts_made)
     }
     .instrument(infer_span.clone())
@@ -474,8 +480,8 @@ pub(crate) fn cap_transcript(transcript: &str, cap: usize) -> String {
 // ──────────────────────── Loop ──────────────────────────────────────────────
 
 /// The summariser task: drain the queue, then wait for an indexer notify or the
-/// catch-up sweep. Dormant if no coding agent is present. Backs off when both
-/// the primary engine and MLX are unavailable.
+/// catch-up sweep. Dormant if no coding agent is present. Backs off when the
+/// primary engine is unavailable (a failed row stays pending for a later drain).
 pub async fn run_loop(
     pool: SqlitePool,
     notify: Arc<Notify>,
@@ -539,8 +545,8 @@ const MAX_ROW_ATTEMPTS: u32 = 3;
 /// signalling the caller to wait longer rather than spinning.
 ///
 /// Rate-limit backoff is per-source (keyed on `app_name`): if Claude Code is
-/// rate-limited, Codex / Cursor / Copilot rows continue draining via MLX or
-/// their own primary. The old global 30-minute freeze is gone.
+/// rate-limited, Codex / Cursor / Copilot rows continue draining via their own
+/// primary. The old global 30-minute freeze is gone.
 ///
 /// Why the yesterday+today window: today-only strands rows sealed just before
 /// midnight; all-days walks the full historical backlog. Yesterday+today

@@ -12,7 +12,7 @@
 //! The endpoint's identity (base URL, key, model) comes from a
 //! [`meridian_core::CustomLlmProvider`] registry row, not from this type or the
 //! [`LlmProvider`] enum — there can be several configured at once. The request shape is
-//! `local.rs`'s, which already speaks this protocol to the MLX server; the deltas are the
+//! the standard OpenAI chat-completions protocol; the deltas from a bare call are the
 //! base URL, `Authorization: Bearer`, and [`crate::llm::schema::strictify`] on the way out.
 //!
 //! # Structured output is measured, never assumed
@@ -570,9 +570,6 @@ mod tests {
             model: String::new(),
             meridian_home: std::path::PathBuf::from("/tmp"),
             cli_timeout_s: 5,
-            local_timeout_s: 5,
-            mlx_host: "127.0.0.1".into(),
-            mlx_port: 7823,
             custom: None,
         };
         let err = OpenAiCompatBackend { cfg }
@@ -620,9 +617,6 @@ mod tests {
             model: String::new(),
             meridian_home: std::path::PathBuf::from("/tmp"),
             cli_timeout_s: 90,
-            local_timeout_s: 90,
-            mlx_host: "127.0.0.1".into(),
-            mlx_port: 7823,
             custom: Some(CustomEndpoint {
                 id: "live".into(),
                 base_url: base,

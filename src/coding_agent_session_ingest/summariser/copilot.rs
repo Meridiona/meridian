@@ -2,7 +2,7 @@
 //
 // Run `copilot -p` to summarise a GitHub Copilot session (symmetry with
 // claude.rs / codex.rs — each agent's transcripts are summarised by its own
-// CLI on the user's subscription, MLX as the shared fallback). Non-interactive
+// CLI on the user's subscription, with no cross-engine fallback). Non-interactive
 // and side-effect-free: `-p` + `-s` (response only), no tool permissions
 // granted, custom instructions disabled so a stray AGENTS.md can't leak into
 // the summary.

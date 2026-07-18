@@ -3,18 +3,13 @@
 
 // Wizard step bodies + Welcome + Completion + the STEPS meta (ported from the
 // design's steps.jsx). Every body is driven by the live `Wiz` handle built in
-// page.tsx — permissions, MLX status, hardware specs, and OAuth state are all
-// real. Nothing here fabricates data: the spec panel and memory gauge render
-// detected hardware, and the model tiles map to real checkpoints.
+// page.tsx — permissions, integrations, sign-in, and the AI-provider choice are
+// all real. Nothing here fabricates data.
 
 import type { CSSProperties, ReactNode } from 'react'
-import { Btn, Bar, Check, Kicker, MemoryGauge, PermIcon, Row, Spinner } from './atoms'
-import {
-  APP, MODEL_ID, MODEL_RAM_GB, PERMISSIONS, fmtModelLabel, fmtSize,
-} from './data'
-import type {
-  DownloadProgress, MlxStatusResponse, NotifState, SystemSpecs,
-} from './data'
+import { Btn, Check, Kicker, PermIcon, Row } from './atoms'
+import { PERMISSIONS } from './data'
+import type { NotifState } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import { TRACKERS } from '@/lib/integrations'
 import { llmProvider, type LlmProviderId } from '@/lib/llm-providers'
@@ -22,7 +17,9 @@ import ConnectTrackers from '@/components/IntegrationConnect'
 import LlmProviderPicker, { type ProviderStatus } from '@/components/LlmProviderPicker'
 import { SignInWidget } from './signin'
 
-const SERIF: CSSProperties = { fontFamily: 'var(--font-serif)' }
+// One voice with the timeline UI: SF Pro (var(--font-sans)), not the old
+// Instrument Serif. Display headings just go heavier + tighter, same family.
+const DISPLAY: CSSProperties = { fontFamily: 'var(--font-sans)', fontWeight: 700, letterSpacing: '-.02em' }
 
 /** The live wizard handle page.tsx builds and threads to every step body. */
 export interface Wiz {
@@ -33,16 +30,6 @@ export interface Wiz {
   openPane: (pane: string) => void
   grantScreen: () => void
   grantNotifications: (alreadyDenied: boolean) => void
-  // Step 2 — local intelligence (live MLX status + detected specs)
-  specs: SystemSpecs | null
-  mlx: MlxStatusResponse | null
-  downloading: boolean    // runtime tarball in flight
-  prefetching: boolean    // model-set download in flight
-  modelReady: boolean     // every pipeline model is on disk
-  progress: DownloadProgress | null
-  speed: number | null    // live download speed in bytes/sec (null until known)
-  err: string             // last provisioning error ('' when none) — drives Retry
-  retryModel: () => void  // re-arm runtime/model provisioning after an error
   // Step 2 — integrations (live connected-state from get_integrations)
   integrations: IntegrationsResponse | null
   refetchIntegrations: () => void
@@ -87,9 +74,9 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="flex items-center" style={{ gap: 8 }}>
                 <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>{p.name}</span>
-                {!notif && <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', color: 'var(--t-faint)', border: '0.5px solid var(--t-card-border)', borderRadius: 4, padding: '1px 5px' }}>{p.required ? 'REQUIRED' : 'OPTIONAL'}</span>}
+                {!notif && <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', color: 'var(--t-muted)', border: '0.5px solid var(--t-card-border)', borderRadius: 4, padding: '1px 5px' }}>{p.required ? 'REQUIRED' : 'OPTIONAL'}</span>}
               </div>
-              <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-faint)', marginTop: 3 }}>{p.desc}</p>
+              <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-muted)', marginTop: 3 }}>{p.desc}</p>
             </div>
 
             <div className="shrink-0">
@@ -106,7 +93,7 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
           </Row>
         )
       })}
-      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-faint)', marginTop: 3 }}>
+      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-muted)', marginTop: 3 }}>
         <span style={{ width: 5, height: 5, borderRadius: 99, background: 'var(--color-state-approved)' }} />
         Your screen, tasks, and worklogs stay on this Mac and are never uploaded. We send usage stats - daily focus time, app version, and your email once you sign in - to improve Meridian, never your content.
       </p>
@@ -114,197 +101,7 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
   )
 }
 
-// ── STEP 2 — Local intelligence ──────────────────────────────────────────────
-
-/** One provisioning sub-step (engine install / model download). The leading
- *  glyph updates live as the phase advances: hollow ○ (pending) → spinner
- *  (active) → ✓ (done), so the two steps visibly tick off in sequence. */
-type StepState = 'pending' | 'active' | 'done' | 'error'
-function ProvisionStep({ state, label }: { state: StepState; label: string }) {
-  return (
-    <div className="flex items-center" style={{ gap: 10 }}>
-      <span className="flex items-center justify-center shrink-0" style={{ width: 20, height: 20 }}>
-        {state === 'done'
-          ? <Check size={16} color="var(--color-state-approved)" w={2.2} />
-          : state === 'error'
-            ? <span style={{ width: 12, height: 12, borderRadius: 99, background: 'var(--color-state-pending)' }} />
-            : state === 'active'
-              ? <Spinner size={15} width={2} />
-              : <span style={{ width: 12, height: 12, borderRadius: 99, border: '1.5px solid var(--t-card-border)' }} />}
-      </span>
-      <span style={{
-        fontSize: 12.5,
-        color: state === 'pending' ? 'var(--t-faint)' : state === 'error' ? 'var(--color-state-pending)' : 'var(--t-title)',
-        fontWeight: state === 'done' ? 500 : 400,
-      }}>{label}</span>
-    </div>
-  )
-}
-
-/** Compact hardware + expected-memory panel for the Local-intelligence step.
- *  Surfaces the detected chip/macOS/RAM and the engine's expected resident
- *  footprint — sized as the single largest model (the three load one-at-a-time,
- *  so peak memory is `MODEL_RAM_GB`) plus Meridian's own service (`APP.ramGB`) —
- *  as a fraction of unified memory, so the user sees what it costs before they
- *  finish setup. All numbers are live (`detect_system_specs`); when specs are
- *  unavailable (non-macOS / probe failure) it degrades to a bare estimate line
- *  with no gauge. The footprint label mirrors `Completion`'s "Footprint" row. */
-function SpecMemoryPanel({ specs }: { specs: SystemSpecs | null }) {
-  const footprintGb = MODEL_RAM_GB + APP.ramGB
-  const ram = specs?.ram_gb ?? 0
-  const pct = ram > 0 ? Math.min(100, Math.round((footprintGb / ram) * 100)) : null
-  const specBits = specs
-    ? [specs.chip, specs.macos, ram > 0 ? `${ram} GB unified` : ''].filter(Boolean)
-    : []
-  return (
-    <div style={{
-      width: 330, textAlign: 'left', background: 'var(--t-box)',
-      border: '0.5px solid var(--t-card-border)', borderRadius: 10, padding: '12px 14px',
-    }}>
-      <div className="flex items-center justify-between" style={{ marginBottom: pct !== null ? 9 : 0 }}>
-        <span className="font-mono" style={{ fontSize: 9.5, letterSpacing: '.1em', color: 'var(--t-faint)' }}>
-          EXPECTED MEMORY
-        </span>
-        <span style={{ fontSize: 12, color: 'var(--t-title)', fontWeight: 450 }}>
-          ≈&nbsp;{fmtSize(footprintGb)}{ram > 0 ? ` of ${ram} GB` : ''}
-        </span>
-      </div>
-      {pct !== null && (
-        <div className="flex items-center justify-center" style={{ marginBottom: 2 }}>
-          <MemoryGauge pct={pct} />
-        </div>
-      )}
-      {specBits.length > 0 && (
-        <p className="font-mono" style={{ fontSize: 10.5, color: 'var(--t-faint-2)', marginTop: 9, letterSpacing: '.02em' }}>
-          {specBits.join('  ·  ')}
-        </p>
-      )}
-    </div>
-  )
-}
-
-/** Self-checkable causes shown when provisioning hits a network/download error —
- *  ordered most-likely first, phrased so a non-technical user can fix it during
- *  setup (the download reaches GitHub over the network; corporate proxy/VPN/
- *  captive-portal are the usual blockers). */
-const SETUP_NET_HINTS: { t: string; d: string }[] = [
-  { t: 'Internet connection', d: 'Confirm you’re online. On café or hotel Wi-Fi, open a browser and finish any “sign in to connect” page, then Try again.' },
-  { t: 'VPN or firewall', d: 'A work VPN or firewall can block the download. Pause the VPN or switch to another network.' },
-  { t: 'Network proxy', d: 'If your Mac uses a proxy (System Settings → Network → Proxies), Meridian may not pick it up. Try a network without a proxy.' },
-  { t: 'Security software', d: 'Tools that inspect secure connections can interrupt the download - allow Meridian or pause them briefly.' },
-]
-
-function MLXBody({ wiz }: { wiz: Wiz }) {
-  const m = wiz.mlx
-  const runtimeInstalled = !!(m && (m.runtime_found || m.runtime_installed))
-  const unavailable = !!(m && !runtimeInstalled && !m.download_available)
-  const pct = wiz.progress && wiz.progress.total > 0
-    ? Math.min(100, Math.round((wiz.progress.received / wiz.progress.total) * 100)) : null
-  const showErr = (!!wiz.err && !wiz.modelReady) || unavailable
-  const working = !wiz.modelReady && !showErr
-  const installStepState: StepState =
-    runtimeInstalled ? 'done' : wiz.downloading ? 'active' : wiz.err ? 'error' : 'pending'
-  const modelStepState: StepState =
-    wiz.modelReady ? 'done' : wiz.prefetching ? 'active' : runtimeInstalled && !!wiz.err ? 'error' : 'pending'
-
-  return (
-    <div className="flex flex-col items-center justify-center" style={{ minHeight: 300, textAlign: 'center', padding: '8px 8px 4px' }}>
-      {/* State glyph — one calm circle, mirroring the Completion mark */}
-      <span className="flex items-center justify-center mer-pop" style={{
-        width: 60, height: 60, borderRadius: 99, marginBottom: 24,
-        background: showErr ? 'var(--t-box)' : 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)',
-        color: showErr ? 'var(--color-state-pending)' : 'var(--color-state-proposal)',
-        border: showErr ? '0.5px solid var(--t-card-border)' : 'none',
-      }}>
-        {wiz.modelReady
-          ? <Check size={28} color="var(--color-state-proposal)" w={2.2} />
-          : showErr
-            ? <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 7.5v6" /><circle cx="12" cy="17" r="0.7" fill="currentColor" stroke="none" /></svg>
-            : <Spinner size={24} width={2} />}
-      </span>
-
-      {/* Progress — only while working. The MB readout makes it tangibly alive:
-          the numbers climb even when % barely moves on a slow shard. */}
-      {working && (
-        <div style={{ width: 300, minHeight: 30 }}>
-          {pct !== null ? (
-            <>
-              <Bar pct={pct} />
-              <p className="font-mono tnum" style={{ fontSize: 11, color: 'var(--t-faint)', marginTop: 9, letterSpacing: '.02em' }}>
-                {Math.round((wiz.progress?.received ?? 0) / 1_048_576)} / {Math.round((wiz.progress?.total ?? 0) / 1_048_576)} MB · {pct}%
-                {wiz.speed && wiz.speed > 0 ? ` · ${(wiz.speed / 1_048_576).toFixed(1)} MB/s` : ''}
-              </p>
-            </>
-          ) : (
-            <p className="font-mono" style={{ fontSize: 11.5, color: 'var(--t-faint)' }}>{wiz.progress?.message ?? 'Preparing…'}</p>
-          )}
-        </div>
-      )}
-
-      {/* Two-step checklist — each row ticks to ✓ as that phase completes, so
-          "engine" and "models" read as distinct, sequential steps. Hidden only
-          when the runtime can't be provisioned at all (nothing to track). */}
-      {!unavailable && (
-        <div className="flex flex-col" style={{ gap: 10, width: 250, margin: working ? '16px 0 2px' : '12px 0 2px', textAlign: 'left' }}>
-          <ProvisionStep state={installStepState} label="Install on-device engine" />
-          <ProvisionStep state={modelStepState} label="Download private models" />
-        </div>
-      )}
-
-      {/* Status line — reflects the live phase / outcome */}
-      <p style={{
-        fontSize: 13, lineHeight: 1.5, maxWidth: 300, marginTop: working ? 18 : 4,
-        color: wiz.modelReady ? 'var(--t-title)' : 'var(--t-muted)', textWrap: 'pretty',
-      }}>
-        {wiz.modelReady
-          ? 'Your on-device engine is ready.'
-          : unavailable
-            ? 'The on-device runtime isn’t available for this Mac.'
-            : showErr
-              ? (wiz.err || 'The download didn’t finish.')
-              : 'Downloading the models that run privately on your Mac - just once.'}
-      </p>
-
-      {/* Detected specs + expected memory footprint — shown while provisioning
-          and after ready (hidden on error, where the fix-it hints take over, and
-          on `unavailable`, where there's no engine to size). */}
-      {!showErr && (
-        <div style={{ marginTop: working ? 18 : 14 }}>
-          <SpecMemoryPanel specs={wiz.specs} />
-        </div>
-      )}
-
-      {/* Recoverable error → show the likely causes the user can self-check
-          (most-likely first) plus a retry. Hidden for `unavailable` (a hardware
-          verdict, not a fixable network issue). */}
-      {showErr && !unavailable && (
-        <div className="flex flex-col items-center" style={{ marginTop: 16 }}>
-          <div style={{
-            width: 330, textAlign: 'left', background: 'var(--t-box)',
-            border: '0.5px solid var(--t-card-border)', borderRadius: 10, padding: '12px 14px',
-          }}>
-            <p className="font-mono" style={{ fontSize: 9.5, letterSpacing: '.1em', color: 'var(--t-faint)', marginBottom: 9 }}>
-              IF IT KEEPS FAILING, CHECK
-            </p>
-            <div className="flex flex-col" style={{ gap: 9 }}>
-              {SETUP_NET_HINTS.map((h, i) => (
-                <div key={h.t} className="flex items-start" style={{ gap: 8 }}>
-                  <span className="font-mono shrink-0" style={{ fontSize: 10.5, color: 'var(--t-faint-2)', fontWeight: 600, lineHeight: 1.55, width: 11 }}>{i + 1}</span>
-                  <p style={{ fontSize: 11.5, lineHeight: 1.45, color: 'var(--t-muted)' }}>
-                    <span style={{ fontWeight: 500, color: 'var(--t-title)' }}>{h.t}</span> - {h.d}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </div>
-          <Btn size="sm" variant="secondary" onClick={wiz.retryModel} style={{ marginTop: 14 }}>Try again</Btn>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ── STEP 3 — Integrations ─────────────────────────────────────────────────────
+// ── STEP 2 — Integrations ─────────────────────────────────────────────────────
 // The whole connect surface is the shared <ConnectTrackers> (same component the
 // dashboard uses), so all 5 providers + every connect flow live in one place.
 function IntegrationsBody({ wiz }: { wiz: Wiz }) {
@@ -312,7 +109,7 @@ function IntegrationsBody({ wiz }: { wiz: Wiz }) {
   return (
     <div className="flex flex-col" style={{ gap: 9 }}>
       <ConnectTrackers integrations={wiz.integrations} onChanged={wiz.refetchIntegrations} compact />
-      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-faint)', marginTop: 3 }}>
+      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-muted)', marginTop: 3 }}>
         <span style={{ width: 5, height: 5, borderRadius: 99, background: connected ? 'var(--color-state-approved)' : 'var(--t-faint-2)' }} />
         {connected > 0
           ? `${connected} connected · Meridian will match sessions and draft worklogs.`
@@ -340,7 +137,7 @@ function SignInBody({ wiz }: { wiz: Wiz }) {
         }}><Check size={16} color="var(--color-state-proposal)" w={2.2} /></span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>Signed in</span>
-          <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-faint)', marginTop: 3 }}>{wiz.signedInEmail}</p>
+          <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-muted)', marginTop: 3 }}>{wiz.signedInEmail}</p>
         </div>
       </Row>
     )
@@ -356,7 +153,7 @@ function SignInBody({ wiz }: { wiz: Wiz }) {
 // The choice is never blocked on the CLI being installed: the probe reports *installed*,
 // not *signed in* (we refuse to probe auth — see src/llm/detect.rs), so a hard gate here
 // would be built on a half-truth. Picking a missing CLI shows the install command and an
-// honest note that the hour falls back on-device until it's there.
+// honest note that those hours stay pending until it's there.
 function IntelligenceBody({ wiz }: { wiz: Wiz }) {
   const picked = llmProvider(wiz.provider)
   const missing = picked.kind === 'cli' && wiz.providers[picked.id]?.installed === false
@@ -372,19 +169,17 @@ function IntelligenceBody({ wiz }: { wiz: Wiz }) {
         testOne={wiz.testProvider}
         rescan={wiz.rescanProviders}
       />
-      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-faint)', marginTop: 3 }}>
+      <p className="flex items-center" style={{ gap: 7, fontSize: 11, color: 'var(--t-muted)', marginTop: 3 }}>
         <span style={{
           width: 5, height: 5, borderRadius: 99,
           background: missing ? 'var(--color-state-pending)' : 'var(--color-state-approved)',
         }} />
         {missing
-          ? `${picked.name} isn't installed yet - install it and hit Rescan, or Meridian will use the on-device model in the meantime.`
-          : picked.kind === 'local'
-            ? 'Nothing leaves your Mac. Change it anytime in Settings.'
-            : picked.kind === 'custom'
-              // Not "your own subscription" - this one bills per call on the key they pasted.
-              ? 'Summaries are written by your own endpoint, billed to your own API key. Change it anytime in Settings.'
-              : `Summaries are written by ${picked.name}, on your own subscription. Change it anytime in Settings.`}
+          ? `${picked.name} isn't installed yet - install it and hit Rescan, or those hours stay pending until it's there.`
+          : picked.kind === 'custom'
+            // Not "your own subscription" - this one bills per call on the key they pasted.
+            ? 'Summaries are written by your own endpoint, billed to your own API key. Change it anytime in Settings.'
+            : `Summaries are written by ${picked.name}, on your own subscription. Change it anytime in Settings.`}
       </p>
     </div>
   )
@@ -393,22 +188,22 @@ function IntelligenceBody({ wiz }: { wiz: Wiz }) {
 // ── Welcome (pre-step intro) ──────────────────────────────────────────────────
 export function Welcome({ onBegin }: { onBegin: () => void }) {
   const points = [
-    { t: 'On-device', d: 'Runs on Apple MLX - your screen is read and understood locally, never uploaded.' },
-    { t: 'Automatic', d: 'Builds an accurate timeline of the tickets you worked on - then drafts the updates for you.' },
+    { t: 'On-device', d: 'Your screen is read and understood locally on your Mac, never uploaded.' },
+    { t: 'Automatic', d: 'Builds an accurate timeline of the tickets you worked on, then drafts the updates for you.' },
     { t: 'Connected', d: 'Works with Jira, Linear, GitHub, Trello, and Azure DevOps.' },
   ]
   return (
     <div className="flex flex-col items-center justify-center" style={{ height: '100%', textAlign: 'center', padding: '36px 44px' }}>
-      <div className="flex items-center mer-pop" style={{ gap: 9, marginBottom: 24 }}>
+      <div className="flex items-center mer-pop" style={{ gap: 9, marginBottom: 22 }}>
         <span style={{ width: 9, height: 9, borderRadius: 99, background: 'var(--color-state-proposal)' }} />
-        <span style={{ ...SERIF, fontSize: 25, lineHeight: 1, letterSpacing: '.01em', color: 'var(--t-title)' }}>meridian</span>
+        <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 19, lineHeight: 1, letterSpacing: '-.01em', color: 'var(--t-title)' }}>meridian</span>
       </div>
       <Kicker style={{ marginBottom: 14 }}>First-run setup</Kicker>
-      <h1 style={{ ...SERIF, fontSize: 39, lineHeight: 1.02, letterSpacing: '-.015em', color: 'var(--t-title)', maxWidth: 440, textWrap: 'balance' }}>
-        Your work, <span style={{ fontStyle: 'italic', color: 'var(--color-state-proposal)' }}>remembered - accurately.</span>
+      <h1 style={{ ...DISPLAY, fontSize: 33, fontWeight: 750, lineHeight: 1.08, letterSpacing: '-.03em', color: 'var(--t-title)', maxWidth: 400, textWrap: 'balance' }}>
+        Your work, <span style={{ color: 'var(--color-state-proposal)' }}>remembered accurately.</span>
       </h1>
-      <p style={{ fontSize: 13.5, lineHeight: 1.55, color: 'var(--t-muted)', marginTop: 14, maxWidth: 380, textWrap: 'pretty' }}>
-        Meridian watches your work on-device and keeps an accurate record of what you actually did - then turns it into worklogs and ticket updates you just approve.
+      <p style={{ fontSize: 13.5, lineHeight: 1.55, color: 'var(--t-muted)', marginTop: 13, maxWidth: 384, textWrap: 'pretty' }}>
+        Meridian watches your work on-device and keeps an accurate record of what you actually did, then turns it into worklogs and ticket updates you just approve.
       </p>
       <div className="flex flex-col" style={{ gap: 11, margin: '26px 0 28px', textAlign: 'left', width: '100%', maxWidth: 360 }}>
         {points.map((p) => (
@@ -423,7 +218,7 @@ export function Welcome({ onBegin }: { onBegin: () => void }) {
         ))}
       </div>
       <Btn onClick={onBegin} style={{ padding: '11px 26px', fontSize: 13.5 }}>Get started</Btn>
-      <p className="font-mono" style={{ fontSize: 10.5, letterSpacing: '.04em', color: 'var(--t-faint-2)', marginTop: 14 }}>{STEPS.length} quick steps · about a minute</p>
+      <p className="font-mono" style={{ fontSize: 10.5, letterSpacing: '.04em', color: 'var(--t-faint)', marginTop: 14 }}>{STEPS.length} quick steps · about a minute</p>
     </div>
   )
 }
@@ -435,8 +230,6 @@ export function Completion({ wiz }: { wiz: Wiz }) {
   const lines = [
     { k: 'Permissions', v: `${grantedCount} of 2 granted` },
     { k: 'Intelligence', v: llmProvider(wiz.provider).name },
-    { k: 'Local model', v: fmtModelLabel(MODEL_ID) },
-    { k: 'Footprint', v: `${fmtSize(MODEL_RAM_GB + APP.ramGB)} memory` },
     { k: 'Connected', v: connected.length ? connected.map((c) => c.name).join(', ') : 'None yet' },
   ]
   return (
@@ -445,7 +238,7 @@ export function Completion({ wiz }: { wiz: Wiz }) {
         <Check size={28} color="var(--color-state-proposal)" w={2.2} />
       </span>
       <Kicker style={{ marginBottom: 10 }}>Setup complete</Kicker>
-      <h1 style={{ ...SERIF, fontSize: 38, lineHeight: 1, letterSpacing: '-.01em', color: 'var(--t-title)', marginBottom: 10 }}>You&apos;re all set.</h1>
+      <h1 style={{ ...DISPLAY, fontSize: 31, fontWeight: 750, lineHeight: 1.05, letterSpacing: '-.03em', color: 'var(--t-title)', marginBottom: 10 }}>You&apos;re all set.</h1>
       <p style={{ fontSize: 13.5, lineHeight: 1.5, color: 'var(--t-muted)', maxWidth: 340, textWrap: 'pretty', marginBottom: 22 }}>
         Meridian is now tracking quietly in your menu bar - on-device, private, and matched to your work.
       </p>
@@ -474,11 +267,9 @@ export interface StepMeta {
   canNext: (w: Wiz) => boolean
 }
 
-// Local intelligence is LAST on purpose: the model download starts the moment
-// the wizard opens (see page.tsx), so it runs in the background while the user
-// handles Permissions + Integrations and is usually done — or nearly so — by the
-// time they arrive here. Permissions stays first (capture needs them); the
-// download-gated step sits at the end so the wait, if any, is the last thing.
+// Permissions stays first (capture needs them); the AI-provider choice comes
+// last so the user has connected their trackers and signed in before picking
+// which model writes their summaries.
 export const STEPS: StepMeta[] = [
   {
     id: 'permissions', n: '01', label: 'Permissions', kicker: 'Access',
@@ -507,25 +298,11 @@ export const STEPS: StepMeta[] = [
   {
     id: 'provider', n: '04', label: 'Intelligence', kicker: 'Your AI',
     title: 'Choose the AI that writes your summaries',
-    subtitle: 'One choice, used everywhere Meridian writes prose about your day. Use a coding-agent CLI you already pay for, or keep it entirely on-device.',
+    subtitle: 'One choice, used everywhere Meridian writes prose about your day. Use a coding-agent CLI you already pay for, or a custom cloud endpoint on your own key.',
     Body: IntelligenceBody,
     status: (s) => llmProvider(s.provider).name,
     // Never gates. Every path out of this step is valid — including picking a CLI that
-    // isn't installed yet, which degrades to on-device rather than dead-ending setup.
+    // isn't installed yet: that hour is left pending rather than dead-ending setup.
     canNext: () => true,
-  },
-  {
-    id: 'mlx', n: '05', label: 'Local intelligence', kicker: 'On-device AI',
-    title: 'Set up on-device intelligence',
-    subtitle: 'Everything runs privately on your Mac with Apple MLX. The models started downloading when setup opened - this is just the finish line.',
-    Body: MLXBody,
-    status: (s) => s.modelReady ? 'Ready' : (s.mlx?.runtime_found || s.mlx?.runtime_installed) ? 'Downloading…' : 'Installing…',
-    // Block Finish until every model is on disk — the worklog pipeline (distill →
-    // report) can't run a cycle without them, so the user must not
-    // reach the dashboard early. The download has had the whole wizard to run, so
-    // this is usually instant; visible progress + Retry keep it from being a dead end.
-    // Exception: if the runtime itself is unavailable (incompatible hardware, no
-    // download_available), gate open — there is no download to wait for.
-    canNext: (s) => s.modelReady || !!(s.mlx && !s.mlx.runtime_found && !s.mlx.runtime_installed && !s.mlx.download_available),
   },
 ]

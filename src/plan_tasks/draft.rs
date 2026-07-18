@@ -5,7 +5,7 @@
 //! # What this is
 //! The dev types "fix the flaky login test" into the new-task box; this turns it into
 //! `{title, description, issue_type}` for them to review and EDIT. It is a formatter,
-//! not an author — see `services/prompts/plan-task-draft.md`.
+//! not an author — see `assets/prompts/plan-task-draft.md`.
 //!
 //! # This call can never block a create
 //! [`draft`] returns `Ok(TaskDraft)` even when the model is down, slow, or answers

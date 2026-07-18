@@ -1,8 +1,8 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Run `claude -p` with the session-summary skill + structured output. Returns
-// the validated {summary}, or RateLimited (→ MLX fallback) /
-// Failed (→ retry). Port of the former Python summariser/claude_runner.py.
+// the validated {summary}, or RateLimited / Failed — both leave the row pending
+// for a later drain (no cross-engine fallback).
 //
 // Auth: the user's Claude subscription. We drop ANTHROPIC_API_KEY from the child
 // env so a stray key can't silently switch to metered API billing, and set

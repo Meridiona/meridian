@@ -30,8 +30,9 @@
 //! # There is no on-device fallback (deliberately removed)
 //!
 //! This used to substitute the on-device MLX model whenever the chosen provider failed or
-//! was backing off. MLX is being deprecated, so that substitution is gone — a provider the
-//! user did not choose no longer answers on their behalf.
+//! was backing off. MLX — and the whole Python/services stack it ran in — has been removed
+//! entirely, so that substitution is gone along with the "Local" provider it substituted:
+//! generation now runs only through a third-party CLI or a custom endpoint.
 //!
 //! Losing it costs less than it looks. The substitution was already refused whenever the
 //! local weights were not on disk (the old `llm_local_chat_model_ready` gate), so
@@ -83,8 +84,8 @@ use tracing::Instrument;
 
 use super::{
     claude::ClaudeBackend, codex::CodexBackend, copilot::CopilotBackend, cursor::CursorBackend,
-    local::LocalBackend, openai_compat::OpenAiCompatBackend, reset_time, LlmBackend, LlmConfig,
-    LlmError, LlmOutput, LlmProvider, PromptRequest,
+    openai_compat::OpenAiCompatBackend, reset_time, LlmBackend, LlmConfig, LlmError, LlmOutput,
+    LlmProvider, PromptRequest,
 };
 
 /// Fallback for a rate-limit message [`reset_time::parse_backoff`] couldn't read. Matches
@@ -148,8 +149,7 @@ pub(super) fn from_summariser_error(e: SummariserError) -> LlmError {
 }
 
 /// The backoff-map key for a resolved backend. CLI providers key by name; a custom endpoint
-/// keys by its id so two endpoints (both the `Custom` variant) back off independently. Local
-/// is never rate-limited, so it never reaches here.
+/// keys by its id so two endpoints (both the `Custom` variant) back off independently.
 fn backoff_key(provider: LlmProvider, cfg: &LlmConfig) -> String {
     match provider {
         LlmProvider::Custom => {
@@ -192,7 +192,6 @@ pub fn backend_for(provider: LlmProvider, cfg: LlmConfig) -> Box<dyn LlmBackend>
         LlmProvider::Codex => Box::new(CodexBackend { cfg }),
         LlmProvider::Cursor => Box::new(CursorBackend { cfg }),
         LlmProvider::Copilot => Box::new(CopilotBackend { cfg }),
-        LlmProvider::Local => Box::new(LocalBackend { cfg }),
         // The endpoint was resolved into `cfg` (see `LlmConfig::from_settings`), because
         // this factory cannot fail. A `cfg.custom` of None — "custom" selected with no live
         // row — surfaces as a clear error on the call, never as a quiet switch to another
@@ -328,19 +327,13 @@ pub async fn complete(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider), L
 }
 
 /// The resolution + retry body, wrapped by [`complete`]'s per-call span.
+///
+/// No on-device fallback: a backing-off or failing provider returns an error and the
+/// caller leaves the work pending for the next cycle.
 async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider), LlmError> {
     let s = load_runtime_settings();
     let cfg = LlmConfig::from_settings(&s);
     let chosen = LlmProvider::from_wire(&s.llm_provider).unwrap_or_default();
-
-    // A user who explicitly chose the on-device model goes direct — no retry loop and no
-    // backoff, because the local server has no quota to exhaust: it either answers or is
-    // down, and a second immediate attempt at a model that failed to load just doubles the
-    // wait.
-    if chosen.is_local() {
-        let out = backend_for(LlmProvider::Local, cfg).complete(req).await?;
-        return Ok((out, LlmProvider::Local));
-    }
 
     // Still inside an earlier rate limit's window. Refuse without dialling out: the quota
     // has not refilled, so the call would spend a round-trip to earn the same 429 and, on a
@@ -463,21 +456,21 @@ mod tests {
         write_settings(&dir, "codex");
         assert_eq!(resolve().provider(), LlmProvider::Codex);
 
-        write_settings(&dir, "local");
-        assert_eq!(resolve().provider(), LlmProvider::Local);
+        write_settings(&dir, "cursor");
+        assert_eq!(resolve().provider(), LlmProvider::Cursor);
 
         std::env::remove_var("MERIDIAN_SETTINGS_PATH");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn an_unknown_provider_resolves_to_on_device() {
+    fn an_unknown_provider_resolves_to_the_default() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_backoff();
         let dir =
             std::env::temp_dir().join(format!("meridian-resolver-unknown-{}", std::process::id()));
         write_settings(&dir, "gemini");
-        assert_eq!(resolve().provider(), LlmProvider::Local);
+        assert_eq!(resolve().provider(), LlmProvider::default());
         std::env::remove_var("MERIDIAN_SETTINGS_PATH");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -493,8 +486,6 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("meridian-resolver-backoff-{}", std::process::id()));
         let path = write_settings(&dir, "claude");
-
-        assert_eq!(resolve().provider(), LlmProvider::Claude);
 
         start_backoff("claude", RATE_LIMIT_BACKOFF);
         assert!(

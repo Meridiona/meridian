@@ -7,14 +7,14 @@ name: Release (staging)
 #   • bakes the STAGING updater endpoint (…/releases/download/updater-staging/
 #     latest.json) into the .app at build time via a --config overlay — never
 #     committed, so it cannot leak to `main`;
-#   • is GitHub-only (NO npm publish, NO version-bump commit back to pre-main);
+#   • publishes to GitHub only, with NO version-bump commit back to pre-main;
 #   • mirrors latest.json onto the rolling `updater-staging` prerelease so an
 #     installed staging app self-updates staging→staging.
 #
 # Differs from release.yml (production/main) only in: it targets pre-main, cuts a
 # prerelease, swaps in .releaserc.staging.json, and publishes to GitHub only.
 # Same macos-26 runner because the prepare step builds the Swift Foundation
-# Models bridge + Metal/MLX + the dashboard, exactly like main.
+# Models bridge + the Rust daemon + the dashboard, exactly like main.
 #
 # TRIGGERING — a full macOS build is ~45 min, and `pre-main` is a busy
 # integration branch, so this does NOT build on every push. It builds only when:
@@ -115,13 +115,6 @@ jobs:
             ui/package-lock.json
             tray/package-lock.json
 
-      - name: Cache uv packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/uv
-          key: uv-${{ hashFiles('services/uv.lock') }}
-          restore-keys: uv-
-
       - name: Cache Next.js build
         uses: actions/cache@v4
         with:
@@ -170,16 +163,6 @@ jobs:
           # to GITHUB_TOKEN. No npm token — the staging channel is GitHub-only.
           # Also authenticates the `gh` calls in mirror-staging-release.sh.
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
-          # Bake the staging runtime channel into the build at compile time
-          # (mlx_server::manifest_url reads this via option_env!). A packaged .app
-          # has no shell env, so the staging .app must compile in runtime-staging.
-          MERIDIAN_RUNTIME_MANIFEST_URL: "https://github.com/Meridiona/meridian/releases/download/runtime-staging/runtime-manifest.json"
-          # Bake the HF caching-proxy endpoint into the staging build (same
-          # option_env! pattern, mlx_server::hf_endpoint). Production (main)
-          # deliberately leaves this unset until Cache Reserve is enabled on the
-          # zone — staging is where we validate the proxy against real installer
-          # traffic first.
-          MERIDIAN_HF_ENDPOINT: "https://hf.meridiona.com"
           # Bake the build channel into the binary (commands::version::build_channel,
           # same option_env! pattern) so the dashboard/popover version badge reads
           # "staging" instead of the "prod" default. Production leaves this unset.

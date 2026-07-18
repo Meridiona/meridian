@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 # Dev-mode install: build deps and register the OpenObserve observability agent.
-# The Rust daemon, MLX server, and Tauri tray run in watch mode via dev-start.sh.
-# Capture runs in-process inside the Tauri tray — no screenpipe/a11y-helper needed.
+# The Rust daemon and Tauri tray run in watch mode via dev-start.sh. Capture runs
+# in-process inside the Tauri tray — no screenpipe/a11y-helper needed.
 #
 # If you have those agents from a previous dev setup, remove them:
 #   launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.meridiona.screenpipe.plist
@@ -12,7 +12,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Build Rust (debug), install UI/tray npm deps, set up Python venv + MLX.
+# Build Rust (debug), install UI/tray npm deps.
 # --no-daemon: skip launchd registration (capture is in-process in the tray).
 # --dev: skips the permissions walkthrough (tray handles it on first launch).
 # --skip-env: skip PM tool credential prompts (Jira/Linear/GitHub etc — the
@@ -20,10 +20,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   to set credentials manually at any time).
 bash "${REPO_ROOT}/install.sh" --dev --no-daemon --skip-env "$@"
 
-# Suppress the update-available banner in dev mode.
-mkdir -p "${HOME}/.meridian/app"
-echo "dev" > "${HOME}/.meridian/app/VERSION"
-echo "  ✓ ~/.meridian/app/VERSION set to 'dev' (suppresses update banner)"
+# The update-available banner is already suppressed in a dev build: version.rs's
+# read_current_version() returns "dev" under debug_assertions, so is_newer() is
+# always false. (No VERSION file to write — the tray reads its baked
+# package_info().version, not ~/.meridian/app/VERSION.)
 
 # OpenObserve — local OTLP backend for traces + logs. Optional but recommended
 # if you're iterating on the pipeline (query at http://localhost:5080).

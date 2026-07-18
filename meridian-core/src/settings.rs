@@ -202,14 +202,11 @@ pub struct RuntimeSettings {
     #[serde(default = "default_theme")]
     pub theme: String,
     pub log_level: String,
-    pub classification_enabled: bool,
-    pub min_classification_duration_s: i64,
-    pub classification_timeout_s: u64,
     pub agent_auto_floor: f64,
     pub agent_queue_floor: f64,
     // Which AI runs the user's prose LLM calls — the wire form of
     // `crate::llm_provider::LlmProvider` ("claude" | "codex" | "cursor" | "copilot" |
-    // "local"). Deliberately a `String`, NOT the enum: `load_runtime_settings` falls
+    // "custom"). Deliberately a `String`, NOT the enum: `load_runtime_settings` falls
     // back to `Default` on any deserialise error, so a variant written by a newer build
     // would make an older daemon lose EVERY setting (work hours, poll interval, …), not
     // just this one. Parsed with `LlmProvider::from_wire`, which degrades an unknown
@@ -230,10 +227,6 @@ pub struct RuntimeSettings {
     // its model is a required field on its own row, because there is no default to fall
     // back to.
     pub llm_provider_model: Option<String>,
-    // Did the setup wizard actually download the on-device chat model? Drives the
-    // conditional download in the wizard, and the fallback: a failing CLI provider can
-    // only fall back to local if the model is on disk.
-    pub llm_local_chat_model_ready: bool,
     pub llm_budget_pct: f64,
     pub poll_interval_secs: u64,
     pub jira_update_enabled: bool,
@@ -291,19 +284,15 @@ impl Default for RuntimeSettings {
         Self {
             theme: default_theme(),
             log_level: "INFO".to_string(),
-            classification_enabled: true,
-            min_classification_duration_s: 10,
-            classification_timeout_s: 120,
             agent_auto_floor: 0.65,
             agent_queue_floor: 0.40,
-            // On-device by default — nothing leaves the machine unless the user opts in.
+            // The user's chosen AI CLI runs every prose LLM call (default: Claude).
             llm_provider: crate::llm_provider::LlmProvider::default()
                 .as_str()
                 .to_string(),
             llm_provider_custom_id: None,
             custom_llm_providers: Vec::new(),
             llm_provider_model: None,
-            llm_local_chat_model_ready: false,
             llm_budget_pct: 0.5,
             poll_interval_secs: 60,
             jira_update_enabled: true,
@@ -612,11 +601,11 @@ mod tests {
     }
 
     /// The registry is inert unless `llm_provider` actually selects `custom` — a configured
-    /// endpoint must not hijack a user still on claude/local.
+    /// endpoint must not hijack a user still on claude.
     #[test]
     fn a_configured_endpoint_is_inert_until_selected() {
         let s = RuntimeSettings {
-            llm_provider: "local".to_string(),
+            llm_provider: "claude".to_string(),
             llm_provider_custom_id: Some("g1".to_string()),
             custom_llm_providers: vec![custom_row("g1", &[("workstream", SchemaRung::Strict)])],
             ..Default::default()
@@ -684,10 +673,10 @@ mod tests {
     }
 
     /// An existing settings.json predates `llm_provider` entirely — it must upgrade to
-    /// the on-device default without a migration. `#[serde(default)]` buys this, and this
+    /// the default provider without a migration. `#[serde(default)]` buys this, and this
     /// test is what stops someone removing it.
     #[test]
-    fn settings_without_llm_provider_default_to_local() {
+    fn settings_without_llm_provider_default_to_claude() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!(
             "meridian-settings-upgrade-{}-{:?}",
@@ -701,9 +690,8 @@ mod tests {
         std::fs::write(&path, r#"{"log_level":"DEBUG","poll_interval_secs":30}"#).unwrap();
 
         let s = load_runtime_settings();
-        assert_eq!(s.llm_provider, "local");
+        assert_eq!(s.llm_provider, "claude");
         assert_eq!(s.llm_provider_model, None);
-        assert!(!s.llm_local_chat_model_ready);
         assert_eq!(s.log_level, "DEBUG", "the pre-existing settings survive");
 
         std::env::remove_var("MERIDIAN_SETTINGS_PATH");

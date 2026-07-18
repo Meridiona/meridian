@@ -21,8 +21,6 @@ const headSubText = $('head-sub-text')
 const healthPanel = $('health-panel')
 const hpDaemonDot = $('hp-daemon-dot')
 const hpDaemonVal = $('hp-daemon-val')
-const hpMlxDot = $('hp-mlx-dot')
-const hpMlxVal = $('hp-mlx-val')
 const hpDbDot = $('hp-db-dot')
 const hpDbVal = $('hp-db-val')
 const statusCard = $('status-card')
@@ -256,35 +254,6 @@ function paintDaemon(status) {
   }
 }
 
-function paintMlx(res) {
-  if (!res) { setDot(hpMlxDot, 'bad'); hpMlxVal.textContent = 'Unreachable'; return }
-  // MlxStatus is a serde enum with rename_all = "snake_case": the unit variants
-  // serialize to the lowercase strings "offline" / "starting" / "running", and
-  // Error(String) to { "error": "<msg>" }. Compare against those exact shapes.
-  const s = res.status
-  const kind = typeof s === 'string' ? s : (s && Object.keys(s)[0]) || 'unknown'
-  if (kind === 'running') {
-    setDot(hpMlxDot, 'ok')
-    hpMlxVal.textContent = res.port ? `Running (port ${res.port})` : 'Running'
-  } else if (kind === 'error') {
-    setDot(hpMlxDot, 'bad')
-    // Error(String) serializes to { "error": "<msg>" }. Surface the actual
-    // message (bounded, like paintDb) instead of a bare "Error" — the panel
-    // exists precisely to say WHICH subsystem is down and why.
-    const msg = s && typeof s.error === 'string' ? s.error : ''
-    hpMlxVal.textContent = msg ? `Error: ${msg.slice(0, 60)}` : 'Error'
-  } else if (!res.runtime_installed) {
-    setDot(hpMlxDot, 'warn')
-    hpMlxVal.textContent = 'Runtime not installed'
-  } else if (kind === 'starting') {
-    setDot(hpMlxDot, 'warn')
-    hpMlxVal.textContent = 'Starting…'
-  } else {
-    setDot(hpMlxDot, 'warn')
-    hpMlxVal.textContent = 'Offline'
-  }
-}
-
 function paintDb(res) {
   if (!res) { setDot(hpDbDot, 'bad'); hpDbVal.textContent = 'Unreachable'; return }
   if (res.database_ready === true) {
@@ -303,13 +272,11 @@ async function refreshHealth() {
   if (healthRefreshInFlight) return
   healthRefreshInFlight = true
   try {
-    const [d, m, h] = await Promise.all([
+    const [d, h] = await Promise.all([
       invoke('get_daemon_status').catch(() => null),
-      invoke('get_mlx_status').catch(() => null),
       invoke('get_health').catch(() => null),
     ])
     paintDaemon(d)
-    paintMlx(m)
     paintDb(h)
   } finally {
     healthRefreshInFlight = false
@@ -543,7 +510,6 @@ if (typeof globalThis !== 'undefined' && globalThis.__MERIDIAN_POPOVER_TEST__) {
     toggleHealth,
     refreshHealth,
     paintDaemon,
-    paintMlx,
     paintDb,
   }
 } else {

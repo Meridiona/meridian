@@ -16,10 +16,6 @@ export interface RuntimeSettings {
   oo_password: string
   // ETL
   poll_interval_secs: number
-  // Classification
-  classification_enabled: boolean
-  min_classification_duration_s: number
-  classification_timeout_s: number
   agent_auto_floor: number
   agent_queue_floor: number
   // LLM
@@ -34,9 +30,6 @@ export interface RuntimeSettings {
   llm_provider_custom_id: string | null
   // Optional model override within the chosen provider. null → the provider's default.
   llm_provider_model: string | null
-  // Has the on-device chat model been downloaded? Gates the setup wizard's model step
-  // and the fallback: a failing CLI provider can only fall back to local if it is there.
-  llm_local_chat_model_ready: boolean
   llm_budget_pct: number
   // Jira updater
   jira_update_enabled: boolean
@@ -77,15 +70,11 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   oo_email: '',
   oo_password: '',
   poll_interval_secs: 60,
-  classification_enabled: true,
-  min_classification_duration_s: 10,
-  classification_timeout_s: 120,
   agent_auto_floor: 0.65,
   agent_queue_floor: 0.40,
-  llm_provider: 'local',
+  llm_provider: 'claude',
   llm_provider_custom_id: null,
   llm_provider_model: null,
-  llm_local_chat_model_ready: false,
   llm_budget_pct: 0.5,
   jira_update_enabled: true,
   notifications_enabled: true,

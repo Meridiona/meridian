@@ -4,7 +4,7 @@
 # Builds the meridian-a11y-helper binary from main.swift and ad-hoc signs it
 # with a stable identifier.
 #
-# ⚠ DO NOT wire this into CI or package-release.sh. The built binary is
+# ⚠ DO NOT wire this into CI or the release build. The built binary is
 # COMMITTED to the repo on purpose: users grant it the Accessibility
 # permission, and macOS keys that grant to the binary's code hash (CDHash).
 # A byte-identical binary keeps the grant across meridian updates; a rebuilt

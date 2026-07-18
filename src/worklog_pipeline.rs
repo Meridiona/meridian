@@ -34,6 +34,7 @@ use crate::pm_worklog::{ledger, PmWorklogConfig};
 
 // `pub(crate)` where the LLM-Lab replay ([`crate::llm_experiment`]) reuses the request
 // builders / parsers / DB fetchers to rebuild a past hour's exact model input.
+pub(crate) mod distiller;
 pub(crate) mod hour;
 pub(crate) mod hour_db;
 pub(crate) mod hour_input;
@@ -142,8 +143,8 @@ async fn hour_has_coding(pool: &SqlitePool, hs: &str, he: &str) -> Result<bool> 
 
 /// Count coding-agent rows overlapping the hour still moving through the pipeline
 /// (`coding_agent_live` / `pending_summariser`). Terminal states (`summarised`,
-/// `subprocess_error`, `mlx_direct`) are NOT counted — so a dead-lettered row can
-/// never make us wait forever.
+/// `subprocess_error`) are NOT counted — so a dead-lettered row can never make us
+/// wait forever.
 async fn coding_in_flight(pool: &SqlitePool, hs: &str, he: &str) -> Result<i64> {
     // Wait for every LIVE coding row (still being written), but among sealed rows
     // awaiting summarisation only the non-trivial ones — a 0-3s slice carries nothing

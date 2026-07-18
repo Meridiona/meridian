@@ -16,12 +16,10 @@
 //! - `tray/src-tauri/src/update.rs`'s `is_packaged()` — the same
 //!   executable-path pattern, used independently by the tray (no crate
 //!   dependency between the two).
-//! - `services/agents/observability.py`'s `_capture_disabled()` — must read
-//!   the same `MERIDIAN_TELEMETRY_DISABLED` env var name as this module.
 
 /// True when THIS PROCESS is a canonical packaged install — its own
-/// executable lives at one of the DMG/npm installer's staged locations
-/// (`~/.meridian/bin/meridian` or `~/.meridian/app/bin/meridian`; see
+/// executable lives at the DMG installer's staged location
+/// (`~/.meridian/bin/meridian`; see
 /// `tray/src-tauri/src/backend_install.rs`). A packaged install must never
 /// attempt live delivery to OpenObserve — telemetry capture stays fully
 /// local, and the only path to a developer's OpenObserve is a user-initiated
@@ -46,7 +44,6 @@ pub(super) fn is_canonical_install() -> bool {
         Ok(exe) => std::env::var("HOME").is_ok_and(|home| {
             let home = std::path::Path::new(&home);
             exe == home.join(".meridian/bin/meridian")
-                || exe == home.join(".meridian/app/bin/meridian")
         }),
         // `current_exe()` failing is rare (permissions, exotic sandboxing) —
         // fall back to the machine-wide marker file rather than guessing.
@@ -56,10 +53,8 @@ pub(super) fn is_canonical_install() -> bool {
     }
 }
 
-/// Hard kill switch for OTel capture (spans/logs to the local spool). Same
-/// variable name as Python's `_capture_disabled()`
-/// (`services/agents/observability.py`) — keep both sides in sync so setting
-/// this once actually turns off capture everywhere, not just the Rust side.
+/// Hard kill switch for OTel capture (spans/logs to the local spool), read from
+/// `MERIDIAN_TELEMETRY_DISABLED`.
 pub(super) fn capture_disabled() -> bool {
     std::env::var("MERIDIAN_TELEMETRY_DISABLED")
         .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))

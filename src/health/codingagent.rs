@@ -1,9 +1,10 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Coding-agent ingest health: per-agent presence of the CLIs (the summariser
-// engines — a missing CLI means that agent's sessions silently fall back to MLX
-// summaries) and of the session stores the indexer sweeps (Claude / Codex
-// JSONLs, Copilot session-state, Cursor state.vscdb + cursor-agent chats).
+// engines — a missing CLI means that agent's sessions can't be summarised and
+// are left pending for a later drain) and of the session stores the indexer
+// sweeps (Claude / Codex JSONLs, Copilot session-state, Cursor state.vscdb +
+// cursor-agent chats).
 
 use crate::config::Config;
 use crate::health::platform::which;
@@ -35,7 +36,7 @@ pub fn checks(_cfg: &Config) -> Vec<Check> {
 
     // The session-summary skill must exist for `claude -p /session-summary` to
     // work. Without it the command returns "Unknown command" and every Claude
-    // Code session silently falls through to the local MLX model instead.
+    // Code session fails to summarise and is left pending.
     if claude_present {
         if skill_path.exists() {
             out.push(Check::ok(
@@ -48,7 +49,7 @@ pub fn checks(_cfg: &Config) -> Vec<Check> {
                 Check::warn(
                     "session-summary skill",
                     "L2",
-                    "~/.claude/commands/session-summary.md missing — claude summariser falls back to MLX for every session",
+                    "~/.claude/commands/session-summary.md missing — claude summariser fails for every session (left pending)",
                 )
                 .with_remedy("meridian doctor --fix  (or: meridian coding-agent-install-skill)"),
             );
@@ -57,7 +58,7 @@ pub fn checks(_cfg: &Config) -> Vec<Check> {
 
     // Cursor: sidebar/IDE-agent transcripts are ingested from state.vscdb and
     // cursor-agent CLI chats from ~/.cursor/chats. Summaries use the
-    // cursor-agent CLI when present + authenticated, else MLX.
+    // cursor-agent CLI when present + authenticated; otherwise they stay pending.
     let cursor_present =
         which("cursor").is_some() || home.join("Library/Application Support/Cursor").is_dir();
     if cursor_present {
@@ -96,7 +97,7 @@ pub fn checks(_cfg: &Config) -> Vec<Check> {
                 Check::info(
                     "cursor-agent CLI",
                     "L2",
-                    "Cursor detected but cursor-agent not on PATH — Cursor summaries fall back to MLX",
+                    "Cursor detected but cursor-agent not on PATH — Cursor summaries can't run (left pending)",
                 )
                 .with_remedy(
                     "install: curl https://cursor.com/install -fsS | bash; then: cursor-agent login — or set CURSOR_AGENT_AUTO_INSTALL=1 in ~/.meridian/app/.env to let the daemon install it",
@@ -114,7 +115,7 @@ fn cli(bin: &str, label: &'static str) -> Check {
         Check::info(
             label,
             "L2",
-            format!("{bin} not on PATH — those sessions fall back to MLX summaries"),
+            format!("{bin} not on PATH — those sessions can't be summarised (left pending)"),
         )
     }
 }

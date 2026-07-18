@@ -1,19 +1,14 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //! The Rust-owned hour report — distil locally, summarise through the user's chosen AI.
 //!
-//! This replaces the single Python `/worklog_hour` call. The hour is now orchestrated
-//! here so its generative work goes through the centralised provider layer
-//! ([`crate::llm`]) — the user's chosen AI (Claude / Codex / Cursor / Copilot / on-device)
-//! writes the hourly summary, per the "one global choice for everything except coding-agent
-//! summaries" design. Only two things still touch the local MLX server:
+//! The hour is orchestrated here so its generative work goes through the centralised
+//! provider layer ([`crate::llm`]) — the user's chosen AI (Claude / Codex / Cursor /
+//! Copilot) writes the hourly summary, per the "one global choice for everything except
+//! coding-agent summaries" design.
 //!
-//! * **distil** (`/distill_hour`) — the embedder, which no CLI provider offers, so it stays
-//!   local and is the one call that holds [`crate::llm_gate`] (the single-GPU permit).
-//! * **the on-device fallback** — when the chosen provider fails, [`crate::llm::complete`]
-//!   routes to the local model, which self-gates.
-//!
-//! A CLI provider therefore leaves the GPU free while it thinks — the permit is held only
-//! around distillation, not the whole multi-minute hour.
+//! **Distillation runs fully in-process** ([`super::distiller`]): a pure-Rust embedder
+//! ([`crate::embedder`]) compresses the hour's screen OCR before the summary call — no
+//! external service, no HTTP hop.
 //!
 //! The report is a SINGLE generative call (see [`crate::llm::prompts::ACTIVITY_REPORT`]):
 //! the model returns the activities as prose (no clock times in the words) AND a minute
@@ -24,10 +19,7 @@
 //! because the weak on-device 2B mixed prose quality with invented durations; a capable
 //! provider plus a structured `minutes` field removes that failure, so one call suffices.)
 
-use std::time::Duration;
-
-use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use anyhow::Result;
 use sqlx::SqlitePool;
 use tracing::Instrument;
 
@@ -38,7 +30,7 @@ use super::hour_db;
 use super::hour_input::{
     assemble_report, compose_report_input, hour_span_minutes, parse_activities,
 };
-use super::{task_db, workstream};
+use super::{distiller, task_db, workstream};
 
 /// Token ceiling for the single report call: "under 300 words" of prose plus a short
 /// per-activity minutes list, as one JSON object. Generous enough not to truncate.
@@ -46,7 +38,7 @@ use super::{task_db, workstream};
 /// request contract for this process.
 pub(crate) const REPORT_MAX_TOKENS: u32 = 1536;
 
-/// What `/distill_hour` returns (the embedder-compressed hour body + metrics).
+/// The embedder-compressed hour body + a few metrics the pipeline reports on.
 struct Distilled {
     body: String,
     out_chars: i64,
@@ -54,46 +46,17 @@ struct Distilled {
     nsess: i64,
 }
 
-/// Call the local MLX embedder to distil the hour's screen sessions. Holds the single GPU
-/// permit for exactly this call — NOT the surrounding pipeline, so a CLI summary that
-/// follows doesn't sit behind a resource it isn't using.
-async fn distill(cfg: &PmWorklogConfig, db_path: &str, hour: &str) -> Result<Distilled> {
-    let _permit = crate::llm_gate::acquire().await;
-
-    let url = format!("http://{}:{}/distill_hour", cfg.mlx_host, cfg.mlx_port);
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(120))
-        .build()
-        .context("building distill_hour http client")?;
-
-    let traceparent = crate::observability::current_traceparent();
-    let resp = client
-        .post(&url)
-        .json(&json!({ "hour": hour, "db_path": db_path, "traceparent": traceparent }))
-        .send()
-        .await
-        .with_context(|| {
-            format!("/distill_hour unreachable at {url} — is the MLX server running?")
-        })?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        let preview: String = body.chars().take(200).collect();
-        anyhow::bail!("/distill_hour returned {status}: {preview}");
+/// Distil the hour's screen sessions in-process via [`super::distiller`] (a pure-Rust
+/// port of the old Python embedder path). Never fails — an empty hour or an unavailable
+/// embedder yields an empty / lower-reduction body rather than an error.
+async fn distill(pool: &SqlitePool, hs: &str, he: &str, hour: &str) -> Distilled {
+    let (body, stats) = distiller::distil_hour(pool, hs, he, hour).await;
+    Distilled {
+        body,
+        out_chars: stats.out_chars as i64,
+        reduction_pct: stats.reduction_pct,
+        nsess: stats.nsess as i64,
     }
-
-    let v: Value = resp
-        .json()
-        .await
-        .context("/distill_hour response not JSON")?;
-    Ok(Distilled {
-        body: v["body"].as_str().unwrap_or_default().to_string(),
-        out_chars: v["out_chars"].as_i64().unwrap_or(0),
-        reduction_pct: v["reduction_pct"].as_f64().unwrap_or(0.0),
-        nsess: v["nsess"].as_i64().unwrap_or(0),
-    })
 }
 
 /// The single hourly report call: a short, high-level, plain-text summary of the hour —
@@ -307,18 +270,20 @@ fn strip_list_marker(s: &str) -> &str {
 /// driver leaves the hour pending and retries; a legitimately empty hour is `Ok(())`.
 pub async fn run_hour(
     pool: &SqlitePool,
-    cfg: &PmWorklogConfig,
-    db_path: &str,
+    // `_cfg` / `_db_path` are retained only for signature stability with the driver; the
+    // in-process distiller uses `pool`/`hs`/`he` (they were needed by the old HTTP call).
+    _cfg: &PmWorklogConfig,
+    _db_path: &str,
     hour: &str,
     hs: &str,
     he: &str,
 ) -> Result<()> {
-    // ── distil (local embedder) ──────────────────────────────────────────────
+    // ── distil (in-process embedder) ─────────────────────────────────────────
     let sess_span =
         tracing::info_span!("worklog.sessions", hour, body_chars = tracing::field::Empty);
-    let d = distill(cfg, db_path, hour)
+    let d = distill(pool, hs, he, hour)
         .instrument(sess_span.clone())
-        .await?;
+        .await;
     let coding = hour_db::fetch_coding_summaries(pool, hs, he).await;
     let timeline = hour_db::fetch_hour_timeline(pool, hs, he).await;
     sess_span.record("body_chars", d.body.len());
