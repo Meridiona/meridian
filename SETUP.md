@@ -1,6 +1,6 @@
 # Meridian Setup
 
-**Platform:** macOS, Apple Silicon (M1 or later). Intel Macs are not supported.
+**Platform:** macOS (Apple Silicon or Intel). Ships as a universal binary.
 
 ---
 

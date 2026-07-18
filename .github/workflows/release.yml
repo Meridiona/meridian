@@ -2,15 +2,18 @@ name: Release
 
 # semantic-release: on every push to main it analyzes conventional commits and,
 # when a release is warranted, bumps the version across all manifests, builds
-# the signed + notarized macOS arm64 .app/DMG, publishes it (plus the updater
-# artifacts) to the GitHub release, creates the tag + CHANGELOG, and commits the
-# version bump back to main.
+# the signed + notarized macOS universal (arm64 + x86_64) .app/DMG, publishes
+# it (plus the updater artifacts) to the GitHub release, creates the tag +
+# CHANGELOG, and commits the version bump back to main.
 #
 # Runs on macos-26 (arm64) because the prepare step compiles the Swift
 # Foundation Models bridge — which needs the macOS 26 SDK — plus the Rust
 # daemon and the dashboard. The bridge is weak-linked, so the resulting binary
 # still launches on older macOS (Foundation Models simply reports unavailable
-# there).
+# there). The x86_64 slice is cross-compiled from this same arm64 runner
+# (`rustup target add x86_64-apple-darwin` below) — Tauri's
+# `--target universal-apple-darwin` builds + lipos both archs itself, no
+# second runner needed.
 
 on:
   push:
@@ -124,6 +127,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.93.1"
+          targets: "aarch64-apple-darwin,x86_64-apple-darwin"
       - uses: Swatinem/rust-cache@v2
 
       - name: Set up Node.js

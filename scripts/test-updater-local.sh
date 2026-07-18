@@ -32,7 +32,9 @@ cd "${ROOT}"
 
 KEY="${HOME}/.tauri/meridian-updater.key"
 CONF="tray/src-tauri/tauri.conf.json"
-BUNDLE="target/release/bundle/macos"
+# `--target universal-apple-darwin` (invoked by `npm run build` below) bundles
+# under target/universal-apple-darwin/, not plain target/release/.
+BUNDLE="target/universal-apple-darwin/release/bundle/macos"
 PORT=8000
 SERVE_DIR="${HOME}/meridian-updater-test"
 OLD_VER="0.1.0"
@@ -102,16 +104,16 @@ SIG="$(cat "${BUNDLE}/Meridian.app.tar.gz.sig")"
 python3 - "${SERVE_DIR}/latest.json" "${NEW_VER}" "${PORT}" "${SIG}" <<'PY'
 import json, sys
 out, ver, port, sig = sys.argv[1:5]
+platform = {
+    "signature": sig,
+    "url": f"http://localhost:{port}/Meridian.app.tar.gz",
+}
 manifest = {
     "version": ver,
     "notes": "Local updater test build.",
     "pub_date": "2026-01-01T00:00:00Z",
-    "platforms": {
-        "darwin-aarch64": {
-            "signature": sig,
-            "url": f"http://localhost:{port}/Meridian.app.tar.gz",
-        }
-    },
+    # Universal build — same payload serves both archs.
+    "platforms": {"darwin-aarch64": platform, "darwin-x86_64": platform},
 }
 with open(out, "w") as fh:
     json.dump(manifest, fh, indent=2)

@@ -25,10 +25,10 @@
       "successComment": false,
       "failComment": false,
       "assets": [
-        { "path": "target/release/bundle/dmg/Meridian.dmg", "label": "Meridian.dmg (macOS, Apple silicon) — staging ${nextRelease.gitTag}" },
-        { "path": "target/release/bundle/macos/Meridian.app.tar.gz", "label": "Meridian.app.tar.gz (updater)" },
-        { "path": "target/release/bundle/macos/Meridian.app.tar.gz.sig", "label": "Meridian.app.tar.gz.sig" },
-        { "path": "target/release/bundle/macos/latest.json", "label": "latest.json (updater manifest)" }
+        { "path": "target/universal-apple-darwin/release/bundle/dmg/Meridian.dmg", "label": "Meridian.dmg (macOS, Apple Silicon + Intel) — staging ${nextRelease.gitTag}" },
+        { "path": "target/universal-apple-darwin/release/bundle/macos/Meridian.app.tar.gz", "label": "Meridian.app.tar.gz (updater)" },
+        { "path": "target/universal-apple-darwin/release/bundle/macos/Meridian.app.tar.gz.sig", "label": "Meridian.app.tar.gz.sig" },
+        { "path": "target/universal-apple-darwin/release/bundle/macos/latest.json", "label": "latest.json (updater manifest)" }
       ]
     }],
     ["@semantic-release/exec", {

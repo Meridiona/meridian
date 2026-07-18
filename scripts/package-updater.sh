@@ -4,9 +4,13 @@
 # Generate the DMG auto-update artifacts for the GitHub release:
 #   - latest.json  — the manifest tauri-plugin-updater fetches from
 #                    /releases/latest/download/latest.json (built from the REAL
-#                    minisign signature `tauri build` just produced)
-#   - Meridian.dmg — a stable-named copy of Meridian_<version>_aarch64.dmg so the
-#                    public download link /releases/latest/download/Meridian.dmg
+#                    minisign signature `tauri build` just produced). One
+#                    universal Meridian.app.tar.gz serves both architectures,
+#                    so BOTH darwin-aarch64 and darwin-x86_64 keys point at the
+#                    same payload/signature — tauri-plugin-updater resolves the
+#                    key to use from the running app's arch, not the manifest.
+#   - Meridian.dmg — a stable-named copy of the universal Meridian_<version>_*.dmg
+#                    so the public download link /releases/latest/download/Meridian.dmg
 #                    is version-independent
 #
 # Called by semantic-release (@semantic-release/exec prepareCmd) AFTER the tray
@@ -22,8 +26,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
 REPO="Meridiona/meridian"
-MAC="target/release/bundle/macos"
-DMG_DIR="target/release/bundle/dmg"
+# `--target universal-apple-darwin` bundles under target/universal-apple-darwin/,
+# not plain target/release/.
+MAC="target/universal-apple-darwin/release/bundle/macos"
+DMG_DIR="target/universal-apple-darwin/release/bundle/dmg"
 SIG="${MAC}/Meridian.app.tar.gz.sig"
 
 # The build fails earlier when createUpdaterArtifacts can't be signed (pubkey
@@ -34,13 +40,14 @@ if [[ ! -f "${SIG}" ]]; then
   exit 0
 fi
 
-# Stable-named DMG for a version-independent public download link.
-VERSIONED_DMG="${DMG_DIR}/Meridian_${VERSION}_aarch64.dmg"
-if [[ -f "${VERSIONED_DMG}" ]]; then
+# Stable-named DMG for a version-independent public download link. Universal
+# builds don't carry the old fixed "_aarch64" suffix, so glob for it.
+VERSIONED_DMG="$(ls "${DMG_DIR}"/Meridian_${VERSION}_*.dmg 2>/dev/null | head -1)"
+if [[ -n "${VERSIONED_DMG}" && -f "${VERSIONED_DMG}" ]]; then
   cp "${VERSIONED_DMG}" "${DMG_DIR}/Meridian.dmg"
   echo "✓ ${DMG_DIR}/Meridian.dmg (copy of $(basename "${VERSIONED_DMG}"))"
 else
-  echo "⚠ ${VERSIONED_DMG} not found — no stable-named DMG (tarball update still works)"
+  echo "⚠ no Meridian_${VERSION}_*.dmg found in ${DMG_DIR} — no stable-named DMG (tarball update still works)"
 fi
 
 # Optional mandatory-update floor. When tray/minimum-version contains a semver,
@@ -88,12 +95,16 @@ out, ver, url, sig, pub, minimum = sys.argv[1:7]
 notes = f"Meridian v{ver}"
 if minimum:
     notes += f"\nMinimum-Version: {minimum}"
+# One universal Meridian.app.tar.gz serves both architectures — tauri-plugin-updater
+# resolves the platform key from the RUNNING app's arch, so both keys must be
+# present and point at the same payload + signature.
+platform = {"signature": sig, "url": url}
 json.dump(
     {
         "version": ver,
         "notes": notes,
         "pub_date": pub,
-        "platforms": {"darwin-aarch64": {"signature": sig, "url": url}},
+        "platforms": {"darwin-aarch64": platform, "darwin-x86_64": platform},
     },
     open(out, "w"),
     indent=2,

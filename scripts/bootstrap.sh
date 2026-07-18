@@ -2,7 +2,8 @@
 # ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 #
 # Bootstrap installer. Downloads the latest signed + notarized Meridian.app
-# (macOS, Apple Silicon) from the GitHub release, installs it to /Applications,
+# (macOS, universal — Apple Silicon + Intel) from the GitHub release, installs
+# it to /Applications,
 # and launches it. The app stages its own background daemon on first run and
 # opens the setup wizard (permissions + AI provider + tracker) - there is no npm,
 # Node, or Python to install; the .app is fully self-contained.
@@ -24,7 +25,6 @@ err()  { printf '✗ %s\n'   "$*" >&2; exit 1; }
 
 # ── 0. Platform + safety guards ──────────────────────────────────────────────
 [[ "$(uname -s)" == "Darwin" ]] || err "Meridian requires macOS."
-[[ "$(uname -m)" == "arm64"  ]] || err "Meridian requires Apple Silicon (arm64)."
 [[ "$(id -u)" -ne 0          ]] || err "Do not run as root / with sudo. Re-run as your normal user."
 
 DMG_URL="https://github.com/Meridiona/meridian/releases/latest/download/Meridian.dmg"
