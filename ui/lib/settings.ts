@@ -54,6 +54,12 @@ export interface RuntimeSettings {
   work_hours_end: string    // 'HH:MM' local time, exclusive
   work_days: string         // comma-separated 1–7 (Mon=1 … Sun=7), e.g. '1,2,3,4,5'
   pause_on_streaming_video: boolean
+  // Capture ignore lists — apps (exact app name) and websites (domain) Meridian
+  // must never capture. Enforced at the capture frame boundary going forward;
+  // history is left untouched. Mirrors RuntimeSettings.ignored_apps/ignored_urls
+  // in meridian-core/src/settings.rs.
+  ignored_apps: string[]
+  ignored_urls: string[]
 }
 
 export const SETTINGS_DEFAULTS: RuntimeSettings = {
@@ -89,6 +95,9 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   work_days: '1,2,3,4,5',
   // On by default — must match RuntimeSettings::default() in meridian-core/src/settings.rs.
   pause_on_streaming_video: true,
+  // Nothing ignored by default.
+  ignored_apps: [],
+  ignored_urls: [],
 }
 
 // repoRoot finds the source-checkout root (nearest ancestor with Cargo.toml).

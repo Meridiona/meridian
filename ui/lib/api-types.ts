@@ -668,3 +668,14 @@ export interface DaySummaryData {
   datasets: Record<string, Record<string, unknown>[]>
   scalars: DaySummaryScalars
 }
+
+// ── Recent captured apps (`get_recent_capture_apps`) ─────────────────────────
+
+/** One app Meridian has captured recently — the Settings ignore-picker source.
+ *  Mirrors `meridian_core::capture_apps::CaptureApp`. */
+export interface CaptureApp {
+  /** App name exactly as captured — what `ignored_apps` matches against. */
+  app: string
+  /** Frame count over the window; a recency/volume hint, not a duration. */
+  frames: number
+}

@@ -21,6 +21,10 @@ pub mod board;
 /// The `/api/coding-agents` daily agent totals (ported from coding-agents/route.ts).
 pub mod coding_agents;
 
+/// The apps recently seen in `capture_frames` — the picker source for the
+/// Settings capture-ignore control. No route; new work.
+pub mod capture_apps;
+
 /// The menu-bar pill's "current task" + progress-ring fill (tray-only; no route).
 pub mod current_task;
 

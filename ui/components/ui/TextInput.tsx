@@ -7,14 +7,16 @@ interface TextInputProps {
   placeholder?: string
   type?: 'text' | 'password' | 'email' | 'time'
   width?: number | string
+  onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void
 }
 
-export function TextInput({ value, onChange, placeholder, type = 'text', width = 220 }: TextInputProps) {
+export function TextInput({ value, onChange, placeholder, type = 'text', width = 220, onKeyDown }: TextInputProps) {
   return (
     <input
       type={type}
       value={value}
       onChange={e => onChange(e.target.value)}
+      onKeyDown={onKeyDown}
       placeholder={placeholder}
       style={{
         width,

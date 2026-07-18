@@ -199,6 +199,12 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, hourStatus, 
   // worth showing: it is the only thing that says the hour is being tracked at
   // all. (See HourBadges' doc comment.)
   const liveMode = !isToday ? null : liveStatus?.generating ? 'generating' as const : 'queued' as const
+  // Whether to print the strip's own hour label in the gutter. When the live
+  // hour is ALREADY a gridline label on the timeline above (work was folded into
+  // it a moment ago — the common case), repeating "9 PM" here just reads as a
+  // duplicate. Only label the strip when the hour isn't already on the rail —
+  // e.g. the last real work stopped hours ago, so the strip needs its own anchor.
+  const showLiveHourLabel = liveMode !== null && !hourLines.some(h => h.hour === nowHour)
 
   return (
     // A click anywhere in the column that isn't on a card clears the selection
@@ -282,16 +288,18 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, hourStatus, 
 
       {/* The hour in progress. Rendered on today only, and on the empty day too
           — a day with nothing folded yet is exactly when "Meridian is watching
-          this hour" is the most useful thing on the screen. The hour label is
-          laid out like the gridline labels above (GUTTER - 12, then 12px), so the
-          strip lines up with the task cards rather than floating loose. */}
+          this hour" is the most useful thing on the screen. The gutter reserves
+          the same label width as the gridlines above (GUTTER - 12, then 12px) so
+          the strip lines up with the task cards; the hour text itself is only
+          drawn when the timeline isn't already labelling this hour above
+          (see showLiveHourLabel) — otherwise it just duplicates that label. */}
       {loaded && liveMode && (
         <div className="px-6 pb-8 flex items-start">
           <span className="mt-mono-sm shrink-0" style={{
             width: GUTTER - 12, fontSize: 10.5, textAlign: 'right',
             color: 'var(--color-state-pending)',
           }}>
-            {hourClock(nowHour)}
+            {showLiveHourLabel ? hourClock(nowHour) : ''}
           </span>
           {/* 12px would carry the label's GUTTER - 12 width up to GUTTER, where
               the task cards' rail sits — less HourTakeover's own mx-2, so its

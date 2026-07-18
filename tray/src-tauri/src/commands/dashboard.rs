@@ -128,6 +128,25 @@ pub async fn get_coding_agents(
         })
 }
 
+/// The apps Meridian has captured recently — the picker source for Settings →
+/// Capture & Privacy → "Ignore an app". Last 30 days, most-seen first, capped at
+/// 60. No day param (this is a settings affordance, not a timeline view).
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn get_recent_capture_apps(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+) -> Result<Vec<meridian_core::capture_apps::CaptureApp>, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    meridian_core::capture_apps::recent_capture_apps(pool, 30, 60)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "get_recent_capture_apps failed");
+            e.to_string()
+        })
+}
+
 /// Full detail for one board ticket (the ported /api/plan/task). `key` is the
 /// task key; resolves "today" (local) here for the deterministic due_days math.
 #[tauri::command]
