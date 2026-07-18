@@ -45,6 +45,10 @@ pub async fn try_handle() -> Result<bool> {
             run_edit().await;
             Ok(true)
         }
+        "plan-task-done" => {
+            run_done().await;
+            Ok(true)
+        }
         _ => Ok(false),
     }
 }
@@ -157,5 +161,37 @@ async fn run_edit() {
     match res {
         Ok(r) => finish(&r, obs_guard).await,
         Err(e) => die("plan-task-edit", format!("{e:#}"), obs_guard).await,
+    }
+}
+
+/// `meridian plan-task-done --key K --done true|false` — mark a task done or not-done,
+/// routing to our DB or the tracker depending on who owns it. Prints the same
+/// `{task_key, provider, status, browse_url, reason}` shape as `plan-task-edit`.
+async fn run_done() {
+    let key = flag("--key").unwrap_or_default();
+    if key.trim().is_empty() {
+        eprintln!("plan-task-done: --key is required");
+        std::process::exit(2);
+    }
+    let done = match flag("--done").unwrap_or_default().as_str() {
+        "true" => true,
+        "false" => false,
+        _ => {
+            eprintln!("plan-task-done: --done must be true or false");
+            std::process::exit(2);
+        }
+    };
+
+    let cfg = Config::from_env();
+    let obs_guard = observability::init("meridian-rust").ok();
+    let pool = match setup_db(&cfg.meridian_db_uri()).await {
+        Ok(p) => p,
+        Err(e) => die("plan-task-done", format!("open db: {e:#}"), obs_guard).await,
+    };
+    let res = super::done::set_done(&pool, &cfg, &key, done).await;
+    pool.close().await;
+    match res {
+        Ok(r) => finish(&r, obs_guard).await,
+        Err(e) => die("plan-task-done", format!("{e:#}"), obs_guard).await,
     }
 }

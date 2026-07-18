@@ -7,10 +7,10 @@
 // point (connected users only for the CTAs/plan; solo users get the greeting
 // + Today cards + time-by-app). Narrative + metric fields are adapted from
 // the retired TodayView's data; the plan checklist reads the same get_plan
-// the Daily plan modal uses. The checkbox writes through to the real tracker
-// (apply_ticket_fix close/reopen — same write-back path as board hygiene)
-// instead of being purely decorative; clicking the row body still opens the
-// ticket detail.
+// the Daily plan modal uses. The checkbox writes through for real rather than
+// being decorative — via set_plan_task_done, which routes a personal task to
+// our DB and a board ticket to its tracker's close/reopen; clicking the row
+// body still opens the ticket detail.
 
 'use client'
 
@@ -123,27 +123,29 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
   }, [isSolo, day])
   const focusItems = useMemo(() => (plan?.confirmed ? plan.plan : []), [plan])
 
-  // Toggle a focus item's done state on its real tracker. `close`/`reopen` are
-  // the same apply_ticket_fix path board hygiene uses — some providers (Trello,
-  // Azure DevOps) have no reliable done/not-done mapping and redirect to the
-  // ticket in the browser instead of writing in-app; only a true `applied`
-  // result flips the checkbox.
+  // Toggle a focus item's done state. This goes through `set_plan_task_done`,
+  // NOT `apply_ticket_fix` — the latter only knows real trackers, so ticking a
+  // personal (provider 'local') task died with `provider "local" is not
+  // configured`. The command branches on who owns the task: a personal one is a
+  // direct DB write, a board ticket still gets the tracker's close/reopen. Some
+  // providers (Trello, Azure DevOps) have no reliable done/not-done mapping and
+  // redirect to the ticket in the browser instead of writing in-app; only a true
+  // `applied` result flips the checkbox.
   const toggleDone = useCallback((t: PlanItem, currentlyTerminal: boolean) => {
-    const field = currentlyTerminal ? 'reopen' : 'close'
     setToggling(s => ({ ...s, [t.task_key]: true }))
     setToggleError(s => { if (!(t.task_key in s)) return s; const n = { ...s }; delete n[t.task_key]; return n })
-    mutateData<{ result: { status: string; browse_url?: string; reason?: string } }>(
-      '/api/triage/apply', 'apply_ticket_fix', { provider: t.provider, key: t.task_key, field, value: '' },
+    mutateData<{ status: string; browse_url?: string; reason?: string }>(
+      '/api/plan/task-done', 'set_plan_task_done', { task_key: t.task_key, done: !currentlyTerminal },
     ).then(data => {
-      if (data.result.status === 'applied') {
+      if (data.status === 'applied') {
         setOverrideTerminal(s => ({ ...s, [t.task_key]: !currentlyTerminal }))
         refreshPlan(day)
       } else {
-        const url = data.result.browse_url || t.url
+        const url = data.browse_url || t.url
         if (url) openExternal(url)
       }
     }).catch(e => {
-      setToggleError(s => ({ ...s, [t.task_key]: e instanceof Error ? e.message : typeof e === 'string' ? e : 'Couldn’t update the tracker' }))
+      setToggleError(s => ({ ...s, [t.task_key]: e instanceof Error ? e.message : typeof e === 'string' ? e : 'Couldn’t update the task' }))
     }).finally(() => {
       setToggling(s => { const n = { ...s }; delete n[t.task_key]; return n })
     })
