@@ -44,9 +44,9 @@ const COPY: Record<TakeoverMode, [string, string][]> = {
     ['Generating this hour’s work log', 'Analyzing your captures — we’ll notify you the moment it’s ready.'],
   ],
   queued: [
-    ['Cooking up this hour’s recap…', 'Analyzing your captures — we’ll notify you the moment it’s ready, around {NEXT}.'],
-    ['Meridian is watching this hour…', 'Keep working — nothing to do. We’ll let you know when the draft lands at {NEXT}.'],
-    ['Logging this hour as you go…', 'It turns into a worklog the moment {NEXT} hits, and you’ll be notified when it does.'],
+    ['Cooking up this hour’s recap…', 'Analyzing your captures — we’ll notify you the moment it’s ready, once the hour wraps up.'],
+    ['Meridian is watching this hour…', 'Keep working — nothing to do. We’ll let you know when the draft lands at the top of the hour.'],
+    ['Logging this hour as you go…', 'It turns into a worklog the moment this hour wraps, and you’ll be notified when it does.'],
   ],
 }
 
