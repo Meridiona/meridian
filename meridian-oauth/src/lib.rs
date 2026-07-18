@@ -30,3 +30,17 @@ pub mod jira;
 pub mod pkce;
 pub mod store;
 pub mod trello;
+
+/// Serialises tests that mutate process-global env vars (`HOME`,
+/// `GITHUB_OAUTH_CLIENT_ID`, …). `cargo test` runs tests in parallel and POSIX
+/// `setenv` is process-wide (and not thread-safe), so without this two
+/// env-mutating tests race: one clobbers the other's `HOME` mid-run and the
+/// path/lock resolution reads the wrong directory (a flaky failure that only
+/// surfaced under full-workspace parallelism). Every such test holds this guard
+/// for its whole body. Poison-tolerant — a panicking test already fails on its
+/// own; don't cascade that into every later test.
+#[cfg(test)]
+pub(crate) fn env_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}

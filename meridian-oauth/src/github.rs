@@ -243,18 +243,21 @@ pub async fn poll_for_token(
 mod tests {
     use super::*;
 
+    // Both assertions live in ONE test on purpose: they mutate the same
+    // process-global `GITHUB_OAUTH_CLIENT_ID`, and Rust runs tests in parallel,
+    // so splitting them lets one clobber the other's env var mid-run (a flaky
+    // race that only surfaced under full-workspace parallelism). Kept serial here.
     #[test]
-    fn client_id_prefers_env_override() {
+    fn client_id_env_override_rules() {
+        let _env = crate::env_test_guard();
+        // A real override wins.
         std::env::set_var("GITHUB_OAUTH_CLIENT_ID", "Ov23liEXAMPLE");
         assert_eq!(client_id(), "Ov23liEXAMPLE");
-        std::env::remove_var("GITHUB_OAUTH_CLIENT_ID");
-    }
 
-    #[test]
-    fn client_id_ignores_blank_override() {
+        // A blank override falls back to the baked-in default (empty in source builds).
         std::env::set_var("GITHUB_OAUTH_CLIENT_ID", "   ");
-        // Blank override falls back to the baked-in default (empty in source builds).
         assert_eq!(client_id(), DEFAULT_CLIENT_ID.to_string());
+
         std::env::remove_var("GITHUB_OAUTH_CLIENT_ID");
     }
 
