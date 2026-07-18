@@ -41,17 +41,50 @@
 mod unix;
 #[cfg(unix)]
 pub use unix::{
-    daemon_already_running, endpoint_display, release_endpoint, spawn_health_listener,
-    wait_for_shutdown,
+    daemon_already_running, disk_free_gb, endpoint_display, release_endpoint, service_manifest,
+    service_status, spawn_health_listener, wait_for_shutdown,
 };
 
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
 pub use windows::{
-    daemon_already_running, endpoint_display, release_endpoint, spawn_health_listener,
-    wait_for_shutdown,
+    daemon_already_running, disk_free_gb, endpoint_display, release_endpoint, service_manifest,
+    service_status, spawn_health_listener, wait_for_shutdown,
 };
+
+/// What the health report can say about the service's on-disk definition.
+///
+/// Same reasoning as [`ServiceStatus`]: `Missing` is a finding, `Unknown` is
+/// an admission, and reporting the second as the first is how a health check
+/// loses the user's trust.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceManifest {
+    /// Present and the OS accepts it (on Unix: `plutil -lint` passes).
+    Valid,
+    /// Queried, and absent or malformed.
+    Invalid,
+    /// No service integration for this platform yet.
+    Unknown,
+}
+
+/// What the OS's service manager says about the daemon's own service.
+///
+/// The third variant is the reason this is an enum rather than
+/// `Option<pid>`: "I could not determine this" and "it is definitely not
+/// running" are different answers, and collapsing them makes `meridian doctor`
+/// report a confident CRITICAL on a platform where it simply has not looked.
+/// A health report that cries wolf is worse than one that admits ignorance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceStatus {
+    /// The service manager reports it running, with this pid.
+    Running(i64),
+    /// The service manager was queried and the daemon is not loaded.
+    NotRunning,
+    /// No service integration exists for this platform yet — say so rather
+    /// than guessing.
+    Unknown,
+}
 
 /// The greeting a live daemon writes to every accepted connection.
 ///

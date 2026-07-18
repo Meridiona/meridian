@@ -95,6 +95,66 @@ pub fn release_endpoint() {
     let _ = std::fs::remove_file(endpoint());
 }
 
+/// Ask launchd whether the agent labelled `label` is loaded, and as what pid.
+///
+/// Moved here verbatim from `health::platform`. Never returns
+/// [`super::ServiceStatus::Unknown`] — on Unix the query always has a real
+/// answer, so a failure to run `launchctl` genuinely means not-loaded.
+pub fn service_status(label: &str) -> super::ServiceStatus {
+    use super::ServiceStatus;
+    use std::process::Command;
+
+    let Ok(out) = Command::new("launchctl").args(["list", label]).output() else {
+        return ServiceStatus::NotRunning;
+    };
+    if !out.status.success() {
+        return ServiceStatus::NotRunning;
+    }
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        if let Some(rest) = line.trim().strip_prefix("\"PID\" = ") {
+            if let Ok(pid) = rest.trim_end_matches(';').trim().parse() {
+                return ServiceStatus::Running(pid);
+            }
+        }
+    }
+    ServiceStatus::NotRunning
+}
+
+/// Is `~/Library/LaunchAgents/<label>.plist` present and well-formed?
+pub fn service_manifest(label: &str) -> super::ServiceManifest {
+    use super::ServiceManifest;
+    use std::process::Command;
+
+    let p = meridian_core::paths::home_dir_or_cwd()
+        .join("Library/LaunchAgents")
+        .join(format!("{label}.plist"));
+    let ok = p.is_file()
+        && Command::new("plutil")
+            .arg("-lint")
+            .arg(&p)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+    if ok {
+        ServiceManifest::Valid
+    } else {
+        ServiceManifest::Invalid
+    }
+}
+
+/// Free space on the volume holding `path`, in GB, via `df -Pk`.
+pub fn disk_free_gb(path: &std::path::Path) -> Option<f64> {
+    use std::process::Command;
+
+    let out = Command::new("df").arg("-Pk").arg(path).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    let avail_kb: f64 = s.lines().nth(1)?.split_whitespace().nth(3)?.parse().ok()?;
+    Some(avail_kb / 1_048_576.0)
+}
+
 /// Resolve when the OS asks the daemon to stop.
 ///
 /// `SIGHUP` is treated as "reload config": it takes the same clean-shutdown

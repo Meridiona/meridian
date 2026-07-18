@@ -113,6 +113,41 @@ pub fn spawn_health_listener() -> anyhow::Result<()> {
 /// socket file there is nothing to unlink.
 pub fn release_endpoint() {}
 
+/// Windows has no service integration for the daemon yet, so this reports
+/// [`super::ServiceStatus::Unknown`] rather than guessing.
+///
+/// This is deliberate, not a stub left to rot. Nothing registers the daemon
+/// with the Service Control Manager yet — that lands with the installer, since
+/// querying a service is only meaningful once something creates it, and a
+/// query written against a service definition that does not exist yet would be
+/// unverifiable. Returning `NotRunning` in the meantime would make
+/// `meridian doctor` print a confident CRITICAL about a service the product
+/// has never installed, which is worse than admitting the gap.
+///
+/// When the SCM integration lands, this becomes a real `OpenService` +
+/// `QueryServiceStatus` call and the health check below starts reporting it
+/// with no change at the call site.
+pub fn service_status(_label: &str) -> super::ServiceStatus {
+    super::ServiceStatus::Unknown
+}
+
+/// See [`service_status`] — same reasoning: there is no manifest to inspect
+/// because nothing installs one yet. A Windows service has no plist
+/// equivalent in any case; its definition lives in the SCM database.
+pub fn service_manifest(_label: &str) -> super::ServiceManifest {
+    super::ServiceManifest::Unknown
+}
+
+/// Free space is not reported on Windows yet.
+///
+/// `None` is already the "usage unknown" path the health check handles
+/// gracefully, so this degrades to an Info rung rather than a false warning.
+/// Wiring `GetDiskFreeSpaceExW` would mean taking a dependency on the
+/// `windows` crate for one number; deferred until something else needs it.
+pub fn disk_free_gb(_path: &std::path::Path) -> Option<f64> {
+    None
+}
+
 /// Resolve when the OS asks the daemon to stop.
 ///
 /// Windows has no `SIGHUP`, so the "reload config" path has no direct

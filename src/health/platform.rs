@@ -108,35 +108,6 @@ fn candidate_names(bin: &str) -> Vec<String> {
     }
 }
 
-fn launchd_pid(label: &str) -> Option<i64> {
-    let out = Command::new("launchctl")
-        .args(["list", label])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        if let Some(rest) = line.trim().strip_prefix("\"PID\" = ") {
-            return rest.trim_end_matches(';').trim().parse().ok();
-        }
-    }
-    None
-}
-
-fn plist_valid(label: &str) -> bool {
-    let p = home()
-        .join("Library/LaunchAgents")
-        .join(format!("{label}.plist"));
-    p.is_file()
-        && Command::new("plutil")
-            .arg("-lint")
-            .arg(&p)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-}
-
 fn cmd_output(bin: &str, args: &[&str]) -> Option<String> {
     let out = Command::new(bin).args(args).output().ok()?;
     out.status
@@ -144,21 +115,25 @@ fn cmd_output(bin: &str, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-fn disk_free_gb(path: &Path) -> Option<f64> {
-    let out = Command::new("df").arg("-Pk").arg(path).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout);
-    let avail_kb: f64 = s.lines().nth(1)?.split_whitespace().nth(3)?.parse().ok()?;
-    Some(avail_kb / 1_048_576.0)
-}
-
-fn plist_check(label: &str, name: &'static str) -> Check {
-    if plist_valid(label) {
-        Check::ok(name, "system", "installed + valid")
-    } else {
-        Check::critical(name, "system", "missing or invalid").with_remedy("run ./install.sh")
+/// Report the service's definition — present and valid, broken, or not
+/// something this platform can answer for.
+///
+/// `Unknown` reports as Info, not CRITICAL: see
+/// [`meridian_core`]-adjacent reasoning on [`crate::platform::ServiceManifest`]
+/// — a health check that asserts a problem it has not actually looked for
+/// trains the user to ignore it.
+fn service_manifest_check(label: &str, name: &'static str) -> Check {
+    use crate::platform::ServiceManifest;
+    match crate::platform::service_manifest(label) {
+        ServiceManifest::Valid => Check::ok(name, "system", "installed + valid"),
+        ServiceManifest::Invalid => {
+            Check::critical(name, "system", "missing or invalid").with_remedy("run ./install.sh")
+        }
+        ServiceManifest::Unknown => Check::info(
+            name,
+            "system",
+            "not applicable on this platform (no service integration yet)",
+        ),
     }
 }
 
@@ -176,15 +151,22 @@ pub fn daemon_service() -> Vec<Check> {
         None => Check::critical("daemon binary", "system", "not installed")
             .with_remedy("run ./install.sh"),
     };
-    let run_check = match launchd_pid(LABEL_DAEMON) {
-        Some(pid) => Check::ok("daemon running", "system", format!("pid {pid}")),
-        None => {
+    use crate::platform::ServiceStatus;
+    let run_check = match crate::platform::service_status(LABEL_DAEMON) {
+        ServiceStatus::Running(pid) => Check::ok("daemon running", "system", format!("pid {pid}")),
+        ServiceStatus::NotRunning => {
             Check::critical("daemon running", "system", "not loaded").with_remedy("meridian start")
         }
+        // Not "not running" — we have not looked. See ServiceStatus's docs.
+        ServiceStatus::Unknown => Check::info(
+            "daemon running",
+            "system",
+            "service state not queryable on this platform yet",
+        ),
     };
     vec![
         bin_check,
-        plist_check(LABEL_DAEMON, "daemon plist"),
+        service_manifest_check(LABEL_DAEMON, "daemon plist"),
         run_check,
     ]
 }
@@ -216,14 +198,20 @@ pub fn mcp_service() -> Vec<Check> {
 // ── system / toolchain ──────────────────────────────────────────────────────
 
 pub fn system_checks(_cfg: &Config) -> Vec<Check> {
+    // Windows is a supported target for the daemon itself; the tray-side
+    // capture stack is still macOS-only, so Windows reports as a known-partial
+    // rather than either "fine" or "unsupported". Revisit when Windows capture
+    // lands in the tray.
     let os = if cfg!(target_os = "macos") {
         Check::ok("os", "system", "macOS")
-    } else {
+    } else if cfg!(target_os = "windows") {
         Check::warn(
             "os",
             "system",
-            "not macOS — the capture stack is macOS-only",
+            "Windows — daemon supported; capture not yet wired",
         )
+    } else {
+        Check::warn("os", "system", "unsupported OS — capture is not available")
     };
     let env_ok = repo_root()
         .map(|r| r.join(".env").is_file())
@@ -266,7 +254,7 @@ fn node_check() -> Check {
 }
 
 fn disk_check(name: &'static str, path: &Path) -> Check {
-    match disk_free_gb(path) {
+    match crate::platform::disk_free_gb(path) {
         Some(gb) if gb < 2.0 => Check::warn(name, "system", format!("{gb:.1} GB free — low"))
             .with_remedy("free disk space"),
         Some(gb) => Check::ok(name, "system", format!("{gb:.0} GB free")),
