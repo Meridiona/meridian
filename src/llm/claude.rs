@@ -88,7 +88,7 @@ impl LlmBackend for ClaudeBackend {
             if sp::looks_rate_limited(&blob) {
                 let msg =
                     sp::rate_limited_line(&blob).unwrap_or_else(|| sp::first_line(&cap.stderr));
-                return Err(LlmError::RateLimited(if msg.is_empty() {
+                return Err(LlmError::rate_limited(if msg.is_empty() {
                     "rate/usage limit".into()
                 } else {
                     msg
@@ -130,7 +130,7 @@ impl LlmBackend for ClaudeBackend {
                 .take(200)
                 .collect();
             if sp::looks_rate_limited(&detail) {
-                return Err(LlmError::RateLimited(detail));
+                return Err(LlmError::rate_limited(detail));
             }
             return Err(LlmError::Failed(format!("claude reported: {detail}")));
         }

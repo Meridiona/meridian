@@ -40,11 +40,38 @@ export interface CustomProviderView {
   name: string
   base_url: string
   model: string
+  /** Requests-per-minute ceiling; 0 = unpaced. See `CustomLlmProvider::rpm` in Rust. */
+  rpm: number
+  /** Requests-per-day ceiling; 0 = not known (never "zero allowed"). */
+  rpd: number
+  /** Whether these limits can run the app for a day. Computed in Rust - never re-derive
+   *  it here from rpm/rpd, or the two answers will drift. */
+  capacity: CapacityAssessment
   rungs: Record<string, SchemaRung>
   effective_rung: SchemaRung
   fully_probed: boolean
   production_eligible: boolean
   selected: boolean
+}
+
+/** How an endpoint's configured quota compares with what the app actually asks for.
+ *  Mirrors `meridian_core::llm_capacity::CapacityVerdict`. */
+export type CapacityVerdict =
+  | 'sufficient'
+  | 'unknown'
+  | 'tight'
+  | 'insufficient'
+  | 'cannot_onboard'
+
+/** Mirrors `meridian_core::llm_capacity::CapacityAssessment`. */
+export interface CapacityAssessment {
+  verdict: CapacityVerdict
+  /** Active hours/day this quota covers once setup is paid for; null when RPD is unknown. */
+  covered_active_hours: number | null
+  /** Requests a normal working day needs. */
+  daily_demand: number
+  /** Seconds the setup probe will take at this RPM, when low enough to be worth saying. */
+  probe_seconds_at_rpm: number | null
 }
 
 /** What `add_custom_llm_provider` / `probe_custom_llm_provider` report back. */
@@ -54,6 +81,64 @@ export interface ProbeOutcome {
   requests: number
   /** Why the probe stopped early (usually a rate limit), or null if it completed. */
   incomplete: string | null
+}
+
+/** What to tell the user about an endpoint's quota, or null when there is nothing worth
+ *  saying. Returns the severity so the caller can style it, and prose that states the
+ *  working-day assumption rather than presenting the verdict as fact.
+ *
+ *  All hyphens here are plain `-` on purpose: this is user-facing app text. */
+export function capacityNotice(
+  c: CapacityAssessment,
+): { tone: 'error' | 'warn' | 'info'; text: string } | null {
+  const day = `about ${c.daily_demand} requests a day`
+  switch (c.verdict) {
+    case 'cannot_onboard':
+      return {
+        tone: 'error',
+        text:
+          `This key's daily limit is too small to even measure the endpoint - checking which ` +
+          `JSON modes it supports costs up to 16 requests on its own. Pick a model with a ` +
+          `higher requests-per-day allowance.`,
+      }
+    case 'insufficient':
+      return {
+        tone: 'error',
+        text:
+          `This key covers roughly ${c.covered_active_hours} active ${hours(c.covered_active_hours)} ` +
+          `a day. Meridian needs ${day} for a normal 8-hour day, so hours past that will be ` +
+          `skipped until the quota resets. Pick a model with a higher requests-per-day allowance.`,
+      }
+    case 'tight':
+      return {
+        tone: 'warn',
+        text:
+          `This key covers roughly ${c.covered_active_hours} active ${hours(c.covered_active_hours)} ` +
+          `a day - enough for a short day, not a full one (Meridian needs ${day}). A model with a ` +
+          `higher requests-per-day allowance would be safer.`,
+      }
+    case 'unknown':
+      return {
+        tone: 'info',
+        text:
+          `Add this plan's requests-per-day limit and Meridian can tell you whether it's enough ` +
+          `for a full day - it needs ${day}. Free tiers are often capped low enough to matter.`,
+      }
+    case 'sufficient':
+      return c.probe_seconds_at_rpm && c.probe_seconds_at_rpm > 60
+        ? {
+            tone: 'info',
+            text:
+              `Plenty for a day's work. The one-time setup check will take about ` +
+              `${Math.round(c.probe_seconds_at_rpm / 60)} minutes, because requests are spaced out ` +
+              `to stay under this key's per-minute limit.`,
+          }
+        : null
+  }
+}
+
+function hours(n: number | null): string {
+  return n === 1 ? 'hour' : 'hours'
 }
 
 /** Human label for a measured rung - what the card says about how far it can be trusted. */
