@@ -94,7 +94,7 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         let commands_dir = home.join(".claude/commands");
         let skill_path = commands_dir.join("session-summary.md");
-        // Keep in sync with services/skills/coding-agent/session-summary/SKILL.md
+        // Keep in sync with assets/skills/coding-agent/session-summary/SKILL.md
         // (install.sh and install-from-bundle.sh copy that file directly; this
         // path is the fallback for `meridian doctor --fix` and `meridian coding-agent-install-skill`)
         let content = concat!(

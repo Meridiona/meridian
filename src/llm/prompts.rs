@@ -9,35 +9,18 @@
 //!
 //! (The coding-agent summariser already set this precedent with `SKILL.md`.)
 //!
-//! # The two calls
-//!
-//! The hourly report is deliberately split in two, because one call could not write good
-//! prose *and* get the clock times right: on identical input the 2B produced 1, 5 and 30
-//! paragraphs across runs, and invented durations in words that contradicted the measured
-//! sessions. So:
-//!
-//! 1. [`ACTIVITY_SUMMARY`] — the activities, as numbered prose, with **no time in them**.
-//!    Time is not mentioned, so it cannot be got wrong.
-//! 2. [`ACTIVITY_TIME`] — how many minutes each activity took. A short list and the
-//!    measured timeline: one small job.
-//!
-//! Code then clamps and fills the result. The model never writes a number we trust.
+//! The hourly report is a SINGLE call producing activities (prose, no time) AND the
+//! minutes per activity in one structured answer. One call could not both write good
+//! prose *and* get clock times right on the old 2B, so time lives in a separate
+//! `minutes` field the code clamps and fills — the model never writes a number we trust.
 
 use serde_json::{json, Value};
 
 /// The single hourly report prompt: activities (prose, no time) AND minutes per
-/// activity, in one structured call. Replaces the former two-call split
-/// ([`ACTIVITY_SUMMARY`] + [`ACTIVITY_TIME`]) — the prose stays time-free, the
-/// time lives in a separate `minutes` field, so one call yields both without the
-/// model writing clock times into the words.
-pub const ACTIVITY_REPORT: &str = include_str!("../../services/prompts/activity-report.md");
-
-/// Former call 1: what happened this hour, no time. Kept for reference / tests;
-/// the live pipeline now uses the merged [`ACTIVITY_REPORT`].
-pub const ACTIVITY_SUMMARY: &str = include_str!("../../services/prompts/activity-summary.md");
-
-/// Former call 2: minutes per activity. Superseded by [`ACTIVITY_REPORT`].
-pub const ACTIVITY_TIME: &str = include_str!("../../services/prompts/activity-time.md");
+/// activity, in one structured call. The prose stays time-free and the time lives in a
+/// separate `minutes` field, so one call yields both without the model writing clock
+/// times into the words.
+pub const ACTIVITY_REPORT: &str = include_str!("../../assets/prompts/activity-report.md");
 
 /// The shape the merged hourly report must answer in: activities in time order,
 /// each with its prose and an integer minute estimate. `minutes` is capped at 600
@@ -73,41 +56,7 @@ pub fn activity_report_schema() -> Value {
 /// rewrite of the whole set. The prompt (not code) owns matching, how work groups
 /// into tasks, how to group time into approximate segments, and what counts as work
 /// worth showing. Same one-prompt-all-providers rule as the activity prompts.
-pub const WORKSTREAM: &str = include_str!("../../services/prompts/workstream.md");
-
-/// The JSON shape call 2 must answer in: one `{activity, minutes}` per activity.
-///
-/// `activity` is **bounded to the real count**, and that bound is load-bearing, not
-/// decoration: with an unbounded schema the 2B echoed the input back, returning 13
-/// entries for 4 activities. `minutes` is capped at 600 so a runaway can't claim ten
-/// hours inside a one-hour window (the caller clamps to the hour's true span anyway).
-pub fn activity_time_schema(n_activities: usize) -> Value {
-    let max = n_activities.max(1);
-    json!({
-        "type": "object",
-        "properties": {
-            "activities": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "activity": {"type": "integer", "minimum": 1, "maximum": max},
-                        "minutes":  {"type": "integer", "minimum": 1, "maximum": 600}
-                    },
-                    "required": ["activity", "minutes"],
-                    "additionalProperties": false
-                }
-            }
-        },
-        "required": ["activities"],
-        "additionalProperties": false
-    })
-}
-
-/// The schema rendered for a CLI that takes it as a file or a flag.
-pub fn activity_time_schema_json(n_activities: usize) -> String {
-    activity_time_schema(n_activities).to_string()
-}
+pub const WORKSTREAM: &str = include_str!("../../assets/prompts/workstream.md");
 
 /// The JSON shape the Workstream Builder must answer in: this hour's PLACEMENTS,
 /// not the whole task set. Each placement is one piece of the new hour's work,
@@ -161,7 +110,7 @@ pub fn workstream_schema() -> Value {
 /// work moved — one or several — or draft a new one), plus a high-level `update`
 /// (summary / free-form `sections` / status) posted as a comment on each matched
 /// ticket. Same one-prompt-all-providers rule as the others.
-pub const WORKLOG_GENERATE: &str = include_str!("../../services/prompts/worklog-generate.md");
+pub const WORKLOG_GENERATE: &str = include_str!("../../assets/prompts/worklog-generate.md");
 
 /// The JSON shape the "Generate worklog" call must answer in. `matches` is an array
 /// (a day's strand of work can advance several planned tasks) and `propose` is a
@@ -233,7 +182,7 @@ pub fn worklog_generate_schema() -> Value {
 /// FORMATTER, not an expander: the prompt's load-bearing rule is `INVENT NOTHING`,
 /// because the failure mode of a four-word note is a fabricated three-paragraph
 /// ticket. Same one-prompt-all-providers rule as the others.
-pub const PLAN_TASK_DRAFT: &str = include_str!("../../services/prompts/plan-task-draft.md");
+pub const PLAN_TASK_DRAFT: &str = include_str!("../../assets/prompts/plan-task-draft.md");
 
 /// The JSON shape the task-draft call must answer in. All three fields required.
 ///
@@ -263,7 +212,7 @@ pub fn plan_task_draft_schema() -> Value {
 ///
 /// The daily plan is deliberately NOT an input: this is what the day WAS, not what
 /// was promised, and mixing them turns a review into a scorecard.
-pub const DAILY_SUMMARY: &str = include_str!("../../services/prompts/daily-summary.md");
+pub const DAILY_SUMMARY: &str = include_str!("../../assets/prompts/daily-summary.md");
 
 /// The JSON shape the daily-summary call must answer in.
 ///
@@ -342,12 +291,10 @@ mod tests {
 
     #[test]
     fn prompts_are_present_and_carry_their_load_bearing_clauses() {
-        // If someone edits the .md files, these are the clauses that must survive: the
-        // whole two-call design rests on call 1 never mentioning time.
-        assert!(ACTIVITY_SUMMARY.contains("NO TIME"));
-        assert!(ACTIVITY_SUMMARY.contains("NEVER NAME THE PERSON"));
-        assert!(ACTIVITY_TIME.contains("how many minutes"));
-        assert!(!ACTIVITY_SUMMARY.trim().is_empty());
+        // If someone edits the .md files, these are the clauses that must survive. The
+        // hourly report is a single call whose prose never carries clock times.
+        assert!(!ACTIVITY_REPORT.trim().is_empty());
+        assert!(ACTIVITY_REPORT.contains("NEVER NAME THE PERSON"));
         // The Workstream Builder's whole design rests on: real workstreams (not
         // per-fix tasks), segments as the time unit, work-only (no leisure), and
         // never naming the person. The count / grouping / negligibility are the
@@ -505,24 +452,5 @@ mod tests {
         assert_eq!(seg["start"]["type"], json!("string"));
         assert_eq!(seg["end"]["type"], json!("string"));
         assert_eq!(props["id"]["type"], json!("string"));
-    }
-
-    #[test]
-    fn schema_bounds_the_activity_index_to_the_real_count() {
-        let s = activity_time_schema(4);
-        let props = &s["properties"]["activities"]["items"]["properties"];
-        assert_eq!(props["activity"]["maximum"], json!(4));
-        assert_eq!(props["activity"]["minimum"], json!(1));
-    }
-
-    #[test]
-    fn schema_never_bounds_to_zero() {
-        // An empty activity list would make `maximum: 0` — an unsatisfiable grammar the
-        // FSM cannot generate any value for. Floor it at 1.
-        assert_eq!(
-            activity_time_schema(0)["properties"]["activities"]["items"]["properties"]["activity"]
-                ["maximum"],
-            json!(1)
-        );
     }
 }

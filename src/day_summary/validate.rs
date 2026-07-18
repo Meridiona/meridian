@@ -12,7 +12,7 @@
 //! it passes here.
 //!
 //! # The two layers
-//! 1. **The real Vega-Lite schema** (`services/schemas/vega-lite-schema.json`,
+//! 1. **The real Vega-Lite schema** (`assets/schemas/vega-lite-schema.json`,
 //!    `include_str!`'d). This is the only thing that actually knows what
 //!    Vega-Lite accepts; hand-rolling a subset of it would be a second, drifting
 //!    implementation of someone else's grammar.
@@ -50,7 +50,7 @@ use meridian_core::day_evidence::datasets;
 /// that passes here but fails in the webview (or vice versa) is the exact bug this
 /// is meant to prevent, and `tests::vendored_schema_matches_the_installed_vega_lite`
 /// is the tripwire.
-const VEGA_LITE_SCHEMA: &str = include_str!("../../services/schemas/vega-lite-schema.json");
+const VEGA_LITE_SCHEMA: &str = include_str!("../../assets/schemas/vega-lite-schema.json");
 
 /// Why one panel was rejected. `Display`s into the drop-reason span field.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -320,7 +320,7 @@ mod tests {
                 let live: Value = serde_json::from_str(&text).unwrap();
                 assert_eq!(
                     schema, live,
-                    "services/schemas/vega-lite-schema.json is stale — re-copy it from \
+                    "assets/schemas/vega-lite-schema.json is stale — re-copy it from \
                      ui/node_modules/vega-lite/build/vega-lite-schema.json (vega-lite {dep})"
                 );
             }

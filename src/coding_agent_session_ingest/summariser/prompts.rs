@@ -19,10 +19,10 @@ pub const SUMMARY_PROMPT_MARKER: &str =
     "You summarise ONE work-burst of a developer's coding-agent session";
 
 /// The shared rules, without an output-format clause (engines append their own).
-/// Single source of truth lives in services/skills/coding-agent/session-summary/SKILL.md —
+/// Single source of truth lives in assets/skills/coding-agent/session-summary/SKILL.md —
 /// edit that file, rebuild, and all three engines (Claude, Codex, MLX) pick up the change.
 pub const SUMMARY_RULES: &str =
-    include_str!("../../../services/skills/coding-agent/session-summary/SKILL.md");
+    include_str!("../../../assets/skills/coding-agent/session-summary/SKILL.md");
 
 /// For schema-enforced engines (Codex `--output-schema`): ask for JSON.
 pub fn summary_instruction() -> String {
