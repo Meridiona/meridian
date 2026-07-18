@@ -116,9 +116,6 @@ pub struct Config {
     /// Number of recent classified sessions included as temporal context in each prompt.
     /// CLASSIFICATION_CONTEXT_WINDOW — default 5
     pub classification_context_window: usize,
-    /// Port the persistent MLX classifier server listens on.
-    /// MLX_SERVER_PORT — default 7823
-    pub mlx_server_port: u16,
     /// Whether to post Jira progress updates. Auto-enabled when JIRA_BASE_URL is set.
     /// JIRA_UPDATE_ENABLED — default true if Jira is configured
     pub jira_update_enabled: bool,
@@ -410,11 +407,6 @@ impl Config {
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(5);
 
-        let mlx_server_port = std::env::var("MLX_SERVER_PORT")
-            .ok()
-            .and_then(|v| v.parse::<u16>().ok())
-            .unwrap_or(7823);
-
         let pm_providers = parse_providers();
         let provider_names: Vec<&str> = pm_providers.iter().map(|p| p.provider_name()).collect();
 
@@ -436,7 +428,6 @@ impl Config {
             classification_services_dir,
             classification_backfill,
             classification_context_window,
-            mlx_server_port,
             jira_update_enabled,
             jira_update_interval_s,
             jira_office_start_hour,

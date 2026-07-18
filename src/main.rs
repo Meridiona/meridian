@@ -13,14 +13,6 @@ use meridian::observability;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::Notify;
 
-/// User-facing remediation hint for the `mlx.down` notice. The tray auto-restarts
-/// the MLX server (see `tray/src-tauri/src/poll/mod.rs::supervise_mlx`), so an
-/// installed user has nothing to type — the only manual fallback is relaunching
-/// Meridian. Deliberately NOT the dev `cd services && .venv/bin/python …` command,
-/// which is meaningless on a packaged install (no `services/` or `.venv`).
-const MLX_DOWN_FIX_HINT: &str =
-    "Meridian restarts the classifier automatically. If it keeps happening, quit and reopen Meridian.";
-
 /// Single-instance probe for the daemon socket. Returns `true` only when a live
 /// daemon answers `~/.meridian/daemon.sock` with its greeting — i.e. one is already
 /// running for this data dir. A missing/stale socket with no listener (previous
@@ -1133,33 +1125,6 @@ async fn main() -> Result<()> {
                     tracing::debug!(error = %e, "notification response consume skipped");
                 }
 
-                // Proactive classifier health probe. Detect a down/wedged MLX
-                // server every tick via a fast /health check (NOT reactively, only
-                // when a classify happens to fail) so the fault surfaces promptly
-                // on the dashboard banner AND — via the notices→outbox bridge — as
-                // a desktop toast + in-app banner. Auto-clears when it recovers.
-                // Suppress this alarm during first-run onboarding: the MLX server
-                // is still being provisioned (runtime downloading), so "offline" is
-                // expected, not a fault — surfacing it (banner + desktop toast) in
-                // the setup wizard is just noise. Only raise once setup is complete.
-                // A genuine post-setup outage still surfaces reactively via the
-                // task-linker's mlx.down notice above, so this gate hides nothing.
-                let onboarded = std::env::var("HOME")
-                    .map(|h| std::path::Path::new(&h).join(".meridian/onboarded").exists())
-                    .unwrap_or(true);
-                if meridian::intelligence::mlx_ready(&cfg).await || !onboarded {
-                    let _ = meridian::notices::clear(&meridian, "mlx.down").await;
-                } else {
-                    let _ = meridian::notices::raise(
-                        &meridian,
-                        "mlx.down",
-                        "warning",
-                        "Classifier offline",
-                        "The MLX classifier server isn't responding — new sessions are recorded but won't be tagged until it's back.",
-                        Some(MLX_DOWN_FIX_HINT),
-                    )
-                    .await;
-                }
                 // Refresh the PM task cache (pm_tasks) every tick — interval-gated
                 // per provider (~5 min), so this is a cheap no-op most ticks. The
                 // legacy drafting driver that used to trigger this before every

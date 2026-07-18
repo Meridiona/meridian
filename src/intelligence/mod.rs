@@ -8,7 +8,6 @@ pub mod ticket_update;
 
 use anyhow::Result;
 use sqlx::SqlitePool;
-use std::time::Duration;
 
 use crate::config::{Config, PmProviderConfig};
 
@@ -35,49 +34,15 @@ pub async fn pm_tasks_present(pool: &SqlitePool) -> bool {
     }
 }
 
-/// True when the MLX classifier is READY TO SERVE: the port answers and `/info`
-/// reports the server is up (`loaded_at`). With lazy-load builds the model may be
-/// evicted (idle) and is reloaded on the next classify (~4 s, well within the
-/// 120 s classify timeout) — so "ready" means "will serve on demand", not
-/// "resident now". A POSITIVE readiness probe (short timeout) — never inferred
-/// from a failed classify call, and never the 120 s startup wait of
-/// `check_classification_ready`. Safe to call every cycle.
-pub async fn mlx_ready(cfg: &Config) -> bool {
-    let base = format!("http://127.0.0.1:{}", cfg.mlx_server_port);
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    // Liveness: the port must answer /health.
-    if client.get(format!("{base}/health")).send().await.is_err() {
-        return false;
-    }
-    // Readiness: /info reports `loaded_at` once the server is up. We require the
-    // server up (not the model resident — lazy-load reloads on demand). If /info
-    // is absent (older build), liveness is enough.
-    match client.get(format!("{base}/info")).send().await {
-        Ok(resp) => match resp.json::<serde_json::Value>().await {
-            Ok(body) => match body.get("loaded_at") {
-                Some(v) => !v.is_null(),
-                None => true,
-            },
-            Err(_) => true,
-        },
-        Err(_) => true,
-    }
-}
-
-/// The gate for the whole task-linking + worklog pipeline: BOTH halves must be
-/// working before any session is classified or any worklog drafted — the LLM
-/// classifier loaded AND a PM tracker that has synced tasks. Either side failing
-/// pauses the pipeline; it resumes automatically once both recover, because the
-/// driving loops re-check each cycle and the classification cursor is held while
-/// paused (so the backlog links retroactively rather than being skipped).
-pub async fn pipeline_ready(pool: &SqlitePool, cfg: &Config) -> bool {
-    mlx_ready(cfg).await && pm_tasks_present(pool).await
+/// The gate for the whole task-linking + worklog pipeline: a PM tracker that has
+/// synced tasks must be present before any worklog is drafted. Failing pauses the
+/// pipeline; it resumes automatically once a tracker syncs, because the driving
+/// loops re-check each cycle.
+///
+/// (This was once ANDed with an MLX-classifier readiness probe; with generation now
+/// running through the user's CLI provider there is no local server to gate on.)
+pub async fn pipeline_ready(pool: &SqlitePool, _cfg: &Config) -> bool {
+    pm_tasks_present(pool).await
 }
 
 /// Forces an immediate refresh of all configured PM providers, bypassing the staleness gate.
