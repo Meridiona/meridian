@@ -8,19 +8,23 @@
 //!
 //! # Related
 //! - [`super`] — the loop that schedules these and the tray-sync that follows.
-//! - [`super::notifications_allowed`] — the quiet-hours gate `refresh_health` consults.
+//! - [`meridian::notices`] — the fault-bus `refresh_health` raises/clears
+//!   `tray.daemon_quiet` through (event_key `system.health`).
 //! - [`crate::commands::health::check_health`] — the direct health check.
 
 use crate::commands::health::check_health;
 use crate::state::{ActiveSession, AppState, HealthStatus, TodayBreakdown};
-use crate::sys::notify;
 use meridian_core::SqlitePool;
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
 
-/// Run the local health check, fold it into [`AppState`], and fire the
-/// went-quiet / back-online toasts (debounced to the 2nd consecutive failure).
-pub(super) async fn refresh_health(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {
+/// Run the local health check, fold it into [`AppState`], and raise/clear the
+/// went-quiet / back-online notice (debounced to the 2nd consecutive failure).
+pub(super) async fn refresh_health(
+    app: &tauri::AppHandle,
+    state: &Arc<Mutex<AppState>>,
+    pool: Option<&SqlitePool>,
+) {
     let hr = check_health().await;
 
     // Push the health detail to the dashboard webview (the ported
@@ -66,10 +70,46 @@ pub(super) async fn refresh_health(app: &tauri::AppHandle, state: &Arc<Mutex<App
         (notify_down, notify_back)
     };
 
-    if notify_down && super::notifications_allowed("system.health").await {
-        notify(app, "Meridian went quiet.", "Tap to check what happened.");
-    } else if notify_back && super::notifications_allowed("system.health").await {
-        notify(app, "Back online.", "Picking up where you left off.");
+    let Some(pool) = pool else { return };
+    if notify_down {
+        if let Err(e) = meridian::notices::raise_typed(
+            pool,
+            meridian::notices::Notice {
+                id: "tray.daemon_quiet",
+                severity: "warning",
+                title: "Meridian went quiet.",
+                detail: "Tap to check what happened.",
+                remedy: None,
+                event_key: "system.health",
+                deep_link: Some("/logs"),
+            },
+        )
+        .await
+        {
+            tracing::warn!(error = %e, "daemon-health notice raise failed");
+        }
+    } else if notify_back {
+        if let Err(e) =
+            meridian::notices::clear_typed(pool, "tray.daemon_quiet", "system.health").await
+        {
+            tracing::warn!(error = %e, "daemon-health notice clear failed");
+        }
+        // "Back online" is a discrete confirmation, not a state to leave
+        // sitting as a banner once the fault it answers is already cleared.
+        let dedup = format!(
+            "system.health:back_online:{}",
+            chrono::Utc::now().timestamp()
+        );
+        let n = meridian::notifications::NewNotification::event(
+            &dedup,
+            "system.health",
+            "Back online.",
+            "Picking up where you left off.",
+        )
+        .via(meridian::notifications::CHANNEL_NATIVE);
+        if let Err(e) = meridian::notifications::enqueue(pool, n).await {
+            tracing::warn!(error = %e, "back-online notification enqueue failed");
+        }
     }
 }
 

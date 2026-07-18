@@ -119,6 +119,15 @@ fn type_enabled(event_key: &str, s: &RuntimeSettings) -> bool {
         "plan.nudge" => s.notify_plan_nudge,
         "worklog.ready" => s.notify_worklog_ready,
         "system.fault" => s.notify_system_fault,
+        "system.pause" => s.notify_system_pause,
+        "system.health" => s.notify_system_health,
+        "system.update" => s.notify_system_update,
+        "summariser.dead_letter" => s.notify_summariser_digest,
+        "board.hygiene" => s.notify_board_hygiene,
+        // Safety-critical: notification/capture-permission revoked and low disk
+        // space stay ungated by a per-type toggle (unknown keys default
+        // enabled) — a user shouldn't be able to silence the one alert that
+        // explains why everything else went quiet.
         _ => true,
     }
 }

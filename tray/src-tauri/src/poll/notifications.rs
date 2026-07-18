@@ -10,9 +10,12 @@
 //! delivery ack is now a direct `meridian.db` write too — the loop is HTTP-free.
 //!
 //! # Related
-//! - [`super::refresh::refresh_health`] — gates its toasts via [`notifications_allowed`].
-//! - [`crate::commands::daemon::toggle_daemon`] — same gate for the pause/resume toast.
 //! - [`meridian_core::notifications::mark_native_delivered`] — the delivery ack.
+//! - [`meridian::notices`] — every tray-originated toast (pause/resume, daemon
+//!   health, updates, permission/disk checks) now routes through this fault
+//!   bus rather than a direct bypass toast, so it gets the same
+//!   master-switch/per-type/quiet-hours policy this module's outbox drain
+//!   already applies to daemon-originated notifications.
 
 use crate::sys::{notify_outbox, retract_toast};
 use tauri::Manager;
@@ -66,15 +69,4 @@ pub(super) async fn drain_notifications(app: &tauri::AppHandle) {
         }
         retract_toast(app, id);
     }
-}
-
-/// Whether a notification for `event_key` may fire right now — master switch +
-/// per-type toggle + quiet hours, computed directly from `settings.json` (ported
-/// `/api/notifications/allowed`, no HTTP). Fails open when settings are
-/// missing/corrupt (`load_runtime_settings` → defaults, notifications on) so an
-/// operational alert (e.g. "went quiet") is never lost to a policy-read failure.
-pub(crate) async fn notifications_allowed(event_key: &str) -> bool {
-    let s = meridian_core::settings::load_runtime_settings();
-    meridian_core::notifications::event_allowed(event_key, &s)
-        && !meridian_core::notifications::in_quiet_hours(&s)
 }

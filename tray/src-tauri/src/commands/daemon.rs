@@ -11,13 +11,16 @@
 //! `SettingsView.tsx` during a reload via `ui/lib/bridge.ts::load`.
 //!
 //! # Related
-//! - [`crate::sys`] — shared `uid_str` (launchctl domain) + `notify` (toast).
-//! - [`crate::poll::notifications_allowed`] — quiet-hours gate for the toggle toast.
+//! - [`crate::sys`] — shared `uid_str` (launchctl domain).
+//! - [`meridian::notices`] — the fault-bus the toggle notice routes through (id
+//!   `tray.daemon_paused`, event_key `system.pause`, same toggle as
+//!   [`crate::commands::pause`]'s capture-pause notice).
 //! - [`crate::commands::pause`] — `pause_for_duration`/`pause_indefinitely`, split
 //!   out of this module (CLAUDE.md's 500-line file cap).
 
 use crate::state::{AppState, StatusPayload};
 use crate::sys;
+use meridian_core::SqlitePool;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -52,11 +55,17 @@ pub async fn restart_daemon() -> Result<(), String> {
     }
 }
 
-/// Pause (`stop`) or resume (`start`) the daemon. On success, fires a toast
-/// honoring the user's notification prefs (master switch + quiet hours), the
-/// same policy the outbox notifications follow.
+/// Pause (`stop`) or resume (`start`) the daemon. On success, raises/clears a
+/// `tray.daemon_paused` notice — same `system.pause` event_key (and
+/// `notify_system_pause` toggle) as [`crate::commands::pause`]'s capture-pause
+/// notice, so quiet-hours/master-switch/per-type policy applies identically.
 #[tauri::command]
-pub async fn toggle_daemon(app: tauri::AppHandle, is_running: bool) -> Result<(), String> {
+pub async fn toggle_daemon(
+    _app: tauri::AppHandle,
+    is_running: bool,
+    db_pool: State<'_, Option<SqlitePool>>,
+) -> Result<(), String> {
+    let pool = db_pool.inner().clone();
     let uid = sys::uid_str();
     let service = format!("gui/{}/com.meridiona.daemon", uid);
 
@@ -72,13 +81,27 @@ pub async fn toggle_daemon(app: tauri::AppHandle, is_running: bool) -> Result<()
     .map_err(|e| format!("launchctl failed: {}", e))?;
 
     if status.success() {
-        let (title, body) = if is_running {
-            ("Paused", "Meridian is paused. Click to resume.")
-        } else {
-            ("Resumed", "Meridian is back tracking.")
-        };
-        if crate::poll::notifications_allowed("system.pause").await {
-            sys::notify(&app, title, body);
+        if let Some(p) = pool.as_ref() {
+            let result = if is_running {
+                meridian::notices::raise_typed(
+                    p,
+                    meridian::notices::Notice {
+                        id: "tray.daemon_paused",
+                        severity: "info",
+                        title: "Paused",
+                        detail: "Meridian is paused. Click to resume.",
+                        remedy: None,
+                        event_key: "system.pause",
+                        deep_link: None,
+                    },
+                )
+                .await
+            } else {
+                meridian::notices::clear_typed(p, "tray.daemon_paused", "system.pause").await
+            };
+            if let Err(e) = result {
+                tracing::warn!(error = %e, is_running, "daemon toggle notice write failed");
+            }
         }
         Ok(())
     } else {

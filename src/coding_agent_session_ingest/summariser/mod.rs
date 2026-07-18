@@ -686,6 +686,41 @@ pub async fn cli_summarise(pool: &SqlitePool, dry_run: bool, day: Option<&str>, 
     }
 }
 
+/// Daily digest: if any coding-agent sessions were permanently dead-lettered
+/// today (see [`db::write_dead_letter`]), enqueue one batched notification
+/// rather than a toast per row — matches [`crate::daily_plan::maybe_nudge`]'s
+/// once-per-day dedup shape (`dedup_key` scoped to today), so calling this
+/// unconditionally every ETL tick is safe: the outbox's UNIQUE constraint on
+/// `dedup_key` makes a repeat call within the same day a no-op.
+///
+/// # Who calls this
+/// The daemon's poll-tick loop (`src/main.rs`), alongside `daily_plan::maybe_nudge`.
+pub async fn maybe_notify_dead_letters(pool: &SqlitePool) -> anyhow::Result<()> {
+    let today = meridian_core::date::today_string();
+    let (since_utc, _) = meridian_core::date::local_day_bounds(&today);
+    let count = db::count_dead_lettered_since(pool, &since_utc).await?;
+    if count == 0 {
+        return Ok(());
+    }
+    let dedup = format!("summariser.dead_letter:{today}");
+    let body = format!(
+        "{count} coding session{} couldn't be summarised. Check that your coding-agent CLIs are signed in.",
+        if count == 1 { "" } else { "s" }
+    );
+    crate::notifications::enqueue(
+        pool,
+        crate::notifications::NewNotification::event(
+            &dedup,
+            "summariser.dead_letter",
+            "Some coding sessions weren't summarised",
+            &body,
+        )
+        .link("/settings"),
+    )
+    .await?;
+    Ok(())
+}
+
 // ──────────────────────── Tests ─────────────────────────────────────────────
 
 #[cfg(test)]

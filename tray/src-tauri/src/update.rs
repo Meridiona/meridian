@@ -30,16 +30,48 @@
 //!   running — broken update paths, data-corrupting bugs).
 //!
 //! # Related
-//! - [`crate::sys::notify`] — the toast the tray-menu path surfaces through.
+//! - [`notify_update`] — routes every tray-menu toast through the outbox
+//!   (event_key `system.update`) instead of a direct bypass, so quiet-hours,
+//!   the master switch, and the `notify_system_update` toggle all apply —
+//!   previously these six call sites skipped that policy entirely.
 //! - `scripts/package-updater.sh` — the producer of the `Minimum-Version:` notes
 //!   line (reads the optional `tray/minimum-version` file at release time).
 //! - Plan: Obsidian `Decisions/Public distribution + auto-update for the DMG`.
 
+use meridian_core::SqlitePool;
 use semver::Version;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
+
+/// Enqueue a discrete update-related toast through the outbox instead of the
+/// direct `sys::notify` bypass. Each of these six call sites represents a
+/// one-shot event (a check outcome, a download starting), not an ongoing
+/// condition to raise/clear like [`meridian::notices`] models — so this goes
+/// straight to [`meridian::notifications::enqueue`], gated by `system.update`
+/// (master switch + quiet hours + the `notify_system_update` toggle) the same
+/// way every other outbox producer is. `dedup_suffix` only needs to be unique
+/// per call (the current timestamp is fine — these are user-triggered or
+/// rare background events, never a tight loop that would spam distinct keys).
+async fn notify_update(app: &AppHandle, dedup_suffix: &str, title: &str, body: &str) {
+    let Some(pool) = app
+        .try_state::<Option<SqlitePool>>()
+        .and_then(|s| s.inner().clone())
+    else {
+        tracing::debug!(title, "notify_update: DB not open yet — toast dropped");
+        return;
+    };
+    let dedup = format!(
+        "system.update:{dedup_suffix}:{}",
+        chrono::Utc::now().timestamp_millis()
+    );
+    let n = meridian::notifications::NewNotification::event(&dedup, "system.update", title, body)
+        .via(meridian::notifications::CHANNEL_NATIVE);
+    if let Err(e) = meridian::notifications::enqueue(&pool, n).await {
+        tracing::warn!(error = %e, title, "update notification enqueue failed");
+    }
+}
 
 /// Guards the tray-menu path against re-entry (a second click mid-download).
 static CHECKING: AtomicBool = AtomicBool::new(false);
@@ -272,11 +304,13 @@ pub fn enforce_minimum_version(app: &AppHandle) {
                 minimum = status.minimum_version.as_deref().unwrap_or(""),
                 "update: running version is below the minimum supported - forcing install"
             );
-            crate::sys::notify(
+            notify_update(
                 &app,
+                "mandatory",
                 "Updating Meridian",
                 &format!("This version is no longer supported - installing v{v}"),
-            );
+            )
+            .await;
             if let Err(e) = download_and_apply(&app).await {
                 tracing::warn!(error = %e, "update: forced install failed - retrying next cycle");
             }
@@ -299,28 +333,48 @@ pub fn check_for_updates(app: &AppHandle) {
         match status.state.as_str() {
             "available" => {
                 let v = status.version.clone().unwrap_or_default();
-                crate::sys::notify(&app, "Updating Meridian", &format!("Downloading v{v}…"));
+                notify_update(
+                    &app,
+                    "downloading",
+                    "Updating Meridian",
+                    &format!("Downloading v{v}…"),
+                )
+                .await;
                 if let Err(e) = download_and_apply(&app).await {
                     tracing::warn!(error = %e, "update: install failed");
-                    crate::sys::notify(&app, "Update failed", "The update couldn't be installed.");
+                    notify_update(
+                        &app,
+                        "failed",
+                        "Update failed",
+                        "The update couldn't be installed.",
+                    )
+                    .await;
                 }
             }
-            "uptodate" => crate::sys::notify(
-                &app,
-                "Meridian is up to date",
-                "You're on the latest version.",
-            ),
-            "unsupported" => crate::sys::notify(
-                &app,
-                "Updates via npm",
-                "This build updates with `meridian update`.",
-            ),
+            "uptodate" => {
+                notify_update(
+                    &app,
+                    "uptodate",
+                    "Meridian is up to date",
+                    "You're on the latest version.",
+                )
+                .await;
+            }
+            "unsupported" => {
+                notify_update(
+                    &app,
+                    "unsupported",
+                    "Updates via npm",
+                    "This build updates with `meridian update`.",
+                )
+                .await;
+            }
             _ => {
                 let msg = status
                     .error
                     .as_deref()
                     .unwrap_or("Couldn't reach the update server.");
-                crate::sys::notify(&app, "Update check failed", msg);
+                notify_update(&app, "check_failed", "Update check failed", msg).await;
             }
         }
         CHECKING.store(false, Ordering::SeqCst);
