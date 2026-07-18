@@ -46,6 +46,13 @@ use segment::{
 };
 use select::Item;
 
+/// Cosine-similarity dot product for two L2-normalized embedding vectors — shared by
+/// [`dedup`]'s SemDeDup mask and [`select`]'s facility-location diversity pick, the two
+/// stages that compare embeddings.
+pub(crate) fn dot(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
 // ── Tunables (env-overridable) ──────────────────────────────────────────────────
 
 /// Coding-agent apps whose transcripts are folded in as clean summaries elsewhere, so

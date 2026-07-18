@@ -47,11 +47,6 @@ pub fn lexical_dedup(mut spans: Vec<Span>) -> Vec<Span> {
     lex
 }
 
-/// Dot product of two L2-normalized vectors == cosine similarity.
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
-}
-
 /// Stage 6 — SemDeDup. Given `lex` spans and their row-aligned embeddings `v`, return a
 /// keep-mask: a span is dropped when it is more similar than `thr` to an already-kept
 /// span **and** (it shares that span's session **or** carries no named entity). A span
@@ -72,7 +67,7 @@ pub fn sem_dedup_mask(lex: &[Span], v: &[Vec<f32>], thr: f64) -> Vec<bool> {
             let mut best_sim = f32::MIN;
             let mut best_kept = kept[0];
             for &k in &kept {
-                let s = dot(&v[i], &v[k]);
+                let s = super::dot(&v[i], &v[k]);
                 if s > best_sim {
                     best_sim = s;
                     best_kept = k;

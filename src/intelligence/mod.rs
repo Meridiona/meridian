@@ -34,17 +34,6 @@ pub async fn pm_tasks_present(pool: &SqlitePool) -> bool {
     }
 }
 
-/// The gate for the whole task-linking + worklog pipeline: a PM tracker that has
-/// synced tasks must be present before any worklog is drafted. Failing pauses the
-/// pipeline; it resumes automatically once a tracker syncs, because the driving
-/// loops re-check each cycle.
-///
-/// (This was once ANDed with a local-classifier readiness probe; with generation now
-/// running through the user's CLI provider there is no local server to gate on.)
-pub async fn pipeline_ready(pool: &SqlitePool, _cfg: &Config) -> bool {
-    pm_tasks_present(pool).await
-}
-
 /// Forces an immediate refresh of all configured PM providers, bypassing the staleness gate.
 pub async fn run_pm_force_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
     if config.pm_providers.is_empty() {

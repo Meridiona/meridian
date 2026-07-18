@@ -1059,6 +1059,20 @@ async fn main() -> Result<()> {
         });
     }
 
+    // 7g. Embedder weight provisioning: first-run download of the session distiller's
+    //     on-device embedding model (~130 MB). Fire-and-forget — `embedder::is_ready()`
+    //     gates every caller, so a slow or failed download just means the distiller keeps
+    //     taking its lexical-only degrade path until this succeeds (retried next start).
+    //     Idempotent (`ensure_weights` skips files already on disk), so this is safe to run
+    //     unconditionally on every boot rather than only once at setup time.
+    {
+        tokio::spawn(async move {
+            if let Err(e) = meridian::embedder::ensure_weights().await {
+                tracing::warn!(error = %e, "embedder: weight provisioning failed — distiller stays on lexical-only until this succeeds");
+            }
+        });
+    }
+
     // 8b. Poll loop — ETL, PM sync, and FM categorization on the configured interval.
     // Track the last-applied log level so we can detect changes and hot-reload
     // the EnvFilter without restarting the daemon.

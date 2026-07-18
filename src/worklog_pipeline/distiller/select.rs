@@ -17,10 +17,6 @@ pub struct Item {
     pub vec: Option<Vec<f32>>,
 }
 
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
-}
-
 fn longest_idx(items: &[Item]) -> usize {
     let mut best = 0usize;
     let mut best_len = 0usize;
@@ -58,7 +54,7 @@ pub fn floc_pick(items: Vec<Item>, k: usize) -> (Vec<Span>, Vec<Span>) {
                 let vj = items[j].vec.as_ref().unwrap();
                 let max_sim = picked
                     .iter()
-                    .map(|&p| dot(vj, items[p].vec.as_ref().unwrap()))
+                    .map(|&p| super::dot(vj, items[p].vec.as_ref().unwrap()))
                     .fold(f32::MIN, f32::max);
                 let dist = 1.0 - max_sim as f64;
                 if dist > best_dist {
