@@ -92,9 +92,7 @@ pub async fn detect(provider: LlmProvider) -> ProviderStatus {
         };
     };
 
-    let found = probe_login_shell(bin)
-        .await
-        .or_else(|| probe_candidates(bin));
+    let found = resolve_cli(bin).await;
     ProviderStatus {
         id,
         installed: found.is_some(),
@@ -269,6 +267,55 @@ pub fn persist_test_result(result: &ProviderTestResult) {
     }
 }
 
+/// Successful `bin name → absolute path` resolutions, memoised for the process lifetime.
+///
+/// Only SUCCESSES are cached. A negative result must stay retryable: a user who installs
+/// `claude` while the tray is running would otherwise be told it is missing until they
+/// restart the app. The cost of not caching misses is one login-shell probe per call on a
+/// genuinely absent CLI, bounded by [`PROBE_TIMEOUT`].
+static RESOLVED_BINS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, PathBuf>>> =
+    std::sync::OnceLock::new();
+
+/// Resolve a CLI's absolute path the way [`detect`] does — login shell first, then the
+/// usual install locations.
+///
+/// # Who calls this
+///
+/// [`detect`], for the install probe; and
+/// [`crate::coding_agent_session_ingest::summariser::run_capture`], which spawns the
+/// resolved path instead of a bare program name. That second caller is the load-bearing
+/// one: `Command::new("claude")` searches only the CALLING process's `PATH`, and the tray
+/// is a Finder-launched `.app` whose `PATH` is the stripped launchd default
+/// (`/usr/bin:/bin:/usr/sbin:/sbin`). The daemon never hit this because
+/// `scripts/com.meridiona.daemon.plist` sets a rich `PATH` for it, which is exactly why
+/// the bug only ever showed up in the tray's Test Connection.
+///
+/// Returns `None` when neither probe finds the binary; callers fall back to the bare name
+/// so a working `PATH` still behaves as before.
+pub async fn resolve_cli(bin: &str) -> Option<PathBuf> {
+    if let Some(hit) = RESOLVED_BINS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(bin)
+        .cloned()
+    {
+        return Some(hit);
+    }
+
+    let found = probe_login_shell(bin)
+        .await
+        .or_else(|| probe_candidates(bin))?;
+
+    tracing::debug!(bin, path = %found.display(), "resolved CLI path");
+    RESOLVED_BINS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(bin.to_string(), found.clone());
+    Some(found)
+}
+
 /// Ask the user's login shell where the binary is. This is the one that works when the
 /// app was launched from Finder — `-l` sources their profile, so we see the same `PATH`
 /// they see. `-i` is deliberately omitted: an interactive shell can print banners, run
@@ -311,6 +358,47 @@ fn probe_candidates(bin: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The load-bearing property: whatever `resolve_cli` hands back must be something
+    /// `Command::new` can spawn WITHOUT relying on the caller's `PATH` — i.e. an absolute
+    /// path that exists. A bare name here would silently reintroduce the tray bug, since
+    /// a Finder-launched `.app` has only `/usr/bin:/bin:/usr/sbin:/sbin`.
+    ///
+    /// `sh` is the probe target because POSIX guarantees it at an absolute path on every
+    /// machine this runs on, so the test asserts the contract rather than the environment.
+    #[tokio::test]
+    async fn resolve_cli_returns_an_absolute_existing_path() {
+        let found = resolve_cli("sh").await.expect("sh must resolve");
+        assert!(found.is_absolute(), "not absolute: {}", found.display());
+        assert!(found.exists(), "does not exist: {}", found.display());
+    }
+
+    /// A miss must be `None` rather than a bare-name `PathBuf`. `run_capture` treats
+    /// `None` as "fall back to the bare name"; a `Some("nope")` would instead be spawned
+    /// as a literal relative path and fail with a confusing error.
+    #[tokio::test]
+    async fn resolve_cli_misses_are_none() {
+        assert_eq!(
+            resolve_cli("meridian-definitely-not-a-real-binary-xyz").await,
+            None
+        );
+    }
+
+    /// Negative results must NOT be memoised: a user who installs a CLI while the tray is
+    /// running has to be able to Test Connection again without restarting the app.
+    #[tokio::test]
+    async fn resolve_cli_does_not_cache_misses() {
+        let bin = "meridian-not-installed-yet-abc";
+        assert_eq!(resolve_cli(bin).await, None);
+        assert!(
+            !RESOLVED_BINS
+                .get_or_init(Default::default)
+                .lock()
+                .unwrap()
+                .contains_key(bin),
+            "a miss was cached, so installing the CLI later would not be picked up"
+        );
+    }
 
     #[tokio::test]
     async fn detect_all_covers_every_builtin_exactly_once() {
