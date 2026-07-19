@@ -144,6 +144,70 @@ jobs:
         continue-on-error: true
         run: cargo check -p meridian-tray --all-targets
 
+  # macOS is the shipped platform, and it now ships a UNIVERSAL binary — Apple
+  # Silicon (arm64) AND Intel (x86_64). Before this job, neither was exercised
+  # at PR time: the `rust` job runs on ubuntu (so it never compiles the tray's
+  # macOS-only capture/objc2/launchd code, and never runs the tray's tests),
+  # and nothing checked the x86_64 slice at all — an Intel-slice regression
+  # would only surface at release, on the one build that can't be retried
+  # cheaply. This job closes both gaps.
+  #
+  # The runner is arm64, so the native steps ARE the Apple-Silicon gate; the
+  # Intel slice is a cross-check (same OS, other arch — cheap and reliable,
+  # unlike the Windows cross-compile which can't run off-Windows at all).
+  macos-universal:
+    name: macOS (Silicon + Intel)
+    runs-on: macos-latest
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        # The tray's capture stack is a git dep on the PRIVATE screenpipe-fork;
+        # same rewrite as the other jobs (this one actually compiles it).
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          # arm64 is the runner's host; add the Intel target for the x86_64
+          # slice check. NOT added to rust-toolchain.toml — only CI needs it.
+          targets: "x86_64-apple-darwin"
+          components: clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      # Same stub trick as the Windows tray check: tauri-build only STATS the
+      # bundle.resources daemon path during `cargo check`, never reads it, so a
+      # placeholder saves a ~9-min release build of the daemon. The real
+      # universal daemon build is covered by the release pipeline.
+      - name: Stub the tray bundle resource
+        run: |
+          mkdir -p target/release
+          : > target/release/meridian
+
+      # Apple Silicon (arm64, the host): the tray is macOS-only and was never
+      # compiled or tested in CI before — clippy + its 109 tests run here.
+      - name: clippy tray (Apple Silicon)
+        run: cargo clippy -p meridian-tray --all-targets -- -D warnings
+
+      - name: test tray (Apple Silicon)
+        run: cargo test -p meridian-tray
+
+      # Intel (x86_64): the universal binary's other slice. A compile check is
+      # enough to catch an arch- or SDK-specific regression before it reaches
+      # the release build; the daemon+core Intel slice rides along.
+      - name: check universal — Intel slice
+        run: cargo check -p meridian -p meridian-core -p meridian-tray --target x86_64-apple-darwin
+
   ui:
     name: UI
     runs-on: ubuntu-latest
