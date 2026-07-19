@@ -63,18 +63,53 @@ pub fn run_headless(db_path: String) -> ! {
     // separate process, so it needs its own subscriber to be observable; the
     // parent's subscriber does not carry across the process boundary.
     {
+        use tracing_subscriber::fmt::writer::MakeWriterExt;
         use tracing_subscriber::{fmt, EnvFilter};
         // DIAGNOSTIC: default surfaces the forked screenshot stack's own debug
         // logs (esp. `capture_image` failures, normally at debug) so an SCK
         // screenshot failure is visible without a RUST_LOG override. Revert to a
         // plain "info" default once the OCR/SCK root cause is fixed.
         let default_filter = "info,screenpipe_screen=debug,sck_rs=debug";
-        let _ = fmt()
-            .with_env_filter(
-                EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| EnvFilter::new(default_filter)),
-            )
-            .try_init();
+        let filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
+        // DIAGNOSTIC: tee child logs to <db-dir>/logs/capture-child.log so the SCK
+        // failure is readable without the dev terminal (child logs otherwise go
+        // only to stderr, which is lost in a packaged build). Remove with the rest
+        // of the OCR/SCK diagnostics.
+        let log_path = std::path::Path::new(&db_path).parent().map(|d| {
+            let logs = d.join("logs");
+            let _ = std::fs::create_dir_all(&logs);
+            logs.join("capture-child.log")
+        });
+        let file_ok = log_path
+            .as_ref()
+            .map(|p| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(p)
+                    .is_ok()
+            })
+            .unwrap_or(false);
+        match (file_ok, log_path) {
+            (true, Some(path)) => {
+                let writer = std::io::stderr.and(move || {
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                        .expect("capture-child.log already probed as openable")
+                });
+                let _ = fmt()
+                    .with_env_filter(filter)
+                    .with_ansi(false)
+                    .with_writer(writer)
+                    .try_init();
+            }
+            _ => {
+                let _ = fmt().with_env_filter(filter).try_init();
+            }
+        }
     }
 
     let rt = match tokio::runtime::Builder::new_multi_thread()
