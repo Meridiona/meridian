@@ -373,8 +373,14 @@ mod tests {
     /// path that exists. A bare name here would silently reintroduce the tray bug, since
     /// a Finder-launched `.app` has only `/usr/bin:/bin:/usr/sbin:/sbin`.
     ///
-    /// `sh` is the probe target because POSIX guarantees it at an absolute path on every
-    /// machine this runs on, so the test asserts the contract rather than the environment.
+    /// `sh` is the probe target because POSIX guarantees it at an absolute path.
+    ///
+    /// Unix-only, and so is the mechanism under test: the probe shells out to `$SHELL -l`
+    /// and falls back to unix install dirs (`~/.local/bin`, `/opt/homebrew/bin`). On the
+    /// Windows portability job there is no `/bin/sh` for either path to find, so this
+    /// asserted the environment rather than the contract. The bug it guards is macOS-only
+    /// (a Finder-launched `.app`), and the other `resolve_cli` tests still run everywhere.
+    #[cfg(unix)]
     #[tokio::test]
     async fn resolve_cli_returns_an_absolute_existing_path() {
         let found = resolve_cli("sh").await.expect("sh must resolve");
