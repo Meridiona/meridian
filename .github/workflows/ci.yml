@@ -52,6 +52,16 @@ jobs:
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
+        with:
+          # Restore everywhere, save only on the two integration branches.
+          # GitHub scopes caches by REF, so a branch that is both pushed and
+          # has an open PR stored two near-identical copies of every target/
+          # cache (observed: 2582MB vs 2527MB for macos-universal alone).
+          # Six Rust caches totalled 9.6GB against the 10GB repo quota, which
+          # evicted the release job's cache within ~3h of it being written and
+          # forced every release to compile cold. PR runs still RESTORE from
+          # the base branch; they just stop writing a duplicate.
+          save-if: ${{ github.ref == 'refs/heads/pre-main' || github.ref == 'refs/heads/main' }}
 
       - name: fmt
         run: cargo fmt --check
@@ -111,6 +121,9 @@ jobs:
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
+        with:
+          # Save only on the integration branches - see the Rust job above.
+          save-if: ${{ github.ref == 'refs/heads/pre-main' || github.ref == 'refs/heads/main' }}
 
       - name: check
         run: cargo check -p meridian -p meridian-core --all-targets
@@ -184,6 +197,9 @@ jobs:
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
+        with:
+          # Save only on the integration branches - see the Rust job above.
+          save-if: ${{ github.ref == 'refs/heads/pre-main' || github.ref == 'refs/heads/main' }}
 
       # Same stub trick as the Windows tray check: tauri-build only STATS the
       # bundle.resources daemon path during `cargo check`, never reads it, so a
