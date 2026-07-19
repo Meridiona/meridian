@@ -42,7 +42,7 @@ use meridian_core::SqlitePool;
 use semver::Version;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
 
@@ -288,17 +288,63 @@ const ENFORCE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 /// [`ENFORCE_INTERVAL`]. A transient network blip must not cost a full cycle on
 /// a machine we are actively trying to evict.
 const ENFORCE_RETRY_BASE: Duration = Duration::from_secs(2 * 60);
-/// Timer granularity. The loop wakes this often and compares a **wall-clock**
-/// deadline rather than sleeping one long stretch, so a machine that suspends
-/// mid-interval re-checks promptly on wake instead of resuming a timer that
-/// stood still. No network happens on a tick that isn't due.
+/// Timer granularity. The loop wakes this often and compares a [`Deadline`]
+/// rather than sleeping one long stretch, so a machine that suspends mid-interval
+/// re-checks promptly on wake instead of resuming a timer that stood still. No
+/// network happens on a tick that isn't due.
 const ENFORCE_TICK: Duration = Duration::from_secs(60);
 
-/// The next retry delay after a failed forced install: double, capped at the
-/// steady-state interval so a persistently failing install settles into the
+/// The next retry delay after a failed check or install: double, capped at the
+/// steady-state interval so a persistently failing machine settles into the
 /// normal cadence instead of retrying forever at speed.
 fn next_retry(current: Duration) -> Duration {
     (current * 2).min(ENFORCE_INTERVAL)
+}
+
+/// A deadline gated on **both** clocks, firing when *either* reaches it.
+///
+/// Neither clock alone is sufficient here, and each covers the other's hole:
+///
+/// - [`Instant`] (monotonic, what tokio's timer uses) does not advance while
+///   macOS is asleep, so a lid closed for eight hours consumes none of the
+///   interval — the stall this loop exists to avoid.
+/// - [`SystemTime`] (wall clock) advances across suspend, but is *settable*: a
+///   backward jump (manual clock change, dead RTC on wake, VM snapshot restore,
+///   a large NTP correction) would park the deadline in the future by the size
+///   of the jump, reintroducing the same stall from the other direction.
+///
+/// Taking whichever fires first means a jump in either clock can only make the
+/// check happen *early*, never late. Early is harmless: it costs one extra
+/// HTTPS GET.
+struct Deadline {
+    wall: SystemTime,
+    mono: Instant,
+}
+
+impl Deadline {
+    /// A deadline `d` from now on both clocks.
+    fn after(d: Duration) -> Self {
+        Self {
+            wall: SystemTime::now() + d,
+            mono: Instant::now() + d,
+        }
+    }
+
+    /// Time until the *earlier* of the two clocks reaches it; zero once either
+    /// has. A wall clock that jumped backwards saturates to zero rather than
+    /// erroring, which is the "fire early" behaviour we want.
+    fn remaining(&self) -> Duration {
+        let wall = self
+            .wall
+            .duration_since(SystemTime::now())
+            .unwrap_or(Duration::ZERO);
+        wall.min(self.mono.saturating_duration_since(Instant::now()))
+    }
+
+    /// True once either clock has reached the deadline.
+    fn reached(&self) -> bool {
+        self.remaining().is_zero()
+    }
 }
 
 /// Mandatory-update enforcement — the one path that installs without consent.
@@ -308,43 +354,65 @@ fn next_retry(current: Duration) -> Duration {
 /// mid-run). When the manifest marks the running version as below its minimum,
 /// it notifies and installs; on success [`download_and_apply`] never returns.
 ///
-/// Two properties the naive "sleep the whole interval" loop did not have:
+/// Three properties the naive "sleep the whole interval" loop did not have:
 ///
-/// - **Survives suspend.** The deadline is wall-clock ([`SystemTime`]), and the
-///   loop wakes every [`ENFORCE_TICK`] to compare against it. tokio's timer runs
-///   on a monotonic clock that does not advance while macOS is asleep, so a
-///   single long sleep silently stretched by however long the lid was shut — the
-///   common case for a laptop we are trying to evict.
-/// - **Retries a failed install quickly.** A failure previously waited the full
-///   cycle; it now retries from [`ENFORCE_RETRY_BASE`], backing off via
-///   [`next_retry`] to the steady interval. The consent banner remains the
-///   fallback throughout.
+/// - **Survives suspend and clock jumps.** The gate is a [`Deadline`], which
+///   fires on whichever of the wall and monotonic clocks reaches it first, and
+///   the loop wakes every [`ENFORCE_TICK`] to test it. tokio's timer runs on a
+///   monotonic clock that does not advance while macOS is asleep, so a single
+///   long sleep silently stretched by however long the lid was shut — the common
+///   case for a laptop we are trying to evict.
+/// - **Retries a failed *check* as fast as a failed install.** On an offline
+///   machine the check is the first network op and the one that fails, so
+///   folding `state = "error"` into the "nothing to do" arm would have left the
+///   fast path unused in exactly the case it was written for. Both failures back
+///   off via [`next_retry`] from [`ENFORCE_RETRY_BASE`] to the steady interval.
+/// - **Keeps the backoff across a flaky network.** `retry` and the toast guard
+///   reset only on a genuine "nothing to do" result, never on an error, so a
+///   machine flapping between check failures does not restart its cadence or
+///   re-toast each time.
 ///
-/// The "no longer supported" toast fires once per mandatory episode, not once
-/// per retry — notifying on every attempt would be a notification loop on a
-/// machine that is simply offline.
+/// The forced-install toast fires once per mandatory episode, not once per
+/// retry — notifying on every attempt would be a notification loop on a machine
+/// that is simply offline. The consent banner remains the fallback throughout.
 pub fn enforce_minimum_version(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let mut due = SystemTime::now() + ENFORCE_FIRST_DELAY;
+        let mut due = Deadline::after(ENFORCE_FIRST_DELAY);
         let mut retry = ENFORCE_RETRY_BASE;
         let mut notified = false;
         loop {
             // Wake at most a tick at a time; `due` is the real gate below.
-            let wait = due
-                .duration_since(SystemTime::now())
-                .unwrap_or(Duration::ZERO);
-            tokio::time::sleep(wait.min(ENFORCE_TICK)).await;
-            if SystemTime::now() < due {
+            tokio::time::sleep(due.remaining().min(ENFORCE_TICK)).await;
+            if !due.reached() {
                 continue;
             }
 
             let status = check_status(&app).await;
-            // `unsupported` (dev run) never flips to packaged mid-run, so the
-            // loop is pure idle there; keep it anyway — it costs one no-op
-            // check per cycle and avoids a second is_packaged() code path.
+
+            // A failed *check* is the first thing that breaks on an offline
+            // machine — one network op earlier than a failed download — so it
+            // gets the same fast retry rather than the hour-long "nothing to
+            // do" path. `notified` is deliberately left alone: a check error
+            // mid-episode must not re-arm the toast on a flaky network.
+            if status.state == "error" {
+                due = Deadline::after(retry);
+                tracing::warn!(
+                    error = status.error.as_deref().unwrap_or(""),
+                    retry_s = retry.as_secs(),
+                    "update: mandatory-update check failed - retrying"
+                );
+                retry = next_retry(retry);
+                continue;
+            }
+
+            // Genuinely nothing to do: up to date, `unsupported` (a dev run,
+            // which never flips to packaged mid-run — kept anyway, it costs one
+            // no-op check per cycle and avoids a second is_packaged() path), or
+            // an update that is available but not mandatory. Only here is it
+            // safe to reset the backoff and re-arm the toast.
             if status.state != "available" || !status.mandatory {
-                due = SystemTime::now() + ENFORCE_INTERVAL;
+                due = Deadline::after(ENFORCE_INTERVAL);
                 retry = ENFORCE_RETRY_BASE;
                 notified = false;
                 continue;
@@ -371,7 +439,7 @@ pub fn enforce_minimum_version(app: &AppHandle) {
                 notified = true;
             }
             if let Err(e) = download_and_apply(&app).await {
-                due = SystemTime::now() + retry;
+                due = Deadline::after(retry);
                 tracing::warn!(
                     error = %e,
                     retry_s = retry.as_secs(),
@@ -379,7 +447,7 @@ pub fn enforce_minimum_version(app: &AppHandle) {
                 );
                 retry = next_retry(retry);
             } else {
-                due = SystemTime::now() + ENFORCE_INTERVAL;
+                due = Deadline::after(ENFORCE_INTERVAL);
             }
         }
     });
@@ -451,6 +519,36 @@ pub fn check_for_updates(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fresh_deadline_has_not_been_reached() {
+        assert!(!Deadline::after(ENFORCE_INTERVAL).reached());
+        // …and it never asks the loop to sleep past the deadline itself.
+        assert!(Deadline::after(ENFORCE_INTERVAL).remaining() <= ENFORCE_INTERVAL);
+    }
+
+    #[test]
+    fn deadline_fires_when_the_wall_clock_reaches_it() {
+        // Suspend: wall advanced past the deadline while the monotonic clock,
+        // frozen through sleep, still shows an hour to go.
+        let d = Deadline {
+            wall: SystemTime::now(),
+            mono: Instant::now() + ENFORCE_INTERVAL,
+        };
+        assert!(d.reached());
+    }
+
+    #[test]
+    fn deadline_fires_when_the_monotonic_clock_reaches_it() {
+        // Backward wall-clock jump (NTP correction, VM restore): `wall` is
+        // parked an hour out, but the monotonic clock is unaffected — without
+        // this arm the loop would stall for the size of the jump.
+        let d = Deadline {
+            wall: SystemTime::now() + ENFORCE_INTERVAL,
+            mono: Instant::now(),
+        };
+        assert!(d.reached());
+    }
 
     #[test]
     fn retry_doubles_then_caps_at_the_steady_interval() {
