@@ -25,10 +25,12 @@
 //! same: an ignored frame is never persisted.
 //!
 //! # Who uses this
-//! Held as `AppState::capture_ignore` (a shared, non-feature-gated handle,
-//! mirroring `capture_paused`). Seeded from settings in `crate::start_capture`,
-//! read by the frame + UI-event consumers there, and refreshed live by the
-//! `update_settings` command on save.
+//! The authoritative instance lives in the capture child ([`crate::capture_child`]),
+//! seeded from `settings.json` and refreshed there on a timer — that process runs
+//! the frame + UI-event consumers that enforce it. A retained mirror is also held
+//! as `AppState::capture_ignore` (a shared, non-feature-gated handle) and
+//! refreshed by the `update_settings` command on save, which is what persists the
+//! list to `settings.json` for the child to pick up.
 //!
 //! [`TreeWalkerConfig`]: screenpipe_a11y::tree::TreeWalkerConfig
 

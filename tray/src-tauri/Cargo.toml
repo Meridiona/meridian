@@ -128,6 +128,10 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 # equivalent: the fork's own `screenpipe_a11y::platform::windows` reports
 # permissions as always granted (UIA/WGC have no TCC analogue).
 cidre = { version = "0.13", features = ["ax"], optional = true }
+# getppid() for the capture-helper child's parent-death watcher (capture_child.rs):
+# std has no getppid, so the isolated capture process uses libc to notice when the
+# tray parent is gone and exit rather than orphan-capture. Already in the tree.
+libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # Same plugin as above, re-declared to turn `notify-rust` ON for Windows only

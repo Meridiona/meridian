@@ -109,11 +109,11 @@ pub struct AppState {
     /// `capture_frames`. The flag is unconditional (not feature-gated) so the
     /// `pause_for_duration` command can always reference `AppState` cleanly.
     pub capture_paused: Arc<AtomicBool>,
-    /// The user's capture ignore list (apps + website domains). Shared with the
-    /// capture frame + UI-event consumers, which drop a matching frame before it
-    /// is written to `capture_frames`/`capture_ui_events`. Unconditional (not
-    /// feature-gated) so the always-compiled `update_settings` command can
-    /// refresh it live on save; seeded from settings in `crate::start_capture`.
+    /// The user's capture ignore list (apps + website domains). Since capture
+    /// moved out-of-process, the authoritative copy lives in the capture child
+    /// ([`crate::capture_child`]), which re-reads it from `settings.json`; this
+    /// in-memory handle is a retained mirror `update_settings` still refreshes on
+    /// save (unconditional / not feature-gated so that command always compiles).
     pub capture_ignore: Arc<Mutex<CaptureIgnore>>,
     /// Unix timestamp (secs) when the current timed pause expires.
     /// `None` when not timed-paused. Set by `pause_for_duration`, cleared on resume.
@@ -153,11 +153,12 @@ pub struct AppState {
     pub daemon_was_healthy: bool,
     pub consecutive_health_failures: u32,
     pub last_menu_state: HealthStatus,
-    /// Dropping this sender cancels the ScreenpipeEngine task, stopping screen capture.
-    pub engine_cancel: Option<oneshot::Sender<()>>,
-    /// Dropping this sender cancels the UI event consumer task, which causes the OS
-    /// recorder thread to exit (it checks `tx.is_closed()` every 500ms).
-    pub ui_consumer_cancel: Option<oneshot::Sender<()>>,
+    /// Dropping this sender tells [`crate::capture_supervisor`] to kill its
+    /// capture child process and stop supervising — the single stop signal for
+    /// the out-of-process capture engine (screen frames + UI events both live in
+    /// the child now). Set by `capture_supervisor::start`, dropped on pause /
+    /// schedule-pause to halt capture.
+    pub capture_cancel: Option<oneshot::Sender<()>>,
 }
 
 impl Default for AppState {
@@ -190,8 +191,7 @@ impl Default for AppState {
             daemon_was_healthy: false,
             consecutive_health_failures: 0,
             last_menu_state: HealthStatus::Unknown,
-            engine_cancel: None,
-            ui_consumer_cancel: None,
+            capture_cancel: None,
         }
     }
 }

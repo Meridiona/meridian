@@ -5116,6 +5116,7 @@ dependencies = [
  "cidre 0.13.1",
  "dotenvy",
  "futures-util",
+ "libc",
  "meridian",
  "meridian-core",
  "meridian-oauth",

@@ -22,6 +22,14 @@ mod capture;
 // `AppState` and refreshed by the always-compiled `update_settings` command, so
 // it must exist in non-capture builds too (nothing reads it there — harmless).
 mod capture_ignore;
+// Headless capture child-process entry (`<exe> __capture-helper`). Gated with
+// the engine it drives: it runs the same ScreenCaptureKit/OCR/a11y capture in a
+// separate process so a native capture abort ends only that process, not the
+// tray. See `capture_child` / `capture_supervisor`.
+#[cfg(feature = "capture")]
+mod capture_child;
+#[cfg(feature = "capture")]
+mod capture_supervisor;
 mod commands;
 mod deep_link;
 
@@ -53,6 +61,25 @@ use tauri::{
 };
 
 pub fn run() {
+    // Capture child-process fast path: `<exe> __capture-helper --db <path>` runs
+    // ONLY the headless capture engine (see `capture_child`) and never returns —
+    // it must be intercepted before any Tauri/otel setup so the helper never
+    // builds a second tray/app. The parent `capture_supervisor` spawns us this
+    // way and restarts us if we die, isolating the tray from capture crashes.
+    #[cfg(feature = "capture")]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.get(1).map(String::as_str) == Some(capture_child::HELPER_ARG) {
+            let db = args
+                .iter()
+                .position(|a| a == "--db")
+                .and_then(|i| args.get(i + 1))
+                .cloned()
+                .unwrap_or_else(install::meridian_db_path);
+            capture_child::run_headless(db); // diverges (-> !)
+        }
+    }
+
     // Dev-only (`--features otel`): export tray spans to OpenObserve via the
     // daemon's OTLP setup, tagged service.name = meridian-tray. Held for the
     // process lifetime. Compiled out entirely when the feature is off — release
@@ -462,7 +489,7 @@ pub fn run() {
             // isolation, so this matters). Frames → capture_frames (slice 4a),
             // input events → capture_ui_events (slice 3c).
             #[cfg(feature = "capture")]
-            start_capture(app_state.clone(), capture_pool);
+            capture_supervisor::start(app_state.clone(), capture_pool);
 
             // Auto-open the setup wizard on first launch (no ~/.meridian/onboarded).
             // The 800 ms delay lets the tray menu settle before the window appears.
@@ -906,157 +933,6 @@ fn set_process_display_name(name: &str) {
         let _: () = msg_send![&*info, setProcessName: ns_name];
     }
     tracing::debug!(name, "set_process_display_name: applied");
-}
-
-/// Start (or restart) the in-process capture engine and UI event recorder.
-///
-/// Safe to call multiple times — aborts any previously stored tasks before
-/// spawning fresh ones, so pausing then resuming is idempotent. Does nothing
-/// when Screen Recording is not granted (logs and returns).
-///
-/// # Who calls this
-/// Once from `lib.rs`'s `setup()` on launch, and again from
-/// `commands::pause_for_duration` on resume.
-#[cfg(feature = "capture")]
-pub(crate) fn start_capture(
-    app_state: std::sync::Arc<std::sync::Mutex<AppState>>,
-    pool: Option<meridian_core::SqlitePool>,
-) {
-    use capture::{screenpipe::ScreenpipeEngine, CaptureEngine};
-
-    #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
-        fn CGPreflightScreenCaptureAccess() -> bool;
-    }
-    let screen_granted = unsafe { CGPreflightScreenCaptureAccess() };
-    if !screen_granted {
-        tracing::info!(
-            "capture: Screen Recording not granted — engine deferred until next launch after grant"
-        );
-        return;
-    }
-
-    // Read settings once for this capture start: seed the ignore list (so the
-    // frame consumers enforce it from the first frame) and the streaming flag.
-    // `update_settings` refreshes the ignore list live afterwards via the same
-    // shared handle, so a Settings change never needs a capture restart.
-    let settings = meridian_core::settings::load_runtime_settings();
-    let pause_on_streaming_video = settings.pause_on_streaming_video;
-    let capture_ignore = {
-        let s = app_state.lock().unwrap();
-        *s.capture_ignore.lock().unwrap() =
-            capture_ignore::CaptureIgnore::new(&settings.ignored_apps, &settings.ignored_urls);
-        s.capture_ignore.clone()
-    };
-
-    // Drop any previous cancel senders — this signals the old tasks to exit.
-    {
-        let mut s = app_state.lock().unwrap();
-        drop(s.engine_cancel.take());
-        drop(s.ui_consumer_cancel.take());
-    }
-
-    // Cancellation channels: dropping the Sender exits the receiving task.
-    // tauri::async_runtime::spawn works from any thread (incl. macOS main);
-    // tokio::task::spawn panics outside a tokio worker, so we avoid it here.
-    let (engine_cancel_tx, mut engine_cancel_rx) = tokio::sync::oneshot::channel::<()>();
-    let (ui_cancel_tx, mut ui_cancel_rx) = tokio::sync::oneshot::channel::<()>();
-
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<capture::CapturedFrame>(64);
-
-    // Frame consumer: exits when engine task finishes (tx drops → rx returns None).
-    let consumer_pool = pool.clone();
-    let frame_ignore = capture_ignore.clone();
-    tauri::async_runtime::spawn(async move {
-        while let Some(frame) = rx.recv().await {
-            tracing::debug!(
-                ts = %frame.timestamp,
-                app = ?frame.app_name,
-                chars = frame.text.len(),
-                "capture: frame received"
-            );
-            // User ignore list (apps + website domains): drop the frame before it
-            // is ever persisted, so an ignored app/site leaves no trace on the
-            // timeline. Going forward only — history is untouched.
-            if frame_ignore
-                .lock()
-                .unwrap()
-                .should_drop_frame(frame.app_name.as_deref(), frame.browser_url.as_deref())
-            {
-                tracing::debug!(
-                    app = ?frame.app_name,
-                    "capture: frame ignored (user ignore list) — not persisted"
-                );
-                continue;
-            }
-            let Some(p) = consumer_pool.as_ref() else {
-                continue;
-            };
-            let row = meridian_core::CaptureFrameInsert {
-                timestamp: frame.timestamp,
-                app_name: frame.app_name,
-                window_name: frame.window_name,
-                browser_url: frame.browser_url,
-                text: frame.text,
-                text_source: frame.text_source.as_str().to_string(),
-            };
-            if let Err(e) = meridian_core::insert_capture_frame(p, &row).await {
-                tracing::warn!(error = %e, "capture: failed to persist frame");
-            }
-        }
-    });
-
-    // Engine task: select races the cancel signal against the engine run.
-    // When engine_cancel_tx is dropped, engine_cancel_rx resolves → task exits,
-    // dropping tx → frame consumer loop ends naturally.
-    tauri::async_runtime::spawn(async move {
-        let engine = ScreenpipeEngine {
-            pause_on_streaming_video,
-        };
-        tokio::select! {
-            _ = &mut engine_cancel_rx => {
-                tracing::info!("capture: engine stopped (pause)");
-            }
-            result = engine.run(tx) => {
-                if let Err(e) = result {
-                    tracing::error!(error = %e, "capture: engine exited with error");
-                }
-            }
-        }
-    });
-
-    // UI event consumer: exits on cancel signal, which drops ui_rx, causing
-    // the OS recorder thread to see tx.is_closed() within 500ms and exit.
-    let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel::<meridian_core::CaptureUiEventInsert>(256);
-    let ui_pool = pool;
-    let ui_ignore = capture_ignore;
-    tauri::async_runtime::spawn(async move {
-        loop {
-            tokio::select! {
-                biased;
-                _ = &mut ui_cancel_rx => break,
-                ev = ui_rx.recv() => {
-                    let Some(ev) = ev else { break };
-                    // Ignored apps leave no UI-event trace either (keystroke
-                    // counts, clipboard). App-only match — UI events carry no URL.
-                    if ui_ignore.lock().unwrap().should_drop_app(ev.app_name.as_deref()) {
-                        continue;
-                    }
-                    let Some(p) = ui_pool.as_ref() else { continue };
-                    if let Err(e) = meridian_core::insert_capture_ui_event(p, &ev).await {
-                        tracing::warn!(error = %e, "capture: failed to persist ui event");
-                    }
-                }
-            }
-        }
-    });
-    std::thread::spawn(move || capture::ui_events::run_ui_event_recorder(ui_tx));
-
-    // Store senders in state; dropping them (on pause) cancels the tasks.
-    let mut s = app_state.lock().unwrap();
-    s.engine_cancel = Some(engine_cancel_tx);
-    s.ui_consumer_cancel = Some(ui_cancel_tx);
-    tracing::info!("capture: engine and ui recorder started");
 }
 
 #[cfg(test)]

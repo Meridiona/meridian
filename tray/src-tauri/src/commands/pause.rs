@@ -49,8 +49,9 @@ async fn transition_pause(
     let prev = {
         let mut s = state.lock().map_err(|e| e.to_string())?;
         let prev = s.pause_started_at.take().zip(s.pause_source.take());
-        drop(s.engine_cancel.take());
-        drop(s.ui_consumer_cancel.take());
+        // Dropping the supervisor cancel kills the capture child process and
+        // stops it being restarted (screen + UI-event capture both stop).
+        drop(s.capture_cancel.take());
         s.capture_paused.store(true, Ordering::Relaxed);
         s.pause_until = new_until;
         s.pause_source = Some(new_source);
@@ -123,9 +124,10 @@ pub async fn pause_for_duration(
     let now = now_secs();
     let until = now + seconds;
 
-    // Drops engine_cancel/ui_consumer_cancel (halting ScreenCaptureKit + the
-    // CGEventTap recorder) and closes out any already-active pause, all in
-    // one atomic state transition — see transition_pause's doc comment.
+    // Drops the capture-supervisor cancel (killing the capture child, which
+    // halts ScreenCaptureKit + the CGEventTap recorder) and closes out any
+    // already-active pause, all in one atomic state transition — see
+    // transition_pause's doc comment.
     transition_pause(
         state.inner(),
         pool.as_ref(),
@@ -314,9 +316,9 @@ pub(crate) async fn resume_capture(
         }
     }
 
-    // Restart the capture engine so screen recording resumes.
+    // Restart the supervised capture child so screen recording resumes.
     #[cfg(feature = "capture")]
-    crate::start_capture(state.clone(), pool.cloned());
+    crate::capture_supervisor::start(state.clone(), pool.cloned());
 
     // Emit immediately so the popover reverts to the picker without waiting for the next tick.
     if let Ok(s) = state.lock() {

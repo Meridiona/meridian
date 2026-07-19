@@ -189,9 +189,11 @@ pub async fn update_settings(
         e.to_string()
     })?;
 
-    // Refresh the live capture ignore list so a Settings change takes effect on
-    // the very next captured frame — no capture restart. The frame + UI-event
-    // consumers read this same shared handle (see `crate::start_capture`).
+    // The write above persisted the new ignore list to settings.json, which the
+    // out-of-process capture child ([`crate::capture_child`]) re-reads on a timer
+    // — so a Settings change takes effect on the next captured frame with no
+    // capture restart. Also refresh the in-memory mirror handle here to keep it
+    // in sync (retained for any in-process reader).
     let apps = str_list(&updated, "ignored_apps");
     let urls = str_list(&updated, "ignored_urls");
     if let Ok(mut ig) = app_state.lock().unwrap().capture_ignore.lock() {

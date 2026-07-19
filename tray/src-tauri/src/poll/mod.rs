@@ -190,11 +190,10 @@ async fn check_work_hours(
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            // Drop cancel senders → stops engine + UI consumer, halting capture.
+            // Drop the supervisor cancel → kills the capture child, halting capture.
             {
                 let mut s = state.lock().unwrap();
-                drop(s.engine_cancel.take());
-                drop(s.ui_consumer_cancel.take());
+                drop(s.capture_cancel.take());
                 capture_paused_flag.store(true, Ordering::Relaxed);
                 s.pause_source = Some(PauseSource::Schedule);
                 s.pause_started_at = Some(now);
@@ -243,9 +242,9 @@ async fn check_work_hours(
                 s.schedule_resume_at = None;
                 s.pause_until = None;
             }
-            // Restart engine so screen recording resumes.
+            // Restart the supervised capture child so screen recording resumes.
             #[cfg(feature = "capture")]
-            crate::start_capture(state.clone(), Some(pool.clone()));
+            crate::capture_supervisor::start(state.clone(), Some(pool.clone()));
             tracing::info!(
                 duration_s,
                 "work-hours: schedule pause ended — capture resumed"
