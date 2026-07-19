@@ -292,7 +292,24 @@ jobs:
           # path this guard used to check was removed with the npm channel
           # (DMG-only distribution). Capture now pulls the fork as a git dep
           # in tray/src-tauri/Cargo.toml — that `rev` is the pin.
-          expected="d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e"
+          #
+          # What this guard actually protects is the LICENSE BASE: the fork is
+          # cut from screenpipe's last MIT commit (892199f74), and screenpipe
+          # >= 0.4.17 is Commercial-licensed. Meridiona's OWN commits on top of
+          # that base are ours and carry no license risk — so bumping `expected`
+          # is legitimate ONLY when every commit the bump introduces is ours and
+          # none merges upstream screenpipe code past the MIT cutoff.
+          #
+          # Audit each time you bump, and record it here:
+          #   gh api repos/Meridiona/screenpipe-fork/compare/<old>...<new> \
+          #     --jq '.commits[] | .sha[0:8] + "  " + .commit.author.name'
+          #
+          # 2026-07-19, d6d2b318 -> 825b038d. Three commits, all Meridiona-
+          # authored, no upstream merge:
+          #   1bc2ba88 adityaharishch  fix(a11y): prune browser tab strip …
+          #   4f9ba866 adityaharishch  Merge pull request #1 (same, ours)
+          #   825b038d Akarsh Hegde    fix(screen): disable sck-rs on macOS 26
+          expected="825b038d845d7dcc8c1387b2707899b352417233"
           f="tray/src-tauri/Cargo.toml"
           fail=0
           for crate in screenpipe-screen screenpipe-a11y; do
