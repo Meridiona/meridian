@@ -91,7 +91,15 @@ pub(crate) async fn run_capture(
     extra_env: &[(&str, &str)],
     remove_env: &[&str],
 ) -> Result<Capture, SummariserError> {
-    let mut cmd = Command::new(program);
+    // Spawn the RESOLVED absolute path, not the bare name. `Command::new("claude")`
+    // searches only the calling process's `PATH`, and the tray is a Finder-launched
+    // `.app` whose `PATH` is the stripped launchd default — so every CLI provider
+    // reported "not found on PATH" in Test Connection on machines where the CLI works
+    // fine. The daemon was unaffected (its plist sets a rich `PATH`), which is why this
+    // only ever surfaced in the tray. Falls back to the bare name so a process that
+    // does have a working `PATH` behaves exactly as before.
+    let resolved = crate::llm::detect::resolve_cli(program).await;
+    let mut cmd = Command::new(resolved.as_deref().unwrap_or_else(|| Path::new(program)));
     cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -107,7 +115,13 @@ pub(crate) async fn run_capture(
 
     let mut child = cmd.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            SummariserError::Failed(format!("{program} CLI not found on PATH"))
+            // User-facing (it surfaces on the provider card), so: plain hyphen, and
+            // honest about where we looked - "not on PATH" was actively misleading
+            // once resolution also searches the login shell and the install dirs.
+            SummariserError::Failed(format!(
+                "{program} CLI not found - looked on PATH, in your login shell, \
+                 and in the usual install locations"
+            ))
         } else {
             SummariserError::Failed(format!("{program} spawn failed: {e}"))
         }
