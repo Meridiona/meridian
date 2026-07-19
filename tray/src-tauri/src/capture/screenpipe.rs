@@ -350,16 +350,35 @@ async fn capture_once_ocr(
     // No app/title/url filters; focused window(s) only (`capture_unfocused = false`)
     // — we capture what the user is actively on, not every background window.
     let filters = WindowFilters::new(&[], &[], &[]);
+    // DIAGNOSTIC: brackets the SCK screenshot enumeration so a crash INSIDE it
+    // (no "enumerated" line follows) is distinguishable from a window being
+    // dropped (a focused app missing from `apps`) or a blank image (see per-window
+    // dims below). Remove once the OCR/SCK root cause is fixed.
+    tracing::info!("capture.ocr.diag: enumerating windows via SCK screenshot path");
     let windows = capture_all_visible_windows(&monitor, &filters, false)
         .await
         .map_err(|e| anyhow::anyhow!("capture_all_visible_windows: {e}"))?;
+    tracing::info!(
+        window_count = windows.len(),
+        apps = ?windows.iter().map(|w| w.app_name.as_str()).collect::<Vec<_>>(),
+        "capture.ocr.diag: windows enumerated"
+    );
 
     let now = Utc::now();
     for win in windows {
         if is_self_app(&win.app_name.to_lowercase()) {
             continue;
         }
+        // DIAGNOSTIC: image dims localize a blank/zero-size capture (dead SCStream)
+        // and mark the last point reached before a crash inside `perform_ocr`.
+        tracing::info!(
+            app = %win.app_name,
+            img_w = win.image.width(),
+            img_h = win.image.height(),
+            "capture.ocr.diag: about to OCR window"
+        );
         let Some(text) = perform_ocr(&win).await else {
+            tracing::info!(app = %win.app_name, "capture.ocr.diag: perform_ocr → None (blank/illegible)");
             continue;
         };
         if text.trim().is_empty() {
