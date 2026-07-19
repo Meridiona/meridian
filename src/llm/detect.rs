@@ -323,9 +323,18 @@ pub async fn resolve_cli(bin: &str) -> Option<PathBuf> {
 async fn probe_login_shell(bin: &str) -> Option<PathBuf> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let mut cmd = Command::new(&shell);
+    // `bin` is passed as a POSITIONAL ARGUMENT, never interpolated into the script. The
+    // script text is a fixed literal, so no value of `bin` can be parsed as shell syntax
+    // — `format!("command -v {bin}")` would let a name containing `;`, `$()` or a
+    // backtick execute arbitrary commands in the user's login shell. Every caller passes
+    // a hardcoded literal today, but `resolve_cli` is public and takes an arbitrary
+    // `&str`, so the guarantee belongs here rather than in a caller-side convention.
+    // For `-c`, the first operand becomes `$0`, hence the placeholder before `bin`.
     cmd.arg("-l")
         .arg("-c")
-        .arg(format!("command -v {bin}"))
+        .arg("command -v -- \"$1\"")
+        .arg("meridian-probe")
+        .arg(bin)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -381,6 +390,25 @@ mod tests {
         assert_eq!(
             resolve_cli("meridian-definitely-not-a-real-binary-xyz").await,
             None
+        );
+    }
+
+    /// `resolve_cli` is public and takes an arbitrary `&str`, so a name carrying shell
+    /// metacharacters must resolve to nothing rather than execute. The probe passes the
+    /// name as a positional argument to a fixed script, so there is no way out of it.
+    ///
+    /// The canary is the side effect: if the `;` were interpreted, the injected `touch`
+    /// would run and the file would exist.
+    #[tokio::test]
+    async fn resolve_cli_does_not_execute_shell_metacharacters() {
+        let canary = std::env::temp_dir().join("meridian-injection-canary");
+        let _ = std::fs::remove_file(&canary);
+        let payload = format!("sh; touch {}", canary.display());
+
+        assert_eq!(resolve_cli(&payload).await, None);
+        assert!(
+            !canary.exists(),
+            "injected command ran - the probe is interpolating into the shell script"
         );
     }
 
