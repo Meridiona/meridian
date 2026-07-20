@@ -507,6 +507,7 @@ async fn catch_up_today(
 /// midnight is picked up before the current day's work.
 pub async fn run_loop(pool: SqlitePool, db_path: String, mut shutdown_rx: watch::Receiver<bool>) {
     let cfg = PmWorklogConfig::from_env();
+    let full_cfg = crate::config::Config::from_env();
     tracing::info!("worklog-pipeline driver starting (clock-aligned HH:03; drafts only)");
 
     // Startup catch-up — retry stranded earlier-day hours, then today's completed ones.
@@ -514,6 +515,7 @@ pub async fn run_loop(pool: SqlitePool, db_path: String, mut shutdown_rx: watch:
         tracing::info!("worklog-pipeline driver stopped");
         return;
     }
+    auto_generate_today(&pool, &full_cfg).await;
 
     loop {
         let dur = next_worklog_wake();
@@ -523,11 +525,21 @@ pub async fn run_loop(pool: SqlitePool, db_path: String, mut shutdown_rx: watch:
                 if catch_up_pass(&pool, &cfg, &db_path, &mut shutdown_rx).await {
                     break;
                 }
+                auto_generate_today(&pool, &full_cfg).await;
             }
         }
     }
 
     tracing::info!("worklog-pipeline driver stopped");
+}
+
+/// Run the opt-in auto-generate (draft-only) pass for today's day-tasks — see
+/// `pm_worklog::auto_generate`. Piggybacks on this driver's clock-aligned hourly
+/// wake rather than a separate timer; `maybe_auto_generate` itself no-ops on every
+/// hour except the one the user chose in `worklog_auto_generate_time`.
+async fn auto_generate_today(pool: &SqlitePool, full_cfg: &crate::config::Config) {
+    let day_local = Local::now().date_naive().format("%Y-%m-%d").to_string();
+    crate::pm_worklog::auto_generate::maybe_auto_generate(pool, full_cfg, &day_local).await;
 }
 
 /// One-shot CLI: force-run the worklog pipeline for a single explicit local hour

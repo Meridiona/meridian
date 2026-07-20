@@ -51,6 +51,14 @@ export function clockLabel(min: number): string {
   return `${h12}:${String(mm).padStart(2, '0')} ${period}`
 }
 
+/** An RFC-3339 timestamp -> a local 12-hour clock label (`"2:14 PM"`), or `''`
+ *  for an unparsable value — callers show nothing rather than "Invalid Date". */
+export function clockLabelFromIso(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return clockLabel(d.getHours() * 60 + d.getMinutes())
+}
+
 /** 12-hour label for a whole hour-of-day (`0 -> "12 AM"`, `18 -> "6 PM"`). */
 export function hourClock(hour: number): string {
   const hod = ((hour % 24) + 24) % 24

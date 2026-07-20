@@ -10,6 +10,7 @@
 // Stage-4 driver (collect → synthesise → ground → draft) was superseded by the
 // Rust-owned per-card generate path and has been removed.
 
+pub mod auto_generate;
 pub mod azure_devops;
 pub mod comment;
 pub mod config;

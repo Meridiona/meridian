@@ -22,7 +22,7 @@ import { GeneratingBar } from '@/components/GeneratingBar'
 import { load } from '@/lib/bridge'
 import { connectedTrackerNames } from '@/lib/integrations'
 import type { DayTaskWorklogDraft, IntegrationsResponse } from '@/lib/api-types'
-import { clockLabel, type LaidSegment } from './dayTaskLayout'
+import { clockLabel, clockLabelFromIso, type LaidSegment } from './dayTaskLayout'
 import type { SettingsSection } from './settings/types'
 import { Bullets, Field, LinkChip } from './dayTaskKit'
 import { useWorklog, type WorklogState } from './useWorklog'
@@ -180,9 +180,17 @@ function DraftPreview({ draft, hue, busy, onOpenTask, onDismiss }: {
   // ("Comment on KAN-12 · 87% match") before you post, and by the footer's
   // "✓ Posted to KAN-12" + its chip after. A third mention beside the heading was
   // just noise repeating the same key down the panel.
+  const generatedAt = clockLabelFromIso(draft.updated_at)
   return (
     <div>
-      <p className="mt-label mb-2.5" style={{ color: hue, fontWeight: 700 }}>Worklog draft</p>
+      <div className="flex items-center justify-between gap-2 mb-2.5">
+        <p className="mt-label" style={{ color: hue, fontWeight: 700 }}>Worklog draft</p>
+        {generatedAt && (
+          <p className="text-[10.5px]" style={{ color: 'var(--t-faint)' }}>
+            Generated at {generatedAt} · still working on this? Regenerate below
+          </p>
+        )}
+      </div>
       <div className="rounded-xl p-4 space-y-3"
         style={{ border: `1px solid color-mix(in srgb, ${hue} 26%, transparent)`, background: `color-mix(in srgb, ${hue} 5%, var(--t-card))` }}>
         <DraftTargets draft={draft} busy={busy} onOpenTask={onOpenTask} onDismiss={onDismiss} />
