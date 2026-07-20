@@ -1,3 +1,47 @@
+## [1.73.0](https://github.com/Meridiona/meridian/compare/v1.72.0...v1.73.0) (2026-07-20)
+
+### 🚀 Features
+
+* **llm:** add curated model registry and live model listing ([56273c7](https://github.com/Meridiona/meridian/commit/56273c7552a38341be8cc74d16ccb399072ecfd2))
+* **notifications:** harden delivery and close coverage gaps ([#482](https://github.com/Meridiona/meridian/issues/482)) ([9300636](https://github.com/Meridiona/meridian/commit/93006361cb022b6bcc32d20370f91c4aae3be4e3))
+* **ui:** replace free-text model entry with pickers ([fe261c3](https://github.com/Meridiona/meridian/commit/fe261c373ac518fb476276d030d463b5d430a6ca))
+* **windows:** Windows support — daemon, tray, notifications, packaging, release ([#478](https://github.com/Meridiona/meridian/issues/478)) ([21f3127](https://github.com/Meridiona/meridian/commit/21f3127f5ceff12c914ad13137ed31e236dd1b1f))
+
+### 🐛 Bug Fixes
+
+* address CodeRabbit review on the model picker ([a719e62](https://github.com/Meridiona/meridian/commit/a719e62798d622d529975021f3d0e1e4c8abf174))
+* **capture:** bump screenpipe-fork to disable sck-rs on macOS 26 ([#487](https://github.com/Meridiona/meridian/issues/487)) ([7ab425f](https://github.com/Meridiona/meridian/commit/7ab425f5d0f0906db81dcffc286c11ac67400a00)), closes [Meridiona/screenpipe-fork#2](https://github.com/Meridiona/screenpipe-fork/issues/2) [#1](https://github.com/Meridiona/meridian/issues/1)
+* **ci:** register the parallel staging workflow so it can be dispatched ([4634c15](https://github.com/Meridiona/meridian/commit/4634c15c3c67688aaac82e9e3dd2b62749ca17bc))
+* **distiller:** bound embedder memory/time + related fixes ([#477](https://github.com/Meridiona/meridian/issues/477)) ([d3c674e](https://github.com/Meridiona/meridian/commit/d3c674e67e1d483544f92d2904884a2b569f014f))
+* **error-handling:** harden ETL/worklog error paths against silent failure ([#475](https://github.com/Meridiona/meridian/issues/475)) ([0fcc248](https://github.com/Meridiona/meridian/commit/0fcc24876f01d828c523ed8116a49161d1db3c0c))
+* **llm:** pass the probed binary name as an argument, not shell text ([7cea5f0](https://github.com/Meridiona/meridian/commit/7cea5f05480e84e329269a797bf466e60072a5a6))
+* **llm:** spawn CLI providers by resolved path, not bare name ([c37d845](https://github.com/Meridiona/meridian/commit/c37d845d3234faa73d30deff521b5fcc0af0cba3))
+* **ui:** correct a false claim in the Opus model note ([465fc21](https://github.com/Meridiona/meridian/commit/465fc21c1a8822ced4ab46ad179b43e0cada90fa))
+* **ui:** give the uninstall wizard the same SF Pro voice as the dashboard ([38cb17b](https://github.com/Meridiona/meridian/commit/38cb17b9e77556d0f1d300e4053943fa4cb07fd5)), closes [#468](https://github.com/Meridiona/meridian/issues/468)
+* **update:** check hourly for mandatory updates, and survive suspend ([5a95f25](https://github.com/Meridiona/meridian/commit/5a95f25ebb60c61d8d5459029d168fbd5352c225))
+* **update:** fast-retry a failed check, and gate the deadline on both clocks ([b5d77ff](https://github.com/Meridiona/meridian/commit/b5d77ff532f00fe7b12daf4c8018c748a55f15cb))
+* **update:** soften the forced-install toast ([92671c4](https://github.com/Meridiona/meridian/commit/92671c4880ec461ed22acb0582616025e4b1ab04))
+
+### ⚡ Performance
+
+* **release:** drop the redundant host cargo build from prepareCmd ([2b35bb6](https://github.com/Meridiona/meridian/commit/2b35bb69d923a78fc533f0e4dec10f48ceed6e1a))
+
+### ♻️ Refactoring
+
+* **ui:** share DISPLAY from atoms, and retire the last serif references ([b6bb08b](https://github.com/Meridiona/meridian/commit/b6bb08beace20483e7d3c12b38b2037c63f232a9))
+
+### 🤖 CI
+
+* add an experimental parallel staging release workflow ([de0d855](https://github.com/Meridiona/meridian/commit/de0d855013399620ae4cae0b67e06ba85e703dd4)), closes [#488](https://github.com/Meridiona/meridian/issues/488)
+* gate the macOS universal build (Apple Silicon + Intel) at PR time ([#485](https://github.com/Meridiona/meridian/issues/485)) ([eb847ba](https://github.com/Meridiona/meridian/commit/eb847bafa397965eb6542dc4ea89db08d6058875))
+* save rust caches only on the integration branches ([d21b2e5](https://github.com/Meridiona/meridian/commit/d21b2e5ad953bb38c25f3c877e5d0c5f9cc8a47c))
+
+### ✅ Tests
+
+* **llm:** cover the /models response envelopes ([6abddb8](https://github.com/Meridiona/meridian/commit/6abddb89345d3052a12c48364f2203c4ec02587a))
+* **llm:** gate the absolute-path assertion to unix ([f1e305a](https://github.com/Meridiona/meridian/commit/f1e305aa6b68411180ca307b96b639e97e3b3969))
+* **ui:** guard the model picker's load-bearing rules ([a13b946](https://github.com/Meridiona/meridian/commit/a13b94625b5ea9fd751697c227baeea0ff7406d1))
+
 ## [1.72.0](https://github.com/Meridiona/meridian/compare/v1.71.0...v1.72.0) (2026-07-18)
 
 ### 🚀 Features
