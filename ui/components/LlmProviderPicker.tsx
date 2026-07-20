@@ -23,43 +23,20 @@ import {
   llmProvider, type LlmProviderId,
 } from '@/lib/llm-providers'
 import { invoke } from '@/lib/bridge'
+import type {
+  InstallOutcome, ProviderStatus, ProviderTestOutcome, ProviderTestResult,
+} from '@/lib/api-types'
 import { ProviderLogo } from '@/components/LlmProviderLogos'
 import LlmProviderDetail from '@/components/LlmProviderDetail'
+
+// Re-exported so the existing `from '@/components/LlmProviderPicker'` imports
+// keep resolving. The definitions now live in api-types.ts, per the repo rule
+// that Rust-mirrored invoke contracts live in one place.
+export type {
+  InstallOutcome, ProviderStatus, ProviderTestOutcome, ProviderTestResult,
+}
 import { AddCustomProvider, CustomProviderCard, useCustomProviders } from '@/components/CustomProviders'
 
-/** What one real connectivity test found (mirrors `ProviderTestOutcome` in src/llm/detect.rs). */
-export type ProviderTestOutcome =
-  | { status: 'ok' }
-  | { status: 'rate_limited'; message: string }
-  | { status: 'failed'; message: string }
-
-/** One recorded test run (mirrors `ProviderTestResult` in src/llm/detect.rs). */
-export interface ProviderTestResult {
-  id: string
-  outcome: ProviderTestOutcome
-  elapsed_ms: number
-  /** RFC3339 — when this test ran. */
-  tested_at: string
-}
-
-/** One provider's live install state (mirrors `ProviderStatus` in src/llm/detect.rs). */
-export interface ProviderStatus {
-  id: string
-  installed: boolean
-  path: string | null
-  /** Always null — Meridian reports *installed*, not *signed in*. See src/llm/detect.rs. */
-  authenticated: boolean | null
-  /** The last real connectivity test on record, if any. `null` means never tested — not failed. */
-  last_test: ProviderTestResult | null
-}
-
-/** What running a provider's installer produced (mirrors `InstallOutcome` in src/llm/detect.rs). */
-export interface InstallOutcome {
-  ok: boolean
-  message: string
-  path: string | null
-  command: string
-}
 
 /**
  * Probe which provider CLIs exist on this Mac (free, instant). Unlike before, this NO LONGER
