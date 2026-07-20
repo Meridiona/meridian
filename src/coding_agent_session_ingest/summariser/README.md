@@ -15,7 +15,9 @@ and sharper. The summary is also what the Jira updater quotes as evidence.
 
 One transcript in flight at a time (sequential → flat memory, no rate-limit
 bursts). **Each agent's transcripts go to its own CLI** (routed on the row's
-`app_name`); there is **no cross-engine fallback**:
+`app_name`). There is **no cross-engine fallback** — the only substitute is the
+user's own globally chosen AI provider, and only once the agent's CLI is
+permanently unable to answer:
 
 ```
 Codex session          ──▶  codex exec    ─┐
@@ -23,10 +25,16 @@ GitHub Copilot session ──▶  copilot -p    ─┤
 Cursor Agent session   ──▶  cursor-agent  ─┼─ try that agent's CLI up to `primary_attempts` (2) times
 else (Claude/unknown)  ──▶  claude -p     ─┘        │
                                                      ├─ rate-limited?  ──▶  leave row pending, back off this source
-                                                     └─ all attempts failed?  ──▶  leave row pending, retry next drain
-                                                                                   │
+                                                     │                      (a quota refills — wait it out, never route around)
+                                                     └─ all attempts failed?  ──▶  the global AI provider, once (`fallback.rs`)
+                                                                                   │   (skipped without a call when it IS that same CLI)
+                                                                                   └─ still nothing?  ──▶  leave row pending, retry next drain
                                             (a row that fails MAX_ROW_ATTEMPTS drains is dead-lettered)
 ```
+
+A fallback summary is recorded as `summary_source = "fallback:<provider>"`, so a
+summary written by a substitute is never mistaken for one the agent that did the
+work produced.
 
 - **Claude sessions → `claude -p`** (`claude.rs`) — loads the `session-summary`
   skill, structured output. Runs on the user's Claude subscription;
