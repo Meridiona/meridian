@@ -20,7 +20,8 @@ import { useEffect, useState } from 'react'
 import { fmtDur, PROVIDER_META, ProviderGlyph } from '@/components/atoms'
 import { GeneratingBar } from '@/components/GeneratingBar'
 import { load } from '@/lib/bridge'
-import { connectedTrackerNames } from '@/lib/integrations'
+import { connectedTrackers, trackerName as providerName } from '@/lib/integrations'
+import type { Tracker } from '@/lib/integrations'
 import type { DayTaskWorklogDraft, IntegrationsResponse } from '@/lib/api-types'
 import { clockLabel, clockLabelFromIso, type LaidSegment } from './dayTaskLayout'
 import type { SettingsSection } from './settings/types'
@@ -74,7 +75,10 @@ export function DayTaskDetailPanel({ detail, onClose, onOpenSettings, onOpenTask
       .catch(() => {})
     return () => { alive = false }
   }, [])
-  const trackers = connectedTrackerNames(integrations)
+  // Objects for the propose-branch board picker, names for the CTA copy. One read,
+  // two shapes - never a second get_integrations call that could disagree.
+  const connected = connectedTrackers(integrations)
+  const trackers = connected.map(t => t.name)
 
   return (
     <div className="dt-detail h-full flex flex-col">
@@ -93,8 +97,9 @@ export function DayTaskDetailPanel({ detail, onClose, onOpenSettings, onOpenTask
         )}
 
         {wl.draft && (
-          <DraftPreview draft={wl.draft} hue={hue} onOpenTask={onOpenTask}
-            busy={wl.phase === 'generating' || wl.phase === 'approving'} onDismiss={wl.dismiss} />
+          <DraftPreview draft={wl.draft} hue={hue} onOpenTask={onOpenTask} trackers={connected}
+            busy={wl.phase === 'generating' || wl.phase === 'approving'} onDismiss={wl.dismiss}
+            onSetProvider={wl.setProvider} />
         )}
       </div>
 
@@ -171,10 +176,13 @@ function SegmentList({ segments, hue }: { segments: LaidSegment[]; hue: string }
 // ── Worklog: draft preview (scrolls) + pinned action footer ──────────────────
 
 /** The generated worklog draft — preview only; the actions live in the footer. */
-function DraftPreview({ draft, hue, busy, onOpenTask, onDismiss }: {
+function DraftPreview({ draft, hue, busy, trackers, onOpenTask, onDismiss, onSetProvider }: {
   draft: DayTaskWorklogDraft; hue: string; busy: boolean
+  /** Connected trackers, for the propose branch's board picker. */
+  trackers: Tracker[]
   onOpenTask: (key: string, title?: string) => void
   onDismiss: (taskKey: string) => void
+  onSetProvider: (provider: string) => void
 }) {
   // No link chip here: the tickets are already named twice below — by DraftTargets
   // ("Comment on KAN-12 · 87% match") before you post, and by the footer's
@@ -193,7 +201,8 @@ function DraftPreview({ draft, hue, busy, onOpenTask, onDismiss }: {
       </div>
       <div className="rounded-xl p-4 space-y-3"
         style={{ border: `1px solid color-mix(in srgb, ${hue} 26%, transparent)`, background: `color-mix(in srgb, ${hue} 5%, var(--t-card))` }}>
-        <DraftTargets draft={draft} busy={busy} onOpenTask={onOpenTask} onDismiss={onDismiss} />
+        <DraftTargets draft={draft} busy={busy} trackers={trackers} onOpenTask={onOpenTask}
+          onDismiss={onDismiss} onSetProvider={onSetProvider} />
         {draft.update.summary && (
           <p className="mt-body-sm" style={{ color: 'var(--t-title)', fontSize: 12.5, lineHeight: 1.55 }}>{draft.update.summary}</p>
         )}
@@ -428,7 +437,9 @@ function ConfirmPost({ draft, busy, approving, onApprove, onCancel }: {
     <div className="space-y-2">
       <p className="mt-body-sm text-center" style={{ color: 'var(--t-muted)', fontSize: 12.5 }}>
         {draft.propose
-          ? `Create a new ${draft.propose.issue_type} and post this update?`
+          // Names the board too: creating a ticket is outward-facing and can't be
+          // undone, and with two trackers connected "a new Task" doesn't say where.
+          ? `Create a new ${draft.propose.issue_type} in ${providerName(draft.provider)} and post this update?`
           : `Post this update to ${where || 'the tracker'}?`}
       </p>
       <div className="flex items-center gap-2">

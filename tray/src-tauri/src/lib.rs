@@ -489,6 +489,7 @@ pub fn run() {
             commands::get_board_tickets,
             commands::retarget_day_task_worklog,
             commands::dismiss_worklog_target,
+            commands::set_worklog_provider,
             commands::plan_dismissed,
             commands::draft_plan_task,
             commands::create_plan_task,

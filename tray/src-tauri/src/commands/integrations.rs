@@ -257,6 +257,58 @@ fn oauth_error_path(provider: &str) -> Option<PathBuf> {
     home().map(|h| h.join(".meridian/oauth").join(format!("{provider}.error")))
 }
 
+/// Which trackers have usable credentials, in the canonical provider order the UI
+/// also uses (`ui/components/timeline/useTimelineData.ts`'s `PROVIDER_IDS`).
+///
+/// The credential-probing half of [`get_integrations`], split out so a command can
+/// ask "is this provider actually connected?" without going through the response
+/// struct field by field.
+///
+/// `has_oauth` is injected rather than calling [`oauth_file_exists`] directly: the
+/// two OAuth-backed trackers are otherwise decided by files under the real `$HOME`,
+/// which would make this untestable (and its result quietly dependent on whichever
+/// machine it runs on).
+fn connected_from_env(
+    env: &HashMap<String, String>,
+    has_oauth: impl Fn(&str) -> bool,
+) -> Vec<&'static str> {
+    let jira_basic =
+        is_set(env, "JIRA_BASE_URL") && is_set(env, "JIRA_EMAIL") && is_set(env, "JIRA_API_TOKEN");
+    let azure = is_set(env, "AZURE_DEVOPS_PAT")
+        && (is_set(env, "AZURE_DEVOPS_URL")
+            || is_set(env, "AZURE_DEVOPS_ORG")
+            || is_set(env, "AZURE_DEVOPS_ORG_URL"));
+
+    let mut on = Vec::new();
+    if has_oauth("jira") || jira_basic {
+        on.push("jira");
+    }
+    if is_set(env, "LINEAR_API_KEY") {
+        on.push("linear");
+    }
+    if is_set(env, "GITHUB_TOKEN") {
+        on.push("github");
+    }
+    if has_oauth("trello") {
+        on.push("trello");
+    }
+    if azure {
+        on.push("azure_devops");
+    }
+    on
+}
+
+/// Every connected tracker id, resolved through the same install-mode `.env` the
+/// GET reads.
+///
+/// Exists so other commands can VALIDATE a provider id the frontend sent instead of
+/// trusting it - see [`crate::commands::set_worklog_provider`].
+pub fn connected_providers() -> Vec<&'static str> {
+    let mode = crate::install::detect_install_mode();
+    let env = mode.env_path().map(parse_env).unwrap_or_default();
+    connected_from_env(&env, oauth_file_exists)
+}
+
 /// Which trackers are connected (the ported /api/integrations GET).
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
@@ -265,10 +317,7 @@ pub async fn get_integrations(
 ) -> Result<IntegrationsResponse, String> {
     let mode = crate::install::detect_install_mode();
     let env = mode.env_path().map(parse_env).unwrap_or_default();
-
-    let jira_basic = is_set(&env, "JIRA_BASE_URL")
-        && is_set(&env, "JIRA_EMAIL")
-        && is_set(&env, "JIRA_API_TOKEN");
+    let on = connected_from_env(&env, oauth_file_exists);
 
     // Sync errors are best-effort: a missing/uninitialised DB just omits them
     // (matches the route's silent catch).
@@ -280,14 +329,11 @@ pub async fn get_integrations(
     };
 
     Ok(IntegrationsResponse {
-        jira: oauth_file_exists("jira") || jira_basic,
-        linear: is_set(&env, "LINEAR_API_KEY"),
-        github: is_set(&env, "GITHUB_TOKEN"),
-        trello: oauth_file_exists("trello"),
-        azure_devops: is_set(&env, "AZURE_DEVOPS_PAT")
-            && (is_set(&env, "AZURE_DEVOPS_URL")
-                || is_set(&env, "AZURE_DEVOPS_ORG")
-                || is_set(&env, "AZURE_DEVOPS_ORG_URL")),
+        jira: on.contains(&"jira"),
+        linear: on.contains(&"linear"),
+        github: on.contains(&"github"),
+        trello: on.contains(&"trello"),
+        azure_devops: on.contains(&"azure_devops"),
         github_projects_selected: is_set(&env, "GITHUB_PROJECT_IDS"),
         sync_errors,
     })
@@ -1506,5 +1552,98 @@ mod tests {
         assert!(!out.contains("JIRA_EMAIL"));
         assert!(!out.contains("JIRA_API_TOKEN"));
         std::fs::remove_file(&path).ok();
+    }
+
+    // ── connected_from_env ────────────────────────────────────────────────
+    //
+    // This list is what `set_worklog_provider` validates against, so a provider
+    // wrongly reported connected here means a worklog ticket filed at a tracker
+    // with no usable credentials — a failure the user only sees after approving.
+
+    /// No OAuth files — the default for these tests, so only env creds count.
+    fn no_oauth(_: &str) -> bool {
+        false
+    }
+
+    #[test]
+    fn connected_from_env_reports_nothing_for_an_empty_env() {
+        assert!(connected_from_env(&env_of(&[]), no_oauth).is_empty());
+    }
+
+    #[test]
+    fn connected_from_env_reads_the_token_backed_trackers() {
+        let env = env_of(&[("LINEAR_API_KEY", "lin_abc"), ("GITHUB_TOKEN", "ghp_abc")]);
+        assert_eq!(connected_from_env(&env, no_oauth), vec!["linear", "github"]);
+    }
+
+    #[test]
+    fn connected_from_env_keeps_the_canonical_provider_order() {
+        // The UI renders trackers in this order (PROVIDER_IDS / TRACKERS); the two
+        // must agree or the same set reads differently in two places.
+        let env = env_of(&[
+            ("GITHUB_TOKEN", "ghp_abc"),
+            ("LINEAR_API_KEY", "lin_abc"),
+            ("AZURE_DEVOPS_PAT", "pat"),
+            ("AZURE_DEVOPS_ORG", "acme"),
+            ("JIRA_BASE_URL", "https://x.atlassian.net"),
+            ("JIRA_EMAIL", "a@b.c"),
+            ("JIRA_API_TOKEN", "tok"),
+        ]);
+        assert_eq!(
+            connected_from_env(&env, |p| p == "trello"),
+            vec!["jira", "linear", "github", "trello", "azure_devops"]
+        );
+    }
+
+    #[test]
+    fn connected_from_env_needs_all_three_jira_basic_fields() {
+        // Two of three is a half-configured tracker: it would pass a naive check
+        // and then fail every API call.
+        let partial = env_of(&[
+            ("JIRA_BASE_URL", "https://x.atlassian.net"),
+            ("JIRA_EMAIL", "a@b.c"),
+        ]);
+        assert!(connected_from_env(&partial, no_oauth).is_empty());
+    }
+
+    #[test]
+    fn connected_from_env_accepts_jira_by_oauth_without_any_env_creds() {
+        // The OAuth flow writes a token store, not .env keys.
+        assert_eq!(
+            connected_from_env(&env_of(&[]), |p| p == "jira"),
+            vec!["jira"]
+        );
+    }
+
+    #[test]
+    fn connected_from_env_needs_a_host_alongside_the_azure_pat() {
+        let pat_only = env_of(&[("AZURE_DEVOPS_PAT", "pat")]);
+        assert!(connected_from_env(&pat_only, no_oauth).is_empty());
+
+        // Any one of the three host spellings is enough.
+        for host in [
+            "AZURE_DEVOPS_URL",
+            "AZURE_DEVOPS_ORG",
+            "AZURE_DEVOPS_ORG_URL",
+        ] {
+            let env = env_of(&[("AZURE_DEVOPS_PAT", "pat"), (host, "acme")]);
+            assert_eq!(
+                connected_from_env(&env, no_oauth),
+                vec!["azure_devops"],
+                "{host} should satisfy the Azure host requirement"
+            );
+        }
+    }
+
+    #[test]
+    fn connected_from_env_rejects_env_example_placeholders() {
+        // A user who copied .env.example has a GITHUB_TOKEN line and no token. It
+        // must not count as connected — `is_set` is what catches that, and this
+        // pins that connected_from_env actually goes through it.
+        let env = env_of(&[
+            ("GITHUB_TOKEN", "your-token-here"),
+            ("LINEAR_API_KEY", "lin_real_key"),
+        ]);
+        assert_eq!(connected_from_env(&env, no_oauth), vec!["linear"]);
     }
 }

@@ -84,7 +84,7 @@ export default function MeridianTimelineShell() {
   const [worklogPrompted, setWorklogPrompted] = useState<boolean | null>(null)
 
   const data = useTimelineData(day)
-  const { items, isSolo, connectedProviderName, connectedProviderId, isToday, integrations } = data
+  const { items, isSolo, connectedProviderName, connectedProviderIds, isToday, integrations } = data
   const pendingCount = items.filter(isPending).length
   const hasTracker = !!integrations && !isSolo
 
@@ -204,7 +204,7 @@ export default function MeridianTimelineShell() {
         onShiftDay={shift}
         isSolo={isSolo}
         connectedProviderName={connectedProviderName}
-        connectedProviderId={connectedProviderId}
+        connectedProviderIds={connectedProviderIds}
         onOpenSettings={(section) => { setSettingsSection(section); setActiveModal('settings') }}
         onOpenReport={() => setActiveModal('report')}
         showLlmLab={channel === 'dev'}

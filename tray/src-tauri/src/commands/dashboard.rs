@@ -340,6 +340,61 @@ pub async fn retarget_day_task_worklog(
     })
 }
 
+/// The body of a [`set_worklog_provider`] call.
+#[derive(Debug, serde::Deserialize)]
+pub struct SetWorklogProviderBody {
+    pub day: String,
+    pub task_id: String,
+    /// The tracker to create the proposed ticket on. VALIDATED, never trusted.
+    pub provider: String,
+}
+
+/// Choose which tracker a proposed worklog ticket gets created on.
+///
+/// Only reachable for the propose branch of a draft, where the provider was picked
+/// for the user as "the first configured tracker" - arbitrary for anyone on two
+/// boards. A matched draft carries its provider per-target and the core call refuses
+/// there.
+///
+/// **The provider is validated against the connected trackers before it is written.**
+/// [`retarget_day_task_worklog`] states the rule this obeys: the frontend must not be
+/// able to name an arbitrary tracker for a comment to be posted to. It cannot come
+/// from `pm_tasks` here (a proposed ticket does not exist yet), so the check is
+/// against [`crate::commands::connected_providers`] instead - the same credential
+/// probe `get_integrations` shows the user. An id that isn't connected is refused
+/// rather than written and left to fail later inside the approve.
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn set_worklog_provider(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    body: SetWorklogProviderBody,
+) -> Result<meridian_core::day_task_worklogs::DayTaskWorklogDraft, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    if !crate::commands::connected_providers().contains(&body.provider.as_str()) {
+        tracing::warn!(provider = %body.provider, "set_worklog_provider: unconnected tracker refused");
+        return Err(format!(
+            "{} isn't connected - connect it in Settings first",
+            body.provider
+        ));
+    }
+
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    meridian_core::day_task_worklogs::set_draft_provider(
+        pool,
+        &body.day,
+        &body.task_id,
+        &body.provider,
+        &now,
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!(error = %e, "set_worklog_provider failed");
+        e.to_string()
+    })
+}
+
 /// The body of a [`dismiss_worklog_target`] call.
 #[derive(Debug, serde::Deserialize)]
 pub struct DismissTargetBody {
