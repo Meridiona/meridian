@@ -338,6 +338,9 @@ export interface DayTaskWorklogDraft {
   created_task_key: string | null
   /** The last draft-level failure. Per-ticket failures live on the target. */
   error: string | null
+  /** When this draft was last written (generated OR regenerated) — RFC-3339, UTC.
+   *  "As of", not "first generated at" — a Regenerate click bumps it. */
+  updated_at: string
 }
 
 /** One ticket the worklog picker can retarget a draft at (tray

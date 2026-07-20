@@ -5,7 +5,7 @@ interface TextInputProps {
   value: string
   onChange: (v: string) => void
   placeholder?: string
-  type?: 'text' | 'password' | 'email' | 'time'
+  type?: 'text' | 'password' | 'email' | 'time' | 'number'
   width?: number | string
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void
 }

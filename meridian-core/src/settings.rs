@@ -282,6 +282,22 @@ pub struct RuntimeSettings {
     // predates these keys to empty lists. Mirrors ui/lib/settings.ts.
     pub ignored_apps: Vec<String>,
     pub ignored_urls: Vec<String>,
+    // Worklog auto-generation — once a day, at this local "HH:MM" clock time,
+    // Meridian scans today's day-tasks and auto-DRAFTS (never approves/posts) a
+    // worklog for any with more than `pm_worklog::auto_generate`'s fixed 30-minute
+    // qualifying threshold that doesn't have a draft yet. `None` means the user
+    // hasn't chosen a time yet (never asked, or explicitly skipped) — in that
+    // state nothing is ever auto-drafted, only the manual "Generate worklog"
+    // button as before. Read by `pm_worklog::auto_generate` on the worklog
+    // pipeline's clock tick. Mirrors `ui/lib/settings.ts`.
+    pub worklog_auto_generate_time: Option<String>,
+    // Has the user been asked about auto-generation at least once (the one-time
+    // Timeline nudge, or a manual Settings visit)? Distinguishes "never asked"
+    // from "asked and skipped" — both leave `worklog_auto_generate_time` at
+    // `None`, but only the latter should never be asked again. `#[serde(default)]`
+    // at the struct level makes this `false` for every settings.json written before
+    // this field existed, which is exactly the "reprompt existing users once" case.
+    pub worklog_auto_generate_prompted: bool,
 }
 
 /// Default surface palette when `settings.json` predates the `theme` key. Must
@@ -340,6 +356,10 @@ impl Default for RuntimeSettings {
             // ui/lib/settings.ts.
             ignored_apps: Vec::new(),
             ignored_urls: Vec::new(),
+            // Nobody is auto-drafted until they say so. Must match
+            // SETTINGS_DEFAULTS in ui/lib/settings.ts.
+            worklog_auto_generate_time: None,
+            worklog_auto_generate_prompted: false,
         }
     }
 }
