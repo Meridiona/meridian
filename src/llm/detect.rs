@@ -305,17 +305,13 @@ pub async fn install_provider(provider: LlmProvider) -> InstallOutcome {
     };
 
     if !output.status.success() {
-        // The tail of stderr is the useful part (npm/curl print the real reason last); keep it
-        // bounded so a noisy installer can't flood the toast.
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let tail: String = stderr.trim().chars().rev().take(400).collect::<String>();
-        let tail: String = tail.chars().rev().collect();
+        let reason = tail(String::from_utf8_lossy(&output.stderr).trim(), 400);
         return install_failed(
             cmd,
-            if tail.is_empty() {
+            if reason.is_empty() {
                 "the installer exited with an error".to_string()
             } else {
-                tail
+                reason
             },
         );
     }
@@ -325,6 +321,7 @@ pub async fn install_provider(provider: LlmProvider) -> InstallOutcome {
     match resolve_cli(bin).await {
         Some(p) => {
             tracing::info!(provider = provider.as_str(), path = %p.display(), "llm: provider installed");
+            warn_if_version_unpinned(provider, &p).await;
             InstallOutcome {
                 ok: true,
                 message: "Installed. Checking your sign-in…".into(),
@@ -336,6 +333,57 @@ pub async fn install_provider(provider: LlmProvider) -> InstallOutcome {
             cmd,
             "the installer finished but the CLI still isn't on your PATH - try running it in a terminal".into(),
         ),
+    }
+}
+
+/// Confirm a pinned CLI actually installed at the pinned version, and warn loudly if not.
+///
+/// Only Cursor pins today. The pin works by rewriting version strings in the vendor's rolling
+/// installer **by pattern**, which means it **fails open**: if Cursor ever changes its version
+/// format the `sed` matches nothing, the script installs latest, and the user silently ends up
+/// on an unverified build - exactly the outcome the pin exists to prevent, and one that would
+/// surface much later as an unexplained flag rejection. This turns that into a log line at the
+/// moment it happens.
+///
+/// Deliberately does NOT fail the install: an unpinned CLI still works (the invocation ladder
+/// in [`crate::llm::cursor_cli`] degrades on an unknown flag), so blocking the user over a
+/// version mismatch would be worse than telling them.
+async fn warn_if_version_unpinned(provider: LlmProvider, path: &std::path::Path) {
+    let Some(expected) = provider.pinned_cli_version() else {
+        return;
+    };
+    let out = Command::new(path)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .output()
+        .await;
+    let Ok(out) = out else {
+        tracing::warn!(
+            provider = provider.as_str(),
+            "llm: could not read the installed CLI version - cannot confirm the pin applied"
+        );
+        return;
+    };
+    let reported = String::from_utf8_lossy(&out.stdout);
+    let reported = reported.trim();
+    if reported.contains(expected) {
+        tracing::info!(
+            provider = provider.as_str(),
+            version = expected,
+            "llm: installed CLI matches the pinned version"
+        );
+    } else {
+        tracing::warn!(
+            provider = provider.as_str(),
+            expected,
+            reported = %reported,
+            "llm: the version pin did not apply - the vendor installer's version format probably \
+             changed, so an UNVERIFIED build was installed. Update CURSOR_CLI_VERSION and the \
+             rewrite pattern in meridian-core/src/llm_provider.rs."
+        );
     }
 }
 
@@ -369,22 +417,54 @@ pub async fn cursor_sign_in() -> InstallOutcome {
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    let output = match cmd.spawn() {
-        Ok(child) => match tokio::time::timeout(CURSOR_LOGIN_TIMEOUT, child.wait_with_output())
-            .await
-        {
-            Ok(Ok(out)) => out,
-            Ok(Err(e)) => {
-                return install_failed(label, format!("couldn't run cursor-agent login: {e}"))
-            }
-            Err(_) => {
-                return install_failed(
-                    label,
-                    "the sign-in wasn't finished in time - click Sign in to Cursor again".into(),
-                )
-            }
-        },
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
         Err(e) => return install_failed(label, format!("couldn't start cursor-agent: {e}")),
+    };
+
+    // Drain stdout as it arrives rather than only via `wait_with_output`. `cursor-agent login`
+    // prints its verification URL / device code to STDOUT while it waits, and that is precisely
+    // what the user needs when the browser does not open for them (no default browser, wrong
+    // profile, a headless session). Waiting for exit would discard it on the timeout path -
+    // leaving a 180 s spinner followed by an error with no way to finish the sign-in by hand.
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    if let Some(out) = child.stdout.take() {
+        let seen = seen.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut lines = BufReader::new(out).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tracing::info!(line = %line, "cursor-agent login");
+                let mut buf = seen.lock().unwrap_or_else(|e| e.into_inner());
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+        });
+    }
+    let login_output = |seen: &std::sync::Mutex<String>| -> String {
+        let buf = seen.lock().unwrap_or_else(|e| e.into_inner());
+        tail(buf.trim(), 300)
+    };
+
+    let output = match tokio::time::timeout(CURSOR_LOGIN_TIMEOUT, child.wait_with_output()).await {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => {
+            return install_failed(label, format!("couldn't run cursor-agent login: {e}"))
+        }
+        Err(_) => {
+            let printed = login_output(&seen);
+            return install_failed(
+                label,
+                if printed.is_empty() {
+                    "the sign-in wasn't finished in time - click Sign in to Cursor again".into()
+                } else {
+                    format!(
+                        "the sign-in wasn't finished in time. Finish it by hand with what \
+                         cursor-agent printed:\n{printed}"
+                    )
+                },
+            );
+        }
     };
 
     if output.status.success() {
@@ -396,18 +476,32 @@ pub async fn cursor_sign_in() -> InstallOutcome {
             command: label.to_string(),
         }
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let tail: String = stderr.trim().chars().rev().take(400).collect::<String>();
-        let tail: String = tail.chars().rev().collect();
+        // stderr first (that is where the reason goes), but fall back to what the CLI printed
+        // on stdout - on some failures the URL/device code is the only useful thing said.
+        let reason = tail(String::from_utf8_lossy(&output.stderr).trim(), 400);
+        let reason = if reason.is_empty() {
+            login_output(&seen)
+        } else {
+            reason
+        };
         install_failed(
             label,
-            if tail.is_empty() {
+            if reason.is_empty() {
                 "cursor-agent login failed".to_string()
             } else {
-                tail
+                reason
             },
         )
     }
+}
+
+/// The last `n` characters of `s`, char-safe.
+///
+/// The tail is the useful end of CLI output - npm, curl and cursor-agent all print the real
+/// reason last - and bounding it stops a noisy installer flooding a toast.
+fn tail(s: &str, n: usize) -> String {
+    let rev: String = s.trim().chars().rev().take(n).collect();
+    rev.chars().rev().collect()
 }
 
 /// Build a failed [`InstallOutcome`], logging the reason.

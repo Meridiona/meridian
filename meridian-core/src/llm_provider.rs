@@ -160,6 +160,21 @@ impl LlmProvider {
             LlmProvider::Custom => None,
         }
     }
+
+    /// The exact CLI build [`Self::install_command`] is supposed to produce, when this provider
+    /// is version-pinned.
+    ///
+    /// Only Cursor pins today, because its installer is a rolling script with no version flag
+    /// and the pin is applied by rewriting it (see [`CURSOR_INSTALL_CMD`]) - a mechanism that
+    /// fails OPEN. Returning the expectation here lets the installer verify that the rewrite
+    /// actually took effect rather than assuming it did. The other CLIs install a named npm
+    /// version range and need no such check.
+    pub fn pinned_cli_version(self) -> Option<&'static str> {
+        match self {
+            LlmProvider::Cursor => Some(CURSOR_CLI_VERSION),
+            _ => None,
+        }
+    }
 }
 
 /// The cursor-agent build Meridian installs and supports.
