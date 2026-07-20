@@ -197,12 +197,20 @@ jobs:
           # so without it both arches would compute the same cache key and
           # clobber each other's target/ on save.
           key: ${{ matrix.target }}
-          # Restore-only, deliberately. Two per-arch target/ caches would add
-          # ~4GB to a repo already at its 10GB quota (see #488, merged
-          # specifically to get back under it) and would evict release.yml's
-          # cache. Worth revisiting once the quota has headroom — saving here is
-          # the remaining easy win on top of the parallel split.
-          save-if: "false"
+          # SAVE, on pre-main only. Restore-only was the original call, to stay
+          # under the repo's 10GB cache quota (see #488) — but restore-only
+          # against a key NOTHING writes is a permanent miss, not a saving. Every
+          # staging build logged "No cache found." and recompiled the workspace
+          # cold: 19m19s for the arm64 tray on run 29734394528.
+          #
+          # The quota objection is also stale. Retiring the sequential staging
+          # build (#494) orphaned its two 2.4GB `rust-macos-universal` caches, one
+          # per branch — roughly exactly the room the two per-arch caches need.
+          #
+          # Scoped to pre-main so a feature branch cannot evict the release
+          # cache: GitHub isolates caches per branch on READ but not on write
+          # eviction, and only pre-main ever cuts a staging release.
+          save-if: ${{ github.ref == 'refs/heads/pre-main' }}
 
       - uses: actions/setup-node@v4
         with:
