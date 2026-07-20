@@ -75,6 +75,7 @@ fn recorder_config() -> UiCaptureConfig {
 
 /// Whether this process already holds macOS Input Monitoring — a pure status read
 /// (`IOHIDCheckAccess`, no prompt) used to skip re-requesting an existing grant.
+#[cfg(target_os = "macos")]
 fn input_monitoring_granted() -> bool {
     #[link(name = "IOKit", kind = "framework")]
     extern "C" {
@@ -85,6 +86,20 @@ fn input_monitoring_granted() -> bool {
     const GRANTED: u32 = 0;
     // Safety: IOHIDCheckAccess is a pure status read — no prompt, no side effects.
     unsafe { IOHIDCheckAccess(LISTEN_EVENT) == GRANTED }
+}
+
+/// Windows counterpart of [`input_monitoring_granted`] — always `true`.
+///
+/// Same reasoning as the capture engine's `request_screen_capture_access`:
+/// Windows has no TCC, so there is no Input Monitoring grant to hold and no
+/// reduced mode to fall back to. The low-level input hooks the recorder installs
+/// need no per-app permission — the fork's own
+/// `screenpipe_a11y::platform::windows` `check_permissions()` hardcodes the same,
+/// noting that "Windows doesn't require explicit permissions for hooks". `true`
+/// is therefore the accurate answer, not a placeholder.
+#[cfg(target_os = "windows")]
+fn input_monitoring_granted() -> bool {
+    true
 }
 
 /// Run the input recorder until `tx` closes. **Blocking** — call on a dedicated

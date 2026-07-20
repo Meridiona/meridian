@@ -359,6 +359,40 @@ pub fn register_notification_categories(app: &tauri::AppHandle) {
     }
 }
 
+/// Restore the tray-only UX when `win` closes: revert the app to the Accessory
+/// activation policy (no dock icon), undoing the Regular policy a window opener
+/// sets so the dashboard gets a dock entry while it is open.
+///
+/// **macOS-only behaviour, deliberately a no-op elsewhere.** Activation policy
+/// is an AppKit concept (`NSApplication.activationPolicy`) with no Windows
+/// analogue — there is no dock to leave an orphaned icon in — so on Windows the
+/// window event is simply never registered.
+///
+/// # Who calls this
+/// Both dashboard openers, which previously each carried their own copy of this
+/// closure: [`crate::tray`]'s tray-menu opener and
+/// [`crate::commands::system::open_dashboard`].
+///
+/// # Related
+/// - [`crate::commands::system::dismiss_popover_on_focus`] — the other
+///   window-event hook the dashboard openers install.
+pub(crate) fn revert_to_accessory_on_close(
+    app: &tauri::AppHandle,
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] win: &tauri::WebviewWindow,
+) {
+    #[cfg(target_os = "macos")]
+    {
+        let app_handle = app.clone();
+        win.on_window_event(move |event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+}
+
 #[cfg(test)]
 mod tests {
     /// The non-macOS half of [`super::is_bundled`], factored out so the

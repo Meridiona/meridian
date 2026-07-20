@@ -924,11 +924,25 @@ pub(crate) fn start_capture(
 ) {
     use capture::{screenpipe::ScreenpipeEngine, CaptureEngine};
 
-    #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
-        fn CGPreflightScreenCaptureAccess() -> bool;
-    }
-    let screen_granted = unsafe { CGPreflightScreenCaptureAccess() };
+    // Launch-time gate: don't even spawn the engine when Screen Recording is
+    // missing. Distinct from the engine's own `request_screen_capture_access`,
+    // which prompts — this one is a silent preflight, so a first launch before
+    // the wizard's grant doesn't race a cold TCC dialog.
+    //
+    // Windows has no TCC: Windows Graphics Capture needs no persistent per-app
+    // grant, so there is nothing to preflight and the gate is always open —
+    // matching the engine's own Windows permission stubs.
+    #[cfg(target_os = "macos")]
+    let screen_granted = {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" {
+            fn CGPreflightScreenCaptureAccess() -> bool;
+        }
+        unsafe { CGPreflightScreenCaptureAccess() }
+    };
+    #[cfg(not(target_os = "macos"))]
+    let screen_granted = true;
+
     if !screen_granted {
         tracing::info!(
             "capture: Screen Recording not granted — engine deferred until next launch after grant"

@@ -515,6 +515,19 @@ fn with_autorelease_pool<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// Non-Apple counterpart of [`with_autorelease_pool`] — runs `f` directly.
+///
+/// Autorelease pools are an Objective-C runtime concept with no counterpart
+/// off Apple platforms; there is no deferred-release queue to drain, so the
+/// unbounded-growth problem the macOS arm exists to solve cannot arise. Kept as
+/// a pass-through wrapper rather than `cfg`-ing the call sites so the engine
+/// loop stays platform-agnostic — the AX walk at the top of the loop is shared
+/// by both platforms, and the fork dispatches `create_tree_walker` internally.
+#[cfg(not(target_os = "macos"))]
+fn with_autorelease_pool<R>(f: impl FnOnce() -> R) -> R {
+    f()
+}
+
 /// Register for Screen Recording, but **only prompt when it isn't already
 /// granted**. Preflights with `CGPreflightScreenCaptureAccess` (a pure status
 /// read) first and only calls the prompting `CGRequestScreenCaptureAccess` when
