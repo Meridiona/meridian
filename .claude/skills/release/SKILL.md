@@ -51,13 +51,23 @@ commits the version bump + `CHANGELOG.md` back to `main`
 
 ### Staging (`pre-main`)
 Config: `.releaserc.staging.json` (copied over `.releaserc.json` at CI
-runtime — never the committed file). Same `prepareCmd` pipeline, but the tray
-builds with the `tray/src-tauri/tauri.staging.conf.json` overlay (different
-updater endpoint) and cuts a prerelease version `X.Y.Z-staging.N`. No
-version-bump commit back to `pre-main`. `publishCmd` runs
+runtime — never the committed file). The tray builds with the
+`tray/src-tauri/tauri.staging.conf.json` overlay (different updater endpoint)
+and cuts a prerelease version `X.Y.Z-staging.N`. No version-bump commit back
+to `pre-main`. `publishCmd` runs
 `scripts/mirror-staging-release.sh <ver>`, which mirrors `latest.json` (and
 the DMG) onto a fixed, rolling `updater-staging` GitHub prerelease tag so it
 never leaks into production's "latest" pointer.
+
+**Staging has NO `prepareCmd`** — unlike production, its config is a publisher
+only. `release-staging.yml` builds the two macOS arches on separate runners
+concurrently (`tauri build --no-bundle`), lipos them, then runs
+bundle/notarize/package/verify as explicit workflow steps *before* invoking
+semantic-release. Everything `prepareCmd` would have done is already on disk
+by then. This is what took a staging release from ~43m to ~29m; adding a
+`prepareCmd` back would recompile from scratch and undo it. The tradeoff is
+that the version gets computed twice (once to stamp the binaries, once to
+tag), so the workflow asserts the two agree before publishing.
 
 ### 1. Check Current Versions
 ```bash

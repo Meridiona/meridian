@@ -1,32 +1,65 @@
 name: Release (staging)
 
-# Staging-channel releases via semantic-release, on the `pre-main` branch.
-# Each run cuts a PRERELEASE version (X.Y.Z-staging.N, computed from main's
-# reachable v* tags) that builds the SAME signed universal (arm64 + x86_64)
-# DMG + updater artifacts as the production flow, but:
-#   • bakes the STAGING updater endpoint (…/releases/download/updater-staging/
-#     latest.json) into the .app at build time via a --config overlay — never
-#     committed, so it cannot leak to `main`;
-#   • publishes to GitHub only, with NO version-bump commit back to pre-main;
-#   • mirrors latest.json onto the rolling `updater-staging` prerelease so an
-#     installed staging app self-updates staging→staging.
+# Cuts the staging release's wall-clock time by building the two macOS
+# architectures CONCURRENTLY instead of one after the other.
 #
-# Differs from release.yml (production/main) only in: it targets pre-main, cuts a
-# prerelease, swaps in .releaserc.staging.json, and publishes to GitHub only.
-# Same macos-26 runner because the prepare step builds the Swift Foundation
-# Models bridge + the Rust daemon + the dashboard, exactly like main.
+# WHY: this workflow used to spend ~39 of its ~43 minutes compiling the workspace
+# four times, strictly sequentially — daemon×2 arches, then tray×2 arches inside
+# a single `tauri build --target universal-apple-darwin`. On run 29698684026:
 #
-# TRIGGERING — a full macOS build is ~45 min, and `pre-main` is a busy
-# integration branch, so this does NOT build on every push. It builds only when:
-#   • a push to pre-main whose head-commit message contains the marker
-#     `[staging-release]` (the controlled test loop — e.g.
-#     `git commit --allow-empty -m "chore(release): staging [staging-release]" && git push`), OR
-#   • a manual `workflow_dispatch` (available in the Actions tab / `gh workflow
-#     run release-staging.yml --ref pre-main` after the first push-triggered run
-#     has registered the workflow).
-# We deliberately do NOT keep this workflow on `main` — semantic-release reads
-# the channel from GITHUB_REF, so the run must carry ref=pre-main (else it would
-# treat the build as `main` and try to cut a STABLE release from pre-main code).
+#     daemon aarch64  6.9m   |  tray, both slices  26.3m
+#     daemon x86_64   5.5m   |  everything else     ~4m
+#
+# The two architectures share no compiled artifacts (each target needs its own
+# rlibs), so the only thing making them sequential was that they ran on one
+# runner. Splitting them across two runners took a full build from ~43m to ~29m
+# (measured on run 29723988701, before the publish arm was wired on).
+#
+# HOW: `tauri build --no-bundle` compiles without packaging, and `tauri bundle`
+# packages WITHOUT re-invoking cargo. That seam is what makes the split possible.
+# Verified locally before this file was written:
+#
+#   * `tauri bundle` runs zero cargo invocations and completes in ~1.4s
+#   * `tauri bundle --target universal-apple-darwin` REQUIRES a pre-lipo'd binary
+#     at target/universal-apple-darwin/release/meridian-tray — it does NOT lipo
+#     for you (it fails with a bare `No such file or directory` if absent)
+#   * the daemon is read from target/release/meridian at BUNDLE time, not compile
+#     time, so only the join job needs the universal daemon
+#   * TAURI_SIGNING_PRIVATE_KEY is consumed at BUNDLE time, so the signing
+#     secrets never need to reach the build jobs
+#
+# SCOPE — this is THE staging release path. It cuts the versioned prerelease,
+# attaches the DMG + updater artifacts, mirrors latest.json onto the rolling
+# `updater-staging` tag, and builds/attaches the Windows installer. Nothing here
+# ever runs on its own: see TRIGGERING below.
+#
+# HOW PUBLISHING SPLITS FROM BUILDING — this workflow used to hand the whole job
+# to semantic-release, whose `prepareCmd` compiles. That is exactly what cannot be
+# parallelised, so the phases are pulled apart:
+#
+#   plan     semantic-release --dry-run decides the version (no tag, no release)
+#   build    both arches compile that version, concurrently, on two runners
+#   release  lipo → sign → bundle → notarize → package → THEN semantic-release
+#            runs as a PUBLISHER ONLY (.releaserc.staging.json, whose
+#            exec plugin carries publishCmd but no prepareCmd — everything
+#            prepareCmd would have done is already on disk as explicit steps)
+#
+# The version is therefore computed TWICE, once per semantic-release invocation.
+# Those two must agree or the binaries carry a version the release does not: see
+# the "Assert the version has not moved" step, which fails the run rather than
+# publish mis-stamped artifacts.
+
+# TRIGGERING - a `workflow_dispatch`-only workflow is NOT dispatchable unless the
+# file also exists on the DEFAULT branch, and this one deliberately lives only on
+# `pre-main` — semantic-release reads the channel from GITHUB_REF, so a run must
+# carry ref=pre-main or it would treat the build as `main` and try to cut a STABLE
+# release from pre-main code. The `push` trigger below is what REGISTERS the
+# workflow with the Actions API so `gh workflow run --ref pre-main` resolves at
+# all - the same reason release-staging.yml carries one.
+#
+# It must never actually build on an ordinary pre-main push, so every job is gated
+# on a manual dispatch or an explicit `[staging-release]` marker commit. An
+# unmarked push creates a run whose jobs all skip, which is enough to register it.
 
 on:
   push:
@@ -34,84 +67,235 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: write       # tags, the GitHub prerelease(s), the rolling updater-staging release
+  contents: write       # tags, the versioned prerelease, the rolling updater-staging release
 
 concurrency:
+  # Serialise staging releases: two in flight would fight over the same tags,
+  # caches and notarization throughput.
   group: release-staging
   cancel-in-progress: false
 
+env:
+  SQLX_OFFLINE: "true"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
 jobs:
-  release:
-    # Build only on a manual dispatch or a marker commit — never on ordinary
-    # pre-main integration pushes (fold merges, feature merges).
+  # ── Stage 1: decide the version, once, for everybody ────────────────────────
+  #
+  # The version has to exist BEFORE any compiling starts, because set-version.sh
+  # bakes it into Cargo.toml (→ the daemon binary) and tauri.conf.json (→ the
+  # value tauri-plugin-updater compares against latest.json). Both build jobs and
+  # the release job must therefore agree on one value.
+  #
+  # This also pins the SHA. The workflow targets `pre-main`, a busy integration
+  # branch — if each job checked out `pre-main` by name they could resolve to
+  # DIFFERENT commits as pushes land mid-run, and the two arch binaries would
+  # silently disagree with each other and with the bundle.
+  plan:
+    name: Plan (version + SHA)
+    # The gate for the whole workflow: `build` and `release` both chain off this
+    # job, so skipping it skips them. Ordinary pre-main pushes register the
+    # workflow and do nothing else.
     if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[staging-release]') }}
-    runs-on: macos-26
+    runs-on: ubuntu-latest
     outputs:
-      released: ${{ steps.release.outputs.released }}
-      version: ${{ steps.release.outputs.version }}
-      tag: ${{ steps.release.outputs.tag }}
-    env:
-      SQLX_OFFLINE: "true"
-      # The tray pulls screenpipe-screen/-a11y from the PRIVATE Meridiona/
-      # screenpipe-fork (a git dep). Force cargo to fetch via the git CLI so it
-      # honors the credential the "Authenticate ... screenpipe-fork" step installs
-      # — libgit2 would not pick up the url.insteadOf rewrite.
-      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      # Baked into the staging binary at compile time (see release.yml); same
-      # secret. Absent → Jira OAuth simply unavailable in the staging build.
-      MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
-      # Public GitHub OAuth device-flow client id (see release.yml); GH_OAUTH_CLIENT_ID
-      # repo secret. Absent → GitHub browser connect unavailable in the staging build.
-      MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
-      # Baked into the staging binary at compile time (see release.yml); same
-      # secret. Absent → PostHog analytics simply disabled in the staging build.
-      MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
-      # Baked into the staging binary at compile time (see release.yml); same
-      # secret — staging is downloadable/installable too, so it gets Clerk
-      # PRODUCTION, not the dev instance (only a source checkout uses dev).
-      # Absent → sign-in unavailable in the staging build.
-      MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
-      # Minisign key for the DMG auto-updater: `tauri build` (createUpdaterArtifacts)
-      # signs Meridian.app.tar.gz so the installed staging app can verify the
-      # update against the pubkey baked in tauri.conf.json. REQUIRED here (unlike
-      # the legacy staging flow) — without it package-updater.sh emits no
-      # latest.json and the mirror no-ops, so the staging channel can't update.
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-      # Apple Developer ID signing + notarization — identical to release.yml (see
-      # the long note there). Staging signs with the SAME Developer ID cert on
-      # purpose: staging is where we prove the signed/notarized DMG works end to
-      # end (Gatekeeper-clean install, TCC grants surviving an auto-update) before
-      # the same machinery ships to production.
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-      # Tauri's DMG bundler skips the AppleScript step that sets the Finder
-      # window background/icon layout whenever `CI` is set (every GitHub
-      # Actions job sets `CI=true`), assuming CI runners can't drive Finder —
-      # https://github.com/tauri-apps/tauri/issues/1731. GitHub-hosted macOS
-      # runners DO have a full desktop session, so force the decoration step
-      # to run; without this the DMG ships the drag-to-Applications
-      # background.png as an inert file with no .DS_Store, so Finder never
-      # displays it.
-      TAURI_BUNDLER_DMG_IGNORE_CI: "true"
+      sha: ${{ steps.resolve.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
+      release_due: ${{ steps.version.outputs.release_due }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: pre-main           # release the pre-main tip — NOT the default branch
-          fetch-depth: 0          # full history — semantic-release needs commits
-          fetch-tags: true        # see main's v* tags (reachable: pre-main is off main)
+          ref: pre-main
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - id: resolve
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Use the parallel staging release config
+        # Ephemeral in CI — .releaserc.json is in no git-asset list, so this is
+        # never committed. Analysis-only here, but it must be the SAME config the
+        # release job publishes with, or the two version computations could
+        # diverge on branch/prerelease rules alone.
+        run: cp .releaserc.staging.json .releaserc.json
+
+      - name: Compute the next staging version
+        id: version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+        # `--dry-run` runs analysis only: no tag, no release, no prepareCmd. We
+        # parse the version it reports so the build jobs can stamp it. If nothing
+        # is releasable, downstream jobs skip rather than build an untagged
+        # artifact nobody asked for.
+        run: |
+          set -o pipefail
+          npx semantic-release --dry-run 2>&1 | tee sr.log || true
+          version="$(grep -oE 'The next release version is [0-9][^ ]*' sr.log | tail -1 | awk '{print $NF}')"
+          if [ -z "${version}" ]; then
+            echo "release_due=false" >> "$GITHUB_OUTPUT"
+            echo "→ nothing to release; downstream jobs will skip"
+          else
+            echo "release_due=true"        >> "$GITHUB_OUTPUT"
+            echo "version=${version}"      >> "$GITHUB_OUTPUT"
+            echo "→ next staging version: ${version}"
+          fi
+
+  # ── Stage 2: the point of the exercise — both arches at once ────────────────
+  build:
+    name: Build ${{ matrix.target }}
+    needs: plan
+    if: needs.plan.outputs.release_due == 'true'
+    runs-on: macos-26
+    strategy:
+      # fail-fast off: if one arch breaks we still want the other's timing, which
+      # is the whole reason this workflow exists.
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    env:
+      # EVERY value below is baked into the binary at COMPILE time, so each build
+      # job needs the full set — a missing one produces no error, just a staging
+      # app with (say) sign-in quietly unavailable. Kept byte-identical to
+      # release-staging.yml; see that file for what each one does.
+      MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
+      MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
+      MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+      MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
+      MERIDIAN_CHANNEL: "staging"
+      # From tray/package.json's `build:staging` script, which this job replaces.
+      MERIDIAN_RUNTIME_MANIFEST_URL: https://github.com/Meridiona/meridian/releases/download/runtime-staging/runtime-manifest.json
+      MERIDIAN_HF_ENDPOINT: https://hf.meridiona.com
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
 
       - name: Install Rust 1.93.1
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.93.1"
-          targets: "aarch64-apple-darwin,x86_64-apple-darwin"
-      - uses: Swatinem/rust-cache@v2
+          targets: ${{ matrix.target }}
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # `key` is REQUIRED here: every leg of a matrix shares one github.job,
+          # so without it both arches would compute the same cache key and
+          # clobber each other's target/ on save.
+          key: ${{ matrix.target }}
+          # Restore-only, deliberately. Two per-arch target/ caches would add
+          # ~4GB to a repo already at its 10GB quota (see #488, merged
+          # specifically to get back under it) and would evict release.yml's
+          # cache. Worth revisiting once the quota has headroom — saving here is
+          # the remaining easy win on top of the parallel split.
+          save-if: "false"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            ui/package-lock.json
+            tray/package-lock.json
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      - name: Stamp the version
+        run: bash scripts/set-version.sh "${{ needs.plan.outputs.version }}"
+
+      - name: Install UI + tray deps
+        # The UI must build before the tray compiles: frontendDist (ui/out) is
+        # EMBEDDED into the binary by generate_context! at compile time, so it is
+        # a build input here, not a packaging step.
+        run: |
+          (cd ui && npm ci --no-audit --no-fund)
+          (cd tray && npm ci --no-audit --no-fund)
+
+      - name: Build daemon (${{ matrix.target }})
+        run: cargo build --locked --release --bin meridian --target ${{ matrix.target }}
+
+      - name: Place the daemon where tauri-build expects it
+        # tauri-build only STATS bundle.resources during compilation (it reads the
+        # contents at bundle time), but the path must exist or the build script
+        # fails. This job's own arch slice satisfies that; the real universal
+        # daemon is lipo'd in the bundle job.
+        run: |
+          mkdir -p target/release
+          cp "target/${{ matrix.target }}/release/meridian" target/release/meridian
+
+      - name: Evict the stale tauri-plugin-notifications fingerprint
+        # rust-cache restores target/ (so the fingerprint says "fresh") but NOT
+        # registry/src, where the pinned 0.4.6 fork's build.rs writes the Swift
+        # static lib. The build script is therefore skipped while the .a it
+        # produces is gone, and linking fails with "could not find native static
+        # library tauri-plugin-notifications". `--release` is load-bearing:
+        # without it the clean targets the debug profile and reports
+        # "Removed 0 files". Carried over from the sequential prepareCmd.
+        working-directory: tray/src-tauri
+        run: cargo clean -p tauri-plugin-notifications --release
+
+      - name: Compile the tray (${{ matrix.target }}, no bundling)
+        working-directory: tray
+        run: npx tauri build --no-bundle --target ${{ matrix.target }} --config src-tauri/tauri.staging.conf.json
+
+      - name: Upload the two binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: slice-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/meridian
+            target/${{ matrix.target }}/release/meridian-tray
+          retention-days: 1
+          # Mach-O binaries barely compress; level 0 trades a bigger upload for a
+          # much faster one, and this transfer sits on the critical path.
+          compression-level: 0
+
+  # ── Stage 3: join — lipo, sign, bundle, notarize, publish ───────────────────
+  release:
+    name: Bundle universal + publish
+    needs: [plan, build]
+    if: needs.plan.outputs.release_due == 'true'
+    runs-on: macos-26
+    outputs:
+      released: ${{ steps.publish.outputs.released }}
+      version: ${{ steps.publish.outputs.version }}
+      tag: ${{ steps.publish.outputs.tag }}
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      TAURI_BUNDLER_DMG_IGNORE_CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The pinned SHA, not `pre-main` by name: this job tags and publishes,
+          # and pre-main may have moved since `plan` resolved it. Tagging the
+          # exact commit the binaries were built from is the whole point.
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 0      # full history — semantic-release needs the commits
+          fetch-tags: true    # and main's v* tags, to compute the prerelease counter
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: "npm"
@@ -120,63 +304,122 @@ jobs:
             ui/package-lock.json
             tray/package-lock.json
 
-      - name: Cache Next.js build
-        uses: actions/cache@v4
-        with:
-          path: ui/.next/cache
-          key: nextjs-${{ hashFiles('ui/package-lock.json') }}-${{ hashFiles('ui/**/*.ts', 'ui/**/*.tsx') }}
-          restore-keys: |
-            nextjs-${{ hashFiles('ui/package-lock.json') }}-
-            nextjs-
+      - name: Stamp the version
+        # Same value the binaries were built with — tauri.conf.json's version is
+        # read at BUNDLE time and becomes what the updater compares against.
+        run: bash scripts/set-version.sh "${{ needs.plan.outputs.version }}"
 
-      - name: Install release tooling
-        run: npm ci --no-audit --no-fund
-
-      - name: Authenticate git for the private screenpipe-fork dependency
-        # The tray's capture stack (screenpipe-screen/-a11y) is a git dep on the
-        # PRIVATE Meridiona/screenpipe-fork. checkout uses persist-credentials:
-        # false and the default GITHUB_TOKEN is scoped to this repo only, so
-        # cargo's `git fetch` of the fork 403s. Rewrite just that URL to embed a
-        # PAT with read access. REQUIRES the GH_TOKEN secret to be able to read
-        # Meridiona/screenpipe-fork (org-member classic PAT with `repo`, or a
-        # fine-grained PAT granting both meridian AND screenpipe-fork).
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      - name: Install UI + tray deps, and materialise ui/out
+        # `tauri bundle` runs beforeBundleCommand, NOT beforeBuildCommand, so
+        # nothing here recreates ui/out on its own. The bundled assets are already
+        # embedded in the binaries the build jobs produced, but tauri.conf.json's
+        # frontendDist still points at ui/out and the bundler resolves that path,
+        # so it has to exist. Cheap (~40s) insurance against a late failure.
         run: |
-          git config --global \
-            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
-            "https://github.com/Meridiona/screenpipe-fork"
+          (cd ui && npm ci --no-audit --no-fund && npm run build)
+          (cd tray && npm ci --no-audit --no-fund)
 
-      - name: Use staging release config
-        # Ephemeral in CI — .releaserc.json is not in any git-asset list, so this
-        # is never committed. Keeps the staging config out of main's tree.
-        run: cp .releaserc.staging.json .releaserc.json
+      - uses: actions/download-artifact@v4
+        with:
+          path: slices
+
+      - name: Assemble the universal binaries
+        # upload-artifact does NOT preserve the executable bit, so chmod first or
+        # lipo and codesign fail in confusing ways.
+        run: |
+          set -euo pipefail
+          chmod +x slices/slice-*/meridian slices/slice-*/meridian-tray
+
+          mkdir -p target/release target/universal-apple-darwin/release
+
+          lipo -create \
+            slices/slice-aarch64-apple-darwin/meridian \
+            slices/slice-x86_64-apple-darwin/meridian \
+            -output target/release/meridian
+
+          lipo -create \
+            slices/slice-aarch64-apple-darwin/meridian-tray \
+            slices/slice-x86_64-apple-darwin/meridian-tray \
+            -output target/universal-apple-darwin/release/meridian-tray
+
+          echo "daemon: $(lipo -archs target/release/meridian)"
+          echo "tray:   $(lipo -archs target/universal-apple-darwin/release/meridian-tray)"
 
       - name: Import Developer ID certificate + notarization key
-        # Shared composite action (deduped from release.yml) - see the action's
-        # own comments for the set-key-partition-list / APPLE_API_KEY_PATH
-        # gotchas. Also no-ops gracefully when APPLE_CERTIFICATE is unset.
         uses: ./.github/actions/import-apple-cert
         with:
           apple-certificate: ${{ secrets.APPLE_CERTIFICATE }}
           apple-certificate-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           apple-api-key-content: ${{ secrets.APPLE_API_KEY_CONTENT }}
 
-      - name: semantic-release (staging channel)
-        id: release
+      - name: Sign the daemon
+        # Must precede bundling: the daemon is copied into the .app as a resource,
+        # and re-signing the enclosing bundle does not sign nested Mach-Os.
+        run: bash scripts/sign-daemon.sh
+
+      - name: Bundle, sign and notarize
+        working-directory: tray
+        run: npx tauri bundle --target universal-apple-darwin --bundles app,dmg --config src-tauri/tauri.staging.conf.json
+
+      - name: Notarize and staple the DMG
+        # `tauri bundle` notarizes and staples the .app, but it only SIGNS the
+        # disk image — the bundler has no notarize call for the DMG, and a
+        # notarization ticket is keyed to the cdhash of what was submitted, so
+        # the stapled app inside does not cover the container. Without this the
+        # DMG a user downloads trips "can't check it for malicious software".
+        # Must precede package-updater.sh: stapling rewrites the file, so the
+        # stable-named copy has to be taken afterwards to inherit the ticket.
+        run: bash scripts/notarize-dmg.sh "${{ needs.plan.outputs.version }}"
+
+      - name: Package the updater artifacts
+        # Writes latest.json from the real minisign signature and makes the
+        # stable-named Meridian.dmg copy. ALSO the only thing that reads
+        # tray/minimum-version and stamps `Minimum-Version:` into the manifest
+        # notes — skip it and the forced-update floor silently stops shipping.
+        run: bash scripts/package-updater.sh "${{ needs.plan.outputs.version }}"
+
+      - name: Verify the release bundle
+        # Independently re-checks signing, notarization, stapling and the
+        # presence of the updater artifacts. A non-zero exit here aborts before
+        # the tag exists and before anything is published.
+        run: bash scripts/verify-release-bundle.sh "${{ needs.plan.outputs.version }}"
+
+      - name: Install release tooling
+        run: npm ci --no-audit --no-fund
+
+      - name: Use the parallel staging release config
+        run: cp .releaserc.staging.json .releaserc.json
+
+      - name: Assert the version has not moved
         env:
-          # PAT to create the tag/prerelease past branch protection; falls back
-          # to GITHUB_TOKEN. No npm token — the staging channel is GitHub-only.
-          # Also authenticates the `gh` calls in mirror-staging-release.sh.
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
-          # Bake the build channel into the binary (commands::version::build_channel,
-          # same option_env! pattern) so the dashboard/popover version badge reads
-          # "staging" instead of the "prod" default. Production leaves this unset.
+          PLANNED: ${{ needs.plan.outputs.version }}
+        # The binaries above were stamped with `plan`'s version, but the
+        # semantic-release run below computes the version independently. They
+        # diverge if a v* or v*-staging* tag appeared in between — a concurrent
+        # production release.yml run can do exactly that, since it sits in a
+        # different concurrency group. Publishing then would ship a release whose
+        # artifacts are stamped with a different version than the tag, which the
+        # updater compares against — a silently broken update. Cheap to check,
+        # and the failure costs only a re-run.
+        run: |
+          set -o pipefail
+          npx semantic-release --dry-run 2>&1 | tee sr-verify.log || true
+          actual="$(grep -oE 'The next release version is [0-9][^ ]*' sr-verify.log | tail -1 | awk '{print $NF}')"
+          if [ "${actual}" != "${PLANNED}" ]; then
+            echo "::error::version moved between plan and publish - built ${PLANNED}, semantic-release now wants ${actual:-<none>}. Re-run the workflow."
+            exit 1
+          fi
+          echo "✓ version still ${PLANNED}"
+
+      - name: semantic-release (publish only)
+        id: publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           MERIDIAN_CHANNEL: "staging"
-        # Detect whether a staging prerelease was actually cut by watching the
-        # newest v*-staging* tag move — sorted by creation date, not version,
-        # so semver's "prerelease sorts below release" quirk can't pick a stale
-        # tag. The Windows job below only runs when one was created.
+        # Same tag-movement detection as release-staging.yml: sorted by creation
+        # date, not version, so semver's "prerelease sorts below release" quirk
+        # cannot pick a stale tag. Gates the Windows job below.
         run: |
           before="$(git tag --list 'v*-staging*' --sort=-creatordate | head -1)"
           npx semantic-release
@@ -191,6 +434,13 @@ jobs:
             echo "→ no staging release this run"
           fi
 
+      - name: Report what was produced
+        if: always()
+        run: |
+          out=target/universal-apple-darwin/release/bundle
+          echo "app:  $(lipo -archs "$out/macos/Meridian.app/Contents/MacOS/meridian-tray" 2>/dev/null || echo '<absent>')"
+          ls -la "$out/dmg/" "$out/macos/" || true
+
       - name: Clean up signing material
         # Runs even on failure — never leave the cert/key on a runner.
         if: always()
@@ -200,16 +450,11 @@ jobs:
 
   # ── Windows: build + attach to the staging release, exactly like the DMG ────
   #
-  # Mirrors release.yml's windows-release job, adapted for the staging channel:
-  # it builds with tauri.staging.conf.json (which points the updater at the
-  # rolling updater-staging endpoint), attaches Meridian-setup.exe to the
-  # versioned prerelease the macOS job just cut, and merges a windows-x86_64
-  # key into the latest.json that mirror-staging-release.sh published to the
-  # rolling updater-staging tag — the manifest installed staging apps poll.
+  # Mirrors release.yml's windows-release job, adapted for the staging channel.
+  # Unaffected by the macOS parallelisation — Windows was never part of the
+  # sequential macOS build arm, and still builds on its own runner after the
+  # macOS release lands.
   #
-  # A separate job, and NOT part of semantic-release's asset list, for the same
-  # reason as production: that list ships the DMG, and reaching into it from
-  # Windows work risks the macOS staging path.
   windows-release:
     needs: release
     if: needs.release.outputs.released == 'true'
