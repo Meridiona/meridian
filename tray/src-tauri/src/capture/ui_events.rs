@@ -88,16 +88,20 @@ fn input_monitoring_granted() -> bool {
     unsafe { IOHIDCheckAccess(LISTEN_EVENT) == GRANTED }
 }
 
-/// Windows counterpart of [`input_monitoring_granted`] — always `true`.
+/// Non-Apple counterpart of [`input_monitoring_granted`] — always `true`.
 ///
 /// Same reasoning as the capture engine's `request_screen_capture_access`:
-/// Windows has no TCC, so there is no Input Monitoring grant to hold and no
-/// reduced mode to fall back to. The low-level input hooks the recorder installs
-/// need no per-app permission — the fork's own
+/// Input Monitoring is a TCC concept, so off macOS there is no grant to hold and
+/// no reduced mode to fall back to. The low-level input hooks the recorder
+/// installs need no per-app permission — the fork's own
 /// `screenpipe_a11y::platform::windows` `check_permissions()` hardcodes the same,
 /// noting that "Windows doesn't require explicit permissions for hooks". `true`
 /// is therefore the accurate answer, not a placeholder.
-#[cfg(target_os = "windows")]
+///
+/// Gated `not(macos)` rather than `windows` so the pair is target-complete: a
+/// third target still resolves, matching `screenpipe::with_autorelease_pool` and
+/// [`crate::sys`]'s own platform pairs.
+#[cfg(not(target_os = "macos"))]
 fn input_monitoring_granted() -> bool {
     true
 }

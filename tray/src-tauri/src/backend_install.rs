@@ -272,6 +272,7 @@ const WINDOWS_TASK_NAME: &str = "Meridian Daemon";
 /// requests Screen Recording (a duplicate prompt) and races the tray's in-process
 /// capture. Boot it out, remove its plist + binary, and kill any live process.
 /// Entirely best-effort and non-fatal — a launchctl hiccup must not abort install.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 async fn cleanup_legacy_screenpipe(home: &Path) {
     let label = "com.meridiona.screenpipe";
     let target = format!("gui/{}/{label}", crate::sys::uid_str());
@@ -295,6 +296,7 @@ async fn cleanup_legacy_screenpipe(home: &Path) {
 /// `install-mlx-server-daemon.sh`) on port 7823. That whole subsystem has been
 /// removed (generation runs through the user's CLI provider now), so on update we
 /// boot out any surviving agent and remove its plist. Best-effort.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 async fn cleanup_legacy_mlx_server(home: &Path) {
     let label = "com.meridiona.mlx-server";
     let target = format!("gui/{}/{label}", crate::sys::uid_str());
@@ -318,6 +320,7 @@ async fn cleanup_legacy_mlx_server(home: &Path) {
 /// any live process, and best-effort clear its TCC grant (`tccutil reset`) so
 /// the entry doesn't linger grayed-out after the binary is gone. Entirely
 /// best-effort + non-fatal — a launchctl/tccutil hiccup must not abort install.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 async fn cleanup_legacy_a11y_helper(home: &Path) {
     let label = "com.meridiona.a11y-helper";
     let target = format!("gui/{}/{label}", crate::sys::uid_str());
@@ -347,6 +350,7 @@ async fn cleanup_legacy_a11y_helper(home: &Path) {
 /// via the setup wizard. Copy the bundle file across **only when the canonical
 /// one doesn't already exist** — never clobber creds the tray already wrote.
 /// Best-effort + non-fatal.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 async fn migrate_legacy_bundle_env(home: &Path) {
     let canonical = home.join(".meridian/.env");
     let bundle = home.join(".meridian/app/.env");
@@ -403,6 +407,7 @@ async fn set_executable(_path: &Path) -> Result<(), String> {
 
 /// Replace each `{{KEY}}` in `template` with its value. Pure — the testable core
 /// of [`render_plist`].
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn apply_subs(template: &str, subs: &[(&str, &str)]) -> String {
     let mut text = template.to_string();
     for (key, val) in subs {
@@ -413,6 +418,7 @@ fn apply_subs(template: &str, subs: &[(&str, &str)]) -> String {
 
 /// Read a bundled plist template, replace each `{{KEY}}`, write it to
 /// `~/Library/LaunchAgents/`, and `plutil -lint` the result.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 async fn render_plist(template: &Path, dest: &Path, subs: &[(&str, &str)]) -> Result<(), String> {
     let raw = tokio::fs::read_to_string(template)
         .await
@@ -443,6 +449,7 @@ async fn render_plist(template: &Path, dest: &Path, subs: &[(&str, &str)]) -> Re
 /// kickstart the agent under `gui/<uid>` — the same dance the shell installers
 /// run, ported. `bootout` is async, so we poll `launchctl print` until the label
 /// clears (≤15 s) before bootstrapping, else `bootstrap` can fail with EIO.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 async fn register_agent(label: &str, plist: &Path) -> Result<(), String> {
     let gui = format!("gui/{}", crate::sys::uid_str());
     let target = format!("{gui}/{label}");
@@ -471,6 +478,7 @@ async fn register_agent(label: &str, plist: &Path) -> Result<(), String> {
 
 /// Run `launchctl <args>`, returning `Ok(true)` on exit 0. Errors only on spawn
 /// failure; a non-zero exit is `Ok(false)` so callers decide what's fatal.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 async fn launchctl(args: &[&str]) -> Result<bool, String> {
     tokio::process::Command::new("launchctl")
         .args(args)

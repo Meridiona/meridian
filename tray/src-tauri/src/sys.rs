@@ -27,6 +27,7 @@ use tauri_plugin_notifications::Notifications;
 /// The current user's numeric uid as a string (for `launchctl gui/<uid>/…`
 /// domain targets). Falls back to `"501"` (the first macOS user) if `id -u`
 /// can't be read — better than failing the whole launchctl call.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn uid_str() -> String {
     std::process::Command::new("id")
         .arg("-u")
@@ -376,10 +377,7 @@ pub fn register_notification_categories(app: &tauri::AppHandle) {
 /// # Related
 /// - [`crate::commands::system::dismiss_popover_on_focus`] — the other
 ///   window-event hook the dashboard openers install.
-pub(crate) fn revert_to_accessory_on_close(
-    app: &tauri::AppHandle,
-    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] win: &tauri::WebviewWindow,
-) {
+pub(crate) fn revert_to_accessory_on_close(app: &tauri::AppHandle, win: &tauri::WebviewWindow) {
     #[cfg(target_os = "macos")]
     {
         let app_handle = app.clone();
@@ -389,8 +387,9 @@ pub(crate) fn revert_to_accessory_on_close(
             }
         });
     }
+    // One mechanism for both params, so the signature stays attribute-free.
     #[cfg(not(target_os = "macos"))]
-    let _ = app;
+    let _ = (app, win);
 }
 
 #[cfg(test)]

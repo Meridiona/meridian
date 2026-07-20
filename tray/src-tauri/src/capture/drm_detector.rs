@@ -104,6 +104,7 @@ pub fn is_streaming_content(app_name: &str, url: Option<&str>) -> bool {
 }
 
 /// Safari uses "current tab" terminology in its AppleScript dictionary.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const SAFARI_STYLE_BROWSERS: &[&str] = &["Safari"];
 
 /// Chromium-based browsers share the same "active tab of front window"
@@ -112,6 +113,7 @@ const SAFARI_STYLE_BROWSERS: &[&str] = &["Safari"];
 /// well-documented Chromium convention but weren't installed on this machine
 /// to verify directly. Firefox is deliberately absent — it has no reliable
 /// AppleScript command for the active tab's URL.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const CHROMIUM_STYLE_BROWSERS: &[&str] = &[
     "Google Chrome",
     "Arc",
@@ -154,6 +156,7 @@ pub fn resolve_url_via_applescript(_app_name: &str) -> Option<String> {
 /// URL, or `None` if it isn't a known scriptable browser. Split out from
 /// [`resolve_url_via_applescript`] so the browser-family dispatch logic is
 /// unit-testable without spawning a real process.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn current_tab_url_script(app_name: &str) -> Option<String> {
     if SAFARI_STYLE_BROWSERS
         .iter()
@@ -195,6 +198,7 @@ fn run_osascript(script: &str) -> Option<String> {
 /// All scriptable browsers we can ask directly for their current-tab URL via
 /// AppleScript (see [`resolve_url_via_applescript`]) — the union of both
 /// dictionary styles.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn scriptable_browsers() -> impl Iterator<Item = &'static str> {
     SAFARI_STYLE_BROWSERS
         .iter()
@@ -205,6 +209,7 @@ fn scriptable_browsers() -> impl Iterator<Item = &'static str> {
 /// Best-effort process-name hints for native streaming apps, used only to
 /// decide whether it's worth checking further — NOT full detection (that's
 /// [`is_streaming_app`], matched against the AX/OCR-observed `app_name`).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const NATIVE_APP_PROCESS_HINTS: &[&str] = &[
     "Netflix",
     "Disney+",

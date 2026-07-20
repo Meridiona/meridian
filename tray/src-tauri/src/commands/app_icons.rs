@@ -80,6 +80,7 @@ fn resolve_bundle_path_in(dirs: &[PathBuf], app_name: &str) -> Option<PathBuf> {
 /// Sanitize an app name into a safe cache filename — app names can contain
 /// spaces/slashes (e.g. browser profile suffixes), neither of which belong
 /// in a path segment.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn cache_key(app_name: &str) -> String {
     app_name
         .to_lowercase()

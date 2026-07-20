@@ -197,8 +197,10 @@ pub(crate) fn open_wizard_window(app: &tauri::AppHandle) {
     // Applied as a separate statement rather than inline in the chain because
     // both `title_bar_style` and `tauri::TitleBarStyle` are macOS-only in Tauri
     // — a `#[cfg]` on the method call alone would still leave the unresolvable
-    // type in a Windows build. Windows keeps its standard title bar, so the
-    // card sits ~26px lower than on macOS; cosmetic, and the layout still holds.
+    // type in a Windows build. Off macOS the window keeps its standard title
+    // bar; since `inner_size` sizes the CLIENT area, the webview is still
+    // 1000×680 and the card still centres within it — only the outer window
+    // grows by the title-bar height. No layout change, just a taller frame.
     #[cfg(target_os = "macos")]
     let builder = builder.title_bar_style(tauri::TitleBarStyle::Transparent);
     match builder.build() {
