@@ -46,7 +46,11 @@ const SKILL_ROOT_DIRS: &[&str] = &[".claude", ".codex", ".agents"];
 const CURSOR_SKILL_ENTRIES: &[&str] = &["skills", "skills-cursor", "plugins", "agents"];
 
 /// Directory mode for the neutralised skill dirs: readable and traversable, NOT writable.
-#[cfg(unix)]
+///
+/// Defined on every platform even though only unix consumes it - [`restrict`] no-ops elsewhere,
+/// and gating the const instead of its use broke the Windows build (the call site is
+/// unconditional).
+#[cfg_attr(not(unix), allow(dead_code))]
 const READ_ONLY_DIR_MODE: u32 = 0o555;
 
 /// Build (idempotently) a private `$HOME` for `cursor-agent` that contains the user's real
@@ -79,7 +83,7 @@ const READ_ONLY_DIR_MODE: u32 = 0o555;
 /// `HOME` (a fatter call, never a broken one).
 pub fn sandbox_home() -> Option<PathBuf> {
     let real = meridian_core::paths::home_dir_or_cwd();
-    let root = std::env::temp_dir().join("meridian-cursor-home");
+    let root = scratch_root("meridian-cursor-home");
 
     if let Err(e) = build_sandbox(&real, &root) {
         tracing::warn!(
@@ -178,15 +182,71 @@ fn restrict(path: &Path, mode: u32) -> std::io::Result<()> {
 /// `AGENTS.md` / `.cursorrules` - measured: the entire file arrives as
 /// `<always_applied_workspace_rules>`. That is coding-assistant instruction text contaminating a
 /// pure summarise/classify call, and this is Cursor's equivalent of what Claude's
-/// `--setting-sources ""` suppresses. `std::env::temp_dir()` sits outside the home tree on macOS
-/// (`$TMPDIR` -> `/var/folders/…`) and Linux (`/tmp`), so no such ancestor can exist. An empty
-/// workspace also leaves the agent nothing to read - every input we need is already in the prompt.
+/// `--setting-sources ""` suppresses. [`scratch_root`] guarantees no such ancestor can exist. An
+/// empty workspace also leaves the agent nothing to read - every input we need is already in the
+/// prompt.
 pub fn neutral_workspace() -> PathBuf {
-    let dir = std::env::temp_dir().join("meridian-llm-workspace");
+    let dir = scratch_root("meridian-llm-workspace");
     if let Err(e) = std::fs::create_dir_all(&dir) {
         tracing::debug!(error = %e, path = %dir.display(), "cursor: neutral workspace mkdir failed");
     }
     dir
+}
+
+/// A Meridian-owned scratch directory that is NOT under the user's home.
+///
+/// Both callers depend on that property for correctness, for different reasons: the workspace
+/// because Cursor walks UP from it looking for rule files, and the sandbox because a `HOME`
+/// nested inside the real one mirrors itself.
+///
+/// `std::env::temp_dir()` satisfies it on macOS (`$TMPDIR` -> `/var/folders/…`) and Linux
+/// (`/tmp`) but **not on Windows**, where it resolves to `%USERPROFILE%\AppData\Local\Temp` -
+/// i.e. *inside* the home, so `~\CLAUDE.md` and `.cursorrules` would be back in scope. There we
+/// prefer `%PUBLIC%` (`C:\Users\Public`), which is user-writable by default and a sibling of the
+/// profile rather than a child.
+///
+/// If neither is outside the home the temp path is still returned - a fatter, rule-contaminated
+/// call beats no call - but it is logged, because that silently weakens a guarantee the module
+/// docs claim.
+fn scratch_root(name: &str) -> PathBuf {
+    let home = meridian_core::paths::home_dir_or_cwd();
+    let temp = std::env::temp_dir().join(name);
+    if !is_under(&temp, &home) {
+        return temp;
+    }
+    if let Some(public) = std::env::var_os("PUBLIC").map(PathBuf::from) {
+        let candidate = public.join(name);
+        if !is_under(&candidate, &home) {
+            return candidate;
+        }
+    }
+    tracing::warn!(
+        path = %temp.display(),
+        home = %home.display(),
+        "cursor: no scratch directory outside the home - workspace rules may be injected"
+    );
+    temp
+}
+
+/// Is `path` inside `ancestor`? Both are canonicalised where they exist, so a symlinked or
+/// short-name (`C:\Users\RUNNER~1`) temp dir cannot make an inside path look outside - which is
+/// exactly how a naive check passes on CI for the wrong reason.
+fn is_under(path: &Path, ancestor: &Path) -> bool {
+    let real = |p: &Path| {
+        std::fs::canonicalize(p).unwrap_or_else(|_| {
+            // Not created yet: canonicalise the nearest existing parent and re-join.
+            match p.parent() {
+                Some(parent) => std::fs::canonicalize(parent)
+                    .map(|c| match p.file_name() {
+                        Some(n) => c.join(n),
+                        None => c,
+                    })
+                    .unwrap_or_else(|_| p.to_path_buf()),
+                None => p.to_path_buf(),
+            }
+        })
+    };
+    real(path).starts_with(real(ancestor))
 }
 
 /// The safety flags every Meridian `cursor-agent` call carries, in argv order.
@@ -235,7 +295,12 @@ pub fn env_overrides(sandbox: Option<&Path>) -> Vec<(&'static str, String)> {
         ),
     ];
     if let Some(home) = sandbox {
-        env.push(("HOME", home.to_string_lossy().into_owned()));
+        let home = home.to_string_lossy().into_owned();
+        env.push(("HOME", home.clone()));
+        // cursor-agent is a Node bundle, and Node's `os.homedir()` reads `USERPROFILE` on
+        // Windows - `HOME` alone moves nothing there, so the skills would come straight back.
+        // Harmless on unix, where nothing reads it.
+        env.push(("USERPROFILE", home));
     }
     env
 }
@@ -271,9 +336,254 @@ pub fn looks_auth_failure(msg: &str) -> bool {
         || m.contains("login required")
 }
 
+/// Did the CLI reject the model as unavailable on this account?
+///
+/// Cursor plans differ in model access, so a pinned id can simply be absent. Detecting that
+/// lets the ladder fall back to [`FALLBACK_MODEL`] rather than failing every call.
+pub fn looks_unknown_model(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    m.contains("model")
+        && (m.contains("unknown")
+            || m.contains("not available")
+            || m.contains("unavailable")
+            || m.contains("invalid")
+            || m.contains("not found")
+            || m.contains("does not exist")
+            || m.contains("no access"))
+}
+
+/// Pinned model for every Meridian `cursor-agent` call: small, fast, cheap and ZDR-eligible
+/// (Cursor flags non-ZDR models explicitly in `--list-models`; this is not one) - the right
+/// tier for summarise/classify/draft, and deterministic across users unlike the account
+/// default `auto`, which is server-routed and varies per call AND per account.
+///
+/// `-medium` is the effort suffix Cursor displays as plain "GPT-5.4 Mini"; the ladder is
+/// `-none/-low/-medium/-high/-xhigh`.
+pub const DEFAULT_MODEL: &str = "gpt-5.4-mini-medium";
+
+/// Cursor's server-routed default, used only when [`DEFAULT_MODEL`] is not on the account.
+pub const FALLBACK_MODEL: &str = "auto";
+
+/// A failure a [`run_hardened`] caller can classify.
+///
+/// Implemented by both call sites' error types so the ladder is written once. Returning
+/// `None` means "never degrade past this" - it is what keeps a rate limit from being
+/// mistaken for a broken install and burning a second attempt on an account-level wall.
+pub trait CursorCallError {
+    /// The failure text to classify, or `None` when this failure must not be retried.
+    fn degradable_message(&self) -> Option<&str>;
+}
+
+/// Which levers are still engaged. Each is dropped only in response to a DETECTED cause, so
+/// a healthy install always takes the fully hardened path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Levers {
+    no_tools: bool,
+    sandbox: bool,
+}
+
+/// Run a `cursor-agent` call, degrading one lever at a time when - and only when - the CLI
+/// says so.
+///
+/// `run` receives the safety argv and the environment for one attempt and performs the actual
+/// spawn/parse; everything about *which* flags to use and *when* to back off lives here. That
+/// is the whole point: before this existed the provider backend had the recovery ladder and
+/// the summariser did not, so the day Cursor drops the undocumented `--allowed-tools` the
+/// backend would have degraded gracefully while every coding-agent summary failed.
+///
+/// The ladder, each step gated on a detected cause:
+/// 1. `--allowed-tools` rejected -> retry without it (fatter context, still works)
+/// 2. auth invisible from the sandbox `HOME` -> retry on the inherited one (carries skills)
+/// 3. model unavailable on this plan -> retry on [`FALLBACK_MODEL`]
+///
+/// A rate limit degrades nothing: `degradable_message` returns `None` and the error is
+/// returned immediately, because Cursor limits are account-level and a second call would
+/// spend quota to hit the same wall.
+pub async fn run_hardened<T, E, F, Fut>(model: &str, mut run: F) -> Result<T, E>
+where
+    E: CursorCallError,
+    F: FnMut(Vec<String>, Vec<(&'static str, String)>) -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    let mut levers = Levers {
+        no_tools: true,
+        sandbox: true,
+    };
+    let mut model = model.to_string();
+    let mut tried_fallback_model = model == FALLBACK_MODEL;
+
+    loop {
+        let sandbox = if levers.sandbox { sandbox_home() } else { None };
+        let err = match run(
+            safety_args(&model, levers.no_tools),
+            env_overrides(sandbox.as_deref()),
+        )
+        .await
+        {
+            Ok(v) => return Ok(v),
+            Err(e) => e,
+        };
+
+        // `None` = not classifiable / must not be retried (a rate limit). Stop here.
+        let Some(msg) = err.degradable_message() else {
+            return Err(err);
+        };
+
+        if levers.no_tools && looks_unsupported_flag(msg) {
+            tracing::warn!(
+                "cursor: this CLI build rejects --allowed-tools - retrying without it \
+                 (call still works, just carries the full tool context)"
+            );
+            levers.no_tools = false;
+        } else if levers.sandbox && looks_auth_failure(msg) {
+            tracing::warn!(
+                "cursor: credentials not visible from the sandbox HOME - retrying on the \
+                 real HOME (call still works, just carries the user's skill list)"
+            );
+            levers.sandbox = false;
+        } else if !tried_fallback_model && looks_unknown_model(msg) {
+            tracing::warn!(
+                model = %model,
+                fallback = FALLBACK_MODEL,
+                "cursor: model unavailable on this account - retrying with auto"
+            );
+            model = FALLBACK_MODEL.to_string();
+            tried_fallback_model = true;
+        } else {
+            // Nothing left to degrade, or a cause no lever addresses.
+            return Err(err);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in for the real error types, so the ladder can be exercised without spawning
+    /// anything. `None` models the rate-limit case.
+    struct TestErr(Option<String>);
+    impl CursorCallError for TestErr {
+        fn degradable_message(&self) -> Option<&str> {
+            self.0.as_deref()
+        }
+    }
+
+    /// Drive `run_hardened` with a canned failure for the first `fail_n` attempts, recording
+    /// the argv/env of every attempt.
+    async fn ladder(
+        model: &str,
+        errs: Vec<Option<&'static str>>,
+    ) -> (
+        Result<usize, TestErr>,
+        Vec<(Vec<String>, Vec<(&'static str, String)>)>,
+    ) {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let s2 = seen.clone();
+        let res = run_hardened(model, move |args, env| {
+            let s2 = s2.clone();
+            let calls = calls.clone();
+            let errs = errs.clone();
+            async move {
+                let n = {
+                    let mut c = calls.lock().unwrap();
+                    *c += 1;
+                    *c - 1
+                };
+                s2.lock().unwrap().push((args, env));
+                match errs.get(n) {
+                    Some(e) => Err(TestErr(e.map(str::to_string))),
+                    None => Ok(n),
+                }
+            }
+        })
+        .await;
+        let seen = seen.lock().unwrap().clone();
+        (res, seen)
+    }
+
+    #[tokio::test]
+    async fn a_healthy_call_takes_the_fully_hardened_path_and_never_retries() {
+        let (res, seen) = ladder(DEFAULT_MODEL, vec![]).await;
+        assert!(res.is_ok());
+        assert_eq!(seen.len(), 1, "no degradation without a detected cause");
+        assert!(seen[0].0.contains(&"--allowed-tools".to_string()));
+        assert!(seen[0].1.iter().any(|(k, _)| *k == "HOME"));
+    }
+
+    /// THE regression this module exists for: the recovery must be shared, so an unsupported
+    /// flag degrades rather than failing every call on a CLI upgrade.
+    #[tokio::test]
+    async fn an_unknown_option_drops_the_tool_flag_and_retries() {
+        let (res, seen) = ladder(
+            DEFAULT_MODEL,
+            vec![Some("error: unknown option '--allowed-tools'")],
+        )
+        .await;
+        assert!(res.is_ok());
+        assert_eq!(seen.len(), 2);
+        assert!(!seen[1].0.contains(&"--allowed-tools".to_string()));
+    }
+
+    #[tokio::test]
+    async fn an_auth_failure_drops_the_sandbox_home() {
+        let (res, seen) = ladder(DEFAULT_MODEL, vec![Some("Not logged in")]).await;
+        assert!(res.is_ok());
+        assert_eq!(seen.len(), 2);
+        assert!(
+            !seen[1].1.iter().any(|(k, _)| *k == "HOME"),
+            "the retry must inherit the real HOME"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unavailable_model_falls_back_to_auto() {
+        let (res, seen) = ladder(DEFAULT_MODEL, vec![Some("Unknown model: gpt-5.4-mini")]).await;
+        assert!(res.is_ok());
+        assert_eq!(seen.len(), 2);
+        assert!(seen[1].0.contains(&FALLBACK_MODEL.to_string()));
+    }
+
+    /// A rate limit must NOT walk the ladder - Cursor limits are account-level, so a retry
+    /// spends quota to hit the same wall.
+    #[tokio::test]
+    async fn a_rate_limit_returns_immediately_without_degrading() {
+        let (res, seen) = ladder(DEFAULT_MODEL, vec![None, None, None, None]).await;
+        assert!(res.is_err());
+        assert_eq!(seen.len(), 1, "a rate limit degrades nothing");
+    }
+
+    /// An unrelated failure is not a licence to strip hardening.
+    #[tokio::test]
+    async fn an_unrecognised_failure_does_not_degrade() {
+        let (res, seen) = ladder(DEFAULT_MODEL, vec![Some("connection reset by peer")]).await;
+        assert!(res.is_err());
+        assert_eq!(seen.len(), 1);
+    }
+
+    /// Each lever drops at most once, so a persistently failing CLI terminates instead of
+    /// looping.
+    #[tokio::test]
+    async fn the_ladder_terminates_after_every_lever_is_spent() {
+        let errs = vec![
+            Some("unknown option '--allowed-tools'"),
+            Some("Not logged in"),
+            Some("Unknown model: x"),
+            Some("unknown option '--allowed-tools'"),
+        ];
+        let (res, seen) = ladder(DEFAULT_MODEL, errs).await;
+        assert!(res.is_err());
+        assert_eq!(seen.len(), 4, "3 degradations, then give up");
+    }
+
+    /// Starting on `auto` means there is no model left to fall back to.
+    #[tokio::test]
+    async fn auto_does_not_fall_back_to_itself() {
+        let (res, seen) = ladder(FALLBACK_MODEL, vec![Some("Unknown model: auto")]).await;
+        assert!(res.is_err());
+        assert_eq!(seen.len(), 1);
+    }
 
     #[test]
     fn safety_args_carry_the_read_only_and_no_tool_levers() {
@@ -346,15 +656,46 @@ mod tests {
     #[test]
     fn sandbox_is_outside_the_real_home() {
         let real = meridian_core::paths::home_dir_or_cwd();
-        let sandbox = std::env::temp_dir().join("meridian-cursor-home");
+        // Assert on what the PRODUCT computes, via the same containment check it uses.
+        // Re-deriving the path here (`temp_dir().join(...)`) and comparing with a raw
+        // `starts_with` is how this passes for the wrong reason: on Windows CI the temp dir is
+        // an 8.3 short name (`C:\Users\RUNNER~1\…`) that never string-matches the home even
+        // though it is inside it.
         assert!(
-            !sandbox.starts_with(&real),
-            "sandbox must not live under $HOME"
+            !is_under(&scratch_root("meridian-cursor-home"), &real),
+            "sandbox must not live under $HOME - a nested sandbox mirrors itself"
         );
         assert!(
-            !neutral_workspace().starts_with(&real),
-            "workspace must not live under $HOME"
+            !is_under(&neutral_workspace(), &real),
+            "workspace must not live under $HOME - Cursor walks UP from it for rule files"
         );
+    }
+
+    /// The containment check must see through symlinks and short names, or the guarantee above
+    /// is only as good as the string comparison.
+    #[test]
+    fn containment_resolves_paths_rather_than_comparing_strings() {
+        let home = meridian_core::paths::home_dir_or_cwd();
+        assert!(is_under(&home.join("some-child"), &home));
+        assert!(!is_under(Path::new("/"), &home));
+        // The macOS case that motivated canonicalising: /tmp is a symlink to /private/tmp.
+        #[cfg(target_os = "macos")]
+        assert!(is_under(Path::new("/tmp/x"), Path::new("/private/tmp")));
+    }
+
+    /// The sandbox is useless on Windows without this: Node reads `USERPROFILE`, not `HOME`.
+    #[test]
+    fn the_sandbox_overrides_both_home_variables() {
+        let env = env_overrides(Some(Path::new("/tmp/sbx")));
+        let home = env.iter().find(|(k, _)| *k == "HOME");
+        let profile = env.iter().find(|(k, _)| *k == "USERPROFILE");
+        assert_eq!(home.map(|(_, v)| v.as_str()), Some("/tmp/sbx"));
+        assert_eq!(profile.map(|(_, v)| v.as_str()), Some("/tmp/sbx"));
+        // No sandbox = inherit both, so the fallback path really is the user's real home.
+        let plain = env_overrides(None);
+        assert!(!plain
+            .iter()
+            .any(|(k, _)| *k == "HOME" || *k == "USERPROFILE"));
     }
 
     /// Building it twice must be a no-op, and it must contain neutralised skill dirs.

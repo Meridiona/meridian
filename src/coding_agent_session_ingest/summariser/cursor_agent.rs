@@ -23,6 +23,18 @@ use super::{cap_transcript, run_capture, EngineOutput, SummariserError};
 /// Linux would cap a single string at 128 KiB).
 const ARG_TRANSCRIPT_CAP: usize = 180_000;
 
+/// Lets `cursor_cli::run_hardened` classify our failures. Mirrors the provider backend's impl
+/// for `LlmError`: a `Failed` may name a degradable cause, a `RateLimited` never does - Cursor
+/// limits are account-level, so degrading and retrying would spend quota to hit the same wall.
+impl crate::llm::cursor_cli::CursorCallError for SummariserError {
+    fn degradable_message(&self) -> Option<&str> {
+        match self {
+            SummariserError::Failed(m) => Some(m),
+            SummariserError::RateLimited(_) => None,
+        }
+    }
+}
+
 pub async fn run_cursor_agent(
     stdin_text: &str,
     cfg: &SummariserConfig,
@@ -54,19 +66,33 @@ pub async fn run_cursor_agent(
     } else {
         cfg.cursor_model.as_str()
     };
-    let mut args: Vec<String> = vec!["-p".into(), prompt];
-    args.extend(["--output-format".into(), "text".into()]);
-    args.extend(crate::llm::cursor_cli::safety_args(model, true));
+    // The degradation ladder comes from `cursor_cli` too, not just the flags. Passing the
+    // undocumented `--allowed-tools` with no way to retry without it would mean that the day
+    // Cursor drops the flag, the provider backend degrades gracefully while EVERY coding-agent
+    // summary fails - the same drift this shared module exists to prevent, one level up.
+    crate::llm::cursor_cli::run_hardened(model, |safety, env| run_once(&prompt, safety, env, cfg))
+        .await
+}
 
-    let sandbox = crate::llm::cursor_cli::sandbox_home();
-    let env = crate::llm::cursor_cli::env_overrides(sandbox.as_deref());
+/// One `cursor-agent` attempt with the safety argv/environment chosen by the ladder.
+async fn run_once(
+    prompt: &str,
+    safety: Vec<String>,
+    env: Vec<(&'static str, String)>,
+    cfg: &SummariserConfig,
+) -> Result<EngineOutput, SummariserError> {
+    let mut args: Vec<String> = vec!["-p".into(), prompt.to_string()];
+    args.extend(["--output-format".into(), "text".into()]);
+    args.extend(safety);
+
     let env_refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
     let cap = run_capture(
         "cursor-agent",
         &args,
         "", // transcript is embedded in the prompt (stdin support unprobed)
-        &cfg.meridian_home,
+        // See the note in llm/cursor.rs: a cwd outside $HOME so rule discovery cannot regress.
+        &crate::llm::cursor_cli::neutral_workspace(),
         cfg.cursor_timeout_s,
         &env_refs,
         crate::llm::cursor_cli::ENV_REMOVE,

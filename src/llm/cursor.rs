@@ -27,63 +27,46 @@ use super::{prompts, LlmBackend, LlmConfig, LlmError, LlmOutput, LlmProvider, Pr
 
 const ARG_CAP: usize = 180_000;
 
-/// Pinned model for every Meridian AI process on Cursor: small, fast, cheap and ZDR-eligible
-/// (Cursor flags non-ZDR models explicitly in `--list-models`; this is not one) - the right tier
-/// for summarise/classify/draft, and deterministic across users, unlike the account default
-/// `auto` which is server-routed and varies per call AND per account.
-///
-/// `-medium` is the effort suffix Cursor displays as plain "GPT-5.4 Mini"; the ladder is
-/// `-none/-low/-medium/-high/-xhigh`. A given plan may not carry it, so [`FALLBACK_MODEL`] keeps
-/// the call working rather than failing.
-const DEFAULT_MODEL: &str = "gpt-5.4-mini-medium";
-
-/// Cursor's server-routed default, used only when [`DEFAULT_MODEL`] is unavailable on the account.
-const FALLBACK_MODEL: &str = "auto";
-
 pub struct CursorBackend {
     pub cfg: LlmConfig,
 }
 
-/// How far the call has degraded. Each step is a response to a specific, detected failure - never
-/// a blind retry - so a working install always takes the fully hardened path.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Hardening {
-    /// Everything on: no tools, skills-free sandbox HOME.
-    Full,
-    /// This CLI build rejected `--allowed-tools` (undocumented flag removed upstream).
-    NoToolFlag,
-    /// Auth could not be read from the sandbox HOME; fall back to the inherited one.
-    RealHome,
+/// Lets [`cursor_cli::run_hardened`] classify our failures: a `Failed` may be a degradable
+/// cause, a `RateLimited` never is (account-level, so a retry spends quota to hit the same
+/// wall).
+impl cursor_cli::CursorCallError for LlmError {
+    fn degradable_message(&self) -> Option<&str> {
+        match self {
+            LlmError::Failed(m) => Some(m),
+            LlmError::RateLimited { .. } => None,
+        }
+    }
 }
 
 impl CursorBackend {
-    /// One `cursor-agent -p` call, returning the answer text or a classified error.
-    #[tracing::instrument(skip(self, prompt), fields(model, hardening = ?hardening))]
-    async fn run(
+    /// One `cursor-agent -p` attempt with the safety argv and environment handed down by
+    /// [`cursor_cli::run_hardened`], returning the answer text or a classified error.
+    #[tracing::instrument(skip(self, prompt, safety, env))]
+    async fn attempt(
         &self,
         prompt: &str,
-        model: &str,
-        hardening: Hardening,
+        safety: Vec<String>,
+        env: Vec<(&'static str, String)>,
     ) -> Result<String, LlmError> {
         let mut args: Vec<String> = vec!["-p".into(), prompt.to_string()];
         args.extend(["--output-format".into(), "json".into()]);
-        args.extend(cursor_cli::safety_args(
-            model,
-            hardening != Hardening::NoToolFlag,
-        ));
+        args.extend(safety);
 
-        let sandbox = match hardening {
-            Hardening::RealHome => None,
-            _ => cursor_cli::sandbox_home(),
-        };
-        let env = cursor_cli::env_overrides(sandbox.as_deref());
         let env_refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
         let cap = run_capture(
             "cursor-agent",
             &args,
             "", // payload is in the prompt (argv), not stdin
-            &self.cfg.meridian_home,
+            // The neutral workspace, NOT ~/.meridian: `--workspace` governs rule discovery
+            // today, but the cwd is inside $HOME, so if Cursor ever also seeds discovery from
+            // it the no-rule-injection guarantee would regress silently. Free to pin.
+            &cursor_cli::neutral_workspace(),
             self.cfg.cli_timeout_s,
             &env_refs,
             cursor_cli::ENV_REMOVE,
@@ -166,60 +149,20 @@ impl LlmBackend for CursorBackend {
     #[tracing::instrument(skip(self, req), fields(label = %req.label))]
     async fn complete(&self, req: &PromptRequest) -> Result<LlmOutput, LlmError> {
         let t0 = std::time::Instant::now();
-
-        // Marker first: cursor-agent has no --no-session-persistence, so this call persists a
-        // chat to ~/.cursor/chats. The ingest self-guard drops any session whose first prompt
-        // carries MERIDIAN_PROMPT_MARKER, so our own calls are never re-ingested and
-        // re-summarised - for every AI process routed through Cursor, not just the summariser.
-        let mut prompt = format!(
-            "{}\n{}\n\n{}",
-            super::MERIDIAN_PROMPT_MARKER,
-            req.system,
-            cap_transcript(&req.user, ARG_CAP)
-        );
-        if let Some(schema) = &req.schema {
-            prompt.push_str(&prompts::schema_instruction(schema));
-        }
+        let prompt = build_prompt(req);
 
         // Empty override = the pinned default (deterministic, ZDR). A non-empty override is the
         // user's explicit choice and is passed through as-is.
         let model = if self.cfg.model.is_empty() {
-            DEFAULT_MODEL
+            cursor_cli::DEFAULT_MODEL
         } else {
             self.cfg.model.as_str()
         };
 
-        // Degrade one step at a time on a DETECTED cause, never blindly: drop the undocumented
-        // tool flag if this build rejects it, fall back to the real HOME if the sandbox hid the
-        // credentials, then to the server-routed model if the pinned one is not on this plan.
-        // A rate limit deliberately does NOT retry - Cursor limits are account-level, so a second
-        // call would burn quota to hit the same wall; the work stays pending for the next cycle.
-        let text = match self.run(&prompt, model, Hardening::Full).await {
-            Ok(t) => t,
-            Err(LlmError::Failed(msg)) if cursor_cli::looks_unsupported_flag(&msg) => {
-                tracing::warn!(
-                    "cursor: this CLI build rejects --allowed-tools - retrying without it \
-                     (call still works, just carries the full tool context)"
-                );
-                self.run(&prompt, model, Hardening::NoToolFlag).await?
-            }
-            Err(LlmError::Failed(msg)) if cursor_cli::looks_auth_failure(&msg) => {
-                tracing::warn!(
-                    "cursor: credentials not visible from the sandbox HOME - retrying on the \
-                     real HOME (call still works, just carries the user's skill list)"
-                );
-                self.run(&prompt, model, Hardening::RealHome).await?
-            }
-            Err(LlmError::Failed(msg)) if model != FALLBACK_MODEL && looks_unknown_model(&msg) => {
-                tracing::warn!(
-                    model,
-                    fallback = FALLBACK_MODEL,
-                    "cursor: pinned model unavailable on this account - retrying with auto"
-                );
-                self.run(&prompt, FALLBACK_MODEL, Hardening::Full).await?
-            }
-            Err(e) => return Err(e),
-        };
+        // The degradation ladder lives in `cursor_cli` so the summariser inherits it too.
+        let text =
+            cursor_cli::run_hardened(model, |safety, env| self.attempt(&prompt, safety, env))
+                .await?;
 
         let elapsed_s = t0.elapsed().as_secs_f64();
         tracing::info!(
@@ -239,48 +182,61 @@ impl LlmBackend for CursorBackend {
     }
 }
 
-/// Heuristic: did the CLI reject the pinned model as unavailable on this account? Cursor plans
-/// differ in model access, so a pinned id can be absent - detecting that lets
-/// [`CursorBackend::complete`] fall back to `auto` rather than failing every call.
-fn looks_unknown_model(msg: &str) -> bool {
-    let m = msg.to_lowercase();
-    m.contains("model")
-        && (m.contains("unknown")
-            || m.contains("not available")
-            || m.contains("unavailable")
-            || m.contains("invalid")
-            || m.contains("not found")
-            || m.contains("does not exist")
-            || m.contains("no access"))
+/// The exact text sent to `cursor-agent -p`.
+///
+/// Extracted from [`CursorBackend::complete`] so a test can assert on the prompt the product
+/// actually builds. Inlining it made the marker assertion a tautology - the test rebuilt the
+/// `format!` itself, so deleting the marker from the real call site still passed.
+///
+/// The marker leads: cursor-agent has no `--no-session-persistence`, so this call persists a
+/// chat to `~/.cursor/chats`. The ingest self-guard drops any session carrying
+/// [`super::MERIDIAN_PROMPT_MARKER`], so our own calls are never re-ingested and
+/// re-summarised - for every AI process routed through Cursor, not just the summariser.
+fn build_prompt(req: &PromptRequest) -> String {
+    let mut prompt = format!(
+        "{}\n{}\n\n{}",
+        super::MERIDIAN_PROMPT_MARKER,
+        req.system,
+        cap_transcript(&req.user, ARG_CAP)
+    );
+    if let Some(schema) = &req.schema {
+        prompt.push_str(&prompts::schema_instruction(schema));
+    }
+    prompt
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn req() -> PromptRequest {
+        PromptRequest::new("SYSTEM PROMPT", "USER INPUT", "test-label")
+    }
+
+    /// The marker is what cuts the summarise -> ingest -> summarise loop, so the property to
+    /// pin is its PRESENCE in the prompt `complete()` really sends. Asserted against
+    /// [`build_prompt`] rather than a string rebuilt here, so deleting or moving the marker at
+    /// the call site fails this test.
     #[test]
-    fn unknown_model_detection_matches_availability_errors() {
-        assert!(looks_unknown_model("Unknown model: gpt-5.4-mini-medium"));
-        assert!(looks_unknown_model(
-            "cursor-agent reported: model not available on your plan"
-        ));
-        assert!(looks_unknown_model("Invalid model id"));
-        // Not a model-availability problem - must NOT trigger a silent model swap.
-        assert!(!looks_unknown_model("rate limit reached"));
-        assert!(!looks_unknown_model("network error"));
-        assert!(!looks_unknown_model("workspace trust required"));
+    fn the_real_prompt_carries_the_self_ingest_marker() {
+        let prompt = build_prompt(&req());
+        assert!(
+            prompt.contains(super::super::MERIDIAN_PROMPT_MARKER),
+            "without the marker every Meridian cursor call is re-ingested as developer activity"
+        );
+        // The guard uses `contains`, so position is not the contract - but the system prompt
+        // and the user input must both actually make it through.
+        assert!(prompt.contains("SYSTEM PROMPT"));
+        assert!(prompt.contains("USER INPUT"));
     }
 
     #[test]
-    fn marker_leads_the_prompt_so_ingest_can_drop_our_own_sessions() {
-        // The self-ingest guard checks the FIRST user prompt for the marker; the backend must
-        // put it there. Guards against a refactor that reorders the format!.
-        let prompt = format!(
-            "{}\n{}\n\n{}",
-            super::super::MERIDIAN_PROMPT_MARKER,
-            "sys",
-            "user"
-        );
-        assert!(prompt.starts_with(super::super::MERIDIAN_PROMPT_MARKER));
+    fn a_schema_request_appends_the_json_contract() {
+        // Cursor has no --json-schema, so the contract can only ride in the prompt; losing
+        // this silently degrades every structured caller to unparseable prose.
+        let plain = build_prompt(&req());
+        let with_schema = build_prompt(&req().with_schema(serde_json::json!({"type": "object"})));
+        assert!(with_schema.len() > plain.len());
+        assert!(with_schema.starts_with(&plain));
     }
 }
