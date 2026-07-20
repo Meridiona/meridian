@@ -33,7 +33,11 @@ REQUIRED_DARWIN = ("darwin-aarch64", "darwin-x86_64")
 
 
 def die(msg: str) -> "None":
-    sys.exit(f"✗ merge-windows-updater: {msg}")
+    # ASCII only - see the note by the success print. On windows-latest a
+    # non-ASCII character here would raise UnicodeEncodeError INSTEAD of the
+    # message, turning every one of this script's safety checks into a
+    # confusing traceback at the exact moment it is trying to explain itself.
+    sys.exit(f"FAIL merge-windows-updater: {msg}")
 
 
 def main() -> None:
@@ -52,7 +56,7 @@ def main() -> None:
 
     platforms = manifest.get("platforms")
     if not isinstance(platforms, dict):
-        die("manifest has no 'platforms' object — refusing to write")
+        die("manifest has no 'platforms' object - refusing to write")
 
     # Capture the incoming darwin entries so the post-write check can prove
     # they survived untouched rather than merely being present.
@@ -70,7 +74,7 @@ def main() -> None:
     if manifest.get("version") != version:
         die(
             f"manifest version {manifest.get('version')!r} != release version "
-            f"{version!r} — this is a manifest from a DIFFERENT release. "
+            f"{version!r} - this is a manifest from a DIFFERENT release. "
             f"Writing would point macOS users at the wrong build."
         )
 
@@ -86,11 +90,17 @@ def main() -> None:
     # Prove the darwin entries are exactly as they arrived.
     for key, original in before.items():
         if platforms.get(key) != original:
-            die(f"'{key}' changed during merge — refusing to write")
+            die(f"'{key}' changed during merge - refusing to write")
 
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     covered = ", ".join(sorted(platforms))
-    print(f"✓ merge-windows-updater: {manifest_path} now covers {covered}")
+    # ASCII only, deliberately. This runs on windows-latest, where Python
+    # defaults stdout to the cp1252 console codepage; a `✓` here raised
+    # UnicodeEncodeError AFTER the manifest was written but BEFORE the caller
+    # could upload it, so the merge silently accomplished nothing and the
+    # release shipped a manifest with no windows-x86_64 key. A success message
+    # must never be able to fail the step it is reporting success from.
+    print(f"OK merge-windows-updater: {manifest_path} now covers {covered}")
 
 
 if __name__ == "__main__":
