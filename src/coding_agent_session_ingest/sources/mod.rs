@@ -183,14 +183,16 @@ pub async fn sweep(pool: &SqlitePool, now: DateTime<Utc>) -> (u64, u64) {
             if !has_new_turns(&records, endpoints.get(&uuid).map(String::as_str)) {
                 continue;
             }
-            // Circular-dependency cut: a summariser engine that persists its
-            // own sessions into the store it is summarised FROM (cursor-agent
-            // is unprobed; future engines may) would otherwise loop —
-            // summarise → new session → ingest → summarise. Any conversation
-            // opening with our own summary prompt is a summariser artifact,
-            // never developer activity. Applies to every source uniformly.
-            if is_summariser_artifact(&records) {
-                tracing::info!(agent, uuid = %uuid, "skipping summariser-artifact session");
+            // Circular-dependency cut: cursor-agent has no way to skip session
+            // persistence, so every Meridian call it makes (coding-agent
+            // summaries AND every other AI process when Cursor is the selected
+            // provider) persists a chat into the store we ingest FROM —
+            // otherwise looping summarise/answer → new session → ingest →
+            // summarise. Any conversation opening with one of our own markers is
+            // a Meridian artifact, never developer activity. Applies to every
+            // source uniformly.
+            if is_meridian_artifact(&records) {
+                tracing::info!(agent, uuid = %uuid, "skipping meridian-issued session");
                 continue;
             }
             // An explicit end-of-session marker AFTER the last turn (Copilot
@@ -228,15 +230,19 @@ fn session_ended(records: &[NormRecord]) -> bool {
         .any(|r| r.is_session_end)
 }
 
-/// True iff the conversation was started by the summariser itself: the first
-/// user prompt carries the summary-prompt fingerprint. Such sessions are the
-/// engine's own runs, not developer activity — ingesting them would loop.
-fn is_summariser_artifact(records: &[NormRecord]) -> bool {
+/// True iff the conversation was started by Meridian itself: the first user
+/// prompt carries one of our fingerprints — the coding-agent summary prompt
+/// (`SUMMARY_PROMPT_MARKER`) or the general AI-process marker every
+/// `cursor-agent` call stamps (`llm::MERIDIAN_PROMPT_MARKER`, since Cursor can't
+/// skip session persistence). Such sessions are our own runs, not developer
+/// activity — ingesting them would loop.
+fn is_meridian_artifact(records: &[NormRecord]) -> bool {
     use crate::coding_agent_session_ingest::summariser::prompts::SUMMARY_PROMPT_MARKER;
+    use crate::llm::MERIDIAN_PROMPT_MARKER;
     records
         .iter()
         .find(|r| r.is_user_prompt)
-        .map(|r| r.body.contains(SUMMARY_PROMPT_MARKER))
+        .map(|r| r.body.contains(SUMMARY_PROMPT_MARKER) || r.body.contains(MERIDIAN_PROMPT_MARKER))
         .unwrap_or(false)
 }
 
@@ -368,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn summariser_artifact_sessions_are_detected() {
+    fn meridian_artifact_sessions_are_detected() {
         use crate::coding_agent_session_ingest::summariser::prompts;
 
         let prompt_rec = |body: &str| NormRecord {
@@ -385,21 +391,31 @@ mod tests {
         // whether the marker leads (codex style) or is prefixed by the
         // skill preamble (cursor-agent embeds the instruction mid-prompt).
         let own = vec![prompt_rec(&prompts::summary_instruction())];
-        assert!(is_summariser_artifact(&own));
+        assert!(is_meridian_artifact(&own));
         let embedded = vec![prompt_rec(&format!(
             "{} Summarise the coding-session transcript below.\n\n[transcript]",
             prompts::summary_instruction()
         ))];
-        assert!(is_summariser_artifact(&embedded));
+        assert!(is_meridian_artifact(&embedded));
+
+        // Every OTHER AI process routed through Cursor (worklog, classify,
+        // propose, distil) carries the general marker instead — cursor-agent
+        // can't skip session persistence, so those chats land in the store we
+        // ingest from and must be dropped just the same.
+        let general = vec![prompt_rec(&format!(
+            "{}\nDraft a worklog for the hour.\n\n[activity]",
+            crate::llm::MERIDIAN_PROMPT_MARKER
+        ))];
+        assert!(is_meridian_artifact(&general));
 
         // A developer merely DISCUSSING the summariser prompt in a later turn
         // is not an artifact — only the FIRST user prompt is fingerprinted.
         let mut discussion = vec![prompt_rec("why does the summariser loop?")];
         discussion.push(prompt_rec(&prompts::summary_instruction()));
-        assert!(!is_summariser_artifact(&discussion));
+        assert!(!is_meridian_artifact(&discussion));
 
         // Ordinary sessions pass through.
-        assert!(!is_summariser_artifact(&[prompt_rec("fix the login bug")]));
-        assert!(!is_summariser_artifact(&[]));
+        assert!(!is_meridian_artifact(&[prompt_rec("fix the login bug")]));
+        assert!(!is_meridian_artifact(&[]));
     }
 }

@@ -32,6 +32,8 @@ const picker = readFileSync(uiRoot + '/components/ModelPicker.tsx', 'utf8')
 const section = readFileSync(uiRoot + '/components/timeline/settings/IntelligenceSection.tsx', 'utf8')
 const composer = readFileSync(uiRoot + '/components/timeline/llmlab/RunComposer.tsx', 'utf8')
 const registry = readFileSync(uiRoot + '/lib/llm-providers.ts', 'utf8')
+/** The setup wizard - the second surface that writes the provider. */
+const setup = readFileSync(uiRoot + '/app/setup/page.tsx', 'utf8')
 
 /** Source with comments stripped - these guards assert on CODE, and the headers above
  *  each file describe the very behaviour being guarded against. */
@@ -39,89 +41,57 @@ function stripComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
 }
 
-// ── Rule 1: the staging model ────────────────────────────────────────────────
-// Mirrors IntelligenceSection's `onChange` / `onModelChange`.
+// ── Rule 1: a stored model override never rides onto another provider ────────
+// The redesigned settings UI has NO per-provider model control - the model always follows the
+// provider's own default. But `llm_provider_model` still exists on disk (older builds wrote it,
+// and src/llm/config.rs still passes it into --model), so switching a built-in provider must
+// CLEAR it: a value left from claude must not reach codex's -m.
 
-interface Choice { id: string; customId: string | null; model: string }
-
-/** `onChange`: stage a provider pick, dropping the model unless we land back on the
- *  saved provider (where the saved model is what's on disk). */
-function stageProvider(saved: Choice, pickId: string, pickCustomId: string | null = null): Choice | null {
-  const nextCustomId = pickId === 'custom' ? pickCustomId : null
-  const nextModel = pickId === saved.id ? saved.model : ''
-  const backToSaved = pickId === saved.id && (pickId !== 'custom' || nextCustomId === saved.customId)
-  return backToSaved ? null : { id: pickId, customId: nextCustomId, model: nextModel }
+/** onChange for a provider pick: the fields committed. A built-in clears the stored model. */
+function switchFields(id: string): Record<string, unknown> {
+  return id === 'custom'
+    ? { llm_provider: id, llm_provider_custom_id: null }
+    : { llm_provider: id, llm_provider_model: null }
 }
 
-/** `onModelChange`: stage a model, collapsing to null once the whole triple matches disk. */
-function stageModel(saved: Choice, pending: Choice | null, next: string): Choice | null {
-  const staged = { ...(pending ?? saved), model: next }
-  const settled = staged.id === saved.id
-    && (staged.id !== 'custom' || staged.customId === saved.customId)
-    && staged.model === saved.model
-  return settled ? null : staged
-}
-
-describe('the model override is scoped to its provider', () => {
-  const saved: Choice = { id: 'claude', customId: null, model: 'opus' }
-
-  it('drops the staged model when the provider changes', () => {
-    // The leak this exists to stop: claude's "opus" reaching codex's -m.
-    expect(stageProvider(saved, 'codex')?.model).toBe('')
+describe('a stored model override is cleared when the provider changes', () => {
+  it('clears llm_provider_model when switching to another built-in', () => {
+    // The leak this stops: claude's "opus" reaching codex's -m.
+    expect(switchFields('codex').llm_provider_model).toBeNull()
   })
 
-  it('restores the saved model when the provider comes back', () => {
-    const away = stageProvider(saved, 'codex')
-    expect(away?.model).toBe('')
-    // Re-picking the saved provider clears the stage entirely, so what renders is
-    // the value on disk rather than the '' we passed through on the way out.
-    expect(stageProvider(saved, 'claude')).toBeNull()
-  })
-
-  it('keeps a model staged across an unrelated re-render', () => {
-    const staged = stageModel(saved, null, 'haiku')
-    expect(staged).toEqual({ id: 'claude', customId: null, model: 'haiku' })
-  })
-
-  it('clears the stage when the model returns to what is saved', () => {
-    const staged = stageModel(saved, null, 'haiku')
-    expect(stageModel(saved, staged, 'opus')).toBeNull()
-  })
-
-  it('treats clearing the model to the provider default as a real change', () => {
-    // '' is a legitimate value ("use the provider's default"), not a no-op, so it
-    // must stage and be savable - it is written as null.
-    expect(stageModel(saved, null, '')).toEqual({ id: 'claude', customId: null, model: '' })
+  it('a custom switch carries the endpoint id, never the shared model override', () => {
+    expect(switchFields('custom')).not.toHaveProperty('llm_provider_model')
+    expect(switchFields('custom').llm_provider_custom_id).toBeNull()
   })
 })
 
-describe('the settings section persists the override correctly', () => {
-  const code = stripComments(section)
+// Both surfaces that can change the provider must obey this, not just Settings. Asserting it
+// against IntelligenceSection alone was false confidence: the wizard hand-rolled its own
+// `{ llm_provider: id }` and so never cleared the override, and this suite stayed green because
+// it did not read that file. Now the rule is pinned on the SHARED builder both of them call.
+describe('every provider surface persists the choice through one builder', () => {
+  const helper = stripComments(registry)
 
-  it('writes llm_provider_model for a CLI provider', () => {
-    expect(code).toContain('llm_provider_model')
+  it('does not write the shared model override for a custom endpoint', () => {
+    // A custom endpoint's model lives on its own row; openai_compat sends ep.model and ignores
+    // cfg.model, so the custom arm writes only the endpoint id, never the shared field.
+    const start = helper.indexOf('return id === \'custom\'')
+    const customArm = helper.slice(start, helper.indexOf(': {', start))
+    expect(customArm).toContain('llm_provider_custom_id')
+    expect(customArm).not.toContain('llm_provider_model')
   })
 
-  it('stores an empty model as null, matching Option<String>/None in Rust', () => {
-    expect(code).toMatch(/llm_provider_model:\s*pending\.model\s*\|\|\s*null/)
+  it('clears the stored model on a built-in provider switch', () => {
+    expect(helper).toMatch(/llm_provider: id, llm_provider_model: null/)
   })
 
-  it('does not write the shared override for a custom endpoint', () => {
-    // A custom endpoint's model lives on its own row; openai_compat sends ep.model
-    // and ignores cfg.model, so writing the shared field would be a dead setting.
-    const customBranch = code.slice(code.indexOf("pending.id === 'custom'"))
-    const arm = customBranch.slice(0, customBranch.indexOf(':'))
-    expect(arm).not.toContain('llm_provider_model')
-  })
-
-  it('only offers the picker for a backend that passes the model through', () => {
-    expect(code).toContain('supportsModelOverride')
-  })
-
-  it('actually resets the model on a provider switch', () => {
-    // The transition tests above model this rule; this one ties it to the SOURCE, so
-    // the guard can't keep passing against a component that stopped honouring it.
-    expect(code).toMatch(/id === savedId\s*\?\s*savedModel\s*:\s*''/)
+  it('neither Settings nor the wizard hand-rolls the patch', () => {
+    for (const src of [stripComments(section), stripComments(setup)]) {
+      expect(src).toContain('providerChoiceFields(')
+      // The literal the wizard used to write, which silently omitted the model clear.
+      expect(src).not.toMatch(/\{\s*llm_provider:\s*id\s*\}/)
+    }
   })
 })
 

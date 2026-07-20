@@ -212,8 +212,17 @@ pub fn backend_for(provider: LlmProvider, cfg: LlmConfig) -> Box<dyn LlmBackend>
 pub fn resolve() -> Box<dyn LlmBackend> {
     let s = load_runtime_settings();
     let cfg = LlmConfig::from_settings(&s);
-    let chosen = LlmProvider::from_wire(&s.llm_provider).unwrap_or_default();
-    backend_for(chosen, cfg)
+    backend_for(chosen_provider(), cfg)
+}
+
+/// WHICH provider the user has chosen, without building a backend.
+///
+/// The single place that reads the stored choice, so callers that only need to *reason*
+/// about the provider (rather than call it) do not re-implement the parse-and-default
+/// dance. Used by the coding-agent summariser's fallback to answer "is my global provider
+/// the same CLI that just failed?" before spending a call to find out.
+pub fn chosen_provider() -> LlmProvider {
+    LlmProvider::from_wire(&load_runtime_settings().llm_provider).unwrap_or_default()
 }
 
 /// Run one prose call through the user's provider, with retry and rate-limit handling.

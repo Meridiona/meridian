@@ -16,7 +16,7 @@ import type { Wiz } from './steps'
 import type { NotifState } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import type { RuntimeSettings } from '@/lib/settings'
-import { DEFAULT_LLM_PROVIDER, type LlmProviderId } from '@/lib/llm-providers'
+import { DEFAULT_LLM_PROVIDER, providerChoiceFields, type LlmProviderId } from '@/lib/llm-providers'
 import { useLlmProviderDetection } from '@/components/LlmProviderPicker'
 import { Btn, Check, DISPLAY, Kicker } from './atoms'
 
@@ -46,7 +46,8 @@ export default function SetupWizard() {
   const [providerCustomId, setProviderCustomIdState] = useState<string | null>(null)
   const {
     status: providers, scanning: scanningProviders,
-    testingIds: testingProviderIds, testOne: testProvider, rescan: rescanProviders,
+    testingIds: testingProviderIds, installingIds: installingProviderIds, signingIds: signingProviderIds,
+    testOne: testProvider, install: installProvider, signIn: signInProvider, rescan: rescanProviders,
   } = useLlmProviderDetection()
 
   // Seed from settings.json rather than assuming the default — a re-run of the wizard
@@ -60,20 +61,26 @@ export default function SetupWizard() {
       .catch(() => {})
   }, [])
 
+  // Commit the choice, and only THEN move the UI. Settings works this way (it renders
+  // `settings.llm_provider` straight off disk); setup used to set local state optimistically
+  // and roll back on failure, which is not the same invariant — two overlapping picks could
+  // roll back to a value the disk no longer held, and the error it set is cleared by any
+  // navigation, so the mismatch could disappear unseen. Returning the promise is what lets
+  // the shared detail view render "Switching…" and surface a failure here too.
   const setProvider = useCallback((id: LlmProviderId, customId?: string) => {
-    const prev = provider
-    const prevCustom = providerCustomId
-    // 'custom' is a kind, not an endpoint — it only ever travels with the id of the one
-    // chosen, which update_settings requires and validates.
-    const fields: Partial<RuntimeSettings> =
-      id === 'custom' ? { llm_provider: id, llm_provider_custom_id: customId ?? null } : { llm_provider: id }
-    setProviderState(id)  // optimistic — the picker must feel instant
-    if (id === 'custom') setProviderCustomIdState(customId ?? null)
-    mutate<RuntimeSettings>('/api/settings', 'update_settings', fields, 'PUT')
-      // Roll back on a rejected write, or the UI would claim a choice the daemon
-      // isn't honouring — the exact silent-mismatch update_settings validates against.
-      .catch((e) => { setProviderState(prev); setProviderCustomIdState(prevCustom); setErr(String(e)) })
-  }, [provider, providerCustomId])
+    const fields = providerChoiceFields(id, customId) as Partial<RuntimeSettings>
+    return mutate<RuntimeSettings>('/api/settings', 'update_settings', fields, 'PUT')
+      .then(() => {
+        setProviderState(id)
+        if (id === 'custom') setProviderCustomIdState(customId ?? null)
+      })
+      .catch((e) => {
+        // Never claim a choice the daemon isn't honouring — the exact silent mismatch
+        // update_settings validates against. Rethrown so the detail view can show it.
+        setErr(String(e))
+        throw e
+      })
+  }, [])
 
   const active = !welcome && !done
 
@@ -174,7 +181,8 @@ export default function SetupWizard() {
     integrations, refetchIntegrations,
     signedInEmail, onSignedIn,
     provider, providerCustomId, setProvider, providers, scanningProviders,
-    testingProviderIds, testProvider, rescanProviders,
+    testingProviderIds, installingProviderIds, signingProviderIds,
+    testProvider, installProvider, signInProvider, rescanProviders,
   }
 
   // ── Navigation ───────────────────────────────────────────────────────────────

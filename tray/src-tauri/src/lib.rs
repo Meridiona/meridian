@@ -602,6 +602,8 @@ pub fn run() {
             commands::detect_llm_providers,
             commands::test_llm_provider,
             commands::test_all_llm_providers,
+            commands::install_llm_provider,
+            commands::cursor_sign_in,
             // Custom cloud endpoints (add/probe/remove). `add` + `probe` spend real metered
             // requests measuring the endpoint — only ever on explicit user action.
             commands::add_custom_llm_provider,

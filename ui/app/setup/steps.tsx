@@ -12,9 +12,9 @@ import { PERMISSIONS } from './data'
 import type { NotifState } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import { TRACKERS } from '@/lib/integrations'
-import { llmProvider, type LlmProviderId } from '@/lib/llm-providers'
+import { llmProvider, LLM_INTRO_BODY, LLM_INTRO_TITLE, type LlmProviderId } from '@/lib/llm-providers'
 import ConnectTrackers from '@/components/IntegrationConnect'
-import LlmProviderPicker, { type ProviderStatus } from '@/components/LlmProviderPicker'
+import LlmProviderPicker, { type InstallOutcome, type ProviderStatus } from '@/components/LlmProviderPicker'
 import { SignInWidget } from './signin'
 
 /** The live wizard handle page.tsx builds and threads to every step body. */
@@ -40,11 +40,17 @@ export interface Wiz {
   provider: LlmProviderId
   /** Which custom endpoint, when `provider` is 'custom'. */
   providerCustomId: string | null
-  setProvider: (id: LlmProviderId, customId?: string) => void
+  /** Resolves when the choice is persisted, rejects if it wasn't - the shared detail view
+   *  awaits this to render "Switching…" and surface a failure. */
+  setProvider: (id: LlmProviderId, customId?: string) => Promise<void>
   providers: Record<string, ProviderStatus>
   scanningProviders: boolean
   testingProviderIds: Set<string>
+  installingProviderIds: Set<string>
+  signingProviderIds: Set<string>
   testProvider: (id: string) => void
+  installProvider: (id: string) => Promise<InstallOutcome>
+  signInProvider: (id: string) => Promise<InstallOutcome>
   rescanProviders: () => void
 }
 
@@ -146,38 +152,26 @@ function SignInBody({ wiz }: { wiz: Wiz }) {
 // resolver re-reads it on every call (src/llm/resolver.rs), so changing it later in
 // Settings takes effect on the next hour with nothing to restart.
 //
-// The choice is never blocked on the CLI being installed: the probe reports *installed*,
-// not *signed in* (we refuse to probe auth — see src/llm/detect.rs), so a hard gate here
-// would be built on a half-truth. Picking a missing CLI shows the install command and an
-// honest note that those hours stay pending until it's there.
+// The whole surface is the shared <LlmProviderPicker>: a chooser of the three recommended
+// coding agents (+ bring-your-own-key), each opening a detail view that installs the CLI,
+// confirms the sign-in, and sets the provider as default. The choice is never blocked on the
+// CLI being installed — the detail view walks the user through getting it there instead.
 function IntelligenceBody({ wiz }: { wiz: Wiz }) {
-  const picked = llmProvider(wiz.provider)
-  const missing = picked.kind === 'cli' && wiz.providers[picked.id]?.installed === false
   return (
-    <div className="flex flex-col" style={{ gap: 9 }}>
-      <LlmProviderPicker
-        value={wiz.provider}
-        selectedCustomId={wiz.providerCustomId}
-        onChange={wiz.setProvider}
-        status={wiz.providers}
-        scanning={wiz.scanningProviders}
-        testingIds={wiz.testingProviderIds}
-        testOne={wiz.testProvider}
-        rescan={wiz.rescanProviders}
-      />
-      <p className="flex items-start" style={{ gap: 7, fontSize: 11, lineHeight: 1.5, color: 'var(--t-muted)', marginTop: 3 }}>
-        <span style={{
-          width: 5, height: 5, borderRadius: 99, marginTop: 5, flexShrink: 0,
-          background: missing ? 'var(--color-state-pending)' : 'var(--color-state-approved)',
-        }} />
-        {missing
-          ? `${picked.name} isn't installed yet - install it and hit Rescan, or those hours stay pending until it's there.`
-          : picked.kind === 'custom'
-            // Not "your own subscription" - this one bills per call on the key they pasted.
-            ? 'Summaries are written by your own endpoint, billed to your own API key. Change it anytime in Settings.'
-            : `Summaries are written by ${picked.name}, on your own subscription. Change it anytime in Settings.`}
-      </p>
-    </div>
+    <LlmProviderPicker
+      value={wiz.provider}
+      selectedCustomId={wiz.providerCustomId}
+      onChange={wiz.setProvider}
+      status={wiz.providers}
+      scanning={wiz.scanningProviders}
+      testingIds={wiz.testingProviderIds}
+      installingIds={wiz.installingProviderIds}
+      signingIds={wiz.signingProviderIds}
+      testOne={wiz.testProvider}
+      install={wiz.installProvider}
+      signIn={wiz.signInProvider}
+      rescan={wiz.rescanProviders}
+    />
   )
 }
 
@@ -293,8 +287,10 @@ export const STEPS: StepMeta[] = [
   },
   {
     id: 'provider', n: '04', label: 'Intelligence', kicker: 'Your AI',
-    title: 'Choose the AI that writes your summaries',
-    subtitle: 'One choice, used everywhere Meridian writes prose about your day. Use a coding-agent CLI you already pay for, or a custom cloud endpoint on your own key.',
+    // The SHARED copy - the same words Settings shows. These used to be hardcoded here with
+    // different wording while llm-providers.ts claimed they were shared.
+    title: LLM_INTRO_TITLE,
+    subtitle: LLM_INTRO_BODY,
     Body: IntelligenceBody,
     status: (s) => llmProvider(s.provider).name,
     // Never gates. Every path out of this step is valid — including picking a CLI that

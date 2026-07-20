@@ -111,12 +111,18 @@ fn auto_install_enabled() -> bool {
 /// Install cursor-agent via the official installer script (opt-in only — see
 /// `auto_install_enabled`). Runs once per daemon lifetime (cached by
 /// ensure_ready).
+///
+/// Uses the PINNED installer ([`meridian_core::CURSOR_INSTALL_CMD`]) — the same command
+/// the tray's "Install" button runs — so an unattended daemon install can never pull a
+/// newer cursor-agent than the build this code was verified against.
 async fn try_auto_install() -> anyhow::Result<PathBuf> {
-    tracing::info!("running cursor-agent installer: curl https://cursor.com/install -fsS | bash");
+    let cmd = meridian_core::CURSOR_INSTALL_CMD;
+    tracing::info!(
+        version = meridian_core::CURSOR_CLI_VERSION,
+        "running pinned cursor-agent installer"
+    );
     let output = run_with_timeout(
-        Command::new("bash")
-            .arg("-c")
-            .arg("curl https://cursor.com/install -fsS | bash"),
+        Command::new("bash").arg("-c").arg(cmd),
         INSTALL_TIMEOUT,
         "cursor-agent install",
     )

@@ -6,12 +6,21 @@
 //
 // Engine routing per segment: Codex sessions → `codex exec`, else → `claude -p`
 // (both Rust subprocesses on the user's subscription). Each engine is tried up to
-// `primary_attempts` times; a rate-limit short-circuits. There is no fallback
-// engine — the local MLX server used to catch every failure here, and with it
-// deprecated a row its own agent cannot summarise stays pending and is retried
-// on later ticks, then dead-lettered to 'subprocess_error' after
-// MAX_ROW_ATTEMPTS so it cannot churn forever. Sequential (one transcript in
-// flight) keeps memory flat and avoids bursting rate limits.
+// `primary_attempts` times.
+//
+// Escalation, in order:
+//   1. the session's OWN agent CLI, `primary_attempts` times
+//   2. a rate limit → stop immediately, back the source off, retry on a later
+//      tick. A quota refills; it is waited out, never routed around.
+//   3. otherwise (crashed / not installed / signed out / unusable output) → the
+//      user's globally chosen AI provider, once (`fallback`). Usually the same
+//      CLI, in which case it is skipped without a call.
+//   4. still nothing → the row stays `pending_summariser` and the drain loop's
+//      attempt ledger dead-letters it to 'subprocess_error' after
+//      MAX_ROW_ATTEMPTS so it cannot churn forever.
+//
+// Sequential (one transcript in flight) keeps memory flat and avoids bursting
+// rate limits.
 //
 // Cadence: woken in-process by the indexer's own seals (near-instant) plus a
 // short catch-up sweep for hook-sealed rows — no listener (local-only rule).
@@ -22,6 +31,7 @@ pub mod config;
 pub mod copilot;
 pub mod cursor_agent;
 pub mod db;
+pub mod fallback;
 pub mod prompts;
 
 use std::collections::HashMap;
@@ -166,6 +176,11 @@ pub enum Source {
     Codex,
     Copilot,
     CursorAgent,
+    /// The user's globally chosen AI provider, used only after the session's own CLI
+    /// failed every attempt (see [`fallback`]). Carries WHICH provider answered so the
+    /// persisted `summary_source` records that this summary did not come from the agent
+    /// that produced the transcript.
+    Fallback(crate::llm::LlmProvider),
     /// Historical only — nothing produces this any more.
     ///
     /// MLX used to be the shared fallback for every agent; that was removed with the
@@ -177,6 +192,9 @@ pub enum Source {
 }
 
 impl Source {
+    /// The persisted `summary_source` value. Fallback summaries are prefixed so a
+    /// consumer can tell "summarised by the agent that did the work" from "summarised by
+    /// a substitute" without a second column.
     pub fn as_str(self) -> &'static str {
         match self {
             Source::Claude => "claude",
@@ -185,6 +203,13 @@ impl Source {
             Source::CursorAgent => "cursor",
             Source::Mlx => "mlx",
             Source::None => "none",
+            Source::Fallback(p) => match p {
+                crate::llm::LlmProvider::Claude => "fallback:claude",
+                crate::llm::LlmProvider::Codex => "fallback:codex",
+                crate::llm::LlmProvider::Cursor => "fallback:cursor",
+                crate::llm::LlmProvider::Copilot => "fallback:copilot",
+                crate::llm::LlmProvider::Custom => "fallback:custom",
+            },
         }
     }
 }
@@ -296,10 +321,10 @@ async fn summarise_one_inner(
 
     // The session's own agent summarises it, up to `primary_attempts` tries
     // (codex→codex, copilot→copilot, cursor→cursor-agent, claude/unknown→claude).
-    // There is no fallback engine: MLX used to catch every failure here. A row the
-    // agent can't summarise is left `pending_summariser` for a later tick rather
-    // than written with a weaker answer, and `drain`'s attempt ledger dead-letters
-    // it after MAX_ROW_ATTEMPTS so a permanently-broken row cannot churn.
+    // Only once those attempts are spent on a NON-quota failure does the user's
+    // global provider get a turn (`fallback`); a row neither can summarise is left
+    // `pending_summariser` for a later tick, and `drain`'s attempt ledger
+    // dead-letters it after MAX_ROW_ATTEMPTS so a broken row cannot churn.
     let agent = row.agent.trim();
     let primary_source = if agent.eq_ignore_ascii_case("codex") {
         Source::Codex
@@ -375,9 +400,29 @@ async fn summarise_one_inner(
             }
         }
 
-        // No fallback: a coding-agent transcript is summarised by ITS OWN CLI, so routing
-        // a Codex session to some other engine would be wrong. On primary failure the row
-        // is left pending and the drain loop retries it on a later tick.
+        // Last resort: the user's globally chosen provider. Reached ONLY when the
+        // session's own CLI failed every attempt for a non-quota reason — a rate limit
+        // breaks out above, because a quota refills and must be waited out rather than
+        // routed around onto a second subscription. See `fallback` for the full rule.
+        if summary.is_none() && !rate_limited {
+            match fallback::try_summarise(&stdin_text, &row.session_uuid, primary_source).await {
+                Ok(Some((s, provider))) => {
+                    summary = Some(s);
+                    source = Source::Fallback(provider);
+                }
+                // The global provider IS the engine that just failed — nothing to add.
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        row_id = row.id,
+                        error = %e,
+                        "summariser fallback provider failed — leaving the row pending"
+                    );
+                    errors.push(format!("fallback: {e}"));
+                }
+            }
+        }
+
         (summary, source, rate_limited, attempts_made)
     }
     .instrument(infer_span.clone())
@@ -391,6 +436,10 @@ async fn summarise_one_inner(
         Source::CursorAgent if !cfg.cursor_model.is_empty() => cfg.cursor_model.clone(),
         Source::CursorAgent => "cursor-agent-default".into(),
         Source::Copilot => "copilot-default".into(),
+        // The concrete model is the global provider's own configured one, already recorded
+        // on the `llm.call` span that `resolver::complete` opened; naming the provider here
+        // keeps this field meaningful without guessing at a value we do not own.
+        Source::Fallback(p) => format!("provider:{}", p.as_str()),
         // Unreachable now that nothing sets `Source::Mlx`; kept so the match stays total
         // and reads correctly against rows written before the fallback was removed.
         Source::Mlx => "mlx-server".into(),
@@ -754,6 +803,26 @@ mod tests {
         assert!(capped.starts_with(&"A".repeat(70)), "70% head kept");
         assert!(capped.ends_with(&"B".repeat(30)), "30% tail kept");
         assert!(capped.contains("chars elided"));
+    }
+
+    /// `summary_source` is a PERSISTED vocabulary read back by the worklog pipeline, so
+    /// these strings are a contract. A fallback summary must be distinguishable from one
+    /// the session's own agent produced - same prefix, never the bare provider name.
+    #[test]
+    fn fallback_source_is_distinguishable_from_the_primary_engine() {
+        use crate::llm::LlmProvider;
+        assert_eq!(Source::Claude.as_str(), "claude");
+        assert_eq!(
+            Source::Fallback(LlmProvider::Claude).as_str(),
+            "fallback:claude"
+        );
+        assert_ne!(
+            Source::CursorAgent.as_str(),
+            Source::Fallback(LlmProvider::Cursor).as_str()
+        );
+        for p in LlmProvider::all() {
+            assert!(Source::Fallback(p).as_str().starts_with("fallback:"));
+        }
     }
 
     #[test]

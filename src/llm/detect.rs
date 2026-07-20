@@ -225,6 +225,296 @@ pub async fn test_all_installed(settings: &RuntimeSettings) -> Vec<ProviderTestR
     futures::future::join_all(futures).await
 }
 
+// ── Install: run the provider's own CLI installer on the user's behalf ───────────────────
+
+/// How long the installer may run before we give up. `npm i -g` fetching a fresh toolchain,
+/// or `curl … | bash` pulling a signed tarball, can legitimately take a couple of minutes on
+/// a slow link — but not five, and the user is watching a spinner.
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// What running a provider's installer produced. Serialised to the UI, which shows the
+/// message verbatim and, on success, moves straight to a connectivity test.
+#[derive(Debug, Clone, Serialize)]
+pub struct InstallOutcome {
+    /// The installer exited 0 AND the CLI is now resolvable.
+    pub ok: bool,
+    /// Human-readable result — the installer's own tail on failure, a short confirmation on
+    /// success. Shown to the user as-is.
+    pub message: String,
+    /// Where the CLI landed, when we can now find it. `None` on failure.
+    pub path: Option<String>,
+    /// The exact command that was run, so the UI can offer a "run it yourself" fallback.
+    pub command: String,
+}
+
+/// Install `provider`'s CLI by running its official installer through the user's LOGIN shell,
+/// then confirm the binary is now resolvable.
+///
+/// # Why a login shell
+///
+/// The tray is a Finder-launched `.app` with the stripped launchd `PATH`
+/// (`/usr/bin:/bin:/usr/sbin:/sbin`), which has no `npm`, `node`, or Homebrew. `npm i -g …`
+/// would fail with "command not found" spawned directly. `$SHELL -l` sources the user's
+/// profile, so it sees the same `npm`/PATH they do in a terminal — the same reason
+/// [`resolve_cli`] probes through a login shell.
+///
+/// # Safety
+///
+/// The command comes from [`LlmProvider::install_command`], a fixed literal per provider with
+/// no user input, so passing it to `-c` cannot inject anything. This is the ONE place the
+/// daemon runs a vendor installer, and only ever on an explicit user click (the tray's
+/// `install_llm_provider` command) — never automatically.
+pub async fn install_provider(provider: LlmProvider) -> InstallOutcome {
+    let Some(cmd) = provider.install_command() else {
+        return InstallOutcome {
+            ok: false,
+            message: "This provider is a cloud endpoint - there is nothing to install.".into(),
+            path: None,
+            command: String::new(),
+        };
+    };
+    let bin = provider.cli_name().unwrap_or("");
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+
+    tracing::info!(provider = provider.as_str(), %cmd, "llm: running provider installer");
+    let mut command = Command::new(&shell);
+    command
+        .arg("-l")
+        .arg("-c")
+        .arg(cmd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    let output = match command.spawn() {
+        Ok(child) => match tokio::time::timeout(INSTALL_TIMEOUT, child.wait_with_output()).await {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => return install_failed(cmd, format!("could not run the installer: {e}")),
+            Err(_) => {
+                return install_failed(
+                    cmd,
+                    format!(
+                        "the installer took longer than {}s and was stopped",
+                        INSTALL_TIMEOUT.as_secs()
+                    ),
+                )
+            }
+        },
+        Err(e) => return install_failed(cmd, format!("could not start a shell to install: {e}")),
+    };
+
+    if !output.status.success() {
+        let reason = tail(String::from_utf8_lossy(&output.stderr).trim(), 400);
+        return install_failed(
+            cmd,
+            if reason.is_empty() {
+                "the installer exited with an error".to_string()
+            } else {
+                reason
+            },
+        );
+    }
+
+    // Exit 0 is necessary but not sufficient — confirm the binary is actually resolvable now,
+    // the same probe the install-state badge uses, so "installed" means the same thing here.
+    match resolve_cli(bin).await {
+        Some(p) => {
+            tracing::info!(provider = provider.as_str(), path = %p.display(), "llm: provider installed");
+            warn_if_version_unpinned(provider, &p).await;
+            InstallOutcome {
+                ok: true,
+                message: "Installed. Checking your sign-in…".into(),
+                path: Some(p.display().to_string()),
+                command: cmd.to_string(),
+            }
+        }
+        None => install_failed(
+            cmd,
+            "the installer finished but the CLI still isn't on your PATH - try running it in a terminal".into(),
+        ),
+    }
+}
+
+/// Confirm a pinned CLI actually installed at the pinned version, and warn loudly if not.
+///
+/// Only Cursor pins today. The pin works by rewriting version strings in the vendor's rolling
+/// installer **by pattern**, which means it **fails open**: if Cursor ever changes its version
+/// format the `sed` matches nothing, the script installs latest, and the user silently ends up
+/// on an unverified build - exactly the outcome the pin exists to prevent, and one that would
+/// surface much later as an unexplained flag rejection. This turns that into a log line at the
+/// moment it happens.
+///
+/// Deliberately does NOT fail the install: an unpinned CLI still works (the invocation ladder
+/// in [`crate::llm::cursor_cli`] degrades on an unknown flag), so blocking the user over a
+/// version mismatch would be worse than telling them.
+async fn warn_if_version_unpinned(provider: LlmProvider, path: &std::path::Path) {
+    let Some(expected) = provider.pinned_cli_version() else {
+        return;
+    };
+    let out = Command::new(path)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .output()
+        .await;
+    let Ok(out) = out else {
+        tracing::warn!(
+            provider = provider.as_str(),
+            "llm: could not read the installed CLI version - cannot confirm the pin applied"
+        );
+        return;
+    };
+    let reported = String::from_utf8_lossy(&out.stdout);
+    let reported = reported.trim();
+    if reported.contains(expected) {
+        tracing::info!(
+            provider = provider.as_str(),
+            version = expected,
+            "llm: installed CLI matches the pinned version"
+        );
+    } else {
+        tracing::warn!(
+            provider = provider.as_str(),
+            expected,
+            reported = %reported,
+            "llm: the version pin did not apply - the vendor installer's version format probably \
+             changed, so an UNVERIFIED build was installed. Update CURSOR_CLI_VERSION and the \
+             rewrite pattern in meridian-core/src/llm_provider.rs."
+        );
+    }
+}
+
+/// How long the interactive Cursor sign-in may take - a human finishing an OAuth flow in their
+/// browser, so generous, but not unbounded.
+const CURSOR_LOGIN_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Run the interactive `cursor-agent login` on the user's behalf — the "Sign in to Cursor"
+/// button in the provider detail view.
+///
+/// This signs into the user's own Cursor account, so the coding-agent summariser then runs on
+/// their **Cursor subscription** — there is no API key and nothing metered. The browser is
+/// deliberately ENABLED here (the daemon's unattended `cursor_agent_init::ensure_ready` sets
+/// `NO_OPEN_BROWSER` because it can't ask a human anything; this path is an explicit click, so
+/// opening the browser to finish the sign-in is exactly what's wanted). Once it completes,
+/// cursor-agent persists the auth and every later daemon run just adopts it.
+pub async fn cursor_sign_in() -> InstallOutcome {
+    let label = "cursor-agent login";
+    let Some(path) = resolve_cli("cursor-agent").await else {
+        return install_failed(
+            label,
+            "cursor-agent isn't installed yet - install it first".into(),
+        );
+    };
+
+    tracing::info!("llm: launching interactive cursor-agent login");
+    let mut cmd = Command::new(&path);
+    cmd.arg("login")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return install_failed(label, format!("couldn't start cursor-agent: {e}")),
+    };
+
+    // Drain stdout as it arrives rather than only via `wait_with_output`. `cursor-agent login`
+    // prints its verification URL / device code to STDOUT while it waits, and that is precisely
+    // what the user needs when the browser does not open for them (no default browser, wrong
+    // profile, a headless session). Waiting for exit would discard it on the timeout path -
+    // leaving a 180 s spinner followed by an error with no way to finish the sign-in by hand.
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    if let Some(out) = child.stdout.take() {
+        let seen = seen.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut lines = BufReader::new(out).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tracing::info!(line = %line, "cursor-agent login");
+                let mut buf = seen.lock().unwrap_or_else(|e| e.into_inner());
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+        });
+    }
+    let login_output = |seen: &std::sync::Mutex<String>| -> String {
+        let buf = seen.lock().unwrap_or_else(|e| e.into_inner());
+        tail(buf.trim(), 300)
+    };
+
+    let output = match tokio::time::timeout(CURSOR_LOGIN_TIMEOUT, child.wait_with_output()).await {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => {
+            return install_failed(label, format!("couldn't run cursor-agent login: {e}"))
+        }
+        Err(_) => {
+            let printed = login_output(&seen);
+            return install_failed(
+                label,
+                if printed.is_empty() {
+                    "the sign-in wasn't finished in time - click Sign in to Cursor again".into()
+                } else {
+                    format!(
+                        "the sign-in wasn't finished in time. Finish it by hand with what \
+                         cursor-agent printed:\n{printed}"
+                    )
+                },
+            );
+        }
+    };
+
+    if output.status.success() {
+        tracing::info!("llm: cursor-agent login succeeded");
+        InstallOutcome {
+            ok: true,
+            message: "Signed in to Cursor.".into(),
+            path: Some(path.display().to_string()),
+            command: label.to_string(),
+        }
+    } else {
+        // stderr first (that is where the reason goes), but fall back to what the CLI printed
+        // on stdout - on some failures the URL/device code is the only useful thing said.
+        let reason = tail(String::from_utf8_lossy(&output.stderr).trim(), 400);
+        let reason = if reason.is_empty() {
+            login_output(&seen)
+        } else {
+            reason
+        };
+        install_failed(
+            label,
+            if reason.is_empty() {
+                "cursor-agent login failed".to_string()
+            } else {
+                reason
+            },
+        )
+    }
+}
+
+/// The last `n` characters of `s`, char-safe.
+///
+/// The tail is the useful end of CLI output - npm, curl and cursor-agent all print the real
+/// reason last - and bounding it stops a noisy installer flooding a toast.
+fn tail(s: &str, n: usize) -> String {
+    let rev: String = s.trim().chars().rev().take(n).collect();
+    rev.chars().rev().collect()
+}
+
+/// Build a failed [`InstallOutcome`], logging the reason.
+fn install_failed(cmd: &str, message: String) -> InstallOutcome {
+    tracing::warn!(%cmd, %message, "llm: provider install failed");
+    InstallOutcome {
+        ok: false,
+        message,
+        path: None,
+        command: cmd.to_string(),
+    }
+}
+
 // ── Cache: last-known test result per provider, survives restarts ───────────────────────
 
 fn test_cache_path() -> PathBuf {

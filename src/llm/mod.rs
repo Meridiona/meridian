@@ -31,6 +31,7 @@ pub mod codex;
 pub mod config;
 pub mod copilot;
 pub mod cursor;
+pub mod cursor_cli;
 pub mod detect;
 pub mod openai_compat;
 pub mod probe;
@@ -62,6 +63,20 @@ pub use resolver::{complete, resolve};
 /// subprocess cannot flip it. The setup/Settings UI says so and links each provider's
 /// toggle; do not add copy here claiming we turned training off, because we didn't.
 pub const DO_NOT_TRACK: (&str, &str) = ("DO_NOT_TRACK", "1");
+
+/// Stamped on the first line of every Meridian-issued `cursor-agent` prompt.
+///
+/// Cursor has **no** `--no-session-persistence` (Claude does, and uses it), so each
+/// `cursor-agent -p` call writes a chat to `~/.cursor/chats`. The cursor-cli ingest
+/// source (`coding_agent_session_ingest::sources::cursor_cli`) would otherwise pick
+/// those up as developer activity and re-summarise them next hour - summarise → new
+/// session → ingest → summarise. The ingest self-guard
+/// (`sources::is_meridian_artifact`) drops any session whose first prompt carries this
+/// marker, cutting that loop for **every** AI process routed through Cursor - not just
+/// the coding-agent summariser (which is separately fingerprinted by
+/// `summariser::prompts::SUMMARY_PROMPT_MARKER`). Keep the string distinctive so a real
+/// developer prompt can never collide with it.
+pub const MERIDIAN_PROMPT_MARKER: &str = "[meridian-internal-ai-call]";
 
 /// Why a backend failed.
 ///
