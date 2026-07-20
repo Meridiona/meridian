@@ -195,10 +195,9 @@ pub fn run() {
             // health is Unknown until the first poll resolves it.
             let menu = tray::build_tray_menu(app.handle(), &HealthStatus::Unknown)?;
 
-            // Start as an un-filled progress ring (the design's menu-bar glyph);
-            // the 1 s ticker swaps in the filled version once a task percentage
-            // is known. Rendered as a template so macOS tints it to the menu bar.
-            let tray_icon = tray_icon::ring_image(None);
+            // The Meridian brand mark, rendered as a template so macOS tints it
+            // to the light/dark menu bar — static, like other menu-bar apps.
+            let tray_icon = tray_icon::logo_image();
 
             // Left-click toggles the popover (positioned under the tray icon);
             // right-click still opens the native menu. `show_menu_on_left_click`
@@ -211,7 +210,6 @@ pub fn run() {
                 // Monochrome mark → render as a template so macOS tints it to the
                 // light/dark menu bar instead of showing it full-colour.
                 .icon_as_template(true)
-
                 .on_tray_icon_event(|tray_handle, event| {
                     let app = tray_handle.app_handle();
                     match &event {
@@ -234,7 +232,10 @@ pub fn run() {
                             }
                             if let Some(win) = app.get_webview_window("main") {
                                 let visible = win.is_visible().unwrap_or(false);
-                                tracing::info!(popover_visible = visible, "tray.click: toggling popover");
+                                tracing::info!(
+                                    popover_visible = visible,
+                                    "tray.click: toggling popover"
+                                );
                                 if visible {
                                     let _ = win.hide();
                                 } else {
@@ -262,7 +263,10 @@ pub fn run() {
                                     #[cfg(target_os = "macos")]
                                     show_no_focus(&win);
                                     #[cfg(not(target_os = "macos"))]
-                                    { let _ = win.show(); let _ = win.set_focus(); }
+                                    {
+                                        let _ = win.show();
+                                        let _ = win.set_focus();
+                                    }
                                     tracing::info!(
                                         x, y,
                                         size = ?win.inner_size().ok(),
@@ -279,7 +283,9 @@ pub fn run() {
                                 .map(|w| w.is_visible().unwrap_or(false))
                                 .unwrap_or(false);
                             if popover_open {
-                                tracing::info!("tray.enter: popover already open — tooltip suppressed");
+                                tracing::info!(
+                                    "tray.enter: popover already open — tooltip suppressed"
+                                );
                                 return;
                             }
                             if let Some(tt) = app.get_webview_window("tray-tooltip") {
@@ -304,7 +310,8 @@ pub fn run() {
                                 // Push the latest status so the tooltip renders fresh data.
                                 // Fall back to a default payload if the state lock is
                                 // poisoned rather than panicking this tray-event handler.
-                                let _ = app.emit("status-update",
+                                let _ = app.emit(
+                                    "status-update",
                                     app.try_state::<Arc<Mutex<AppState>>>()
                                         .and_then(|s| s.inner().lock().ok().map(|g| g.to_payload()))
                                         .unwrap_or_else(|| AppState::default().to_payload()),
@@ -347,70 +354,6 @@ pub fn run() {
                     init_as_nspanel(&win);
                     make_visible_over_fullscreen(&win);
                 }
-            }
-
-            // Live menu-bar pill: tick once a second and render the design's
-            // "MER-142 · 2:05:11" — the current task key + the running session
-            // elapsed (extrapolated from the last poll so it counts smoothly),
-            // with the icon a progress ring filled to the task's completion.
-            // The title clears when nothing is tracked / the daemon is down; the
-            // ring tracks task progress regardless. Both write only on change to
-            // avoid hammering the native item (icon keyed on its 1 % bucket).
-            {
-                let title_app = app.handle().clone();
-                let title_state = app_state.clone();
-                tauri::async_runtime::spawn(async move {
-                    let mut last_title: Option<String> = None;
-                    let mut last_bucket: i32 = i32::MIN; // -1 = un-filled; MIN = uninitialised
-                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
-                    loop {
-                        ticker.tick().await;
-                        let (tray_id, title, bucket) = {
-                            let s = title_state.lock().unwrap();
-                            let timer = match (&s.active_session, s.health == HealthStatus::Healthy)
-                            {
-                                (Some(a), true) => {
-                                    let extra =
-                                        s.active_set_at.map(|t| t.elapsed().as_secs()).unwrap_or(0);
-                                    Some(format::format_timer(a.elapsed_s + extra))
-                                }
-                                _ => None,
-                            };
-                            let title = match (s.current_task_key.as_ref(), timer) {
-                                (Some(k), Some(t)) => Some(format!("{k} · {t}")),
-                                (None, Some(t)) => Some(t),
-                                _ => None,
-                            };
-                            // 1 %-resolution bucket; -1 means "no percentage → un-filled ring".
-                            let bucket = match s.task_percent {
-                                Some(p) => (p.clamp(0.0, 1.0) * 100.0).round() as i32,
-                                None => -1,
-                            };
-                            (s.tray_id.clone(), title, bucket)
-                        };
-                        let Some(id) = tray_id else { continue };
-                        let Some(tray) = title_app.tray_by_id(&id) else {
-                            continue;
-                        };
-                        if title != last_title {
-                            let _ = tray.set_title(title.as_deref());
-                            last_title = title;
-                        }
-                        if bucket != last_bucket {
-                            let pct = (bucket >= 0).then(|| bucket as f64 / 100.0);
-                            if tray.set_icon(Some(tray_icon::ring_image(pct))).is_ok() {
-                                // Runtime set_icon drops the template flag; re-arm it.
-                                if let Err(e) = tray.set_icon_as_template(true) {
-                                    tracing::warn!(
-                                        error = %e,
-                                        "tray: set_icon_as_template failed — ring may render full-colour"
-                                    );
-                                }
-                            }
-                            last_bucket = bucket;
-                        }
-                    }
-                });
             }
 
             // The popover is a non-activating NSPanel — it never becomes key so
