@@ -213,6 +213,38 @@ pub async fn test_llm_provider(
     Ok(result)
 }
 
+/// Install one provider's CLI by running its official installer on the user's behalf - the
+/// provider detail view's "Install" button. Runs through the user's login shell so `npm`/PATH
+/// resolve (see [`meridian::llm::detect::install_provider`]), then confirms the binary is now
+/// present. Only ever on an explicit click - the daemon never installs anything automatically.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn install_llm_provider(
+    id: String,
+) -> Result<meridian::llm::detect::InstallOutcome, String> {
+    let provider = meridian_core::LlmProvider::from_wire(&id)
+        .ok_or_else(|| format!("unknown provider {id:?}"))?;
+    let outcome = meridian::llm::detect::install_provider(provider).await;
+    tracing::info!(
+        provider = %id,
+        ok = outcome.ok,
+        "llm: provider install complete"
+    );
+    Ok(outcome)
+}
+
+/// Run the interactive `cursor-agent login` - the Cursor detail view's "Sign in to Cursor"
+/// button. Opens the user's browser to sign into their own Cursor account, so the summariser
+/// runs on their Cursor SUBSCRIPTION (no API key, nothing metered). Only ever on an explicit
+/// click; the daemon's own unattended path never opens a browser.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn cursor_sign_in() -> Result<meridian::llm::detect::InstallOutcome, String> {
+    let outcome = meridian::llm::detect::cursor_sign_in().await;
+    tracing::info!(ok = outcome.ok, "llm: cursor sign-in complete");
+    Ok(outcome)
+}
+
 /// Test every currently-installed provider at once - the Intelligence panel's Rescan
 /// action. Each result is persisted as it lands (see
 /// [`meridian::llm::detect::test_all_installed`]), so a slow or hanging CLI can't hold the
