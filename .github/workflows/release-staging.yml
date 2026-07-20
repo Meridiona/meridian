@@ -543,6 +543,26 @@ jobs:
             nextjs-win-${{ hashFiles('ui/package-lock.json') }}-
             nextjs-win-
 
+      - name: Stamp the version
+        shell: bash
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        # REQUIRED on staging, unlike production. This job checks out the release
+        # TAG, and on the staging channel that tag points at a tree where the
+        # version was never committed: .releaserc.staging.json has no
+        # @semantic-release/git plugin, so the stamped manifests exist only in
+        # the macOS runner's working tree and die with it.
+        #
+        # Without this the installer was built at whatever Cargo.toml/
+        # tauri.conf.json last held on pre-main — v1.72.0-staging.5 produced
+        # `Meridian_1.71.0_x64-setup.exe` — while the manifest advertised the
+        # real version. A Windows app would update, report the old version, see
+        # the same update again, and loop.
+        #
+        # Production does not need this: its config DOES carry the git plugin,
+        # so the tag points at the version-bump commit and the tree is stamped.
+        run: bash scripts/set-version.sh "$VERSION"
+
       - name: Install JS dependencies
         shell: bash
         run: |
@@ -562,6 +582,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.release.outputs.version }}
           TAG: ${{ needs.release.outputs.tag }}
+          # Windows Python defaults stdout to the cp1252 console codepage, which
+          # cannot encode the `✓` merge-windows-updater.py prints on success.
+          # It died on that print AFTER writing the merged manifest, so the
+          # `gh release upload` below never ran and latest.json never gained its
+          # windows-x86_64 key. Forcing UTF-8 fixes the whole class, not just
+          # this one character.
+          PYTHONIOENCODING: "utf-8"
         run: |
           set -euo pipefail
           NSIS_DIR="target/release/bundle/nsis"
