@@ -33,7 +33,11 @@ REQUIRED_DARWIN = ("darwin-aarch64", "darwin-x86_64")
 
 
 def die(msg: str) -> "None":
-    sys.exit(f"✗ merge-windows-updater: {msg}")
+    # ASCII only - see the note by the success print. On windows-latest a
+    # non-ASCII character here would raise UnicodeEncodeError INSTEAD of the
+    # message, turning every one of this script's safety checks into a
+    # confusing traceback at the exact moment it is trying to explain itself.
+    sys.exit(f"FAIL merge-windows-updater: {msg}")
 
 
 def main() -> None:
@@ -46,13 +50,18 @@ def main() -> None:
     sig_path = Path(sys.argv[4])
 
     try:
-        manifest = json.loads(manifest_path.read_text())
+        # encoding pinned on every file operation. PYTHONIOENCODING (set by the
+        # workflow) only covers stdin/stdout/stderr - Path.read_text/write_text
+        # fall back to the locale encoding, which is cp1252 on the Windows
+        # runner this script runs on. A single non-ASCII character anywhere in
+        # the manifest would otherwise fail the read.
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         die(f"cannot read {manifest_path}: {e}")
 
     platforms = manifest.get("platforms")
     if not isinstance(platforms, dict):
-        die("manifest has no 'platforms' object — refusing to write")
+        die("manifest has no 'platforms' object - refusing to write")
 
     # Capture the incoming darwin entries so the post-write check can prove
     # they survived untouched rather than merely being present.
@@ -70,12 +79,12 @@ def main() -> None:
     if manifest.get("version") != version:
         die(
             f"manifest version {manifest.get('version')!r} != release version "
-            f"{version!r} — this is a manifest from a DIFFERENT release. "
+            f"{version!r} - this is a manifest from a DIFFERENT release. "
             f"Writing would point macOS users at the wrong build."
         )
 
     try:
-        signature = sig_path.read_text().strip()
+        signature = sig_path.read_text(encoding="utf-8").strip()
     except OSError as e:
         die(f"cannot read signature {sig_path}: {e}")
     if not signature:
@@ -86,11 +95,20 @@ def main() -> None:
     # Prove the darwin entries are exactly as they arrived.
     for key, original in before.items():
         if platforms.get(key) != original:
-            die(f"'{key}' changed during merge — refusing to write")
+            die(f"'{key}' changed during merge - refusing to write")
 
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    # ensure_ascii is left at its default (True), so the JSON body itself is
+    # escaped to ASCII regardless; encoding="utf-8" makes the WRITE safe too,
+    # rather than relying on that default holding forever.
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     covered = ", ".join(sorted(platforms))
-    print(f"✓ merge-windows-updater: {manifest_path} now covers {covered}")
+    # ASCII only, deliberately. This runs on windows-latest, where Python
+    # defaults stdout to the cp1252 console codepage; a `✓` here raised
+    # UnicodeEncodeError AFTER the manifest was written but BEFORE the caller
+    # could upload it, so the merge silently accomplished nothing and the
+    # release shipped a manifest with no windows-x86_64 key. A success message
+    # must never be able to fail the step it is reporting success from.
+    print(f"OK merge-windows-updater: {manifest_path} now covers {covered}")
 
 
 if __name__ == "__main__":

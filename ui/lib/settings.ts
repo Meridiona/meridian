@@ -67,6 +67,17 @@ export interface RuntimeSettings {
   // in meridian-core/src/settings.rs.
   ignored_apps: string[]
   ignored_urls: string[]
+  // Worklog auto-generation — once a day, at this local 'HH:MM' clock time,
+  // Meridian scans today's day-tasks and auto-drafts (never approves/posts) a
+  // worklog for any past the fixed 30-minute qualifying threshold that doesn't
+  // have a draft yet. `null` = no time chosen yet (never asked, or explicitly
+  // skipped). Mirrors RuntimeSettings.worklog_auto_generate_time in
+  // meridian-core/src/settings.rs.
+  worklog_auto_generate_time: string | null
+  // Has the user been asked at least once (the one-time Timeline nudge, or a
+  // manual Settings visit)? Distinguishes "never asked" from "asked and skipped"
+  // so we only ever prompt once.
+  worklog_auto_generate_prompted: boolean
 }
 
 export const SETTINGS_DEFAULTS: RuntimeSettings = {
@@ -107,6 +118,10 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   // Nothing ignored by default.
   ignored_apps: [],
   ignored_urls: [],
+  // Nobody is auto-drafted until they say so. Must match RuntimeSettings::default()
+  // in meridian-core/src/settings.rs.
+  worklog_auto_generate_time: null,
+  worklog_auto_generate_prompted: false,
 }
 
 // repoRoot finds the source-checkout root (nearest ancestor with Cargo.toml).

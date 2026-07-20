@@ -150,6 +150,7 @@ pub async fn update_settings(
             }
         }
     }
+    validate_worklog_auto_generate_time(body_obj)?;
 
     let current = meridian_core::settings::read_settings_value();
     let mut updated = current.clone();
@@ -259,6 +260,33 @@ fn restore_custom_keys(
                 ))
             }
         }
+    }
+    Ok(())
+}
+
+/// Validate a present-but-non-null `worklog_auto_generate_time` as a proper
+/// "HH:MM" 24-hour local time. A malformed value would silently never match the
+/// daemon's hourly clock check (`pm_worklog::auto_generate`) and the feature
+/// would just never fire — reject it at the door instead of failing quietly
+/// later. Absent or explicit `null` (turning the feature off) both pass.
+fn validate_worklog_auto_generate_time(
+    body_obj: &serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    let Some(v) = body_obj.get("worklog_auto_generate_time") else {
+        return Ok(());
+    };
+    if v.is_null() {
+        return Ok(());
+    }
+    let s = v
+        .as_str()
+        .ok_or("worklog_auto_generate_time must be a string")?;
+    let valid = s
+        .split_once(':')
+        .and_then(|(h, m)| Some((h.parse::<u32>().ok()?, m.parse::<u32>().ok()?)))
+        .is_some_and(|(h, m)| h < 24 && m < 60 && s.len() == 5);
+    if !valid {
+        return Err("worklog_auto_generate_time must be \"HH:MM\" 24-hour local time".to_string());
     }
     Ok(())
 }
@@ -464,5 +492,63 @@ mod tests {
                            "custom_llm_providers": [row("a", "sk", json!({}))]});
             assert!(enforce_custom_provider_gate(&v).is_ok(), "{p}");
         }
+    }
+
+    /// Absent, or explicitly `null` (turning auto-generate off), both pass untouched.
+    #[test]
+    fn worklog_time_validation_passes_when_absent_or_null() {
+        let body = json!({}).as_object().unwrap().clone();
+        assert!(validate_worklog_auto_generate_time(&body).is_ok());
+        let body = json!({"worklog_auto_generate_time": null})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(validate_worklog_auto_generate_time(&body).is_ok());
+    }
+
+    /// Every valid "HH:MM" in range passes, including the midnight/end-of-day edges.
+    #[test]
+    fn worklog_time_validation_accepts_valid_times() {
+        for t in ["00:00", "09:05", "18:00", "23:59"] {
+            let body = json!({"worklog_auto_generate_time": t})
+                .as_object()
+                .unwrap()
+                .clone();
+            assert!(
+                validate_worklog_auto_generate_time(&body).is_ok(),
+                "{t} should be valid"
+            );
+        }
+    }
+
+    /// Out-of-range hours/minutes, wrong shape, and non-string values are all rejected —
+    /// a malformed value would otherwise silently never match the daemon's hourly check
+    /// and the feature would just never fire, with no error anywhere to explain why.
+    #[test]
+    fn worklog_time_validation_rejects_malformed_values() {
+        for t in [
+            "24:00",
+            "18:60",
+            "9:05",
+            "18:0",
+            "18",
+            "18:00:00",
+            "",
+            "not-a-time",
+        ] {
+            let body = json!({"worklog_auto_generate_time": t})
+                .as_object()
+                .unwrap()
+                .clone();
+            assert!(
+                validate_worklog_auto_generate_time(&body).is_err(),
+                "{t:?} should be rejected"
+            );
+        }
+        let body = json!({"worklog_auto_generate_time": 1800})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(validate_worklog_auto_generate_time(&body).is_err());
     }
 }

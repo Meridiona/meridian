@@ -53,15 +53,33 @@ jobs:
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
         with:
-          # Restore everywhere, save only on the two integration branches.
-          # GitHub scopes caches by REF, so a branch that is both pushed and
-          # has an open PR stored two near-identical copies of every target/
-          # cache (observed: 2582MB vs 2527MB for macos-universal alone).
-          # Six Rust caches totalled 9.6GB against the 10GB repo quota, which
-          # evicted the release job's cache within ~3h of it being written and
-          # forced every release to compile cold. PR runs still RESTORE from
-          # the base branch; they just stop writing a duplicate.
-          save-if: ${{ github.ref == 'refs/heads/pre-main' || github.ref == 'refs/heads/main' }}
+          # Restore everywhere, save ONLY on main - the default branch.
+          #
+          # GitHub scopes caches by REF, so saving on both integration branches
+          # stored the same cache twice. Not near-identical: byte-identical
+          # KEYS, e.g. both main and pre-main held
+          # `v0-rust-macos-universal-Darwin-arm64-201b0125-da9962c3`. Across the
+          # three Rust jobs that was ~4.46GB of a 10GB quota spent on a second
+          # copy of something already present.
+          #
+          # A run restores from its own branch OR the default branch, so pre-main
+          # and PR runs read main's copy and simply stop writing their own. This
+          # is the same reasoning that already stopped PR branches duplicating;
+          # it just was not carried the last step to pre-main.
+          #
+          # Cost is bounded and small: the key only diverges when Cargo.lock,
+          # the toolchain, or RUSTFLAGS change - 39 of 650 commits (6%) touched
+          # Cargo.lock over the last 30 days - and rust-cache "will try to
+          # restore from a previous Cargo.lock version as well, so lockfile
+          # updates should only re-build changed dependencies", so even that
+          # case degrades to incremental work rather than a cold build.
+          #
+          # Why it matters: six Rust caches at 9.6GB previously evicted the
+          # release cache within ~3h of it being written and forced every
+          # release to compile cold. The release path has since split into two
+          # per-arch caches, so the demand grew again; this is where the room
+          # comes from.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: fmt
         run: cargo fmt --check
@@ -122,8 +140,8 @@ jobs:
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
         with:
-          # Save only on the integration branches - see the Rust job above.
-          save-if: ${{ github.ref == 'refs/heads/pre-main' || github.ref == 'refs/heads/main' }}
+          # Save only on main - see the Rust job above.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: check
         run: cargo check -p meridian -p meridian-core --all-targets
@@ -198,8 +216,8 @@ jobs:
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
         with:
-          # Save only on the integration branches - see the Rust job above.
-          save-if: ${{ github.ref == 'refs/heads/pre-main' || github.ref == 'refs/heads/main' }}
+          # Save only on main - see the Rust job above.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Same stub trick as the Windows tray check: tauri-build only STATS the
       # bundle.resources daemon path during `cargo check`, never reads it, so a

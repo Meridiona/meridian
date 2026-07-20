@@ -7,6 +7,7 @@
 
 export type SettingsSection =
   | 'integrations'
+  | 'worklogs'
   | 'intelligence'
   | 'capture'
   | 'notifications'

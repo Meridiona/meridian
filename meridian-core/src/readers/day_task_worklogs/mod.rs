@@ -156,6 +156,12 @@ pub struct DayTaskWorklogDraft {
     /// The last draft-level failure (a create, or the approve as a whole).
     /// Per-target failures live on the target.
     pub error: Option<String>,
+    /// When this draft was last written (generated OR regenerated) — RFC-3339,
+    /// UTC. Lets the panel tell the user "this was drafted at 2:14pm" so they know
+    /// to hit Regenerate if they've kept working the task since. Every write path
+    /// (`upsert_draft`) stamps this, including a regenerate that overwrites a
+    /// still-`drafted` row — it is NOT "first generated at", it is "as of".
+    pub updated_at: String,
 }
 
 /// The raw parent row (migration 060, less the columns 062 moved to [`targets`]).
@@ -171,6 +177,7 @@ struct RawWorklog {
     state: String,
     created_task_key: Option<String>,
     last_error: Option<String>,
+    updated_at: String,
 }
 
 impl RawWorklog {
@@ -201,6 +208,7 @@ impl RawWorklog {
             reasoning: self.reasoning,
             created_task_key: self.created_task_key,
             error: self.last_error,
+            updated_at: self.updated_at,
         }
     }
 }
@@ -215,7 +223,8 @@ pub async fn get_day_task_worklog(
 ) -> anyhow::Result<Option<DayTaskWorklogDraft>> {
     let row = sqlx::query_as::<_, RawWorklog>(
         "SELECT provider, propose_issue_type, propose_title, propose_description, \
-                update_summary, update_json, reasoning, state, created_task_key, last_error \
+                update_summary, update_json, reasoning, state, created_task_key, last_error, \
+                updated_at \
          FROM day_task_worklogs \
          WHERE day_local = ? AND task_id = ?",
     )

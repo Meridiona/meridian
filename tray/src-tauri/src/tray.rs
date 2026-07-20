@@ -14,7 +14,7 @@ use crate::state::{AppState, HealthStatus};
 use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
-    Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    Manager, Runtime, WebviewUrl, WebviewWindowBuilder,
 };
 
 /// The toggle item's label for a given daemon health. Kept next to the menu
@@ -119,14 +119,7 @@ pub(crate) fn open_native_dashboard(app: &tauri::AppHandle) {
             Ok(win) => {
                 // Revert to Accessory (no dock icon) when the dashboard is closed
                 // so the tray-only UX is restored.
-                let app_handle = app.clone();
-                win.on_window_event(move |event| {
-                    if let WindowEvent::Destroyed = event {
-                        #[cfg(target_os = "macos")]
-                        let _ =
-                            app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
-                    }
-                });
+                crate::sys::revert_to_accessory_on_close(app, &win);
             }
             Err(e) => {
                 eprintln!("tray: failed to open native dashboard: {e}");
@@ -188,21 +181,29 @@ pub(crate) fn open_wizard_window(app: &tauri::AppHandle) {
     // room. Resizable (with a floor at the design size) so the user can grow it or
     // enter macOS full-screen — the card stays centred and the backdrop just widens,
     // so the layout never breaks.
-    match WebviewWindowBuilder::new(app, "setup", WebviewUrl::App("setup".into()))
+    let builder = WebviewWindowBuilder::new(app, "setup", WebviewUrl::App("setup".into()))
         .title("Meridian - Setup")
-        // Transparent title bar so the webview fills the *whole* window and the
-        // centred card gets equal backdrop margins on all four sides. With a
-        // normal (opaque) title bar the bar sits above the webview, so the top
-        // gap reads larger than the sides/bottom. Sized so the 948×628 card keeps
-        // ~26px margins all round — enough clearance for the overlaid traffic
-        // lights + title to sit in the top backdrop, not on the card.
         .inner_size(1000.0, 680.0)
         .min_inner_size(1000.0, 680.0)
         .resizable(true)
-        .title_bar_style(tauri::TitleBarStyle::Transparent)
-        .zoom_hotkeys_enabled(true)
-        .build()
-    {
+        .zoom_hotkeys_enabled(true);
+    // Transparent title bar so the webview fills the *whole* window and the
+    // centred card gets equal backdrop margins on all four sides. With a
+    // normal (opaque) title bar the bar sits above the webview, so the top
+    // gap reads larger than the sides/bottom. The size above is chosen so the
+    // 948×628 card keeps ~26px margins all round — enough clearance for the
+    // overlaid traffic lights + title to sit in the top backdrop, not on the card.
+    //
+    // Applied as a separate statement rather than inline in the chain because
+    // both `title_bar_style` and `tauri::TitleBarStyle` are macOS-only in Tauri
+    // — a `#[cfg]` on the method call alone would still leave the unresolvable
+    // type in a Windows build. Off macOS the window keeps its standard title
+    // bar; since `inner_size` sizes the CLIENT area, the webview is still
+    // 1000×680 and the card still centres within it — only the outer window
+    // grows by the title-bar height. No layout change, just a taller frame.
+    #[cfg(target_os = "macos")]
+    let builder = builder.title_bar_style(tauri::TitleBarStyle::Transparent);
+    match builder.build() {
         Ok(win) => {
             // Opt the window into native full-screen so the green traffic-light
             // shows the enter-full-screen arrows, not the plain zoom (+) glyph.

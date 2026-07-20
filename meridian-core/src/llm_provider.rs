@@ -140,6 +140,97 @@ impl LlmProvider {
             LlmProvider::Custom => None,
         }
     }
+
+    /// The shell command that installs this provider's CLI, or `None` when there is nothing
+    /// to install ([`LlmProvider::Custom`] is a cloud endpoint, not a binary).
+    ///
+    /// Cursor's is PINNED - see [`CURSOR_CLI_VERSION`].
+    ///
+    /// This is the SAME command the UI shows as its `installHint` (`ui/lib/llm-providers.ts`)
+    /// — kept here as the authoritative copy because the tray now runs it on the user's behalf
+    /// (`crate::llm::detect::install_provider` in the daemon crate). The strings are fixed
+    /// literals, never interpolated with user input, so running them through a login shell is
+    /// safe. Each is the vendor's own official, non-interactive installer.
+    pub fn install_command(self) -> Option<&'static str> {
+        match self {
+            LlmProvider::Claude => Some("npm i -g @anthropic-ai/claude-code"),
+            LlmProvider::Codex => Some("npm i -g @openai/codex"),
+            LlmProvider::Cursor => Some(CURSOR_INSTALL_CMD),
+            LlmProvider::Copilot => Some("npm i -g @github/copilot"),
+            LlmProvider::Custom => None,
+        }
+    }
+
+    /// The exact CLI build [`Self::install_command`] is supposed to produce, when this provider
+    /// is version-pinned.
+    ///
+    /// Only Cursor pins today, because its installer is a rolling script with no version flag
+    /// and the pin is applied by rewriting it (see [`CURSOR_INSTALL_CMD`]) - a mechanism that
+    /// fails OPEN. Returning the expectation here lets the installer verify that the rewrite
+    /// actually took effect rather than assuming it did. The other CLIs install a named npm
+    /// version range and need no such check.
+    pub fn pinned_cli_version(self) -> Option<&'static str> {
+        match self {
+            LlmProvider::Cursor => Some(CURSOR_CLI_VERSION),
+            _ => None,
+        }
+    }
+}
+
+/// The cursor-agent build Meridian installs and supports.
+///
+/// PINNED DELIBERATELY. `https://cursor.com/install` is a ROLLING script - it hardcodes
+/// whatever build is current when you fetch it, with no version flag or env var. Two
+/// reasons we don't want that:
+///
+/// 1. `crate::llm::cursor` depends on `--allowed-tools`, which is **undocumented**
+///    ("internal only", hidden from `--help`). An unpinned upgrade could drop it
+///    silently. (The backend degrades gracefully if that happens, but a pin means it
+///    doesn't happen unattended in the first place.)
+/// 2. Reproducibility: every user gets the build this was tested against, not whatever
+///    shipped that morning.
+///
+/// This value is the build all of the flag behaviour was verified on. To move it: bump
+/// this constant, re-run the cursor smoke tests, and confirm `--allowed-tools`,
+/// `--workspace` and `--mode ask` still behave.
+pub const CURSOR_CLI_VERSION: &str = "2026.07.16-899851b";
+
+/// Cursor's official installer, rewritten to install [`CURSOR_CLI_VERSION`].
+///
+/// The `sed` rewrites every version string in their script (all 5 occurrences: the temp
+/// dir, the `downloads.cursor.com/lab/<v>/<os>/<arch>/agent-cli-package.tar.gz` URL, the
+/// final dir, and both symlinks) to the pinned build. Matching the version by PATTERN
+/// rather than by literal is what makes this survive Cursor bumping their script - a
+/// literal `s/<old>/<new>/` would silently become a no-op the day they publish a new
+/// build, handing the user "latest" again, which is the exact failure being avoided.
+///
+/// Reusing their script (rather than hand-rolling a download) keeps their OS/arch
+/// detection, symlink layout and PATH guidance. Fixed literal, no user input.
+pub const CURSOR_INSTALL_CMD: &str = concat!(
+    "curl -fsSL https://cursor.com/install | ",
+    "sed -E 's#[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}-[0-9a-f]{7}#",
+    "2026.07.16-899851b",
+    "#g' | bash"
+);
+
+#[cfg(test)]
+mod install_pin_tests {
+    use super::*;
+
+    /// The pin must actually appear in the command, and the constant must stay the single
+    /// source of truth (`concat!` can't interpolate, so the two are pinned together here).
+    #[test]
+    fn cursor_install_command_is_pinned_to_the_supported_version() {
+        assert!(CURSOR_INSTALL_CMD.contains(CURSOR_CLI_VERSION));
+        // Pattern-based rewrite, not a literal old->new swap: a literal would no-op once
+        // Cursor publishes a new build and silently install latest.
+        assert!(CURSOR_INSTALL_CMD.contains("[0-9]{4}"));
+        assert!(CURSOR_INSTALL_CMD.contains("sed -E"));
+        assert_eq!(
+            LlmProvider::Cursor.install_command(),
+            Some(CURSOR_INSTALL_CMD)
+        );
+    }
 }
 
 #[cfg(test)]
@@ -212,5 +303,16 @@ mod tests {
             assert!(p.cli_name().is_some(), "{p:?}");
         }
         assert!(LlmProvider::Custom.cli_name().is_none());
+    }
+
+    /// Every built-in CLI provider has an installer; `Custom` (a cloud endpoint) does not.
+    /// The tray runs these on the user's behalf, so a missing one would leave a card with an
+    /// Install button that can't work.
+    #[test]
+    fn every_builtin_has_an_install_command() {
+        for p in LlmProvider::builtins() {
+            assert!(p.install_command().is_some(), "{p:?}");
+        }
+        assert!(LlmProvider::Custom.install_command().is_none());
     }
 }
