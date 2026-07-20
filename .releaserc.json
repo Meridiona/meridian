@@ -1,48 +1,94 @@
 {
-  "branches": ["main"],
+  "branches": [
+    "main"
+  ],
   "tagFormat": "v${version}",
   "plugins": [
-    ["@semantic-release/commit-analyzer", { "preset": "conventionalcommits" }],
-    ["@semantic-release/release-notes-generator", {
-      "preset": "conventionalcommits",
-      "presetConfig": {
-        "types": [
-          { "type": "feat", "section": "🚀 Features" },
-          { "type": "fix", "section": "🐛 Bug Fixes" },
-          { "type": "perf", "section": "⚡ Performance" },
-          { "type": "refactor", "section": "♻️ Refactoring" },
-          { "type": "build", "section": "📦 Build System" },
-          { "type": "ci", "section": "🤖 CI" },
-          { "type": "test", "section": "✅ Tests" },
-          { "type": "docs", "section": "📝 Documentation" },
-          { "type": "style", "section": "🎨 Styles" },
-          { "type": "chore", "section": "🔧 Chores" },
-          { "type": "revert", "section": "⏪ Reverts" }
-        ]
+    [
+      "@semantic-release/commit-analyzer",
+      {
+        "preset": "conventionalcommits"
       }
-    }],
-    ["@semantic-release/changelog", { "changelogFile": "CHANGELOG.md" }],
-    ["@semantic-release/github", {
-      "assets": [
-        { "path": "target/universal-apple-darwin/release/bundle/dmg/Meridian.dmg", "label": "Meridian.dmg (macOS, Apple Silicon + Intel)" },
-        { "path": "target/universal-apple-darwin/release/bundle/macos/Meridian.app.tar.gz", "label": "Meridian.app.tar.gz (updater)" },
-        { "path": "target/universal-apple-darwin/release/bundle/macos/Meridian.app.tar.gz.sig", "label": "Meridian.app.tar.gz.sig" },
-        { "path": "target/universal-apple-darwin/release/bundle/macos/latest.json", "label": "latest.json (updater manifest)" }
-      ]
-    }],
-    ["@semantic-release/exec", {
-      "prepareCmd": "bash scripts/set-version.sh ${nextRelease.version} && (cd ui && npm ci --no-audit --no-fund && npm run build) && (cd tray/src-tauri && cargo clean -p tauri-plugin-notifications --release) && (cd tray && bash create-icons.sh && npm ci --no-audit --no-fund && npm run build) && bash scripts/notarize-dmg.sh ${nextRelease.version} && bash scripts/package-updater.sh ${nextRelease.version} && bash scripts/verify-release-bundle.sh ${nextRelease.version}"
-    }],
-    ["@semantic-release/git", {
-      "assets": [
-        "CHANGELOG.md",
-        "Cargo.toml",
-        "Cargo.lock",
-        "ui/package.json",
-        "packages/meridian-mcp/package.json",
-        "tray/src-tauri/tauri.conf.json"
-      ],
-      "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
-    }]
+    ],
+    [
+      "@semantic-release/release-notes-generator",
+      {
+        "preset": "conventionalcommits",
+        "presetConfig": {
+          "types": [
+            {
+              "type": "feat",
+              "section": "\ud83d\ude80 Features"
+            },
+            {
+              "type": "fix",
+              "section": "\ud83d\udc1b Bug Fixes"
+            },
+            {
+              "type": "perf",
+              "section": "\u26a1 Performance"
+            },
+            {
+              "type": "refactor",
+              "section": "\u267b\ufe0f Refactoring"
+            },
+            {
+              "type": "build",
+              "section": "\ud83d\udce6 Build System"
+            },
+            {
+              "type": "ci",
+              "section": "\ud83e\udd16 CI"
+            },
+            {
+              "type": "test",
+              "section": "\u2705 Tests"
+            },
+            {
+              "type": "docs",
+              "section": "\ud83d\udcdd Documentation"
+            },
+            {
+              "type": "style",
+              "section": "\ud83c\udfa8 Styles"
+            },
+            {
+              "type": "chore",
+              "section": "\ud83d\udd27 Chores"
+            },
+            {
+              "type": "revert",
+              "section": "\u23ea Reverts"
+            }
+          ]
+        }
+      }
+    ],
+    [
+      "@semantic-release/changelog",
+      {
+        "changelogFile": "CHANGELOG.md"
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "draftRelease": true
+      }
+    ],
+    [
+      "@semantic-release/git",
+      {
+        "assets": [
+          "CHANGELOG.md",
+          "Cargo.toml",
+          "Cargo.lock",
+          "ui/package.json",
+          "packages/meridian-mcp/package.json",
+          "tray/src-tauri/tauri.conf.json"
+        ],
+        "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+      }
+    ]
   ]
 }

@@ -5,7 +5,22 @@ edition = "2021"
 
 [lib]
 name = "meridian_tray_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# DESKTOP-ONLY. `staticlib` (what Xcode links for iOS) and `cdylib` (what
+# Android's JNI loader dlopens) are the Tauri v2 MOBILE template defaults and
+# are used by nothing on desktop — `main.rs` is four lines that call
+# `meridian_tray_lib::run()`, which needs `rlib` alone.
+#
+# They are not free. Per the Rust reference on linkage, each non-rlib crate type
+# gets its OWN codegen AND its own link, and both FFI types pull in the ENTIRE
+# upstream closure (`staticlib` "contains all of the local crate's code along
+# with all upstream dependencies"). Declaring all three therefore links this
+# crate's ~768-crate dependency closure THREE times instead of once — which is
+# why one thin glue crate accounted for 4m27s of an 18m48s release build.
+#
+# There is no gen/apple, no gen/android, and no `mobile_entry_point` in this
+# repo. Restore all three if mobile is ever targeted. Upstream tracking issue:
+# tauri-apps/tauri#7007.
+crate-type = ["rlib"]
 
 [[bin]]
 name = "meridian-tray"
