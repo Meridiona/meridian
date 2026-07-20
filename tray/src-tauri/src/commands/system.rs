@@ -54,13 +54,7 @@ pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
         Ok(win) => {
             // Revert to Accessory (no dock icon) when the dashboard is closed
             // so the tray-only UX is restored.
-            let app_handle = app.clone();
-            win.on_window_event(move |event| {
-                if let WindowEvent::Destroyed = event {
-                    #[cfg(target_os = "macos")]
-                    let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
-                }
-            });
+            crate::sys::revert_to_accessory_on_close(&app, &win);
             // Clicking back into an already-open dashboard while the popover
             // happens to be open on top of it wouldn't otherwise dismiss the
             // popover — see dismiss_popover_on_focus's doc comment.
