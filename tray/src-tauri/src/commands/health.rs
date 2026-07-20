@@ -20,7 +20,6 @@
 //! - [`crate::poll`] — schedules the tray's periodic health refresh
 
 use serde::Serialize;
-use std::time::Duration;
 
 /// Response shape matching the TS route's `HealthStatus`.
 #[derive(Debug, Clone, Serialize)]
@@ -38,21 +37,24 @@ pub struct HealthResponse {
 /// Run all three health checks in parallel and return the combined result.
 /// Called by both `get_health` (Tauri command) and `poll::refresh_health` (internal).
 pub async fn check_health() -> HealthResponse {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     // When the `capture` feature is enabled, a11y runs in-process inside the
     // tray (screenpipe-screen crate). No separate a11y-helper binary is needed
     // or expected — skip the trust check so the banner never fires falsely.
     #[cfg(feature = "capture")]
-    let (db, daemon) = tokio::join!(check_database(), check_daemon_running(&home));
+    let (db, daemon) = tokio::join!(check_database(), check_daemon_running());
     #[cfg(feature = "capture")]
     let trusted: Option<bool> = None;
 
     #[cfg(not(feature = "capture"))]
-    let (db, a11y, daemon) = tokio::join!(
-        check_database(),
-        check_a11y_trusted(&home),
-        check_daemon_running(&home),
-    );
+    let (db, a11y, daemon) = {
+        let home = meridian_core::paths::home_dir_or_cwd();
+        let home = home.to_string_lossy();
+        tokio::join!(
+            check_database(),
+            check_a11y_trusted(&home),
+            check_daemon_running(),
+        )
+    };
     #[cfg(not(feature = "capture"))]
     let trusted = match a11y {
         Some(v) => Some(v),
@@ -110,24 +112,16 @@ async fn check_a11y_trusted(home: &str) -> Option<bool> {
     None
 }
 
-/// Probe `~/.meridian/daemon.sock` with a 500 ms connect timeout.
-/// Returns `None` on unexpected errors, `Some(false)` on ENOENT/ECONNREFUSED.
-async fn check_daemon_running(home: &str) -> Option<bool> {
-    use tokio::net::UnixStream;
-    use tokio::time::timeout;
-
-    let sock = format!("{}/.meridian/daemon.sock", home);
-    match timeout(Duration::from_millis(500), UnixStream::connect(&sock)).await {
-        Ok(Ok(_)) => Some(true),
-        Ok(Err(e)) => {
-            use std::io::ErrorKind;
-            match e.kind() {
-                ErrorKind::NotFound | ErrorKind::ConnectionRefused => Some(false),
-                _ => None,
-            }
-        }
-        Err(_) => Some(false), // timeout → not reachable
-    }
+/// Whether a live daemon is answering its IPC endpoint.
+///
+/// Routes through the platform-aware probe in [`super::daemon_control`] (a Unix
+/// socket on macOS, a named pipe on Windows) rather than opening a
+/// `UnixStream` directly — the direct form did not compile off Unix and
+/// duplicated the greeting handshake. Returns `Some(running)`; kept as an
+/// `Option` to match this module's other checks, which use `None` for
+/// "couldn't tell", though the probe collapses any failure to `running=false`.
+async fn check_daemon_running() -> Option<bool> {
+    Some(super::daemon_control::probe().await.running)
 }
 
 /// Fallback: ask `launchctl print` for the a11y-helper trust state.

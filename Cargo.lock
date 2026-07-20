@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "accelerate-src"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "415ed64958754dbe991900f3940677e6a7eefb4d7367afd70d642677b0c7d19d"
+
+[[package]]
 name = "accessibility"
 version = "0.3.0"
 source = "git+https://github.com/eiz/accessibility.git?rev=173e898d4a52ee0afe0224ecb458d324057856e7#173e898d4a52ee0afe0224ecb458d324057856e7"
@@ -999,10 +1005,12 @@ version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6bd9895436c1ba5dc1037a19935d084b838db066ff4e15ef7dded020b7c12a4a"
 dependencies = [
+ "accelerate-src",
  "byteorder",
  "float8",
  "gemm",
  "half",
+ "libc",
  "libm",
  "memmap2",
  "num-traits",
@@ -1023,6 +1031,7 @@ version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9317a09d6530b758990ed7f625ac69ff43653bc9ee28b0464644ad1169ada87"
 dependencies = [
+ "accelerate-src",
  "candle-core",
  "half",
  "libc",
@@ -1039,6 +1048,7 @@ version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f59d08c89e9f4af9c464e2f3a8e16199e7cc601e6f34538c2cfbb42b623b1783"
 dependencies = [
+ "accelerate-src",
  "byteorder",
  "candle-core",
  "candle-nn",
@@ -4723,6 +4733,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
+name = "libmimalloc-sys"
+version = "0.1.49"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a45a52f43e1c16f667ccfe4dd8c85b7f7c204fd5e3bf46c5b0db9a5c3c0b8e9"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "libredox"
 version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4876,6 +4895,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-notification-sys"
+version = "0.6.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd604973958ddcc11b561193c0fb96ba146506ef2f231ef2e7c35fd2cbc9beca"
+dependencies = [
+ "cc",
+ "log",
+ "objc2",
+ "objc2-foundation",
+ "time",
+ "uuid",
+]
+
+[[package]]
 name = "macro_rules_attribute"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5007,12 +5040,14 @@ dependencies = [
  "dotenvy",
  "flate2",
  "futures",
+ "gethostname",
  "hex",
  "http",
  "jsonschema",
  "libsqlite3-sys",
  "meridian-core",
  "meridian-oauth",
+ "mimalloc",
  "once_cell",
  "opentelemetry",
  "opentelemetry-appender-tracing",
@@ -5047,6 +5082,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "dirs 5.0.1",
  "libsqlite3-sys",
  "serde",
  "serde_json",
@@ -5114,6 +5150,15 @@ name = "micromap"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a86d3146ed3995b5913c414f6664344b9617457320782e64f0bb44afd49d74"
+
+[[package]]
+name = "mimalloc"
+version = "0.1.52"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d4139bb28d14ad1facf21d5eb8825051b326e172d216b39f6d31df53cc97862"
+dependencies = [
+ "libmimalloc-sys",
+]
 
 [[package]]
 name = "mime"
@@ -5367,6 +5412,20 @@ name = "noop_proc_macro"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0676bb32a98c1a483ce53e500a81ad9c3d5b3f7c920c28c24e9cb0980d0b5bc8"
+
+[[package]]
+name = "notify-rust"
+version = "4.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "50ff2e74231b72c832d82982193b417f230945be6bdb5575b251d941d31adb00"
+dependencies = [
+ "futures-lite",
+ "log",
+ "mac-notification-sys",
+ "serde",
+ "tauri-winrt-notification",
+ "zbus",
+]
 
 [[package]]
 name = "ntapi"
@@ -6979,6 +7038,15 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
+version = "0.37.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "quick-xml"
 version = "0.39.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
@@ -7999,7 +8067,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "screenpipe-a11y"
 version = "0.1.0"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e#d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=825b038d845d7dcc8c1387b2707899b352417233#825b038d845d7dcc8c1387b2707899b352417233"
 dependencies = [
  "anyhow",
  "arboard",
@@ -8028,7 +8096,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-config"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e#d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=825b038d845d7dcc8c1387b2707899b352417233#825b038d845d7dcc8c1387b2707899b352417233"
 dependencies = [
  "dirs 6.0.0",
  "serde",
@@ -8040,7 +8108,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-connect"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e#d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=825b038d845d7dcc8c1387b2707899b352417233#825b038d845d7dcc8c1387b2707899b352417233"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8079,7 +8147,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-core"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e#d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=825b038d845d7dcc8c1387b2707899b352417233#825b038d845d7dcc8c1387b2707899b352417233"
 dependencies = [
  "accessibility",
  "accessibility-sys",
@@ -8119,7 +8187,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-db"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e#d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=825b038d845d7dcc8c1387b2707899b352417233#825b038d845d7dcc8c1387b2707899b352417233"
 dependencies = [
  "anyhow",
  "chrono",
@@ -8145,7 +8213,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-events"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e#d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=825b038d845d7dcc8c1387b2707899b352417233#825b038d845d7dcc8c1387b2707899b352417233"
 dependencies = [
  "anyhow",
  "chrono",
@@ -8162,7 +8230,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-screen"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e#d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=825b038d845d7dcc8c1387b2707899b352417233#825b038d845d7dcc8c1387b2707899b352417233"
 dependencies = [
  "accessibility-sys",
  "anyhow",
@@ -8199,7 +8267,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-secrets"
 version = "0.1.0"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e#d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=825b038d845d7dcc8c1387b2707899b352417233#825b038d845d7dcc8c1387b2707899b352417233"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -8217,7 +8285,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-vault"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e#d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=825b038d845d7dcc8c1387b2707899b352417233#825b038d845d7dcc8c1387b2707899b352417233"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -9672,6 +9740,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6c4aab0939b457c551cec92331eb47e1c285140ea15e4d85f3bba710b2dd91e"
 dependencies = [
  "log",
+ "notify-rust",
  "rand 0.10.1",
  "serde",
  "serde_json",
@@ -9868,6 +9937,18 @@ dependencies = [
  "dunce",
  "embed-resource",
  "toml 1.1.2+spec-1.1.0",
+]
+
+[[package]]
+name = "tauri-winrt-notification"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b1e66e07de489fe43a46678dd0b8df65e0c973909df1b60ba33874e297ba9b9"
+dependencies = [
+ "quick-xml 0.37.5",
+ "thiserror 2.0.18",
+ "windows 0.61.3",
+ "windows-version",
 ]
 
 [[package]]

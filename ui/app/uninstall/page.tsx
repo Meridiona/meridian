@@ -17,12 +17,10 @@
 // no logic is duplicated here.
 
 import { useCallback, useEffect, useState } from 'react'
-import type { CSSProperties, ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { invoke, tauri } from '@/lib/bridge'
 import type { UninstallItem, UninstallPlan, UninstallResult } from '@/lib/api-types'
-import { Btn, Check, Kicker, Row, Spinner } from '../setup/atoms'
-
-const SERIF: CSSProperties = { fontFamily: 'var(--font-instrument-serif), Georgia, serif' }
+import { Btn, Check, DISPLAY, Kicker, Row, Spinner } from '../setup/atoms'
 
 type Phase = 'loading' | 'plan-error' | 'select' | 'running' | 'done'
 
@@ -74,7 +72,7 @@ export default function UninstallWizard() {
       }}>
         <div style={{ padding: '26px 32px 14px' }}>
           <Kicker style={{ marginBottom: 8 }}>{phase === 'done' ? 'Done' : 'Uninstall'}</Kicker>
-          <h1 style={{ ...SERIF, fontSize: 26, lineHeight: 1.05, letterSpacing: '-.01em', color: 'var(--t-title)' }}>
+          <h1 style={{ ...DISPLAY, fontSize: 23, lineHeight: 1.1, color: 'var(--t-title)' }}>
             {phase === 'done' ? 'Cleaned up' : 'Uninstall Meridian'}
           </h1>
           {phase === 'select' && (
@@ -249,7 +247,7 @@ function DoneStep({ result, openPane }: { result: UninstallResult; openPane: (pa
       <div style={{ padding: '13px 15px', borderRadius: 13, border: '0.5px solid var(--t-card-border)', background: 'var(--t-box)' }}>
         <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--t-title)' }}>Revoke permissions (optional)</p>
         <p style={{ fontSize: 11.5, color: 'var(--t-muted)', marginTop: 4, marginBottom: 10 }}>
-          Deleting or uninstalling doesn&apos;t remove these grants from System Settings — remove them
+          Deleting or uninstalling doesn&apos;t remove these grants from System Settings - remove them
           yourself if you don&apos;t want the entry lingering.
         </p>
         <div className="flex" style={{ gap: 8, flexWrap: 'wrap' }}>
@@ -260,7 +258,7 @@ function DoneStep({ result, openPane }: { result: UninstallResult; openPane: (pa
       </div>
 
       <p style={{ fontSize: 11.5, color: 'var(--t-muted)' }}>
-        You can now drag Meridian.app to the Trash — nothing will be left running.
+        You can now drag Meridian.app to the Trash - nothing will be left running.
       </p>
     </div>
   )

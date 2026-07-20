@@ -186,8 +186,8 @@ impl Scores {
             .0
             .iter()
             .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .unwrap();
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .expect("scores array is fixed-size and non-empty");
         (ActivityKind::from_index(idx), max / total)
     }
 
@@ -542,5 +542,17 @@ mod tests {
         assert!(!ActivityKind::IdlePersonal.is_pm_mappable());
         assert!(ActivityKind::Coding.is_pm_mappable());
         assert!(ActivityKind::DeploymentDevops.is_pm_mappable());
+    }
+
+    #[test]
+    fn winner_does_not_panic_on_nan_score() {
+        // total_cmp's total order ranks a positive NaN above every finite
+        // value, so a NaN score wins outright rather than panicking like
+        // partial_cmp would.
+        let mut scores = Scores::new();
+        scores.add(ActivityKind::Coding, f32::NAN);
+        scores.add(ActivityKind::Meeting, 1.0);
+        let (winner, _confidence) = scores.winner();
+        assert_eq!(winner, ActivityKind::Coding);
     }
 }

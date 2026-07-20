@@ -37,6 +37,10 @@ pub struct TimelineRow {
     /// Raw `app_sessions.window_titles` JSON blob (`[{"window_name":…,"count":N}]`).
     pub window_titles: String,
     pub is_coding: bool,
+    /// The W3C `traceparent` of this session's ETL formation trace (migration
+    /// 010), when the ETL wrote one. Used to link `worklog.hour`'s span back
+    /// to each contributing session's formation trace in OpenObserve.
+    pub traceparent: Option<String>,
 }
 
 /// One coding-agent session that already carries an agent-written summary.
@@ -393,6 +397,7 @@ mod tests {
                 duration_s: 1800,
                 window_titles: "[]".into(),
                 is_coding: false,
+                traceparent: None,
             },
             TimelineRow {
                 app_name: "B".into(),
@@ -401,6 +406,7 @@ mod tests {
                 duration_s: 1800,
                 window_titles: "[]".into(),
                 is_coding: false,
+                traceparent: None,
             },
         ];
         assert_eq!(hour_span_minutes(&rows), 45);
@@ -416,6 +422,7 @@ mod tests {
             duration_s: 300,
             window_titles: "[]".into(),
             is_coding: true,
+            traceparent: None,
         }];
         assert_eq!(hour_span_minutes(&rows), 5);
     }
@@ -435,6 +442,7 @@ mod tests {
             duration_s: dur,
             window_titles: "[]".into(),
             is_coding: false,
+            traceparent: None,
         };
         let timeline = vec![mk("Kept", 300), mk("Burst", 60)];
         let coding = vec![CodingRow {

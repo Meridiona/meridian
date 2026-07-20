@@ -31,6 +31,7 @@ mod provision;
 use anyhow::Result;
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use candle_bert::Embedder;
 
@@ -39,6 +40,29 @@ use candle_bert::Embedder;
 /// old cross-subsystem GPU gate). Never held across an `.await` — all compute runs inside
 /// [`embed_batch`]'s blocking task.
 static EMBEDDER: Lazy<Mutex<Option<Embedder>>> = Lazy::new(|| Mutex::new(None));
+
+/// Max sequences per forward pass. Self-attention memory is `O(batch * seq_len^2)`, so
+/// one hour's whole span list in a single batch (the pre-chunking behaviour) made peak
+/// memory scale with how much on-screen text that hour had — multiple GB on a heavy hour.
+/// The Python predecessor's actual last-shipped embedder (MLX-native, in
+/// `session_distiller.py`, not the earlier sentence-transformers version) chunked at
+/// `batch = 16` and called `mx.clear_cache()` after each one — a starting point, not the
+/// tuned value: measured against the heaviest real hour on record (856 spans), peak RSS
+/// AND wall-clock both kept improving as chunk size shrank further (16 → 1.43GB/27s,
+/// 8 → 918MB/22s, 4 → 586MB/20s), most likely because a larger chunk is more likely to
+/// contain one unusually long span, forcing BatchLongest to pad every other span in that
+/// chunk up to it — wasted compute and memory that a smaller chunk mostly avoids. `4`
+/// landed comfortably under the ~1 GB Python was observed to stay under, so that's the
+/// default; the mimalloc global allocator in `lib.rs` covers giving the freed pages back
+/// to the OS between chunks, since candle frees each one's tensors via RAII regardless.
+/// Overridable for benchmarking.
+static EMBED_CHUNK_SIZE: Lazy<usize> = Lazy::new(|| {
+    std::env::var("EMBEDDER_BATCH_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&n: &usize| n > 0)
+        .unwrap_or(4)
+});
 
 /// Whether the embedding weights are present on disk (so the model can load). The
 /// distiller gates every vector stage on this; `false` → lexical-only degrade.
@@ -78,20 +102,58 @@ pub fn unload() {
     *guard = None;
 }
 
-/// The blocking body: lazily load the model under the mutex, then embed each text.
+/// The blocking body: lazily load the model under the mutex, then embed each text in
+/// fixed-size chunks (see [`EMBED_CHUNK_SIZE`]) rather than one all-at-once forward pass.
 ///
 /// Recovers from a poisoned lock rather than propagating the poison forever: a panic
 /// during one embed (a candle shape mismatch, say) must not permanently strand the
 /// distiller on its lexical-only degrade path for the rest of the daemon's lifetime.
 /// Matches [`crate::llm::rate_limit`]'s `NEXT_SLOT` handling of the same hazard.
 fn embed_blocking(texts: &[String]) -> Result<Vec<Vec<f32>>> {
-    let mut guard = EMBEDDER.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = EMBEDDER.lock().unwrap_or_else(|e| {
+        tracing::warn!("embedder: recovered from poisoned mutex (a prior embed likely panicked)");
+        e.into_inner()
+    });
     if guard.is_none() {
-        *guard = Some(Embedder::load()?);
+        let _span = tracing::debug_span!("embedder.load").entered();
+        let start = Instant::now();
+        match Embedder::load() {
+            Ok(e) => {
+                tracing::info!(
+                    elapsed_ms = start.elapsed().as_millis() as u64,
+                    "embedder: model loaded"
+                );
+                *guard = Some(e);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "embedder: model load failed");
+                return Err(e);
+            }
+        }
     }
     let embedder = guard.as_ref().expect("just loaded");
-    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
-    embedder.embed_batch(&refs)
+
+    let chunk_size = *EMBED_CHUNK_SIZE;
+    let n_chunks = texts.len().div_ceil(chunk_size.max(1));
+    let _span = tracing::debug_span!(
+        "embedder.batch",
+        n_texts = texts.len(),
+        chunk_size,
+        n_chunks
+    )
+    .entered();
+    let start = Instant::now();
+    let mut out = Vec::with_capacity(texts.len());
+    for chunk in texts.chunks(chunk_size) {
+        let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
+        out.extend(embedder.embed_batch(&refs)?);
+    }
+    tracing::debug!(
+        n_texts = texts.len(),
+        elapsed_ms = start.elapsed().as_millis() as u64,
+        "embedder: batch embedded"
+    );
+    Ok(out)
 }
 
 #[cfg(test)]

@@ -46,6 +46,10 @@ jobs:
     # pre-main integration pushes (fold merges, feature merges).
     if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[staging-release]') }}
     runs-on: macos-26
+    outputs:
+      released: ${{ steps.release.outputs.released }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
     env:
       SQLX_OFFLINE: "true"
       # The tray pulls screenpipe-screen/-a11y from the PRIVATE Meridiona/
@@ -159,6 +163,7 @@ jobs:
           apple-api-key-content: ${{ secrets.APPLE_API_KEY_CONTENT }}
 
       - name: semantic-release (staging channel)
+        id: release
         env:
           # PAT to create the tag/prerelease past branch protection; falls back
           # to GITHUB_TOKEN. No npm token — the staging channel is GitHub-only.
@@ -168,7 +173,23 @@ jobs:
           # same option_env! pattern) so the dashboard/popover version badge reads
           # "staging" instead of the "prod" default. Production leaves this unset.
           MERIDIAN_CHANNEL: "staging"
-        run: npx semantic-release
+        # Detect whether a staging prerelease was actually cut by watching the
+        # newest v*-staging* tag move — sorted by creation date, not version,
+        # so semver's "prerelease sorts below release" quirk can't pick a stale
+        # tag. The Windows job below only runs when one was created.
+        run: |
+          before="$(git tag --list 'v*-staging*' --sort=-creatordate | head -1)"
+          npx semantic-release
+          after="$(git tag --list 'v*-staging*' --sort=-creatordate | head -1)"
+          if [ -n "${after}" ] && [ "${before}" != "${after}" ]; then
+            echo "released=true"      >> "$GITHUB_OUTPUT"
+            echo "version=${after#v}" >> "$GITHUB_OUTPUT"
+            echo "tag=${after}"       >> "$GITHUB_OUTPUT"
+            echo "→ staging released ${after}"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            echo "→ no staging release this run"
+          fi
 
       - name: Clean up signing material
         # Runs even on failure — never leave the cert/key on a runner.
@@ -176,3 +197,124 @@ jobs:
         run: |
           security delete-keychain "${RUNNER_TEMP}/meridian-signing.keychain-db" 2>/dev/null || true
           rm -f "${RUNNER_TEMP}/apple-api-key.p8" "${RUNNER_TEMP}/certificate.p12"
+
+  # ── Windows: build + attach to the staging release, exactly like the DMG ────
+  #
+  # Mirrors release.yml's windows-release job, adapted for the staging channel:
+  # it builds with tauri.staging.conf.json (which points the updater at the
+  # rolling updater-staging endpoint), attaches Meridian-setup.exe to the
+  # versioned prerelease the macOS job just cut, and merges a windows-x86_64
+  # key into the latest.json that mirror-staging-release.sh published to the
+  # rolling updater-staging tag — the manifest installed staging apps poll.
+  #
+  # A separate job, and NOT part of semantic-release's asset list, for the same
+  # reason as production: that list ships the DMG, and reaching into it from
+  # Windows work risks the macOS staging path.
+  windows-release:
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: windows-latest
+    env:
+      SQLX_OFFLINE: "true"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
+      MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
+      MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+      MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # Same as the macOS staging job — the badge reads "staging".
+      MERIDIAN_CHANNEL: "staging"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+          persist-credentials: false
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            ui/package-lock.json
+            tray/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: ui/.next/cache
+          key: nextjs-win-${{ hashFiles('ui/package-lock.json') }}-${{ hashFiles('ui/**/*.ts', 'ui/**/*.tsx') }}
+          restore-keys: |
+            nextjs-win-${{ hashFiles('ui/package-lock.json') }}-
+            nextjs-win-
+
+      - name: Install JS dependencies
+        shell: bash
+        run: |
+          (cd ui && npm ci --no-audit --no-fund)
+          (cd tray && npm ci --no-audit --no-fund)
+
+      - name: Build the daemon + tray (NSIS, staging)
+        shell: bash
+        # build:windows:staging passes --config tauri.staging.conf.json, so the
+        # installer bakes the updater-staging endpoint. tauri.windows.conf.json
+        # still auto-merges (NSIS target + meridian.exe resource).
+        run: cd tray && npm run build:windows:staging
+
+      - name: Attach the installer and merge the staging updater manifest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.release.outputs.version }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          NSIS_DIR="target/release/bundle/nsis"
+          setup="$(ls "${NSIS_DIR}"/*-setup.exe 2>/dev/null | head -1)"
+          [ -n "${setup}" ] || { echo "::error::no NSIS installer in ${NSIS_DIR}"; exit 1; }
+          sig="${setup}.sig"
+          [ -f "${sig}" ] || { echo "::error::missing updater signature ${sig}"; exit 1; }
+
+          # 1. The versioned installer, on the immutable v<version> prerelease —
+          #    this is what the updater manifest's `url` points at, matching how
+          #    the macOS tarball lives on the versioned release.
+          cp "${setup}" "${NSIS_DIR}/Meridian-setup.exe"
+          gh release upload "${TAG}" "${NSIS_DIR}/Meridian-setup.exe" --clobber
+
+          # 2. A stable-named copy on the rolling updater-staging tag, for a
+          #    fixed staging-tester download link — the DMG's convenience-copy
+          #    equivalent (mirror-staging-release.sh does the same for the DMG).
+          gh release upload updater-staging "${NSIS_DIR}/Meridian-setup.exe" --clobber
+
+          # 3. Merge windows-x86_64 into the latest.json on updater-staging (the
+          #    manifest installed staging apps poll). The merge refuses to write
+          #    unless both darwin-* keys survive intact.
+          gh release download updater-staging --pattern latest.json --output latest.json --clobber
+          python3 scripts/merge-windows-updater.py \
+            latest.json "${VERSION}" \
+            "https://github.com/Meridiona/meridian/releases/download/${TAG}/Meridian-setup.exe" \
+            "${sig}"
+          gh release upload updater-staging latest.json --clobber
+          echo "✓ staging Windows installer attached; updater-staging/latest.json updated"

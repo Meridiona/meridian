@@ -717,10 +717,21 @@ pub async fn build_plan_response(
     let plan = load_plan(pool, date, today).await?;
 
     let committed: HashSet<String> = plan.iter().map(|p| p.task_key.clone()).collect();
-    let suggestions: Vec<AvailableTask> = available
+    // Carryover (yesterday's confirmed, still-not-Done) tasks are never subject to
+    // the suggestion cap — a dev who leaves 7 tasks unfinished must see all 7
+    // pre-filled tomorrow, not just however many fit in SUGGESTION_CAP. Only the
+    // non-carryover "you might also want this" suggestions are capped, and only
+    // to fill out whatever room is left under SUGGESTION_CAP.
+    let uncommitted: Vec<&AvailableTask> = available
         .iter()
         .filter(|a| !committed.contains(&a.key) && a.score > 0)
-        .take(SUGGESTION_CAP)
+        .collect();
+    let (carryover, rest): (Vec<&AvailableTask>, Vec<&AvailableTask>) =
+        uncommitted.into_iter().partition(|a| a.carryover);
+    let remaining_slots = SUGGESTION_CAP.saturating_sub(carryover.len());
+    let suggestions: Vec<AvailableTask> = carryover
+        .into_iter()
+        .chain(rest.into_iter().take(remaining_slots))
         .cloned()
         .collect();
 

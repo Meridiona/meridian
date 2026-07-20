@@ -1,0 +1,15 @@
+{
+  "bundle": {
+    "targets": ["nsis"],
+    "resources": {
+      "../../target/release/meridian": null,
+      "../../scripts/com.meridiona.daemon.plist": null,
+      "../../target/release/meridian.exe": "backend/meridian.exe"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

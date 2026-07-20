@@ -52,6 +52,16 @@ jobs:
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
+        with:
+          # Restore everywhere, save only on the two integration branches.
+          # GitHub scopes caches by REF, so a branch that is both pushed and
+          # has an open PR stored two near-identical copies of every target/
+          # cache (observed: 2582MB vs 2527MB for macos-universal alone).
+          # Six Rust caches totalled 9.6GB against the 10GB repo quota, which
+          # evicted the release job's cache within ~3h of it being written and
+          # forced every release to compile cold. PR runs still RESTORE from
+          # the base branch; they just stop writing a duplicate.
+          save-if: ${{ github.ref == 'refs/heads/pre-main' || github.ref == 'refs/heads/main' }}
 
       - name: fmt
         run: cargo fmt --check
@@ -61,6 +71,158 @@ jobs:
 
       - name: test
         run: cargo test
+
+  # The daemon builds and its full suite passes on Windows, so this job is a
+  # BLOCKING gate: it exists to stop that silently rotting. It began as a
+  # non-blocking burn-down while the port landed; that phase is over.
+  #
+  # This job is also the ONLY way to validate Windows: `cargo check --target
+  # x86_64-pc-windows-msvc` from macOS dies in `ring`'s build script (its C
+  # sources need the Windows SDK headers), which is the same reason Tauri
+  # documents that meaningful cross-compilation is not possible. There is no
+  # local shortcut — push and read this job.
+  #
+  # NOTE: passing here means the code COMPILES and its tests pass on a CI
+  # runner. It does not mean Meridian works on Windows — nothing here
+  # exercises a real desktop, so capture producing frames, the tray rendering,
+  # and the installer registering a service are all still unverified.
+  windows-portability:
+    name: Windows portability
+    runs-on: windows-latest
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        # Same mechanism as the Rust job above — cargo resolves the whole
+        # workspace, so the private git dep must be fetchable even though this
+        # job never compiles the crate that uses it.
+        # `shell: bash` (Git Bash ships on windows-latest) so this is character-
+        # for-character the same command as the Rust job's, rather than a
+        # PowerShell transliteration that could drift from it.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          # x86_64-pc-windows-msvc is this runner's host target, so no `targets:`
+          # entry is needed. It is deliberately NOT added to rust-toolchain.toml
+          # either — that would make every macOS dev machine download the Windows
+          # std for a target they never build.
+          components: clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Save only on the integration branches - see the Rust job above.
+          save-if: ${{ github.ref == 'refs/heads/pre-main' || github.ref == 'refs/heads/main' }}
+
+      - name: check
+        run: cargo check -p meridian -p meridian-core --all-targets
+
+      # Compiling is not working. The remaining Windows gaps are behavioural —
+      # tests that hardcode a Unix path, a launchd label, or an argv shape —
+      # and only running them surfaces those. Kept in the same non-blocking
+      # job so the burn-down stays one signal rather than two.
+      - name: test
+        run: cargo test -p meridian -p meridian-core
+
+      # The tray is checked separately and non-blocking: unlike the daemon it
+      # has never been compiled in CI on ANY platform, so a failure here may
+      # well be latent breakage that has nothing to do with Windows. Keeping it
+      # out of the blocking steps above means it cannot take the portability
+      # gate red for an unrelated reason, while still reporting.
+      #
+      # Tauri's build script validates that every bundle.resources path EXISTS,
+      # but `cargo check` never reads the contents — so a placeholder satisfies
+      # it. A real `cargo build --release --bin meridian` here took ~9 minutes
+      # (release-optimised candle/tokenizers/sqlx) purely to produce a file the
+      # check only stats. The release daemon genuinely building on Windows is
+      # covered by the release pipeline, not needed for a compile check.
+      - name: Stub the tray bundle resource
+        shell: bash
+        run: |
+          mkdir -p target/release
+          : > target/release/meridian.exe
+
+      - name: check tray
+        continue-on-error: true
+        run: cargo check -p meridian-tray --all-targets
+
+  # macOS is the shipped platform, and it now ships a UNIVERSAL binary — Apple
+  # Silicon (arm64) AND Intel (x86_64). Before this job, neither was exercised
+  # at PR time: the `rust` job runs on ubuntu (so it never compiles the tray's
+  # macOS-only capture/objc2/launchd code, and never runs the tray's tests),
+  # and nothing checked the x86_64 slice at all — an Intel-slice regression
+  # would only surface at release, on the one build that can't be retried
+  # cheaply. This job closes both gaps.
+  #
+  # The runner is arm64, so the native steps ARE the Apple-Silicon gate; the
+  # Intel slice is a cross-check (same OS, other arch — cheap and reliable,
+  # unlike the Windows cross-compile which can't run off-Windows at all).
+  macos-universal:
+    name: macOS (Silicon + Intel)
+    runs-on: macos-latest
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        # The tray's capture stack is a git dep on the PRIVATE screenpipe-fork;
+        # same rewrite as the other jobs (this one actually compiles it).
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          # arm64 is the runner's host; add the Intel target for the x86_64
+          # slice check. NOT added to rust-toolchain.toml — only CI needs it.
+          targets: "x86_64-apple-darwin"
+          components: clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Save only on the integration branches - see the Rust job above.
+          save-if: ${{ github.ref == 'refs/heads/pre-main' || github.ref == 'refs/heads/main' }}
+
+      # Same stub trick as the Windows tray check: tauri-build only STATS the
+      # bundle.resources daemon path during `cargo check`, never reads it, so a
+      # placeholder saves a ~9-min release build of the daemon. The real
+      # universal daemon build is covered by the release pipeline.
+      - name: Stub the tray bundle resource
+        run: |
+          mkdir -p target/release
+          : > target/release/meridian
+
+      # Apple Silicon (arm64, the host): the tray is macOS-only and was never
+      # compiled or tested in CI before — clippy + its 109 tests run here.
+      - name: clippy tray (Apple Silicon)
+        run: cargo clippy -p meridian-tray --all-targets -- -D warnings
+
+      - name: test tray (Apple Silicon)
+        run: cargo test -p meridian-tray
+
+      # Intel (x86_64): the universal binary's other slice. A compile check is
+      # enough to catch an arch- or SDK-specific regression before it reaches
+      # the release build; the daemon+core Intel slice rides along.
+      - name: check universal — Intel slice
+        run: cargo check -p meridian -p meridian-core -p meridian-tray --target x86_64-apple-darwin
 
   ui:
     name: UI
@@ -146,7 +308,24 @@ jobs:
           # path this guard used to check was removed with the npm channel
           # (DMG-only distribution). Capture now pulls the fork as a git dep
           # in tray/src-tauri/Cargo.toml — that `rev` is the pin.
-          expected="d6d2b318cfe1fffbc9e923e627e8659df1b2ff7e"
+          #
+          # What this guard actually protects is the LICENSE BASE: the fork is
+          # cut from screenpipe's last MIT commit (892199f74), and screenpipe
+          # >= 0.4.17 is Commercial-licensed. Meridiona's OWN commits on top of
+          # that base are ours and carry no license risk — so bumping `expected`
+          # is legitimate ONLY when every commit the bump introduces is ours and
+          # none merges upstream screenpipe code past the MIT cutoff.
+          #
+          # Audit each time you bump, and record it here:
+          #   gh api repos/Meridiona/screenpipe-fork/compare/<old>...<new> \
+          #     --jq '.commits[] | .sha[0:8] + "  " + .commit.author.name'
+          #
+          # 2026-07-19, d6d2b318 -> 825b038d. Three commits, all Meridiona-
+          # authored, no upstream merge:
+          #   1bc2ba88 adityaharishch  fix(a11y): prune browser tab strip …
+          #   4f9ba866 adityaharishch  Merge pull request #1 (same, ours)
+          #   825b038d Akarsh Hegde    fix(screen): disable sck-rs on macOS 26
+          expected="825b038d845d7dcc8c1387b2707899b352417233"
           f="tray/src-tauri/Cargo.toml"
           fail=0
           for crate in screenpipe-screen screenpipe-a11y; do

@@ -6,14 +6,14 @@
 
 [![CI](https://github.com/Meridiona/meridian/actions/workflows/ci.yml/badge.svg)](https://github.com/Meridiona/meridian/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Platform: macOS](https://img.shields.io/badge/platform-macOS-111111.svg)](#install)
+[![Platform: macOS | Windows](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-111111.svg)](#install)
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-dea584.svg)](https://www.rust-lang.org/)
 
 </div>
 
 You finish something good — and then you have to go *log* it. Update the status. Write the standup. Drag the card. Meridian makes that second job disappear.
 
-It runs quietly on your Mac, understands what you're working on, and keeps your tickets in **Jira, GitHub Issues, and Linear** current — so you never start a timer, fill out a form, or drag a card again.
+It runs quietly on your Mac or PC, understands what you're working on, and keeps your tickets in **Jira, GitHub Issues, and Linear** current — so you never start a timer, fill out a form, or drag a card again.
 
 Not a time tracker you fill out. Not a dashboard you check. A background layer that keeps your project management honest while you stay in the work.
 
@@ -49,17 +49,27 @@ A dashboard inside the Meridian app (open it from the menu-bar tray icon) shows 
 
 ## Install
 
-**Requirements:** macOS (Apple Silicon or Intel).
+**Requirements:** macOS (Apple Silicon or Intel), or Windows 10/11 (x64).
 
-> Meridian ships as a universal binary — Apple Silicon and Intel Macs are both supported. **Windows and Linux are not supported.** The local embedder is CPU-only (not Metal-accelerated), so it behaves identically on both architectures. A Rosetta x86_64 terminal or Homebrew on an Apple Silicon Mac is fine — Meridian's own binaries carry native code for both architectures regardless of what's on your `PATH`.
+> On macOS Meridian ships as a universal binary, so Apple Silicon and Intel are both native. The local embedder is CPU-only (not Metal-accelerated), so it behaves identically everywhere. **Linux is not supported.**
+>
+> Windows support is newer than macOS and one capability differs: notifications are plain title-and-body toasts, without the action buttons macOS shows, so a notification asking you to confirm something can be read but not answered from the toast itself. Everything else - capture, the timeline, tracker sync, auto-update - works the same.
+
+**macOS**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Meridiona/meridian/main/scripts/bootstrap.sh | bash
 ```
 
-This downloads the latest signed Meridian app, installs it to `/Applications`, and launches it. The app stages its own background daemon on first run and opens the setup wizard — macOS permissions, the AI that writes your summaries, and connecting your tracker. Updates install themselves from within the app.
+**Windows** (PowerShell)
 
-Prefer to do it by hand? Download `Meridian.dmg` from the [latest release](https://github.com/Meridiona/meridian/releases/latest), open it, and drag **Meridian** to Applications.
+```powershell
+irm https://raw.githubusercontent.com/Meridiona/meridian/main/scripts/bootstrap.ps1 | iex
+```
+
+This downloads the latest Meridian build, installs it, and launches it. The app stages its own background daemon on first run and opens the setup wizard — permissions (macOS only; Windows needs none), the AI that writes your summaries, and connecting your tracker. Updates install themselves from within the app.
+
+Prefer to do it by hand? From the [latest release](https://github.com/Meridiona/meridian/releases/latest), download `Meridian.dmg` (macOS) and drag **Meridian** to Applications, or `Meridian-setup.exe` (Windows) and run it.
 
 ## Supported PM tools
 

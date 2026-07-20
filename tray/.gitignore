@@ -12,3 +12,14 @@ src-tauri/icons/32x32@2x.png
 src-tauri/icons/128x128@2x.png
 src-tauri/icons/tray.png
 src-tauri/gen/
+
+# The four icons tauri.conf.json's bundle.icon references ARE committed, so a
+# build has them without running create-icons.sh — which is macOS-only
+# (sips/iconutil). A Windows build (CI check + release) has no other way to
+# obtain icon.ico, which tauri-build hard-requires to emit the .exe's icon
+# resource. create-icons.sh regenerates all of these on macOS; the committed
+# copies are the source of truth for every other platform.
+!src-tauri/icons/icon.ico
+!src-tauri/icons/icon.icns
+!src-tauri/icons/32x32.png
+!src-tauri/icons/128x128.png

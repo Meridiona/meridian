@@ -550,6 +550,7 @@ pub fn run() {
             commands::draft_plan_task,
             commands::create_plan_task,
             commands::edit_plan_task,
+            commands::set_plan_task_done,
             commands::triage_decision,
             commands::triage_ignore,
             commands::apply_ticket_fix,
@@ -608,6 +609,7 @@ pub fn run() {
             commands::probe_custom_llm_provider,
             commands::remove_custom_llm_provider,
             commands::list_custom_llm_providers,
+            commands::list_custom_llm_provider_models,
             // Uninstall wizard (plan + execute; see src/uninstall.rs for the CLI it drives)
             commands::get_uninstall_plan,
             commands::execute_uninstall,

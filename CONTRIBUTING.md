@@ -34,7 +34,7 @@ See **[CLAUDE.md](CLAUDE.md)** for the full architecture and per-task recipes.
 
 ## Development setup
 
-**Requirements:** macOS (Apple Silicon or Intel), Rust 1.93.1 (pinned via `rust-toolchain.toml`), Node 20+.
+**Requirements:** macOS (Apple Silicon or Intel) or Windows 10/11, Rust 1.93.1 (pinned via `rust-toolchain.toml`), Node 20+.
 
 ### First-time setup
 

@@ -286,10 +286,18 @@ fn try_build_otel_providers(
         .to_string();
     let log_endpoint = trace_endpoint.replace("/v1/traces", "/v1/logs");
 
-    let resource = Resource::new(vec![KeyValue::new(
-        "service.name",
-        service_name.to_string(),
-    )]);
+    // `host.name` is a "semconv_experimental"-gated constant in
+    // opentelemetry-semantic-conventions 0.27 — not worth enabling that
+    // feature flag for one stable, well-known attribute name.
+    use opentelemetry_semantic_conventions::resource::SERVICE_VERSION;
+    let resource = Resource::new(vec![
+        KeyValue::new("service.name", service_name.to_string()),
+        KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
+        KeyValue::new(
+            "host.name",
+            gethostname::gethostname().to_string_lossy().into_owned(),
+        ),
+    ]);
 
     // Build spool clients — one per signal so filenames encode the correct prefix.
     let spool_trace = crate::telemetry_spool::spool_client::SpoolClient::new()
@@ -345,7 +353,11 @@ fn build_default_filter(log_level: &str) -> String {
         "WARNING" | "WARN" => "meridian=warn,sqlx=warn".to_string(),
         "ERROR" => "meridian=error,sqlx=error".to_string(),
         // INFO or anything else: keep the previous fixed default with module-level overrides.
-        _ => "meridian=info,meridian::etl=debug,meridian::intelligence=debug,sqlx=warn".to_string(),
+        // `embedder=debug` surfaces the model-load/batch spans (embedder/mod.rs) at the
+        // production default — the same treatment etl/intelligence already get — since
+        // the embedder is on the critical path for every hour's distillation and its
+        // timing is exactly what a `DISTILLER_EMBED_TIMEOUT_SECS` investigation needs.
+        _ => "meridian=info,meridian::etl=debug,meridian::intelligence=debug,meridian::embedder=debug,sqlx=warn".to_string(),
     }
 }
 
@@ -380,8 +392,9 @@ pub fn resolve_log_dir() -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("MERIDIAN_LOG_DIR") {
         return Ok(PathBuf::from(shellexpand::tilde(&dir).into_owned()));
     }
-    let home = std::env::var("HOME").context("HOME not set")?;
-    Ok(PathBuf::from(home).join(".meridian").join("logs"))
+    let meridian_dir =
+        meridian_core::paths::meridian_dir().context("cannot resolve the home directory")?;
+    Ok(meridian_dir.join("logs"))
 }
 
 /// Inject the current span's W3C `traceparent` into a string suitable for

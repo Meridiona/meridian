@@ -47,12 +47,12 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// Where these CLIs actually land, for when the login shell is unavailable or too slow.
 fn candidate_dirs() -> Vec<PathBuf> {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = meridian_core::paths::home_dir_or_cwd();
     [
-        format!("{home}/.local/bin"),
-        format!("{home}/.npm-global/bin"),
-        format!("{home}/.bun/bin"),
-        format!("{home}/.volta/bin"),
+        home.join(".local/bin").to_string_lossy().into_owned(),
+        home.join(".npm-global/bin").to_string_lossy().into_owned(),
+        home.join(".bun/bin").to_string_lossy().into_owned(),
+        home.join(".volta/bin").to_string_lossy().into_owned(),
         "/opt/homebrew/bin".to_string(),
         "/usr/local/bin".to_string(),
     ]
@@ -92,9 +92,7 @@ pub async fn detect(provider: LlmProvider) -> ProviderStatus {
         };
     };
 
-    let found = probe_login_shell(bin)
-        .await
-        .or_else(|| probe_candidates(bin));
+    let found = resolve_cli(bin).await;
     ProviderStatus {
         id,
         installed: found.is_some(),
@@ -232,10 +230,7 @@ pub async fn test_all_installed(settings: &RuntimeSettings) -> Vec<ProviderTestR
 fn test_cache_path() -> PathBuf {
     let home = std::env::var("MERIDIAN_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let h = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(h).join(".meridian")
-        });
+        .unwrap_or_else(|_| meridian_core::paths::home_dir_or_cwd().join(".meridian"));
     home.join("provider_test_cache.json")
 }
 
@@ -272,6 +267,55 @@ pub fn persist_test_result(result: &ProviderTestResult) {
     }
 }
 
+/// Successful `bin name → absolute path` resolutions, memoised for the process lifetime.
+///
+/// Only SUCCESSES are cached. A negative result must stay retryable: a user who installs
+/// `claude` while the tray is running would otherwise be told it is missing until they
+/// restart the app. The cost of not caching misses is one login-shell probe per call on a
+/// genuinely absent CLI, bounded by [`PROBE_TIMEOUT`].
+static RESOLVED_BINS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, PathBuf>>> =
+    std::sync::OnceLock::new();
+
+/// Resolve a CLI's absolute path the way [`detect`] does — login shell first, then the
+/// usual install locations.
+///
+/// # Who calls this
+///
+/// [`detect`], for the install probe; and
+/// [`crate::coding_agent_session_ingest::summariser::run_capture`], which spawns the
+/// resolved path instead of a bare program name. That second caller is the load-bearing
+/// one: `Command::new("claude")` searches only the CALLING process's `PATH`, and the tray
+/// is a Finder-launched `.app` whose `PATH` is the stripped launchd default
+/// (`/usr/bin:/bin:/usr/sbin:/sbin`). The daemon never hit this because
+/// `scripts/com.meridiona.daemon.plist` sets a rich `PATH` for it, which is exactly why
+/// the bug only ever showed up in the tray's Test Connection.
+///
+/// Returns `None` when neither probe finds the binary; callers fall back to the bare name
+/// so a working `PATH` still behaves as before.
+pub async fn resolve_cli(bin: &str) -> Option<PathBuf> {
+    if let Some(hit) = RESOLVED_BINS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(bin)
+        .cloned()
+    {
+        return Some(hit);
+    }
+
+    let found = probe_login_shell(bin)
+        .await
+        .or_else(|| probe_candidates(bin))?;
+
+    tracing::debug!(bin, path = %found.display(), "resolved CLI path");
+    RESOLVED_BINS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(bin.to_string(), found.clone());
+    Some(found)
+}
+
 /// Ask the user's login shell where the binary is. This is the one that works when the
 /// app was launched from Finder — `-l` sources their profile, so we see the same `PATH`
 /// they see. `-i` is deliberately omitted: an interactive shell can print banners, run
@@ -279,9 +323,18 @@ pub fn persist_test_result(result: &ProviderTestResult) {
 async fn probe_login_shell(bin: &str) -> Option<PathBuf> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let mut cmd = Command::new(&shell);
+    // `bin` is passed as a POSITIONAL ARGUMENT, never interpolated into the script. The
+    // script text is a fixed literal, so no value of `bin` can be parsed as shell syntax
+    // — `format!("command -v {bin}")` would let a name containing `;`, `$()` or a
+    // backtick execute arbitrary commands in the user's login shell. Every caller passes
+    // a hardcoded literal today, but `resolve_cli` is public and takes an arbitrary
+    // `&str`, so the guarantee belongs here rather than in a caller-side convention.
+    // For `-c`, the first operand becomes `$0`, hence the placeholder before `bin`.
     cmd.arg("-l")
         .arg("-c")
-        .arg(format!("command -v {bin}"))
+        .arg("command -v -- \"$1\"")
+        .arg("meridian-probe")
+        .arg(bin)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -314,6 +367,72 @@ fn probe_candidates(bin: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The load-bearing property: whatever `resolve_cli` hands back must be something
+    /// `Command::new` can spawn WITHOUT relying on the caller's `PATH` — i.e. an absolute
+    /// path that exists. A bare name here would silently reintroduce the tray bug, since
+    /// a Finder-launched `.app` has only `/usr/bin:/bin:/usr/sbin:/sbin`.
+    ///
+    /// `sh` is the probe target because POSIX guarantees it at an absolute path.
+    ///
+    /// Unix-only, and so is the mechanism under test: the probe shells out to `$SHELL -l`
+    /// and falls back to unix install dirs (`~/.local/bin`, `/opt/homebrew/bin`). On the
+    /// Windows portability job there is no `/bin/sh` for either path to find, so this
+    /// asserted the environment rather than the contract. The bug it guards is macOS-only
+    /// (a Finder-launched `.app`), and the other `resolve_cli` tests still run everywhere.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn resolve_cli_returns_an_absolute_existing_path() {
+        let found = resolve_cli("sh").await.expect("sh must resolve");
+        assert!(found.is_absolute(), "not absolute: {}", found.display());
+        assert!(found.exists(), "does not exist: {}", found.display());
+    }
+
+    /// A miss must be `None` rather than a bare-name `PathBuf`. `run_capture` treats
+    /// `None` as "fall back to the bare name"; a `Some("nope")` would instead be spawned
+    /// as a literal relative path and fail with a confusing error.
+    #[tokio::test]
+    async fn resolve_cli_misses_are_none() {
+        assert_eq!(
+            resolve_cli("meridian-definitely-not-a-real-binary-xyz").await,
+            None
+        );
+    }
+
+    /// `resolve_cli` is public and takes an arbitrary `&str`, so a name carrying shell
+    /// metacharacters must resolve to nothing rather than execute. The probe passes the
+    /// name as a positional argument to a fixed script, so there is no way out of it.
+    ///
+    /// The canary is the side effect: if the `;` were interpreted, the injected `touch`
+    /// would run and the file would exist.
+    #[tokio::test]
+    async fn resolve_cli_does_not_execute_shell_metacharacters() {
+        let canary = std::env::temp_dir().join("meridian-injection-canary");
+        let _ = std::fs::remove_file(&canary);
+        let payload = format!("sh; touch {}", canary.display());
+
+        assert_eq!(resolve_cli(&payload).await, None);
+        assert!(
+            !canary.exists(),
+            "injected command ran - the probe is interpolating into the shell script"
+        );
+    }
+
+    /// Negative results must NOT be memoised: a user who installs a CLI while the tray is
+    /// running has to be able to Test Connection again without restarting the app.
+    #[tokio::test]
+    async fn resolve_cli_does_not_cache_misses() {
+        let bin = "meridian-not-installed-yet-abc";
+        assert_eq!(resolve_cli(bin).await, None);
+        assert!(
+            !RESOLVED_BINS
+                .get_or_init(Default::default)
+                .lock()
+                .unwrap()
+                .contains_key(bin),
+            "a miss was cached, so installing the CLI later would not be picked up"
+        );
+    }
 
     #[tokio::test]
     async fn detect_all_covers_every_builtin_exactly_once() {

@@ -14,6 +14,11 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0.86"
 chrono = "0.4.31"
+# Home-directory lookup for `util::paths` (the one place `~/` is expanded).
+# Needed because `$HOME` is unset on Windows; `dirs` falls back to the
+# platform's own profile-directory API there. Already in the daemon's tree, so
+# this adds nothing new to the workspace lockfile.
+dirs = "5"
 # Instrumentation facade only (~no-op without a subscriber) — the heavy OTLP
 # exporter is wired by the binary (daemon, or the tray's `otel` dev feature).
 tracing = "0.1"

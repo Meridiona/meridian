@@ -32,6 +32,10 @@ concurrency:
 jobs:
   release:
     runs-on: macos-26
+    outputs:
+      released: ${{ steps.release.outputs.released }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
     env:
       SQLX_OFFLINE: "true"
       # The tray pulls screenpipe-screen/-a11y from the PRIVATE Meridiona/
@@ -182,12 +186,29 @@ jobs:
           apple-api-key-content: ${{ secrets.APPLE_API_KEY_CONTENT }}
 
       - name: semantic-release
+        id: release
         env:
           # GitHub PAT (repo scope) to push the version commit to main past
           # branch protection; falls back to GITHUB_TOKEN. The release publishes
           # only to the GitHub release (the DMG + updater artifacts) — no npm.
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
-        run: npx semantic-release
+        # Whether a release actually happened is derived from the newest v* tag
+        # moving, rather than from parsing semantic-release's output: most runs
+        # legitimately release nothing, and the Windows job below must not try
+        # to attach artifacts to a release that was never cut.
+        run: |
+          before="$(git tag --list 'v*' --sort=-v:refname | head -1)"
+          npx semantic-release
+          after="$(git tag --list 'v*' --sort=-v:refname | head -1)"
+          if [ -n "${after}" ] && [ "${before}" != "${after}" ]; then
+            echo "released=true"            >> "$GITHUB_OUTPUT"
+            echo "version=${after#v}"       >> "$GITHUB_OUTPUT"
+            echo "tag=${after}"             >> "$GITHUB_OUTPUT"
+            echo "→ released ${after}"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            echo "→ no release this run (newest tag still ${before:-none})"
+          fi
 
       - name: Clean up signing material
         # Runs even on failure — never leave the cert/key on a runner.
@@ -195,3 +216,141 @@ jobs:
         run: |
           security delete-keychain "${RUNNER_TEMP}/meridian-signing.keychain-db" 2>/dev/null || true
           rm -f "${RUNNER_TEMP}/apple-api-key.p8" "${RUNNER_TEMP}/certificate.p12"
+
+  # ── Windows: build + attach to the release the macOS job just cut ──────────
+  #
+  # A separate job because Windows artifacts cannot be produced on the macOS
+  # runner, and deliberately NOT folded into semantic-release's asset list:
+  # that list and its prepareCmd are what publish the macOS DMG, and a Windows
+  # change reaching into them is the one way this work could regress the
+  # shipping macOS release path.
+  #
+  # Runs only when the macOS job actually cut a release — most pushes to main
+  # release nothing, and there would be no tag to attach to.
+  windows-release:
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: windows-latest
+    env:
+      SQLX_OFFLINE: "true"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      # Same compile-time constants the macOS job bakes in. These are
+      # cross-platform values (OAuth client ids, public analytics keys), not
+      # macOS-specific ones, so the Windows build must carry them too or the
+      # shipped app silently loses Jira sign-in, GitHub device flow, analytics,
+      # and Clerk sign-in.
+      MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
+      MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
+      MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+      MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
+      # The updater's minisign keypair is cross-platform — the SAME key signs
+      # the macOS tarball and the Windows installer, and the pubkey baked into
+      # tauri.conf.json verifies both.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The tag semantic-release just created — NOT the trigger commit,
+          # which predates the version bump.
+          ref: ${{ needs.release.outputs.tag }}
+          persist-credentials: false
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            ui/package-lock.json
+            tray/package-lock.json
+
+      # Explicit, because `python3` is not a reliable name on the Windows
+      # runner image — it ships Python as `python` plus the `py` launcher, and
+      # whether `python3` resolves has varied between images. The manifest
+      # merge below is the step that must not fail on something this
+      # incidental, so pin the interpreter rather than hope.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Reuse the Next.js compiler cache across release runs — the dashboard
+      # build is otherwise from scratch every time.
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: ui/.next/cache
+          key: nextjs-win-${{ hashFiles('ui/package-lock.json') }}-${{ hashFiles('ui/**/*.ts', 'ui/**/*.tsx') }}
+          restore-keys: |
+            nextjs-win-${{ hashFiles('ui/package-lock.json') }}-
+            nextjs-win-
+
+      # Install JS deps only. The dashboard itself is built exactly once, by
+      # `tauri build`'s `beforeBuildCommand` (`cd ../ui && npm run build`)
+      # inside build:windows below — an explicit `npm run build` here would be
+      # a second, redundant full Next.js production build.
+      - name: Install JS dependencies
+        shell: bash
+        run: |
+          (cd ui && npm ci --no-audit --no-fund)
+          (cd tray && npm ci --no-audit --no-fund)
+
+      - name: Build the daemon + tray (NSIS)
+        shell: bash
+        # tauri.windows.conf.json is picked up automatically for this target:
+        # it swaps the bundle to NSIS and points bundle.resources at
+        # meridian.exe. No flag needed. tauri build's beforeBuildCommand builds
+        # the dashboard (ui/out) as its first step.
+        run: cd tray && npm run build:windows
+
+      - name: Attach the installer and merge the updater manifest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.release.outputs.version }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          NSIS_DIR="target/release/bundle/nsis"
+          setup="$(ls "${NSIS_DIR}"/*-setup.exe 2>/dev/null | head -1)"
+          [ -n "${setup}" ] || { echo "::error::no NSIS installer found in ${NSIS_DIR}"; exit 1; }
+
+          # Stable name so the bootstrap script's /latest/download/ URL is
+          # version-independent, mirroring what package-updater.sh does for the
+          # DMG.
+          cp "${setup}" "${NSIS_DIR}/Meridian-setup.exe"
+          gh release upload "${TAG}" "${NSIS_DIR}/Meridian-setup.exe" --clobber
+
+          # The updater points at the installer itself on Windows (unlike
+          # macOS, which points at a .app.tar.gz), so the .sig belongs to it.
+          sig="${setup}.sig"
+          [ -f "${sig}" ] || { echo "::error::missing updater signature ${sig} — is TAURI_SIGNING_PRIVATE_KEY set?"; exit 1; }
+
+          # Merge into the manifest the macOS job already published. The merge
+          # script refuses to write unless both darwin-* entries survive intact
+          # — this is the only step where a Windows bug could break macOS
+          # auto-update.
+          gh release download "${TAG}" --pattern latest.json --output latest.json --clobber
+          python3 scripts/merge-windows-updater.py \
+            latest.json "${VERSION}" \
+            "https://github.com/Meridiona/meridian/releases/download/${TAG}/Meridian-setup.exe" \
+            "${sig}"
+          gh release upload "${TAG}" latest.json --clobber
+          echo "✓ Windows installer attached and latest.json updated"

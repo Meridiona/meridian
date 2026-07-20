@@ -25,6 +25,13 @@ name = "cat_smoke"
 path = "src/bin/cat_smoke.rs"
 
 [dependencies]
+# Global allocator — returns freed pages to the OS proactively (unlike the platform
+# default allocators, which retain freed arenas for reuse). The embedder's chunked
+# batches free a full tensor set every ~16-32 spans; without this, RSS plateaus at
+# whatever the highest transient chunk cost was instead of settling back down.
+# Cross-platform (macOS/Windows/Linux, ARM/x86) — see src/lib.rs's global allocator.
+mimalloc = "0.1"
+
 # DB — exact versions matching screenpipe
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls", "chrono", "migrate", "json"] }
 libsqlite3-sys = { version = "0.26", features = ["bundled"] }
@@ -64,6 +71,9 @@ opentelemetry-semantic-conventions = "0.27"
 # .otlp files back to structured log/span records for `meridian logs`
 # (src/telemetry_spool/render.rs) — no live OpenObserve needed to read them.
 opentelemetry-proto = { version = "0.27", default-features = false, features = ["gen-tonic-messages", "trace", "logs"] }
+# Resolves the `host.name` OTel resource attribute (observability/mod.rs). Was
+# already a transitive dep (via opentelemetry-otlp's stack); made explicit.
+gethostname = "1.1.0"
 prost = "0.13"
 hex = "0.4"
 
@@ -81,17 +91,19 @@ shellexpand = "3"
 regex = "1"
 
 # On-device embedding model for the session distiller's SemDeDup — pure-Rust (candle),
-# no C++/ONNX runtime. Runs on CPU (see src/embedder/device.rs): at this volume (a few
-# hundred short spans once an hour) CPU is sub-second, so the GPU buys nothing, and it
-# keeps the build identical on every OS. Weights are fetched at setup via the existing
+# no C++/ONNX runtime. Runs on CPU (see src/embedder/device.rs): candle's *default* CPU
+# backend has no BLAS acceleration at all (plain safe-Rust matmul), which made an
+# unusually heavy hour's batch take 45s+. macOS ships Accelerate.framework (vecLib/BLAS)
+# on every Mac, Intel or Apple Silicon, with no extra download or licensing — enabled
+# below for a large matmul speedup with zero cross-platform risk. Windows/Linux stay on
+# the plain backend for now (candle's `mkl` feature needs a bundled/system MKL install,
+# x86-only, and is a separate follow-up). Weights are fetched at setup via the existing
 # `reqwest` (no hf-hub), see src/embedder/provision.rs. `dirs` resolves the cross-platform
 # model cache dir.
-candle-core = "0.10"
-candle-nn = "0.10"
-candle-transformers = "0.10"
 # `fancy-regex` is the pure-Rust regex backend (vs `onig`, which is C) — required by
 # tokenizers for its Split/Replace pre-tokenizers.
 tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+
 dirs = "5"
 
 # Telemetry spool: tar+gz for export/import CLI
@@ -112,6 +124,16 @@ sha2 = "0.10"
 base64 = "0.22"
 rand = "0.8"
 jsonschema = { version = "0.48.0", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.10", features = ["accelerate"] }
+candle-nn = { version = "0.10", features = ["accelerate"] }
+candle-transformers = { version = "0.10", features = ["accelerate"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+candle-core = "0.10"
+candle-nn = "0.10"
+candle-transformers = "0.10"
 
 [dev-dependencies]
 tokio       = { version = "1.15", features = ["full", "test-util"] }

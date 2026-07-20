@@ -161,6 +161,12 @@ impl Plan {
         let staged_binaries: Vec<PathBuf> = [
             // Staged native binaries (DMG path).
             ".meridian/bin/meridian",
+            // Same binary as staged by the Windows installer, which needs the
+            // .exe suffix to be runnable. Listed unconditionally rather than
+            // cfg'd: the filter below drops paths that do not exist, so the
+            // wrong-platform entry costs nothing and one list is easier to keep
+            // correct than two.
+            ".meridian/bin/meridian.exe",
             ".meridian/bin/meridian-a11y-helper",
             ".meridian/backend-version",
             // CLI on PATH — the DMG symlink and the npm node-wrapper both land here;
@@ -216,9 +222,9 @@ impl Plan {
 pub fn run(args: &[String]) {
     let flags = Flags::from_args(args);
 
-    let home = match std::env::var("HOME") {
-        Ok(h) => PathBuf::from(h),
-        Err(_) => {
+    let home = match meridian_core::paths::home_dir() {
+        Some(h) => h,
+        None => {
             if flags.json {
                 println!(r#"{{"error":"HOME not set - cannot locate the install"}}"#);
             } else {
@@ -300,6 +306,26 @@ fn run_human(plan: &Plan) {
     }
 
     // Execute.
+    //
+    // Windows registers the daemon as a per-user scheduled task rather than a
+    // launchd agent (see the tray's backend_install::register_service), so the
+    // plist loop below finds nothing there. Without this, uninstalling on
+    // Windows would leave the task behind and the daemon would keep starting
+    // at every login — with its binary deleted.
+    //
+    // Best-effort: /Delete exits non-zero when the task is already absent,
+    // which is the normal case on a second uninstall.
+    #[cfg(target_os = "windows")]
+    {
+        let out = std::process::Command::new("schtasks")
+            .args(["/Delete", "/F", "/TN", "Meridian Daemon"])
+            .output();
+        match out {
+            Ok(o) if o.status.success() => println!("✓ removed login task  Meridian Daemon"),
+            _ => println!("✓ login task  Meridian Daemon (not registered)"),
+        }
+    }
+
     let uid = uid_str();
     for (label, plist) in &plan.agents {
         // `bootout` can legitimately return non-zero (the agent isn't currently

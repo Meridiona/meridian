@@ -124,14 +124,47 @@ pub async fn run_pm_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
 /// log and move on.
 async fn triage_after_sync(meridian: &SqlitePool) {
     match task_triage::run_triage(meridian, chrono::Utc::now()).await {
-        Ok(s) => tracing::debug!(
-            ready = s.ready,
-            needs_detail = s.needs_detail,
-            looks_stale = s.looks_stale,
-            not_sure = s.not_sure,
-            pruned = s.pruned,
-            "board triaged"
-        ),
+        Ok(s) => {
+            tracing::debug!(
+                ready = s.ready,
+                needs_detail = s.needs_detail,
+                looks_stale = s.looks_stale,
+                not_sure = s.not_sure,
+                pruned = s.pruned,
+                "board triaged"
+            );
+            maybe_notify_board_hygiene(meridian, &s).await;
+        }
         Err(e) => tracing::warn!(error = %e, "board triage after sync failed"),
+    }
+}
+
+/// Daily digest: if the board has tickets needing attention (not `Ready`),
+/// enqueue one batched notification rather than nudging on every sync tick —
+/// same once-per-day dedup shape as [`crate::daily_plan::maybe_nudge`]. Safe
+/// to call unconditionally on every `triage_after_sync` pass (potentially
+/// several times a day): the outbox's UNIQUE constraint on `dedup_key` makes
+/// a repeat call within the same day a no-op, so no extra gate is needed.
+async fn maybe_notify_board_hygiene(pool: &SqlitePool, s: &task_triage::TriageSummary) {
+    let attention = s.needs_detail + s.looks_stale + s.not_sure;
+    if attention == 0 {
+        return;
+    }
+    let today = meridian_core::date::today_string();
+    let dedup = format!("board.hygiene:{today}");
+    let body = format!(
+        "{attention} ticket{} on your board need{} a closer look.",
+        if attention == 1 { "" } else { "s" },
+        if attention == 1 { "s" } else { "" }
+    );
+    let n = crate::notifications::NewNotification::event(
+        &dedup,
+        "board.hygiene",
+        "Board hygiene",
+        &body,
+    )
+    .link("/tasks?integrations=1");
+    if let Err(e) = crate::notifications::enqueue(pool, n).await {
+        tracing::warn!(error = %e, "board hygiene digest enqueue failed");
     }
 }

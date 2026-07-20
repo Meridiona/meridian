@@ -234,7 +234,11 @@ pub async fn approve(
                 let now = chrono::Utc::now().to_rfc3339();
                 let msg = format!("{e:#}");
                 // Record the failure; leave the row `approved` for a safe retry.
-                let _ = day_task_worklogs::mark_error(pool, day_local, task_id, &msg, &now).await;
+                if let Err(mark_err) =
+                    day_task_worklogs::mark_error(pool, day_local, task_id, &msg, &now).await
+                {
+                    tracing::warn!(error = %mark_err, task_id, "worklog: failed to record approve error on row");
+                }
                 tracing::warn!(error = %e, "worklog: approve failed - left retry-safe");
                 tracing::Span::current().record("posted", false);
                 Ok(ApproveResult {
@@ -333,8 +337,11 @@ async fn approve_inner(
                             // Definite failure: nothing was filed, so release the claim
                             // and let a later retry try again.
                             Err(e) => {
-                                let _ = day_task_worklogs::revert_create(pool, day_local, task_id)
-                                    .await;
+                                if let Err(revert_err) =
+                                    day_task_worklogs::revert_create(pool, day_local, task_id).await
+                                {
+                                    tracing::warn!(error = %revert_err, task_id, "worklog: failed to revert create claim after ticket-create failure");
+                                }
                                 return Err(e)
                                     .context("creating the proposed ticket on the tracker");
                             }
@@ -484,17 +491,23 @@ async fn approve_inner(
                 // side effect, so releasing the claim is known-safe and lets a
                 // normal retry re-attempt it. This is the ONLY safe place to
                 // release: a crash never reaches here, which is the point.
-                let _ =
+                if let Err(revert_err) =
                     day_task_worklogs::targets::revert_post(pool, day_local, task_id, &t.task_key)
-                        .await;
-                let _ = day_task_worklogs::targets::mark_error(
+                        .await
+                {
+                    tracing::warn!(error = %revert_err, task_id, task_key = t.task_key, "worklog: failed to revert post claim after target-post failure");
+                }
+                if let Err(mark_err) = day_task_worklogs::targets::mark_error(
                     pool,
                     day_local,
                     task_id,
                     &t.task_key,
                     &msg,
                 )
-                .await;
+                .await
+                {
+                    tracing::warn!(error = %mark_err, task_id, task_key = t.task_key, "worklog: failed to record target post error");
+                }
                 out.push(PostedTarget {
                     task_key: t.task_key.clone(),
                     posted: false,

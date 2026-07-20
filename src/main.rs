@@ -10,33 +10,7 @@ use meridian::db::meridian::{cleanup_incomplete_runs, setup_db};
 use meridian::etl::run_etl;
 use meridian::intelligence::{run_pm_force_sync, run_pm_sync};
 use meridian::observability;
-use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::Notify;
-
-/// Single-instance probe for the daemon socket. Returns `true` only when a live
-/// daemon answers `~/.meridian/daemon.sock` with its greeting — i.e. one is already
-/// running for this data dir. A missing/stale socket with no listener (previous
-/// crash) connects-refused or times out → `false`, so this instance may take over.
-/// Mirrors the tray's `probe_socket`; kept deliberately short (800 ms) so startup
-/// isn't stalled when the socket is genuinely stale.
-async fn daemon_already_running(sock_path: &std::path::Path) -> bool {
-    use tokio::io::AsyncReadExt as _;
-    use tokio::time::timeout;
-
-    let connect = timeout(
-        Duration::from_millis(800),
-        tokio::net::UnixStream::connect(sock_path),
-    )
-    .await;
-    let Ok(Ok(mut stream)) = connect else {
-        return false; // no listener (absent or stale socket) — safe to take over
-    };
-    // A live daemon writes `{"running":true,"pid":…}` on connect. A non-empty read
-    // confirms a real daemon is there, not just a leftover socket file.
-    let mut buf = Vec::new();
-    let _ = timeout(Duration::from_millis(800), stream.read_to_end(&mut buf)).await;
-    !buf.is_empty()
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -51,9 +25,18 @@ async fn main() -> Result<()> {
     // 1b. Subcommand dispatch. `meridian coding-agent-hook` is the Claude Code
     //     SessionEnd hook entry point: one-shot, reads a JSON payload on stdin,
     //     seals that session, exits 0. It must stay light (no daemon init, no
-    //     OTLP) and must never block Claude, so it always exits 0.
+    //     network) and must never block Claude, so it always exits 0.
+    //     `observability::init` is still cheap here: capture is a local-disk
+    //     write only (see `telemetry_spool::spool_client::SpoolClient`), never
+    //     a network call, so it doesn't violate the "must never block" contract
+    //     — without it, hook failures were only visible on Claude Code's own
+    //     stderr, never in `meridian logs` or an exported diagnostics bundle.
     if std::env::args().nth(1).as_deref() == Some("coding-agent-hook") {
+        let obs_guard = observability::init("meridian-rust").ok();
         meridian::coding_agent_session_ingest::hook::run_hook().await;
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
+        }
         return Ok(());
     }
 
@@ -69,6 +52,7 @@ async fn main() -> Result<()> {
         let dry_run = args.iter().any(|a| a == "--dry-run");
         let day = flag("--day");
         let limit: i64 = flag("--limit").and_then(|v| v.parse().ok()).unwrap_or(8);
+        let obs_guard = observability::init("meridian-rust").ok();
         match meridian::coding_agent_session_ingest::open_meridian_pool().await {
             Ok(pool) => {
                 meridian::coding_agent_session_ingest::summariser::cli_summarise(
@@ -80,7 +64,10 @@ async fn main() -> Result<()> {
                 .await;
                 pool.close().await;
             }
-            Err(e) => eprintln!("coding-agent-summarise: open db: {e}"),
+            Err(e) => tracing::error!(error = %e, "coding-agent-summarise: failed to open db"),
+        }
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
         }
         return Ok(());
     }
@@ -89,9 +76,7 @@ async fn main() -> Result<()> {
     // Code command file so `claude -p /session-summary` works. Idempotent; safe
     // to run any number of times. Also called by `meridian doctor --fix`.
     if std::env::args().nth(1).as_deref() == Some("coding-agent-install-skill") {
-        let home = std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let home = meridian_core::paths::home_dir_or_cwd();
         let commands_dir = home.join(".claude/commands");
         let skill_path = commands_dir.join("session-summary.md");
         // Keep in sync with assets/skills/coding-agent/session-summary/SKILL.md.
@@ -890,61 +875,21 @@ async fn main() -> Result<()> {
     //     before we bind our own. Whoever starts second bows out; dev-start.sh stops
     //     the installed daemon first so the dev build wins, and any KeepAlive respawn
     //     self-terminates on the next line.
-    let sock_path = {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
-        std::path::PathBuf::from(format!("{}/.meridian/daemon.sock", home))
-    };
-    if daemon_already_running(&sock_path).await {
+    //     The endpoint itself is OS-specific (a socket file on Unix, a named
+    //     pipe on Windows) — see `meridian::platform`.
+    if meridian::platform::daemon_already_running().await {
         tracing::warn!(
-            path = %sock_path.display(),
+            endpoint = %meridian::platform::endpoint_display(),
             "another meridian daemon already owns this data dir — exiting (single-instance guard)"
         );
         return Ok(());
     }
-    let _ = std::fs::remove_file(&sock_path);
-    let sock_path_cleanup = sock_path.clone();
-    {
-        use tokio::io::AsyncWriteExt as _;
-        let listener = tokio::net::UnixListener::bind(&sock_path)?;
-        tokio::spawn(async move {
-            loop {
-                match listener.accept().await {
-                    Ok((mut stream, _)) => {
-                        let pid = std::process::id();
-                        tokio::spawn(async move {
-                            let msg = format!("{{\"running\":true,\"pid\":{}}}\n", pid);
-                            let _ = stream.write_all(msg.as_bytes()).await;
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "daemon.sock accept error");
-                        break;
-                    }
-                }
-            }
-        });
-    }
-    tracing::info!(path = %sock_path.display(), "daemon.sock ready");
+    meridian::platform::spawn_health_listener()?;
+    tracing::info!(endpoint = %meridian::platform::endpoint_display(), "daemon health endpoint ready");
 
-    // 6. Graceful shutdown: listen for SIGINT, SIGTERM, and SIGHUP.
-    //    SIGHUP = "reload config" — same clean shutdown path as SIGTERM so that
-    //    launchd auto-restarts the daemon with the new settings.json applied.
-    let mut sigint = signal(SignalKind::interrupt())?;
-    let mut sigterm = signal(SignalKind::terminate())?;
-    let mut sighup = signal(SignalKind::hangup())?;
-
-    // Combines SIGINT / SIGTERM / SIGHUP into a single future.
-    async fn wait_for_shutdown(
-        sigint: &mut tokio::signal::unix::Signal,
-        sigterm: &mut tokio::signal::unix::Signal,
-        sighup: &mut tokio::signal::unix::Signal,
-    ) {
-        tokio::select! {
-            _ = sigint.recv()  => { tracing::info!("SIGINT received") },
-            _ = sigterm.recv() => { tracing::info!("SIGTERM received") },
-            _ = sighup.recv()  => { tracing::info!("SIGHUP received — reloading (graceful restart)") },
-        }
-    }
+    // 6. Graceful shutdown, on whichever signal set this OS provides
+    //    (SIGINT/SIGTERM/SIGHUP, or the Windows console-control events).
+    use meridian::platform::wait_for_shutdown;
 
     // 7a. Clean up any runs left in 'running' state from a previous crash.
     match cleanup_incomplete_runs(&meridian).await {
@@ -983,7 +928,7 @@ async fn main() -> Result<()> {
     {
         let cfg = Config::from_env();
         let startup_tick = tracing::info_span!("startup_tick");
-        *etl_tick_span.lock().unwrap() = Some(startup_tick.clone());
+        *etl_tick_span.lock().unwrap_or_else(|e| e.into_inner()) = Some(startup_tick.clone());
         let _guard = startup_tick.enter();
         tracing::info!("running initial ETL pass");
         if let Err(e) = run_etl(&meridian).await {
@@ -1101,7 +1046,7 @@ async fn main() -> Result<()> {
         };
 
         tokio::select! {
-            _ = wait_for_shutdown(&mut sigint, &mut sigterm, &mut sighup) => {
+            _ = wait_for_shutdown() => {
                 break;
             }
             _ = tokio::time::sleep(poll_interval) => {
@@ -1123,7 +1068,7 @@ async fn main() -> Result<()> {
                     "poll_tick",
                     poll_interval_secs = cfg.runtime.poll_interval_secs
                 );
-                *etl_tick_span.lock().unwrap() = Some(poll_tick.clone());
+                *etl_tick_span.lock().unwrap_or_else(|e| e.into_inner()) = Some(poll_tick.clone());
                 let _guard = poll_tick.enter();
                 tracing::debug!("starting ETL tick");
                 if let Err(e) = run_etl(&meridian).await {
@@ -1143,6 +1088,46 @@ async fn main() -> Result<()> {
                 // Morning plan nudge — idempotent per day, gated to working hours.
                 if let Err(e) = meridian::daily_plan::maybe_nudge(&meridian).await {
                     tracing::debug!(error = %e, "plan nudge check skipped");
+                }
+
+                // Coding-agent summariser dead-letter digest — idempotent per day.
+                if let Err(e) =
+                    meridian::coding_agent_session_ingest::summariser::maybe_notify_dead_letters(
+                        &meridian,
+                    )
+                    .await
+                {
+                    tracing::debug!(error = %e, "summariser dead-letter digest check skipped");
+                }
+
+                // Disk space on ~/.meridian's volume — raise/clear every tick,
+                // same idempotent pattern as etl.failed above.
+                match meridian::health::platform::meridian_data_low_gb() {
+                    Some(gb) => {
+                        let _ = meridian::notices::raise_typed(
+                            &meridian,
+                            meridian::notices::Notice {
+                                id: "system.disk_low",
+                                severity: "warning",
+                                title: "Disk space is low",
+                                detail: &format!(
+                                    "Only {gb:.1} GB free — Meridian's database may stop writing."
+                                ),
+                                remedy: Some("Free up disk space to keep tracking running."),
+                                event_key: "system.disk_low",
+                                deep_link: None,
+                            },
+                        )
+                        .await;
+                    }
+                    None => {
+                        let _ = meridian::notices::clear_typed(
+                            &meridian,
+                            "system.disk_low",
+                            "system.disk_low",
+                        )
+                        .await;
+                    }
                 }
 
                 // Interactive-notification responses — act on the user's answers
@@ -1175,7 +1160,7 @@ async fn main() -> Result<()> {
 
     // 9. Shutdown
     tracing::info!("shutting down");
-    let _ = std::fs::remove_file(&sock_path_cleanup);
+    meridian::platform::release_endpoint();
     meridian.close().await;
 
     // Flush OTel exporters FIRST, while the runtime is alive — this writes the

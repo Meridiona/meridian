@@ -61,7 +61,9 @@ export default function MeridianTimelineShell() {
   // The ticket detail dialog is a separate, stackable layer (not part of
   // ActiveModal) — it can open on top of the Tasks/Plan modals or straight
   // from the timeline/Overview panel.
-  const [openTask, setOpenTask] = useState<{ key: string; title?: string } | null>(null)
+  // `editable` is false when opened from a past day's Today's-focus checklist —
+  // that day's plan is a record of what was focused on, not something to rewrite.
+  const [openTask, setOpenTask] = useState<{ key: string; title?: string; editable: boolean } | null>(null)
 
   // Build channel, for dev-only surfaces (the LLM Lab). 'dev' only under
   // `tauri dev`/`cargo run` (cfg!(debug_assertions) via get_app_info) - staging
@@ -206,7 +208,7 @@ export default function MeridianTimelineShell() {
             onCloseDayTask={() => setSelectedDayTask(null)}
             onSelectHour={selectHour}
             onOpen={setActiveModal}
-            onOpenTask={(key, title) => setOpenTask({ key, title })}
+            onOpenTask={(key, title, editable) => setOpenTask({ key, title, editable: editable ?? true })}
             onEditWorklog={openReview}
             onOpenSettings={(section) => { setSettingsSection(section); setActiveModal('settings') }}
           />
@@ -238,15 +240,16 @@ export default function MeridianTimelineShell() {
           onShiftDay={shift}
           onClose={() => setActiveModal(null)}
           onOpenSettings={(section) => { setSettingsSection(section); setActiveModal('settings') }}
-          onOpenTask={(key, title) => setOpenTask({ key, title })}
+          onOpenTask={(key, title) => setOpenTask({ key, title, editable: true })}
         />
       )}
       {activeModal === 'plan' && <PlanModal onClose={closePlan} />}
       {activeModal === 'tasks' && (
-        <TasksModal onClose={() => setActiveModal(null)} onOpenTask={(key, title) => setOpenTask({ key, title })} />
+        <TasksModal onClose={() => setActiveModal(null)} onOpenTask={(key, title) => setOpenTask({ key, title, editable: true })} />
       )}
       {openTask && (
-        <TaskDetailDialog taskKey={openTask.key} fallbackTitle={openTask.title} onClose={() => setOpenTask(null)} />
+        <TaskDetailDialog taskKey={openTask.key} fallbackTitle={openTask.title} day={day}
+          editableTask={openTask.editable} onClose={() => setOpenTask(null)} />
       )}
     </div>
   )

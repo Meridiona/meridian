@@ -287,6 +287,7 @@ pub async fn run_hour(
     let coding = hour_db::fetch_coding_summaries(pool, hs, he).await;
     let timeline = hour_db::fetch_hour_timeline(pool, hs, he).await;
     sess_span.record("body_chars", d.body.len());
+    link_session_formation_traces(&timeline);
 
     // Burst filter + block rendering + the 3-part join live in `compose_report_input`
     // (shared with the LLM-Lab replay); `timeline` (full set) still feeds the span/time
@@ -367,6 +368,34 @@ pub async fn run_hour(
     workstream::run(pool, day_local, hour, &report).await?;
     task_db::upsert_hour_span(pool, day_local, hour, span_min).await?;
     Ok(())
+}
+
+/// Add an OTel span Link from the current span (`worklog.hour`, via the caller's
+/// `.instrument()`) to each distinct session-formation trace among this hour's
+/// timeline rows, so a `worklog.hour` trace in OpenObserve can backtrack to
+/// exactly how each contributing session was formed by the ETL. Sessions with no
+/// `traceparent` (pre-migration-010 rows, or a formation that predates OTel
+/// capture being enabled) are silently skipped — this is best-effort lineage,
+/// never load-bearing for the hour itself.
+fn link_session_formation_traces(timeline: &[crate::worklog_pipeline::hour_input::TimelineRow]) {
+    use std::collections::HashSet;
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+    let mut seen = HashSet::new();
+    let mut linked = 0u32;
+    let current = tracing::Span::current();
+    for tp in timeline.iter().filter_map(|r| r.traceparent.as_deref()) {
+        if !seen.insert(tp) {
+            continue;
+        }
+        if let Some(sc) = crate::observability::span_context_from_traceparent(tp) {
+            current.add_link(sc);
+            linked += 1;
+        }
+    }
+    if linked > 0 {
+        tracing::debug!(linked, "worklog: linked session formation traces");
+    }
 }
 
 #[cfg(test)]

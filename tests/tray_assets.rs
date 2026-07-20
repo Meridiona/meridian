@@ -233,6 +233,13 @@ fn install_dev_skips_screenpipe_agents() {
 /// 404s under `tauri dev` (Next.js dev server doesn't serve `out/popover/` —
 /// only `public/` is served at the root). The production build is unaffected
 /// (uses beforeBuildCommand which already does the cp via `npm run build`).
+///
+/// Asserts the copy HAPPENS, not how. It used to match the literal
+/// `rm -rf && mkdir -p && cp -r` string, which pinned the guard to a
+/// Unix-shell implementation — Tauri runs `beforeDevCommand` through `cmd /C`
+/// on Windows, where none of those commands exist, so the portable fix was to
+/// move the copy into a Node script. Matching the old string would have failed
+/// that fix while the behaviour it guards was intact.
 #[test]
 fn before_dev_command_copies_popover() {
     let conf = read_json(CONF);
@@ -240,10 +247,21 @@ fn before_dev_command_copies_popover() {
         .as_str()
         .unwrap_or_default();
     assert!(
-        before_dev.contains("src/.") && before_dev.contains("../ui/public/popover"),
-        "tauri.conf.json build.beforeDevCommand must copy `src/.` into \
-         `../ui/public/popover` so the popover window resolves under `tauri dev`. \
-         Found: {before_dev:?}"
+        before_dev.contains("sync-popover"),
+        "tauri.conf.json build.beforeDevCommand must run the popover sync step \
+         so the popover window resolves under `tauri dev`. Found: {before_dev:?}"
+    );
+
+    // …and the script it names must actually perform the copy. Checking the
+    // config alone would pass on a script that had been gutted.
+    let script = read_text("tray/scripts/sync-popover.mjs");
+    assert!(
+        script.contains("cpSync"),
+        "tray/scripts/sync-popover.mjs must copy the popover sources"
+    );
+    assert!(
+        script.contains("\"popover\""),
+        "tray/scripts/sync-popover.mjs must target ui/public/popover"
     );
 }
 

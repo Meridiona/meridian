@@ -376,34 +376,35 @@ async fn seal_finished_cli_sessions(pool: &SqlitePool, now_iso: &str) -> u64 {
     sealed
 }
 
-/// Snapshot every process's argv (`ps -axo args=` — argv ONLY). pgrep -f is
-/// useless here: on macOS it matches the environment block too, and PATH /
-/// CODEX_* env vars put agent names into half the processes on the box.
+/// Snapshot every process's argv. The OS-specific source lives in
+/// [`crate::platform::list_process_argvs`] (`ps` on Unix, a `Win32_Process`
+/// CIM query on Windows); the matching below is platform-agnostic.
 async fn list_process_argvs() -> Option<Vec<String>> {
-    // Hard timeout + kill_on_drop: `ps` reading proc info can wedge in the
-    // kernel on a stuck process. An un-timed await here parks the whole
-    // indexer loop forever (observed live 2026-06-06 18:23 UTC: ticks stopped
-    // dead mid-tick right at this step until the process was kicked). None →
-    // every CLI is treated as running, which only defers to the idle backstop.
-    let mut cmd = tokio::process::Command::new("ps");
-    cmd.args(["-axo", "args="]).kill_on_drop(true);
-    let output = tokio::time::timeout(std::time::Duration::from_secs(5), cmd.output())
-        .await
-        .ok()?
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(str::to_string)
-            .collect(),
-    )
+    crate::platform::list_process_argvs().await
 }
 
+/// The executable name from an argv[0] token, with any directory prefix and
+/// any executable extension stripped.
+///
+/// Both separators are handled, not just `/`: a Windows command line reads
+/// `C:\Users\me\AppData\...\claude.exe`, so splitting on `/` alone would leave
+/// the whole path and no CLI would ever match. The extension is stripped for
+/// the same reason — the caller compares against bare names like `claude`.
 fn basename(token: &str) -> &str {
-    token.rsplit('/').next().unwrap_or(token)
+    let file = token.rsplit(['/', '\\']).next().unwrap_or(token);
+    // Only strip a known executable extension, so a genuine dot in a binary
+    // name (`python3.11`) survives.
+    for ext in [".exe", ".cmd", ".bat", ".com"] {
+        if let Some(stripped) = file
+            .len()
+            .checked_sub(ext.len())
+            .filter(|_| file.to_ascii_lowercase().ends_with(ext))
+            .map(|at| &file[..at])
+        {
+            return stripped;
+        }
+    }
+    file
 }
 
 /// Does any process argv look like this source's CLI? Matched on the argv[0]
@@ -637,6 +638,49 @@ mod tests {
     use sqlx::sqlite::SqliteConnectOptions;
     use std::io::Write;
     use std::str::FromStr;
+
+    /// `basename` decides whether a running CLI is recognised at all, so a
+    /// miss here does not error — it silently stops sessions sealing on
+    /// Ctrl+C and leaves them to the one-hour idle backstop.
+    #[test]
+    fn basename_strips_both_separators_and_exe_extensions() {
+        // POSIX
+        assert_eq!(basename("/opt/homebrew/bin/claude"), "claude");
+        assert_eq!(basename("claude"), "claude");
+        // Windows: splitting on '/' alone would return the whole path here,
+        // and the '.exe'/'.cmd' suffix would never match a bare CLI name.
+        assert_eq!(basename(r"C:\Users\me\bin\claude.exe"), "claude");
+        assert_eq!(basename(r"C:\Program Files\nodejs\copilot.cmd"), "copilot");
+        assert_eq!(basename("cursor-agent.EXE"), "cursor-agent");
+    }
+
+    /// A dot that is not an executable extension must survive, or a binary
+    /// like `python3.11` would be truncated to `python3`.
+    #[test]
+    fn basename_keeps_non_executable_extensions() {
+        assert_eq!(basename("/usr/bin/python3.11"), "python3.11");
+        assert_eq!(basename("node.js"), "node.js");
+    }
+
+    /// The exclusions in `cli_running` are load-bearing: the summariser runs
+    /// `claude -p`, and treating that as a live session would let the
+    /// summariser seal the very session it is summarising.
+    #[test]
+    fn cli_running_matches_real_sessions_and_excludes_known_collisions() {
+        let live = vec![r"C:\Users\me\bin\claude.exe --resume".to_string()];
+        assert!(cli_running(&live, "claude_jsonl"));
+
+        let summariser = vec!["/opt/homebrew/bin/claude -p /session-summary".to_string()];
+        assert!(!cli_running(&summariser, "claude_jsonl"));
+
+        // VS Code's ChatGPT extension ships a binary literally named `codex`.
+        let codex_app_server = vec![r"C:\tools\codex.exe app-server".to_string()];
+        assert!(!cli_running(&codex_app_server, "codex_jsonl"));
+
+        // A cursor-agent login child is auth plumbing, not a chat session.
+        let cursor_login = vec!["/usr/local/bin/cursor-agent login".to_string()];
+        assert!(!cli_running(&cursor_login, "cursor_cli_store"));
+    }
     use std::sync::atomic::{AtomicU64, Ordering};
 
     async fn fresh_db() -> SqlitePool {
