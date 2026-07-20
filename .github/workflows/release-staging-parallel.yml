@@ -1,0 +1,312 @@
+name: Release (staging, parallel — EXPERIMENTAL)
+
+# An experiment in cutting the staging release's wall-clock time by building the
+# two macOS architectures CONCURRENTLY instead of one after the other.
+#
+# WHY: release-staging.yml spends ~39 of its ~43 minutes compiling the workspace
+# four times, strictly sequentially — daemon×2 arches, then tray×2 arches inside
+# a single `tauri build --target universal-apple-darwin`. On run 29698684026:
+#
+#     daemon aarch64  6.9m   |  tray, both slices  26.3m
+#     daemon x86_64   5.5m   |  everything else     ~4m
+#
+# The two architectures share no compiled artifacts (each target needs its own
+# rlibs), so the only thing making them sequential is that they run on one runner.
+# Splitting them across two runners should take the build arm from ~39m to ~20m.
+#
+# HOW: `tauri build --no-bundle` compiles without packaging, and `tauri bundle`
+# packages WITHOUT re-invoking cargo. That seam is what makes the split possible.
+# Verified locally before this file was written:
+#
+#   * `tauri bundle` runs zero cargo invocations and completes in ~1.4s
+#   * `tauri bundle --target universal-apple-darwin` REQUIRES a pre-lipo'd binary
+#     at target/universal-apple-darwin/release/meridian-tray — it does NOT lipo
+#     for you (it fails with a bare `No such file or directory` if absent)
+#   * the daemon is read from target/release/meridian at BUNDLE time, not compile
+#     time, so only the join job needs the universal daemon
+#   * TAURI_SIGNING_PRIVATE_KEY is consumed at BUNDLE time, so the signing
+#     secrets never need to reach the build jobs
+#
+# SCOPE — this workflow does NOT publish. It builds, bundles, signs and notarizes,
+# then reports timings, so the restructure can be proven and measured without
+# cutting prereleases or moving the updater-staging channel. release-staging.yml
+# remains the only thing that cuts a staging release. Wire publishing in here only
+# once these timings are trusted.
+#
+# Manual dispatch only, deliberately: this is an experiment, not a release path.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  # Shares release-staging.yml's group so an experiment and a real staging release
+  # can never fight over the same tags, caches or notarization throughput.
+  group: release-staging
+  cancel-in-progress: false
+
+env:
+  SQLX_OFFLINE: "true"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # ── Stage 1: decide the version, once, for everybody ────────────────────────
+  #
+  # The version has to exist BEFORE any compiling starts, because set-version.sh
+  # bakes it into Cargo.toml (→ the daemon binary) and tauri.conf.json (→ the
+  # value tauri-plugin-updater compares against latest.json). Both build jobs and
+  # the bundle job must therefore agree on one value.
+  #
+  # This also pins the SHA. The workflow targets `pre-main`, a busy integration
+  # branch — if each job checked out `pre-main` by name they could resolve to
+  # DIFFERENT commits as pushes land mid-run, and the two arch binaries would
+  # silently disagree with each other and with the bundle.
+  plan:
+    name: Plan (version + SHA)
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
+      release_due: ${{ steps.version.outputs.release_due }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: pre-main
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - id: resolve
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Use staging release config
+        run: cp .releaserc.staging.json .releaserc.json
+
+      - name: Compute the next staging version
+        id: version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+        # `--dry-run` runs analysis only: no tag, no release, no prepareCmd. We
+        # parse the version it reports so the build jobs can stamp it. If nothing
+        # is releasable, downstream jobs skip rather than build an untagged
+        # artifact nobody asked for.
+        run: |
+          set -o pipefail
+          npx semantic-release --dry-run 2>&1 | tee sr.log || true
+          version="$(grep -oE 'The next release version is [0-9][^ ]*' sr.log | tail -1 | awk '{print $NF}')"
+          if [ -z "${version}" ]; then
+            echo "release_due=false" >> "$GITHUB_OUTPUT"
+            echo "→ nothing to release; downstream jobs will skip"
+          else
+            echo "release_due=true"        >> "$GITHUB_OUTPUT"
+            echo "version=${version}"      >> "$GITHUB_OUTPUT"
+            echo "→ next staging version: ${version}"
+          fi
+
+  # ── Stage 2: the point of the exercise — both arches at once ────────────────
+  build:
+    name: Build ${{ matrix.target }}
+    needs: plan
+    if: needs.plan.outputs.release_due == 'true'
+    runs-on: macos-26
+    strategy:
+      # fail-fast off: if one arch breaks we still want the other's timing, which
+      # is the whole reason this workflow exists.
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    env:
+      # EVERY value below is baked into the binary at COMPILE time, so each build
+      # job needs the full set — a missing one produces no error, just a staging
+      # app with (say) sign-in quietly unavailable. Kept byte-identical to
+      # release-staging.yml; see that file for what each one does.
+      MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
+      MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
+      MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+      MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
+      MERIDIAN_CHANNEL: "staging"
+      # From tray/package.json's `build:staging` script, which this job replaces.
+      MERIDIAN_RUNTIME_MANIFEST_URL: https://github.com/Meridiona/meridian/releases/download/runtime-staging/runtime-manifest.json
+      MERIDIAN_HF_ENDPOINT: https://hf.meridiona.com
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # `key` is REQUIRED here: every leg of a matrix shares one github.job,
+          # so without it both arches would compute the same cache key and
+          # clobber each other's target/ on save.
+          key: ${{ matrix.target }}
+          # Restore-only while this is an experiment. Two per-arch target/ caches
+          # would add ~4GB to a repo already at its 10GB quota (see #488, which
+          # was merged specifically to get back under it) and would evict the
+          # release cache we are trying to keep warm. Flip to a branch condition
+          # if and when this workflow becomes the real release path.
+          save-if: "false"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            ui/package-lock.json
+            tray/package-lock.json
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      - name: Stamp the version
+        run: bash scripts/set-version.sh "${{ needs.plan.outputs.version }}"
+
+      - name: Install UI + tray deps
+        # The UI must build before the tray compiles: frontendDist (ui/out) is
+        # EMBEDDED into the binary by generate_context! at compile time, so it is
+        # a build input here, not a packaging step.
+        run: |
+          (cd ui && npm ci --no-audit --no-fund)
+          (cd tray && npm ci --no-audit --no-fund)
+
+      - name: Build daemon (${{ matrix.target }})
+        run: cargo build --locked --release --bin meridian --target ${{ matrix.target }}
+
+      - name: Place the daemon where tauri-build expects it
+        # tauri-build only STATS bundle.resources during compilation (it reads the
+        # contents at bundle time), but the path must exist or the build script
+        # fails. This job's own arch slice satisfies that; the real universal
+        # daemon is lipo'd in the bundle job.
+        run: |
+          mkdir -p target/release
+          cp "target/${{ matrix.target }}/release/meridian" target/release/meridian
+
+      - name: Compile the tray (${{ matrix.target }}, no bundling)
+        working-directory: tray
+        run: npx tauri build --no-bundle --target ${{ matrix.target }} --config src-tauri/tauri.staging.conf.json
+
+      - name: Upload the two binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: slice-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/meridian
+            target/${{ matrix.target }}/release/meridian-tray
+          retention-days: 1
+          # Mach-O binaries barely compress; level 0 trades a bigger upload for a
+          # much faster one, and this transfer sits on the critical path.
+          compression-level: 0
+
+  # ── Stage 3: join — lipo, sign, bundle, notarize ────────────────────────────
+  bundle:
+    name: Bundle universal
+    needs: [plan, build]
+    if: needs.plan.outputs.release_due == 'true'
+    runs-on: macos-26
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      TAURI_BUNDLER_DMG_IGNORE_CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            ui/package-lock.json
+            tray/package-lock.json
+
+      - name: Stamp the version
+        # Same value the binaries were built with — tauri.conf.json's version is
+        # read at BUNDLE time and becomes what the updater compares against.
+        run: bash scripts/set-version.sh "${{ needs.plan.outputs.version }}"
+
+      - name: Install UI + tray deps, and materialise ui/out
+        # `tauri bundle` runs beforeBundleCommand, NOT beforeBuildCommand, so
+        # nothing here recreates ui/out on its own. The bundled assets are already
+        # embedded in the binaries the build jobs produced, but tauri.conf.json's
+        # frontendDist still points at ui/out and the bundler resolves that path,
+        # so it has to exist. Cheap (~40s) insurance against a late failure.
+        run: |
+          (cd ui && npm ci --no-audit --no-fund && npm run build)
+          (cd tray && npm ci --no-audit --no-fund)
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: slices
+
+      - name: Assemble the universal binaries
+        # upload-artifact does NOT preserve the executable bit, so chmod first or
+        # lipo and codesign fail in confusing ways.
+        run: |
+          set -euo pipefail
+          chmod +x slices/slice-*/meridian slices/slice-*/meridian-tray
+
+          mkdir -p target/release target/universal-apple-darwin/release
+
+          lipo -create \
+            slices/slice-aarch64-apple-darwin/meridian \
+            slices/slice-x86_64-apple-darwin/meridian \
+            -output target/release/meridian
+
+          lipo -create \
+            slices/slice-aarch64-apple-darwin/meridian-tray \
+            slices/slice-x86_64-apple-darwin/meridian-tray \
+            -output target/universal-apple-darwin/release/meridian-tray
+
+          echo "daemon: $(lipo -archs target/release/meridian)"
+          echo "tray:   $(lipo -archs target/universal-apple-darwin/release/meridian-tray)"
+
+      - name: Import Developer ID certificate + notarization key
+        uses: ./.github/actions/import-apple-cert
+        with:
+          apple-certificate: ${{ secrets.APPLE_CERTIFICATE }}
+          apple-certificate-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          apple-api-key-content: ${{ secrets.APPLE_API_KEY_CONTENT }}
+
+      - name: Sign the daemon
+        # Must precede bundling: the daemon is copied into the .app as a resource,
+        # and re-signing the enclosing bundle does not sign nested Mach-Os.
+        run: bash scripts/sign-daemon.sh
+
+      - name: Bundle, sign and notarize
+        working-directory: tray
+        run: npx tauri bundle --target universal-apple-darwin --bundles app,dmg --config src-tauri/tauri.staging.conf.json
+
+      - name: Report what was produced
+        run: |
+          out=target/universal-apple-darwin/release/bundle
+          echo "app:  $(lipo -archs "$out/macos/Meridian.app/Contents/MacOS/meridian-tray")"
+          ls -la "$out/dmg/" "$out/macos/" || true
+          echo "NOTE: this workflow does not publish - release-staging.yml remains the release path."
