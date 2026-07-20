@@ -33,9 +33,21 @@ name: Release (staging, parallel — EXPERIMENTAL)
 # remains the only thing that cuts a staging release. Wire publishing in here only
 # once these timings are trusted.
 #
-# Manual dispatch only, deliberately: this is an experiment, not a release path.
+# Nothing here ever runs on its own: see TRIGGERING below. This is an experiment,
+# not a release path.
 
+# TRIGGERING - a `workflow_dispatch`-only workflow is NOT dispatchable unless the
+# file also exists on the DEFAULT branch, and this one deliberately lives only on
+# `pre-main` (it is an experiment, not a release path). The `push` trigger below is
+# what REGISTERS the workflow with the Actions API so `gh workflow run --ref
+# pre-main` resolves at all - the same reason release-staging.yml carries one.
+#
+# It must never actually build on an ordinary pre-main push, so every job is gated
+# on a manual dispatch or an explicit `[parallel-release-test]` marker commit. An
+# unmarked push creates a run whose jobs all skip, which is enough to register it.
 on:
+  push:
+    branches: [pre-main]
   workflow_dispatch: {}
 
 permissions:
@@ -67,6 +79,10 @@ jobs:
   # silently disagree with each other and with the bundle.
   plan:
     name: Plan (version + SHA)
+    # The gate for the whole workflow: `build` and `bundle` both chain off this
+    # job, so skipping it skips them. Ordinary pre-main pushes register the
+    # workflow and do nothing else.
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[parallel-release-test]') }}
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
