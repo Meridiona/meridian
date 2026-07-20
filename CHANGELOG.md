@@ -1,3 +1,29 @@
+## [1.74.0](https://github.com/Meridiona/meridian/compare/v1.73.0...v1.74.0) (2026-07-20)
+
+### 🚀 Features
+
+* redesigned AI provider picker + hardened Cursor integration ([#498](https://github.com/Meridiona/meridian/issues/498)) ([c056254](https://github.com/Meridiona/meridian/commit/c056254b1e1b2c41aabd4276e4c7511f55d81ae3))
+* **worklog:** auto-draft worklogs once a day at a user-chosen time ([#502](https://github.com/Meridiona/meridian/issues/502)) ([a554ad7](https://github.com/Meridiona/meridian/commit/a554ad756d9a864c477e138b5676aeb04c25fb4c))
+
+### 🐛 Bug Fixes
+
+* **ci:** unbreak the staging Windows installer and updater manifest ([f718001](https://github.com/Meridiona/meridian/commit/f7180013af4a0be45f22a2a033a2aae8480270c0))
+* **integrations:** let the GitHub project picker save after an OAuth connect ([d5efb50](https://github.com/Meridiona/meridian/commit/d5efb50e801bd98268d2556f960d15a83ce376dc))
+* **integrations:** refuse a submitted placeholder over a stored token ([772a427](https://github.com/Meridiona/meridian/commit/772a427614a1c692519b23b4dd97b7c1e40b97a5)), closes [#495](https://github.com/Meridiona/meridian/issues/495)
+* resolve the second round of review comments on [#495](https://github.com/Meridiona/meridian/issues/495) ([5e53b56](https://github.com/Meridiona/meridian/commit/5e53b56f0fb439e98db7d4836f93f322b392cae1))
+* **tray:** apply the placeholder rule to submitted values too ([3a66ec7](https://github.com/Meridiona/meridian/commit/3a66ec7c5cb656d07f3ebf633b1326d7c830bbeb))
+* **tray:** finish the Windows port of the in-process capture module ([52764b2](https://github.com/Meridiona/meridian/commit/52764b28cb9d92f6f06adb311c0d16bad63f73c9))
+* **tray:** fix Dock/menu-bar icon rendering and trim unused icon assets ([#503](https://github.com/Meridiona/meridian/issues/503)) ([1db2472](https://github.com/Meridiona/meridian/commit/1db2472cc7007c46f6a05abd9ad991efbe902e5f))
+* **tray:** silence the macOS-only dead code the Windows build now reaches ([51891a7](https://github.com/Meridiona/meridian/commit/51891a7c4e51a660521ebcf274ba752a29c4d0bd))
+
+### 🤖 CI
+
+* **release:** fold the parallel build into release-staging.yml ([ab37e1d](https://github.com/Meridiona/meridian/commit/ab37e1d765970ec646ee306f586bb319f6678ece))
+* **release:** let the staging build actually keep its cache ([44147de](https://github.com/Meridiona/meridian/commit/44147de707d28187cc9ad4032f519fce2a3f769d)), closes [#494](https://github.com/Meridiona/meridian/issues/494)
+* **release:** make the parallel staging workflow publish ([0796a85](https://github.com/Meridiona/meridian/commit/0796a85ed804db99fe88deabc90d597fb22c793a))
+* **release:** parallelise the production release build ([0c80839](https://github.com/Meridiona/meridian/commit/0c8083983b24a65add79aaf4d951eb338ca27c3b))
+* stop storing every Rust cache twice ([10c232d](https://github.com/Meridiona/meridian/commit/10c232deeca1c7a87d6295f758f5fbaf617ea8cf))
+
 ## [1.73.0](https://github.com/Meridiona/meridian/compare/v1.72.0...v1.73.0) (2026-07-20)
 
 ### 🚀 Features
