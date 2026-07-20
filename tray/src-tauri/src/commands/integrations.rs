@@ -145,6 +145,48 @@ const TOKEN_REQUIRED: &[(&str, &[&str])] = &[
     ("azure_devops", &["AZURE_DEVOPS_URL", "AZURE_DEVOPS_PAT"]),
 ];
 
+/// Which of `provider`'s [`TOKEN_REQUIRED`] keys would still be unset after
+/// applying `updates` on top of the `existing` `.env`.
+///
+/// The distinction matters because a required key is required to *end up set*,
+/// not to appear in every payload. GitHub is the case that forces it: its OAuth
+/// device flow writes `GITHUB_TOKEN` to `.env` itself (see [`ENV_OAUTH_PROVIDERS`]),
+/// and the project picker that runs afterwards submits only `project_ids`. Judging
+/// that payload in isolation reported "Missing: GITHUB_TOKEN" for a token that was
+/// already on disk. The user-visible symptom was a dead-end rather than a mere
+/// error string: after connecting GitHub, the picker would list the account's
+/// boards (it reads the very token the check claimed was missing) and then refuse
+/// every save, so `GITHUB_PROJECT_IDS` could never be set and GitHub never synced.
+///
+/// Checking `existing` rather than dropping the requirement keeps the guard that
+/// matters: a `project_ids`-only save with no GitHub connection at all still
+/// reports the token missing. Both halves test the *value*, not bare presence, so
+/// a leftover `.env.example` placeholder fails the check whether it arrives in the
+/// payload or is already on disk — that agrees with the connected-state test in
+/// [`get_integrations`], which would otherwise accept the save and then report the
+/// provider disconnected.
+///
+/// # Who calls this
+/// [`save_integration_token`], which turns a non-empty result into its error.
+fn missing_required(
+    provider: &str,
+    updates: &BTreeMap<String, String>,
+    existing: &HashMap<String, String>,
+) -> Vec<&'static str> {
+    TOKEN_REQUIRED
+        .iter()
+        .find(|(p, _)| *p == provider)
+        .map(|(_, r)| *r)
+        .unwrap_or(&[])
+        .iter()
+        .copied()
+        .filter(|k| {
+            let submitted = updates.get(*k).is_some_and(|v| value_is_set(v));
+            !submitted && !is_set(existing, k)
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct IntegrationsResponse {
     pub jira: bool,
@@ -175,16 +217,23 @@ fn parse_env(path: &std::path::Path) -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
+/// Whether a raw value counts as "set" — i.e. not a leftover `.env.example`
+/// placeholder (`your-`, `_your_`, `-here`).
+///
+/// Split out from [`is_set`] so the same rule can be applied to a submitted
+/// payload, which is a `BTreeMap` rather than the parsed-`.env` `HashMap`.
+/// One predicate for both is what stops a submitted placeholder from passing
+/// the required-field check and then being reported disconnected by
+/// [`get_integrations`], which tests the written value with this same rule.
+fn value_is_set(v: &str) -> bool {
+    let lower = v.to_lowercase();
+    !lower.contains("your-") && !lower.contains("_your_") && !lower.contains("-here")
+}
+
 /// A value counts as "set" only if present and not a leftover `.env.example`
 /// placeholder (`your-`, `_your_`, `-here`). Mirrors the route's `isSet`.
 fn is_set(env: &HashMap<String, String>, key: &str) -> bool {
-    match env.get(key) {
-        None => false,
-        Some(v) => {
-            let lower = v.to_lowercase();
-            !lower.contains("your-") && !lower.contains("_your_") && !lower.contains("-here")
-        }
-    }
+    env.get(key).is_some_and(|v| value_is_set(v))
 }
 
 fn oauth_file_exists(provider: &str) -> bool {
@@ -394,17 +443,20 @@ pub async fn save_integration_token(body: SaveTokenBody) -> Result<serde_json::V
         return Err("No fields provided".to_string());
     }
 
-    // Required-field check (the route's 400 on a partial submit).
-    let required = TOKEN_REQUIRED
-        .iter()
-        .find(|(p, _)| *p == provider)
-        .map(|(_, r)| *r)
-        .unwrap_or(&[]);
-    let missing: Vec<&str> = required
-        .iter()
-        .copied()
-        .filter(|k| !updates.contains_key(*k))
-        .collect();
+    // Required-field check (the route's 400 on a partial submit), judged against
+    // the state this write LEAVES BEHIND — payload plus what `.env` already
+    // holds — rather than the payload alone. See [`missing_required`]; the
+    // GitHub project picker submits only `project_ids` on top of a token its
+    // OAuth device flow already wrote.
+    //
+    // Read through `detect_install_mode().env_path()`, the same resolver
+    // `discover_github_projects` reads the token with, so the check and the call
+    // that proves the token exists can never disagree about which file is live.
+    let existing = crate::install::detect_install_mode()
+        .env_path()
+        .map(parse_env)
+        .unwrap_or_default();
+    let missing = missing_required(provider, &updates, &existing);
     if !missing.is_empty() {
         return Err(format!("Missing: {}", missing.join(", ")));
     }
@@ -1167,6 +1219,116 @@ pub async fn get_oauth_status(provider: String) -> Result<OAuthStatus, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn updates(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    fn env_of(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    /// The reported bug: after the GitHub OAuth device flow writes `GITHUB_TOKEN`
+    /// to `.env`, the project picker submits ONLY `project_ids`. Judged against
+    /// the payload alone that read as "Missing: GITHUB_TOKEN" and the picker
+    /// could never save.
+    #[test]
+    fn github_project_ids_alone_are_enough_when_the_token_is_already_saved() {
+        let missing = missing_required(
+            "github",
+            &updates(&[("GITHUB_PROJECT_IDS", "PVT_1,PVT_2")]),
+            &env_of(&[("GITHUB_TOKEN", "gho_live_token")]),
+        );
+        assert!(
+            missing.is_empty(),
+            "a token already in .env must satisfy the requirement, got {missing:?}"
+        );
+    }
+
+    /// The guard that stops this from being "just drop the requirement": with no
+    /// GitHub connection anywhere, a project-ids-only save must still be refused.
+    #[test]
+    fn github_project_ids_alone_still_fail_with_no_token_anywhere() {
+        let missing = missing_required(
+            "github",
+            &updates(&[("GITHUB_PROJECT_IDS", "PVT_1")]),
+            &env_of(&[]),
+        );
+        assert_eq!(missing, vec!["GITHUB_TOKEN"]);
+    }
+
+    /// A placeholder left over from `.env.example` is not a connection — the
+    /// check uses `is_set`, not bare presence, so it agrees with the
+    /// connected-state test in `get_integrations`.
+    #[test]
+    fn github_placeholder_token_does_not_satisfy_the_requirement() {
+        let missing = missing_required(
+            "github",
+            &updates(&[("GITHUB_PROJECT_IDS", "PVT_1")]),
+            &env_of(&[("GITHUB_TOKEN", "your-token-here")]),
+        );
+        assert_eq!(missing, vec!["GITHUB_TOKEN"]);
+    }
+
+    /// The placeholder rule is symmetric across the two halves of the filter: a
+    /// placeholder *submitted* in the payload is refused exactly like one already
+    /// on disk. Without this, the save would succeed and `get_integrations` —
+    /// which tests the written value with the same predicate — would immediately
+    /// report GitHub disconnected.
+    #[test]
+    fn a_submitted_placeholder_token_is_refused_like_a_stored_one() {
+        let missing = missing_required(
+            "github",
+            &updates(&[("GITHUB_TOKEN", "your-token-here")]),
+            &env_of(&[]),
+        );
+        assert_eq!(missing, vec!["GITHUB_TOKEN"]);
+    }
+
+    /// The first-time PAT connect keeps working: the token is in the payload and
+    /// nothing is on disk yet.
+    #[test]
+    fn github_pat_connect_from_scratch_is_accepted() {
+        let missing = missing_required(
+            "github",
+            &updates(&[("GITHUB_TOKEN", "ghp_fresh")]),
+            &env_of(&[]),
+        );
+        assert!(missing.is_empty());
+    }
+
+    /// Multi-key providers report every still-unset key, and a partial submit on
+    /// top of an already-complete `.env` is accepted (editing one field of a
+    /// connected tracker no longer requires re-entering the others).
+    #[test]
+    fn jira_reports_every_unset_key_and_accepts_a_partial_edit() {
+        assert_eq!(
+            missing_required("jira", &updates(&[("JIRA_EMAIL", "a@b.c")]), &env_of(&[])),
+            vec!["JIRA_BASE_URL", "JIRA_API_TOKEN"]
+        );
+        assert!(missing_required(
+            "jira",
+            &updates(&[("JIRA_EMAIL", "new@b.c")]),
+            &env_of(&[
+                ("JIRA_BASE_URL", "https://x.atlassian.net"),
+                ("JIRA_API_TOKEN", "ATATT3x"),
+            ]),
+        )
+        .is_empty());
+    }
+
+    /// A provider with no required entry (trello: its app key is baked in for
+    /// production builds) is unconstrained.
+    #[test]
+    fn a_provider_with_no_required_keys_is_unconstrained() {
+        assert!(missing_required("trello", &updates(&[]), &env_of(&[])).is_empty());
+    }
 
     #[test]
     fn strip_env_keys_removes_only_matching_lines() {
