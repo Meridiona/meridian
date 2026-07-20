@@ -266,7 +266,13 @@ export const LLM_PROVIDERS: LlmProviderMeta[] = [
     blurb: 'Uses your Cursor subscription through the cursor-agent CLI.',
     kind: 'cli',
     bin: 'cursor-agent',
-    installHint: 'curl https://cursor.com/install -fsS | bash',
+    // Pinned to the cursor-agent build Meridian is verified against - mirrors
+    // CURSOR_INSTALL_CMD in meridian-core/src/llm_provider.rs (the authoritative copy the
+    // tray actually runs). cursor.com/install is a rolling script with no version flag,
+    // so the sed rewrites its version strings; matching by pattern keeps working after
+    // Cursor bumps their script.
+    installHint:
+      "curl -fsSL https://cursor.com/install | sed -E 's#[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}-[0-9a-f]{7}#2026.07.16-899851b#g' | bash",
     installUrl: 'https://cursor.com/cli',
     privacyUrl: 'https://cursor.com/settings',
     privacyLabel: 'Cursor - Privacy Mode',
@@ -331,6 +337,31 @@ export function supportsModelOverride(id: LlmProviderId): boolean {
  * unconfigured choice resolves here.
  */
 export const DEFAULT_LLM_PROVIDER: LlmProviderId = 'claude'
+
+/**
+ * The providers shown at the TOP LEVEL of the picker, in order — the three coding-agent CLIs
+ * we recommend. Copilot is still a valid stored value and is still probed by the backend, but
+ * it is deliberately NOT offered here: it needs org policy that often blocks it and it can't
+ * take a model, so it made a poor default. A user who already has it selected is handled with
+ * a small banner rather than a card (see <LlmProviderPicker>).
+ */
+export const CHOOSER_PROVIDER_IDS: LlmProviderId[] = ['claude', 'codex', 'cursor']
+
+/** The single shared heading for the provider chooser - same words in the wizard and Settings
+ *  so the one choice reads identically wherever it is made. Plain hyphens (user-facing). */
+export const LLM_INTRO_TITLE = 'First, choose your AI provider'
+
+/** The shared sub-heading. States the job, the tiny footprint, and the escape hatch in one
+ *  breath, in plain language. */
+export const LLM_INTRO_BODY =
+  'Meridian uses this to write your hourly summaries and worklogs. It sends about one short request per active hour - well under 1% of your plan with Claude, Codex, or Cursor, so it never eats into your own coding. Pick one, or bring your own API key.'
+
+/** The badge every recommended CLI carries at the top level. */
+export const LLM_RECOMMENDED_BADGE = 'RECOMMENDED'
+
+/** Why we recommend them - shown once under the recommended row. */
+export const LLM_RECOMMENDED_NOTE =
+  'These run on frontier models through a subscription you already pay for - the most accurate option, and no extra cost.'
 
 /**
  * The rough share of a plan's usage limit that Meridian's hourly summaries consume - one

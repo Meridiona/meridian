@@ -46,7 +46,8 @@ export default function SetupWizard() {
   const [providerCustomId, setProviderCustomIdState] = useState<string | null>(null)
   const {
     status: providers, scanning: scanningProviders,
-    testingIds: testingProviderIds, testOne: testProvider, rescan: rescanProviders,
+    testingIds: testingProviderIds, installingIds: installingProviderIds, signingIds: signingProviderIds,
+    testOne: testProvider, install: installProvider, signIn: signInProvider, rescan: rescanProviders,
   } = useLlmProviderDetection()
 
   // Seed from settings.json rather than assuming the default — a re-run of the wizard
@@ -174,7 +175,8 @@ export default function SetupWizard() {
     integrations, refetchIntegrations,
     signedInEmail, onSignedIn,
     provider, providerCustomId, setProvider, providers, scanningProviders,
-    testingProviderIds, testProvider, rescanProviders,
+    testingProviderIds, installingProviderIds, signingProviderIds,
+    testProvider, installProvider, signInProvider, rescanProviders,
   }
 
   // ── Navigation ───────────────────────────────────────────────────────────────

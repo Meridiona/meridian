@@ -1,22 +1,30 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 'use client'
 
-// The AI-provider picker — ONE component, mounted in both the setup wizard's
-// Intelligence step and the dashboard's Settings, exactly as <ConnectTrackers> is shared
-// between the wizard and the dashboard. The provider list itself lives in
-// `@/lib/llm-providers`; this only renders it and reports the choice up.
+// The AI-provider picker — ONE component, mounted in both the setup wizard's Intelligence step
+// and the dashboard's Settings, so the two surfaces can never drift. The provider list lives in
+// `@/lib/llm-providers`.
 //
-// Layout is a 2-column card GRID (not a stacked list) so the providers read as
-// comparable options at a glance. Order is the recommendation: coding agents first
-// (frontier accuracy), then a custom OpenAI-compatible endpoint.
+// Two levels, on purpose (this replaced a flat grid of cards each carrying every control at
+// once, which read as busy and buried the one decision):
 //
-// It deliberately does NOT save. The wizard and Settings persist differently (the wizard
-// writes once per pick; Settings the same through useRuntimeSettings), so the owner does
-// the write and this stays a controlled input — one source of truth per surface.
+//   CHOOSER  — three recommended coding-agent tiles (logo + name + RECOMMENDED) plus one
+//              "bring your own API key" tile. Just the choice, nothing else.
+//   DETAIL   — click a tile and you get its own screen: install the CLI if missing, confirm the
+//              sign-in if it's there, optionally set a model, and make it the default. One
+//              provider, one next action.
+//
+// It deliberately does NOT save. The wizard writes each pick straight through; Settings commits
+// through its own save(). The owner does the write and this stays a controlled input.
 
 import { useCallback, useEffect, useState } from 'react'
-import { invoke, openExternal } from '@/lib/bridge'
-import { CUSTOM_PROVIDER_COST_NOTE, LLM_PROVIDERS, USAGE_FOOTPRINT_NOTE, type LlmProviderId, type LlmProviderMeta } from '@/lib/llm-providers'
+import {
+  CHOOSER_PROVIDER_IDS, LLM_RECOMMENDED_BADGE, LLM_RECOMMENDED_NOTE,
+  llmProvider, type LlmProviderId,
+} from '@/lib/llm-providers'
+import { invoke } from '@/lib/bridge'
+import { ProviderLogo } from '@/components/LlmProviderLogos'
+import LlmProviderDetail from '@/components/LlmProviderDetail'
 import { AddCustomProvider, CustomProviderCard, useCustomProviders } from '@/components/CustomProviders'
 
 /** What one real connectivity test found (mirrors `ProviderTestOutcome` in src/llm/detect.rs). */
@@ -41,361 +49,316 @@ export interface ProviderStatus {
   path: string | null
   /** Always null — Meridian reports *installed*, not *signed in*. See src/llm/detect.rs. */
   authenticated: boolean | null
-  /** The last real connectivity test on record, if any. `null` means never tested — not
-   *  failed. A stale test (from before the CLI was reinstalled/re-authed) is still shown;
-   *  Rescan and the per-card Test button are how the user refreshes it. */
+  /** The last real connectivity test on record, if any. `null` means never tested — not failed. */
   last_test: ProviderTestResult | null
 }
 
+/** What running a provider's installer produced (mirrors `InstallOutcome` in src/llm/detect.rs). */
+export interface InstallOutcome {
+  ok: boolean
+  message: string
+  path: string | null
+  command: string
+}
+
 /**
- * Probe which provider CLIs exist on this Mac (free, instant), then - for every one that
- * IS installed - run a real connectivity test (spends one request per provider against
- * the user's own subscription). Re-run on demand (the Rescan button): the user will
- * alt-tab out to `npm i -g …` or `claude login` and come back mid-wizard, and a cached
- * "not installed"/"not working" would then be a lie.
+ * Probe which provider CLIs exist on this Mac (free, instant). Unlike before, this NO LONGER
+ * fires a real connectivity test for every installed CLI on mount — that spent a request per
+ * provider and surfaced scary failures for CLIs the user never even opened (e.g. a stray
+ * cursor-agent that isn't signed in). Testing now happens in the DETAIL view, only for the
+ * provider the user actually opened. `install` runs the vendor installer, then re-detects and
+ * auto-tests just that one.
  */
 export function useLlmProviderDetection() {
   const [status, setStatus] = useState<Record<string, ProviderStatus>>({})
   const [scanning, setScanning] = useState(true)
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set())
+  const [installingIds, setInstallingIds] = useState<Set<string>>(new Set())
+  const [signingIds, setSigningIds] = useState<Set<string>>(new Set())
 
-  /** Re-test ONE provider on demand (a card's own Test button) without re-testing every
-   *  other installed provider - e.g. right after fixing that CLI's login. */
-  const testOne = useCallback(async (id: string) => {
-    setTestingIds((prev) => new Set(prev).add(id))
+  /** Free install-state probe. Re-run on demand (Rescan / after a manual install). */
+  const detect = useCallback(async () => {
+    setScanning(true)
+    try {
+      const found = await invoke<ProviderStatus[]>('detect_llm_providers')
+      setStatus(Object.fromEntries(found.map((p) => [p.id, p])))
+    } catch {
+      // A failed probe must not block the step: an un-probed provider renders as "can't tell",
+      // and picking it is still allowed.
+      setStatus({})
+    } finally {
+      setScanning(false)
+    }
+  }, [])
+
+  /** One real connectivity test — spends one request against the user's own subscription.
+   *  `silent` runs + persists the test WITHOUT the "Testing…" spinner, so a confirm-in-the
+   *  background (e.g. right after sign-in) doesn't yank the panel back to a spinner. */
+  const testOne = useCallback(async (id: string, opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setTestingIds((prev) => new Set(prev).add(id))
     try {
       const result = await invoke<ProviderTestResult>('test_llm_provider', { id })
       setStatus((prev) => (prev[id] ? { ...prev, [id]: { ...prev[id], last_test: result } } : prev))
     } catch {
-      // Leave whatever was cached before - a failed probe call itself is not evidence
-      // the provider stopped working, just that we couldn't find out right now.
+      // A failed probe CALL isn't evidence the provider stopped working — keep what was cached.
     } finally {
-      setTestingIds((prev) => {
+      if (!opts?.silent) {
+        setTestingIds((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+      }
+    }
+  }, [])
+
+  /** Run the vendor installer for one provider, then re-detect and (on success) auto-test it. */
+  const install = useCallback(async (id: string): Promise<InstallOutcome> => {
+    setInstallingIds((prev) => new Set(prev).add(id))
+    try {
+      const outcome = await invoke<InstallOutcome>('install_llm_provider', { id })
+      await detect()
+      if (outcome.ok) await testOne(id)
+      return outcome
+    } catch (e) {
+      return { ok: false, message: String(e), path: null, command: '' }
+    } finally {
+      setInstallingIds((prev) => {
         const next = new Set(prev)
         next.delete(id)
         return next
       })
     }
-  }, [])
+  }, [detect, testOne])
 
-  const rescan = useCallback(async () => {
-    setScanning(true)
-    let found: ProviderStatus[] = []
+  /** Run the interactive Cursor sign-in (browser OAuth on the user's own subscription).
+   *  Cursor-only - the tray command takes no provider. */
+  const signIn = useCallback(async (id: string): Promise<InstallOutcome> => {
+    setSigningIds((prev) => new Set(prev).add(id))
     try {
-      found = await invoke<ProviderStatus[]>('detect_llm_providers')
-      setStatus(Object.fromEntries(found.map((p) => [p.id, p])))
-    } catch {
-      // A failed probe must not block the step: an un-probed provider renders as
-      // "can't tell", and picking it is still allowed (the CLI may well be there).
-      setStatus({})
-    } finally {
-      setScanning(false)
-    }
-
-    // The expensive half: a real call per installed CLI, run concurrently server-side.
-    // Never spends a request on a provider that isn't even on the machine.
-    const installedIds = found.filter((p) => p.installed).map((p) => p.id)
-    if (installedIds.length === 0) return
-    setTestingIds(new Set(installedIds))
-    try {
-      const results = await invoke<ProviderTestResult[]>('test_all_llm_providers')
-      setStatus((prev) => {
-        const next = { ...prev }
-        for (const r of results) {
-          if (next[r.id]) next[r.id] = { ...next[r.id], last_test: r }
+      const outcome = await invoke<InstallOutcome>('cursor_sign_in')
+      if (outcome.ok) {
+        // `cursor-agent login` exits 0 only AFTER the browser OAuth completes, so this is the
+        // exact moment the user finished signing in. Flip the panel to "connected" NOW rather
+        // than making them wait on a slow follow-up completion call, then confirm + persist it
+        // with a silent background test (which corrects the badge if it somehow isn't usable).
+        const result: ProviderTestResult = {
+          id, outcome: { status: 'ok' }, elapsed_ms: 0, tested_at: new Date().toISOString(),
         }
+        setStatus((prev) => {
+          const cur = prev[id] ?? { id, installed: true, path: null, authenticated: null, last_test: null }
+          return { ...prev, [id]: { ...cur, installed: true, last_test: result } }
+        })
+        void testOne(id, { silent: true })
+      } else {
+        // Sign-in didn't complete - refresh at least the install state.
+        await detect()
+      }
+      return outcome
+    } catch (e) {
+      return { ok: false, message: String(e), path: null, command: '' }
+    } finally {
+      setSigningIds((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
         return next
       })
-    } catch {
-      // Same reasoning as above - stale-but-cached beats blocking the panel.
-    } finally {
-      setTestingIds(new Set())
     }
-  }, [])
+  }, [detect, testOne])
 
-  useEffect(() => { rescan() }, [rescan])
-  return { status, scanning, testingIds, testOne, rescan }
+  useEffect(() => { detect() }, [detect])
+  return { status, scanning, testingIds, installingIds, signingIds, testOne, install, signIn, rescan: detect }
 }
 
-/** "3m ago" / "2h ago" / "5d ago" from an RFC3339 timestamp. Never throws on a bad string -
- *  falls back to blank, since a badge with no relative time is still honest. */
-function timeAgo(iso: string): string {
-  const then = Date.parse(iso)
-  if (Number.isNaN(then)) return ''
-  const secs = Math.max(0, Math.floor((Date.now() - then) / 1000))
-  if (secs < 60) return 'just now'
-  const mins = Math.floor(secs / 60)
-  if (mins < 60) return `${mins}m ago`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h ago`
-  return `${Math.floor(hours / 24)}d ago`
-}
-
-function ProviderGlyph({ on }: { on: boolean }) {
-  // Unselected uses --t-muted, not --t-faint: on the ink palette --t-faint (#9A8FC2)
-  // against the card reads as disabled rather than merely unselected.
-  const color = on ? 'var(--color-state-proposal)' : 'var(--t-muted)'
-  return (
-    <span className="flex items-center justify-center shrink-0" style={{
-      width: 30, height: 30, borderRadius: 9,
-      // --t-box (the subtle-fill token), not --t-ctrl: on the light palettes --t-ctrl is
-      // #FFFFFF, the same value as the --t-card the glyph now sits on, so it would read
-      // as an empty outline. --t-box lifts off the card on all three palettes.
-      background: on ? 'color-mix(in srgb, var(--color-state-proposal) 16%, transparent)' : 'var(--t-box)',
-      border: '1px solid var(--t-ctrl-border)', color,
-    }}>
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 9l3 3-3 3M13 15h4" />
-      </svg>
-    </span>
-  )
-}
-
-function Badge({ text, tone }: { text: string; tone: 'accent' | 'warn' | 'muted' | 'ok' }) {
-  const c = tone === 'accent' ? 'var(--color-state-proposal)'
-    : tone === 'warn' ? 'var(--color-state-pending)'
-    : tone === 'ok' ? 'var(--color-state-approved)' : 'var(--t-title)'
-  return (
-    <span className="font-mono" style={{
-      // 9.5px, not 8.5: at 8.5 these badges carry real state (VERIFIED / NOT
-      // INSTALLED / CONNECTION FAILED) at a size that reads as decorative.
-      fontSize: 9.5, letterSpacing: '.09em', color: c,
-      border: `1px solid ${tone === 'muted' ? 'var(--t-ctrl-border)' : c}`,
-      background: tone === 'muted' ? 'transparent' : `color-mix(in srgb, ${c} 10%, transparent)`,
-      borderRadius: 4, padding: '1.5px 5px', whiteSpace: 'nowrap',
-    }}>{text}</span>
-  )
-}
-
-/** Badge + detail for the last real connectivity test, or nothing if never tested. */
-function TestBadge({ testing, lastTest }: { testing: boolean; lastTest: ProviderTestResult | null }) {
-  if (testing) return <Badge text="TESTING…" tone="muted" />
-  if (!lastTest) return null
-  const when = timeAgo(lastTest.tested_at)
-  if (lastTest.outcome.status === 'ok') {
-    return <Badge text={when ? `VERIFIED · ${when}` : 'VERIFIED'} tone="ok" />
-  }
-  if (lastTest.outcome.status === 'rate_limited') {
-    return <Badge text={when ? `RATE LIMITED · ${when}` : 'RATE LIMITED'} tone="warn" />
-  }
-  return <Badge text={when ? `CONNECTION FAILED · ${when}` : 'CONNECTION FAILED'} tone="warn" />
-}
-
-/** One card in the grid. A `div` shell (not `button`) so a real Test button can nest
- *  inside without invalid nested-interactive-element markup; keyboard/role parity with a
- *  native button is kept by hand (role, tabIndex, Enter/Space). */
-function ProviderCard({ p, picked, missing, testing, lastTest, onPick, onTest }: {
-  p: LlmProviderMeta; picked: boolean; missing: boolean
-  testing: boolean; lastTest: ProviderTestResult | null
-  onPick: () => void; onTest: () => void
+/** One tile in the top-level chooser: logo + name + a badge, nothing else. */
+function ChooserTile({ id, name, badge, selected, subtitle, onOpen }: {
+  id: LlmProviderId; name: string; badge: string; selected: boolean
+  subtitle?: string; onOpen: () => void
 }) {
-  const testable = p.kind === 'cli' && !missing
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onPick}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPick() } }}
-      className="flex flex-col text-left h-full"
+    <button onClick={onOpen} className="flex flex-col text-left h-full"
       style={{
-        gap: 8, padding: '13px 14px', borderRadius: 13, cursor: 'pointer',
-        // --t-card, not --t-box: on the ink palette --t-box is rgba(255,255,255,.055),
-        // which leaves the cards barely distinguishable from the desk behind them. The
-        // real card surface reads as a solid, lit object on all three palettes.
-        background: picked
-          ? 'color-mix(in srgb, var(--color-state-proposal) 12%, var(--t-card))'
-          : 'var(--t-card)',
-        border: `1px solid ${picked ? 'var(--color-state-proposal)' : 'var(--t-ctrl-border)'}`,
-        boxShadow: picked
-          ? 'inset 0 0 0 1px color-mix(in srgb, var(--color-state-proposal) 30%, transparent)'
-          : '0 1px 2px rgba(0,0,0,.04)',
-        transition: 'background .14s, border-color .14s',
+        gap: 9, padding: '15px 15px', borderRadius: 13, cursor: 'pointer',
+        background: selected ? 'color-mix(in srgb, var(--color-state-proposal) 10%, var(--t-card))' : 'var(--t-card)',
+        border: `1px solid ${selected ? 'var(--color-state-proposal)' : 'var(--t-ctrl-border)'}`,
+        boxShadow: '0 1px 2px rgba(0,0,0,.04)',
       }}>
-      <div className="flex items-start" style={{ gap: 10 }}>
-        <ProviderGlyph on={picked} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div className="flex items-center" style={{ gap: 8 }}>
-            <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>{p.name}</span>
-          </div>
-          <div className="flex items-center flex-wrap" style={{ gap: 5, marginTop: 4 }}>
-            {missing && <Badge text="NOT INSTALLED" tone="warn" />}
-            <TestBadge testing={testing} lastTest={lastTest} />
-          </div>
-        </div>
-        {/* Radio dot */}
+      <div className="flex items-start justify-between" style={{ gap: 10 }}>
         <span className="flex items-center justify-center shrink-0" style={{
-          width: 17, height: 17, borderRadius: 99, marginTop: 1,
-          border: `1.5px solid ${picked ? 'var(--color-state-proposal)' : 'var(--t-card-border)'}`,
-          background: picked ? 'var(--color-state-proposal)' : 'transparent',
+          width: 38, height: 38, borderRadius: 10,
+          background: selected ? 'color-mix(in srgb, var(--color-state-proposal) 15%, transparent)' : 'var(--t-box)',
+          border: '1px solid var(--t-ctrl-border)',
+          color: selected ? 'var(--color-state-proposal)' : 'var(--t-title)',
         }}>
-          {picked && <span style={{ width: 6, height: 6, borderRadius: 99, background: '#fff' }} />}
+          <ProviderLogo id={id} size={21} />
         </span>
+        {selected && (
+          <span className="font-mono" style={{
+            fontSize: 9, letterSpacing: '.09em', color: 'var(--color-state-approved)',
+            border: '1px solid var(--color-state-approved)',
+            background: 'color-mix(in srgb, var(--color-state-approved) 10%, transparent)',
+            borderRadius: 4, padding: '1.5px 5px', whiteSpace: 'nowrap',
+          }}>IN USE</span>
+        )}
       </div>
-
-      <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-title)' }}>{p.blurb}</p>
-
-      {/* The failure/rate-limit message from the last test, when there is one. */}
-      {lastTest && lastTest.outcome.status !== 'ok' && (
-        <p style={{ fontSize: 10.5, lineHeight: 1.4, color: 'var(--t-title)' }}>
-          {lastTest.outcome.message}
-        </p>
-      )}
-
-      {/* Picking an uninstalled CLI is allowed, not blocked — show exactly how to get it.
-          Surfaced on --t-key-bg, not --t-card: the card itself is now --t-card, so this
-          inset command block needs its own surface to stay legible as a nested element. */}
-      {missing && picked && (
-        <p className="font-mono" style={{ fontSize: 10.5, lineHeight: 1.5, color: 'var(--t-key-text)', background: 'var(--t-key-bg)', borderRadius: 6, padding: '6px 8px' }}>
-          {p.installHint}
-        </p>
-      )}
-
-      {testable && (
-        <button
-          onClick={(e) => { e.stopPropagation(); onTest() }}
-          // Also stop keydown: Enter/Space fires this button natively, but without
-          // this the same keypress bubbles to the card's role="button" onKeyDown and
-          // switches the selected provider too.
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation() }}
-          disabled={testing}
-          className="font-mono self-start"
-          style={{
-            fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase',
-            // A filled control on --t-box rather than a hairline outline on transparent,
-            // which on the card surface read as a disabled label. (--t-box, not --t-ctrl:
-            // --t-ctrl equals --t-card on the light palettes - see ProviderGlyph.)
-            color: 'var(--t-title)', border: '1px solid var(--t-ctrl-border)',
-            borderRadius: 5, padding: '4px 8px', cursor: testing ? 'default' : 'pointer',
-            opacity: testing ? 0.55 : 1, background: 'var(--t-box)',
-          }}>
-          {testing ? 'Testing…' : 'Test connection'}
-        </button>
-      )}
-    </div>
+      <div className="flex flex-col" style={{ gap: 4 }}>
+        <span style={{ fontSize: 14.5, fontWeight: 550, color: 'var(--t-title)' }}>{name}</span>
+        <span className="font-mono self-start" style={{
+          fontSize: 8.5, letterSpacing: '.09em', color: 'var(--t-faint)',
+        }}>{badge}</span>
+        {subtitle && <span style={{ fontSize: 11, lineHeight: 1.4, color: 'var(--t-muted)' }}>{subtitle}</span>}
+      </div>
+    </button>
   )
 }
 
 export interface LlmProviderPickerProps {
   value: LlmProviderId
-  /** Which custom endpoint, when `value` is 'custom'. The registry can hold several, so the
-   *  kind alone can't say which card is chosen. Ignored otherwise. */
+  /** Which custom endpoint, when `value` is 'custom'. */
   selectedCustomId?: string | null
-  /** `customId` is set only when `id` is 'custom'; the owner persists BOTH fields together
-   *  (`llm_provider` + `llm_provider_custom_id`), since either alone is not a valid choice. */
-  onChange: (id: LlmProviderId, customId?: string) => void
+  /** The owner persists BOTH fields together (`llm_provider` + `llm_provider_custom_id`). May
+   *  return a promise the detail view awaits to show "Switching…"/failure. */
+  onChange: (id: LlmProviderId, customId?: string) => void | Promise<void>
   status: Record<string, ProviderStatus>
   scanning: boolean
-  /** Providers a real connectivity test is currently in flight for — from Rescan (all
-   *  installed providers at once) or a single card's own Test button. */
   testingIds: Set<string>
-  /** Run a real connectivity test for one provider on demand. */
+  installingIds: Set<string>
+  signingIds: Set<string>
   testOne: (id: string) => void
+  install: (id: string) => Promise<InstallOutcome>
+  signIn: (id: string) => Promise<InstallOutcome>
   rescan: () => void
 }
 
-export default function LlmProviderPicker({ value, selectedCustomId, onChange, status, scanning, testingIds, testOne, rescan }: LlmProviderPickerProps) {
-  const picked = LLM_PROVIDERS.find((p) => p.id === value)
-  const usingCli = picked?.kind === 'cli'
-  const busy = scanning || testingIds.size > 0
+export default function LlmProviderPicker({
+  value, selectedCustomId, onChange, status, scanning, testingIds, installingIds, signingIds,
+  testOne, install, signIn, rescan,
+}: LlmProviderPickerProps) {
+  // Which provider's detail is open, or null for the chooser. `'custom'` opens the BYO flow.
+  const [openId, setOpenId] = useState<LlmProviderId | null>(null)
   const custom = useCustomProviders()
+
+  // A provider the user has selected but that isn't one of the three recommended tiles (a
+  // legacy Copilot pick). We don't render a Copilot card, but we mustn't strand them either.
+  const usingHidden = value !== 'custom' && !CHOOSER_PROVIDER_IDS.includes(value)
+
+  if (openId && openId !== 'custom') {
+    const p = llmProvider(openId)
+    return (
+      <LlmProviderDetail
+        p={p}
+        probed={status[openId]}
+        testing={testingIds.has(openId)}
+        installing={installingIds.has(openId)}
+        signing={signingIds.has(openId)}
+        selected={value === openId}
+        onBack={() => setOpenId(null)}
+        onInstall={() => install(openId)}
+        onSignIn={() => signIn(openId)}
+        onTest={() => testOne(openId)}
+        onUse={async () => { await onChange(openId) }}
+      />
+    )
+  }
+
+  if (openId === 'custom') {
+    return (
+      <CustomDetail
+        value={value}
+        selectedCustomId={selectedCustomId ?? null}
+        custom={custom}
+        onBack={() => setOpenId(null)}
+        onPick={(id) => onChange('custom', id)}
+      />
+    )
+  }
 
   return (
     <div className="flex flex-col" style={{ gap: 12 }}>
-      {/* auto-fill rather than a fixed 2 columns: the same grid serves the narrow setup
-          wizard (falls to 2) and the wider Settings pane (fits 3), and more columns means
-          fewer rows, which is what keeps Settings' Save button above the fold. */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(232px, 1fr))', gap: 9 }}>
-        {LLM_PROVIDERS.map((p) => {
-          const isPicked = p.id === value
-          // Unknown (probe failed) is NOT "missing" — only say "not installed" when we
-          // actually looked and didn't find it.
-          const probed = status[p.id]
-          const missing = p.kind === 'cli' && !!probed && !probed.installed
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 10 }}>
+        {CHOOSER_PROVIDER_IDS.map((id) => {
+          const p = llmProvider(id)
           return (
-            <ProviderCard
-              key={p.id}
-              p={p}
-              picked={isPicked}
-              missing={missing}
-              testing={testingIds.has(p.id)}
-              lastTest={probed?.last_test ?? null}
-              onPick={() => onChange(p.id)}
-              onTest={() => testOne(p.id)}
+            <ChooserTile
+              key={id}
+              id={id}
+              name={p.name}
+              badge={LLM_RECOMMENDED_BADGE}
+              selected={value === id}
+              onOpen={() => setOpenId(id)}
             />
           )
         })}
+        <ChooserTile
+          id="custom"
+          name="Bring your own API key"
+          badge="ADVANCED"
+          selected={value === 'custom'}
+          subtitle="Your own OpenAI-compatible endpoint."
+          onOpen={() => setOpenId('custom')}
+        />
+      </div>
 
-        {/* The user's own endpoints, after the built-ins: they are the advanced case, and
-            unlike the built-ins they only become selectable once MEASURED (the settings
-            write rejects an ineligible one - the card says why). */}
+      <p style={{ fontSize: 11, lineHeight: 1.45, color: 'var(--t-muted)' }}>
+        {LLM_RECOMMENDED_NOTE}
+      </p>
+
+      {/* A legacy Copilot user isn't stranded: tell them what they're on and let them switch. */}
+      {usingHidden && (
+        <p style={{ fontSize: 11, lineHeight: 1.45, color: 'var(--color-state-pending)' }}>
+          You&apos;re currently using {llmProvider(value).name}. Pick one of the recommended providers
+          above to switch.
+        </p>
+      )}
+
+      {/* Re-probe for a CLI the user installed in a terminal while this was open. */}
+      <button onClick={rescan} disabled={scanning} className="self-start"
+        style={{
+          fontSize: 11, color: 'var(--t-muted)', background: 'none', border: 'none',
+          padding: 0, cursor: scanning ? 'default' : 'pointer', textDecoration: 'underline',
+        }}>
+        {scanning ? 'Checking what’s installed…' : 'Installed a CLI yourself? Rescan'}
+      </button>
+    </div>
+  )
+}
+
+/** The bring-your-own-key detail — the existing custom-endpoint registry, behind a Back button. */
+function CustomDetail({ value, selectedCustomId, custom, onBack, onPick }: {
+  value: LlmProviderId
+  selectedCustomId: string | null
+  custom: ReturnType<typeof useCustomProviders>
+  onBack: () => void
+  onPick: (id: string) => void
+}) {
+  return (
+    <div className="flex flex-col" style={{ gap: 13 }}>
+      <button onClick={onBack} className="self-start flex items-center"
+        style={{ gap: 6, fontSize: 12, color: 'var(--t-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10 4 6 8l4 4" /></svg>
+        All providers
+      </button>
+      <div>
+        <span style={{ fontSize: 17, fontWeight: 600, color: 'var(--t-title)' }}>Bring your own API key</span>
+        <p style={{ fontSize: 12, lineHeight: 1.45, color: 'var(--t-muted)', marginTop: 3, maxWidth: 520 }}>
+          Point Meridian at your own OpenAI-compatible endpoint. Unlike the coding agents, this
+          bills your own key for every call - so a free-tier key is the right choice.
+        </p>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(232px, 1fr))', gap: 9 }}>
         {custom.providers.map((c) => (
           <CustomProviderCard
             key={c.id}
             p={c}
             picked={value === 'custom' && selectedCustomId === c.id}
             probing={custom.probingIds.has(c.id)}
-            onPick={() => onChange('custom', c.id)}
+            onPick={() => onPick(c.id)}
             onProbe={(hard) => custom.probe(c.id, hard)}
             onRemove={() => custom.remove(c.id)}
           />
         ))}
-
-        {/* Renders as one more card in the grid; it spans the full row only while its
-            form is open (URL, model, key need the width) - that span is owned by
-            <AddCustomProvider> itself, since only it knows whether the form is showing. */}
         {!custom.loading && <AddCustomProvider onAdd={custom.add} />}
-      </div>
-
-      {/* Usage-footprint reassurance — only meaningful when a paid CLI is in play. */}
-      {usingCli && (
-        <p style={{ fontSize: 11, lineHeight: 1.45, color: 'var(--t-muted)' }}>
-          {USAGE_FOOTPRINT_NOTE}
-        </p>
-      )}
-
-      {/* Honesty on privacy: we disable telemetry on every call, but opting your prompts
-          out of model TRAINING is a one-time account setting we can't flip for you. */}
-      {usingCli && picked?.privacyUrl && (
-        <div className="flex items-start" style={{
-          gap: 8, padding: '10px 12px', borderRadius: 10,
-          background: 'var(--t-card)', border: '1px solid var(--t-ctrl-border)',
-        }}>
-          <span className="shrink-0" style={{ marginTop: 1, color: 'var(--color-state-approved)' }} aria-hidden="true">🔒</span>
-          <p style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--t-muted)' }}>
-            Meridian turns off usage telemetry on every call. To also keep your prompts out of model
-            training, switch on {picked.name}’s privacy setting once:{' '}
-            <button onClick={() => picked.privacyUrl && openExternal(picked.privacyUrl)}
-              style={{ color: 'var(--color-state-proposal)', background: 'none', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit', textDecoration: 'underline' }}>
-              {picked.privacyLabel ?? 'open settings'} ↗
-            </button>
-          </p>
-        </div>
-      )}
-
-      {/* Standing warning while a custom endpoint is the chosen provider - the pipeline then
-          bills the user's own key every hour, unattended. */}
-      {value === 'custom' && (
-        <p style={{ fontSize: 11, lineHeight: 1.45, color: 'var(--color-state-pending)' }}>
-          {CUSTOM_PROVIDER_COST_NOTE}
-        </p>
-      )}
-
-      <div className="flex items-center justify-between">
-        <p style={{ fontSize: 11, color: 'var(--t-muted)', lineHeight: 1.45, flex: 1, paddingRight: 12 }}>
-          The four coding agents use the login you already have in that CLI - Meridian never asks
-          them for an API key, and an hour they can’t serve is left pending and retried. A custom
-          endpoint is the exception: it runs on a key you paste here.
-        </p>
-        <button onClick={rescan} disabled={busy} className="font-mono shrink-0"
-          style={{
-            fontSize: 10.5, letterSpacing: '.08em', textTransform: 'uppercase',
-            // Same fill as the per-card Test buttons - they are the same class of control.
-            color: 'var(--t-title)', border: '1px solid var(--t-ctrl-border)',
-            borderRadius: 6, padding: '5px 10px', cursor: busy ? 'default' : 'pointer',
-            opacity: busy ? 0.55 : 1, background: 'var(--t-box)',
-          }}>
-          {scanning ? 'Scanning…' : testingIds.size > 0 ? 'Testing…' : 'Rescan'}
-        </button>
       </div>
     </div>
   )
