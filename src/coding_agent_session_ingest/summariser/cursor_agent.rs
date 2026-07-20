@@ -2,11 +2,14 @@
 //
 // Run `cursor-agent` to summarise a Cursor session (symmetry with claude.rs /
 // codex.rs / copilot.rs — each agent's transcripts go to its own CLI, with no
-// cross-engine fallback). Flags pinned against cursor-agent 2026.06.04 live:
-// `-p --output-format text --trust` (without --trust headless runs die with
-// "Workspace Trust Required"). The transcript rides in the prompt argument,
-// and any failure leaves the row pending for a later drain (Failed → retried up
-// to primary_attempts, then left pending).
+// cross-engine fallback). The transcript rides in the prompt argument, and any
+// failure leaves the row pending for a later drain (Failed → retried up to
+// primary_attempts, then left pending).
+//
+// Only `-p --output-format text` is decided here; every safety flag, the
+// environment and the skills-free sandbox HOME come from `llm::cursor_cli`, so
+// this path and the LLM-provider backend cannot diverge. See that module for
+// why each lever exists.
 // Persistence probed: `-p` runs write to ~/.cursor/chats/, NOT the vscdb we
 // ingest from — so a summariser run cannot re-enter the indexer (the
 // SUMMARY_PROMPT_MARKER guard in sources/mod.rs backstops this anyway).
@@ -39,21 +42,25 @@ pub async fn run_cursor_agent(
         prompts::summary_instruction(),
         cap_transcript(stdin_text, ARG_TRANSCRIPT_CAP),
     );
-    // --trust: cursor-agent refuses untrusted workspaces even in print mode
-    // ("Workspace Trust Required", exit 1 — observed live 2026-06-06 running
-    // under cfg.meridian_home). Trusting is safe here: the prompt is our own
-    // summary instruction, not repo code execution.
-    let mut args: Vec<String> = vec![
-        "-p".into(),
-        prompt,
-        "--output-format".into(),
-        "text".into(),
-        "--trust".into(),
-    ];
-    if !cfg.cursor_model.is_empty() {
-        args.push("--model".into());
-        args.push(cfg.cursor_model.clone());
-    }
+    // Safety flags, environment and the skills-free sandbox HOME all come from
+    // `llm::cursor_cli` — the single source of truth shared with the LLM-provider backend. This
+    // call site used to build its own argv, which meant it summarised UNTRUSTED transcripts with
+    // cursor-agent's default full write+shell tool access; routing through the shared helper is
+    // what closes that gap and keeps the two sites from drifting again.
+    let model = if cfg.cursor_model.is_empty() {
+        // Follow the account default here rather than pinning: the summariser predates the
+        // provider layer and has its own configured model, so an empty value means "unset".
+        "auto"
+    } else {
+        cfg.cursor_model.as_str()
+    };
+    let mut args: Vec<String> = vec!["-p".into(), prompt];
+    args.extend(["--output-format".into(), "text".into()]);
+    args.extend(crate::llm::cursor_cli::safety_args(model, true));
+
+    let sandbox = crate::llm::cursor_cli::sandbox_home();
+    let env = crate::llm::cursor_cli::env_overrides(sandbox.as_deref());
+    let env_refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
     let cap = run_capture(
         "cursor-agent",
@@ -61,8 +68,8 @@ pub async fn run_cursor_agent(
         "", // transcript is embedded in the prompt (stdin support unprobed)
         &cfg.meridian_home,
         cfg.cursor_timeout_s,
-        &[("MERIDIAN_SUMMARISER", "1")],
-        &[],
+        &env_refs,
+        crate::llm::cursor_cli::ENV_REMOVE,
     )
     .await?;
 
