@@ -180,9 +180,19 @@ fn missing_required(
         .unwrap_or(&[])
         .iter()
         .copied()
-        .filter(|k| {
-            let submitted = updates.get(*k).is_some_and(|v| value_is_set(v));
-            !submitted && !is_set(existing, k)
+        .filter(|k| match updates.get(*k) {
+            // Submitted: judge the payload's value, and ONLY that. Falling back
+            // to `.env` here is what let a submitted placeholder pass — it was
+            // not "set", but the valid token already on disk satisfied the
+            // check, and `upsert_env` then wrote the placeholder over it,
+            // destroying working credentials. A submitted placeholder must fail
+            // the required-field check so the write never happens.
+            Some(v) => !value_is_set(v),
+            // Not submitted: the write leaves whatever `.env` holds, so that is
+            // what the check judges. This is the case the GitHub project picker
+            // depends on — it submits only `project_ids` on top of a token its
+            // OAuth device flow already wrote.
+            None => !is_set(existing, k),
         })
         .collect()
 }
@@ -452,10 +462,11 @@ pub async fn save_integration_token(body: SaveTokenBody) -> Result<serde_json::V
     // Read through `detect_install_mode().env_path()`, the same resolver
     // `discover_github_projects` reads the token with, so the check and the call
     // that proves the token exists can never disagree about which file is live.
-    let existing = crate::install::detect_install_mode()
-        .env_path()
-        .map(parse_env)
-        .unwrap_or_default();
+    // Resolved ONCE and reused for the write below: `detect_install_mode` does
+    // synchronous filesystem probing, and this is an async command, so calling
+    // it twice stalls the reactor twice for the same answer.
+    let mode = crate::install::detect_install_mode();
+    let existing = mode.env_path().map(parse_env).unwrap_or_default();
     let missing = missing_required(provider, &updates, &existing);
     if !missing.is_empty() {
         return Err(format!("Missing: {}", missing.join(", ")));
@@ -481,7 +492,6 @@ pub async fn save_integration_token(body: SaveTokenBody) -> Result<serde_json::V
     // blocking thread pool so we don't stall the Tokio reactor.
     let key_count = updates.len();
     {
-        let mode = crate::install::detect_install_mode();
         // On a fresh `.app` install no `.env` exists yet, so `detect_install_mode`
         // returns `Bare` (no path). Credentials must be saveable before any `.env`
         // exists — default to the canonical `~/.meridian/.env`, which `upsert_env`
@@ -1287,6 +1297,22 @@ mod tests {
             "github",
             &updates(&[("GITHUB_TOKEN", "your-token-here")]),
             &env_of(&[]),
+        );
+        assert_eq!(missing, vec!["GITHUB_TOKEN"]);
+    }
+
+    /// The destructive case the sibling test above does NOT cover: it passes an
+    /// EMPTY `.env`, so it held under the old logic too. With a valid token
+    /// already on disk, falling back to `.env` for a key that WAS submitted let
+    /// the placeholder through the check — and `upsert_env` then wrote it over
+    /// the working credential. A submitted placeholder must be refused whether
+    /// or not something valid is already stored.
+    #[test]
+    fn a_submitted_placeholder_cannot_overwrite_a_stored_token() {
+        let missing = missing_required(
+            "github",
+            &updates(&[("GITHUB_TOKEN", "your-token-here")]),
+            &env_of(&[("GITHUB_TOKEN", "ghp_valid_and_working")]),
         );
         assert_eq!(missing, vec!["GITHUB_TOKEN"]);
     }
