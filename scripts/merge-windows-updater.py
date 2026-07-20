@@ -50,7 +50,12 @@ def main() -> None:
     sig_path = Path(sys.argv[4])
 
     try:
-        manifest = json.loads(manifest_path.read_text())
+        # encoding pinned on every file operation. PYTHONIOENCODING (set by the
+        # workflow) only covers stdin/stdout/stderr - Path.read_text/write_text
+        # fall back to the locale encoding, which is cp1252 on the Windows
+        # runner this script runs on. A single non-ASCII character anywhere in
+        # the manifest would otherwise fail the read.
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         die(f"cannot read {manifest_path}: {e}")
 
@@ -79,7 +84,7 @@ def main() -> None:
         )
 
     try:
-        signature = sig_path.read_text().strip()
+        signature = sig_path.read_text(encoding="utf-8").strip()
     except OSError as e:
         die(f"cannot read signature {sig_path}: {e}")
     if not signature:
@@ -92,7 +97,10 @@ def main() -> None:
         if platforms.get(key) != original:
             die(f"'{key}' changed during merge - refusing to write")
 
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    # ensure_ascii is left at its default (True), so the JSON body itself is
+    # escaped to ASCII regardless; encoding="utf-8" makes the WRITE safe too,
+    # rather than relying on that default holding forever.
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     covered = ", ".join(sorted(platforms))
     # ASCII only, deliberately. This runs on windows-latest, where Python
     # defaults stdout to the cp1252 console codepage; a `✓` here raised
