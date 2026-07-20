@@ -153,13 +153,18 @@ const TOKEN_REQUIRED: &[(&str, &[&str])] = &[
 /// device flow writes `GITHUB_TOKEN` to `.env` itself (see [`ENV_OAUTH_PROVIDERS`]),
 /// and the project picker that runs afterwards submits only `project_ids`. Judging
 /// that payload in isolation reported "Missing: GITHUB_TOKEN" for a token that was
-/// already on disk — the picker could never save.
+/// already on disk. The user-visible symptom was a dead-end rather than a mere
+/// error string: after connecting GitHub, the picker would list the account's
+/// boards (it reads the very token the check claimed was missing) and then refuse
+/// every save, so `GITHUB_PROJECT_IDS` could never be set and GitHub never synced.
 ///
 /// Checking `existing` rather than dropping the requirement keeps the guard that
 /// matters: a `project_ids`-only save with no GitHub connection at all still
-/// reports the token missing. `is_set` (not bare presence) is deliberate — it
-/// rejects leftover `.env.example` placeholders, so it agrees with the
-/// connected-state test in [`get_integrations`].
+/// reports the token missing. Both halves test the *value*, not bare presence, so
+/// a leftover `.env.example` placeholder fails the check whether it arrives in the
+/// payload or is already on disk — that agrees with the connected-state test in
+/// [`get_integrations`], which would otherwise accept the save and then report the
+/// provider disconnected.
 ///
 /// # Who calls this
 /// [`save_integration_token`], which turns a non-empty result into its error.
@@ -175,7 +180,10 @@ fn missing_required(
         .unwrap_or(&[])
         .iter()
         .copied()
-        .filter(|k| !updates.contains_key(*k) && !is_set(existing, k))
+        .filter(|k| {
+            let submitted = updates.get(*k).is_some_and(|v| value_is_set(v));
+            !submitted && !is_set(existing, k)
+        })
         .collect()
 }
 
@@ -209,16 +217,23 @@ fn parse_env(path: &std::path::Path) -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
+/// Whether a raw value counts as "set" — i.e. not a leftover `.env.example`
+/// placeholder (`your-`, `_your_`, `-here`).
+///
+/// Split out from [`is_set`] so the same rule can be applied to a submitted
+/// payload, which is a `BTreeMap` rather than the parsed-`.env` `HashMap`.
+/// One predicate for both is what stops a submitted placeholder from passing
+/// the required-field check and then being reported disconnected by
+/// [`get_integrations`], which tests the written value with this same rule.
+fn value_is_set(v: &str) -> bool {
+    let lower = v.to_lowercase();
+    !lower.contains("your-") && !lower.contains("_your_") && !lower.contains("-here")
+}
+
 /// A value counts as "set" only if present and not a leftover `.env.example`
 /// placeholder (`your-`, `_your_`, `-here`). Mirrors the route's `isSet`.
 fn is_set(env: &HashMap<String, String>, key: &str) -> bool {
-    match env.get(key) {
-        None => false,
-        Some(v) => {
-            let lower = v.to_lowercase();
-            !lower.contains("your-") && !lower.contains("_your_") && !lower.contains("-here")
-        }
-    }
+    env.get(key).is_some_and(|v| value_is_set(v))
 }
 
 fn oauth_file_exists(provider: &str) -> bool {
@@ -1257,6 +1272,21 @@ mod tests {
             "github",
             &updates(&[("GITHUB_PROJECT_IDS", "PVT_1")]),
             &env_of(&[("GITHUB_TOKEN", "your-token-here")]),
+        );
+        assert_eq!(missing, vec!["GITHUB_TOKEN"]);
+    }
+
+    /// The placeholder rule is symmetric across the two halves of the filter: a
+    /// placeholder *submitted* in the payload is refused exactly like one already
+    /// on disk. Without this, the save would succeed and `get_integrations` —
+    /// which tests the written value with the same predicate — would immediately
+    /// report GitHub disconnected.
+    #[test]
+    fn a_submitted_placeholder_token_is_refused_like_a_stored_one() {
+        let missing = missing_required(
+            "github",
+            &updates(&[("GITHUB_TOKEN", "your-token-here")]),
+            &env_of(&[]),
         );
         assert_eq!(missing, vec!["GITHUB_TOKEN"]);
     }
