@@ -1,7 +1,7 @@
-name: Release (staging, parallel — EXPERIMENTAL)
+name: Release (staging, parallel)
 
-# An experiment in cutting the staging release's wall-clock time by building the
-# two macOS architectures CONCURRENTLY instead of one after the other.
+# Cuts the staging release's wall-clock time by building the two macOS
+# architectures CONCURRENTLY instead of one after the other.
 #
 # WHY: release-staging.yml spends ~39 of its ~43 minutes compiling the workspace
 # four times, strictly sequentially — daemon×2 arches, then tray×2 arches inside
@@ -27,35 +27,57 @@ name: Release (staging, parallel — EXPERIMENTAL)
 #   * TAURI_SIGNING_PRIVATE_KEY is consumed at BUNDLE time, so the signing
 #     secrets never need to reach the build jobs
 #
-# SCOPE — this workflow does NOT publish. It builds, bundles, signs and notarizes,
-# then reports timings, so the restructure can be proven and measured without
-# cutting prereleases or moving the updater-staging channel. release-staging.yml
-# remains the only thing that cuts a staging release. Wire publishing in here only
-# once these timings are trusted.
+# SCOPE — this workflow DOES publish: it cuts the versioned prerelease, attaches
+# the DMG + updater artifacts, mirrors latest.json onto the rolling
+# `updater-staging` tag, and builds/attaches the Windows installer. It is a full
+# peer of release-staging.yml, which stays in place, still triggered by its own
+# distinct `[staging-release]` marker, until this path has cut a real prerelease
+# that an installed staging app has been observed auto-updating to.
 #
-# Nothing here ever runs on its own: see TRIGGERING below. This is an experiment,
-# not a release path.
+# Nothing here ever runs on its own: see TRIGGERING below.
+#
+# HOW PUBLISHING SPLITS FROM BUILDING — release-staging.yml hands the whole job to
+# semantic-release, whose `prepareCmd` compiles. That is exactly what cannot be
+# parallelised, so here the phases are pulled apart:
+#
+#   plan     semantic-release --dry-run decides the version (no tag, no release)
+#   build    both arches compile that version, concurrently, on two runners
+#   release  lipo → sign → bundle → notarize → package → THEN semantic-release
+#            runs as a PUBLISHER ONLY (.releaserc.staging-parallel.json, whose
+#            exec plugin carries publishCmd but no prepareCmd — everything
+#            prepareCmd would have done is already on disk as explicit steps)
+#
+# The version is therefore computed TWICE, once per semantic-release invocation.
+# Those two must agree or the binaries carry a version the release does not: see
+# the "Assert the version has not moved" step, which fails the run rather than
+# publish mis-stamped artifacts.
 
 # TRIGGERING - a `workflow_dispatch`-only workflow is NOT dispatchable unless the
 # file also exists on the DEFAULT branch, and this one deliberately lives only on
-# `pre-main` (it is an experiment, not a release path). The `push` trigger below is
-# what REGISTERS the workflow with the Actions API so `gh workflow run --ref
-# pre-main` resolves at all - the same reason release-staging.yml carries one.
+# `pre-main` — semantic-release reads the channel from GITHUB_REF, so a run must
+# carry ref=pre-main or it would treat the build as `main` and try to cut a STABLE
+# release from pre-main code. The `push` trigger below is what REGISTERS the
+# workflow with the Actions API so `gh workflow run --ref pre-main` resolves at
+# all - the same reason release-staging.yml carries one.
 #
 # It must never actually build on an ordinary pre-main push, so every job is gated
 # on a manual dispatch or an explicit `[parallel-release-test]` marker commit. An
 # unmarked push creates a run whose jobs all skip, which is enough to register it.
+#
+# The marker stays DISTINCT from release-staging.yml's `[staging-release]` on
+# purpose: while both files exist, one marker commit must not fire both and
+# double-release. They swap at cutover, when release-staging.yml is retired.
 on:
   push:
     branches: [pre-main]
   workflow_dispatch: {}
 
 permissions:
-  contents: read
+  contents: write       # tags, the versioned prerelease, the rolling updater-staging release
 
 concurrency:
-  # Shares release-staging.yml's group so an experiment and a real staging release
-  # can never fight over the same tags, caches or notarization throughput.
+  # Shares release-staging.yml's group so the two staging release paths can never
+  # fight over the same tags, caches or notarization throughput while both exist.
   group: release-staging
   cancel-in-progress: false
 
@@ -71,7 +93,7 @@ jobs:
   # The version has to exist BEFORE any compiling starts, because set-version.sh
   # bakes it into Cargo.toml (→ the daemon binary) and tauri.conf.json (→ the
   # value tauri-plugin-updater compares against latest.json). Both build jobs and
-  # the bundle job must therefore agree on one value.
+  # the release job must therefore agree on one value.
   #
   # This also pins the SHA. The workflow targets `pre-main`, a busy integration
   # branch — if each job checked out `pre-main` by name they could resolve to
@@ -79,7 +101,7 @@ jobs:
   # silently disagree with each other and with the bundle.
   plan:
     name: Plan (version + SHA)
-    # The gate for the whole workflow: `build` and `bundle` both chain off this
+    # The gate for the whole workflow: `build` and `release` both chain off this
     # job, so skipping it skips them. Ordinary pre-main pushes register the
     # workflow and do nothing else.
     if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[parallel-release-test]') }}
@@ -107,8 +129,12 @@ jobs:
 
       - run: npm ci --no-audit --no-fund
 
-      - name: Use staging release config
-        run: cp .releaserc.staging.json .releaserc.json
+      - name: Use the parallel staging release config
+        # Ephemeral in CI — .releaserc.json is in no git-asset list, so this is
+        # never committed. Analysis-only here, but it must be the SAME config the
+        # release job publishes with, or the two version computations could
+        # diverge on branch/prerelease rules alone.
+        run: cp .releaserc.staging-parallel.json .releaserc.json
 
       - name: Compute the next staging version
         id: version
@@ -174,11 +200,12 @@ jobs:
           # so without it both arches would compute the same cache key and
           # clobber each other's target/ on save.
           key: ${{ matrix.target }}
-          # Restore-only while this is an experiment. Two per-arch target/ caches
-          # would add ~4GB to a repo already at its 10GB quota (see #488, which
-          # was merged specifically to get back under it) and would evict the
-          # release cache we are trying to keep warm. Flip to a branch condition
-          # if and when this workflow becomes the real release path.
+          # Restore-only, deliberately, even now that this path publishes. Two
+          # per-arch target/ caches would add ~4GB to a repo already at its 10GB
+          # quota (see #488, merged specifically to get back under it) and would
+          # evict the release cache we are trying to keep warm. Revisit at
+          # cutover, once release-staging.yml is retired and its cache with it —
+          # saving here is the remaining easy win on top of the parallel split.
           save-if: "false"
 
       - uses: actions/setup-node@v4
@@ -220,6 +247,17 @@ jobs:
           mkdir -p target/release
           cp "target/${{ matrix.target }}/release/meridian" target/release/meridian
 
+      - name: Evict the stale tauri-plugin-notifications fingerprint
+        # rust-cache restores target/ (so the fingerprint says "fresh") but NOT
+        # registry/src, where the pinned 0.4.6 fork's build.rs writes the Swift
+        # static lib. The build script is therefore skipped while the .a it
+        # produces is gone, and linking fails with "could not find native static
+        # library tauri-plugin-notifications". `--release` is load-bearing:
+        # without it the clean targets the debug profile and reports
+        # "Removed 0 files". Carried over from the sequential prepareCmd.
+        working-directory: tray/src-tauri
+        run: cargo clean -p tauri-plugin-notifications --release
+
       - name: Compile the tray (${{ matrix.target }}, no bundling)
         working-directory: tray
         run: npx tauri build --no-bundle --target ${{ matrix.target }} --config src-tauri/tauri.staging.conf.json
@@ -236,12 +274,16 @@ jobs:
           # much faster one, and this transfer sits on the critical path.
           compression-level: 0
 
-  # ── Stage 3: join — lipo, sign, bundle, notarize ────────────────────────────
-  bundle:
-    name: Bundle universal
+  # ── Stage 3: join — lipo, sign, bundle, notarize, publish ───────────────────
+  release:
+    name: Bundle universal + publish
     needs: [plan, build]
     if: needs.plan.outputs.release_due == 'true'
     runs-on: macos-26
+    outputs:
+      released: ${{ steps.publish.outputs.released }}
+      version: ${{ steps.publish.outputs.version }}
+      tag: ${{ steps.publish.outputs.tag }}
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -252,7 +294,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # The pinned SHA, not `pre-main` by name: this job tags and publishes,
+          # and pre-main may have moved since `plan` resolved it. Tagging the
+          # exact commit the binaries were built from is the whole point.
           ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 0      # full history — semantic-release needs the commits
+          fetch-tags: true    # and main's v* tags, to compute the prerelease counter
           persist-credentials: false
 
       - uses: actions/setup-node@v4
@@ -260,6 +307,7 @@ jobs:
           node-version: "24"
           cache: "npm"
           cache-dependency-path: |
+            package-lock.json
             ui/package-lock.json
             tray/package-lock.json
 
@@ -320,9 +368,206 @@ jobs:
         working-directory: tray
         run: npx tauri bundle --target universal-apple-darwin --bundles app,dmg --config src-tauri/tauri.staging.conf.json
 
+      - name: Notarize and staple the DMG
+        # `tauri bundle` notarizes and staples the .app, but it only SIGNS the
+        # disk image — the bundler has no notarize call for the DMG, and a
+        # notarization ticket is keyed to the cdhash of what was submitted, so
+        # the stapled app inside does not cover the container. Without this the
+        # DMG a user downloads trips "can't check it for malicious software".
+        # Must precede package-updater.sh: stapling rewrites the file, so the
+        # stable-named copy has to be taken afterwards to inherit the ticket.
+        run: bash scripts/notarize-dmg.sh "${{ needs.plan.outputs.version }}"
+
+      - name: Package the updater artifacts
+        # Writes latest.json from the real minisign signature and makes the
+        # stable-named Meridian.dmg copy. ALSO the only thing that reads
+        # tray/minimum-version and stamps `Minimum-Version:` into the manifest
+        # notes — skip it and the forced-update floor silently stops shipping.
+        run: bash scripts/package-updater.sh "${{ needs.plan.outputs.version }}"
+
+      - name: Verify the release bundle
+        # Independently re-checks signing, notarization, stapling and the
+        # presence of the updater artifacts. A non-zero exit here aborts before
+        # the tag exists and before anything is published.
+        run: bash scripts/verify-release-bundle.sh "${{ needs.plan.outputs.version }}"
+
+      - name: Install release tooling
+        run: npm ci --no-audit --no-fund
+
+      - name: Use the parallel staging release config
+        run: cp .releaserc.staging-parallel.json .releaserc.json
+
+      - name: Assert the version has not moved
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          PLANNED: ${{ needs.plan.outputs.version }}
+        # The binaries above were stamped with `plan`'s version, but the
+        # semantic-release run below computes the version independently. They
+        # diverge if a v* or v*-staging* tag appeared in between — a concurrent
+        # production release.yml run can do exactly that, since it sits in a
+        # different concurrency group. Publishing then would ship a release whose
+        # artifacts are stamped with a different version than the tag, which the
+        # updater compares against — a silently broken update. Cheap to check,
+        # and the failure costs only a re-run.
+        run: |
+          set -o pipefail
+          npx semantic-release --dry-run 2>&1 | tee sr-verify.log || true
+          actual="$(grep -oE 'The next release version is [0-9][^ ]*' sr-verify.log | tail -1 | awk '{print $NF}')"
+          if [ "${actual}" != "${PLANNED}" ]; then
+            echo "::error::version moved between plan and publish - built ${PLANNED}, semantic-release now wants ${actual:-<none>}. Re-run the workflow."
+            exit 1
+          fi
+          echo "✓ version still ${PLANNED}"
+
+      - name: semantic-release (publish only)
+        id: publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          MERIDIAN_CHANNEL: "staging"
+        # Same tag-movement detection as release-staging.yml: sorted by creation
+        # date, not version, so semver's "prerelease sorts below release" quirk
+        # cannot pick a stale tag. Gates the Windows job below.
+        run: |
+          before="$(git tag --list 'v*-staging*' --sort=-creatordate | head -1)"
+          npx semantic-release
+          after="$(git tag --list 'v*-staging*' --sort=-creatordate | head -1)"
+          if [ -n "${after}" ] && [ "${before}" != "${after}" ]; then
+            echo "released=true"      >> "$GITHUB_OUTPUT"
+            echo "version=${after#v}" >> "$GITHUB_OUTPUT"
+            echo "tag=${after}"       >> "$GITHUB_OUTPUT"
+            echo "→ staging released ${after}"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            echo "→ no staging release this run"
+          fi
+
       - name: Report what was produced
+        if: always()
         run: |
           out=target/universal-apple-darwin/release/bundle
-          echo "app:  $(lipo -archs "$out/macos/Meridian.app/Contents/MacOS/meridian-tray")"
+          echo "app:  $(lipo -archs "$out/macos/Meridian.app/Contents/MacOS/meridian-tray" 2>/dev/null || echo '<absent>')"
           ls -la "$out/dmg/" "$out/macos/" || true
-          echo "NOTE: this workflow does not publish - release-staging.yml remains the release path."
+
+      - name: Clean up signing material
+        # Runs even on failure — never leave the cert/key on a runner.
+        if: always()
+        run: |
+          security delete-keychain "${RUNNER_TEMP}/meridian-signing.keychain-db" 2>/dev/null || true
+          rm -f "${RUNNER_TEMP}/apple-api-key.p8" "${RUNNER_TEMP}/certificate.p12"
+
+  # ── Windows: build + attach to the staging release, exactly like the DMG ────
+  #
+  # Ported verbatim from release-staging.yml (which in turn mirrors release.yml's
+  # windows-release job) — it is unaffected by the macOS parallelisation, since
+  # Windows was never part of the sequential macOS build arm. Kept in step with
+  # that file: any change there belongs here too, until release-staging.yml is
+  # retired at cutover.
+  #
+  windows-release:
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: windows-latest
+    env:
+      SQLX_OFFLINE: "true"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
+      MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
+      MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+      MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # Same as the macOS staging job — the badge reads "staging".
+      MERIDIAN_CHANNEL: "staging"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+          persist-credentials: false
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            ui/package-lock.json
+            tray/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: ui/.next/cache
+          key: nextjs-win-${{ hashFiles('ui/package-lock.json') }}-${{ hashFiles('ui/**/*.ts', 'ui/**/*.tsx') }}
+          restore-keys: |
+            nextjs-win-${{ hashFiles('ui/package-lock.json') }}-
+            nextjs-win-
+
+      - name: Install JS dependencies
+        shell: bash
+        run: |
+          (cd ui && npm ci --no-audit --no-fund)
+          (cd tray && npm ci --no-audit --no-fund)
+
+      - name: Build the daemon + tray (NSIS, staging)
+        shell: bash
+        # build:windows:staging passes --config tauri.staging.conf.json, so the
+        # installer bakes the updater-staging endpoint. tauri.windows.conf.json
+        # still auto-merges (NSIS target + meridian.exe resource).
+        run: cd tray && npm run build:windows:staging
+
+      - name: Attach the installer and merge the staging updater manifest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.release.outputs.version }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          NSIS_DIR="target/release/bundle/nsis"
+          setup="$(ls "${NSIS_DIR}"/*-setup.exe 2>/dev/null | head -1)"
+          [ -n "${setup}" ] || { echo "::error::no NSIS installer in ${NSIS_DIR}"; exit 1; }
+          sig="${setup}.sig"
+          [ -f "${sig}" ] || { echo "::error::missing updater signature ${sig}"; exit 1; }
+
+          # 1. The versioned installer, on the immutable v<version> prerelease —
+          #    this is what the updater manifest's `url` points at, matching how
+          #    the macOS tarball lives on the versioned release.
+          cp "${setup}" "${NSIS_DIR}/Meridian-setup.exe"
+          gh release upload "${TAG}" "${NSIS_DIR}/Meridian-setup.exe" --clobber
+
+          # 2. A stable-named copy on the rolling updater-staging tag, for a
+          #    fixed staging-tester download link — the DMG's convenience-copy
+          #    equivalent (mirror-staging-release.sh does the same for the DMG).
+          gh release upload updater-staging "${NSIS_DIR}/Meridian-setup.exe" --clobber
+
+          # 3. Merge windows-x86_64 into the latest.json on updater-staging (the
+          #    manifest installed staging apps poll). The merge refuses to write
+          #    unless both darwin-* keys survive intact.
+          gh release download updater-staging --pattern latest.json --output latest.json --clobber
+          python3 scripts/merge-windows-updater.py \
+            latest.json "${VERSION}" \
+            "https://github.com/Meridiona/meridian/releases/download/${TAG}/Meridian-setup.exe" \
+            "${sig}"
+          gh release upload updater-staging latest.json --clobber
+          echo "✓ staging Windows installer attached; updater-staging/latest.json updated"
