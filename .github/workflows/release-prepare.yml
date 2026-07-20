@@ -1,0 +1,189 @@
+name: Release (prepare)
+
+# DECIDES THE VERSION AND PUSHES THE TAG. BUILDS NOTHING.
+#
+# This is one half of a two-workflow release. Its entire job is to run
+# semantic-release, bump the version manifests, and push a `v*` tag. Pushing
+# that tag is what triggers release-build.yml, which does all the compiling,
+# signing, notarizing and publishing.
+#
+# WHY THE SPLIT EXISTS — this is not tidiness, it fixes a real failure we hit.
+#
+# semantic-release's verifyConditions stage runs `isBranchUpToDate`, comparing
+# the checked-out HEAD against origin/<branch>, and refuses to publish if it is
+# behind. That check exists because semantic-release is designed to commit and
+# push during a release, so it insists on sitting at branch HEAD.
+#
+# The old single-workflow shape pinned a SHA at plan time (correct — you want
+# the tag to name exactly the commit whose binaries you built) and then ran
+# semantic-release as a publisher at the END, after ~30 minutes of compiling.
+# Any merge to pre-main inside that window put the checkout behind the remote,
+# and the publish aborted with:
+#
+#     The local branch pre-main is behind the remote one, therefore a new
+#     version won't be published.
+#
+# Run 29748827473 did exactly that: both macOS arches built successfully, then
+# the whole release was discarded. ~53 macOS-runner-minutes for nothing.
+#
+# The two requirements are structurally incompatible — an immutable build ref
+# and a check that demands branch HEAD cannot both hold across a long build —
+# so the fix is architectural, not a flag. Upstream has explicitly declined to
+# make isBranchUpToDate configurable (semantic-release#1849), on the reasoning
+# that "your builds will catch up next run". That is fine for a 90-second npm
+# publish and untenable for a 30-minute signed desktop build.
+#
+# Worse than the wasted time: semantic-release/discussions/3334 documents
+# mis-ordered runs publishing the WRONG VERSION with a success exit code. So
+# the old shape was a correctness hazard, not just a slow one.
+#
+# HOW THE SPLIT REMOVES IT:
+#   * The only place branch state matters is THIS workflow, whose window is
+#     ~60 seconds instead of ~30 minutes. Losing the race now costs a minute of
+#     ubuntu time and is simply re-runnable.
+#   * release-build.yml triggers on the TAG — an immutable ref. pre-main can
+#     move a hundred times mid-build and nothing notices, because there is no
+#     branch-state check left to fail. The tag<->binary correspondence the old
+#     pinned-SHA checkout was reaching for now holds BY CONSTRUCTION.
+#   * "Which version am I building" has exactly one answer, committed to the
+#     repo. No plan job, no second semantic-release run, no assert step.
+#
+# This is the shape Zed, Ghostty, Cap and clash-verge all use: decide the
+# version cheaply (or read it from the repo), then build from an immutable ref.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Analyse commits and report the next version without tagging"
+        type: boolean
+        default: false
+  push:
+    branches: [main, pre-main]
+
+# Serialise: two prepare runs would race to tag. cancel-in-progress stays false
+# because a half-finished semantic-release run can have already pushed a tag.
+concurrency:
+  group: release-prepare
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Decide version + push tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # pushes the version-bump commit and the tag
+    # A `push` to main/pre-main only prepares a release when the commit asks for
+    # it. Without this every merge would cut a release. workflow_dispatch is
+    # always honoured.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+          || contains(github.event.head_commit.message, '[release]')
+          || contains(github.event.head_commit.message, '[staging-release]') }}
+    outputs:
+      released: ${{ steps.run.outputs.released }}
+      version: ${{ steps.run.outputs.version }}
+      tag: ${{ steps.run.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Branch HEAD by name, NOT a pinned SHA — the whole point of this job
+          # is to be up to date with the remote so semantic-release is happy.
+          # Safe here precisely because nothing is built from this checkout.
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: true # semantic-release pushes the tag
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Select the release config for this branch
+        # pre-main cuts prereleases on the `staging` channel; main cuts stable.
+        # The two configs differ in more than the channel (staging has no
+        # @semantic-release/changelog and no @semantic-release/git), so pick the
+        # whole file rather than trying to parameterise one.
+        #
+        # .releaserc.json is the name semantic-release loads by default and is
+        # git-ignored in CI usage — copying over it is ephemeral, never
+        # committed. On main the file is already correct, so only pre-main
+        # swaps it.
+        run: |
+          set -euo pipefail
+          if [ "${{ github.ref_name }}" = "pre-main" ]; then
+            cp .releaserc.staging.json .releaserc.json
+            echo "→ staging channel (.releaserc.staging.json)"
+          else
+            echo "→ stable channel (.releaserc.json)"
+          fi
+
+      - name: semantic-release
+        id: run
+        env:
+          # *** GH_TOKEN (a PAT) IS LOAD-BEARING HERE, NOT A FALLBACK NICETY. ***
+          #
+          # GitHub deliberately does NOT re-trigger workflows for refs pushed
+          # using the default GITHUB_TOKEN — it is the recursion guard. This
+          # whole two-workflow design hangs on the tag push waking
+          # release-build.yml, so a run that tags with GITHUB_TOKEN would
+          # succeed, push the tag, and then NOTHING WOULD BUILD. Silent, and
+          # confusing to diagnose.
+          #
+          # secrets.GH_TOKEN is the org PAT already used elsewhere in this repo
+          # (it also authenticates the private screenpipe-fork fetch). A push
+          # made with it is attributed to a user, so downstream workflows fire
+          # normally.
+          #
+          # If GH_TOKEN is ever unavailable, the fallback still tags correctly
+          # but you must dispatch release-build.yml by hand against the tag.
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        # Detect whether a tag actually appeared rather than parsing
+        # semantic-release's prose. Sorted by CREATION DATE, not version:
+        # semver sorts prereleases below their release, so a version sort could
+        # pick a stale tag and report "no release" on a successful run.
+        run: |
+          set -euo pipefail
+          before="$(git tag --list 'v*' --sort=-creatordate | head -1)"
+
+          if [ "${DRY_RUN}" = "true" ]; then
+            npx semantic-release --dry-run
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            echo "→ dry run; nothing tagged"
+            exit 0
+          fi
+
+          npx semantic-release
+
+          after="$(git tag --list 'v*' --sort=-creatordate | head -1)"
+          if [ -n "${after}" ] && [ "${before}" != "${after}" ]; then
+            echo "released=true"      >> "$GITHUB_OUTPUT"
+            echo "version=${after#v}" >> "$GITHUB_OUTPUT"
+            echo "tag=${after}"       >> "$GITHUB_OUTPUT"
+            echo "→ tagged ${after} — release-build.yml will pick it up"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            echo "→ no releasable commits; nothing tagged"
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Release prepare"
+            if [ "${{ steps.run.outputs.released }}" = "true" ]; then
+              echo "Tagged \`${{ steps.run.outputs.tag }}\`."
+              echo ""
+              echo "\`release-build.yml\` builds and publishes it."
+            else
+              echo "No release cut."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
