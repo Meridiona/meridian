@@ -100,15 +100,14 @@ fn account_path() -> Option<PathBuf> {
 /// Persist the signed-in user's email after the setup wizard's sign-in step
 /// completes. Crash-safe write (temp + rename), mirroring
 /// `analytics.rs::save_state`. Idempotent — safe to call again (e.g. a
-/// relaunch that re-verifies the persisted Clerk session). Also fires an
-/// immediate PostHog identify ([`crate::analytics::identify_signed_in_email`])
-/// so the person record picks up the email right away instead of waiting on
-/// the next scheduled `app_installed`/`daily_usage` capture.
+/// relaunch that re-verifies the persisted Clerk session). The next
+/// scheduled `app_installed`/`daily_usage` capture picks up the email via
+/// `crate::analytics::base_properties`'s `$set`.
 #[tauri::command]
 // skip `email` too: it's PII and must never land in a span field / log line.
 // `err` records the failure + marks the span status ERROR on the `Err` path.
-#[tracing::instrument(skip(app, email), err)]
-pub async fn save_account_email(app: tauri::AppHandle, email: String) -> Result<(), String> {
+#[tracing::instrument(skip(email), err)]
+pub async fn save_account_email(email: String) -> Result<(), String> {
     let email = email.trim().to_string();
     if email.is_empty() || !email.contains('@') {
         return Err("save_account_email: not a valid email address".into());
@@ -124,7 +123,6 @@ pub async fn save_account_email(app: tauri::AppHandle, email: String) -> Result<
         .map_err(|e| format!("join account write task: {e}"))?
         .map_err(|e| format!("persist account file: {e:#}"))?;
     tracing::info!("account: email captured");
-    crate::analytics::identify_signed_in_email(&app).await;
     Ok(())
 }
 

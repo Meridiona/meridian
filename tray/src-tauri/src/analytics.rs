@@ -4,8 +4,9 @@
 //! # What this is
 //! A deliberately tiny, best-effort telemetry client: two anonymous signals —
 //! `app_installed` once per machine, and one `daily_usage` event per completed
-//! local calendar day (focus hours + worklog generated/approved/rejected
-//! counts). Nothing else: a single raw HTTP POST to PostHog's `/i/v0/e/`
+//! local calendar day (focus/coding hours, logged hours, and drafts count —
+//! the same four numbers as the dashboard's Today card). Nothing else: a
+//! single raw HTTP POST to PostHog's `/i/v0/e/`
 //! capture endpoint, no `posthog-js`, so session replay / autocapture /
 //! surveys / feature flags never activate — that's client-SDK behaviour this
 //! code never touches. `$geoip_disable` is set on every event since the
@@ -29,9 +30,18 @@
 //! **Not backfilled**: only the single most-recently-closed day is ever
 //! reported (see [`day_rollover_action`]). If the tray isn't running across a
 //! local-day boundary for several days, the intervening day(s) are skipped
-//! entirely — never sent late. A DB read failure on the day that WOULD be
-//! reported is retried on the next tick instead of being sent as fabricated
-//! zeros.
+//! entirely — never sent late.
+//!
+//! **Nothing is lost on failure.** [`capture`] reports success/failure via
+//! its return value, and both call sites ([`maybe_send_daily_tick`],
+//! [`send_daily_usage`]) only flip their persisted "sent" bookkeeping
+//! (`install_event_sent` / `last_sent_day`) on a confirmed success. A DB read
+//! failure, a network error, a timeout, or a non-2xx from PostHog all leave
+//! that bookkeeping untouched, so the *exact same* pending event (the same
+//! day, carrying that day's own `date` property — never today's) is retried
+//! on every subsequent ~60 s tick until it lands, surviving a tray restart in
+//! between since the bookkeeping is on disk. Never fabricates zeros for a
+//! read that failed.
 //!
 //! # Who calls this
 //! [`crate::poll::run_poll_loop`]'s health tick (`maybe_send_daily_tick`) — a
@@ -48,8 +58,31 @@
 use meridian_core::SqlitePool;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tracing::Instrument;
+
+/// Single-flight guard for [`maybe_send_daily_tick`]. The poll loop spawns a
+/// fresh call every ~60 s tick without waiting for the previous one to
+/// finish (see `poll::run_poll_loop`'s doc comment on why it's spawned off);
+/// under normal conditions each call completes in well under a second, but
+/// nothing structurally prevents two calls overlapping (a slow DNS/TLS
+/// handshake, GC pause, etc). Without this guard, two overlapping calls could
+/// both read the same stale on-disk `last_sent_day`, both decide the same
+/// day just closed, and both send a duplicate `daily_usage` for it — this
+/// flag makes that impossible: only one call is ever actually running.
+static TICK_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// RAII guard that flips [`TICK_IN_FLIGHT`] back to `false` on drop, so every
+/// return path out of `maybe_send_daily_tick` (including the early ones)
+/// releases it — a plain `if`/`return` without this would leave the flag
+/// stuck `true` forever after the first early exit.
+struct InFlightGuard;
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        TICK_IN_FLIGHT.store(false, Ordering::SeqCst);
+    }
+}
 
 /// PostHog Cloud (US region) project token — a **public** write-only capture
 /// key (safe to embed in a shipped client, unlike a personal/secret API key;
@@ -121,23 +154,31 @@ fn save_state(path: &std::path::Path, state: &AnalyticsState) {
 }
 
 /// POST one event to PostHog's raw capture endpoint (no SDK — see module
-/// docs). Best-effort: logs and returns on any failure, never propagates —
-/// analytics must never affect the app's behaviour or startup.
+/// docs). Never panics or propagates an error — analytics must never affect
+/// the app's behaviour or startup — but DOES report success/failure via its
+/// return value so callers with a "send at most once" bookkeeping flag (the
+/// `install_event_sent`/`last_sent_day` fields in [`AnalyticsState`]) know
+/// not to advance that bookkeeping on a failed send. Returns `true` only on
+/// an HTTP 2xx from PostHog; `false` on a missing API key, a request/timeout
+/// error, or a non-2xx response — in every `false` case the caller must
+/// retry, never silently drop the event.
 async fn capture(
     event: &str,
     distinct_id: &str,
     mut properties: serde_json::Map<String, serde_json::Value>,
-) {
+) -> bool {
     let api_key = posthog_api_key();
     if api_key.is_empty() {
         // No compiled-in secret and no runtime override — a source build
         // without MERIDIAN_POSTHOG_API_KEY set. Skip silently rather than
-        // POST an unauthenticated request PostHog will just reject.
+        // POST an unauthenticated request PostHog will just reject. Treated
+        // as a failure so the caller retries once a key becomes available
+        // (e.g. after a rebuild) instead of losing the event forever.
         tracing::debug!(
             event,
             "analytics: no PostHog key configured — skipping capture"
         );
-        return;
+        return false;
     }
     properties.insert("$geoip_disable".to_string(), serde_json::Value::Bool(true));
     let body = serde_json::json!({
@@ -155,10 +196,17 @@ async fn capture(
         .await;
     match result {
         Ok(resp) if resp.status().is_success() => {
-            tracing::debug!(event, "analytics: event captured")
+            tracing::debug!(event, "analytics: event captured");
+            true
         }
-        Ok(resp) => tracing::warn!(event, status = %resp.status(), "analytics: capture rejected"),
-        Err(e) => tracing::warn!(event, error = %e, "analytics: capture request failed"),
+        Ok(resp) => {
+            tracing::warn!(event, status = %resp.status(), "analytics: capture rejected — will retry");
+            false
+        }
+        Err(e) => {
+            tracing::warn!(event, error = %e, "analytics: capture request failed — will retry");
+            false
+        }
     }
 }
 
@@ -192,49 +240,39 @@ fn base_properties(app: &tauri::AppHandle) -> serde_json::Map<String, serde_json
     m
 }
 
-/// Sends an immediate `person_identified` event carrying the just-signed-in
-/// email's `$set`, instead of waiting for the next `app_installed`/
-/// `daily_usage` capture — which may be hours or a full day away, or (for
-/// `app_installed`, capped to once-ever per [`AnalyticsState::install_event_sent`])
-/// may never fire again if it already sent before sign-in happened, meaning
-/// the email would otherwise never reach PostHog for that person at all.
-/// Called right when the setup wizard's Clerk sign-in step completes
-/// (`commands::account::save_account_email`). No-ops if the email somehow
-/// isn't readable back yet (write still in flight) — the next scheduled
-/// capture picks it up as a fallback.
-#[tracing::instrument(skip(app))]
-pub(crate) async fn identify_signed_in_email(app: &tauri::AppHandle) {
-    if crate::commands::account::read_account_email().is_none() {
-        return;
-    }
-    let Some(path) = analytics_state_path() else {
-        return;
-    };
-    let state = load_or_init_state(&path);
-    capture(
-        "person_identified",
-        &state.distinct_id,
-        base_properties(app),
-    )
-    .await;
-}
-
 /// Called once per poll-loop health tick (~60 s — see [`crate::poll`]). A
 /// cheap file read on every call; the two possible HTTP calls are
 /// individually capped to once-ever (`app_installed`) and once-per-completed
-/// local day (`daily_usage`). Runs in every install shape (see the module
-/// doc) — filter by the `channel` property in PostHog to separate dev runs
-/// from real installs.
+/// local day (`daily_usage`) — but only once each has actually *succeeded*.
+/// Whenever `capture()` fails (no key, timeout, non-2xx — see its doc), the
+/// corresponding bookkeeping field is left untouched, so the very next tick
+/// (and every tick after that, ~60 s apart) retries the exact same pending
+/// event — never a fabricated/skipped one — until it lands. That bookkeeping
+/// is persisted to `analytics_state.json`, so the retry survives a tray
+/// restart too: a `daily_usage` that failed to send stays pending even if
+/// the tray is closed and reopened the "next day morning", and is sent for
+/// its original (correct) day as soon as the app is next open and reachable.
+/// Runs in every install shape (see the module doc) — filter by the
+/// `channel` property in PostHog to separate dev runs from real installs.
 #[tracing::instrument(skip(app, pool))]
 pub(crate) async fn maybe_send_daily_tick(app: &tauri::AppHandle, pool: &SqlitePool) {
+    if TICK_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        // A previous tick's spawned call is still running — see
+        // [`TICK_IN_FLIGHT`]'s doc for why this must never run concurrently.
+        tracing::debug!("analytics: previous tick still in flight — skipping");
+        return;
+    }
+    let _guard = InFlightGuard;
+
     let Some(path) = analytics_state_path() else {
         return;
     };
     let mut state = load_or_init_state(&path);
     let mut dirty = false;
 
-    if !state.install_event_sent {
-        capture("app_installed", &state.distinct_id, base_properties(app)).await;
+    if !state.install_event_sent
+        && capture("app_installed", &state.distinct_id, base_properties(app)).await
+    {
         state.install_event_sent = true;
         dirty = true;
     }
@@ -284,16 +322,19 @@ fn day_rollover_action(last_sent_day: Option<&str>, today: &str) -> Option<Optio
 }
 
 /// Build + send the `daily_usage` event for an already-completed local day —
-/// focus hours plus worklog generated/approved/rejected counts, via the same
+/// the same four numbers as the dashboard's Today card (Focus/Coding/Logged/
+/// Drafts, see `ui/components/timeline/OverviewPanel.tsx`), via the same
 /// readers the dashboard uses ([`meridian_core::today::get_today`],
 /// [`meridian_core::worklogs::get_worklogs`]). Queried at the day's own
 /// closing instant (its local-day upper bound) so a past day's active-session
 /// edge case can't leak into the total.
 ///
-/// Returns `false` on a DB read failure WITHOUT sending anything — the caller
-/// must not advance `last_sent_day` in that case, or the day is lost forever
-/// instead of retried on the next tick. Never fabricates zeros for a real
-/// error (a genuinely idle day's zeros come only from a successful read).
+/// Returns `false` on a DB read failure (WITHOUT sending anything — never
+/// fabricates zeros for a real error, a genuinely idle day's zeros come only
+/// from a successful read) OR when the resulting `capture()` HTTP POST
+/// itself fails/times out/is rejected. Either way the caller must not
+/// advance `last_sent_day`, so the exact same day is retried next tick
+/// instead of being lost.
 async fn send_daily_usage(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
@@ -301,56 +342,81 @@ async fn send_daily_usage(
     day: &str,
 ) -> bool {
     let (_, day_end) = meridian_core::date::local_day_bounds(day);
-    let focus_s = match meridian_core::today::get_today(pool, day, &day_end).await {
-        Ok(t) => t.focus_s,
+    let today = match meridian_core::today::get_today(pool, day, &day_end).await {
+        Ok(t) => t,
         Err(e) => {
             tracing::warn!(error = %e, day, "analytics: today read failed for daily_usage — will retry");
             return false;
         }
     };
+    // Mirrors OverviewPanel.tsx's "Focus" tile exactly (focus + autonomous
+    // agent time), not the raw `focus_s` field.
+    let focus_s = today.engaged_s;
+    // Mirrors TimeByCategory.tsx's coding-category fold: session time
+    // classified `cat == "coding"` plus coding-agent tool time (`agent_s`).
+    let coding_s: i64 = today
+        .sessions
+        .iter()
+        .filter(|s| s.cat == "coding")
+        .map(|s| s.dur)
+        .sum::<i64>()
+        + today.agent_s;
 
-    let (generated, approved, rejected) = match meridian_core::worklogs::get_worklogs(pool, day)
-        .await
-    {
-        Ok(w) => {
-            let approved =
-                *w.counts.get("approved").unwrap_or(&0) + *w.counts.get("posted").unwrap_or(&0);
-            let rejected = *w.counts.get("skipped").unwrap_or(&0);
-            let generated: i64 = w.counts.values().sum();
-            (generated, approved, rejected)
-        }
+    let worklogs = match meridian_core::worklogs::get_worklogs(pool, day).await {
+        Ok(w) => w,
         Err(e) => {
             tracing::warn!(error = %e, day, "analytics: worklogs read failed for daily_usage — will retry");
             return false;
         }
     };
+    // Mirrors OverviewPanel.tsx's "Logged" tile: real (non-proposed) worklogs
+    // that are approved or posted, summed by their actual time spent.
+    let logged_s: i64 = worklogs
+        .items
+        .iter()
+        .filter(|i| !i.is_proposed && (i.state == "approved" || i.state == "posted"))
+        .map(|i| i.time_spent_seconds)
+        .sum();
+    // Mirrors OverviewPanel.tsx's "Drafts" tile (`isPending`, types.ts):
+    // proposed tickets still `proposed`, or real worklogs still `drafted`.
+    let drafts_count = worklogs
+        .items
+        .iter()
+        .filter(|i| {
+            if i.is_proposed {
+                i.state == "proposed"
+            } else {
+                i.state == "drafted"
+            }
+        })
+        .count();
 
+    let hours = |s: i64| (s.max(0) as f64 / 3600.0 * 100.0).round() / 100.0;
     let mut props = base_properties(app);
     props.insert(
         "date".to_string(),
         serde_json::Value::String(day.to_string()),
     );
+    props.insert("focus_hours".to_string(), serde_json::json!(hours(focus_s)));
     props.insert(
-        "focus_hours".to_string(),
-        serde_json::json!((focus_s.max(0) as f64 / 3600.0 * 100.0).round() / 100.0),
+        "coding_hours".to_string(),
+        serde_json::json!(hours(coding_s)),
     );
     props.insert(
-        "worklogs_generated".to_string(),
-        serde_json::json!(generated),
+        "logged_hours".to_string(),
+        serde_json::json!(hours(logged_s)),
     );
-    props.insert("worklogs_approved".to_string(), serde_json::json!(approved));
-    props.insert("worklogs_rejected".to_string(), serde_json::json!(rejected));
+    props.insert("drafts_count".to_string(), serde_json::json!(drafts_count));
 
     tracing::info!(
         day,
         focus_s,
-        generated,
-        approved,
-        rejected,
-        "analytics: daily_usage sent"
+        coding_s,
+        logged_s,
+        drafts_count,
+        "analytics: sending daily_usage"
     );
-    capture("daily_usage", distinct_id, props).await;
-    true
+    capture("daily_usage", distinct_id, props).await
 }
 
 #[cfg(test)]
