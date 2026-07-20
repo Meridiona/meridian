@@ -27,13 +27,20 @@ import { readFileSync } from 'fs'
 // transition and scan the source for the required shape rather than mounting the component.
 
 const uiRoot = import.meta.dir + '/..'
-const section = readFileSync(uiRoot + '/components/timeline/settings/IntelligenceSection.tsx', 'utf8')
 
-/** Source with comments stripped. The module header deliberately describes the removed optimistic
+/** Source with comments stripped. The module headers deliberately describe the removed optimistic
  *  behaviour, so scanning raw text would conflate documenting the old bug with still doing it. */
-const code = section
-  .replace(/\/\*[\s\S]*?\*\//g, '')
-  .replace(/^\s*\/\/.*$/gm, '')
+function sourceOf(rel: string): string {
+  return readFileSync(uiRoot + rel, 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+}
+
+const code = sourceOf('/components/timeline/settings/IntelligenceSection.tsx')
+/** The OTHER surface that can change the provider. Asserting these invariants only against
+ *  Settings was false confidence: the wizard violated both (it kept optimistic local state and
+ *  never cleared llm_provider_model), and the suite stayed green because it looked away. */
+const setup = sourceOf('/app/setup/page.tsx')
 
 // ── The commit model ─────────────────────────────────────────────────────────
 // The displayed provider is `settings.llm_provider`; the parent's `save` updates that only on a
@@ -84,7 +91,9 @@ describe('IntelligenceSection writes nothing before a successful save', () => {
 
   it('does not stage the pick - the pick commits immediately, there is no pending state', () => {
     expect(code).not.toContain('setPending')
-    expect(code).not.toContain('pending')
+    // Match the IDENTIFIER, not the substring: a bare `toContain('pending')` also trips on an
+    // unrelated `var(--color-state-pending)`, which would fail for a reason that isn't the rule.
+    expect(code).not.toMatch(/\bpendingProvider\b|\bpending\s*[,=)]/)
   })
 
   it('reads the displayed provider straight from settings on disk, not from local state', () => {
@@ -99,5 +108,42 @@ describe('IntelligenceSection writes nothing before a successful save', () => {
     expect(code).toMatch(/reject\(/)
     // The only writes go through `commit`, which is the sole caller of `save`.
     expect(code).toContain('commit(')
+  })
+})
+
+// ── The same invariants, on the wizard ───────────────────────────────────────
+// Both surfaces write the provider, so both must obey the rules. These are the assertions that
+// would have caught the divergence.
+describe('the setup wizard obeys the same commit rules as Settings', () => {
+  it('moves the UI only after the write resolves - no optimistic pick to roll back', () => {
+    // The old shape called setProviderState(id) BEFORE mutate() and undid it in .catch. Two
+    // overlapping picks could then roll back to a value the disk no longer held.
+    expect(setup).not.toMatch(/setProviderState\(id\)[\s\S]{0,200}?mutate</)
+    expect(setup).toMatch(/mutate<RuntimeSettings>[\s\S]*?\.then\(\(\) => \{[\s\S]*?setProviderState\(id\)/)
+  })
+
+  it('returns the promise so a failed switch can surface in the shared detail view', () => {
+    expect(setup).toMatch(/return mutate<RuntimeSettings>/)
+    expect(setup).toMatch(/throw e/)
+  })
+
+  it('builds the written fields with the SHARED helper, not a hand-rolled literal', () => {
+    // The finding this pins: the wizard's own object omitted llm_provider_model, so a stale
+    // override rode onto the new CLI (and on Cursor suppressed the pinned ZDR-eligible model).
+    expect(setup).toContain('providerChoiceFields(')
+    expect(setup).not.toMatch(/\{\s*llm_provider:\s*id\s*\}/)
+  })
+})
+
+describe('both provider surfaces share one field-builder', () => {
+  it('neither hand-rolls the settings patch', () => {
+    for (const src of [code, setup]) expect(src).toContain('providerChoiceFields(')
+  })
+
+  it('switching a built-in clears any stale model override', () => {
+    const helper = sourceOf('/lib/llm-providers.ts')
+    expect(helper).toMatch(/llm_provider_model:\s*null/)
+    // 'custom' keeps its model - it is a real per-endpoint setting, not a leftover.
+    expect(helper).toMatch(/llm_provider_custom_id:\s*customId \?\? null/)
   })
 })

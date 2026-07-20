@@ -11,7 +11,7 @@
 //   CHOOSER  — three recommended coding-agent tiles (logo + name + RECOMMENDED) plus one
 //              "bring your own API key" tile. Just the choice, nothing else.
 //   DETAIL   — click a tile and you get its own screen: install the CLI if missing, confirm the
-//              sign-in if it's there, optionally set a model, and make it the default. One
+//              sign-in if it's there, and make it the default. One
 //              provider, one next action.
 //
 // It deliberately does NOT save. The wizard writes each pick straight through; Settings commits

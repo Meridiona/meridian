@@ -32,6 +32,8 @@ const picker = readFileSync(uiRoot + '/components/ModelPicker.tsx', 'utf8')
 const section = readFileSync(uiRoot + '/components/timeline/settings/IntelligenceSection.tsx', 'utf8')
 const composer = readFileSync(uiRoot + '/components/timeline/llmlab/RunComposer.tsx', 'utf8')
 const registry = readFileSync(uiRoot + '/lib/llm-providers.ts', 'utf8')
+/** The setup wizard - the second surface that writes the provider. */
+const setup = readFileSync(uiRoot + '/app/setup/page.tsx', 'utf8')
 
 /** Source with comments stripped - these guards assert on CODE, and the headers above
  *  each file describe the very behaviour being guarded against. */
@@ -64,22 +66,32 @@ describe('a stored model override is cleared when the provider changes', () => {
   })
 })
 
-describe('the settings section persists the provider correctly', () => {
-  const code = stripComments(section)
+// Both surfaces that can change the provider must obey this, not just Settings. Asserting it
+// against IntelligenceSection alone was false confidence: the wizard hand-rolled its own
+// `{ llm_provider: id }` and so never cleared the override, and this suite stayed green because
+// it did not read that file. Now the rule is pinned on the SHARED builder both of them call.
+describe('every provider surface persists the choice through one builder', () => {
+  const helper = stripComments(registry)
 
   it('does not write the shared model override for a custom endpoint', () => {
     // A custom endpoint's model lives on its own row; openai_compat sends ep.model and ignores
     // cfg.model, so the custom arm writes only the endpoint id, never the shared field.
-    const start = code.indexOf('? commit(')
-    const customArm = code.slice(start, code.indexOf(': commit(', start))
+    const start = helper.indexOf('return id === \'custom\'')
+    const customArm = helper.slice(start, helper.indexOf(': {', start))
     expect(customArm).toContain('llm_provider_custom_id')
     expect(customArm).not.toContain('llm_provider_model')
   })
 
-  it('clears the stored model on a provider switch', () => {
-    // The built-in arm of onChange writes llm_provider_model: null - the SOURCE tie for the rule
-    // modelled above.
-    expect(code).toMatch(/llm_provider: id, llm_provider_model: null/)
+  it('clears the stored model on a built-in provider switch', () => {
+    expect(helper).toMatch(/llm_provider: id, llm_provider_model: null/)
+  })
+
+  it('neither Settings nor the wizard hand-rolls the patch', () => {
+    for (const src of [stripComments(section), stripComments(setup)]) {
+      expect(src).toContain('providerChoiceFields(')
+      // The literal the wizard used to write, which silently omitted the model clear.
+      expect(src).not.toMatch(/\{\s*llm_provider:\s*id\s*\}/)
+    }
   })
 })
 

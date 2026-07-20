@@ -349,7 +349,7 @@ export const CHOOSER_PROVIDER_IDS: LlmProviderId[] = ['claude', 'codex', 'cursor
 
 /** The single shared heading for the provider chooser - same words in the wizard and Settings
  *  so the one choice reads identically wherever it is made. Plain hyphens (user-facing). */
-export const LLM_INTRO_TITLE = 'First, choose your AI provider'
+export const LLM_INTRO_TITLE = 'Choose your AI provider'
 
 /** The shared sub-heading. States the job, the tiny footprint, and the escape hatch in one
  *  breath, in plain language. */
@@ -476,6 +476,32 @@ export const CUSTOM_PROVIDER_META: LlmProviderMeta = {
   // Empty on purpose: these are the one provider whose models can be enumerated LIVE,
   // from the endpoint's own {base_url}/models. Nothing to hand-maintain here.
   models: [],
+}
+
+/**
+ * The EXACT settings fields to write when the user picks a provider - the single source of
+ * truth for both surfaces that can make that choice (the setup wizard and Settings →
+ * Intelligence).
+ *
+ * Shared because the two hand-rolled copies drifted, and the drift was silent: Settings
+ * cleared `llm_provider_model` and setup did not, so switching provider in the WIZARD carried
+ * a stale model override onto the new CLI. `src/llm/config.rs` still passes that value into
+ * `--model`, so e.g. a leftover `"opus"` became `codex --model opus` - a failure surfacing an
+ * hour later, far from the click. On Cursor it is worse than a bad arg: a non-empty override
+ * suppresses the pinned ZDR-eligible default in `src/llm/cursor.rs`, so a stale value silently
+ * moves the user off the model we pinned partly for that guarantee.
+ *
+ * `custom` is a KIND, not an endpoint, so it always travels with the id of the chosen one
+ * (which `update_settings` requires and validates) - and it keeps its model, because a custom
+ * endpoint's model is a real per-row setting rather than a leftover.
+ */
+export function providerChoiceFields(
+  id: LlmProviderId,
+  customId?: string,
+): { llm_provider: LlmProviderId; llm_provider_custom_id?: string | null; llm_provider_model?: null } {
+  return id === 'custom'
+    ? { llm_provider: id, llm_provider_custom_id: customId ?? null }
+    : { llm_provider: id, llm_provider_model: null }
 }
 
 export function llmProvider(id: LlmProviderId): LlmProviderMeta {

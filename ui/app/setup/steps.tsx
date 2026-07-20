@@ -12,7 +12,7 @@ import { PERMISSIONS } from './data'
 import type { NotifState } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import { TRACKERS } from '@/lib/integrations'
-import { llmProvider, type LlmProviderId } from '@/lib/llm-providers'
+import { llmProvider, LLM_INTRO_BODY, LLM_INTRO_TITLE, type LlmProviderId } from '@/lib/llm-providers'
 import ConnectTrackers from '@/components/IntegrationConnect'
 import LlmProviderPicker, { type InstallOutcome, type ProviderStatus } from '@/components/LlmProviderPicker'
 import { SignInWidget } from './signin'
@@ -40,7 +40,9 @@ export interface Wiz {
   provider: LlmProviderId
   /** Which custom endpoint, when `provider` is 'custom'. */
   providerCustomId: string | null
-  setProvider: (id: LlmProviderId, customId?: string) => void
+  /** Resolves when the choice is persisted, rejects if it wasn't - the shared detail view
+   *  awaits this to render "Switching…" and surface a failure. */
+  setProvider: (id: LlmProviderId, customId?: string) => Promise<void>
   providers: Record<string, ProviderStatus>
   scanningProviders: boolean
   testingProviderIds: Set<string>
@@ -285,8 +287,10 @@ export const STEPS: StepMeta[] = [
   },
   {
     id: 'provider', n: '04', label: 'Intelligence', kicker: 'Your AI',
-    title: 'Choose your AI provider',
-    subtitle: 'Meridian uses this to write your hourly summaries and worklogs - about one short request per active hour, well under 1% of your Claude, Codex, or Cursor plan. Pick one, or bring your own API key.',
+    // The SHARED copy - the same words Settings shows. These used to be hardcoded here with
+    // different wording while llm-providers.ts claimed they were shared.
+    title: LLM_INTRO_TITLE,
+    subtitle: LLM_INTRO_BODY,
     Body: IntelligenceBody,
     status: (s) => llmProvider(s.provider).name,
     // Never gates. Every path out of this step is valid — including picking a CLI that

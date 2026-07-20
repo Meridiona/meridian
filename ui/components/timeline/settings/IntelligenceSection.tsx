@@ -10,14 +10,14 @@
 // old optimistic-patch-survives-a-failed-write problem can't happen. `save` only updates the
 // in-memory settings on success and reports failure through the status callback, which the
 // detail view surfaces; on failure `settings.llm_provider` is unchanged, so nothing rolls back.
-// Model changes commit the same way (debounced in the detail view so free-text typing isn't a
-// write per keystroke).
+// There is no model control: the model always follows the provider's own default, and picking
+// a built-in provider CLEARS any override an older build left behind.
 
 'use client'
 
 import { useCallback } from 'react'
 import type { RuntimeSettings } from '@/lib/settings'
-import { LLM_INTRO_BODY, LLM_INTRO_TITLE, type LlmProviderId } from '@/lib/llm-providers'
+import { LLM_INTRO_BODY, LLM_INTRO_TITLE, providerChoiceFields, type LlmProviderId } from '@/lib/llm-providers'
 import LlmProviderPicker, { useLlmProviderDetection } from '@/components/LlmProviderPicker'
 import type { SaveStatus } from './fields'
 
@@ -44,15 +44,10 @@ export function IntelligenceSection({ settings, save }: {
     [save],
   )
 
+  // Which fields a provider pick writes is shared with the setup wizard (see
+  // providerChoiceFields) - the two used to hand-roll it and silently drifted.
   const onChange = useCallback(
-    (id: LlmProviderId, customId?: string) =>
-      // 'custom' always travels with its endpoint id. Switching a built-in also clears any
-      // stored model override (there is no model UI - the setting always follows the provider's
-      // default now - but a value left over from an older build must not ride onto a new CLI,
-      // since src/llm/config.rs still passes it into --model).
-      id === 'custom'
-        ? commit({ llm_provider: id, llm_provider_custom_id: customId ?? null })
-        : commit({ llm_provider: id, llm_provider_model: null }),
+    (id: LlmProviderId, customId?: string) => commit(providerChoiceFields(id, customId)),
     [commit],
   )
 

@@ -3,7 +3,8 @@
 
 // The per-provider DETAIL view — what opens when a provider tile is clicked in the chooser.
 // One provider, one screen: install its CLI if it's missing, confirm the sign-in if it's
-// there, optionally set its model, and make it the default. Kept deliberately linear so a
+// there, and make it the default (the model always follows the provider's own default -
+// there is deliberately no model control). Kept deliberately linear so a
 // non-technical user is only ever looking at one next action.
 //
 // The three coding-agent CLIs run on a subscription the user already has, so there is no API
