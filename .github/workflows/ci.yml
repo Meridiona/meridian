@@ -15,6 +15,14 @@ concurrency:
 
 env:
   SQLX_OFFLINE: "true"
+  # Incremental compilation is a pure loss on a CI runner: every job starts from
+  # a restored cache and compiles once, so the incremental state is never read
+  # back — it is only WRITTEN, inflating target/ (and therefore the cache tarball
+  # every job uploads and downloads) for no reuse.
+  CARGO_INCREMENTAL: "0"
+  # A transient registry blip otherwise fails a job outright and costs a full
+  # re-run, which is far more expensive than a retry.
+  CARGO_NET_RETRY: "3"
 
 jobs:
   rust:
@@ -36,7 +44,7 @@ jobs:
         # just that URL to embed a PAT with read access. REQUIRES the GH_TOKEN
         # secret to read Meridiona/screenpipe-fork (org-member classic PAT with
         # `repo`, or a fine-grained PAT granting both meridian AND screenpipe-fork).
-        # Same secret + mechanism as release.yml / release-staging.yml.
+        # Same secret + mechanism as release-build.yml.
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
@@ -80,6 +88,20 @@ jobs:
           # per-arch caches, so the demand grew again; this is where the room
           # comes from.
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+          # rust-cache appends the JOB ID to its key by default, so renaming a
+          # job — or adding one that compiles the same graph — silently starts a
+          # brand-new cache lineage and the next run compiles cold. Name the
+          # lineage explicitly instead, so it is a deliberate, reviewable value.
+          add-job-id-key: false
+          shared-key: ci-linux
+
+          # rust-cache DELETES ~/.cargo/registry/src before saving, on the theory
+          # that it is re-extractable from the .crate archives in registry/cache.
+          # It is — by re-unpacking ~1000 tarballs at the start of every job.
+          # Keeping the extracted sources costs cache size and saves that unpack.
+          cache-directories: |
+            ~/.cargo/registry/src
 
       - name: fmt
         run: cargo fmt --check
@@ -140,17 +162,28 @@ jobs:
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
         with:
-          # Save only on main - see the Rust job above.
+          # Save only on main, stable key, keep registry/src - see the Rust job.
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          add-job-id-key: false
+          shared-key: ci-windows
+          cache-directories: |
+            ~/.cargo/registry/src
 
-      - name: check
-        run: cargo check -p meridian -p meridian-core --all-targets
-
-      # Compiling is not working. The remaining Windows gaps are behavioural —
-      # tests that hardcode a Unix path, a launchd label, or an argv shape —
-      # and only running them surfaces those. Kept in the same non-blocking
-      # job so the burn-down stays one signal rather than two.
-      - name: test
+      # `cargo check --all-targets` then `cargo test` over the SAME two packages
+      # was a wasted pass: `cargo test` compiles every target it would have
+      # checked, and compiling is strictly stronger than checking, so the check
+      # could only ever fail where the test build was about to fail anyway. It
+      # bought nothing but an extra full traversal of the graph, on the slowest
+      # runner we have. `cargo test` alone is the gate.
+      #
+      # (The tray check below stays a separate invocation on purpose — see its
+      # comment. It is non-blocking, and folding it in here would make a latent
+      # tray failure take the Windows portability gate red.)
+      #
+      # Running the tests, not just compiling them, is the point: the remaining
+      # Windows gaps are behavioural — a test that hardcodes a Unix path, a
+      # launchd label, or an argv shape — and only executing them surfaces those.
+      - name: check + test
         run: cargo test -p meridian -p meridian-core
 
       # The tray is checked separately and non-blocking: unlike the daemon it
@@ -216,8 +249,16 @@ jobs:
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
         with:
-          # Save only on main - see the Rust job above.
+          # Save only on main, stable key, keep registry/src - see the Rust job.
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          add-job-id-key: false
+          # Deliberately NOT the release job's key. This job stubs the daemon
+          # and only ever `check`s the Intel slice; the release job builds both
+          # for real. Sharing one lineage would mean each kind of run evicting
+          # the other's artifacts under a key that claims they are the same.
+          shared-key: ci-macos
+          cache-directories: |
+            ~/.cargo/registry/src
 
       # Same stub trick as the Windows tray check: tauri-build only STATS the
       # bundle.resources daemon path during `cargo check`, never reads it, so a
@@ -230,6 +271,12 @@ jobs:
 
       # Apple Silicon (arm64, the host): the tray is macOS-only and was never
       # compiled or tested in CI before — clippy + its 109 tests run here.
+      #
+      # clippy and test are two invocations over one package on purpose: clippy
+      # writes its own fingerprint lineage, so it cannot reuse rustc's artifacts
+      # (or vice versa) no matter how they are ordered. There is no merge to be
+      # had here — unlike the Windows check+test pair, which really was one
+      # traversal doing another's work.
       - name: clippy tray (Apple Silicon)
         run: cargo clippy -p meridian-tray --all-targets -- -D warnings
 
