@@ -30,9 +30,6 @@
         { "path": "target/universal-apple-darwin/release/bundle/macos/latest.json", "label": "latest.json (updater manifest)" }
       ]
     }],
-    ["@semantic-release/exec", {
-      "prepareCmd": "bash scripts/set-version.sh ${nextRelease.version} && (cd ui && npm ci --no-audit --no-fund && npm run build) && (cd tray/src-tauri && cargo clean -p tauri-plugin-notifications --release) && (cd tray && bash create-icons.sh && npm ci --no-audit --no-fund && npm run build) && bash scripts/notarize-dmg.sh ${nextRelease.version} && bash scripts/package-updater.sh ${nextRelease.version} && bash scripts/verify-release-bundle.sh ${nextRelease.version}"
-    }],
     ["@semantic-release/git", {
       "assets": [
         "CHANGELOG.md",
