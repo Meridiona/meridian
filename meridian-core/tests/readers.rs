@@ -1549,3 +1549,248 @@ async fn llm_experiments_degrade_to_empty_on_a_pre_064_db() {
         .unwrap()
         .is_none());
 }
+
+// ── day_task_worklogs::set_draft_provider ────────────────────────────────────
+//
+// The propose branch's provider is assigned at generate time as "the first
+// configured tracker", which is arbitrary for anyone on two boards. These cover
+// the override that lets the user re-point it, and — more importantly — the three
+// cases where it must REFUSE, because each one would otherwise make the row name a
+// tracker the ticket is not actually on.
+
+/// In-memory pool with the generated-worklog ledger (migrations 060/062/063) and
+/// the `pm_tasks` the target read left-joins for titles.
+async fn make_worklog_pool() -> SqlitePool {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open in-memory db");
+    sqlx::query(
+        r#"
+        CREATE TABLE day_task_worklogs (
+            day_local TEXT NOT NULL, task_id TEXT NOT NULL, provider TEXT NOT NULL,
+            match_task_key TEXT, match_confidence REAL,
+            propose_issue_type TEXT, propose_title TEXT, propose_description TEXT,
+            update_summary TEXT NOT NULL DEFAULT '', update_json TEXT NOT NULL DEFAULT '{}',
+            reasoning TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT 'drafted',
+            target_key TEXT, created_task_key TEXT, posted_comment_id TEXT, browse_url TEXT,
+            last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            PRIMARY KEY (day_local, task_id)
+        );
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"
+        CREATE TABLE day_task_worklog_targets (
+            day_local TEXT NOT NULL, task_id TEXT NOT NULL, task_key TEXT NOT NULL,
+            provider TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 0,
+            manual INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0,
+            posted_comment_id TEXT, browse_url TEXT, posted_at TEXT, last_error TEXT,
+            post_attempt_at TEXT, created_at TEXT NOT NULL,
+            PRIMARY KEY (day_local, task_id, task_key)
+        );
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"
+        CREATE TABLE pm_tasks (
+            task_key TEXT, title TEXT, description_text TEXT, issue_type TEXT,
+            status_raw TEXT, is_terminal INTEGER, provider TEXT, url TEXT,
+            parent_key TEXT, epic_title TEXT, due_date TEXT, start_date TEXT
+        );
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool
+}
+
+/// Seed one draft. `propose` = the PROPOSE branch (a new ticket); otherwise the
+/// row is a MATCH with one target ticket.
+async fn seed_draft(pool: &SqlitePool, state: &str, provider: &str, propose: bool) {
+    sqlx::query(
+        "INSERT INTO day_task_worklogs (day_local, task_id, provider, propose_issue_type, \
+            propose_title, propose_description, update_summary, update_json, reasoning, state, \
+            created_at, updated_at) \
+         VALUES ('2026-07-20', 'T1', ?, ?, ?, ?, 'did things', '{}', 'because', ?, 't0', 't0')",
+    )
+    .bind(provider)
+    .bind(if propose { Some("Task") } else { None })
+    .bind(if propose {
+        Some("Ship the thing")
+    } else {
+        None
+    })
+    .bind(if propose { Some("A description") } else { None })
+    .bind(state)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    if !propose {
+        sqlx::query(
+            "INSERT INTO day_task_worklog_targets \
+                (day_local, task_id, task_key, provider, confidence, manual, position, created_at) \
+             VALUES ('2026-07-20', 'T1', 'KAN-1', ?, 0.9, 0, 0, 't0')",
+        )
+        .bind(provider)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn set_draft_provider_repoints_a_drafted_proposal() {
+    let pool = make_worklog_pool().await;
+    seed_draft(&pool, "drafted", "jira", true).await;
+
+    let out = meridian_core::day_task_worklogs::set_draft_provider(
+        &pool,
+        "2026-07-20",
+        "T1",
+        "github",
+        "t1",
+    )
+    .await
+    .expect("a drafted proposal is re-pointable");
+
+    assert_eq!(out.provider, "github");
+    // The proposal itself is untouched — this changes WHERE it lands, not WHAT.
+    assert_eq!(out.propose.as_ref().unwrap().title, "Ship the thing");
+    assert_eq!(out.state, "drafted");
+}
+
+#[tokio::test]
+async fn set_draft_provider_stamps_updated_at_and_clears_a_stale_error() {
+    let pool = make_worklog_pool().await;
+    seed_draft(&pool, "drafted", "jira", true).await;
+    sqlx::query("UPDATE day_task_worklogs SET last_error = 'jira rejected it'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let out = meridian_core::day_task_worklogs::set_draft_provider(
+        &pool,
+        "2026-07-20",
+        "T1",
+        "github",
+        "t1",
+    )
+    .await
+    .unwrap();
+
+    // A failure against the OLD provider must not be shown against the new one —
+    // the user would read it as "GitHub rejected it", which never happened.
+    assert_eq!(out.error, None);
+    assert_eq!(out.updated_at, "t1");
+}
+
+#[tokio::test]
+async fn set_draft_provider_is_idempotent_on_the_same_provider() {
+    let pool = make_worklog_pool().await;
+    seed_draft(&pool, "drafted", "jira", true).await;
+
+    let out = meridian_core::day_task_worklogs::set_draft_provider(
+        &pool,
+        "2026-07-20",
+        "T1",
+        "jira",
+        "t1",
+    )
+    .await
+    .expect("re-choosing the current provider is not an error");
+    assert_eq!(out.provider, "jira");
+}
+
+#[tokio::test]
+async fn set_draft_provider_refuses_a_match_draft() {
+    let pool = make_worklog_pool().await;
+    seed_draft(&pool, "drafted", "jira", false).await;
+
+    let err = meridian_core::day_task_worklogs::set_draft_provider(
+        &pool,
+        "2026-07-20",
+        "T1",
+        "github",
+        "t1",
+    )
+    .await
+    .expect_err("a matched draft's provider is per-target, not per-draft");
+    assert!(
+        err.to_string().contains("already exist"),
+        "the message must say why, got: {err}"
+    );
+
+    // And the row is untouched — a refusal must not half-apply.
+    let after: String =
+        sqlx::query_scalar("SELECT provider FROM day_task_worklogs WHERE task_id = 'T1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(after, "jira");
+}
+
+#[tokio::test]
+async fn set_draft_provider_refuses_once_approved() {
+    let pool = make_worklog_pool().await;
+    seed_draft(&pool, "approved", "jira", true).await;
+
+    let err = meridian_core::day_task_worklogs::set_draft_provider(
+        &pool,
+        "2026-07-20",
+        "T1",
+        "github",
+        "t1",
+    )
+    .await
+    .expect_err("an approved row may already have created the ticket");
+    assert!(
+        err.to_string().contains("already been approved"),
+        "got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn set_draft_provider_refuses_once_posted() {
+    let pool = make_worklog_pool().await;
+    seed_draft(&pool, "posted", "jira", true).await;
+
+    let err = meridian_core::day_task_worklogs::set_draft_provider(
+        &pool,
+        "2026-07-20",
+        "T1",
+        "github",
+        "t1",
+    )
+    .await
+    .expect_err("a posted comment is live on the old provider");
+    assert!(
+        err.to_string().contains("already been approved"),
+        "got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn set_draft_provider_errors_on_a_draft_that_does_not_exist() {
+    let pool = make_worklog_pool().await;
+    // No seed at all: nothing to re-point, and the read-back must not panic.
+    let err = meridian_core::day_task_worklogs::set_draft_provider(
+        &pool,
+        "2026-07-20",
+        "T404",
+        "github",
+        "t1",
+    )
+    .await
+    .expect_err("no draft, no provider to set");
+    assert!(err.to_string().contains("vanished"), "got: {err}");
+}

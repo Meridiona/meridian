@@ -12,6 +12,9 @@
 'use client'
 
 import type { DayTaskWorklogDraft, WorklogTarget } from '@/lib/api-types'
+import type { Tracker } from '@/lib/integrations'
+import { ProviderIcon } from '@/components/ProviderIcon'
+import { trackerName } from '@/lib/integrations'
 
 /** Where the update will land: every matched ticket, or the proposed new one.
  *
@@ -19,13 +22,20 @@ import type { DayTaskWorklogDraft, WorklogTarget } from '@/lib/api-types'
  *  percentage. The model's confidence is clamped to 1.0 on the way in, so a manual
  *  pick would otherwise render as "100% match" - the AI taking credit for a
  *  decision it did not make. */
-export function DraftTargets({ draft, busy, onOpenTask, onDismiss }: {
+export function DraftTargets({ draft, busy, trackers, onOpenTask, onDismiss, onSetProvider }: {
   draft: DayTaskWorklogDraft
   busy: boolean
+  /** Connected trackers. 0 or 1 means there is no board choice to offer. */
+  trackers: Tracker[]
   onOpenTask: (key: string, title?: string) => void
   onDismiss: (taskKey: string) => void
+  onSetProvider: (provider: string) => void
 }) {
   if (draft.propose) {
+    // The provider a proposal carries is assigned as "the first configured tracker"
+    // at generate time - a coin toss for anyone on two boards, and creating a ticket
+    // is not undoable. So when there IS a choice, it is shown up front rather than
+    // discovered afterwards in the tracker it landed on.
     return (
       <div className="rounded-lg px-3 py-2" style={{ background: 'color-mix(in srgb, var(--color-state-pending) 12%, transparent)' }}>
         <p className="mt-body-sm" style={{ color: 'var(--color-state-pending)', fontSize: 12, fontWeight: 700 }}>
@@ -34,6 +44,7 @@ export function DraftTargets({ draft, busy, onOpenTask, onDismiss }: {
         {draft.propose.description && (
           <p className="mt-body-sm mt-1" style={{ color: 'var(--t-muted)', fontSize: 11.5, lineHeight: 1.45 }}>{draft.propose.description}</p>
         )}
+        <ProposeProvider draft={draft} trackers={trackers} busy={busy} onSetProvider={onSetProvider} />
       </div>
     )
   }
@@ -56,6 +67,73 @@ export function DraftTargets({ draft, busy, onOpenTask, onDismiss }: {
           onOpen={() => onOpenTask(t.task_key, t.task_title ?? undefined)}
           onDismiss={() => onDismiss(t.task_key)} />
       ))}
+    </div>
+  )
+}
+
+/** Whether the user may still choose the board a PROPOSED ticket is created on.
+ *
+ *  All three conditions are load-bearing:
+ *  - a proposal (not a match): a matched draft's provider is per-target, and the
+ *    core command refuses to set a draft-level one;
+ *  - still `drafted`: once approved the ticket may already exist on the old board,
+ *    and re-pointing the row would make it name a tracker the ticket is not on;
+ *  - two or more trackers: with one there is no choice, only a label.
+ *
+ *  Exported for its unit tests - the repo has no React render harness, so the rule
+ *  is tested here rather than through the component. */
+export function canPickProposalProvider(
+  draft: Pick<DayTaskWorklogDraft, 'propose' | 'state'>,
+  trackerCount: number,
+): boolean {
+  return draft.propose !== null && draft.state === 'drafted' && trackerCount >= 2
+}
+
+/** Which board a proposed ticket gets created on.
+ *
+ *  Renders as a STATEMENT when there's nothing to decide - one tracker connected, or
+ *  the draft already approved and the ticket already filed - and as a picker only
+ *  when the choice is both real and still open. A radiogroup of chips rather than a
+ *  select: two or three trackers all fit, and seeing the alternative is the point. */
+function ProposeProvider({ draft, trackers, busy, onSetProvider }: {
+  draft: DayTaskWorklogDraft
+  trackers: Tracker[]
+  busy: boolean
+  onSetProvider: (provider: string) => void
+}) {
+  if (!canPickProposalProvider(draft, trackers.length)) {
+    return (
+      <p className="mt-body-sm mt-2 inline-flex items-center gap-1.5" style={{ color: 'var(--t-faint)', fontSize: 11.5 }}>
+        <ProviderIcon provider={draft.provider} size={11} />
+        {draft.created_task_key ? 'Created in' : 'Will be created in'} {trackerName(draft.provider)}
+      </p>
+    )
+  }
+
+  return (
+    <div className="mt-2">
+      <p className="mt-label mb-1" style={{ color: 'var(--t-faint)' }}>Create it in</p>
+      <div role="radiogroup" aria-label="Which tracker to create this ticket in" className="flex flex-wrap gap-1.5">
+        {trackers.map(t => {
+          const picked = draft.provider === t.id
+          return (
+            <button key={t.id} role="radio" aria-checked={picked} disabled={busy}
+              onClick={() => onSetProvider(t.id)}
+              className="mt-chip inline-flex items-center gap-1.5 px-2 py-1 rounded-md transition-colors"
+              style={{
+                border: `1px solid ${picked ? 'var(--color-state-pending)' : 'var(--t-ctrl-border)'}`,
+                background: picked ? 'color-mix(in srgb, var(--color-state-pending) 16%, transparent)' : 'var(--t-ctrl)',
+                color: picked ? 'var(--t-title)' : 'var(--t-faint)',
+                fontWeight: picked ? 700 : 500,
+                opacity: busy ? 0.55 : 1,
+                cursor: busy ? 'default' : 'pointer',
+              }}>
+              <ProviderIcon provider={t.id} size={12} />
+              {t.name}
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }

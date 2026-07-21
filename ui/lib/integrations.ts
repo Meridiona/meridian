@@ -158,6 +158,15 @@ export function connectedTrackers(integrations: IntegrationsResponse | null): Tr
   return TRACKERS.filter(t => int[t.id])
 }
 
+/** A provider id's display name (`'azure_devops'` → `'Azure DevOps'`).
+ *
+ *  Falls back to the raw id rather than throwing or rendering nothing: an id the
+ *  registry doesn't know is a backend that got ahead of the UI, and showing
+ *  `some_tracker` beats showing an empty gap where the board name should be. */
+export function trackerName(id: string): string {
+  return TRACKER_BY_ID[id as TrackerId]?.name ?? id
+}
+
 /** The display names of the PM trackers currently connected (e.g. `['Jira']`),
  *  in `TRACKERS` order. `null` integrations (still loading) yields `[]`. Used to
  *  name the tracker in copy and to decide whether any tracker is connected. */

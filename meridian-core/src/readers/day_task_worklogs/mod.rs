@@ -362,6 +362,67 @@ pub async fn upsert_draft(
     read_back(pool, day_local, task_id).await
 }
 
+/// Choose which tracker a still-`drafted` PROPOSAL will create its new ticket on.
+///
+/// A proposal's provider is assigned at generate time as "the first configured
+/// tracker" (`src/pm_worklog/generate.rs`) — a placeholder that is simply wrong half
+/// the time for anyone on two boards, and until now was not overridable: the user
+/// could see "New Task: …" and had no way to say it belongs in GitHub rather than
+/// Jira. This is that override.
+///
+/// Deliberately scoped to the PROPOSE branch (`propose_title IS NOT NULL`). A match
+/// draft's provider is carried per-target — each matched ticket already lives on a
+/// specific board — so changing the draft-level column there would name a tracker
+/// the update does not actually post to. Callers get an error rather than a silent
+/// no-op, so the UI can say why.
+///
+/// Does NOT re-run the model, for [`retarget_draft`]'s reason: the prose describes
+/// the work, and the work does not change with the board it is filed on.
+///
+/// `WHERE state = 'drafted'` mirrors [`upsert_draft`]'s guard — once approved, the
+/// ticket may already exist on the old provider, and re-pointing the row would make
+/// it name a board the ticket is not on.
+#[tracing::instrument(skip(pool))]
+pub async fn set_draft_provider(
+    pool: &SqlitePool,
+    day_local: &str,
+    task_id: &str,
+    provider: &str,
+    now: &str,
+) -> anyhow::Result<DayTaskWorklogDraft> {
+    let res = sqlx::query(
+        "UPDATE day_task_worklogs SET provider = ?, last_error = NULL, updated_at = ? \
+         WHERE day_local = ? AND task_id = ? AND state = 'drafted' \
+           AND propose_title IS NOT NULL",
+    )
+    .bind(provider)
+    .bind(now)
+    .bind(day_local)
+    .bind(task_id)
+    .execute(pool)
+    .instrument(tracing::debug_span!("day_task_worklogs.write.set_provider"))
+    .await
+    .context("choosing the tracker for a proposed worklog ticket")?;
+
+    if res.rows_affected() == 0 {
+        // Two distinct reasons, and the user can act on only one of them — so look
+        // rather than emit one vague message covering both.
+        let existing = read_back(pool, day_local, task_id).await?;
+        if existing.state != "drafted" {
+            anyhow::bail!(
+                "this worklog has already been approved - the ticket exists on {} now",
+                existing.provider
+            );
+        }
+        anyhow::bail!(
+            "this draft posts to tickets that already exist - each one lives on its own board"
+        );
+    }
+    tracing::info!(provider, "worklog: proposal tracker chosen by the user");
+
+    read_back(pool, day_local, task_id).await
+}
+
 /// Point a still-`drafted` row at the ONE ticket the USER picked, over the whole
 /// board — dropping every ticket the model chose.
 ///
