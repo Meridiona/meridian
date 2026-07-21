@@ -96,10 +96,13 @@ jobs:
   #                     pass on Windows) + a non-blocking tray check
   #   macOS    arm64    Apple Silicon — the SHIPPED arch: daemon + core + tray,
   #                     lint + test, on the native runner
-  #   macOS    x86_64   Intel — the OTHER shipped slice, on a REAL Intel runner
-  #                     (macos-13). arm runners cannot execute x86_64 test
-  #                     binaries, so this is the only way to actually RUN the
-  #                     Intel tests rather than merely compile-check them.
+  #
+  # Intel (x86_64 macOS) is NOT here — it is a separate push-only job below.
+  # GitHub is retiring Intel runners, so a macos-13 job now sits QUEUED 25+ min
+  # waiting for a runner it may never get inside a PR's patience. Real Intel
+  # testing still matters (it is a shipped slice), so it runs on every push to
+  # pre-main/main — where a long queue is acceptable — rather than gating every
+  # PR on a runner that is going away. See the `intel` job.
   #
   # Every entry carries its own commands because the workspace is asymmetric
   # (the tray is macOS-only); a single uniform `cargo test` would fail on Linux
@@ -137,13 +140,6 @@ jobs:
             # ONE invocation across all three packages: cargo unifies features
             # per invocation, so splitting daemon and tray into two would give a
             # subset of shared crates different feature sets and recompile them.
-            test: cargo test -p meridian -p meridian-core -p meridian-tray
-            tray_check: false
-          - name: macOS (Intel)
-            os: macos-13
-            target: x86_64-apple-darwin
-            stub: true
-            lint: ""
             test: cargo test -p meridian -p meridian-core -p meridian-tray
             tray_check: false
     steps:
@@ -216,6 +212,59 @@ jobs:
         if: matrix.tray_check
         continue-on-error: true
         run: cargo check -p meridian-tray --all-targets
+
+  # ── Real Intel (x86_64 macOS) testing — POST-MERGE ONLY ──────────────────────
+  # Intel is a shipped slice, so it deserves real tests, not a compile-check on
+  # an arm runner (arm cannot execute x86_64 binaries). But GitHub is retiring
+  # Intel runners: a macos-13 job now queues 25+ minutes for a runner, which
+  # would make Intel the long pole on EVERY Rust PR and defeat the point of the
+  # fast matrix above. So it runs only on `push` to pre-main/main — after a PR
+  # merges, before any release cut from those branches — where a long queue is
+  # fine and the coverage still lands continuously. An Intel-only compile break
+  # (rare) surfaces here within the hour rather than at PR time.
+  #
+  # If GitHub removes macos-13 entirely, this job starts failing to schedule;
+  # the fallback is a `--target x86_64-apple-darwin` compile-check folded back
+  # into the arm matrix entry (catches compile breaks, not runtime ones).
+  intel:
+    name: macOS (Intel, post-merge)
+    needs: changes
+    if: github.event_name == 'push' && needs.changes.outputs.rust == 'true'
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          components: clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          add-job-id-key: false
+          shared-key: ci-x86_64-apple-darwin
+
+      - name: Stub the tray bundle resource
+        run: |
+          mkdir -p target/release
+          : > target/release/meridian
+
+      # The real thing: RUN the daemon + core + tray test suites on Intel
+      # hardware, in one cargo invocation (unified feature resolve).
+      - name: Test (Intel)
+        run: cargo test -p meridian -p meridian-core -p meridian-tray
 
   ui:
     name: UI
