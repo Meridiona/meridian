@@ -1,29 +1,32 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// ONE list of the day, not two.
+// ONE list of the day: the plan, then the work done on top of it.
 //
-// This screen used to carry a plan ledger and a workstream list, one under the
-// other, and half the day appeared in both - a ticket in the top list and the work
-// that advanced it in the bottom one, with nothing to say they were the same thing.
-// The reader had to do the join themselves. Now there is a single list: every real
-// stretch of work, each marked with whether it was on the plan, and after it the
-// planned tickets that no work touched.
+// KEYED BY TICKET, NOT BY WORKSTREAM. This is the load-bearing decision. On a
+// planned day the top of the list is one row per COMMITTED TICKET, in plan order -
+// so a `4 / 6` ring always shows six rows with four ticked, and the list reconciles
+// with the number above it. An earlier version keyed the whole list by workstream
+// and annotated each with the ticket it advanced; that silently dropped any ticket
+// whose work was folded into a shared row (two tickets, one workstream) or had no
+// tracked work at all, so a six-ticket plan could render four rows. Keying by ticket
+// makes the plan portion count-exact by construction.
 //
-// THE JOIN IS THE LEDGER'S, NOT A GUESS. `PlanVerdict.day_task_ids` comes back from
-// `day_evidence::adherence` naming exactly which workstreams a ticket's outcome was
-// read off - a posted worklog's, or the ones the model cited. Matching titles here
-// would be re-deciding, badly, a question already answered upstream.
+// A ticket's ROW still shows the WORK, not the ticket's own wording: the first
+// workstream behind it (`PlanVerdict.day_task_ids`, the join `day_evidence::
+// adherence` already settled) supplies the title and the click-through to the
+// worklog flow. Only a ticket with no tied workstream falls back to its own name and
+// opens the ticket instead - there is no worklog to write for work that did not
+// happen.
 //
-// THE 30-MINUTE FLOOR applies to the work rows (`TASK_MIN_MINUTES`, the same one
-// that keeps `task_count` honest). A list including every five-minute glance is a
-// list the reader sees through instantly. Nothing is hidden dishonestly: the tail is
-// stated plainly underneath so the minutes still reconcile. Planned tickets are
-// exempt - a plan is what someone committed to, not what cleared a bar.
+// Below the plan sits the BONUS half: substantial work no planned ticket claims.
+// The 30-minute floor applies there (`TASK_MIN_MINUTES`, the same one that keeps
+// `task_count` honest) and the sub-floor remainder is stated as a tail, so the
+// minutes still reconcile. Planned tickets are exempt from the floor - a ticket you
+// committed to shows however little it took.
 //
-// Clicking a work row opens the timeline's own DayTaskDetailPanel, so generate /
-// approve / retarget / dismiss arrive with it and no worklog logic lives here.
-// Clicking a planned-but-untouched row opens the ticket instead: there is no
-// worklog to write for work that did not happen.
+// Clicking a row opens the timeline's own DayTaskDetailPanel (generate / approve /
+// retarget / dismiss arrive with it, no worklog logic here) or, for an untouched
+// ticket, the ticket itself.
 
 'use client'
 
@@ -139,97 +142,135 @@ function Row({ title, sub, time, done, tint, chip, delay, onClick }: {
   )
 }
 
-export function WorkList({ tasks, plan, planned, onSelect, onOpenTask, delay = 0 }: {
+export function WorkList({ tasks, plan, planned, allPlanDone, onSelect, onOpenTask, delay = 0 }: {
   /** The day's tasks, unfiltered - the floor is applied here. */
   tasks: DayTask[]
   /** One verdict per planned ticket; empty on a day with no plan. */
   plan: PlanVerdict[]
   /** The day had a committed plan. Without one there is nothing to be on or off. */
   planned: boolean
+  /** Every planned ticket came out done. Only then is unplanned work honestly
+   *  "over-delivered" - you cleared the whole plan AND did more. Short of that,
+   *  unplanned work is still credited, just not as beating a plan you did not
+   *  finish. */
+  allPlanDone: boolean
   /** Called with the task and its index in the FULL day list, so the colour matches
    *  the timeline's. */
   onSelect: (task: DayTask, indexInDay: number) => void
   onOpenTask: (key: string, title?: string) => void
   delay?: number
 }) {
-  const { shown, tailMinutes } = splitAtFloor(tasks)
+  const byId = new Map(tasks.map(t => [t.id, t]))
 
-  // id → the ticket it advanced. Built from the ledger, so a row is on-plan only
-  // when the ledger says which planned ticket it moved.
-  const ticketOf = new Map<string, PlanVerdict>()
-  for (const v of plan) {
-    for (const id of v.day_task_ids) if (!ticketOf.has(id)) ticketOf.set(id, v)
-  }
-
-  // A planned ticket whose work is nowhere in the list above needs its own row -
-  // otherwise a ticket that closed with no workstream tied to it (a terminal
-  // ticket: `day_task_ids` empty, minutes 0) simply vanishes, which is the one
-  // thing a plan ledger must never do. Its outcome is still `done` - it left the
-  // board - so it counts on the ring AND ticks its box here, the two just agree.
-  const listed = new Set(shown.map(t => t.id))
-  const missing = plan.filter(v => !v.day_task_ids.some(id => listed.has(id)))
-
-  if (shown.length === 0 && missing.length === 0) return null
-
-  return (
-    <div className="flex flex-col">
-      <ul className="flex flex-col gap-2">
-        {shown.map((t, n) => {
-          const indexInDay = tasks.indexOf(t)
-          const ticket = ticketOf.get(t.id)
-          return (
+  // ── No plan: the list is just the day's real work, every row ticked (it
+  //    happened), no plan annotations to make. ─────────────────────────────────
+  if (!planned) {
+    const { shown, tailMinutes } = splitAtFloor(tasks)
+    if (shown.length === 0) return null
+    return (
+      <div className="flex flex-col">
+        <ul className="flex flex-col gap-2">
+          {shown.map((t, n) => (
             <Row
               key={t.id}
               title={t.title}
-              sub={
-                !planned
-                  ? ''
-                  : ticket
-                    ? `On today's plan · ${ticket.task_key}`
-                    : 'Picked up along the way'
-              }
+              sub=""
               time={fmtDur(t.minutes * 60)}
-              // Everything in this half of the list is real tracked work, so the
-              // box is ticked. That is the deterministic fact - it happened.
               done
-              // Work beyond the plan should read as accomplishment - you did MORE
-              // than you set out to - not as a stray or a freebie. "Went further".
-              chip={planned && !ticket ? 'went further' : undefined}
               delay={delay + 0.04 * n}
-              onClick={() => onSelect(t, indexInDay)}
+              onClick={() => onSelect(t, tasks.indexOf(t))}
+            />
+          ))}
+        </ul>
+        <Tail minutes={tailMinutes} />
+      </div>
+    )
+  }
+
+  // ── Planned: the list is keyed by PLANNED TICKET first, then the work done on
+  //    top of the plan. Keying the plan portion by ticket (not by workstream) is
+  //    what makes the rows reconcile with the ring: one row per committed ticket,
+  //    so `4 / 6` always shows six rows with four ticked. Keying it by workstream
+  //    silently dropped any ticket whose work was folded into a shared row.
+  const consumed = new Set<string>()
+  for (const v of plan) for (const id of v.day_task_ids) if (byId.has(id)) consumed.add(id)
+
+  // The word on an unplanned-work row. "Over-delivered" is earned only by a clean
+  // sweep of the plan; short of that the work is a genuine pickup, credited warmly
+  // without claiming a plan was beaten.
+  const bonusChip = allPlanDone ? 'over-delivered' : 'also got to'
+
+  // The bonus half: substantial work no planned ticket claims. The floor applies
+  // here (a five-minute glance is not a thing you "also did"); planned tickets are
+  // exempt, because a ticket you committed to still shows however little it took.
+  const bonus = tasks
+    .filter(t => t.minutes >= TASK_MIN_MINUTES && !consumed.has(t.id))
+    .sort((a, b) => b.minutes - a.minutes)
+  const tailMinutes = tasks
+    .filter(t => t.minutes < TASK_MIN_MINUTES && !consumed.has(t.id))
+    .reduce((n, t) => n + t.minutes, 0)
+
+  return (
+    <div className="flex flex-col gap-4">
+      <ul className="flex flex-col gap-2">
+        {plan.map((v, n) => {
+          // The first real workstream behind this ticket, if any. Its title is what
+          // the person actually did, which reads better than the ticket's own name;
+          // clicking it opens the worklog flow for that work. A ticket with no tied
+          // workstream (not touched, or closed with nothing logged) falls back to
+          // its own title and opens the ticket instead.
+          const primary = v.day_task_ids.map(id => byId.get(id)).find(Boolean)
+          const done = v.outcome === 'done'
+          return (
+            <Row
+              key={v.task_key}
+              title={primary ? primary.title : v.title || v.task_key}
+              sub={
+                primary
+                  ? `On today's plan · ${v.task_key}${v.outcome === 'partial' ? ' · in progress' : ''}`
+                  : v.evidence ||
+                    (v.outcome === 'not_touched'
+                      ? 'Planned - nothing tracked against it today'
+                      : 'No tracked time could be tied to it')
+              }
+              time={v.minutes > 0 ? fmtDur(v.minutes * 60) : '-'}
+              tint={!done}
+              done={done}
+              delay={delay + 0.04 * n}
+              onClick={() =>
+                primary ? onSelect(primary, tasks.indexOf(primary)) : onOpenTask(v.task_key, v.title)
+              }
             />
           )
         })}
 
-        {missing.map((v, n) => (
+        {bonus.map((t, n) => (
           <Row
-            key={v.task_key}
-            title={v.title || v.task_key}
-            sub={
-              v.evidence ||
-              (v.outcome === 'not_touched'
-                ? 'Planned - nothing tracked against it today'
-                : 'No tracked time could be tied to it')
-            }
-            time={v.minutes > 0 ? fmtDur(v.minutes * 60) : '-'}
-            tint
-            // Ticked when the ticket is done even though no workstream was tied to
-            // it - a ticket closed today with no tracked time is still finished, and
-            // the ring already counts it, so the box has to match.
-            done={v.outcome === 'done'}
-            delay={delay + 0.04 * (shown.length + n)}
-            onClick={() => onOpenTask(v.task_key, v.title)}
+            key={t.id}
+            title={t.title}
+            sub="Picked up along the way"
+            time={fmtDur(t.minutes * 60)}
+            done
+            chip={bonusChip}
+            delay={delay + 0.04 * (plan.length + n)}
+            onClick={() => onSelect(t, tasks.indexOf(t))}
           />
         ))}
       </ul>
 
-      {/* The tail. Stated, never silently dropped - a list that quietly loses half
-          an hour is a list nobody can reconcile with their own memory. */}
-      {tailMinutes > 0 && (
-        <p className="mt-body-sm px-4 pt-3" style={{ color: 'var(--t-faint-2)' }}>
-          plus {fmtDur(tailMinutes * 60)} across shorter stretches
-        </p>
-      )}
+      <Tail minutes={tailMinutes} />
     </div>
+  )
+}
+
+/** The sub-floor remainder, stated plainly - a list that quietly loses half an hour
+ *  is a list nobody can reconcile with their own memory. Renders nothing when there
+ *  is nothing below the floor. */
+function Tail({ minutes }: { minutes: number }) {
+  if (minutes <= 0) return null
+  return (
+    <p className="mt-body-sm px-4" style={{ color: 'var(--t-faint-2)' }}>
+      plus {fmtDur(minutes * 60)} across shorter stretches
+    </p>
   )
 }

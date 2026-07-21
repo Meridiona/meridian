@@ -374,6 +374,11 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
                 tasks={tasks}
                 plan={planned ? summary.plan : []}
                 planned={planned}
+                allPlanDone={
+                  planned &&
+                  summary.adherence.planned > 0 &&
+                  summary.adherence.done === summary.adherence.planned
+                }
                 delay={0.36}
                 onSelect={(t, i) => setSelected(detailOf(t, i, day))}
                 onOpenTask={onOpenTask}
