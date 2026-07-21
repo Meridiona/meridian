@@ -52,24 +52,30 @@ name: Release (prepare)
 # version cheaply (or read it from the repo), then build from an immutable ref.
 
 on:
-  # MANUAL ONLY. Cutting a staging release is a deliberate act — you go to
-  # Actions -> "Release (prepare)" -> Run workflow. There is intentionally NO
-  # `push:` trigger.
+  # AUTO on every push to pre-main. Every merge to the staging branch runs
+  # semantic-release, which cuts a new staging prerelease WHENEVER there are
+  # releasable commits (feat/fix/perf/…) since the last staging tag — and does
+  # nothing when a merge carries only chore/docs/ci commits. That "does it
+  # warrant a release?" decision belongs to semantic-release's commit analysis,
+  # not to us. This is the canonical way semantic-release is meant to run: point
+  # it at the release branch and let it decide.
   #
-  # It USED to trigger on every push to pre-main and gate on a
-  # `[staging-release]` string in the commit message. That backfired: a squash
-  # merge folds every PR commit's BODY into the merge message, and this repo's
-  # own workflow comments quote the literal marker `[staging-release]` — so
-  # merging a PR that merely TOUCHED these files cut an unintended staging
-  # release (v1.72.0-staging.6, deleted). A substring match on a commit message
-  # you do not fully control is not a safe trigger. Manual dispatch removes the
-  # whole class of accident: a release happens only when a human clicks the
-  # button, never as a side effect of a merge.
+  # There is intentionally NO commit-message marker gate. The previous design
+  # gated on a `[staging-release]` substring, which backfired: a squash merge
+  # folds every PR commit BODY into the merge message, and this repo's own
+  # workflow comments quote the literal marker — so merging a PR that merely
+  # TOUCHED these files matched the gate and cut an unintended release
+  # (v1.72.0-staging.6, deleted). Running unconditionally on push and letting
+  # semantic-release judge the commits removes that whole class of accident:
+  # there is no fragile string match left to misfire.
   #
   # STAGING ONLY, FOR NOW. Production still cuts via the old monolithic
   # release.yml on `main`; this two-workflow pipeline is being proven on staging
-  # first. When production migrates, add a `main` dispatch path (still manual)
-  # and widen release-build.yml's tag filter to stable tags.
+  # first. When production migrates, add `main` here and widen
+  # release-build.yml's tag filter to stable tags.
+  push:
+    branches: [pre-main]
+  # Kept for on-demand runs and version previews (dry_run) without a merge.
   workflow_dispatch:
     inputs:
       dry_run:
@@ -92,10 +98,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # pushes the version-bump commit and the tag
-    # The workflow is workflow_dispatch-only (see `on:` above), so there is no
-    # event-gating left to do — reaching this job already means a human clicked
-    # Run workflow. No `if:` guard on a commit-message substring, which is what
-    # previously cut an accidental release.
+    # No `if:` gate. The job runs on every push to pre-main (and on manual
+    # dispatch); semantic-release itself decides whether the commits warrant a
+    # release. There is deliberately no commit-message substring match — that is
+    # what previously cut an accidental release (see `on:` above).
     outputs:
       released: ${{ steps.run.outputs.released }}
       version: ${{ steps.run.outputs.version }}
