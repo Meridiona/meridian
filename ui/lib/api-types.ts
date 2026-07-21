@@ -157,6 +157,18 @@ export interface SetStatusResponse {
   new_status: TaskStatusOption | null
 }
 
+// The minimal shape `StatusPicker`/`useTaskStatusChange` need to drive a status
+// change — deliberately narrower than `TaskSummary` so `TaskDetail` (the plan's
+// task-detail dialog) can be passed straight in too, without an adapter. Both
+// `TaskSummary` and `TaskDetail` already carry every one of these fields, so
+// either satisfies this structurally.
+export interface TaskStatusTarget {
+  key: string
+  provider: string
+  status: string
+  is_terminal: boolean
+}
+
 // ── Worklogs (`get_worklogs`) ────────────────────────────────────────────────
 
 export interface WorklogBullet {
