@@ -160,6 +160,18 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
 
   return (
     <div className="h-full overflow-y-auto nice-scroll p-6 space-y-7">
+      {/* The plan feature's own empty-state CTA — first thing in the panel so
+          it's impossible to scroll past. Shown to EVERY user (including solo/
+          no-tracker — PlanView's composer already supports a personal,
+          tracker-free task, see PlanView.tsx's `boardEmpty` path), only for
+          today (a past day's empty plan is a quiet historical fact, not
+          something to act on — see the read-only branch further down), and
+          only once the plan has actually loaded so it never flashes before
+          `get_plan` resolves. */}
+      {isToday && plan && focusItems.length === 0 && (
+        <EmptyPlanNudge onOpen={() => onOpen('plan')} />
+      )}
+
       {/* DMG update CTA — only renders when a newer version is available; sits
           at the top of the sidebar so it's noticeable without stealing the
           whole header. Sibling of the tray popover's update banner. */}
@@ -212,18 +224,14 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
         </button>
       )}
 
-      {!isSolo && (
+      {/* Editing is a today-only action — you plan the day you're in, not the
+          past. On a past date the section is read-only: it shows that day's
+          committed focus (or a quiet empty note), with no Edit/Add
+          affordances. `focusLabel` relabels the heading off "Today's". The
+          empty-today case no longer renders anything here — the top-of-panel
+          EmptyPlanNudge above owns that CTA now. */}
+      {!isSolo && (focusItems.length > 0 || !isToday) && (
         <div>
-          {/* Editing is a today-only action — you plan the day you're in, not
-              the past. On a past date the section is read-only: it shows that
-              day's committed focus (or a quiet empty note), with no Edit/Add
-              affordances. `focusLabel` relabels the heading off "Today's". */}
-          {focusItems.length === 0 && isToday && (
-            <div className="flex items-center justify-between mb-2.5">
-              <SectionHeading>Today&apos;s focus</SectionHeading>
-              <button onClick={() => onOpen('plan')} className="mt-body-sm" style={{ color: 'var(--color-state-proposal)', fontWeight: 700 }}>Edit plan</button>
-            </div>
-          )}
           {focusItems.length > 0 ? (
             <div className="rounded-xl overflow-hidden bg-card" style={{ border: '1px solid var(--t-card-border)' }}>
               <div className="flex items-center justify-between px-4 py-3">
@@ -275,13 +283,9 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
                 )
               })}
             </div>
-          ) : isToday ? (
-            <button onClick={() => onOpen('plan')}
-              className="w-full text-left rounded-xl px-4 py-3.5" style={{ border: '1px dashed var(--t-hair)' }}>
-              <p className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>Nothing planned yet for today.</p>
-              <p className="mt-body-sm mt-0.5" style={{ color: 'var(--color-state-proposal)', fontWeight: 700 }}>Add tasks to your plan →</p>
-            </button>
           ) : (
+            // Reachable only for a past day (the outer condition excludes
+            // today when empty) — a quiet historical fact, no CTA.
             <div>
               <div className="mb-2.5"><SectionHeading>{focusLabel}</SectionHeading></div>
               <div className="rounded-xl px-4 py-3.5" style={{ border: '1px dashed var(--t-hair)' }}>
@@ -344,6 +348,32 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
     <p style={{ font: "800 13px var(--font-sans)", color: 'var(--t-title)' }}>
       {children}
     </p>
+  )
+}
+
+// The plan feature's empty-state CTA, promoted to the top of the panel so it's
+// the first thing a user sees rather than the 4th card down. Soft/pastel
+// (color-mix over the panel surface, same recipe as the cleanup/tracker-connect
+// CTAs elsewhere in this file) so it reads as an inviting nudge, not a warning
+// — purple (--color-state-proposal) matches the rest of the plan feature's own
+// color language (the "Edit plan"/progress-bar/done-check accents), so this
+// reads as the same feature rather than a new, unrelated color.
+function EmptyPlanNudge({ onOpen }: { onOpen: () => void }) {
+  return (
+    <button onClick={onOpen}
+      className="w-full text-left rounded-xl px-4 py-3.5 flex items-center gap-2.5 mt-card-hover"
+      style={{
+        background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)',
+        border: '1px solid color-mix(in srgb, var(--color-state-proposal) 30%, transparent)',
+      }}>
+      <span className="inline-flex items-center justify-center rounded-full shrink-0 text-[13px]"
+        style={{ width: 26, height: 26, background: 'color-mix(in srgb, var(--color-state-proposal) 20%, transparent)' }}>✨</span>
+      <span className="flex-1 min-w-0">
+        <p className="mt-card-title" style={{ color: 'var(--color-state-proposal)' }}>What are you working on today?</p>
+        <p className="mt-body-sm mt-0.5" style={{ color: 'var(--t-muted)' }}>Add a few tasks so Meridian can help you stay on track</p>
+      </span>
+      <span style={{ color: 'var(--color-state-proposal)' }}>→</span>
+    </button>
   )
 }
 
