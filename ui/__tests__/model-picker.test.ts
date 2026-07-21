@@ -27,6 +27,8 @@ import { readFileSync } from 'fs'
 // The repo has no React render harness (see intelligence-provider-save), so we model
 // the transitions and scan the source for the required shape rather than mounting.
 
+import { stripComments } from './helpers/source'
+
 const uiRoot = import.meta.dir + '/..'
 const picker = readFileSync(uiRoot + '/components/ModelPicker.tsx', 'utf8')
 const section = readFileSync(uiRoot + '/components/timeline/settings/IntelligenceSection.tsx', 'utf8')
@@ -35,11 +37,7 @@ const registry = readFileSync(uiRoot + '/lib/llm-providers.ts', 'utf8')
 /** The setup wizard - the second surface that writes the provider. */
 const setup = readFileSync(uiRoot + '/app/setup/page.tsx', 'utf8')
 
-/** Source with comments stripped - these guards assert on CODE, and the headers above
- *  each file describe the very behaviour being guarded against. */
-function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
-}
+
 
 // ── Rule 1: a stored model override never rides onto another provider ────────
 // The redesigned settings UI has NO per-provider model control - the model always follows the

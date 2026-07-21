@@ -774,3 +774,54 @@ export interface CaptureApp {
   /** Frame count over the window; a recency/volume hint, not a duration. */
   frames: number
 }
+
+// ── LLM providers (`detect_llm_providers`, `install_llm_provider`, … ) ───────
+//
+// The Rust-mirrored invoke contracts for the provider picker. They lived beside
+// their consumer in LlmProviderPicker.tsx; centralising them is what stops the
+// TS side drifting when the structs in src/llm/detect.rs change.
+
+/** What one real connectivity test found (mirrors `ProviderTestOutcome` in src/llm/detect.rs). */
+export type ProviderTestOutcome =
+  | { status: 'ok' }
+  | { status: 'rate_limited'; message: string }
+  | { status: 'failed'; message: string }
+
+/** One recorded test run (mirrors `ProviderTestResult` in src/llm/detect.rs). */
+export interface ProviderTestResult {
+  id: string
+  outcome: ProviderTestOutcome
+  elapsed_ms: number
+  /** RFC3339 — when this test ran. */
+  tested_at: string
+}
+
+/** One provider's live install state (mirrors `ProviderStatus` in src/llm/detect.rs). */
+export interface ProviderStatus {
+  id: string
+  installed: boolean
+  path: string | null
+  /** Always null — Meridian reports *installed*, not *signed in*. See src/llm/detect.rs. */
+  authenticated: boolean | null
+  /** The last real connectivity test on record, if any. `null` means never tested — not failed. */
+  last_test: ProviderTestResult | null
+}
+
+// ── install / sign-in outcome ───────────────────────────────────────────────
+
+/** What running a provider's installer or sign-in produced.
+ *  Mirrors `InstallOutcome` in `src/llm/detect.rs`.
+ *
+ *  Lives here rather than beside its consumer because it is an invoke response
+ *  contract mirrored from Rust: keeping those in one place is what stops the
+ *  two sides drifting silently when the Rust struct changes. */
+export interface InstallOutcome {
+  /** Whether the install/sign-in itself succeeded. */
+  ok: boolean
+  /** Human-readable result - shown directly in the picker. */
+  message: string
+  /** Resolved CLI path once installed, or null if it could not be located. */
+  path: string | null
+  /** The command that was actually run, for display and debugging. */
+  command: string
+}

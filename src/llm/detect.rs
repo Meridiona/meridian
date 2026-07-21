@@ -264,6 +264,14 @@ pub struct InstallOutcome {
 /// no user input, so passing it to `-c` cannot inject anything. This is the ONE place the
 /// daemon runs a vendor installer, and only ever on an explicit user click (the tray's
 /// `install_llm_provider` command) — never automatically.
+#[tracing::instrument(
+    skip_all,
+    fields(
+        provider = provider.as_str(),
+        ok = tracing::field::Empty,
+        cli_path = tracing::field::Empty,
+    )
+)]
 pub async fn install_provider(provider: LlmProvider) -> InstallOutcome {
     let Some(cmd) = provider.install_command() else {
         return InstallOutcome {
@@ -320,6 +328,9 @@ pub async fn install_provider(provider: LlmProvider) -> InstallOutcome {
     // the same probe the install-state badge uses, so "installed" means the same thing here.
     match resolve_cli(bin).await {
         Some(p) => {
+            let span = tracing::Span::current();
+            span.record("ok", true);
+            span.record("cli_path", tracing::field::display(p.display()));
             tracing::info!(provider = provider.as_str(), path = %p.display(), "llm: provider installed");
             warn_if_version_unpinned(provider, &p).await;
             InstallOutcome {
@@ -400,6 +411,7 @@ const CURSOR_LOGIN_TIMEOUT: Duration = Duration::from_secs(180);
 /// `NO_OPEN_BROWSER` because it can't ask a human anything; this path is an explicit click, so
 /// opening the browser to finish the sign-in is exactly what's wanted). Once it completes,
 /// cursor-agent persists the auth and every later daemon run just adopts it.
+#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty))]
 pub async fn cursor_sign_in() -> InstallOutcome {
     let label = "cursor-agent login";
     let Some(path) = resolve_cli("cursor-agent").await else {
@@ -468,6 +480,9 @@ pub async fn cursor_sign_in() -> InstallOutcome {
     };
 
     if output.status.success() {
+        let span = tracing::Span::current();
+        span.record("ok", true);
+        span.record("cli_path", tracing::field::display(path.display()));
         tracing::info!("llm: cursor-agent login succeeded");
         InstallOutcome {
             ok: true,
@@ -506,6 +521,10 @@ fn tail(s: &str, n: usize) -> String {
 
 /// Build a failed [`InstallOutcome`], logging the reason.
 fn install_failed(cmd: &str, message: String) -> InstallOutcome {
+    // Every failure path in install_provider and cursor_sign_in funnels through
+    // here, so recording on the CURRENT span marks whichever of them is running
+    // as failed without threading a handle through a dozen early returns.
+    tracing::Span::current().record("ok", false);
     tracing::warn!(%cmd, %message, "llm: provider install failed");
     InstallOutcome {
         ok: false,

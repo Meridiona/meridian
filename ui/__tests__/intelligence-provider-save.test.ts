@@ -26,15 +26,12 @@ import { readFileSync } from 'fs'
 // The repo has no React render harness (see plan-store / oauth-setup-lifecycle), so we model the
 // transition and scan the source for the required shape rather than mounting the component.
 
+import { sourceOf as sharedSourceOf } from './helpers/source'
+
 const uiRoot = import.meta.dir + '/..'
 
-/** Source with comments stripped. The module headers deliberately describe the removed optimistic
- *  behaviour, so scanning raw text would conflate documenting the old bug with still doing it. */
-function sourceOf(rel: string): string {
-  return readFileSync(uiRoot + rel, 'utf8')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/^\s*\/\/.*$/gm, '')
-}
+/** Bound to this suite's uiRoot - see helpers/source.ts for why comments are stripped. */
+const sourceOf = (rel: string): string => sharedSourceOf(uiRoot, rel)
 
 const code = sourceOf('/components/timeline/settings/IntelligenceSection.tsx')
 /** The OTHER surface that can change the provider. Asserting these invariants only against
