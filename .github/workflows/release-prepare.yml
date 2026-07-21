@@ -213,6 +213,43 @@ jobs:
             echo "→ tagged ${after} — release-build.yml will pick it up"
           else
             echo "released=false" >> "$GITHUB_OUTPUT"
+
+            # On pre-main this is routine and fine: a push carrying only
+            # chore/docs/ci commits legitimately cuts nothing, and the next
+            # feature merge picks everything up.
+            #
+            # On MAIN it is a FAILURE, and must be loud. The only push to main
+            # is the pre-main → main release merge — a deliberate act whose
+            # entire purpose is to ship a version. If it produces no tag, the
+            # release silently did not happen, and a green check says otherwise.
+            #
+            # This is not hypothetical. It has now happened twice (#517, #522):
+            # both were SQUASH-merged, which collapses every conventional commit
+            # into one subject line — `release: …`, not a releasable type — so
+            # commit-analyzer found nothing and this step exited 0. Production
+            # sat on v1.74.0 while main carried the new code, and nothing in the
+            # UI indicated a problem.
+            #
+            # The cause is the merge method, so that is what the message names.
+            if [ "${GITHUB_REF_NAME}" = "main" ]; then
+              echo "::error::No releasable commits on main — no version was tagged and NOTHING WILL BUILD."
+              {
+                echo "### Release prepare FAILED"
+                echo ""
+                echo "A merge to \`main\` produced no release."
+                echo ""
+                echo "The usual cause is a **squash merge** of the \`pre-main → main\` PR."
+                echo "Squashing collapses every \`feat:\`/\`fix:\` commit into a single"
+                echo "subject line, and semantic-release reads subject lines only —"
+                echo "so it sees nothing to release."
+                echo ""
+                echo "Use **Create a merge commit** for release PRs, so the commits"
+                echo "arrive on \`main\` intact. Feature PRs into \`pre-main\` should still"
+                echo "be squashed."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+
             echo "→ no releasable commits; nothing tagged"
           fi
 
