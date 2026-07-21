@@ -11,7 +11,7 @@
 'use client'
 
 import { useRef, useState, useEffect } from 'react'
-import type { TaskSummary, TaskStatusOption, SetStatusResponse } from '@/lib/api-types'
+import type { TaskStatusTarget, TaskStatusOption, SetStatusResponse } from '@/lib/api-types'
 import { mutate, openExternal } from '@/lib/bridge'
 
 // How long the Undo affordance (or a redirect/error note) lingers before it fades.
@@ -67,8 +67,9 @@ export function useTaskStatusChange(
 
   const dismissNote = () => setNote(null)
 
-  // Change a task's status on its tracker, capturing an Undo.
-  const handleSetStatus = (task: TaskSummary, option: TaskStatusOption) => {
+  // Change a task's status on its tracker (or, for a personal task, straight in our
+  // own DB — see meridian_core::task_create's local-status helpers), capturing an Undo.
+  const handleSetStatus = (task: TaskStatusTarget, option: TaskStatusOption) => {
     if (statusBusyKey) return
     const prevStatus = task.status
     const prevTerminal = task.is_terminal

@@ -12,9 +12,15 @@
 //!
 //! Tracker auth lives in the daemon (`~/.meridian/.env`), so — exactly like
 //! [`crate::commands::apply_ticket_fix`] and [`crate::commands::get_ticket_parents`]
-//! — these **shell out to the `meridian` CLI** (`ticket-statuses` /
-//! `ticket-set-status`) rather than talking to any tracker in-process. They are
-//! NOT DB reads, so they live tray-side, not in meridian-core.
+//! — a TRACKER-owned ticket **shells out to the `meridian` CLI** (`ticket-statuses` /
+//! `ticket-set-status`) rather than talking to any tracker in-process.
+//!
+//! A **personal** (`provider = 'local'`) task is different: there is no tracker to
+//! authenticate against, just our own `pm_tasks` row, so both commands short-circuit
+//! straight to [`meridian_core::task_create`]'s local-status helpers instead of
+//! shelling out — a personal task's fixed To Do/In Progress/Done lifecycle
+//! ([`meridian_core::task_create::LOCAL_STATUSES`]) is a plain DB read/write, not a
+//! process worth spawning for.
 //!
 //! # Who calls this
 //! Registered in `lib.rs`'s `invoke_handler!`; consumed by the dashboard's status
@@ -31,6 +37,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use tauri::State;
 
 // The CLI-spawning contract (argv/no shell, `current_dir(~/.meridian)` so dotenvy
 // finds the daemon's `.env`, a timeout, last-line JSON, and a diagnostic that names
@@ -82,17 +89,51 @@ pub struct SetStatusBody {
     pub status_id: String,
 }
 
-/// List the statuses `key` can move to (+ its current status) on `provider`.
-/// Spawns `meridian ticket-statuses --provider <p> --key <k>` (argv, no shell —
-/// no injection), 30 s timeout, and parses the last JSON line of stdout.
+/// One [`meridian_core::task_create::LocalStatusOption`] shaped as a [`StatusOptionDto`].
+fn local_status_dto(o: &meridian_core::task_create::LocalStatusOption) -> StatusOptionDto {
+    StatusOptionDto {
+        id: o.id.to_string(),
+        name: o.name.to_string(),
+        category: o.category.to_string(),
+    }
+}
+
+/// List the statuses `key` can move to (+ its current status) on `provider`. A
+/// personal task reads its fixed local lifecycle straight from `pm_tasks`
+/// (see the module header); a tracker-owned ticket spawns
+/// `meridian ticket-statuses --provider <p> --key <k>` (argv, no shell — no
+/// injection), 30 s timeout, and parses the last JSON line of stdout.
 #[tauri::command]
-#[tracing::instrument]
+#[tracing::instrument(skip(pool))]
 pub async fn list_task_statuses(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
     provider: String,
     key: String,
 ) -> Result<StatusListResponse, String> {
     if provider.is_empty() || key.is_empty() {
         return Err("provider and key are required".to_string());
+    }
+    if provider == meridian_core::task_create::LOCAL_PROVIDER {
+        let Some(pool) = pool.inner() else {
+            return Err("meridian.db is not open yet".to_string());
+        };
+        let current = meridian_core::task_create::local_task_current(pool, &key)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("no personal task {key}"))?;
+        let (current_name, _) = current;
+        let current_id = meridian_core::task_create::resolve_local_status(&current_name)
+            .map(|o| o.id.to_string());
+        let resp = StatusListResponse {
+            statuses: meridian_core::task_create::LOCAL_STATUSES
+                .iter()
+                .map(local_status_dto)
+                .collect(),
+            current_id,
+            current_name: Some(current_name),
+        };
+        tracing::info!(%key, "list_task_statuses served (personal task)");
+        return Ok(resp);
     }
     let resp: StatusListResponse = run_meridian_json(
         &["ticket-statuses", "--provider", &provider, "--key", &key],
@@ -104,15 +145,50 @@ pub async fn list_task_statuses(
     Ok(resp)
 }
 
-/// Move `key` to `status_id` (an id OR a status name) on `provider`. Spawns
-/// `meridian ticket-set-status --provider <p> --key <k> --status <s>` (argv, no
+/// Move `key` to `status_id` (an id OR a status name) on `provider`. A personal task
+/// writes straight to `pm_tasks` (see the module header); a tracker-owned ticket
+/// spawns `meridian ticket-set-status --provider <p> --key <k> --status <s>` (argv, no
 /// shell), 60 s timeout (an applied move re-syncs the board), and parses the last
 /// JSON line of stdout.
 #[tauri::command]
-#[tracing::instrument(skip(body), fields(provider = %body.provider, key = %body.key, status_id = %body.status_id))]
-pub async fn set_task_status(body: SetStatusBody) -> Result<SetStatusResponse, String> {
+#[tracing::instrument(skip(body, pool), fields(provider = %body.provider, key = %body.key, status_id = %body.status_id))]
+pub async fn set_task_status(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    body: SetStatusBody,
+) -> Result<SetStatusResponse, String> {
     if body.provider.is_empty() || body.key.is_empty() || body.status_id.is_empty() {
         return Err("provider, key and status_id are required".to_string());
+    }
+    if body.provider == meridian_core::task_create::LOCAL_PROVIDER {
+        let Some(pool) = pool.inner() else {
+            return Err("meridian.db is not open yet".to_string());
+        };
+        let Some(opt) = meridian_core::task_create::resolve_local_status(&body.status_id) else {
+            return Err(format!("unknown status \"{}\"", body.status_id));
+        };
+        let now = chrono::Utc::now().to_rfc3339();
+        let is_terminal = opt.category == "done";
+        let changed = meridian_core::task_create::set_local_status(
+            pool,
+            &body.key,
+            opt.name,
+            is_terminal,
+            &now,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        if !changed {
+            return Err(format!("could not update {}", body.key));
+        }
+        tracing::info!(status = opt.name, "set_task_status applied (personal task)");
+        return Ok(SetStatusResponse {
+            result: SetStatusOutcome {
+                status: "applied".to_string(),
+                browse_url: None,
+                reason: None,
+            },
+            new_status: Some(local_status_dto(opt)),
+        });
     }
     let resp: SetStatusResponse = run_meridian_json(
         &[
