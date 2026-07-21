@@ -191,3 +191,8 @@ capture = [
 # whatever happens to exist on the machine running the tests.
 [dev-dependencies]
 tempfile = "3"
+# Test-only: an in-memory migrated DB for poll::refresh's stale-notice
+# reconciliation test — `meridian_core::SqlitePool` is the pool type, but
+# querying result rows needs sqlx itself, which the tray binary otherwise
+# never touches directly (all DB access goes through meridian/meridian-core).
+sqlx = { version = "0.7", default-features = false, features = ["sqlite", "runtime-tokio-rustls", "migrate"] }

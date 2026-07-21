@@ -181,98 +181,6 @@ fn decide_health_notice(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The exact bug this fix targets: a fresh tray process (all counters at
-    /// their `AppState::default()` values) whose very first health check is
-    /// already healthy — e.g. the daemon recovered from an overnight sleep
-    /// gap before this process even started. The normal down→up transition
-    /// can never be observed by this process, so reconciliation must fire
-    /// directly instead.
-    #[test]
-    fn reconciles_stale_notice_on_first_healthy_tick_after_restart() {
-        let mut failures = 0u32;
-        let mut was_healthy = false;
-        let mut reconciled = false;
-
-        let d = decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
-
-        assert!(!d.notify_down);
-        assert!(!d.notify_back);
-        assert!(
-            d.reconcile_stale,
-            "must reconcile on the first healthy tick"
-        );
-        assert!(reconciled, "startup_health_reconciled must be latched true");
-        assert!(was_healthy);
-        assert_eq!(failures, 0);
-    }
-
-    /// The one-shot must not re-fire on every subsequent healthy tick — only
-    /// the first one this process observes.
-    #[test]
-    fn does_not_reconcile_again_after_the_first_healthy_tick() {
-        let mut failures = 0u32;
-        let mut was_healthy = false;
-        let mut reconciled = false;
-
-        decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
-        let second = decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
-
-        assert!(!second.reconcile_stale);
-        assert!(!second.notify_back);
-    }
-
-    /// Normal case, unchanged by this fix: this process itself observes 2
-    /// consecutive failures (after having been healthy at least once), then
-    /// recovers — notify_back handles it, not the startup reconciler.
-    #[test]
-    fn normal_down_then_up_uses_notify_back_not_reconcile() {
-        let mut failures = 0u32;
-        let mut was_healthy = true; // already established healthy earlier
-        let mut reconciled = true; // startup reconciliation already happened
-
-        let first_fail =
-            decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
-        assert!(!first_fail.notify_down); // only 1 consecutive failure so far
-
-        let second_fail =
-            decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
-        assert!(second_fail.notify_down); // 2nd consecutive failure
-
-        let recovered =
-            decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
-        assert!(recovered.notify_back);
-        assert!(!recovered.reconcile_stale);
-    }
-
-    /// Preserves existing (pre-fix) behavior: a cold-start outage that never
-    /// establishes healthy first stays silent — `daemon_was_healthy` gates
-    /// `notify_down` off — but recovery still clears via `notify_back` once
-    /// the failure count has reached 2, same as before this change.
-    #[test]
-    fn cold_start_outage_is_silent_until_recovery() {
-        let mut failures = 0u32;
-        let mut was_healthy = false;
-        let mut reconciled = false;
-
-        let f1 = decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
-        let f2 = decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
-        assert!(!f1.notify_down);
-        assert!(
-            !f2.notify_down,
-            "never-yet-healthy daemon must not notify down"
-        );
-
-        let recovered =
-            decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
-        assert!(recovered.notify_back);
-        assert!(!recovered.reconcile_stale);
-    }
-}
-
 /// Read the active session (direct DB) and store the app name + elapsed seconds.
 /// On a read error we keep the previous value rather than clearing the pill on a
 /// transient blip.
@@ -411,5 +319,183 @@ pub(super) async fn refresh_worklogs(pool: &SqlitePool, state: &Arc<Mutex<AppSta
             s.logged_s = logged_s;
         }
         Err(e) => tracing::warn!(error = %e, "refresh_worklogs failed"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The exact bug this fix targets: a fresh tray process (all counters at
+    /// their `AppState::default()` values) whose very first health check is
+    /// already healthy — e.g. the daemon recovered from an overnight sleep
+    /// gap before this process even started. The normal down→up transition
+    /// can never be observed by this process, so reconciliation must fire
+    /// directly instead.
+    #[test]
+    fn reconciles_stale_notice_on_first_healthy_tick_after_restart() {
+        let mut failures = 0u32;
+        let mut was_healthy = false;
+        let mut reconciled = false;
+
+        let d = decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+
+        assert!(!d.notify_down);
+        assert!(!d.notify_back);
+        assert!(
+            d.reconcile_stale,
+            "must reconcile on the first healthy tick"
+        );
+        assert!(reconciled, "startup_health_reconciled must be latched true");
+        assert!(was_healthy);
+        assert_eq!(failures, 0);
+    }
+
+    /// The one-shot must not re-fire on every subsequent healthy tick — only
+    /// the first one this process observes.
+    #[test]
+    fn does_not_reconcile_again_after_the_first_healthy_tick() {
+        let mut failures = 0u32;
+        let mut was_healthy = false;
+        let mut reconciled = false;
+
+        decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+        let second = decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+
+        assert!(!second.reconcile_stale);
+        assert!(!second.notify_back);
+    }
+
+    /// Normal case, unchanged by this fix: this process itself observes 2
+    /// consecutive failures (after having been healthy at least once), then
+    /// recovers — notify_back handles it, not the startup reconciler.
+    #[test]
+    fn normal_down_then_up_uses_notify_back_not_reconcile() {
+        let mut failures = 0u32;
+        let mut was_healthy = true; // already established healthy earlier
+        let mut reconciled = true; // startup reconciliation already happened
+
+        let first_fail =
+            decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
+        assert!(!first_fail.notify_down); // only 1 consecutive failure so far
+
+        let second_fail =
+            decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
+        assert!(second_fail.notify_down); // 2nd consecutive failure
+
+        let recovered =
+            decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+        assert!(recovered.notify_back);
+        assert!(!recovered.reconcile_stale);
+    }
+
+    /// Preserves existing (pre-fix) behavior: a cold-start outage that never
+    /// establishes healthy first stays silent — `daemon_was_healthy` gates
+    /// `notify_down` off — but recovery still clears via `notify_back` once
+    /// the failure count has reached 2, same as before this change.
+    #[test]
+    fn cold_start_outage_is_silent_until_recovery() {
+        let mut failures = 0u32;
+        let mut was_healthy = false;
+        let mut reconciled = false;
+
+        let f1 = decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
+        let f2 = decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
+        assert!(!f1.notify_down);
+        assert!(
+            !f2.notify_down,
+            "never-yet-healthy daemon must not notify down"
+        );
+
+        let recovered =
+            decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+        assert!(recovered.notify_back);
+        assert!(!recovered.reconcile_stale);
+    }
+
+    async fn fresh_db() -> meridian_core::SqlitePool {
+        use sqlx::sqlite::SqliteConnectOptions;
+        use std::str::FromStr;
+        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .create_if_missing(true);
+        let pool = meridian_core::SqlitePool::connect_with(opts).await.unwrap();
+        sqlx::migrate!("../../src/migrations")
+            .run(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// End-to-end DB check for the scenario the code review flagged as
+    /// hardest to unit-test: a `tray.daemon_quiet` notice raised by one
+    /// process instance, still sitting in `system_notices` when a FRESH
+    /// process's first-ever health check comes back healthy. Composes
+    /// `decide_health_notice` with the real `meridian::notices` DB calls
+    /// against an in-memory schema-migrated database — exactly the sequence
+    /// `refresh_health`'s `reconcile_stale` branch runs — rather than a mock.
+    /// Short of driving an actual packaged tray process through a real
+    /// sleep/restart cycle, this is the strongest verification available
+    /// from an automated test.
+    #[tokio::test]
+    async fn stale_notice_from_a_prior_process_instance_is_actually_cleared() {
+        let pool = fresh_db().await;
+
+        // The PREVIOUS process instance raised the fault before it exited.
+        meridian::notices::raise_typed(
+            &pool,
+            meridian::notices::Notice {
+                id: "tray.daemon_quiet",
+                severity: "warning",
+                title: "Meridian went quiet.",
+                detail: "Tap to check what happened.",
+                remedy: None,
+                event_key: "system.health",
+                deep_link: Some("/logs"),
+            },
+        )
+        .await
+        .unwrap();
+
+        // A FRESH process's AppState defaults, observing its first-ever health
+        // tick as healthy (the daemon recovered before this process started).
+        let mut failures = 0u32;
+        let mut was_healthy = false;
+        let mut reconciled = false;
+        let decision = decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+        assert!(
+            decision.reconcile_stale,
+            "a fresh process's first healthy tick must trigger reconciliation"
+        );
+        assert!(!decision.notify_back);
+
+        // Exactly what refresh_health's reconcile_stale branch does.
+        let cleared =
+            meridian::notices::clear_typed_reporting(&pool, "tray.daemon_quiet", "system.health")
+                .await
+                .unwrap();
+        assert!(
+            cleared,
+            "a real stale notice must report as actually cleared"
+        );
+        send_back_online_toast(&pool).await;
+
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM system_notices WHERE notice_id = 'tray.daemon_quiet'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, 0, "the banner's backing row must be gone");
+
+        let toast_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE event_key = 'system.health' AND title = 'Back online.'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            toast_count, 1,
+            "a back-online toast must confirm the recovery"
+        );
     }
 }
