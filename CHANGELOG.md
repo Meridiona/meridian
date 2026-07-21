@@ -1,3 +1,9 @@
+## [1.74.2](https://github.com/Meridiona/meridian/compare/v1.74.1...v1.74.2) (2026-07-21)
+
+### 🐛 Bug Fixes
+
+* **ci:** let a stable release tag actually trigger its build ([b56dd4a](https://github.com/Meridiona/meridian/commit/b56dd4a107718e8fb87b6da918c14bdf0b8c0c6b))
+
 ## [1.74.1](https://github.com/Meridiona/meridian/compare/v1.74.0...v1.74.1) (2026-07-21)
 
 ### 🐛 Bug Fixes
