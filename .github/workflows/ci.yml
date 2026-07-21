@@ -1,10 +1,35 @@
 name: CI
 
 on:
+  # Both release branches, so `main` still gets a full post-merge signal.
   push:
     branches: [main, pre-main]
+  # PRs into pre-main ONLY — deliberately NOT main.
+  #
+  # The only PR that ever targets main is the `pre-main → main` release merge,
+  # and running CI on it re-tests a tree CI has already passed twice: once on
+  # each commit's own feature PR, and again on the push to pre-main. main holds
+  # nothing pre-main lacks except `chore(release): X [skip ci]` version bumps,
+  # so the merge introduces no code that has not already been through the suite.
+  #
+  # This is NOT the same situation as a feature PR. There, two independently
+  # green branches can combine into something broken — the PR run tests your
+  # branch against the pre-main of that moment, and someone else's PR can land
+  # in between, so the post-merge push run is what catches the semantic
+  # conflict. A release merge has no second code stream, so there is no
+  # conflict surface and nothing for a re-run to find.
+  #
+  # It also removes a real cost: while a pre-main → main PR is open, pre-main is
+  # the PR's head branch, so every push to it fired the whole suite TWICE (once
+  # as `push`, once as `pull_request`) — including the macOS Rust job, the
+  # slowest and most expensive one in the workflow.
+  #
+  # Production is not left unguarded: the `push: main` trigger above still runs
+  # the full suite on the merge commit. The check that actually gates a release
+  # is human anyway — "has this been exercised end to end on the staging DMG" —
+  # which no status check can express (see CLAUDE.md, "PR target branch").
   pull_request:
-    branches: [main, pre-main]
+    branches: [pre-main]
 
 permissions:
   contents: read
