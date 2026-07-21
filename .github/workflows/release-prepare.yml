@@ -231,6 +231,28 @@ jobs:
             # UI indicated a problem.
             #
             # The cause is the merge method, so that is what the message names.
+            #
+            # ONE EXEMPTION: semantic-release's own version-bump commit. The
+            # stable config's @semantic-release/git plugin commits the bump back
+            # to main, and that push re-enters this workflow. There is
+            # legitimately nothing to release then — `chore(release): …` is not a
+            # releasable type, which is exactly what stops the loop — so failing
+            # would paint a red X on the tail end of a SUCCESSFUL release.
+            #
+            # Detected by the subject rather than a marker on purpose. That
+            # commit used to carry GitHub's skip-CI marker, which suppressed
+            # every workflow for the push — including the TAG push, since the tag
+            # points at this very commit. The tag landed and release-build never
+            # fired, so v1.74.1 tagged and built nothing. The marker is gone (see
+            # .releaserc.json); this check replaces the part of its job that was
+            # actually wanted.
+            subject="$(git log -1 --format=%s)"
+            if [ "${GITHUB_REF_NAME}" = "main" ] && \
+               [ "${subject#chore(release): }" != "${subject}" ]; then
+              echo "→ semantic-release's own bump commit (${subject}); nothing to release, as expected"
+              exit 0
+            fi
+
             if [ "${GITHUB_REF_NAME}" = "main" ]; then
               echo "::error::No releasable commits on main — no version was tagged and NOTHING WILL BUILD."
               {
