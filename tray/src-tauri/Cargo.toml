@@ -160,6 +160,14 @@ cidre = { version = "0.13", features = ["ax"], optional = true }
 # `windows-rs` Windows.UI.Notifications implementation behind the existing
 # `sys.rs` facade; tracked as a follow-up, documented in NOTIFICATIONS.md.
 tauri-plugin-notifications = { version = "=0.4.6", default-features = false, features = ["notify-rust"] }
+# Real notification-permission read for the Windows probe (`sys::notification_permission_state`).
+# The plugin's notify-rust backend has no permission API of its own — `permission_state()` /
+# `request_permission()` are hardcoded to return `Granted` (see the doc comment on the probe) —
+# so this queries WinRT directly via `ToastNotificationManager::CreateToastNotifierWithId` +
+# `ToastNotifier::Setting()`. Already a transitive dependency (pulled in by notify-rust's own
+# `tauri-winrt-notification` backend), so this adds no new dependency, just our own direct use of
+# it; version kept in the same 0.61 line Cargo already resolves so there's no duplicate build.
+windows = { version = "0.61", features = ["UI_Notifications"] }
 
 [features]
 # In-process screen capture is ON by default (Gap-2 Bucket 2 cutover): the
