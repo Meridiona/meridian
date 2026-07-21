@@ -76,9 +76,6 @@ pub async fn run_authcode_flow(
     );
 
     tracing::info!("opening browser to authorize OAuth flow");
-    tracing::info!(
-        "if it doesn't open automatically, check your default browser settings and try again"
-    );
     open_browser(&authorize);
 
     let (code, returned_state) = tokio::time::timeout(CONSENT_TIMEOUT, accept_redirect(&listener))
@@ -282,7 +279,6 @@ pub async fn run_fragment_relay_flow(authorize_url: &str, port: u16) -> Result<S
             format!("binding loopback :{port} for the Trello token relay — is the port free?")
         })?;
     tracing::info!("opening browser to authorize Trello OAuth flow");
-    tracing::info!(url = %authorize_url, "if it doesn't open, paste this URL into your browser");
     open_browser(authorize_url);
     tokio::time::timeout(CONSENT_TIMEOUT, accept_fragment_relay(&listener))
         .await
@@ -355,10 +351,28 @@ else{document.querySelector('h2').textContent='No token in URL. Try again.';}\
     }
 }
 
-/// Open `url` in the system browser. macOS-only (`open`); non-fatal if it fails —
-/// the URL is also printed for manual paste.
+/// Open `url` in the system browser. Non-fatal if the launch fails — the URL
+/// is always logged too, so a failed/headless launch still leaves the user a
+/// way to continue by pasting it manually.
+///
+/// `start` on Windows is a cmd.exe builtin, not a standalone executable, so it
+/// has to be invoked through the shell rather than spawned directly. Its first
+/// argument is a window-title slot, not part of the command — the empty `""`
+/// there is required, otherwise `start` misreads a quoted URL as the title and
+/// never opens it.
 fn open_browser(url: &str) {
-    let _ = std::process::Command::new("open").arg(url).spawn();
+    tracing::info!(url, "if it doesn't open automatically, open this URL yourself");
+    #[cfg(target_os = "windows")]
+    let result = std::process::Command::new("cmd")
+        .args(["/C", "start", "", url])
+        .spawn();
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let result = std::process::Command::new("xdg-open").arg(url).spawn();
+    if let Err(e) = result {
+        tracing::warn!(error = %e, "failed to launch the system browser");
+    }
 }
 
 /// RFC 3986 percent-encoding for a query-component value (unreserved chars pass
