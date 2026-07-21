@@ -10,6 +10,7 @@
 // import this module directly and safely.
 
 import dynamic from 'next/dynamic'
+import type { ReactNode } from 'react'
 import { Spinner } from './atoms'
 
 function GateLoading() {
@@ -29,6 +30,13 @@ const SignInWidgetImpl = dynamic(() => import('./signin/SignInWidget').then((m) 
 const AccountAuthControlImpl = dynamic(() => import('./signin/AccountAuthControl').then((m) => m.AccountAuthControl), {
   ssr: false,
   loading: GateLoading,
+})
+
+const RequireSignInImpl = dynamic(() => import('./signin/RequireSignIn').then((m) => m.RequireSignIn), {
+  ssr: false,
+  // A signed-out user must sign in before seeing the app, so the pre-Clerk
+  // placeholder is a blank surface, not a spinner over app chrome.
+  loading: () => null,
 })
 
 /** The setup wizard's Sign-in step body. Calls `onSignedIn(email)` once a
@@ -51,4 +59,12 @@ export function AccountAuthControl({ onSignedIn, onSignedOut, knownEmail }: {
   knownEmail?: string | null
 }) {
   return <AccountAuthControlImpl onSignedIn={onSignedIn} onSignedOut={onSignedOut} knownEmail={knownEmail} />
+}
+
+/** Product-wide sign-in gate for the dashboard window — renders `children`
+ *  only when a live Clerk session exists, otherwise an inline full-window
+ *  sign-in screen. Makes sign-in compulsory: sign out and the app re-locks.
+ *  See `./signin/RequireSignIn.tsx`. */
+export function RequireSignIn({ children }: { children: ReactNode }) {
+  return <RequireSignInImpl>{children}</RequireSignInImpl>
 }

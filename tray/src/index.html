@@ -10,6 +10,20 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <!-- ── Sign-in lock ─────────────────────────────────────────────────────────
+       Covers the whole popover while signed out. The tray popover is vanilla
+       JS and Clerk (React) can't run here, so signing in happens in the
+       dashboard window (its inline sign-in screen); this just blocks the
+       popover and routes there. Shown/hidden by app.js from get_account_email. -->
+  <div class="signin-lock" id="signin-lock" hidden>
+    <span class="brand-mark" aria-hidden="true"></span>
+    <div class="signin-lock-text">
+      <p class="signin-lock-title">Sign in to use Meridian</p>
+      <p class="signin-lock-sub">Meridian is locked until you sign in.</p>
+    </div>
+    <button type="button" class="primary-btn" id="signin-lock-btn">Sign in</button>
+  </div>
+
   <div class="pop" id="pop">
     <!-- ── Header ─────────────────────────────────────────────────────────── -->
     <header class="pop-head">
