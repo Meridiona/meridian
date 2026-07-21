@@ -69,12 +69,17 @@ on:
   # semantic-release judge the commits removes that whole class of accident:
   # there is no fragile string match left to misfire.
   #
-  # STAGING ONLY, FOR NOW. Production still cuts via the old monolithic
-  # release.yml on `main`; this two-workflow pipeline is being proven on staging
-  # first. When production migrates, add `main` here and widen
-  # release-build.yml's tag filter to stable tags.
+  # BOTH CHANNELS. `pre-main` cuts staging prereleases, `main` cuts stable
+  # releases — one pipeline, so the two can never drift from each other. The old
+  # monolithic release.yml that used to own `main` has been deleted; leaving it
+  # in place would double-fire on every push here.
+  #
+  # Which channel a run is depends only on the branch, and it selects the
+  # semantic-release config below. The BUILD does not read this at all — it
+  # derives the channel from the tag it is handed, so there is exactly one
+  # source of truth for "is this stable or staging".
   push:
-    branches: [pre-main]
+    branches: [pre-main, main]
   # Kept for on-demand runs and version previews (dry_run) without a merge.
   workflow_dispatch:
     inputs:
@@ -125,10 +130,11 @@ jobs:
           # never fires. That is exactly the "tagged, but nothing built" failure
           # we hit on v1.72.0-staging.6. A push made with the org PAT is
           # attributed to a user, so the tag-push event fires normally and the
-          # build runs. release-build.yml lives only on pre-main, so a tag push
-          # is the ONE trigger that can reach it — workflow_dispatch /
-          # repository_dispatch / workflow_run all require the workflow on the
-          # default branch, which it is not.
+          # build runs.
+          #
+          # Still load-bearing now that release-build.yml also lives on main: the
+          # tag push is what carries the version, and a GITHUB_TOKEN push would
+          # tag correctly and then silently build nothing.
           token: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-node@v4
@@ -139,21 +145,27 @@ jobs:
 
       - run: npm ci --no-audit --no-fund
 
-      - name: Select the staging release config
-        # This workflow only runs on pre-main (staging), so it always uses the
-        # staging config. It cuts prereleases on the `staging` channel and, unlike
-        # the production config, has no @semantic-release/changelog and no
-        # @semantic-release/git — hence a separate whole file rather than a
-        # parameterised one.
+      - name: Select the release config for this branch
+        # .releaserc.json is the name semantic-release loads by default, and it
+        # is the committed PRODUCTION config (changelog + git plugins, so the
+        # version bump is committed back to main). On pre-main we copy the
+        # staging config over it — ephemeral, this CI checkout only, never
+        # committed.
         #
-        # .releaserc.json is the name semantic-release loads by default; copying
-        # the staging config over it here is ephemeral (this CI checkout only),
-        # never committed, and does not disturb the committed .releaserc.json that
-        # production's release.yml uses on main.
+        # The two configs are separate whole files rather than one parameterised
+        # file because they differ structurally, not just in values: staging cuts
+        # prereleases on the `staging` channel and deliberately has NO
+        # @semantic-release/changelog and NO @semantic-release/git (a staging tag
+        # must not rewrite the repo). That difference is also why the build's
+        # "tag matches the committed version" assertion only applies to stable.
         run: |
           set -euo pipefail
-          cp .releaserc.staging.json .releaserc.json
-          echo "→ staging channel (.releaserc.staging.json)"
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            echo "→ stable channel (.releaserc.json, as committed)"
+          else
+            cp .releaserc.staging.json .releaserc.json
+            echo "→ staging channel (.releaserc.staging.json)"
+          fi
 
       - name: semantic-release
         id: run
