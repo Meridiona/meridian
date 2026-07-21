@@ -1,0 +1,728 @@
+name: Release (build & publish)
+
+# BUILDS, SIGNS, NOTARIZES AND PUBLISHES A TAGGED RELEASE. DECIDES NOTHING.
+#
+# Triggered by the `v*` tag that release-prepare.yml pushes. Read that file's
+# header first — it explains why version-deciding and building are separate
+# workflows (short version: semantic-release demands branch HEAD, an immutable
+# build ref demands the opposite, and a 30-minute build makes the conflict
+# certain rather than theoretical).
+#
+# THIS FILE REPLACES release-staging.yml (the staging channel only, for now).
+# Production still builds through the old monolithic release.yml on main — this
+# faster per-arch pipeline is being proven on staging first, and only once it
+# demonstrably beats the old path will production be migrated onto it (widen the
+# tag filter below to `v*` and re-add `main` to release-prepare.yml).
+#
+# The channel is derived from the tag, so when production does migrate there is
+# still exactly one build path that cannot drift from itself:
+#
+#     v1.73.0            -> stable   (published to the `updater` channel)
+#     v1.72.0-staging.6  -> staging  (published to `updater-staging`)
+#
+# Until then only the staging line is reachable (the tag filter excludes stable
+# tags), and the stable branch of the channel logic is dormant but ready.
+#
+# ── SHAPE ────────────────────────────────────────────────────────────────────
+#
+#   prepare   ubuntu   validate tag == manifest version · create DRAFT release
+#      |
+#      +--> build (macOS aarch64) --+
+#      +--> build (macOS x86_64)  --+   all three concurrent
+#      +--> build (Windows x86_64)--+
+#      |
+#   publish   ubuntu   compose latest.json · verify asset set · draft -> public
+#
+# Every platform is in ONE flat fan-out. The old pipeline ran Windows
+# SEQUENTIALLY after the entire macOS chain, which added ~38 minutes of critical
+# path for no reason — nothing about Apple secrets, notarization or release
+# creation constrains a Windows runner. This is the shape Zed, Cap, Bitwarden
+# and clash-verge all use.
+#
+# ── WHY PER-ARCH macOS INSTEAD OF ONE UNIVERSAL BINARY ───────────────────────
+#
+# Notarization is the floor of a macOS release and the one part we cannot make
+# faster — Apple's notary queue is 2-5 minutes and is not ours to optimise.
+#
+# A universal build has exactly ONE notarization chain, and it sits AFTER both
+# architectures have compiled and been lipo'd together, so the wait is strictly
+# serial with everything else. Building per-arch puts each architecture on its
+# own runner, so the two notarization waits OVERLAP instead of queueing. It also
+# halves each DMG (faster to notarize, upload and download) and deletes the lipo
+# join job entirely.
+#
+# Existing installs migrate transparently: tauri-plugin-updater resolves
+# `darwin-aarch64` / `darwin-x86_64` from the CPU the running app is on, not
+# from what the manifest was built from — so pointing those keys at per-arch
+# tarballs instead of one fat one is invisible to an already-installed app.
+# (Documented in scripts/package-updater.sh.) The only user-visible change is
+# that the download page needs two links.
+#
+# Splitting arches is also what the OFFICIAL Tauri matrix does; universal is
+# relegated to an example file upstream.
+#
+# ── WHY THE BUILD USES A SINGLE CARGO INVOCATION ─────────────────────────────
+#
+# See the "Compile daemon + tray" step. Briefly: the old pipeline ran cargo
+# twice (once for the daemon binary, once via `tauri build`), and cargo resolves
+# features PER INVOCATION. The two resolutions diverged on ~96 shared crates
+# near the BOTTOM of the graph — libc, bytemuck, num-traits, cc, tokio, rustls —
+# and a changed feature set means a changed fingerprint, which cascades to
+# everything above it. Measured on run 29734394528: 320 crates in the daemon
+# pass, 662 in the tray pass, 214 of them COMPILED TWICE, including candle-*,
+# tokenizers, image and sqlx (which do not diverge themselves — they are merely
+# downstream of crates that do). The divergence is bidirectional, so no
+# reordering fixes it. Only one unified resolve does.
+
+on:
+  push:
+    # STAGING TAGS ONLY, FOR NOW. semantic-release cuts staging as prereleases
+    # like `v1.72.0-staging.6`, and the `-staging` infix is what this filter
+    # keys on. A production tag (`v1.73.0`, no infix) deliberately does NOT match
+    # — production still builds through the old monolithic release.yml on main,
+    # and matching `v*` here would make BOTH pipelines fire on the same prod tag.
+    # When production migrates onto this pipeline, widen this to `["v*"]` (and
+    # add `main` back to release-prepare.yml) in the same change.
+    tags: ["v*-staging*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing v*-staging* tag to (re)build and publish"
+        required: true
+        type: string
+
+# Serialise releases. Two in flight would fight over the rolling updater tag,
+# the shared caches, and Apple's notarization throughput. Never cancel in
+# progress: a killed run can leave a draft release and a half-uploaded asset set.
+concurrency:
+  group: release-build
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  SQLX_OFFLINE: "true"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # ── Stage 1: cheap validation + a draft release for everyone to upload into ──
+  prepare:
+    name: Validate + draft release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # creates the draft release
+    outputs:
+      tag: ${{ steps.ctx.outputs.tag }}
+      version: ${{ steps.ctx.outputs.version }}
+      channel: ${{ steps.ctx.outputs.channel }}
+      prerelease: ${{ steps.ctx.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Derive the release context from the tag
+        id: ctx
+        env:
+          RAW_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="${RAW_TAG}"
+          version="${tag#v}"
+
+          # The channel is a property of the version string, so it cannot drift
+          # from what semantic-release actually cut.
+          if [[ "${version}" == *-staging* ]]; then
+            channel=staging
+            prerelease=true
+          else
+            channel=stable
+            prerelease=false
+          fi
+
+          {
+            echo "tag=${tag}"
+            echo "version=${version}"
+            echo "channel=${channel}"
+            echo "prerelease=${prerelease}"
+          } >> "$GITHUB_OUTPUT"
+          echo "→ ${tag} — ${channel} channel"
+
+      - name: Assert the tag matches the committed version
+        env:
+          VERSION: ${{ steps.ctx.outputs.version }}
+        # The version is an INPUT to this pipeline, read from the repo, never
+        # recomputed. This is the Zed/clash-verge guard: if the tag and the
+        # manifests disagree we would build binaries stamped with one version
+        # and advertise another — and the updater compares exactly that field,
+        # so the result is an update loop (install, report old version, see the
+        # same update again).
+        #
+        # On the STAGING channel the tag legitimately points at a tree where the
+        # version was never committed: .releaserc.staging.json carries no
+        # @semantic-release/git plugin, so the bump lives only in the release
+        # runner's working tree. There is therefore nothing to compare against —
+        # the build stamps the version itself from the tag. Only stable, whose
+        # config DOES commit the bump, can be checked.
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.ctx.outputs.channel }}" != "stable" ]; then
+            echo "→ staging channel: version is stamped from the tag, nothing committed to compare"
+            exit 0
+          fi
+          manifest="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
+          if [ "${manifest}" != "${VERSION}" ]; then
+            echo "::error::tag ${{ steps.ctx.outputs.tag }} does not match Cargo.toml version ${manifest}."
+            exit 1
+          fi
+          echo "✓ Cargo.toml version ${manifest} matches the tag"
+
+      - name: Create (or reuse) the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.ctx.outputs.tag }}
+          PRERELEASE: ${{ steps.ctx.outputs.prerelease }}
+        # DRAFT-FIRST, and it is not merely tidy:
+        #   * draft assets are not publicly downloadable and never appear under
+        #     releases/latest, so a half-uploaded release CANNOT be consumed by
+        #     an updater or a user;
+        #   * every platform job needs a stable upload target, and creating it
+        #     once here removes the race where concurrent matrix jobs each try
+        #     to create the release;
+        #   * publishing collapses to a single atomic flag flip after
+        #     verification, and any earlier failure leaves a deletable draft
+        #     rather than a broken public release.
+        #
+        # Re-running against an ALREADY PUBLISHED tag is an operator error we
+        # refuse loudly (Cap's guard): silently re-uploading assets under a live
+        # release is how users get a half-swapped download.
+        run: |
+          set -euo pipefail
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            if [ "$(gh release view "${TAG}" --json isDraft --jq .isDraft)" != "true" ]; then
+              echo "::error::${TAG} is already published. Bump the version and cut a new tag rather than rebuilding over a live release."
+              exit 1
+            fi
+            echo "→ reusing existing draft ${TAG}"
+          else
+            gh release create "${TAG}" \
+              --draft \
+              --title "${TAG}" \
+              --notes "Draft - assets are still uploading." \
+              $([ "${PRERELEASE}" = "true" ] && echo --prerelease)
+            echo "→ created draft ${TAG}"
+          fi
+
+  # ── Stage 2: every platform, concurrently ───────────────────────────────────
+  macos:
+    name: macOS ${{ matrix.arch }}
+    needs: prepare
+    runs-on: macos-26
+    timeout-minutes: 60 # a hung `notarytool --wait` otherwise burns 10x-billed minutes indefinitely
+    permissions:
+      contents: write # uploads assets into the draft
+    strategy:
+      # One flaky architecture must not kill the other's artifacts — and we want
+      # its timing either way.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            target: aarch64-apple-darwin
+          - arch: x86_64
+            target: x86_64-apple-darwin
+    env:
+      # Compile-time secrets — every one is baked into the binary by build.rs or
+      # option_env!, so a MISSING value produces no error, just a shipped app
+      # with (say) sign-in quietly unavailable. Keep this list in sync across
+      # every build job.
+      MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
+      MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
+      MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+      MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
+      MERIDIAN_CHANNEL: ${{ needs.prepare.outputs.channel }}
+      MERIDIAN_HF_ENDPOINT: https://hf.meridiona.com
+      # Signing + updater material. TAURI_SIGNING_* is consumed at BUNDLE time.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      TAURI_BUNDLER_DMG_IGNORE_CI: "true"
+      # Selects target/<triple>/release/bundle for every script below.
+      MERIDIAN_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The TAG — immutable. This is the property the old pipeline tried to
+          # get with a pinned SHA and lost to semantic-release's branch check.
+          ref: ${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # shared-key REPLACES rust-cache's automatic job-based key. That
+          # matters: by default `add-job-id-key` is true, so ci.yml's
+          # macos-universal job, the old release-staging build job and the old
+          # release.yml job each computed a DIFFERENT key and none could read
+          # another's cache. Three disjoint copies of nearly the same thing,
+          # against a quota that was already evicting (8.5GB of 25 caches).
+          #
+          # Keyed by TARGET only, so every workflow that compiles this triple
+          # shares one warm cache.
+          add-job-id-key: false
+          shared-key: macos-release-${{ matrix.target }}
+          # rust-cache restores target/ but NOT ~/.cargo/registry/src, where the
+          # pinned tauri-plugin-notifications fork's build.rs writes its Swift
+          # static lib. Without this the fingerprint says "fresh" while the .a
+          # it produced is gone, and linking fails with "could not find native
+          # static library tauri-plugin-notifications". The old pipeline worked
+          # around it with `cargo clean -p tauri-plugin-notifications --release`
+          # on every run; caching the source directory removes the cause.
+          cache-directories: |
+            ~/.cargo/registry/src
+          # Save from the branches that actually cut releases. A run restores
+          # from its own ref or the DEFAULT branch only — it cannot read a
+          # sibling branch — so main must write its own copy or production
+          # releases can never warm from staging's.
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/pre-main' || startsWith(github.ref, 'refs/tags/v') }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            ui/package-lock.json
+            tray/package-lock.json
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      - name: Stamp the version
+        # Bound through env rather than interpolated into the shell: the value
+        # derives from a tag name, and `${{ }}` inside `run:` is the
+        # template-injection shape.
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: bash scripts/set-version.sh "$VERSION"
+
+      - name: Install UI + tray deps
+        # The UI must build before the tray compiles: frontendDist (ui/out) is
+        # EMBEDDED into the binary by generate_context! at compile time, so it
+        # is a build input, not a packaging step.
+        #
+        # Deliberately NOT hoisted into `prepare` and shared as an artifact:
+        # ui/out is architecture-independent so that would save CPU-minutes, but
+        # it would move ~1 minute out of three PARALLEL jobs into one SERIAL
+        # one. We are optimising wall clock.
+        run: |
+          (cd ui && npm ci --no-audit --no-fund)
+          (cd tray && npm ci --no-audit --no-fund)
+
+      - name: Stub the daemon so tauri-build's resource check passes
+        # tauri-build only STATS bundle.resources during compilation (it reads
+        # the contents at BUNDLE time), so a zero-byte placeholder satisfies it.
+        # Required because the single cargo invocation below may run the tray's
+        # build script before the daemon binary has been linked. ci.yml relies
+        # on the same property.
+        run: |
+          mkdir -p target/release
+          : > target/release/meridian
+
+      - name: Compile daemon + tray (${{ matrix.target }})
+        working-directory: tray
+        # ONE cargo invocation for BOTH binaries. Everything after `--` is
+        # passed straight through to cargo by the Tauri CLI, which lets the
+        # daemon join the tray's feature resolution instead of getting its own.
+        #
+        # Two invocations resolved features independently and diverged on ~96
+        # shared crates, cascading to 214 recompiled from scratch — roughly a
+        # quarter of the build spent rebuilding artifacts that already existed.
+        # See this file's header for the measurement.
+        #
+        # VERIFY after any change here — this must print nothing:
+        #   grep '^ *Compiling' build.log | awk '{print $2,$3}' | sort | uniq -d
+        run: |
+          npx tauri build --no-bundle --target ${{ matrix.target }} \
+            ${{ needs.prepare.outputs.channel == 'staging' && '--config src-tauri/tauri.staging.conf.json' || '' }} \
+            -- -p meridian --bin meridian
+
+      - name: Stage the real daemon for bundling
+        # Replaces the stub with the binary the same invocation just produced.
+        # `tauri bundle` reads bundle.resources contents at THIS point, so the
+        # real file only has to exist now, not at compile time.
+        run: cp "target/${{ matrix.target }}/release/meridian" target/release/meridian
+
+      - name: Import Developer ID certificate + notarization key
+        uses: ./.github/actions/import-apple-cert
+        with:
+          apple-certificate: ${{ secrets.APPLE_CERTIFICATE }}
+          apple-certificate-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          apple-api-key-content: ${{ secrets.APPLE_API_KEY_CONTENT }}
+
+      - name: Sign the daemon
+        # Must precede bundling: the daemon is copied into the .app as a
+        # resource, and re-signing the enclosing bundle does not sign nested
+        # Mach-Os.
+        run: bash scripts/sign-daemon.sh
+
+      - name: Bundle, sign and notarize the app
+        working-directory: tray
+        # `tauri bundle` runs ZERO cargo invocations — it packages what is
+        # already in target/. It signs the .app, notarizes it, staples it, then
+        # produces the DMG and the updater tarball.
+        #
+        # It does NOT notarize the DMG. tauri-bundler's dmg.rs contains no
+        # notarize call at all (tauri-apps/tauri#7533, open since 2023) — hence
+        # the separate step below.
+        run: |
+          npx tauri bundle --target ${{ matrix.target }} --bundles app,dmg \
+            ${{ needs.prepare.outputs.channel == 'staging' && '--config src-tauri/tauri.staging.conf.json' || '' }}
+
+      - name: Notarize and staple the DMG
+        # A notarization ticket is keyed to the cdhash of what was submitted, so
+        # the stapled .app inside does not cover the container. Without this the
+        # DMG a user downloads trips "can't check it for malicious software".
+        #
+        # Must precede package-updater.sh: stapling REWRITES the file, so the
+        # stable-named copy has to be taken afterwards to inherit the ticket.
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: bash scripts/notarize-dmg.sh "$VERSION"
+
+      - name: Package the updater artifacts
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: bash scripts/package-updater.sh "$VERSION"
+
+      - name: Verify the bundle before anything is uploaded
+        # Independently re-checks signing, notarization, stapling and the
+        # presence of the updater artifacts. A non-zero exit aborts while the
+        # release is still a draft and nothing is publicly reachable.
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: bash scripts/verify-release-bundle.sh "$VERSION"
+
+      - name: Upload this architecture's assets into the draft
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          BUNDLE: target/${{ matrix.target }}/release/bundle
+        # *** NAME COLLISION IS THE HAZARD HERE, NOT UPLOAD FAILURE. ***
+        #
+        # Both macOS runners natively produce files called exactly
+        # `Meridian.app.tar.gz` (and `Meridian.dmg`). A GitHub release holds ONE
+        # asset per name, so uploading both unqualified means the second run
+        # REPLACES the first — and roughly half the fleet then auto-updates onto
+        # the wrong architecture. Nothing fails; the release looks complete.
+        #
+        # package-updater.sh therefore also writes arch-suffixed copies
+        # (Meridian-aarch64.* / Meridian-x64.*) and points the manifest url at
+        # those names. We upload ONLY the suffixed ones. `x64` is
+        # tauri-bundler's own spelling for macOS Intel and is kept for the
+        # user-facing download names; the manifest fragment is keyed by target
+        # TRIPLE instead, so no arch-label mapping has to be maintained.
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          assets=(
+            "${BUNDLE}"/dmg/Meridian-*.dmg
+            "${BUNDLE}"/macos/Meridian-*.app.tar.gz
+            "${BUNDLE}"/macos/Meridian-*.app.tar.gz.sig
+            "${BUNDLE}/macos/updater-${{ matrix.target }}.json"
+          )
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "::error::no arch-suffixed assets in ${BUNDLE} — package-updater.sh did not run or did not produce them"
+            exit 1
+          fi
+
+          # Guard the invariant rather than trusting it: an unsuffixed tarball
+          # reaching the release is the silent cross-arch-update bug.
+          for a in "${assets[@]}"; do
+            case "$(basename "$a")" in
+              Meridian.app.tar.gz|Meridian.app.tar.gz.sig|Meridian.dmg)
+                echo "::error::refusing to upload unsuffixed ${a} — it would collide with the other architecture"
+                exit 1 ;;
+            esac
+            echo "  → $(basename "$a")"
+          done
+
+          gh release upload "${TAG}" --clobber "${assets[@]}"
+
+      - name: Clean up signing material
+        # Runs even on failure — never leave a cert or key on a runner.
+        if: always()
+        run: |
+          security delete-keychain "${RUNNER_TEMP}/meridian-signing.keychain-db" 2>/dev/null || true
+          rm -f "${RUNNER_TEMP}/apple-api-key.p8" "${RUNNER_TEMP}/certificate.p12"
+
+  windows:
+    name: Windows x86_64
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      SQLX_OFFLINE: "true"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
+      MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
+      MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+      MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
+      MERIDIAN_CHANNEL: ${{ needs.prepare.outputs.channel }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Same reasoning as the macOS job — the old release.yml Windows job
+          # used a BARE rust-cache, so it keyed on the job name and could never
+          # share with anything.
+          add-job-id-key: false
+          shared-key: windows-release-x86_64
+          cache-directories: |
+            ~/.cargo/registry/src
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/pre-main' || startsWith(github.ref, 'refs/tags/v') }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            ui/package-lock.json
+            tray/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Stamp the version
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        # REQUIRED, and it was a real bug: this job checks out the TAG, and on
+        # the staging channel that tag points at a tree where the version was
+        # never committed (.releaserc.staging.json has no @semantic-release/git
+        # plugin). Without this, the installer was built at whatever the
+        # manifests last held on the branch — v1.72.0-staging.5 produced
+        # `Meridian_1.71.0_x64-setup.exe` — while the manifest advertised the
+        # real version. A Windows app would update, report the old version, see
+        # the same update again, and loop.
+        run: bash scripts/set-version.sh "$VERSION"
+
+      - name: Install UI + tray deps
+        shell: bash
+        run: |
+          (cd ui && npm ci --no-audit --no-fund)
+          (cd tray && npm ci --no-audit --no-fund)
+
+      - name: Stub the daemon so tauri-build's resource check passes
+        shell: bash
+        run: |
+          mkdir -p target/release
+          : > target/release/meridian.exe
+
+      - name: Compile daemon + tray (NSIS)
+        shell: bash
+        # Same single-invocation reasoning as macOS — the old
+        # `npm run build:windows` ran `cargo build --bin meridian` and then
+        # `tauri build`, paying the identical double-compile (960 crates in the
+        # logs for what should be ~775).
+        #
+        # tauri.windows.conf.json auto-merges (NSIS target + meridian.exe
+        # resource); the staging config is layered on top when relevant.
+        run: |
+          cd tray && npx tauri build --no-bundle \
+            ${{ needs.prepare.outputs.channel == 'staging' && '--config src-tauri/tauri.staging.conf.json' || '' }} \
+            -- -p meridian --bin meridian
+
+      - name: Stage the real daemon and bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp target/release/meridian.exe target/release/meridian.exe.stub || true
+          cd tray && npx tauri bundle \
+            ${{ needs.prepare.outputs.channel == 'staging' && '--config src-tauri/tauri.staging.conf.json' || '' }}
+
+      - name: Upload the installer and its manifest fragment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PYTHONIOENCODING: "utf-8" # cp1252 cannot encode the ✓ the merge script prints
+        run: |
+          set -euo pipefail
+          NSIS_DIR="target/release/bundle/nsis"
+          setup="$(ls "${NSIS_DIR}"/*-setup.exe 2>/dev/null | head -1)"
+          [ -n "${setup}" ] || { echo "::error::no NSIS installer in ${NSIS_DIR}"; exit 1; }
+          sig="${setup}.sig"
+          [ -f "${sig}" ] || { echo "::error::missing updater signature ${sig}"; exit 1; }
+
+          cp "${setup}" "${NSIS_DIR}/Meridian-setup.exe"
+          gh release upload "${TAG}" "${NSIS_DIR}/Meridian-setup.exe" --clobber
+
+          # Fragment for the publish job — SAME SHAPE as the macOS runners
+          # produce, i.e. a full manifest carrying only this platform's keys
+          # under `platforms`. The wrapper is not decoration: the composer keys
+          # off it, and a bare {key: entry} map would contribute nothing and
+          # fail the completeness check with a confusing "missing windows-x86_64"
+          # rather than "your fragment is malformed".
+          #
+          # Both the plain and the `-nsis` spelling are emitted. tauri-plugin-
+          # updater >= 2.10 also looks up {os}-{arch}-{installer}, and
+          # tauri-action's updaterJsonPreferNsis defaults to FALSE "for legacy
+          # reasons" — meaning MSI would win over NSIS where both exist. We ship
+          # NSIS only, so publishing both spellings removes the ambiguity.
+          python3 - "$VERSION" "$TAG" "${sig}" > updater-windows.json <<'PY'
+          import sys, json, pathlib
+          version, tag, sigpath = sys.argv[1], sys.argv[2], sys.argv[3]
+          sig = pathlib.Path(sigpath).read_text().strip()
+          if not sig:
+              sys.exit("::error::updater signature file is empty")
+          url = f"https://github.com/Meridiona/meridian/releases/download/{tag}/Meridian-setup.exe"
+          entry = {"signature": sig, "url": url}
+          print(json.dumps({
+              "version": version,
+              "platforms": {"windows-x86_64": entry, "windows-x86_64-nsis": entry},
+          }, indent=2))
+          PY
+          gh release upload "${TAG}" updater-windows.json --clobber
+
+  # ── Stage 3: compose the manifest, verify, publish ──────────────────────────
+  publish:
+    name: Compose manifest + publish
+    needs: [prepare, macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+
+      - name: Compose latest.json from the uploaded fragments
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        # WHY THIS IS A SINGLE JOB AND NOT DONE PER-PLATFORM:
+        #
+        # tauri-action's built-in updater-manifest upload does a READ-MODIFY-
+        # WRITE against a shared release asset, once per matrix job, with NO
+        # locking (src/upload-version-json.ts: list assets -> download
+        # latest.json -> merge -> DELETE -> re-upload). Two jobs finishing in
+        # the same window each read the pre-merge manifest and the loser's
+        # platform key silently vanishes. For us that reads as "Intel users
+        # never got the update". The action's own source concedes the race in a
+        # comment. It is the most-reported flake in Tauri release pipelines.
+        #
+        # Composing once, here, from the fragments each runner uploaded removes
+        # the race by construction and gives one place that knows the full key
+        # set — which is what makes the completeness assertion below possible.
+        run: |
+          set -euo pipefail
+          mkdir -p frag && cd frag
+          for f in updater-aarch64-apple-darwin.json updater-x86_64-apple-darwin.json updater-windows.json; do
+            gh release download "${TAG}" --pattern "$f" --output "$f" --clobber \
+              || echo "::warning::fragment $f absent"
+          done
+          cd ..
+          python3 scripts/compose-updater-manifest.py \
+            --version "${VERSION}" --tag "${TAG}" --fragments frag --output latest.json
+          cat latest.json
+
+      - name: Verify the release is complete before publishing
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        # Zed's expected-asset diff. This is what makes `fail-fast: false` safe:
+        # without it, a silently-skipped architecture produces a release that
+        # looks green and is missing a platform.
+        run: |
+          set -euo pipefail
+          actual="$(gh release view "${TAG}" --json assets --jq '[.assets[].name] | join(" ")')"
+          echo "assets: ${actual}"
+          missing=""
+          for want in .dmg .app.tar.gz .app.tar.gz.sig Meridian-setup.exe; do
+            case " ${actual} " in *"${want}"*) ;; *) missing="${missing} ${want}";; esac
+          done
+          if [ -n "${missing}" ]; then
+            echo "::error::release ${TAG} is missing:${missing}"
+            exit 1
+          fi
+
+          # Every platform key must be populated — an empty url/signature is how
+          # a partial manifest reaches users looking complete.
+          python3 - <<'PY'
+          import json, sys
+          m = json.load(open("latest.json"))
+          need = {"darwin-aarch64", "darwin-x86_64", "windows-x86_64"}
+          missing = [k for k in need if not m["platforms"].get(k, {}).get("url")]
+          if missing:
+              sys.exit(f"::error::latest.json missing populated keys: {missing}")
+          print("✓ latest.json carries all platform keys")
+          PY
+
+      - name: Attach the manifest and publish
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+        # The manifest goes up LAST and the draft flips only after it lands —
+        # uploading latest.json is what actually triggers installed apps to
+        # update, so it must never be reachable before the assets it points at.
+        # (Ghostty stages its appcast under a different name for the same
+        # reason.)
+        run: |
+          set -euo pipefail
+          gh release upload "${TAG}" latest.json --clobber
+          gh release edit "${TAG}" --draft=false
+          echo "→ published ${TAG} (${CHANNEL})"
+
+      - name: Mirror onto the rolling updater tag
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+        # Installed apps poll a FIXED endpoint (updater / updater-staging), not
+        # the versioned release, so the manifest has to be mirrored there.
+        run: bash scripts/mirror-updater-channel.sh "$VERSION" "$CHANNEL"
