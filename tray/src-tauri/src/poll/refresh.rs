@@ -20,6 +20,9 @@ use tauri::Emitter;
 
 /// Run the local health check, fold it into [`AppState`], and raise/clear the
 /// went-quiet / back-online notice (debounced to the 2nd consecutive failure).
+/// Also reconciles a `tray.daemon_quiet` notice left stale by a previous
+/// process instance on this process's first healthy tick — see
+/// `startup_health_reconciled` on [`AppState`].
 pub(super) async fn refresh_health(
     app: &tauri::AppHandle,
     state: &Arc<Mutex<AppState>>,
@@ -42,32 +45,30 @@ pub(super) async fn refresh_health(
         HealthStatus::Unhealthy
     };
 
-    let (notify_down, notify_back) = {
+    let (notify_down, notify_back, reconcile_stale) = {
         let Ok(mut s) = state.lock() else {
             tracing::warn!("refresh_health: state lock poisoned");
             return;
         };
         let now_healthy = new_health == HealthStatus::Healthy;
-
-        let notify_down = if !now_healthy {
-            s.consecutive_health_failures += 1;
-            // Notify only on the second consecutive failure — one miss is a transient blip.
-            s.consecutive_health_failures == 2 && s.daemon_was_healthy
-        } else {
-            false
-        };
-        // Fire "back online" only when we had previously sent a "gone quiet" notification
-        // (consecutive_health_failures reached 2), so a brief outage during startup is silent.
-        let notify_back = now_healthy && s.consecutive_health_failures >= 2;
-
-        if now_healthy {
-            s.consecutive_health_failures = 0;
-            s.daemon_was_healthy = true;
-        }
+        // One explicit deref first: disjoint field borrows aren't provable
+        // across separate `MutexGuard::deref_mut` calls, only through a
+        // single plain `&mut AppState`.
+        let s = &mut *s;
+        let decision = decide_health_notice(
+            now_healthy,
+            &mut s.consecutive_health_failures,
+            &mut s.daemon_was_healthy,
+            &mut s.startup_health_reconciled,
+        );
         s.ui_reachable = true; // health checks are now direct (no HTTP); always reachable
         s.health = new_health;
 
-        (notify_down, notify_back)
+        (
+            decision.notify_down,
+            decision.notify_back,
+            decision.reconcile_stale,
+        )
     };
 
     let Some(pool) = pool else { return };
@@ -94,22 +95,181 @@ pub(super) async fn refresh_health(
         {
             tracing::warn!(error = %e, "daemon-health notice clear failed");
         }
-        // "Back online" is a discrete confirmation, not a state to leave
-        // sitting as a banner once the fault it answers is already cleared.
-        let dedup = format!(
-            "system.health:back_online:{}",
-            chrono::Utc::now().timestamp()
-        );
-        let n = meridian::notifications::NewNotification::event(
-            &dedup,
-            "system.health",
-            "Back online.",
-            "Picking up where you left off.",
-        )
-        .via(meridian::notifications::CHANNEL_NATIVE);
-        if let Err(e) = meridian::notifications::enqueue(pool, n).await {
-            tracing::warn!(error = %e, "back-online notification enqueue failed");
+        send_back_online_toast(pool).await;
+    } else if reconcile_stale {
+        match meridian::notices::clear_typed_reporting(pool, "tray.daemon_quiet", "system.health")
+            .await
+        {
+            // A notice really was sitting there from a prior process instance —
+            // confirm the recovery the same way the normal path does.
+            Ok(true) => send_back_online_toast(pool).await,
+            Ok(false) => {}
+            Err(e) => tracing::warn!(error = %e, "daemon-health stale notice reconcile failed"),
         }
+    }
+}
+
+/// "Back online" is a discrete confirmation, not a state to leave sitting as a
+/// banner once the fault it answers is already cleared.
+async fn send_back_online_toast(pool: &SqlitePool) {
+    let dedup = format!(
+        "system.health:back_online:{}",
+        chrono::Utc::now().timestamp()
+    );
+    let n = meridian::notifications::NewNotification::event(
+        &dedup,
+        "system.health",
+        "Back online.",
+        "Picking up where you left off.",
+    )
+    .via(meridian::notifications::CHANNEL_NATIVE);
+    if let Err(e) = meridian::notifications::enqueue(pool, n).await {
+        tracing::warn!(error = %e, "back-online notification enqueue failed");
+    }
+}
+
+/// The three notice actions a health tick can trigger. At most one is ever
+/// true — see [`decide_health_notice`].
+struct HealthNoticeDecision {
+    notify_down: bool,
+    notify_back: bool,
+    reconcile_stale: bool,
+}
+
+/// Pure decision over one health tick's state transition, extracted out of
+/// `refresh_health` so the debounce/reconcile rules are unit-testable without
+/// a DB, `AppState`'s `Mutex`, or `check_health()`'s IO. Mutates the three
+/// counters exactly as `refresh_health` used to inline; keep this in sync
+/// with that call site.
+fn decide_health_notice(
+    now_healthy: bool,
+    consecutive_health_failures: &mut u32,
+    daemon_was_healthy: &mut bool,
+    startup_health_reconciled: &mut bool,
+) -> HealthNoticeDecision {
+    let notify_down = if !now_healthy {
+        *consecutive_health_failures += 1;
+        // Notify only on the second consecutive failure — one miss is a transient blip.
+        *consecutive_health_failures == 2 && *daemon_was_healthy
+    } else {
+        false
+    };
+    // Fire "back online" only when we had previously sent a "gone quiet" notification
+    // (consecutive_health_failures reached 2), so a brief outage during startup is silent.
+    let notify_back = now_healthy && *consecutive_health_failures >= 2;
+
+    // One-shot, and mutually exclusive with notify_back: if THIS process's own
+    // counter already reached 2 failures and recovered, notify_back above is
+    // the right (and already correct) path. reconcile_stale only fires on
+    // this process's first-ever healthy tick when that didn't happen — e.g.
+    // the daemon was already healthy again by the time this fresh tray
+    // process started, so a `tray.daemon_quiet` notice raised by the PREVIOUS
+    // instance is sitting in system_notices with no process left able to
+    // observe the transition that would clear it.
+    let reconcile_stale = now_healthy && !*startup_health_reconciled && !notify_back;
+
+    if now_healthy {
+        *consecutive_health_failures = 0;
+        *daemon_was_healthy = true;
+        *startup_health_reconciled = true;
+    }
+
+    HealthNoticeDecision {
+        notify_down,
+        notify_back,
+        reconcile_stale,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The exact bug this fix targets: a fresh tray process (all counters at
+    /// their `AppState::default()` values) whose very first health check is
+    /// already healthy — e.g. the daemon recovered from an overnight sleep
+    /// gap before this process even started. The normal down→up transition
+    /// can never be observed by this process, so reconciliation must fire
+    /// directly instead.
+    #[test]
+    fn reconciles_stale_notice_on_first_healthy_tick_after_restart() {
+        let mut failures = 0u32;
+        let mut was_healthy = false;
+        let mut reconciled = false;
+
+        let d = decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+
+        assert!(!d.notify_down);
+        assert!(!d.notify_back);
+        assert!(
+            d.reconcile_stale,
+            "must reconcile on the first healthy tick"
+        );
+        assert!(reconciled, "startup_health_reconciled must be latched true");
+        assert!(was_healthy);
+        assert_eq!(failures, 0);
+    }
+
+    /// The one-shot must not re-fire on every subsequent healthy tick — only
+    /// the first one this process observes.
+    #[test]
+    fn does_not_reconcile_again_after_the_first_healthy_tick() {
+        let mut failures = 0u32;
+        let mut was_healthy = false;
+        let mut reconciled = false;
+
+        decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+        let second = decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+
+        assert!(!second.reconcile_stale);
+        assert!(!second.notify_back);
+    }
+
+    /// Normal case, unchanged by this fix: this process itself observes 2
+    /// consecutive failures (after having been healthy at least once), then
+    /// recovers — notify_back handles it, not the startup reconciler.
+    #[test]
+    fn normal_down_then_up_uses_notify_back_not_reconcile() {
+        let mut failures = 0u32;
+        let mut was_healthy = true; // already established healthy earlier
+        let mut reconciled = true; // startup reconciliation already happened
+
+        let first_fail =
+            decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
+        assert!(!first_fail.notify_down); // only 1 consecutive failure so far
+
+        let second_fail =
+            decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
+        assert!(second_fail.notify_down); // 2nd consecutive failure
+
+        let recovered =
+            decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+        assert!(recovered.notify_back);
+        assert!(!recovered.reconcile_stale);
+    }
+
+    /// Preserves existing (pre-fix) behavior: a cold-start outage that never
+    /// establishes healthy first stays silent — `daemon_was_healthy` gates
+    /// `notify_down` off — but recovery still clears via `notify_back` once
+    /// the failure count has reached 2, same as before this change.
+    #[test]
+    fn cold_start_outage_is_silent_until_recovery() {
+        let mut failures = 0u32;
+        let mut was_healthy = false;
+        let mut reconciled = false;
+
+        let f1 = decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
+        let f2 = decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
+        assert!(!f1.notify_down);
+        assert!(
+            !f2.notify_down,
+            "never-yet-healthy daemon must not notify down"
+        );
+
+        let recovered =
+            decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+        assert!(recovered.notify_back);
+        assert!(!recovered.reconcile_stale);
     }
 }
 

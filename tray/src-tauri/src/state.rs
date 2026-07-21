@@ -152,6 +152,14 @@ pub struct AppState {
     pub last_poll: Option<Instant>,
     pub daemon_was_healthy: bool,
     pub consecutive_health_failures: u32,
+    /// Set the first time this process observes a *healthy* check. Gates a
+    /// one-shot reconciliation in `refresh_health`: a `tray.daemon_quiet`
+    /// notice can be left over from a previous process instance (this one's
+    /// `consecutive_health_failures` starts at 0, so it can never itself
+    /// observe that instance's down→up transition) and needs clearing
+    /// directly on first contact instead of waiting for a 2-failure cycle
+    /// that will never happen.
+    pub startup_health_reconciled: bool,
     pub last_menu_state: HealthStatus,
     /// Dropping this sender cancels the ScreenpipeEngine task, stopping screen capture.
     pub engine_cancel: Option<oneshot::Sender<()>>,
@@ -189,6 +197,7 @@ impl Default for AppState {
             last_poll: None,
             daemon_was_healthy: false,
             consecutive_health_failures: 0,
+            startup_health_reconciled: false,
             last_menu_state: HealthStatus::Unknown,
             engine_cancel: None,
             ui_consumer_cancel: None,

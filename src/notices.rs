@@ -112,7 +112,19 @@ pub async fn clear(pool: &SqlitePool, id: &str) -> Result<()> {
 
 /// Clear a notice raised via [`raise_typed`] with the matching `event_key`.
 pub async fn clear_typed(pool: &SqlitePool, id: &str, event_key: &str) -> Result<()> {
-    sqlx::query("DELETE FROM system_notices WHERE notice_id = ?")
+    clear_typed_reporting(pool, id, event_key).await?;
+    Ok(())
+}
+
+/// Same as [`clear_typed`], but reports whether a notice actually existed and
+/// was deleted. Used by callers that must tell "a real fault was cleared"
+/// apart from "there was nothing to clear" — e.g. `refresh_health`'s
+/// startup reconciliation, which clears a `tray.daemon_quiet` notice that may
+/// be stale from a *previous* process instance (a fresh tray process can
+/// never observe that instance's down→up transition itself) and should only
+/// fire the "back online" toast when something was actually there.
+pub async fn clear_typed_reporting(pool: &SqlitePool, id: &str, event_key: &str) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM system_notices WHERE notice_id = ?")
         .bind(id)
         .execute(pool)
         .await
@@ -120,5 +132,58 @@ pub async fn clear_typed(pool: &SqlitePool, id: &str, event_key: &str) -> Result
     // Retract the paired toast so a future re-occurrence of this fault notifies
     // again instead of being deduped away.
     let _ = crate::notifications::retract(pool, &format!("{event_key}:{id}")).await;
-    Ok(())
+    Ok(result.rows_affected() > 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqliteConnectOptions;
+    use std::str::FromStr;
+
+    async fn fresh_db() -> SqlitePool {
+        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(opts).await.unwrap();
+        sqlx::migrate!("src/migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn clear_typed_reporting_is_true_only_when_a_row_actually_existed() {
+        let pool = fresh_db().await;
+
+        // Nothing raised yet — clearing is a no-op, reported as such.
+        let cleared_nothing = clear_typed_reporting(&pool, "tray.daemon_quiet", "system.health")
+            .await
+            .unwrap();
+        assert!(!cleared_nothing);
+
+        raise_typed(
+            &pool,
+            Notice {
+                id: "tray.daemon_quiet",
+                severity: "warning",
+                title: "Meridian went quiet.",
+                detail: "Tap to check what happened.",
+                remedy: None,
+                event_key: "system.health",
+                deep_link: Some("/logs"),
+            },
+        )
+        .await
+        .unwrap();
+
+        // A real notice exists — clearing it reports true, exactly once.
+        let cleared_real = clear_typed_reporting(&pool, "tray.daemon_quiet", "system.health")
+            .await
+            .unwrap();
+        assert!(cleared_real);
+
+        let cleared_again = clear_typed_reporting(&pool, "tray.daemon_quiet", "system.health")
+            .await
+            .unwrap();
+        assert!(!cleared_again);
+    }
 }
