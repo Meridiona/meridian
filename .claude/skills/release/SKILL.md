@@ -85,14 +85,17 @@ cd packages/meridian-mcp && npm run build && cd ../..
 ```
 
 ### 3. Trigger a Release
-Production: merge conventional-commit PRs into `main` — `release.yml` runs
-semantic-release automatically on push. Staging: push to `pre-main` with
-`[staging-release]` in the commit message, or `gh workflow run
-release-staging.yml`.
+Production: merge conventional-commit PRs into `main` — `release-prepare.yml`
+runs semantic-release automatically on push there, tags `vX.Y.Z`, and the tag
+push triggers `release-build.yml`. Staging is manual-only: `gh workflow run
+release-prepare.yml --ref pre-main` (or "Run workflow" in the Actions UI with
+the branch dropdown set to `pre-main`) — it is no longer cut automatically on
+every merge to `pre-main`.
 
 ### 4. Monitor Build Status
 ```bash
-gh run list --workflow=release.yml --limit=5
+gh run list --workflow=release-prepare.yml --limit=5
+gh run list --workflow=release-build.yml --limit=5
 gh run view <RUN_ID> --json status,conclusion,jobs
 gh run view <RUN_ID> --log-failed 2>&1 | tail -100
 ```
