@@ -258,9 +258,25 @@ jobs:
       # Signing + updater material. TAURI_SIGNING_* is consumed at BUNDLE time.
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # SIGNING is unconditional — an updated app is still Gatekeeper-checked
+      # against its Developer ID signature when it relaunches, on every channel.
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      # NOTARIZATION IS STABLE-ONLY. `tauri bundle` notarizes the .app only when
+      # it finds these two, so blanking them on staging turns the bundle step
+      # into sign-without-notarize.
+      #
+      # Why that is safe on staging and NOT on stable: Gatekeeper only enforces
+      # notarization on a QUARANTINED app, and the quarantine flag is set by the
+      # thing that downloaded it — a browser. Staging is delivered exclusively by
+      # tauri-plugin-updater, which unpacks the tarball itself and sets no
+      # quarantine flag, so the relaunched app is verified on its signature (and
+      # the updater's own minisign key) and never consults a notarization ticket.
+      # Stable ships a DMG that new users download in a browser, which IS
+      # quarantined — dropping notarization there would give every new user
+      # "Apple cannot check it for malicious software". Hence: staging skips,
+      # stable always notarizes.
+      APPLE_API_KEY: ${{ needs.prepare.outputs.channel == 'stable' && secrets.APPLE_API_KEY || '' }}
+      APPLE_API_ISSUER: ${{ needs.prepare.outputs.channel == 'stable' && secrets.APPLE_API_ISSUER || '' }}
       TAURI_BUNDLER_DMG_IGNORE_CI: "true"
       # Selects target/<triple>/release/bundle for every script below.
       MERIDIAN_TARGET: ${{ matrix.target }}
@@ -412,6 +428,10 @@ jobs:
             ${{ needs.prepare.outputs.channel == 'staging' && '--config src-tauri/tauri.staging.conf.json' || '' }}
 
       - name: Notarize and staple the DMG
+        # STABLE ONLY — staging is delivered by the updater, which never sets the
+        # quarantine flag, so no notarization ticket is ever consulted. See the
+        # APPLE_API_* note in this job's `env:` for the full reasoning.
+        if: needs.prepare.outputs.channel == 'stable'
         # A notarization ticket is keyed to the cdhash of what was submitted, so
         # the stapled .app inside does not cover the container. Without this the
         # DMG a user downloads trips "can't check it for malicious software".
@@ -431,8 +451,15 @@ jobs:
         # Independently re-checks signing, notarization, stapling and the
         # presence of the updater artifacts. A non-zero exit aborts while the
         # release is still a draft and nothing is publicly reachable.
+        #
+        # MERIDIAN_CHANNEL tells the script which assertions apply: on staging
+        # the notarized/stapled checks are skipped (nothing was notarized, by
+        # design) while every SIGNING check still runs — a staging build with a
+        # broken signature must still fail loudly, because the updater's
+        # relaunch depends on it.
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          MERIDIAN_CHANNEL: ${{ needs.prepare.outputs.channel }}
         run: bash scripts/verify-release-bundle.sh "$VERSION"
 
       - name: Upload this architecture's assets into the draft
