@@ -45,6 +45,7 @@ import { formatDayLabel } from '@/components/timeline/types'
 import { fmtDur } from '@/components/atoms'
 import type { SettingsSection } from '@/components/timeline/settings/types'
 import { AchievementRing } from './AchievementRing'
+import { Composing } from './Composing'
 import { DayShape } from './DayShape'
 import { Emphasis } from './Emphasis'
 import { Insights } from './Insights'
@@ -211,14 +212,17 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
 
       <div className="flex-1 min-h-0 flex flex-col px-8 pb-6">
         {loading ? (
-          <Centered text="Reading your day…" />
+          // Deliberately bare: this is a DB read that lands in milliseconds, and a
+          // spinner for it would flash rather than inform.
+          <Centered text="" />
         ) : !hasWork ? (
           <Centered text={`Nothing was tracked on ${dayLabel.toLowerCase()}, so there is no day to review.`} />
+        ) : generating && !summary ? (
+          <Composing planned={sc?.planned ?? false} />
         ) : !summary ? (
           <Centered
-            text={generating
-              ? 'Reading the whole day and working out what is worth saying. This takes about a minute.'
-              : 'Compose a summary to see how this day actually went.'}
+            title="How did this day go?"
+            text="Compose a summary and Meridian will read the whole day back to you - what you got through, what took the time, and how it sat against your plan."
           />
         ) : (
           // The one scroll on this screen. A ten-ticket plan plus a long day of
@@ -364,10 +368,21 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
   )
 }
 
-function Centered({ text }: { text: string }) {
+/** An empty state. `title` lifts it from a notice into an invitation, which is what
+ *  the pre-compose screen needs and the nothing-was-tracked one does not. */
+function Centered({ title, text }: { title?: string; text: string }) {
   return (
-    <div className="flex-1 min-h-0 flex items-center justify-center">
-      <p className="mt-body text-center" style={{ color: 'var(--t-faint-2)', maxWidth: '44ch' }}>
+    <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-3">
+      {title && (
+        <p style={{
+          font: '800 21px var(--font-sans)',
+          letterSpacing: '-0.025em',
+          color: 'var(--t-title)',
+        }}>
+          {title}
+        </p>
+      )}
+      <p className="mt-body text-center" style={{ color: 'var(--t-faint-2)', maxWidth: '46ch', lineHeight: 1.6 }}>
         {text}
       </p>
     </div>
