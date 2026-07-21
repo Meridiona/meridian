@@ -192,7 +192,9 @@ export function WorkList({ tasks, plan, planned, onSelect, onOpenTask, delay = 0
               // Everything in this half of the list is real tracked work, so the
               // box is ticked. That is the deterministic fact - it happened.
               done
-              chip={planned && !ticket ? 'extra' : undefined}
+              // Work that was not on the plan reads as a good thing, never as a
+              // stray - "bonus", not "extra".
+              chip={planned && !ticket ? 'bonus' : undefined}
               delay={delay + 0.04 * n}
               onClick={() => onSelect(t, indexInDay)}
             />
