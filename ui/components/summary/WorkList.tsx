@@ -162,8 +162,10 @@ export function WorkList({ tasks, plan, planned, onSelect, onOpenTask, delay = 0
   }
 
   // A planned ticket whose work is nowhere in the list above needs its own row -
-  // otherwise a ticket the model called done while citing nothing simply vanishes,
-  // which is the one thing a plan ledger must never do.
+  // otherwise a ticket that closed with no workstream tied to it (a terminal
+  // ticket: `day_task_ids` empty, minutes 0) simply vanishes, which is the one
+  // thing a plan ledger must never do. Its outcome is still `done` - it left the
+  // board - so it counts on the ring AND ticks its box here, the two just agree.
   const listed = new Set(shown.map(t => t.id))
   const missing = plan.filter(v => !v.day_task_ids.some(id => listed.has(id)))
 
@@ -209,7 +211,10 @@ export function WorkList({ tasks, plan, planned, onSelect, onOpenTask, delay = 0
             }
             time={v.minutes > 0 ? fmtDur(v.minutes * 60) : '-'}
             tint
-            done={false}
+            // Ticked when the ticket is done even though no workstream was tied to
+            // it - a ticket closed today with no tracked time is still finished, and
+            // the ring already counts it, so the box has to match.
+            done={v.outcome === 'done'}
             delay={delay + 0.04 * (shown.length + n)}
             onClick={() => onOpenTask(v.task_key, v.title)}
           />
