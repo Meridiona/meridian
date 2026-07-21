@@ -71,6 +71,31 @@ html, body {
   overflow: hidden;
 }
 
+/* ── Sign-in lock ─────────────────────────────────────────────────────────
+   Covers the popover while signed out (app.js toggles [hidden] on it and on
+   #pop). Vanilla-JS popover can't host Clerk, so the CTA opens the dashboard,
+   where the inline sign-in screen lives. */
+.signin-lock {
+  background: var(--paper);
+  border-radius: var(--radius);
+  box-shadow:
+    0 24px 60px -18px rgba(30, 15, 70, 0.5),
+    0 6px 16px -8px rgba(30, 15, 70, 0.3);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 14px;
+  padding: 32px 28px;
+}
+.signin-lock[hidden] { display: none; }
+.signin-lock .brand-mark { width: 40px; height: 40px; border-radius: 11px; }
+.signin-lock-text { display: flex; flex-direction: column; gap: 4px; }
+.signin-lock-title { font: 700 15px var(--font-sans); color: var(--ink); }
+.signin-lock-sub { font: 500 12px var(--font-sans); color: var(--ink-3); line-height: 1.4; }
+.signin-lock .primary-btn { width: 100%; }
+
 button {
   font-family: inherit;
   cursor: pointer;
