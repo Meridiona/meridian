@@ -59,7 +59,13 @@ on:
         type: boolean
         default: false
   push:
-    branches: [main, pre-main]
+    # STAGING ONLY, FOR NOW. Production releases still run through the old
+    # monolithic release.yml on `main` — this new two-workflow pipeline is being
+    # proven on the staging channel first (the ask: don't touch the production
+    # path until staging demonstrates it is actually faster). Once validated,
+    # a follow-up flips `main` over by adding it back here and pointing
+    # release-build.yml's tag filter at stable tags too.
+    branches: [pre-main]
 
 # Serialise: two prepare runs would race to tag. cancel-in-progress stays false
 # because a half-finished semantic-release run can have already pushed a tag.
@@ -76,12 +82,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # pushes the version-bump commit and the tag
-    # A `push` to main/pre-main only prepares a release when the commit asks for
-    # it. Without this every merge would cut a release. workflow_dispatch is
-    # always honoured.
+    # A `push` to pre-main only prepares a release when the commit asks for it.
+    # Without this every merge would cut a staging release. workflow_dispatch is
+    # always honoured. (`[release]` is intentionally NOT accepted here — this
+    # workflow is staging-only for now; production cuts via release.yml on main.)
     if: >-
       ${{ github.event_name == 'workflow_dispatch'
-          || contains(github.event.head_commit.message, '[release]')
           || contains(github.event.head_commit.message, '[staging-release]') }}
     outputs:
       released: ${{ steps.run.outputs.released }}
@@ -106,24 +112,21 @@ jobs:
 
       - run: npm ci --no-audit --no-fund
 
-      - name: Select the release config for this branch
-        # pre-main cuts prereleases on the `staging` channel; main cuts stable.
-        # The two configs differ in more than the channel (staging has no
-        # @semantic-release/changelog and no @semantic-release/git), so pick the
-        # whole file rather than trying to parameterise one.
+      - name: Select the staging release config
+        # This workflow only runs on pre-main (staging), so it always uses the
+        # staging config. It cuts prereleases on the `staging` channel and, unlike
+        # the production config, has no @semantic-release/changelog and no
+        # @semantic-release/git — hence a separate whole file rather than a
+        # parameterised one.
         #
-        # .releaserc.json is the name semantic-release loads by default and is
-        # git-ignored in CI usage — copying over it is ephemeral, never
-        # committed. On main the file is already correct, so only pre-main
-        # swaps it.
+        # .releaserc.json is the name semantic-release loads by default; copying
+        # the staging config over it here is ephemeral (this CI checkout only),
+        # never committed, and does not disturb the committed .releaserc.json that
+        # production's release.yml uses on main.
         run: |
           set -euo pipefail
-          if [ "${{ github.ref_name }}" = "pre-main" ]; then
-            cp .releaserc.staging.json .releaserc.json
-            echo "→ staging channel (.releaserc.staging.json)"
-          else
-            echo "→ stable channel (.releaserc.json)"
-          fi
+          cp .releaserc.staging.json .releaserc.json
+          echo "→ staging channel (.releaserc.staging.json)"
 
       - name: semantic-release
         id: run

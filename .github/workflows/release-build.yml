@@ -8,15 +8,20 @@ name: Release (build & publish)
 # build ref demands the opposite, and a 30-minute build makes the conflict
 # certain rather than theoretical).
 #
-# THIS FILE REPLACES BOTH release.yml AND release-staging.yml.
-# They had drifted badly — staging had been parallelised into per-arch build
-# jobs while production still ran the original monolithic semantic-release
-# `prepareCmd` that compiled everything serially on one runner. Two files, two
-# behaviours, one of them quietly much worse. The channel is now derived from
-# the tag, so there is exactly one build path and it cannot drift from itself:
+# THIS FILE REPLACES release-staging.yml (the staging channel only, for now).
+# Production still builds through the old monolithic release.yml on main — this
+# faster per-arch pipeline is being proven on staging first, and only once it
+# demonstrably beats the old path will production be migrated onto it (widen the
+# tag filter below to `v*` and re-add `main` to release-prepare.yml).
+#
+# The channel is derived from the tag, so when production does migrate there is
+# still exactly one build path that cannot drift from itself:
 #
 #     v1.73.0            -> stable   (published to the `updater` channel)
 #     v1.72.0-staging.6  -> staging  (published to `updater-staging`)
+#
+# Until then only the staging line is reachable (the tag filter excludes stable
+# tags), and the stable branch of the channel logic is dormant but ready.
 #
 # ── SHAPE ────────────────────────────────────────────────────────────────────
 #
@@ -71,11 +76,18 @@ name: Release (build & publish)
 
 on:
   push:
-    tags: ["v*"]
+    # STAGING TAGS ONLY, FOR NOW. semantic-release cuts staging as prereleases
+    # like `v1.72.0-staging.6`, and the `-staging` infix is what this filter
+    # keys on. A production tag (`v1.73.0`, no infix) deliberately does NOT match
+    # — production still builds through the old monolithic release.yml on main,
+    # and matching `v*` here would make BOTH pipelines fire on the same prod tag.
+    # When production migrates onto this pipeline, widen this to `["v*"]` (and
+    # add `main` back to release-prepare.yml) in the same change.
+    tags: ["v*-staging*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing v* tag to (re)build and publish"
+        description: "Existing v*-staging* tag to (re)build and publish"
         required: true
         type: string
 
