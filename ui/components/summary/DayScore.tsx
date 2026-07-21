@@ -24,7 +24,8 @@
 //
 // # Related
 // - `WorkList` - the same plan and the same work, itemised.
-// - `DayShape` - what stands in for the ring on a day with no plan.
+// - `WorkList` - the same plan and the same work, itemised. On a no-plan day this
+//   component simply renders the stat row without the ring.
 
 'use client'
 

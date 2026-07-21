@@ -146,6 +146,62 @@ pub async fn load(
     }
 }
 
+/// Every planned-ticket match the day's drafted (or posted) worklogs recorded,
+/// as `task_key -> [day-task id, …]`.
+///
+/// This is the DETERMINISTIC plan-adherence signal. When a worklog is drafted, its
+/// matched ticket is written here (`posted_comment_id` NULL until posted), so a
+/// ticket that appears here was worked on that day - whether or not the user has
+/// approved the worklog yet. The daily summary reads this instead of asking the
+/// model which tickets got done (see [`crate::day_evidence::adherence`]).
+///
+/// Drafted AND posted rows both count - the row's mere existence is the match; its
+/// posted-ness is a delivery detail the summary does not care about. A day-task can
+/// match several tickets and a ticket can be matched by several day-tasks, so this
+/// is a genuine many-to-many. A missing table (pre-062 DB) degrades to an empty
+/// map, never an error, matching [`load`].
+///
+/// # Who calls this
+/// [`crate::day_evidence::collect`] - the daily summary's plan ledger.
+pub async fn matched_tickets_for_day(
+    pool: &SqlitePool,
+    day_local: &str,
+) -> anyhow::Result<std::collections::HashMap<String, Vec<String>>> {
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT task_key, task_id FROM day_task_worklog_targets \
+         WHERE day_local = ? ORDER BY task_key, position, task_id",
+    )
+    .bind(day_local)
+    .fetch_all(pool)
+    .instrument(tracing::debug_span!(
+        "day_task_worklogs.read.matched_tickets_for_day"
+    ))
+    .await;
+
+    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    match rows {
+        Ok(rows) => {
+            for (task_key, task_id) in rows {
+                let ids = map.entry(task_key).or_default();
+                // A ticket matched by the same day-task twice (a regenerate that
+                // re-drafted) must not double-count that workstream's minutes.
+                if !ids.contains(&task_id) {
+                    ids.push(task_id);
+                }
+            }
+            tracing::debug!(
+                tickets = map.len(),
+                "day_task_worklogs.read.matched_tickets_for_day"
+            );
+            Ok(map)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "day_task_worklogs: matched-tickets read skipped (pre-062 DB?)");
+            Ok(map)
+        }
+    }
+}
+
 /// Replace the whole target set of `(day_local, task_id)`.
 ///
 /// Destructive by design — a regenerate or a retarget supersedes the previous

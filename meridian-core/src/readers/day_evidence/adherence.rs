@@ -1,35 +1,43 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-//! Planned vs actual: what can be known for certain, and the arithmetic on top.
+//! Planned vs actual: which committed tickets were worked on, and the arithmetic
+//! on top. **Fully deterministic - no model involved.**
 //!
-//! # Why this exists
-//! Nothing in the schema links a planned ticket to the work that was done for it.
-//! There is no `plan_id` on `app_sessions` or `day_tasks`, and there never was — the
-//! plan is intent and the workstreams are observation, and they are joined only by
-//! the developer's own head.
+//! # Why this exists, and why it is no longer the model's job
+//! Nothing in the schema linked a planned ticket to the work done for it, so this
+//! used to be a two-layer join: DB facts where they existed, and the LLM's verdict
+//! for the rest. But the worklog matcher ALREADY makes that join. When a worklog is
+//! drafted for a day-task, the ticket(s) it advances are written to
+//! `day_task_worklog_targets` (migration 062) - the moment it is drafted, before any
+//! approval. So "which planned ticket did this day-task's work go to" is a fact on
+//! disk, and asking the model to re-derive it was redundant and occasionally wrong.
 //!
-//! So the join is rebuilt here in two layers:
+//! [`resolve_deterministic`] reads that match map (built by
+//! [`crate::day_task_worklogs::targets::matched_tickets_for_day`]) and settles every
+//! planned ticket without an LLM call:
 //!
-//! 1. **This module.** Where the database DOES know (a worklog was posted against
-//!    the ticket; the workstream carries the ticket as its linked ticket; the ticket
-//!    went terminal), the outcome is a fact. [`prematch`] finds those, and they are
-//!    **locked** — the model is shown them and may not overturn them.
-//! 2. **The model**, for everything left over, reading the day's own log lines
-//!    beside the plan. Its verdicts are folded in by [`resolve`], which never lets
-//!    one land on a ticket layer 1 already settled.
+//! - a worklog was matched to it (drafted or posted) → **done**, crediting the
+//!   matched day-tasks' measured minutes;
+//! - else the ticket is terminal (it left the board, almost always by being closed)
+//!   → **done**, no attributable time;
+//! - else → **not started**.
 //!
-//! The number the screen shows then comes from [`resolve`], in Rust, from the folded
-//! verdicts — never from the model's prose. That is the whole point of splitting it
-//! this way: the ring and the list beside it are computed from one array, so they
-//! cannot disagree, and regenerating a summary cannot silently move the score while
-//! the evidence stays put.
+//! Binary on purpose: touching the task (a worklog matched it) is enough to count it
+//! done, and there is no reliable deterministic signal for a "half done" middle
+//! state. [`Outcome::Partial`] stays in the type for wire back-compat but is never
+//! emitted here.
+//!
+//! The number the screen shows comes from here, in Rust, from one array - so the
+//! ring and the list beside it cannot disagree, and it holds even when the model
+//! call for the prose fails.
 //!
 //! # Who calls this
-//! [`super::collect`] (to put the locked matches in the evidence) and
-//! `meridian::day_summary::generate` (to fold the answer and score it).
+//! [`super::collect`], which puts the resolved [`DayLedger`] on the evidence so both
+//! the daemon (the summary prose) and the tray (the screen) read one shape.
 //!
 //! # Related
 //! - [`crate::plan`] — where a [`crate::plan::PlanItem`] comes from.
 //! - [`crate::day_tasks`] — the observed side.
+//! - [`crate::day_task_worklogs::targets`] — the match map's source.
 //! - [`crate::day_summaries`] — the wire types this produces.
 
 use std::collections::{HashMap, HashSet};
@@ -40,197 +48,75 @@ use crate::plan::PlanItem;
 
 use super::TASK_MIN_MINUTES;
 
-/// How a planned ticket's outcome became known without asking the model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MatchEvidence {
-    /// A worklog was posted against this exact ticket from this day's work. The
-    /// strongest signal there is: the developer read a draft about this ticket and
-    /// approved it onto the real board.
-    WorklogPosted,
-    /// The workstream carries this ticket as its linked ticket.
-    LinkedTicket,
-    /// No workstream could be tied to it, but the ticket is terminal — it left the
-    /// board, which on the day it was planned almost always means it was finished.
-    TicketTerminal,
-}
-
-impl MatchEvidence {
-    /// The line the screen shows under the ticket. Written as a fact, in the same
-    /// register as the model's own evidence lines, so the two read as one list.
-    pub fn reason(self) -> &'static str {
-        match self {
-            MatchEvidence::WorklogPosted => "a worklog was posted against it",
-            MatchEvidence::LinkedTicket => "the work was linked to it",
-            MatchEvidence::TicketTerminal => "the ticket was closed",
-        }
-    }
-
-    /// What a match of this kind proves. All three prove completion: a posted
-    /// worklog and a closed ticket both mean the developer said so, and a linked
-    /// ticket means the pipeline tied real work to it end to end.
-    pub fn outcome(self) -> Outcome {
-        Outcome::Done
-    }
-}
-
-/// One planned ticket whose outcome the database already settles.
+/// The resolved plan ledger and its arithmetic, kept together so a caller cannot
+/// persist one without the other.
 #[derive(Debug, Clone)]
-pub struct PreMatch {
-    pub task_key: String,
-    /// Every workstream that backs it. Usually one; a ticket worked in two
-    /// separate sittings that got split into two workstreams gives two.
-    pub day_task_ids: Vec<String>,
-    /// Their summed measured minutes. Zero for a [`MatchEvidence::TicketTerminal`]
-    /// match, where the ticket closed but no workstream could be tied to it.
-    pub minutes: i64,
-    pub evidence: MatchEvidence,
+pub struct DayLedger {
+    pub verdicts: Vec<PlanVerdict>,
+    pub adherence: Adherence,
 }
 
-/// The outcomes the database settles on its own, strongest evidence first.
+/// Settle every planned ticket from the worklog match map, and score it.
 ///
-/// One entry per planned ticket that matched; planned tickets with no evidence at
-/// all are simply absent, and are the set the model is asked about.
-pub fn prematch(plan: &[PlanItem], tasks: &[DayTask]) -> Vec<PreMatch> {
-    let mut out = Vec::new();
-
-    for item in plan {
-        // Posted worklog beats linked ticket: the first means a human approved a
-        // draft onto the board, the second only that the pipeline tied them.
-        let posted: Vec<&DayTask> = tasks
-            .iter()
-            .filter(|t| t.posted_target_key.as_deref() == Some(item.task_key.as_str()))
-            .collect();
-        let linked: Vec<&DayTask> = tasks
-            .iter()
-            .filter(|t| t.linked_ticket.as_deref() == Some(item.task_key.as_str()))
-            .collect();
-
-        let (matched, evidence) = if !posted.is_empty() {
-            (posted, MatchEvidence::WorklogPosted)
-        } else if !linked.is_empty() {
-            (linked, MatchEvidence::LinkedTicket)
-        } else if item.is_terminal {
-            (Vec::new(), MatchEvidence::TicketTerminal)
-        } else {
-            continue;
-        };
-
-        out.push(PreMatch {
-            task_key: item.task_key.clone(),
-            day_task_ids: matched.iter().map(|t| t.id.clone()).collect(),
-            minutes: matched.iter().map(|t| t.minutes).sum(),
-            evidence,
-        });
-    }
-
-    out
-}
-
-/// What the model said about one planned ticket, before folding.
-#[derive(Debug, Clone)]
-pub struct ModelVerdict {
-    pub task_key: String,
-    pub outcome: Outcome,
-    pub evidence: String,
-    /// The workstreams it judged from. **Ids, never a duration** — the model
-    /// points and the code measures, the same contract `themes` uses. Without
-    /// this every non-certain row shows no time and its work counts as unplanned,
-    /// which on a day with no posted worklogs is the whole day.
-    pub day_task_ids: Vec<String>,
-}
-
-/// Fold the locked matches and the model's verdicts into the day's plan ledger,
-/// then score it.
+/// `matches` is `task_key -> [day-task id, …]`: the day-tasks whose drafted or
+/// posted worklog was matched to that ticket. Every planned ticket produces exactly
+/// one verdict, in plan order, so the ledger is always the same length as the plan.
 ///
-/// Order is the plan's own order, and **every** planned ticket produces a row: a
-/// ticket the model forgot to mention is `not_touched` with no evidence line, which
-/// is the honest reading and keeps the ledger the same length as the plan.
-///
-/// `tasks` is used only for the unplanned tail — the substantial workstreams no
-/// planned ticket accounts for.
-pub fn resolve(plan: &[PlanItem], tasks: &[DayTask], model: &[ModelVerdict]) -> DayLedger {
-    let prematches = prematch(plan, tasks);
-    let pre: HashMap<&str, &PreMatch> = prematches
-        .iter()
-        .map(|p| (p.task_key.as_str(), p))
-        .collect();
-    let said: HashMap<&str, &ModelVerdict> =
-        model.iter().map(|m| (m.task_key.as_str(), m)).collect();
-
-    // A model verdict names the workstreams it judged from; the minutes are read
-    // off those, never taken from the model. `by_id` is the lookup that turns a
-    // pointed-at id into a measured figure, and silently drops an id that was
-    // never in the day.
+/// `tasks` supplies the measured minutes for the matched day-tasks (and the
+/// unplanned tail). A match naming a day-task id that is not in `tasks` - a stale
+/// target from a workstream that has since been re-segmented away - claims nothing.
+pub fn resolve_deterministic(
+    plan: &[PlanItem],
+    tasks: &[DayTask],
+    matches: &HashMap<String, Vec<String>>,
+) -> DayLedger {
     let by_id: HashMap<&str, &DayTask> = tasks.iter().map(|t| (t.id.as_str(), t)).collect();
 
     let mut verdicts: Vec<PlanVerdict> = Vec::new();
+    // Day-tasks already credited to a planned ticket, so they don't also count as
+    // unplanned work below.
     let mut accounted: HashSet<String> = HashSet::new();
 
     for item in plan {
-        let key = item.task_key.as_str();
-        let v = match pre.get(key) {
-            // Locked. The model's opinion on this one is not consulted.
-            Some(p) => {
-                accounted.extend(p.day_task_ids.iter().cloned());
-                PlanVerdict {
-                    task_key: item.task_key.clone(),
-                    title: item.title.clone(),
-                    outcome: p.evidence.outcome(),
-                    evidence: p.evidence.reason().to_string(),
-                    minutes: p.minutes,
-                    day_task_ids: p.day_task_ids.clone(),
-                    certain: true,
-                    provider: item.provider.clone(),
-                    url: item.url.clone(),
-                }
-            }
-            None => {
-                let Some(m) = said.get(key) else {
-                    // A ticket the model never mentioned. Not touched, no
-                    // evidence, no minutes — the honest reading, and it keeps the
-                    // ledger exactly as long as the plan.
-                    verdicts.push(PlanVerdict {
-                        task_key: item.task_key.clone(),
-                        title: item.title.clone(),
-                        outcome: Outcome::NotTouched,
-                        evidence: String::new(),
-                        minutes: 0,
-                        day_task_ids: Vec::new(),
-                        certain: false,
-                        provider: item.provider.clone(),
-                        url: item.url.clone(),
-                    });
-                    continue;
-                };
+        // The matched day-tasks that actually exist in the day.
+        let matched: Vec<&DayTask> = matches
+            .get(item.task_key.as_str())
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| by_id.get(id.as_str()).copied())
+                    .collect()
+            })
+            .unwrap_or_default();
 
-                // Only a ticket the model says was ACTUALLY worked on claims time.
-                // Crediting a `not_touched` verdict with whatever workstreams it
-                // happened to cite would both invent minutes and shrink the
-                // unplanned tail by work nobody did against that ticket.
-                let cited: Vec<&DayTask> = if m.outcome == Outcome::NotTouched {
-                    Vec::new()
-                } else {
-                    m.day_task_ids
-                        .iter()
-                        .filter_map(|id| by_id.get(id.as_str()).copied())
-                        .collect()
-                };
-                accounted.extend(cited.iter().map(|t| t.id.clone()));
-
-                PlanVerdict {
-                    task_key: item.task_key.clone(),
-                    title: item.title.clone(),
-                    outcome: m.outcome,
-                    evidence: m.evidence.clone(),
-                    minutes: cited.iter().map(|t| t.minutes).sum(),
-                    day_task_ids: cited.iter().map(|t| t.id.clone()).collect(),
-                    certain: false,
-                    provider: item.provider.clone(),
-                    url: item.url.clone(),
-                }
-            }
+        // Base the verdict on the item; only the outcome-specific fields differ.
+        let mut verdict = PlanVerdict {
+            task_key: item.task_key.clone(),
+            title: item.title.clone(),
+            outcome: Outcome::NotTouched,
+            evidence: String::new(),
+            minutes: 0,
+            day_task_ids: Vec::new(),
+            // Every verdict here is a database fact, never a guess.
+            certain: true,
+            provider: item.provider.clone(),
+            url: item.url.clone(),
         };
-        verdicts.push(v);
+
+        if !matched.is_empty() {
+            for t in &matched {
+                accounted.insert(t.id.clone());
+            }
+            verdict.outcome = Outcome::Done;
+            verdict.evidence = "you worked on it".to_string();
+            verdict.minutes = matched.iter().map(|t| t.minutes).sum();
+            verdict.day_task_ids = matched.iter().map(|t| t.id.clone()).collect();
+        } else if item.is_terminal {
+            // Closed today with no workstream tied to it - finished, no time to show.
+            verdict.outcome = Outcome::Done;
+            verdict.evidence = "the ticket was closed".to_string();
+        }
+
+        verdicts.push(verdict);
     }
 
     let planned = verdicts.len() as i64;
@@ -238,15 +124,18 @@ pub fn resolve(plan: &[PlanItem], tasks: &[DayTask], model: &[ModelVerdict]) -> 
         .iter()
         .filter(|v| v.outcome == Outcome::Done)
         .count() as i64;
+    // No middle state is emitted, so partial is always zero and not_touched is the
+    // complement of done. Both are still derived rather than assumed, so the type
+    // can carry a partial verdict from an older row without the count going wrong.
     let partial = verdicts
         .iter()
         .filter(|v| v.outcome == Outcome::Partial)
         .count() as i64;
     let not_touched = planned - done - partial;
 
-    // Half-credit arithmetic in integers, rounded half-up: done counts 2, partial 1,
-    // out of 2 per planned item. Floats here would put a 66.66666 on a screen whose
-    // whole job is to feel considered.
+    // Half-credit arithmetic in integers, rounded half-up (done = 2, partial = 1,
+    // out of 2 per planned item). With a binary ledger this is just done/planned,
+    // but the general form keeps a stray partial honest.
     let achievement_pct = if planned == 0 {
         0
     } else {
@@ -254,9 +143,9 @@ pub fn resolve(plan: &[PlanItem], tasks: &[DayTask], model: &[ModelVerdict]) -> 
         (earned * 100 + planned) / (planned * 2)
     };
 
-    // The unplanned tail, measured the same way the headline count is: substantial
-    // workstreams only. Counting a five-minute glance as "unplanned work" would
-    // make every day look scattered.
+    // The unplanned tail: substantial workstreams no planned ticket accounts for.
+    // Counting a five-minute glance as "unplanned work" would make every day look
+    // scattered, so the same floor the headline count uses applies here.
     let unplanned_minutes = tasks
         .iter()
         .filter(|t| t.minutes >= TASK_MIN_MINUTES && !accounted.contains(&t.id))
@@ -274,14 +163,6 @@ pub fn resolve(plan: &[PlanItem], tasks: &[DayTask], model: &[ModelVerdict]) -> 
         },
         verdicts,
     }
-}
-
-/// The resolved plan ledger and its arithmetic, kept together so a caller cannot
-/// persist one without the other.
-#[derive(Debug, Clone)]
-pub struct DayLedger {
-    pub verdicts: Vec<PlanVerdict>,
-    pub adherence: Adherence,
 }
 
 #[cfg(test)]
@@ -309,7 +190,7 @@ mod tests {
         }
     }
 
-    fn task(id: &str, minutes: i64, linked: Option<&str>, posted: Option<&str>) -> DayTask {
+    fn task(id: &str, minutes: i64) -> DayTask {
         DayTask {
             id: id.to_string(),
             title: format!("{id} work"),
@@ -320,234 +201,124 @@ mod tests {
             first_hour: -1,
             last_hour: -1,
             status: String::new(),
-            linked_ticket: linked.map(str::to_string),
+            linked_ticket: None,
             posted_provider: None,
-            posted_target_key: posted.map(str::to_string),
+            posted_target_key: None,
             posted_browse_url: None,
         }
     }
 
+    /// task_key → [day-task ids], the shape `matched_tickets_for_day` returns.
+    fn matches(pairs: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
+        pairs
+            .iter()
+            .map(|(k, ids)| (k.to_string(), ids.iter().map(|s| s.to_string()).collect()))
+            .collect()
+    }
+
     #[test]
-    fn a_posted_worklog_settles_the_ticket() {
+    fn a_matched_ticket_is_done_and_claims_its_minutes() {
         let plan = [item("KAN-1", false)];
-        let tasks = [task("T1", 130, None, Some("KAN-1"))];
-        let m = prematch(&plan, &tasks);
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0].evidence, MatchEvidence::WorklogPosted);
-        assert_eq!(m[0].minutes, 130);
-        assert_eq!(m[0].day_task_ids, vec!["T1"]);
-    }
-
-    /// A posted worklog outranks a mere link, so the evidence line the screen shows
-    /// is the stronger fact rather than whichever matched first.
-    #[test]
-    fn posting_outranks_linking() {
-        let plan = [item("KAN-1", false)];
-        let tasks = [
-            task("T1", 40, Some("KAN-1"), None),
-            task("T2", 90, None, Some("KAN-1")),
-        ];
-        let m = prematch(&plan, &tasks);
-        assert_eq!(m[0].evidence, MatchEvidence::WorklogPosted);
-        assert_eq!(m[0].minutes, 90, "only the posted workstream is counted");
-    }
-
-    #[test]
-    fn a_closed_ticket_with_no_attributable_work_still_counts() {
-        let plan = [item("KAN-9", true)];
-        let m = prematch(&plan, &[]);
-        assert_eq!(m[0].evidence, MatchEvidence::TicketTerminal);
-        assert_eq!(m[0].minutes, 0);
-    }
-
-    #[test]
-    fn a_ticket_with_no_evidence_is_left_for_the_model() {
-        let plan = [item("KAN-2", false)];
-        assert!(prematch(&plan, &[task("T1", 60, None, None)]).is_empty());
-    }
-
-    /// One ticket, two sittings that became two workstreams: both back it and both
-    /// count, or the ledger under-reports time the developer actually spent.
-    #[test]
-    fn two_workstreams_on_one_ticket_sum() {
-        let plan = [item("KAN-1", false)];
-        let tasks = [
-            task("T1", 60, Some("KAN-1"), None),
-            task("T2", 45, Some("KAN-1"), None),
-        ];
-        let m = prematch(&plan, &tasks);
-        assert_eq!(m[0].minutes, 105);
-        assert_eq!(m[0].day_task_ids.len(), 2);
-    }
-
-    /// The load-bearing rule: a deterministic match is not up for discussion. A
-    /// model that says a worklogged ticket was never touched is wrong, and letting
-    /// it win would put a number on the screen the evidence contradicts.
-    #[test]
-    fn the_model_cannot_overturn_a_certain_match() {
-        let plan = [item("KAN-1", false)];
-        let tasks = [task("T1", 130, None, Some("KAN-1"))];
-        let said = [ModelVerdict {
-            task_key: "KAN-1".to_string(),
-            outcome: Outcome::NotTouched,
-            evidence: "I saw nothing".to_string(),
-            day_task_ids: Vec::new(),
-        }];
-        let led = resolve(&plan, &tasks, &said);
+        let tasks = [task("T1", 130)];
+        let led = resolve_deterministic(&plan, &tasks, &matches(&[("KAN-1", &["T1"])]));
         assert_eq!(led.verdicts[0].outcome, Outcome::Done);
+        assert_eq!(led.verdicts[0].minutes, 130);
+        assert_eq!(led.verdicts[0].day_task_ids, vec!["T1"]);
         assert!(led.verdicts[0].certain);
-        assert_eq!(led.verdicts[0].evidence, "a worklog was posted against it");
+        assert_eq!(led.adherence.done, 1);
         assert_eq!(led.adherence.achievement_pct, 100);
     }
 
     #[test]
-    fn a_planned_ticket_the_model_forgot_reads_as_not_touched() {
-        let plan = [item("KAN-1", false), item("KAN-2", false)];
-        let said = [ModelVerdict {
-            task_key: "KAN-1".to_string(),
-            outcome: Outcome::Done,
-            evidence: "shipped the reader".to_string(),
-            day_task_ids: Vec::new(),
-        }];
-        let led = resolve(&plan, &[], &said);
-        assert_eq!(led.verdicts.len(), 2, "the ledger is as long as the plan");
-        assert_eq!(led.verdicts[1].outcome, Outcome::NotTouched);
-        assert!(led.verdicts[1].evidence.is_empty());
+    fn a_closed_ticket_with_no_matched_work_is_still_done() {
+        let plan = [item("KAN-9", true)];
+        let led = resolve_deterministic(&plan, &[], &matches(&[]));
+        assert_eq!(led.verdicts[0].outcome, Outcome::Done);
+        assert_eq!(led.verdicts[0].minutes, 0);
+        assert_eq!(led.verdicts[0].evidence, "the ticket was closed");
     }
 
-    /// Half credit for partial, rounded half-up: 1 done + 1 partial + 1 untouched
-    /// is 1.5 of 3, which is 50%.
     #[test]
-    fn partial_work_earns_half_credit() {
+    fn an_unmatched_open_ticket_is_not_touched() {
+        let plan = [item("KAN-2", false)];
+        let led = resolve_deterministic(&plan, &[task("T1", 60)], &matches(&[]));
+        assert_eq!(led.verdicts[0].outcome, Outcome::NotTouched);
+        assert!(led.verdicts[0].day_task_ids.is_empty());
+        assert!(led.verdicts[0].evidence.is_empty());
+    }
+
+    #[test]
+    fn the_ledger_is_always_the_length_of_the_plan() {
         let plan = [
             item("KAN-1", false),
             item("KAN-2", false),
             item("KAN-3", false),
         ];
-        let said = [
-            ModelVerdict {
-                task_key: "KAN-1".to_string(),
-                outcome: Outcome::Done,
-                evidence: "done".to_string(),
-                day_task_ids: Vec::new(),
-            },
-            ModelVerdict {
-                task_key: "KAN-2".to_string(),
-                outcome: Outcome::Partial,
-                evidence: "started".to_string(),
-                day_task_ids: Vec::new(),
-            },
-        ];
-        let led = resolve(&plan, &[], &said);
+        let tasks = [task("T1", 60)];
+        let led = resolve_deterministic(&plan, &tasks, &matches(&[("KAN-1", &["T1"])]));
+        assert_eq!(led.verdicts.len(), 3);
+        assert_eq!(led.adherence.planned, 3);
         assert_eq!(led.adherence.done, 1);
-        assert_eq!(led.adherence.partial, 1);
-        assert_eq!(led.adherence.not_touched, 1);
-        assert_eq!(led.adherence.achievement_pct, 50);
+        assert_eq!(led.adherence.not_touched, 2);
     }
 
-    /// Two of three done is 66.67, and the screen must say 67 rather than 66 - a
-    /// truncating divide quietly shortchanges every uneven day.
+    /// Four of six done rounds to 67, not 66 - half-up on the integer arithmetic.
     #[test]
     fn the_percentage_rounds_half_up() {
-        let plan = [
-            item("KAN-1", true),
-            item("KAN-2", true),
-            item("KAN-3", false),
-        ];
-        let led = resolve(&plan, &[], &[]);
+        let plan: Vec<PlanItem> = (1..=6).map(|n| item(&format!("KAN-{n}"), false)).collect();
+        let tasks: Vec<DayTask> = (1..=4).map(|n| task(&format!("T{n}"), 30)).collect();
+        let m = matches(&[
+            ("KAN-1", &["T1"]),
+            ("KAN-2", &["T2"]),
+            ("KAN-3", &["T3"]),
+            ("KAN-4", &["T4"]),
+        ]);
+        let led = resolve_deterministic(&plan, &tasks, &m);
+        assert_eq!(led.adherence.done, 4);
         assert_eq!(led.adherence.achievement_pct, 67);
     }
 
+    /// One workstream matched to two tickets credits both without being double-
+    /// subtracted from the unplanned tail.
     #[test]
-    fn no_plan_scores_zero_rather_than_dividing_by_it() {
-        let led = resolve(&[], &[task("T1", 90, None, None)], &[]);
+    fn one_workstream_may_back_two_tickets() {
+        let plan = [item("KAN-1", false), item("KAN-2", false)];
+        let tasks = [task("T1", 90)];
+        let m = matches(&[("KAN-1", &["T1"]), ("KAN-2", &["T1"])]);
+        let led = resolve_deterministic(&plan, &tasks, &m);
+        assert_eq!(led.adherence.done, 2);
+        assert_eq!(led.verdicts[0].minutes, 90);
+        assert_eq!(led.verdicts[1].minutes, 90);
+        // T1 is accounted, so it is not also unplanned.
+        assert_eq!(led.adherence.unplanned_minutes, 0);
+    }
+
+    #[test]
+    fn substantial_unmatched_work_is_the_unplanned_tail() {
+        let plan = [item("KAN-1", false)];
+        // T1 matched; T2 substantial but unplanned; T3 below the floor.
+        let tasks = [task("T1", 60), task("T2", 45), task("T3", 10)];
+        let led = resolve_deterministic(&plan, &tasks, &matches(&[("KAN-1", &["T1"])]));
+        assert_eq!(led.adherence.unplanned_minutes, 45);
+    }
+
+    /// A match naming a day-task the day no longer has claims nothing and does not
+    /// crash the fold.
+    #[test]
+    fn a_stale_match_id_is_ignored() {
+        let plan = [item("KAN-1", false)];
+        let led = resolve_deterministic(&plan, &[], &matches(&[("KAN-1", &["GONE"])]));
+        // No real day-task, so no minutes and no match → not touched.
+        assert_eq!(led.verdicts[0].outcome, Outcome::NotTouched);
+        assert_eq!(led.verdicts[0].minutes, 0);
+    }
+
+    #[test]
+    fn an_empty_plan_scores_zero_without_dividing_by_zero() {
+        let led = resolve_deterministic(&[], &[task("T1", 60)], &matches(&[]));
         assert_eq!(led.adherence.planned, 0);
         assert_eq!(led.adherence.achievement_pct, 0);
-        assert!(led.verdicts.is_empty());
-    }
-
-    /// The unplanned tail counts substantial workstreams only, and never one
-    /// already accounted for by a planned ticket.
-    #[test]
-    fn unplanned_minutes_exclude_matched_and_brief_work() {
-        let plan = [item("KAN-1", false)];
-        let tasks = [
-            task("T1", 130, None, Some("KAN-1")), // accounted for
-            task("T2", 95, None, None),           // genuinely unplanned
-            task("T3", 12, None, None),           // below the floor
-        ];
-        let led = resolve(&plan, &tasks, &[]);
-        assert_eq!(led.adherence.unplanned_minutes, 95);
-    }
-
-    fn said(key: &str, outcome: Outcome, ids: &[&str]) -> ModelVerdict {
-        ModelVerdict {
-            task_key: key.to_string(),
-            outcome,
-            evidence: "e".to_string(),
-            day_task_ids: ids.iter().map(|s| s.to_string()).collect(),
-        }
-    }
-
-    /// The model points at workstreams and WE measure them. Without this, a day
-    /// with no posted worklogs shows every ledger row at zero minutes and counts
-    /// the entire day as unplanned - which is what the first cut actually did.
-    #[test]
-    fn a_model_verdict_claims_the_minutes_of_the_work_it_cites() {
-        let plan = [item("KAN-1", false)];
-        let tasks = [task("T1", 120, None, None), task("T2", 60, None, None)];
-        let led = resolve(&plan, &tasks, &[said("KAN-1", Outcome::Done, &["T1"])]);
-        assert_eq!(led.verdicts[0].minutes, 120);
-        assert!(!led.verdicts[0].certain, "still a judgement, not a fact");
-        assert_eq!(
-            led.adherence.unplanned_minutes, 60,
-            "only T2 is left unaccounted"
-        );
-    }
-
-    /// An id the day never contained is dropped rather than trusted - the model
-    /// naming a workstream that does not exist must not invent minutes.
-    #[test]
-    fn an_unknown_workstream_id_contributes_nothing() {
-        let plan = [item("KAN-1", false)];
-        let tasks = [task("T1", 120, None, None)];
-        let led = resolve(&plan, &tasks, &[said("KAN-1", Outcome::Done, &["T9"])]);
-        assert_eq!(led.verdicts[0].minutes, 0);
-        assert_eq!(led.adherence.unplanned_minutes, 120);
-    }
-
-    /// A ticket the model says was never touched claims nothing, whatever ids it
-    /// cited - otherwise an untouched row would both show time and shrink the
-    /// unplanned tail by work done against something else entirely.
-    #[test]
-    fn an_untouched_ticket_claims_no_time_even_if_it_cites_work() {
-        let plan = [item("KAN-1", false)];
-        let tasks = [task("T1", 120, None, None)];
-        let led = resolve(
-            &plan,
-            &tasks,
-            &[said("KAN-1", Outcome::NotTouched, &["T1"])],
-        );
-        assert_eq!(led.verdicts[0].minutes, 0);
-        assert_eq!(led.adherence.unplanned_minutes, 120);
-    }
-
-    /// One workstream can genuinely advance two planned tickets. Each row reports
-    /// it honestly, and the unplanned tail subtracts it once.
-    #[test]
-    fn one_workstream_may_back_two_tickets_without_double_subtracting() {
-        let plan = [item("KAN-1", false), item("KAN-2", false)];
-        let tasks = [task("T1", 100, None, None), task("T2", 40, None, None)];
-        let led = resolve(
-            &plan,
-            &tasks,
-            &[
-                said("KAN-1", Outcome::Done, &["T1"]),
-                said("KAN-2", Outcome::Partial, &["T1"]),
-            ],
-        );
-        assert_eq!(led.verdicts[0].minutes, 100);
-        assert_eq!(led.verdicts[1].minutes, 100);
-        assert_eq!(led.adherence.unplanned_minutes, 40);
+        // Substantial work with no plan is entirely the unplanned tail.
+        assert_eq!(led.adherence.unplanned_minutes, 60);
     }
 }

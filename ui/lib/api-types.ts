@@ -763,28 +763,20 @@ export interface Adherence {
   unplanned_minutes: number
 }
 
-/** One thing an *unplanned* day was about. Only ever populated when there was no
- *  plan; the screen sums the real minutes behind `day_task_ids` rather than
- *  trusting a duration from the model. */
-export interface DayTheme {
-  title: string
-  day_task_ids: string[]
-}
-
-/** A day's composed review. `null` from `get_day_summary` until one is generated. */
+/** A day's composed review. `null` from `get_day_summary` until one is generated.
+ *
+ *  The plan side (`plan`, `adherence`) is resolved deterministically in Rust from
+ *  the worklog matches - never from the model - so it holds even on the fallback
+ *  path. The model only writes `headline` and `insights`. */
 export interface DaySummary {
   day: string
   /** A short warm line above everything. Empty on the fallback path. */
   headline: string
-  /** The prose. May contain `**emphasis**` spans — the ONLY markup the screen
-   *  renders. Empty on the fallback path. */
-  narrative: string
+  /** The three insight cards. Empty on the fallback path. */
   insights: DaySummaryInsight[]
   /** One verdict per planned ticket; empty when the day had no plan. */
   plan: PlanVerdict[]
   adherence: Adherence
-  /** What the day was about, for the no-plan case; empty when there was a plan. */
-  themes: DayTheme[]
   /** Who ACTUALLY answered — the resolver degrades to local on failure. */
   provider: string
   /** The model override in force (`sonnet`/`haiku`), or '' for the default. */

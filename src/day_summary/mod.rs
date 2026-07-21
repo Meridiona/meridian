@@ -11,29 +11,24 @@
 //!
 //! # The question it answers
 //! **Did the day go the way you meant it to?** On a day with a committed plan that
-//! is a ledger — one verdict per planned ticket, plus the work that was not planned
-//! and is usually the more interesting half. On a day without one it is what the
-//! day turned out to be about, grouped from the workstreams themselves.
-//!
-//! The plan used to be withheld from the model on the grounds that comparing intent
-//! to outcome makes a scorecard. The risk was real; withholding was the wrong fix.
-//! What keeps this from grading anyone is the prompt's tone contract and a ledger
-//! that credits partial work, not ignorance of what they set out to do.
+//! is a ledger — one verdict per planned ticket (done or not started), plus the work
+//! that was not planned and is usually the more interesting half. On a day without
+//! one it is just the three cards over the day's work.
 //!
 //! # The division of labour
-//! The model owns judgement — the prose, which tickets the day's work plausibly
-//! advanced, how to group an unplanned day. **Code owns every number.** The model is
-//! never asked for a percentage, a count, or a duration, and where the DATABASE
-//! settles an outcome (a posted worklog, a linked ticket, a closed ticket) its
-//! opinion is not consulted at all. See
-//! [`meridian_core::day_evidence::adherence`]. That is
-//! `worklog_pipeline::workstream`'s house rule applied here.
+//! The model owns ONLY the prose — the headline and the three insight cards. **Code
+//! owns every number and the whole ledger.** Which committed tickets got done is a
+//! database fact: the worklog matcher already decided it when it drafted each
+//! worklog, so the ledger is resolved deterministically from those matches with no
+//! LLM at all ([`meridian_core::day_evidence::adherence::resolve_deterministic`]).
+//! The model is handed that outcome as GIVEN and never returns a verdict, a
+//! percentage, a count, or a duration.
 //!
 //! # The screen always renders
-//! An unparseable answer or a failed call degrades to `fallback = 1`: no prose, but
-//! the plan ledger and its arithmetic are still shown, because those never needed
-//! the model in the first place. A feature whose job is to make someone feel good
-//! about their day must never greet them with an error.
+//! An unparseable answer or a failed call degrades to `fallback = 1`: no cards, but
+//! the ring, the counts and the checklist are still shown, because those never
+//! needed the model in the first place. A feature whose job is to make someone feel
+//! good about their day must never greet them with an error.
 //!
 //! # There are no charts here any more
 //! This screen once stored model-authored Vega-Lite specs and rendered them. It
@@ -42,7 +37,8 @@
 //! and the chart runtime with them.
 //!
 //! # Layout
-//! - [`generate`] — the LLM call, the fold, the persist.
+//! - [`generate`] — the LLM call (headline + cards), the deterministic ledger, the persist.
+//! - [`auto`] — composes it once a day at the user's end-of-day time, after worklogs.
 //!
 //! The evidence itself lives in [`meridian_core::day_evidence`] rather than here:
 //! it is a pure DB read the tray also serves directly, and one definition of "what
@@ -52,4 +48,5 @@
 //! - [`meridian_core::day_summaries`] — the DB shape and the wire contract.
 //! - [`crate::pm_worklog::generate`] — the sibling generate flow this mirrors.
 
+pub mod auto;
 pub mod generate;

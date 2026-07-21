@@ -3,26 +3,24 @@
 // The daily summary: one screen answering one question - did the day go the way
 // you meant it to?
 //
-// TWO SCREENS, ONE LAYOUT. A day with a committed plan gets the segmented ring and
-// a ledger of what became of each planned ticket. A day without one gets the same
-// space given to what the day turned out to be about, sized by real measured time.
-// Neither is a degraded version of the other, and the no-plan case is NOT nagged
-// about the plan it did not make.
+// ONE LAYOUT, TWO CASES. A day with a committed plan gets the segmented ring; a day
+// without one is the same screen minus the ring - title, the three cards, the
+// checklist. The no-plan case is NOT nagged about the plan it did not make, and gets
+// no themed stand-in for one.
 //
-// THE PROSE IS STILL THE FEATURE. The headline and narrative get the type size and
-// the room; the ring anchors them; everything else is quiet. The narrative renders
-// `**emphasis**` (see Emphasis.tsx) so drift and breakthroughs can be said IN the
-// sentence rather than stamped on a card as a category.
+// THE THREE CARDS ARE THE PROSE. The headline sits over a deterministic stat block,
+// and the three insight cards carry everything the model has to say about the day.
 //
 // This screen shipped once as prose squeezed above a grid of model-authored
 // Vega-Lite charts, and it read as a monitoring dashboard - the one thing it must
 // not be. There are no charts here now, and no chart library: every mark is a
 // handful of SVG built for this screen.
 //
-// NUMBERS ARE NOT THE MODEL'S. The percentage, the counts and every duration are
-// computed in Rust from the plan ledger (`day_evidence::adherence`), so the ring
-// and the list beside it are two views of one array. The model contributes
-// judgement and prose only.
+// NUMBERS ARE NOT THE MODEL'S - AND NEITHER IS THE PLAN LEDGER. The percentage, the
+// counts, every duration, and which tickets are ticked are resolved in Rust from the
+// worklog matches (`day_evidence::adherence::resolve_deterministic`), with no LLM.
+// The model writes only the headline and the cards, so the ring and checklist hold
+// even when the prose call fails.
 //
 // ONE SCREEN, NO PAGE SCROLL at the top level: min-h-0 all the way down, and the
 // body scrolls internally when a long plan needs it.
@@ -46,7 +44,6 @@ import { fmtDur } from '@/components/atoms'
 import type { SettingsSection } from '@/components/timeline/settings/types'
 import { Composing } from './Composing'
 import { DayScore } from './DayScore'
-import { DayShape } from './DayShape'
 import { Insights } from './Insights'
 import { WorkList } from './WorkList'
 
@@ -354,20 +351,9 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
               </Section>
             )}
 
-            {/* On a day with no plan there is no planned-vs-actual to draw, so the
-                space goes to what the day turned out to be about instead. A day
-                without a plan did not fail an exercise. */}
-            {!planned && summary.themes.length > 0 && (
-              <Section label="What the day was about">
-                <DayShape
-                  themes={summary.themes}
-                  tasks={tasks}
-                  focusSeconds={sc?.focus_s ?? 0}
-                  switchCount={sc?.switch_count ?? 0}
-                />
-              </Section>
-            )}
-
+            {/* No-plan days get exactly this minus the ring: title, the three cards
+                above, and the checklist below. A day without a plan did not fail an
+                exercise, so there is no themed hero standing in for one. */}
             {/* ── One list of the day, and the way into a worklog for any of it ── */}
             <Section label="What you worked on">
               <WorkList

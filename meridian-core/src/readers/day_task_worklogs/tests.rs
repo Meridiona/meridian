@@ -110,6 +110,56 @@ async fn a_draft_holds_every_ticket_the_model_matched() {
     assert!(d.targets.iter().all(|t| !t.posted));
 }
 
+/// The deterministic adherence signal: every ticket a day's drafted worklogs
+/// matched, grouped by ticket, from drafts alone (no approval needed).
+#[tokio::test]
+async fn matched_tickets_for_day_groups_drafts_by_ticket() {
+    let pool = seeded().await;
+
+    // T1's worklog advanced KAN-1 and KAN-2; T2's advanced KAN-1 as well.
+    let mut a = match_upsert();
+    a.targets = vec![target("KAN-1", 0.9), target("KAN-2", 0.8)];
+    upsert_draft(&pool, "2026-07-16", "T1", a, "t0")
+        .await
+        .unwrap();
+    let mut b = match_upsert();
+    b.targets = vec![target("KAN-1", 0.7)];
+    upsert_draft(&pool, "2026-07-16", "T2", b, "t0")
+        .await
+        .unwrap();
+    // A different day must not bleed in.
+    let mut c = match_upsert();
+    c.targets = vec![target("KAN-9", 0.9)];
+    upsert_draft(&pool, "2026-07-17", "T9", c, "t0")
+        .await
+        .unwrap();
+
+    let m = targets::matched_tickets_for_day(&pool, "2026-07-16")
+        .await
+        .unwrap();
+
+    assert_eq!(m.len(), 2, "two distinct tickets matched on the day");
+    let mut kan1 = m.get("KAN-1").cloned().unwrap();
+    kan1.sort();
+    assert_eq!(kan1, vec!["T1", "T2"], "both day-tasks that matched KAN-1");
+    assert_eq!(m.get("KAN-2").unwrap(), &vec!["T1"]);
+    assert!(!m.contains_key("KAN-9"), "another day's match stays out");
+}
+
+/// Drafted OR posted both count - the match is the row's existence, not its
+/// delivery. A `propose` draft (new ticket, no target) contributes nothing.
+#[tokio::test]
+async fn matched_tickets_ignores_propose_only_drafts() {
+    let pool = seeded().await;
+    upsert_draft(&pool, "2026-07-16", "T1", propose_upsert(), "t0")
+        .await
+        .unwrap();
+    let m = targets::matched_tickets_for_day(&pool, "2026-07-16")
+        .await
+        .unwrap();
+    assert!(m.is_empty(), "a propose branch has no matched ticket");
+}
+
 /// Model order is the order the panel lists them in, so the strongest match reads
 /// first. `ORDER BY position` and not by key, which would sort KAN-10 above KAN-9.
 #[tokio::test]

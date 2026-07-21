@@ -7,9 +7,10 @@
 //!   category, by hour, and the day's sittings. They are the deterministic shape of
 //!   the day, and the model only ever names them, never their values.
 //! - **Prose evidence** (workstream log lines, the hourly reports) is what the
-//!   narrative is written FROM.
-//! - **The plan** ([`Evidence::plan`]) and the outcomes the DB already settles
-//!   ([`adherence::prematch`]) — the planned-vs-actual side.
+//!   insight cards are written FROM.
+//! - **The plan** ([`Evidence::plan`]) and the resolved [`Evidence::ledger`] —
+//!   the planned-vs-actual side, settled deterministically from the worklog match
+//!   map ([`adherence::resolve_deterministic`]), no model involved.
 //!
 //! # Why this is in meridian-core and not with the rest of day_summary
 //! It is a pure DB read with no LLM in it, and BOTH sides need it: the daemon to
@@ -30,11 +31,12 @@
 //! person actually has at the end of a day is whether it went the way they meant it
 //! to, and refusing to answer it does not make the screen kinder, only less useful.
 //! The scorecard risk is handled where it belongs — in the prompt's tone contract,
-//! which forbids grading the person, and in a ledger that credits partial work.
+//! which forbids grading the person.
 //!
 //! # Related
 //! - [`datasets`] — declares the names and fields this must produce.
-//! - [`adherence`] — the deterministic half of planned-vs-actual.
+//! - [`adherence`] — resolves the deterministic ledger from the worklog match map.
+//! - [`crate::day_task_worklogs::targets`] — the match map's source.
 //! - [`crate::day_summaries`] — where the composed summary is persisted.
 
 pub mod adherence;
@@ -73,12 +75,19 @@ pub struct Evidence {
     /// The day's committed plan, in plan order. Empty when there was none.
     #[serde(skip)]
     pub plan: Vec<PlanItem>,
+    /// The deterministic plan ledger: one verdict per committed ticket and the
+    /// achievement arithmetic, resolved from the worklog match map with no LLM (see
+    /// [`adherence::resolve_deterministic`]). Empty verdicts + zeroed adherence when
+    /// the day had no plan. This is the source of truth for the ring and the
+    /// checklist; the model only writes the prose beside it.
+    #[serde(skip)]
+    pub ledger: adherence::DayLedger,
     /// Whether that plan was actually committed — `confirmed && !skipped && !empty`.
     /// The one flag callers should branch on; see [`DayPlan::is_planned`].
     pub planned: bool,
-    /// Every day-task, unfiltered. The adherence side needs the brief ones too: a
-    /// planned ticket that got twelve real minutes is `partial`, and dropping it
-    /// here would render it as never touched, which would be a lie.
+    /// Every day-task, unfiltered. The ledger needs the brief ones too: a matched
+    /// day-task credits its ticket however few minutes it ran, and dropping it here
+    /// would drop that credit.
     #[serde(skip)]
     pub tasks: Vec<crate::day_tasks::DayTask>,
     /// The newest tracked activity in the day, RFC3339, or empty when the day is
@@ -183,6 +192,21 @@ pub async fn collect(pool: &SqlitePool, day: &str) -> anyhow::Result<Evidence> {
     let plan: DayPlan = crate::plan::plan_for_day(pool, day, chrono::Local::now().date_naive())
         .await
         .context("day_evidence: plan_for_day")?;
+    // The deterministic plan-adherence input: which planned tickets the day's
+    // drafted/posted worklogs matched. Read here so the ledger is resolved once, in
+    // this one reader, and every caller (daemon prose, tray screen) sees one shape.
+    let matches = crate::day_task_worklogs::targets::matched_tickets_for_day(pool, day)
+        .await
+        .context("day_evidence: matched_tickets_for_day")?;
+    // A confirmed-but-empty or skipped/reopened plan is a day with no plan, so it
+    // scores against no tickets. Emptying the items here means the ledger, the
+    // scalars, and the stored plan all branch on one decision.
+    let planned = plan.is_planned();
+    let plan_items: Vec<PlanItem> = if planned {
+        plan.items.clone()
+    } else {
+        Vec::new()
+    };
 
     // ── workstreams + segments ────────────────────────────────────────────────
     let mut workstreams: Vec<Value> = Vec::new();
@@ -354,9 +378,14 @@ pub async fn collect(pool: &SqlitePool, day: &str) -> anyhow::Result<Evidence> {
         // Whether the day had a plan at all. On the screen this is the branch
         // between an achievement ring and a picture of what the day turned out to
         // be about, so it belongs with the other facts the frontend reads directly.
-        "planned": plan.is_planned(),
-        "planned_count": if plan.is_planned() { plan.items.len() } else { 0 },
+        "planned": planned,
+        "planned_count": plan_items.len(),
     });
+
+    // Resolve the ledger from the effective plan (empty on a no-plan day → zeroed
+    // adherence) and the day's measured tasks. No LLM: the ring and the checklist
+    // are computed here, once.
+    let ledger = adherence::resolve_deterministic(&plan_items, &day_tasks.tasks, &matches);
 
     // The stamp the staleness check compares against: the end of the last sitting
     // the day contains. An empty day gets an empty stamp rather than midnight,
@@ -380,8 +409,10 @@ pub async fn collect(pool: &SqlitePool, day: &str) -> anyhow::Result<Evidence> {
             .unwrap_or(0),
         apps = datasets["apps"].as_array().map(|a| a.len()).unwrap_or(0),
         hour_reports = hour_reports.len(),
-        planned = plan.is_planned(),
-        plan_items = plan.items.len(),
+        planned,
+        plan_items = plan_items.len(),
+        done = ledger.adherence.done,
+        achievement_pct = ledger.adherence.achievement_pct,
         "day evidence collected"
     );
 
@@ -391,16 +422,12 @@ pub async fn collect(pool: &SqlitePool, day: &str) -> anyhow::Result<Evidence> {
         scalars,
         workstream_logs,
         hour_reports,
-        planned: plan.is_planned(),
-        // Emptied unless the plan was genuinely committed. A skipped day can still
-        // have leftover rows (`skip` writes meta, not rows), and a reopened one
-        // keeps its old ones - scoring either against the day would invent a
-        // promise the developer never made.
-        plan: if plan.is_planned() {
-            plan.items
-        } else {
-            Vec::new()
-        },
+        planned,
+        // Emptied unless the plan was genuinely committed (see `plan_items` above):
+        // a skipped day can still have leftover rows, and a reopened one keeps its
+        // old ones - scoring either would invent a promise never made.
+        plan: plan_items,
+        ledger,
         tasks: day_tasks.tasks,
         evidence_at,
     })

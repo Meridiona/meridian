@@ -219,26 +219,27 @@ pub fn plan_task_draft_schema() -> Value {
 /// prompt's tone contract instead.
 pub const DAILY_SUMMARY: &str = include_str!("../../assets/prompts/daily-summary.md");
 
-/// The JSON shape the daily-summary call must answer in.
+/// The JSON shape the daily-summary call must answer in: a headline and the three
+/// insight cards, and NOTHING ELSE.
 ///
-/// Note what is NOT here: any category, kind, tone or severity on an insight. The
-/// screen renders the three insights as titled cards, and a fixed vocabulary for
-/// those headings (`achieved` / `overperformed` / `drifted`) would make every day
-/// fill the same slots whether or not it had anything to put in them — which is how
-/// a review turns into a scorecard. Both fields are free text; the card's colour
-/// comes from its position on the screen, so the model is never asked to classify
-/// what it found.
+/// The model is not asked to judge the plan. Which committed tickets got done is a
+/// database fact - the worklog matcher already decided it - so the whole ledger, the
+/// ring, the counts, and every duration are resolved in Rust
+/// (`meridian_core::day_evidence::adherence::resolve_deterministic`) and handed to
+/// the model as GIVEN. It writes prose about a day whose outcome is already settled;
+/// it never returns a verdict, a percentage, a count, or a duration.
 ///
-/// Note also what the model is NEVER asked for: a percentage, a count, or a
-/// duration. Those are computed from its verdicts in
-/// `meridian_core::day_evidence::adherence`, so the number on the screen is
-/// reproducible and cannot contradict the list beside it.
+/// The insight cards carry no category, kind, tone, or severity. A fixed vocabulary
+/// for those headings (`achieved` / `overperformed` / `drifted`) would make every
+/// day fill the same slots whether or not it had anything to put in them - which is
+/// how a review turns into a scorecard. Both fields are free text; the card's colour
+/// comes from its position on the screen, so the model never classifies what it
+/// found.
 pub fn daily_summary_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
             "headline": {"type": "string"},
-            "narrative": {"type": "string"},
             "insights": {
                 "type": "array",
                 "items": {
@@ -255,46 +256,9 @@ pub fn daily_summary_schema() -> Value {
                 // is worse than a short row.
                 "minItems": 2,
                 "maxItems": 3
-            },
-            "plan_verdicts": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "task_key": {"type": "string"},
-                        "outcome":  {"type": "string",
-                                     "enum": ["done", "partial", "not_touched"]},
-                        "evidence": {"type": "string"},
-                        // Ids, never a duration — the model points and the code
-                        // measures. Same contract `themes` uses.
-                        "day_task_ids": {"type": "array", "items": {"type": "string"}}
-                    },
-                    "required": ["task_key", "outcome", "evidence", "day_task_ids"],
-                    "additionalProperties": false
-                },
-                // No floor and no ceiling: a day with no plan answers `[]`, and a
-                // day with one answers exactly as many entries as it has tickets.
-                // MAX_PLAN_TASKS caps the plan itself, so bounding it twice would
-                // only give the two numbers a chance to disagree.
-                "minItems": 0
-            },
-            "themes": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "title":        {"type": "string"},
-                        "day_task_ids": {"type": "array", "items": {"type": "string"}}
-                    },
-                    "required": ["title", "day_task_ids"],
-                    "additionalProperties": false
-                },
-                // The other half of the same either/or: `[]` on a planned day.
-                "minItems": 0,
-                "maxItems": 4
             }
         },
-        "required": ["headline", "narrative", "insights", "plan_verdicts", "themes"],
+        "required": ["headline", "insights"],
         "additionalProperties": false
     })
 }
@@ -371,9 +335,10 @@ mod tests {
             );
         }
         assert!(DAILY_SUMMARY.contains("WORK THAT WAS NOT PLANNED IS STILL WORK"));
-        // The locked-prematch rule: without it the model argues with a posted
-        // worklog and its answer is silently discarded, which wastes the call.
-        assert!(DAILY_SUMMARY.contains("SOME OUTCOMES ARE ALREADY SETTLED"));
+        // The plan outcome is GIVEN, already computed. The model describes it and
+        // never re-derives it - if this clause goes, it starts second-guessing the
+        // deterministic ledger.
+        assert!(DAILY_SUMMARY.contains("ALREADY DECIDED"));
         // The three insight cards each have a job; if the prompt stops teaching the
         // jobs the model reverts to three interchangeable remarks.
         assert!(DAILY_SUMMARY.contains("How the day went overall"));
@@ -381,10 +346,6 @@ mod tests {
         assert!(DAILY_SUMMARY.contains("A nice find"));
         // Card 1 must be free to name an off-plan or thin day without scolding.
         assert!(DAILY_SUMMARY.contains("never as a scolding"));
-        // The emphasis convention is the only markup the screen renders; if the
-        // prompt stops teaching it, `**` reaches the reader as literal asterisks.
-        assert!(DAILY_SUMMARY.contains("wrap a phrase in double asterisks"));
-        assert!(DAILY_SUMMARY.contains("Use it AT MOST TWICE"));
         // The charts are gone, along with the whole Vega system. If any of this
         // comes back the screen is regressing to a dashboard.
         assert!(!DAILY_SUMMARY.to_lowercase().contains("vega"));
@@ -392,18 +353,18 @@ mod tests {
     }
 
     #[test]
-    fn daily_summary_schema_asks_for_verdicts_and_never_for_a_score() {
+    fn daily_summary_schema_is_headline_and_cards_only() {
         let s = daily_summary_schema();
-        assert_eq!(
-            s["required"],
-            json!([
-                "headline",
-                "narrative",
-                "insights",
-                "plan_verdicts",
-                "themes"
-            ])
-        );
+        // The model answers ONLY a headline and the cards. The plan ledger is
+        // resolved deterministically in Rust, so a verdict/theme/narrative field
+        // here would be work the model is asked to do and the code then ignores.
+        assert_eq!(s["required"], json!(["headline", "insights"]));
+        for gone in ["plan_verdicts", "themes", "narrative"] {
+            assert!(
+                s["properties"].get(gone).is_none(),
+                "the model must no longer return {gone}"
+            );
+        }
 
         // An insight is a heading the model writes itself and a line under it, both
         // FREE TEXT. A closed vocabulary anywhere in here is a set of slots, and
@@ -417,23 +378,11 @@ mod tests {
                 "an insight must never carry a {closed:?}"
             );
         }
+        assert_eq!(s["properties"]["insights"]["minItems"], json!(2));
         assert_eq!(s["properties"]["insights"]["maxItems"], json!(3));
 
-        // The outcome vocabulary is closed — a model that invents a fourth word
-        // would land on `not_touched` in the parser, which is the honest default
-        // but a silent one.
-        let verdict = &s["properties"]["plan_verdicts"]["items"];
-        assert_eq!(
-            verdict["properties"]["outcome"]["enum"],
-            json!(["done", "partial", "not_touched"])
-        );
-        // Both arrays are floor-zero: every day is one case or the other, and a
-        // required entry is an entry invented to satisfy a requirement.
-        assert_eq!(s["properties"]["plan_verdicts"]["minItems"], json!(0));
-        assert_eq!(s["properties"]["themes"]["minItems"], json!(0));
-
-        // The score is computed, never asked for. If a number ever appears in this
-        // schema the ring and the ledger beside it can disagree.
+        // No number of any kind is asked for. The score is computed, so a number in
+        // this schema is one the ring and the checklist beside it could disagree with.
         let props = s["properties"].as_object().unwrap();
         for banned in ["achievement_pct", "minutes", "score", "percent"] {
             assert!(
