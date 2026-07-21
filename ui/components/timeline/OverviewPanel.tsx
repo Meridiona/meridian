@@ -3,7 +3,8 @@
 // The right panel's default state (no hour selected). Layout mirrors the
 // design mock: eyebrow + greeting + summary line, drafts-to-review CTA,
 // board-cleanup CTA, a "Today's focus" plan checklist, a "Today" mini-card
-// row (Logged / Focus / Drafts), the time-by-app chart, and a Tasks entry
+// row (Focus / Drafts — Drafts opens the swipeable review dialog), the
+// time-by-app chart, and a Tasks entry
 // point (connected users only for the CTAs/plan; solo users get the greeting
 // + Today cards + time-by-app). Narrative + metric fields are adapted from
 // the retired TodayView's data; the plan checklist reads the same get_plan
@@ -81,14 +82,6 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
   const appTops = today ? appTotals(today.sessions, codingAgents?.agents ?? []) : []
   const appCount = appTops.length
   const catTops = today ? categoryRows(today.sessions, agent_s) : []
-  // Pull the "Coding" number straight out of the SAME merged rows the
-  // category chart renders, rather than recomputing it — guarantees the top
-  // stat and the pie slice can never disagree, since they're reading the
-  // identical value, not two independently-derived numbers that happen to
-  // match today and drift apart the next time either side changes.
-  const codingRow = catTops.find(r => r.cat === 'coding')
-  const coding_s = codingRow?.seconds ?? 0
-  // const codingSub = agent_s > 0 && autonomous_s > 0 ? `incl. ${fmtDur(autonomous_s)} autonomous` : undefined
   // Real worklogs only — is_proposed items carry an 'approved'/'posted' state
   // once a user approves them in-app, but the daemon hasn't necessarily swept
   // them into an actual pm_worklogs row (real ticket created + worklog posted)
@@ -160,18 +153,6 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
 
   return (
     <div className="h-full overflow-y-auto nice-scroll p-6 space-y-7">
-      {/* The plan feature's own empty-state CTA — first thing in the panel so
-          it's impossible to scroll past. Shown to EVERY user (including solo/
-          no-tracker — PlanView's composer already supports a personal,
-          tracker-free task, see PlanView.tsx's `boardEmpty` path), only for
-          today (a past day's empty plan is a quiet historical fact, not
-          something to act on — see the read-only branch further down), and
-          only once the plan has actually loaded so it never flashes before
-          `get_plan` resolves. */}
-      {isToday && plan && focusItems.length === 0 && (
-        <EmptyPlanNudge onOpen={() => onOpen('plan')} />
-      )}
-
       {/* DMG update CTA — only renders when a newer version is available; sits
           at the top of the sidebar so it's noticeable without stealing the
           whole header. Sibling of the tray popover's update banner. */}
@@ -185,27 +166,24 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
 
       <div className="rounded-xl overflow-hidden bg-card p-4" style={{ border: '1px solid var(--t-card-border)' }}>
         <div className="mb-3"><SectionHeading>{dayLabel}</SectionHeading></div>
-        {/* Solo mode: Logged/Drafts both require PM-matched worklogs, which
-            don't exist without a tracker — showing them here would always
-            read "0s"/some stale count. Focus is the one stat that's real.
-            One uniform card style for every tile (no per-stat hue) — these
-            are plain counters, not distinct categories that need color
-            coding to tell apart. */}
+        {/* Solo mode: Drafts requires PM-matched worklogs, which don't exist
+            without a tracker — showing it here would always read some stale
+            count. Focus is the one stat that's real. */}
         {isSolo ? (
-          <div className={`grid gap-3 ${coding_s > 0 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+          <div className="grid grid-cols-1 gap-3">
             <Mini label="Focus" value={fmtDur(focus_s)} />
-            {coding_s > 0 && <Mini label="Coding" value={fmtDur(coding_s)} />}
           </div>
         ) : (
-          // 2×2 (not 4-across) — a 4-column grid in a ~340px panel left no
-          // room for "3h 24m"-length values without wrapping. Order: Focus
-          // leads, Coding next when there's agent/coding time, then the
-          // remaining two.
+          // Just Focus + Drafts — Drafts doubles as the entry point into the
+          // swipeable review dialog (same one FloatingDraftsPill opens), so
+          // it renders as a button once there's something to review, with an
+          // accent color to signal it's live/actionable rather than a plain
+          // counter like the other tiles used to be.
           <div className="grid grid-cols-2 gap-3">
             <Mini label="Focus" value={fmtDur(focus_s)} />
-            {coding_s > 0 && <Mini label="Coding" value={fmtDur(coding_s)} />}
-            <Mini label="Logged" value={fmtDur(loggedSeconds)} />
-            <Mini label="Drafts" value={String(pendingCount)} />
+            <Mini label="Drafts" value={String(pendingCount)}
+              onClick={pendingCount > 0 ? () => onOpen('review') : undefined}
+              accent={pendingCount > 0} />
           </div>
         )}
       </div>
@@ -227,12 +205,21 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
       {/* Editing is a today-only action — you plan the day you're in, not the
           past. On a past date the section is read-only: it shows that day's
           committed focus (or a quiet empty note), with no Edit/Add
-          affordances. `focusLabel` relabels the heading off "Today's". The
-          empty-today case no longer renders anything here — the top-of-panel
-          EmptyPlanNudge above owns that CTA now. */}
-      {!isSolo && (focusItems.length > 0 || !isToday) && (
+          affordances. `focusLabel` relabels the heading off "Today's".
+          The empty-TODAY case is shown to every user, including solo/
+          no-tracker (PlanView's composer already supports a personal,
+          tracker-free task, see PlanView.tsx's `boardEmpty` path) — everything
+          else (the populated checklist, and a past day's read-only note)
+          stays tracker-only, unchanged. `plan` gates the empty branch so it
+          never flashes before the first `get_plan` resolves. */}
+      {((isToday && plan && focusItems.length === 0) || (!isSolo && (focusItems.length > 0 || !isToday))) && (
         <div>
-          {focusItems.length > 0 ? (
+          {focusItems.length === 0 && isToday ? (
+            <div>
+              <div className="mb-2.5"><SectionHeading>Today&apos;s focus</SectionHeading></div>
+              <EmptyPlanNudge onOpen={() => onOpen('plan')} />
+            </div>
+          ) : focusItems.length > 0 ? (
             <div className="rounded-xl overflow-hidden bg-card" style={{ border: '1px solid var(--t-card-border)' }}>
               <div className="flex items-center justify-between px-4 py-3">
                 <SectionHeading>{focusLabel}</SectionHeading>
@@ -389,12 +376,29 @@ function EntryRow({ label, hint, onClick }: { label: string; hint: string; onCli
   )
 }
 
-function Mini({ label, value, sub }: { label: string; value: string; sub?: string }) {
-  return (
-    <div className="rounded-xl p-3 bg-box">
-      <p className="mt-stat text-title whitespace-nowrap">{value}</p>
+// `onClick` + `accent` turn this into a live entry point (used for Drafts,
+// once there's something to review) rather than a plain counter — accent
+// colors the value the same amber as FloatingDraftsPill so the two read as
+// the same affordance, and the button semantics + hover/press feedback
+// signal it's clickable without adding a whole separate visual style.
+function Mini({ label, value, sub, onClick, accent }: {
+  label: string; value: string; sub?: string; onClick?: () => void; accent?: boolean
+}) {
+  const content = (
+    <>
+      <p className="mt-stat whitespace-nowrap"
+        style={{ color: accent ? 'var(--color-state-pending)' : 'var(--t-title)' }}>{value}</p>
       <p className="mt-label mt-1" style={{ color: 'var(--t-faint)' }}>{label}</p>
       {sub && <p className="mt-body-sm mt-0.5" style={{ color: 'var(--t-faint)', fontSize: 10.5 }}>{sub}</p>}
-    </div>
+    </>
   )
+  if (onClick) {
+    return (
+      <button onClick={onClick}
+        className="w-full text-left rounded-xl p-3 bg-box mt-card-hover transition-transform active:scale-95 cursor-pointer">
+        {content}
+      </button>
+    )
+  }
+  return <div className="rounded-xl p-3 bg-box">{content}</div>
 }
