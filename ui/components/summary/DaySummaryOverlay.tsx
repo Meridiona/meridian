@@ -44,13 +44,11 @@ import { hhmmToMin } from '@/components/timeline/dayTaskLayout'
 import { formatDayLabel } from '@/components/timeline/types'
 import { fmtDur } from '@/components/atoms'
 import type { SettingsSection } from '@/components/timeline/settings/types'
-import { AchievementRing } from './AchievementRing'
 import { Composing } from './Composing'
+import { DayScore } from './DayScore'
 import { DayShape } from './DayShape'
-import { Emphasis } from './Emphasis'
 import { Insights } from './Insights'
-import { PlanLedger } from './PlanLedger'
-import { Workstreams } from './Workstreams'
+import { WorkList } from './WorkList'
 
 const API = '/api/day-summary' // vestigial route label the bridge wants (Tauri-only now)
 
@@ -213,6 +211,17 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
   // a day planned after its summary was composed still gets the right screen.
   const planned = (sc?.planned ?? false) && (summary?.plan.length ?? 0) > 0
 
+  // Every tracked minute, sub-floor detours included: this is the "where did the day
+  // go" figure, and rounding the short stretches out of it would make it disagree
+  // with the timeline the reader just came from.
+  const loggedMinutes = tasks.reduce((n, t) => n + t.minutes, 0)
+  // Substantial work no planned ticket accounts for - counted here from the ledger's
+  // own join so it cannot disagree with the rows below.
+  const onPlan = new Set((summary?.plan ?? []).flatMap(v => v.day_task_ids))
+  const bonusCount = tasks.filter(
+    t => t.minutes >= (sc?.task_min_minutes ?? 30) && !onPlan.has(t.id),
+  ).length
+
   return (
     // A card over the timeline, not a full-bleed takeover. The summary is a
     // composed artefact about one day - giving it edges, a shadow and air around
@@ -253,11 +262,6 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
           </div>
 
           <div className="flex items-center gap-2.5 shrink-0">
-            {summary && !summary.fallback && (
-              <span className="mt-body-sm" style={{ color: 'var(--t-faint-2)' }}>
-                {summary.model || summary.provider}
-              </span>
-            )}
             {hasWork && (
               <button onClick={generate} disabled={generating}
                 className="rounded-full px-3.5 py-1.5 mt-label transition-opacity disabled:opacity-50 hover:opacity-85"
@@ -300,67 +304,45 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
           // than letting the body scroll under a pinned header.
           <div className="flex-1 min-h-0 overflow-y-auto nice-scroll px-7 py-7">
             {/* ── The hero ──────────────────────────────────────────────────── */}
-            <div className="flex items-center gap-9">
-              {planned && summary.adherence.planned > 0 && (
-                <AchievementRing
-                  plan={summary.plan}
-                  adherence={summary.adherence}
-                  activeIndex={hovered}
-                  onHover={setHovered}
-                />
-              )}
+            {summary.headline && (
+              <motion.h2
+                style={{
+                  font: '800 27px var(--font-sans)',
+                  letterSpacing: '-0.032em',
+                  lineHeight: 1.14,
+                  color: 'var(--t-title)',
+                  maxWidth: '26ch',
+                }}
+                initial={reduce ? false : { opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: reduce ? 0 : 0.35, delay: reduce ? 0 : 0.04 }}
+              >
+                {summary.headline}
+              </motion.h2>
+            )}
 
-              <div className="flex-1 min-w-0">
-                {summary.headline && (
-                  <motion.h2
-                    style={{
-                      font: '800 25px var(--font-sans)',
-                      letterSpacing: '-0.03em',
-                      lineHeight: 1.15,
-                      color: 'var(--t-title)',
-                      maxWidth: '24ch',
-                    }}
-                    initial={reduce ? false : { opacity: 0, y: 6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: reduce ? 0 : 0.35, delay: reduce ? 0 : 0.1 }}
-                  >
-                    {summary.headline}
-                  </motion.h2>
-                )}
-
-                {summary.narrative && (
-                  <motion.p
-                    className={summary.headline ? 'mt-3' : ''}
-                    style={{
-                      color: 'var(--t-muted)',
-                      maxWidth: '56ch',
-                      font: '450 16px/1.62 var(--font-sans)',
-                      letterSpacing: '-0.008em',
-                    }}
-                    initial={reduce ? false : { opacity: 0, y: 6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: reduce ? 0 : 0.35, delay: reduce ? 0 : 0.16 }}
-                  >
-                    <Emphasis text={summary.narrative} />
-                  </motion.p>
-                )}
-
-                {/* The unplanned tail, said plainly and WITHOUT apology - work that
-                    was not on the plan is still work, and usually the interesting
-                    half of the day. */}
-                {planned && summary.adherence.unplanned_minutes > 0 && (
-                  <p className="mt-body-sm mt-4" style={{ color: 'var(--t-faint-2)' }}>
-                    {fmtDur(summary.adherence.unplanned_minutes * 60)} went to work that was not on the plan
-                  </p>
-                )}
-
-                {summary.fallback && (
-                  <p className="mt-body-sm mt-4" style={{ color: 'var(--t-faint-2)' }}>
-                    The write-up could not be composed this time - what is below is measured, not written.
-                  </p>
-                )}
-              </div>
+            {/* The numbers under the headline, then the sentence under them. The
+                figures are what the eye lands on; the prose is what makes them
+                mean something, and it reads better as a caption to them than as a
+                paragraph they interrupt. */}
+            <div className="mt-6">
+              <DayScore
+                plan={summary.plan}
+                adherence={summary.adherence}
+                planned={planned}
+                loggedMinutes={loggedMinutes}
+                bonusCount={bonusCount}
+                workstreamCount={sc?.task_count ?? 0}
+                focusSeconds={sc?.focus_s ?? 0}
+              />
             </div>
+
+
+            {summary.fallback && (
+              <p className="mt-body-sm mt-4" style={{ color: 'var(--t-faint-2)' }}>
+                The write-up could not be composed this time - what is below is measured, not written.
+              </p>
+            )}
 
             {error && (
               <p className="mt-body-sm mt-4" style={{ color: 'var(--severity-must)' }}>{error}</p>
@@ -368,21 +350,14 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
 
             {summary.insights.length > 0 && (
               <Section>
-                <Insights insights={summary.insights} delay={0.24} />
+                <Insights insights={summary.insights} delay={0.3} />
               </Section>
             )}
 
-            {/* ── The plan, or what the day turned out to be ────────────────── */}
-            {planned ? (
-              <Section label="What you set out to do" boxed>
-                <PlanLedger
-                  plan={summary.plan}
-                  activeIndex={hovered}
-                  onHover={setHovered}
-                  onOpenTask={onOpenTask}
-                />
-              </Section>
-            ) : summary.themes.length > 0 ? (
+            {/* On a day with no plan there is no planned-vs-actual to draw, so the
+                space goes to what the day turned out to be about instead. A day
+                without a plan did not fail an exercise. */}
+            {!planned && summary.themes.length > 0 && (
               <Section label="What the day was about">
                 <DayShape
                   themes={summary.themes}
@@ -391,14 +366,17 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
                   switchCount={sc?.switch_count ?? 0}
                 />
               </Section>
-            ) : null}
+            )}
 
-            {/* ── The way into a worklog for any of it ──────────────────────── */}
-            <Section label="Everything you worked on" boxed>
-              <Workstreams
+            {/* ── One list of the day, and the way into a worklog for any of it ── */}
+            <Section label="What you worked on">
+              <WorkList
                 tasks={tasks}
-                delay={0.3}
+                plan={planned ? summary.plan : []}
+                planned={planned}
+                delay={0.36}
                 onSelect={(t, i) => setSelected(detailOf(t, i, day))}
+                onOpenTask={onOpenTask}
               />
             </Section>
           </div>

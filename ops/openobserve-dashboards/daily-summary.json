@@ -454,7 +454,7 @@
           "queryType": "sql",
           "queries": [
             {
-              "query": "SELECT day_local as x_axis_1, llm_provider as x_axis_2, model as x_axis_3, planned as x_axis_4, fallback as x_axis_5, plan_items as y_axis_1, certain_matches as y_axis_2, achievement_pct as y_axis_3, themes as y_axis_4, learned as y_axis_5, prompt_chars as y_axis_6 FROM \"default\" WHERE operation_name='day_summary.generate' ORDER BY _timestamp DESC",
+              "query": "SELECT day_local as x_axis_1, llm_provider as x_axis_2, model as x_axis_3, planned as x_axis_4, fallback as x_axis_5, plan_items as y_axis_1, certain_matches as y_axis_2, achievement_pct as y_axis_3, themes as y_axis_4, insights as y_axis_5, prompt_chars as y_axis_6 FROM \"default\" WHERE operation_name='day_summary.generate' ORDER BY _timestamp DESC",
               "customQuery": true,
               "fields": {
                 "stream": "default",

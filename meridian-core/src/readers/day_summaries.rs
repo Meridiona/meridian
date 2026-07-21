@@ -13,11 +13,10 @@
 //! - A [`DaySummary::headline`] and a `narrative`. The prose is the feature. The
 //!   narrative may carry `**emphasis**` spans; the screen renders them and nothing
 //!   else, so it is the one markup convention in the contract.
-//! - [`DaySummaryInsight`]s — plain observations. Deliberately **uncategorised**:
-//!   an earlier shape had a `kind` enum (`drifted`, `overperformed`) and turning an
-//!   observation into a labelled verdict on the person is exactly what made the
-//!   screen feel like a scorecard. The one flag left is `learned`, which is a bonus
-//!   rather than a slot.
+//! - [`DaySummaryInsight`]s — three cards, each a title the model writes itself and
+//!   a line under it. Both fields are FREE TEXT, never an enum: a fixed set of
+//!   categories would make every day fill the same slots whether or not it had
+//!   anything to say in them. The screen colours the cards by position.
 //! - [`PlanVerdict`]s — one per planned ticket, when the day had a plan.
 //! - [`Adherence`] — the counts and the percentage. **Computed in Rust**, never read
 //!   out of the model's text, so the ring and the list beside it cannot disagree.
@@ -42,18 +41,20 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use tracing::Instrument;
 
-/// One line of observation about the day.
+/// One observation about the day, as the screen's cards render it.
 ///
-/// No category, no severity, no label. See the module header for why.
+/// **Nothing here is categorised.** Both fields are free text. An earlier shape had
+/// a closed `kind` (`achieved` / `overperformed` / `drifted`), and a later one a
+/// three-value `tone` — both were slots, and slots get filled whether or not the day
+/// had anything to put in them. What a card is about is whatever the model found;
+/// the screen colours the three cards by position, so it never needs to be told.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaySummaryInsight {
-    pub text: String,
-    /// True only when this is something genuinely NEW the day taught — a tool, an
-    /// API, a root cause, a technique. Routine work is not a lesson. The screen
-    /// lifts these out into their own card; when there are none it renders nothing
-    /// rather than an empty frame, so an honest zero costs nothing.
+    /// The card's own heading, in the model's words — three or so at most.
     #[serde(default)]
-    pub learned: bool,
+    pub title: String,
+    /// A sentence or two under the title. The substance.
+    pub text: String,
 }
 
 /// How a planned ticket actually went.
@@ -105,6 +106,15 @@ pub struct PlanVerdict {
     /// Measured minutes attributed to it, when work could be tied to it at all.
     #[serde(default)]
     pub minutes: i64,
+    /// The `day_tasks` ids this ticket's outcome was read off — a posted worklog's
+    /// workstream, or the ones the model cited. Empty on `not_touched`.
+    ///
+    /// Carried on the wire because the screen shows ONE list of the day's work with
+    /// each row marked on-plan or not; without these ids it would have to guess the
+    /// join by matching titles, which is exactly the guessing this ledger exists to
+    /// remove.
+    #[serde(default)]
+    pub day_task_ids: Vec<String>,
     /// True when this outcome was established from the database rather than by the
     /// model — a posted worklog, a linked ticket, or a ticket that went terminal.
     /// The screen marks these; the model is not allowed to overturn them.
@@ -389,12 +399,12 @@ mod tests {
             narrative: narrative.to_string(),
             insights: vec![
                 DaySummaryInsight {
+                    title: "One long stretch".to_string(),
                     text: "Most of the depth landed in one unbroken stretch.".to_string(),
-                    learned: false,
                 },
                 DaySummaryInsight {
+                    title: "New to you".to_string(),
                     text: "ATTACH does not carry a rekey.".to_string(),
-                    learned: true,
                 },
             ],
             plan: keys
@@ -405,6 +415,7 @@ mod tests {
                     outcome: Outcome::Done,
                     evidence: "a worklog was posted against it".to_string(),
                     minutes: 130,
+                    day_task_ids: vec!["T1".to_string()],
                     certain: true,
                     provider: "jira".to_string(),
                     url: String::new(),
@@ -447,7 +458,7 @@ mod tests {
         assert_eq!(got.narrative, "A long day.");
         assert_eq!(got.headline, "A good day, one detour");
         assert_eq!(got.insights.len(), 2);
-        assert!(got.insights[1].learned);
+        assert_eq!(got.insights[1].title, "New to you");
         assert_eq!(got.plan.len(), 1);
         assert_eq!(got.plan[0].task_key, "KAN-1");
         assert_eq!(got.plan[0].outcome, Outcome::Done);

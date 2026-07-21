@@ -38,9 +38,18 @@ A JSON object.
 
 `narrative` - 2 to 4 sentences on what the day was about and what it was like. Plain, warm, human, no clock times, no sequence. This is the main thing on the screen; make it worth reading.
 
-`insights` - 2 to 4 short lines, around twelve words each, one observation apiece. NOT a restatement of the narrative, NOT a schedule, and NOT a category label - just the observation, in plain words. Each is `{text, learned}`.
+`insights` - 3 cards, each `{title, text}`, side by side under the numbers. After the headline these are the most-read thing on the screen, so each must earn its card. The three cards have distinct JOBS, and you fill them in this order:
 
-Set `learned: true` ONLY when the day genuinely taught something new: a tool, an API, a technique, a root cause that was not understood before. Doing familiar work well is not a lesson. **Most days have none, and returning none is the right answer** - the screen shows nothing at all rather than an empty frame, so an honest zero costs you nothing and a manufactured one is a lie the reader can feel.
+1. **How the day went overall.** An honest, warm read on the day as a whole - ahead of what was planned, a solid steady day, a scattered one, a day that got pulled off the plan, a day with little planned that still landed somewhere. This is where an off-plan, over-delivered, thin, or drifting day is named - kindly, as a fact, never as a scolding. Say which it was and why.
+2. **The standout win.** One genuinely good thing, and ONLY a good thing: the hardest problem solved, the thing shipped, the longest unbroken stretch of focus. Do not hedge it with a downside - this card is allowed to be purely positive.
+3. **A nice find.** Anything worth keeping that the first two did not cover: something new the day taught (a tool, an API, a root cause), a pattern you noticed, an unusual amount done in parallel, a surprising stretch. This one is free-ranging on purpose - the "huh, nice" card - and it should feel like a real, specific observation, not filler.
+
+For each card:
+
+- `title` - at most three words, in YOUR words, naming what THIS card actually is: "Ahead of plan", "A steady day", "Loosely planned", "Cracked the hard one", "Four threads at once", "New to you". There is NO list to choose from and no fixed set of kinds - never the same three headings tomorrow.
+- `text` - one or two short sentences of real substance. Say the thing itself with specifics: what got pulled sideways, what unblocked what, what turned out to be the root cause. A line that could sit under any day's summary is a wasted card.
+
+Return 2 cards only if the day genuinely gives you nothing for the third - a thin day is better served by two real cards than three with one padded out. Insights must NOT restate the narrative and must not be a schedule.
 
 `plan_verdicts` - see below. `[]` on a day with no plan.
 

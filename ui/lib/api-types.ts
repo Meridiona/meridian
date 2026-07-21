@@ -718,11 +718,11 @@ export interface WhatsNewData {
  *  observation into a verdict on the person, which is what made this screen feel
  *  like a scorecard. */
 export interface DaySummaryInsight {
+  /** The card's heading, in the model's own words. FREE TEXT, never from a fixed
+   *  set — a closed vocabulary would make every day fill the same slots whether or
+   *  not it had anything to put in them. May be empty on a legacy row. */
+  title: string
   text: string
-  /** True only for something genuinely new the day taught. The screen lifts these
-   *  into their own card; **most days have none**, and none renders nothing at all
-   *  rather than an empty frame. */
-  learned: boolean
 }
 
 /** How a planned ticket actually went. */
@@ -740,6 +740,9 @@ export interface PlanVerdict {
   evidence: string
   /** Measured minutes attributable to it; 0 when no workstream could be tied. */
   minutes: number
+  /** The day-task ids this outcome was read off. The work list uses them to mark a
+   *  row as on-plan, so the join is the ledger's, not a title match. */
+  day_task_ids: string[]
   /** The outcome came from the DATABASE (a posted worklog, a linked ticket, a
    *  closed ticket), not from the model, which cannot overturn it. */
   certain: boolean

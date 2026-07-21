@@ -98,9 +98,10 @@ fn parse_answer(text: &str) -> Option<Answer> {
         .map(|a| {
             a.iter()
                 .filter_map(|i| {
-                    // Tolerate the pre-068 shape (a bare string) as well as the
-                    // object: a provider that ignores the schema and copies an
-                    // older example should cost the `learned` flag, not the line.
+                    // Tolerate the older shapes (a bare string, or an object with
+                    // no title) as well as the current one: a provider that
+                    // ignores the schema and copies an older example should cost
+                    // the card's heading, not the line itself.
                     let text = match i {
                         Value::String(s) => s.trim().to_string(),
                         _ => i.get("text")?.as_str()?.trim().to_string(),
@@ -109,8 +110,13 @@ fn parse_answer(text: &str) -> Option<Answer> {
                         return None;
                     }
                     Some(DaySummaryInsight {
+                        title: i
+                            .get("title")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or_default()
+                            .trim()
+                            .to_string(),
                         text,
-                        learned: i.get("learned").and_then(|l| l.as_bool()).unwrap_or(false),
                     })
                 })
                 .collect()
@@ -312,7 +318,7 @@ fn build_user_prompt(ev: &day_evidence::Evidence) -> String {
     achievement_pct = Empty,
     unplanned_minutes = Empty,
     themes = Empty,
-    learned = Empty,
+    insights = Empty,
     fallback = Empty,
     prompt_chars = Empty,
 ))]
@@ -411,7 +417,7 @@ pub async fn generate(pool: &SqlitePool, day_local: &str) -> Result<DaySummary> 
     // some record has it. Same reason worklog.generate stamps an empty
     // matched_task_key on the propose branch. See daily-summary.json.
     span.record("themes", themes.len());
-    span.record("learned", a.insights.iter().filter(|i| i.learned).count());
+    span.record("insights", a.insights.len());
     span.record("fallback", fallback);
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -492,9 +498,9 @@ mod tests {
         let a = parse_answer(
             r#"{"headline": "A good day, one detour",
                 "narrative": "You closed the rework and **the triage bug pulled you sideways**.",
-                "insights": [{"text": "Most of the depth landed in one stretch.", "learned": false},
-                             {"text": "ATTACH does not carry a rekey.", "learned": true},
-                             {"text": "  ", "learned": false}],
+                "insights": [{"title": "One long stretch", "text": "Most of the depth landed in one go."},
+                             {"title": "New to you", "text": "ATTACH does not carry a rekey."},
+                             {"title": "Blank", "text": "  "}],
                 "plan_verdicts": [{"task_key": "KAN-1", "outcome": "done", "evidence": "shipped it"},
                                   {"task_key": "KAN-2", "outcome": "partial", "evidence": "started"}],
                 "themes": []}"#,
@@ -503,7 +509,7 @@ mod tests {
         assert_eq!(a.headline, "A good day, one detour");
         // Blank insight lines are dropped rather than rendered as empty rows.
         assert_eq!(a.insights.len(), 2);
-        assert!(a.insights[1].learned);
+        assert_eq!(a.insights[1].title, "New to you");
         assert_eq!(a.verdicts.len(), 2);
         assert_eq!(a.verdicts[1].outcome, Outcome::Partial);
     }
@@ -536,13 +542,14 @@ mod tests {
         assert_eq!(a.verdicts[0].outcome, Outcome::NotTouched);
     }
 
-    /// A provider that ignores the schema and writes bare strings costs the
-    /// `learned` flag, not the whole insight list.
+    /// A provider that ignores the schema and writes bare strings costs the card's
+    /// heading, not the whole insight list.
     #[test]
     fn tolerates_the_older_bare_string_insight_shape() {
         let a = parse_answer(r#"{"insights":["one line","another"]}"#).unwrap();
         assert_eq!(a.insights.len(), 2);
-        assert!(!a.insights[0].learned);
+        assert!(a.insights[0].title.is_empty());
+        assert_eq!(a.insights[0].text, "one line");
     }
 
     /// Copilot fences its JSON and Cursor wraps it in prose; the shared tolerant

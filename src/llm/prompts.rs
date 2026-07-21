@@ -221,11 +221,13 @@ pub const DAILY_SUMMARY: &str = include_str!("../../assets/prompts/daily-summary
 
 /// The JSON shape the daily-summary call must answer in.
 ///
-/// Note what is NOT here: any category, kind, or severity on an insight. An earlier
-/// shape had one (`achieved` / `overperformed` / `drifted` / `learned`) and every
-/// label turned an observation into a verdict on the person, which is precisely
-/// what this screen must not do. The single flag that survives is `learned`, and it
-/// is a bonus rather than a slot — its floor is zero on purpose.
+/// Note what is NOT here: any category, kind, tone or severity on an insight. The
+/// screen renders the three insights as titled cards, and a fixed vocabulary for
+/// those headings (`achieved` / `overperformed` / `drifted`) would make every day
+/// fill the same slots whether or not it had anything to put in them — which is how
+/// a review turns into a scorecard. Both fields are free text; the card's colour
+/// comes from its position on the screen, so the model is never asked to classify
+/// what it found.
 ///
 /// Note also what the model is NEVER asked for: a percentage, a count, or a
 /// duration. Those are computed from its verdicts in
@@ -242,14 +244,17 @@ pub fn daily_summary_schema() -> Value {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "text":    {"type": "string"},
-                        "learned": {"type": "boolean"}
+                        "title": {"type": "string"},
+                        "text":  {"type": "string"}
                     },
-                    "required": ["text", "learned"],
+                    "required": ["title", "text"],
                     "additionalProperties": false
                 },
+                // Three is the shape the screen is built for. Two is allowed
+                // because a thin day genuinely has less to say, and padding it out
+                // is worse than a short row.
                 "minItems": 2,
-                "maxItems": 4
+                "maxItems": 3
             },
             "plan_verdicts": {
                 "type": "array",
@@ -369,10 +374,13 @@ mod tests {
         // The locked-prematch rule: without it the model argues with a posted
         // worklog and its answer is silently discarded, which wastes the call.
         assert!(DAILY_SUMMARY.contains("SOME OUTCOMES ARE ALREADY SETTLED"));
-        // `learned` must be allowed to be zero, or every day sprouts a fake lesson.
-        assert!(
-            DAILY_SUMMARY.contains("Most days have none, and returning none is the right answer")
-        );
+        // The three insight cards each have a job; if the prompt stops teaching the
+        // jobs the model reverts to three interchangeable remarks.
+        assert!(DAILY_SUMMARY.contains("How the day went overall"));
+        assert!(DAILY_SUMMARY.contains("The standout win"));
+        assert!(DAILY_SUMMARY.contains("A nice find"));
+        // Card 1 must be free to name an off-plan or thin day without scolding.
+        assert!(DAILY_SUMMARY.contains("never as a scolding"));
         // The emphasis convention is the only markup the screen renders; if the
         // prompt stops teaching it, `**` reaches the reader as literal asterisks.
         assert!(DAILY_SUMMARY.contains("wrap a phrase in double asterisks"));
@@ -397,16 +405,19 @@ mod tests {
             ])
         );
 
-        // An insight is text plus one bonus flag. NO category enum: a label turns
-        // an observation into a verdict on the person, which is what made the first
-        // version of this screen feel like a scorecard.
+        // An insight is a heading the model writes itself and a line under it, both
+        // FREE TEXT. A closed vocabulary anywhere in here is a set of slots, and
+        // slots get filled whether or not the day had anything to put in them.
         let insight = &s["properties"]["insights"]["items"];
-        assert_eq!(insight["required"], json!(["text", "learned"]));
-        assert_eq!(insight["properties"]["learned"], json!({"type": "boolean"}));
-        assert!(
-            insight["properties"].get("kind").is_none(),
-            "insights must not carry a category"
-        );
+        assert_eq!(insight["required"], json!(["title", "text"]));
+        assert_eq!(insight["properties"]["title"], json!({"type": "string"}));
+        for closed in ["kind", "tone", "category", "severity"] {
+            assert!(
+                insight["properties"].get(closed).is_none(),
+                "an insight must never carry a {closed:?}"
+            );
+        }
+        assert_eq!(s["properties"]["insights"]["maxItems"], json!(3));
 
         // The outcome vocabulary is closed — a model that invents a fourth word
         // would land on `not_touched` in the parser, which is the honest default
