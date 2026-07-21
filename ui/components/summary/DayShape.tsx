@@ -74,11 +74,8 @@ export function DayShape({
   if (rows.length === 0 || total === 0) return null
 
   return (
+    // No heading here: the summary's `Section` owns the label and the spacing.
     <div className="w-full">
-      <p className="mt-label mb-3" style={{ color: 'var(--t-faint-2)' }}>
-        What the day was about
-      </p>
-
       {/* The band. One bar, split - not a bar chart with an axis. There is no
           scale to read off it, only a proportion to see. */}
       <div className="flex gap-1 w-full overflow-hidden" style={{ height: 10 }}>

@@ -54,11 +54,9 @@ export function Workstreams({
   const longest = Math.max(...shown.map(t => t.minutes), 1)
 
   return (
+    // No heading here: the summary's `Section` owns the label, the spacing and the
+    // frame together, so one thing decides how a block is introduced.
     <div className="flex flex-col">
-      <p className="mt-label mb-2.5" style={{ color: 'var(--t-faint-2)' }}>
-        Everything you worked on
-      </p>
-
       <ul className="flex flex-col">
         {shown.map((t, n) => {
           const indexInDay = tasks.indexOf(t)

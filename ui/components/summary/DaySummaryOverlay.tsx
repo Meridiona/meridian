@@ -88,10 +88,39 @@ function NavBtn({ glyph, label, onClick, disabled }: {
   )
 }
 
-/** A hairline section break. Named so the three call sites stay identical - the
- *  rhythm of this screen is mostly the whitespace between its blocks. */
-function Rule() {
-  return <div className="shrink-0 my-6" style={{ height: 1, background: 'var(--t-hair)' }} />
+/** One labelled block of the summary.
+ *
+ *  `boxed` sets the content on its own quiet panel, and is for the two LISTS - a
+ *  row of small type with a bar and a time on it needs an edge to sit against, or
+ *  it floats in the middle of the page with nothing holding it. The hero and the
+ *  insights are deliberately NOT boxed: they are prose, and prose in a box reads
+ *  as a callout, which is the wrong emphasis on a screen whose whole point is
+ *  that the writing comes first.
+ *
+ *  The label lives here rather than inside the list components so one thing owns
+ *  the section's heading, its spacing, and its frame together. */
+function Section({ label, boxed = false, children }: {
+  label?: string
+  boxed?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <section className="mt-7 first:mt-0">
+      {label && (
+        <p className="mt-label mb-2.5" style={{ color: 'var(--t-faint-2)' }}>{label}</p>
+      )}
+      {boxed ? (
+        <div
+          className="rounded-xl px-2 py-1.5"
+          style={{ background: 'var(--t-box)', border: '1px solid var(--t-card-border)' }}
+        >
+          {children}
+        </div>
+      ) : (
+        children
+      )}
+    </section>
+  )
 }
 
 export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSettings, onOpenTask }: {
@@ -116,6 +145,15 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
   // not trigger a render, and it must survive the day flipping back and forth so a
   // user paging through the week cannot spend an LLM call per arrow press.
   const refreshed = useRef<Set<string>>(new Set())
+
+  // Escape closes, as it does on every other overlay here (ModalShell's own
+  // convention). It was missing while this screen was a full-bleed takeover, and
+  // a card over a backdrop makes its absence obvious.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
 
   const generate = useCallback(async () => {
     setGenerating(true)
@@ -176,41 +214,73 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
   const planned = (sc?.planned ?? false) && (summary?.plan.length ?? 0) > 0
 
   return (
-    <div className="absolute inset-0 z-50 flex flex-col rise" style={{ background: 'var(--win-bg)' }}>
-      {/* Header — deliberately quiet. The day belongs to the body, not a title bar. */}
-      <div className="shrink-0 flex items-center justify-between px-8 py-3">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <NavBtn glyph="‹" label="Previous day" onClick={() => onShiftDay(-1)} />
-          <p className="mt-label px-1 truncate" style={{ color: 'var(--t-muted)' }}>{dayLabel}</p>
-          <NavBtn glyph="›" label="Next day" onClick={() => onShiftDay(1)} disabled={isToday} />
-        </div>
+    // A card over the timeline, not a full-bleed takeover. The summary is a
+    // composed artefact about one day - giving it edges, a shadow and air around
+    // it is what makes it read as something made rather than as the app's
+    // background with words on it. Same chrome as every other overlay here
+    // (ModalShell / CleanupOverlay): dimmed blurred backdrop, one rounded panel.
+    <div
+      className="absolute inset-0 z-50 flex items-center justify-center p-5 sm:p-8 rise"
+      style={{ background: 'rgba(20,16,40,0.5)', backdropFilter: 'blur(3px)' }}
+      onClick={onClose}
+    >
+      <div
+        // `relative` so the workstream detail dialog's `absolute inset-0` lands on
+        // the card rather than on the backdrop behind it.
+        className="relative w-full flex flex-col rounded-2xl overflow-hidden bg-panel"
+        style={{
+          maxWidth: 1000,
+          // `maxHeight` with no fixed height, per ModalShell's note: a short day
+          // sizes the card to its content instead of leaving a tall empty box,
+          // while a long one still gets a definite height here - which is what
+          // lets the body's own `flex-1 min-h-0 overflow-y-auto` clip and scroll.
+          maxHeight: '100%',
+          border: '1px solid var(--t-card-border)',
+          boxShadow: 'var(--mt-modal-shadow)',
+        }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header — deliberately quiet, and pinned: the day nav and Regenerate stay
+            reachable however far the body has scrolled. */}
+        <div
+          className="shrink-0 flex items-center justify-between px-7 py-3.5 border-b"
+          style={{ borderColor: 'var(--t-hair)' }}
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            <NavBtn glyph="‹" label="Previous day" onClick={() => onShiftDay(-1)} />
+            <p className="mt-label px-1 truncate" style={{ color: 'var(--t-muted)' }}>{dayLabel}</p>
+            <NavBtn glyph="›" label="Next day" onClick={() => onShiftDay(1)} disabled={isToday} />
+          </div>
 
-        <div className="flex items-center gap-2.5 shrink-0">
-          {summary && !summary.fallback && (
-            <span className="mt-body-sm" style={{ color: 'var(--t-faint-2)' }}>
-              {summary.model || summary.provider}
-            </span>
-          )}
-          {hasWork && (
-            <button onClick={generate} disabled={generating}
-              className="rounded-full px-3.5 py-1.5 mt-label transition-opacity disabled:opacity-50 hover:opacity-85"
-              style={{
-                background: summary ? 'transparent' : 'var(--accent)',
-                color: summary ? 'var(--t-muted)' : '#fff',
-                border: summary ? '1px solid var(--t-hair)' : '1px solid transparent',
-              }}>
-              {generating ? 'Composing…' : summary ? 'Regenerate' : 'Compose summary'}
+          <div className="flex items-center gap-2.5 shrink-0">
+            {summary && !summary.fallback && (
+              <span className="mt-body-sm" style={{ color: 'var(--t-faint-2)' }}>
+                {summary.model || summary.provider}
+              </span>
+            )}
+            {hasWork && (
+              <button onClick={generate} disabled={generating}
+                className="rounded-full px-3.5 py-1.5 mt-label transition-opacity disabled:opacity-50 hover:opacity-85"
+                style={{
+                  background: summary ? 'transparent' : 'var(--accent)',
+                  color: summary ? 'var(--t-muted)' : '#fff',
+                  border: summary ? '1px solid var(--t-hair)' : '1px solid transparent',
+                }}>
+                {generating ? 'Composing…' : summary ? 'Regenerate' : 'Compose summary'}
+              </button>
+            )}
+            <button onClick={onClose} aria-label="Close"
+              className="inline-flex items-center justify-center rounded-full bg-wrap hover:opacity-70"
+              style={{ width: 30, height: 30, color: 'var(--t-muted)' }}>
+              <span className="text-[17px] leading-none">×</span>
             </button>
-          )}
-          <button onClick={onClose} aria-label="Close"
-            className="inline-flex items-center justify-center rounded-full hover:opacity-70"
-            style={{ width: 28, height: 28, color: 'var(--t-muted)', border: '1px solid var(--t-hair)' }}>
-            <span className="text-[16px] leading-none">×</span>
-          </button>
+          </div>
         </div>
-      </div>
 
-      <div className="flex-1 min-h-0 flex flex-col px-8 pb-6">
+        {/* `minHeight` so the empty and composing states get room to breathe now
+            that the card sizes to its content - a spinner in a 90px-tall card
+            reads as an error toast. */}
+        <div className="flex-1 min-h-0 flex flex-col" style={{ minHeight: 340 }}>
         {loading ? (
           // Deliberately bare: this is a DB read that lands in milliseconds, and a
           // spinner for it would flash rather than inform.
@@ -227,10 +297,10 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
         ) : (
           // The one scroll on this screen. A ten-ticket plan plus a long day of
           // workstreams genuinely does not fit, and clipping it would be worse
-          // than letting the body scroll under a fixed header.
-          <div className="flex-1 min-h-0 overflow-y-auto -mx-2 px-2">
+          // than letting the body scroll under a pinned header.
+          <div className="flex-1 min-h-0 overflow-y-auto nice-scroll px-7 py-7">
             {/* ── The hero ──────────────────────────────────────────────────── */}
-            <div className="flex items-center gap-9 pt-2">
+            <div className="flex items-center gap-9">
               {planned && summary.adherence.planned > 0 && (
                 <AchievementRing
                   plan={summary.plan}
@@ -248,7 +318,7 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
                       letterSpacing: '-0.03em',
                       lineHeight: 1.15,
                       color: 'var(--t-title)',
-                      maxWidth: '22ch',
+                      maxWidth: '24ch',
                     }}
                     initial={reduce ? false : { opacity: 0, y: 6 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -297,51 +367,48 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
             )}
 
             {summary.insights.length > 0 && (
-              <>
-                <Rule />
+              <Section>
                 <Insights insights={summary.insights} delay={0.24} />
-              </>
+              </Section>
             )}
 
             {/* ── The plan, or what the day turned out to be ────────────────── */}
             {planned ? (
-              <>
-                <Rule />
-                <p className="mt-label mb-1.5" style={{ color: 'var(--t-faint-2)' }}>
-                  What you set out to do
-                </p>
+              <Section label="What you set out to do" boxed>
                 <PlanLedger
                   plan={summary.plan}
                   activeIndex={hovered}
                   onHover={setHovered}
                   onOpenTask={onOpenTask}
                 />
-              </>
+              </Section>
             ) : summary.themes.length > 0 ? (
-              <>
-                <Rule />
+              <Section label="What the day was about">
                 <DayShape
                   themes={summary.themes}
                   tasks={tasks}
                   focusSeconds={sc?.focus_s ?? 0}
                   switchCount={sc?.switch_count ?? 0}
                 />
-              </>
+              </Section>
             ) : null}
 
             {/* ── The way into a worklog for any of it ──────────────────────── */}
-            <Rule />
-            <Workstreams
-              tasks={tasks}
-              delay={0.3}
-              onSelect={(t, i) => setSelected(detailOf(t, i, day))}
-            />
+            <Section label="Everything you worked on" boxed>
+              <Workstreams
+                tasks={tasks}
+                delay={0.3}
+                onSelect={(t, i) => setSelected(detailOf(t, i, day))}
+              />
+            </Section>
           </div>
         )}
       </div>
 
       {/* The reused timeline detail panel, as a dialog. Generate worklog / approve /
-          retarget / dismiss all come with it. */}
+          retarget / dismiss all come with it. Inside the card, not over the whole
+          screen: it is a detail OF this summary, and stacking a second full-screen
+          scrim over the first would bury the card it belongs to. */}
       <AnimatePresence>
         {selected && (
           <motion.div className="absolute inset-0 z-10 flex items-center justify-end p-4"
@@ -364,6 +431,7 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
           </motion.div>
         )}
       </AnimatePresence>
+      </div>
     </div>
   )
 }
