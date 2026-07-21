@@ -8,11 +8,11 @@
 // permission polling, integrations, sign-in, and the AI-provider choice — is all
 // live. No fabricated state.
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import type { ReactNode } from 'react'
 import { invoke, load, mutate, tauri } from '@/lib/bridge'
-import { STEPS, Welcome, Completion } from './steps'
-import type { Wiz } from './steps'
+import { buildSteps, Welcome, Completion } from './steps'
+import type { StepMeta, Wiz } from './steps'
 import type { NotifState } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import type { RuntimeSettings } from '@/lib/settings'
@@ -25,6 +25,16 @@ export default function SetupWizard() {
   const [step, setStep] = useState(0)
   const [done, setDone] = useState(false)
   const [err, setErr] = useState('')
+
+  // Platform gates which steps exist — Permissions is macOS-only (Windows
+  // capture needs no TCC-style grant; see buildSteps in ./steps.tsx). `null`
+  // until resolved is treated as "include it" so the (Welcome-gated) first
+  // paint never has to un-render a step a moment later.
+  const [platform, setPlatform] = useState<string | null>(null)
+  useEffect(() => {
+    invoke<string>('get_platform').then(setPlatform).catch(() => {})
+  }, [])
+  const steps = useMemo(() => buildSteps(platform), [platform])
 
   // Step 1 — permissions (live)
   const [perms, setPerms] = useState<Wiz['perms']>({ accessibility: null, screen: null, notifications: null })
@@ -90,7 +100,7 @@ export default function SetupWizard() {
   // Notification state also refreshes here after the user answers the OS
   // dialog or flips the toggle in System Settings.
   useEffect(() => {
-    if (!active || step !== 0) return
+    if (!active || steps[step]?.id !== 'permissions') return
     const poll = async () => {
       const [accessibility, screen, notifications] = await Promise.all([
         invoke<boolean>('check_accessibility').catch(() => false),
@@ -113,7 +123,7 @@ export default function SetupWizard() {
     poll()
     const id = setInterval(poll, 2000)
     return () => clearInterval(id)
-  }, [active, step])
+  }, [active, step, steps])
 
   // Keep the live connected-state fresh while on the Integrations step, so the
   // rail status + completion summary reflect connects made via <ConnectTrackers>
@@ -126,11 +136,11 @@ export default function SetupWizard() {
   }, [])
 
   useEffect(() => {
-    if (!active || step !== 1) return  // Integrations is now step index 1 (2nd tab)
+    if (!active || steps[step]?.id !== 'integrations') return
     refetchIntegrations()
     const id = setInterval(refetchIntegrations, 3000)
     return () => clearInterval(id)
-  }, [active, step, refetchIntegrations])
+  }, [active, step, steps, refetchIntegrations])
 
   // ── Actions ────────────────────────────────────────────────────────────────
   const openPane = useCallback((pane: string) => {
@@ -186,8 +196,8 @@ export default function SetupWizard() {
   }
 
   // ── Navigation ───────────────────────────────────────────────────────────────
-  const meta = STEPS[step]
-  const last = step === STEPS.length - 1
+  const meta = steps[step]
+  const last = step === steps.length - 1
   const goStep = (i: number) => { setErr(''); setWelcome(false); setDone(false); setStep(i) }
   const finish = async () => {
     // `mark_setup_complete` writes the onboarded flag that stops the wizard
@@ -230,10 +240,10 @@ export default function SetupWizard() {
         transformOrigin: 'center',
       }}>
         {welcome ? (
-          <Welcome onBegin={() => { setWelcome(false); setStep(0) }} />
+          <Welcome onBegin={() => { setWelcome(false); setStep(0) }} steps={steps} />
         ) : (
           <div className="flex" style={{ height: '100%' }}>
-            <Rail step={step} done={done} wiz={wiz} goStep={goStep} />
+            <Rail step={step} done={done} wiz={wiz} steps={steps} goStep={goStep} />
             <div className="flex flex-col" style={{ flex: 1, minWidth: 0 }}>
               {done ? (
                 <div className="nice-scroll" style={{ flex: 1, overflowY: 'auto', display: 'grid', placeItems: 'center', padding: '28px 32px' }}>
@@ -266,7 +276,9 @@ export default function SetupWizard() {
 }
 
 // ── Left step rail ────────────────────────────────────────────────────────────
-function Rail({ step, done, wiz, goStep }: { step: number; done: boolean; wiz: Wiz; goStep: (i: number) => void }) {
+function Rail({ step, done, wiz, steps, goStep }: {
+  step: number; done: boolean; wiz: Wiz; steps: StepMeta[]; goStep: (i: number) => void
+}) {
   return (
     <div className="flex flex-col" style={{ width: 250, flexShrink: 0, background: 'var(--t-box)', borderRight: '1px solid var(--t-hair)', padding: '22px 18px' }}>
       <div style={{ padding: '0 6px', marginBottom: 26 }}>
@@ -276,14 +288,14 @@ function Rail({ step, done, wiz, goStep }: { step: number; done: boolean; wiz: W
         </div>
       </div>
       <div className="flex flex-col" style={{ gap: 2 }}>
-        {STEPS.map((s, i) => {
+        {steps.map((s, i) => {
           const isCur = i === step && !done
           const reached = done || i <= step
           const ok = done || i < step
           // A future step is reachable only once every step between the current
           // one and it satisfies its gate — so the rail can't skip a required
           // step (e.g. permissions) that the Footer's "Continue" would block.
-          const reachable = done || i <= step || STEPS.slice(step, i).every((p) => p.canNext(wiz))
+          const reachable = done || i <= step || steps.slice(step, i).every((p) => p.canNext(wiz))
           return (
             <button key={s.id} disabled={!reachable} onClick={() => { if (reachable) goStep(i) }} className="flex items-start"
               style={{ gap: 12, padding: '10px 8px', borderRadius: 10, textAlign: 'left',

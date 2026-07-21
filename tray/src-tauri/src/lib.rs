@@ -241,15 +241,24 @@ pub fn run() {
                                 } else {
                                     #[cfg(target_os = "macos")]
                                     make_visible_over_fullscreen(&win);
-                                    // Position the popover directly below the tray icon
-                                    // using the click rect — same approach as the tooltip.
-                                    // tauri-plugin-positioner's TrayCenter placed the window
-                                    // overlapping the menu bar on macOS 14+.
+                                    // Position the popover against the tray icon using the
+                                    // click rect — same approach as the tooltip. Below the
+                                    // icon on macOS (menu bar, top of screen; also sidesteps
+                                    // tauri-plugin-positioner's TrayCenter overlapping the
+                                    // menu bar on macOS 14+); above it on Windows, whose tray
+                                    // icon sits at the bottom of the taskbar — see
+                                    // `tray_anchor_position`.
                                     let pop_w = 344_i32;
                                     let icon_pos = rect.position.to_physical::<i32>(1.0);
                                     let icon_size = rect.size.to_physical::<i32>(1.0);
-                                    let x = (icon_pos.x + icon_size.width / 2 - pop_w / 2).max(0);
-                                    let y = icon_pos.y + icon_size.height;
+                                    let pop_h =
+                                        win.outer_size().map(|s| s.height as i32).unwrap_or(0);
+                                    let (x, y) = tray_anchor_position(
+                                        (icon_pos.x, icon_pos.y),
+                                        (icon_size.width, icon_size.height),
+                                        (pop_w, pop_h),
+                                        cfg!(target_os = "windows"),
+                                    );
                                     let _ = win.set_position(tauri::Position::Physical(
                                         tauri::PhysicalPosition::new(x, y),
                                     ));
@@ -289,14 +298,21 @@ pub fn run() {
                                 return;
                             }
                             if let Some(tt) = app.get_webview_window("tray-tooltip") {
-                                // Position the tooltip centred below the tray icon.
-                                // scale_factor 1.0 because the tray_icon crate already
-                                // gives us physical pixel coords before the dpi wrapper.
+                                // Position the tooltip centred against the tray icon —
+                                // below it on macOS, above it on Windows. See
+                                // `tray_anchor_position`. scale_factor 1.0 because the
+                                // tray_icon crate already gives us physical pixel coords
+                                // before the dpi wrapper.
                                 let tt_w = 300_i32;
                                 let icon_pos = rect.position.to_physical::<i32>(1.0);
                                 let icon_size = rect.size.to_physical::<i32>(1.0);
-                                let x = (icon_pos.x + icon_size.width / 2 - tt_w / 2).max(0);
-                                let y = icon_pos.y + icon_size.height;
+                                let tt_h = tt.outer_size().map(|s| s.height as i32).unwrap_or(0);
+                                let (x, y) = tray_anchor_position(
+                                    (icon_pos.x, icon_pos.y),
+                                    (icon_size.width, icon_size.height),
+                                    (tt_w, tt_h),
+                                    cfg!(target_os = "windows"),
+                                );
                                 let _ = tt.set_position(tauri::Position::Physical(
                                     tauri::PhysicalPosition::new(x, y),
                                 ));
@@ -409,12 +425,18 @@ pub fn run() {
 
             // Auto-open the setup wizard on first launch (no ~/.meridian/onboarded).
             // The 800 ms delay lets the tray menu settle before the window appears.
+            //
+            // Uses meridian_core::paths::meridian_dir() rather than a raw
+            // `HOME` env var read — HOME is unset on Windows, which used to make
+            // this check fall through to a bogus root-relative path, so the
+            // marker could never be found there.
             {
                 let wizard_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
-                    let home = std::env::var("HOME").unwrap_or_default();
-                    if !std::path::Path::new(&format!("{home}/.meridian/onboarded")).exists() {
+                    let onboarded = meridian_core::paths::meridian_dir()
+                        .is_some_and(|dir| dir.join("onboarded").exists());
+                    if !onboarded {
                         tray::open_wizard_window(&wizard_handle);
                     }
                 });
@@ -535,6 +557,7 @@ pub fn run() {
             // Setup wizard (first-run, permissions, providers)
             commands::is_first_run,
             commands::mark_setup_complete,
+            commands::get_platform,
             commands::save_account_email,
             commands::get_account_email,
             commands::clear_account_email,
@@ -629,6 +652,68 @@ fn reopen_target(onboarded: bool) -> ReopenTarget {
         ReopenTarget::Dashboard
     } else {
         ReopenTarget::Wizard
+    }
+}
+
+/// Top-left position for a window anchored to the tray icon's click rect —
+/// centred horizontally on the icon, and placed either below it or above it.
+///
+/// macOS keeps the tray icon in the menu bar at the *top* of the screen, so
+/// anchoring below (`icon_pos.y + icon_size.height`) lands the popover/tooltip
+/// on-screen. Windows puts the tray icon in the notification area at the
+/// *bottom* of the taskbar, so that same "below" math pushes the window off
+/// the bottom of the screen — invisible, not just misplaced. `anchor_above`
+/// picks which side; callers pass `cfg!(target_os = "windows")`.
+///
+/// Pure and platform-independent so it's unit-testable without a live window —
+/// same rationale as [`is_onboarded`] / [`reopen_target`] above.
+fn tray_anchor_position(
+    icon_pos: (i32, i32),
+    icon_size: (i32, i32),
+    win_size: (i32, i32),
+    anchor_above: bool,
+) -> (i32, i32) {
+    let x = (icon_pos.0 + icon_size.0 / 2 - win_size.0 / 2).max(0);
+    let y = if anchor_above {
+        (icon_pos.1 - win_size.1).max(0)
+    } else {
+        icon_pos.1 + icon_size.1
+    };
+    (x, y)
+}
+
+#[cfg(test)]
+mod tray_anchor_position_tests {
+    use super::tray_anchor_position;
+
+    #[test]
+    fn below_places_top_edge_at_icon_bottom() {
+        // macOS-style: icon near the top of the screen, popover grows downward.
+        let (x, y) = tray_anchor_position((1500, 0), (24, 24), (344, 400), false);
+        assert_eq!(x, 1500 + 12 - 172); // centred under the icon
+        assert_eq!(y, 24); // flush with the icon's bottom edge
+    }
+
+    #[test]
+    fn above_places_bottom_edge_at_icon_top() {
+        // Windows-style: icon near the bottom of the screen, popover grows upward.
+        let (x, y) = tray_anchor_position((1500, 1040), (24, 24), (344, 400), true);
+        assert_eq!(x, 1500 + 12 - 172); // centred over the icon, same as below
+        assert_eq!(y, 1040 - 400); // flush with the icon's top edge
+    }
+
+    #[test]
+    fn x_never_goes_negative_when_icon_is_near_the_left_edge() {
+        let (x, _) = tray_anchor_position((5, 0), (24, 24), (344, 400), false);
+        assert_eq!(x, 0);
+    }
+
+    #[test]
+    fn above_never_goes_negative_when_window_is_taller_than_the_icons_offset() {
+        // A pathologically tall window anchored above a near-top icon must clamp
+        // to 0 rather than requesting a negative y (off the top of the screen).
+        let (_, y) = tray_anchor_position((100, 50), (24, 24), (344, 2000), true);
+        assert_eq!(y, 0);
     }
 }
 
