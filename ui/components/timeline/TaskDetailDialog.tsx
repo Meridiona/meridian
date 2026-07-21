@@ -234,8 +234,10 @@ export function TaskDetailDialog({
           </div>
         )}
       </div>
-      <StatusBanner undo={undo} note={note} busy={!!statusBusyKey}
-        onUndo={handleUndo} onDismissUndo={dismissUndo} onDismissNote={dismissNote} />
+      <div onClick={e => e.stopPropagation()}>
+        <StatusBanner undo={undo} note={note} busy={!!statusBusyKey}
+          onUndo={handleUndo} onDismissUndo={dismissUndo} onDismissNote={dismissNote} />
+      </div>
     </div>
   )
 }
