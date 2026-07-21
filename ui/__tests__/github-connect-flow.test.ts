@@ -117,6 +117,14 @@ describe('the project picker appears as the next step, not a separate screen', (
       /status === 'done' && \([\s\S]*?<DeviceStep n=\{1\} state="done"[\s\S]*?<DeviceStep n=\{2\} state="done"[\s\S]*?<DeviceStep n=\{3\} state="done"[\s\S]*?<DeviceStep n=\{4\} state="active"[\s\S]*?<GitHubProjectPicker onSuccess=\{onSuccess\} \/>/
     )
   })
+
+  it('uses a plain hyphen, not an em-dash, in the PAT-flow reload-warning text', () => {
+    // CLAUDE.md hard rule: user-facing app text uses `-` only, never `—`.
+    // This string is new code from this PR (copy-pasted from the sibling
+    // reload-warning in the non-github done branch, which predates the PR and
+    // is out of scope here) — caught in review, regression-guarded here.
+    expect(view).toContain('The daemon wasn&apos;t running - credentials saved, will take effect on next start.')
+  })
 })
 
 // ── PAT flow → project picker wiring (IntegrationConnect.tsx) ─────────────────

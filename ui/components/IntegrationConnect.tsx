@@ -496,7 +496,7 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
           <GitHubProjectPicker onSuccess={onSuccess} />
           {reloadWarning && (
             <p className="text-[11px] mt-2" style={{ color: 'var(--t-faint)' }}>
-              The daemon wasn&apos;t running — credentials saved, will take effect on next start.
+              The daemon wasn&apos;t running - credentials saved, will take effect on next start.
             </p>
           )}
         </div>
