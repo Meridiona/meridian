@@ -301,6 +301,18 @@ fn windows_permission_state(
 /// (`AXIsProcessTrusted`) — a pure status read, no prompt. Shared by the setup
 /// wizard's probe ([`crate::commands::setup::check_accessibility`]) and the
 /// background re-check ([`crate::poll::permissions`]).
+///
+/// **Windows has no TCC analogue** — UI Automation (what the Windows capture
+/// fork uses in place of the Accessibility API) needs no user grant, so
+/// there is nothing to preflight. `true` here is not "granted", it's "not
+/// applicable"; the wizard has no third state, and treating it as granted is
+/// what actually reflects reality — the alternative (`false`) makes the
+/// wizard's Accessibility card permanently un-satisfiable on Windows: a
+/// REQUIRED card with a grant button that opens a macOS-only Settings pane
+/// (`open_permission_pane` has no Windows arm for it), blocking `Continue`
+/// forever. Mirrors `screenpipe_a11y::platform::windows`'s own
+/// always-granted stance (see the Cargo.toml note on `cidre`) — this
+/// function had drifted from that and hardcoded `false` instead.
 pub fn accessibility_trusted() -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -313,7 +325,7 @@ pub fn accessibility_trusted() -> bool {
         unsafe { AXIsProcessTrusted() }
     }
     #[cfg(not(target_os = "macos"))]
-    false
+    true
 }
 
 /// Whether the tray process holds macOS Screen Recording permission
@@ -321,6 +333,12 @@ pub fn accessibility_trusted() -> bool {
 /// by the setup wizard's probe
 /// ([`crate::commands::setup::check_screen_recording`]) and the background
 /// re-check ([`crate::poll::permissions`]).
+///
+/// **Windows has no TCC analogue** — Windows Graphics Capture needs no user
+/// grant either, same reasoning as [`accessibility_trusted`]: `true` reflects
+/// "not applicable", and `false` would permanently block the wizard's
+/// REQUIRED Screen Recording card behind a grant button with no Windows
+/// Settings pane to send the user to.
 pub fn screen_recording_trusted() -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -332,7 +350,7 @@ pub fn screen_recording_trusted() -> bool {
         unsafe { CGPreflightScreenCaptureAccess() }
     }
     #[cfg(not(target_os = "macos"))]
-    false
+    true
 }
 
 /// Register the fixed interactive-category set (`meridian_core`'s
@@ -520,5 +538,17 @@ mod tests {
                 "{setting:?} must not be reported as Granted"
             );
         }
+    }
+
+    /// Regression guard: these two must report `true` on Windows (see the
+    /// doc comments) or the wizard's Accessibility/Screen Recording cards
+    /// become permanently un-satisfiable REQUIRED gates with no Windows
+    /// Settings pane to send the user to — this was an actual bug (`false`
+    /// hardcoded, contradicting the docs) caught by running the wizard.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn non_macos_accessibility_and_screen_recording_are_not_applicable_so_report_true() {
+        assert!(super::accessibility_trusted());
+        assert!(super::screen_recording_trusted());
     }
 }
