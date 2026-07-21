@@ -46,7 +46,7 @@ export function Bullets({ items, accent = 'var(--t-faint)', size = 12.5, clamp =
   return (
     <ul className="space-y-1.5">
       {items.map((line, i) => (
-        <li key={i} className="flex gap-2" style={{ color: 'var(--t-muted)', fontSize: size, lineHeight: 1.5 }}>
+        <li key={i} className="flex gap-2" style={{ color: 'var(--t-muted)', fontSize: size, fontWeight: 500, lineHeight: 1.5 }}>
           <span className="shrink-0" style={{ color: accent }}>·</span>
           <span className="flex-1 min-w-0"
             style={clamp ? { display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical', overflow: 'hidden' } : undefined}>
