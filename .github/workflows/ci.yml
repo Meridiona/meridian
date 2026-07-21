@@ -9,7 +9,10 @@ on:
   # The only PR that ever targets main is the `pre-main → main` release merge,
   # and running CI on it re-tests a tree CI has already passed twice: once on
   # each commit's own feature PR, and again on the push to pre-main. main holds
-  # nothing pre-main lacks except `chore(release): X [skip ci]` version bumps,
+  # nothing pre-main lacks except semantic-release's own `chore(release): X`
+  # version bumps (which used to carry GitHub's skip-CI marker — deliberately NOT
+  # spelled out here; see the release-prepare guard for why quoting it literally
+  # is a hazard),
   # so the merge introduces no code that has not already been through the suite.
   #
   # This is NOT the same situation as a feature PR. There, two independently
