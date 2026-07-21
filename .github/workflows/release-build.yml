@@ -28,16 +28,18 @@ name: Release (build & publish)
 #   prepare   ubuntu   validate tag == manifest version · create DRAFT release
 #      |
 #      +--> build (macOS aarch64) --+
-#      +--> build (macOS x86_64)  --+   all three concurrent
-#      +--> build (Windows x86_64)--+
 #      |
 #   publish   ubuntu   compose latest.json · verify asset set · draft -> public
 #
-# Every platform is in ONE flat fan-out. The old pipeline ran Windows
-# SEQUENTIALLY after the entire macOS chain, which added ~38 minutes of critical
-# path for no reason — nothing about Apple secrets, notarization or release
-# creation constrains a Windows runner. This is the shape Zed, Cap, Bitwarden
-# and clash-verge all use.
+# STAGING IS APPLE-SILICON-ONLY, FOR NOW. Intel (macOS x86_64) and Windows were
+# removed — the same call that made CI macOS-Silicon-only. Silicon is the
+# shipped platform, and a single native aarch64 build is the smallest thing that
+# can fail: no cross-compile, no second notarization chain, no Windows runner.
+# The matrix is still a `matrix.include` fan-out so restoring the other targets
+# is a one-line re-add (see the macos job's matrix comment + the header note in
+# compose-updater-manifest.py). The old pipeline ran Windows SEQUENTIALLY after
+# the entire macOS chain, adding ~38 minutes of critical path; keeping this a
+# flat fan-out means re-adding it never reintroduces that.
 #
 # ── WHY PER-ARCH macOS INSTEAD OF ONE UNIVERSAL BINARY ───────────────────────
 #
@@ -61,18 +63,18 @@ name: Release (build & publish)
 # Splitting arches is also what the OFFICIAL Tauri matrix does; universal is
 # relegated to an example file upstream.
 #
-# ── WHY THE BUILD USES A SINGLE CARGO INVOCATION ─────────────────────────────
+# ── WHY THE BUILD USES TWO CARGO INVOCATIONS ─────────────────────────────────
 #
-# See the "Compile daemon + tray" step. Briefly: the old pipeline ran cargo
-# twice (once for the daemon binary, once via `tauri build`), and cargo resolves
-# features PER INVOCATION. The two resolutions diverged on ~96 shared crates
-# near the BOTTOM of the graph — libc, bytemuck, num-traits, cc, tokio, rustls —
-# and a changed feature set means a changed fingerprint, which cascades to
-# everything above it. Measured on run 29734394528: 320 crates in the daemon
-# pass, 662 in the tray pass, 214 of them COMPILED TWICE, including candle-*,
-# tokenizers, image and sqlx (which do not diverge themselves — they are merely
-# downstream of crates that do). The divergence is bidirectional, so no
-# reordering fixes it. Only one unified resolve does.
+# See the "Compile daemon + tray" step. A single invocation was tried — passing
+# `-- -p meridian --bin meridian` through the Tauri CLI so the daemon shared the
+# tray's feature resolution — to avoid recompiling ~214 shared crates twice. It
+# does not build: `tauri build` injects `--features tauri/custom-protocol`, and
+# cargo applies it to the `-p meridian` scope, which has no `tauri` dependency,
+# so every platform fails with `the package 'meridian' does not contain this
+# feature: tauri/custom-protocol`. The scope switch and the injected feature are
+# structurally incompatible, so the daemon and the tray are compiled in two
+# separate cargo invocations. The double-compile of shared crates is the
+# accepted cost of a build that actually produces an artifact.
 
 on:
   push:
@@ -234,8 +236,14 @@ jobs:
         include:
           - arch: aarch64
             target: aarch64-apple-darwin
-          - arch: x86_64
-            target: x86_64-apple-darwin
+          # STAGING IS APPLE-SILICON-ONLY, FOR NOW. Intel (x86_64-apple-darwin)
+          # and Windows are intentionally not built here — the same decision that
+          # made CI macOS-Silicon-only. Silicon is the shipped platform, and a
+          # native aarch64 build on an Apple-Silicon runner has the smallest
+          # failure surface (no cross-compile, no notarization of a second arch).
+          # To restore Intel: re-add the `x86_64-apple-darwin` include, put back
+          # the `windows` job + `darwin-x86_64`/`windows-x86_64` in the publish
+          # completeness check, and widen REQUIRED in compose-updater-manifest.py.
     env:
       # Compile-time secrets — every one is baked into the binary by build.rs or
       # option_env!, so a MISSING value produces no error, just a shipped app
@@ -347,21 +355,29 @@ jobs:
 
       - name: Compile daemon + tray (${{ matrix.target }})
         working-directory: tray
-        # ONE cargo invocation for BOTH binaries. Everything after `--` is
-        # passed straight through to cargo by the Tauri CLI, which lets the
-        # daemon join the tray's feature resolution instead of getting its own.
+        # TWO cargo invocations: the daemon binary, then the tray app.
         #
-        # Two invocations resolved features independently and diverged on ~96
-        # shared crates, cascading to 214 recompiled from scratch — roughly a
-        # quarter of the build spent rebuilding artifacts that already existed.
-        # See this file's header for the measurement.
+        # The old shape tried to do both in one invocation by passing
+        # `-- -p meridian --bin meridian` through the Tauri CLI to cargo, to
+        # share one feature resolution. It does not work: `tauri build` injects
+        # `--features tauri/custom-protocol` for the app crate, and cargo applies
+        # that to the `-p meridian` scope — a package with no `tauri` dependency
+        # — so every platform failed with `the package 'meridian' does not
+        # contain this feature: tauri/custom-protocol`. The scope switch and the
+        # injected feature are structurally incompatible; no flag reconciles
+        # them. Building the two crates separately is the correct, standard shape
+        # (it is what the pre-optimisation pipeline and `build:windows` did).
         #
-        # VERIFY after any change here — this must print nothing:
-        #   grep '^ *Compiling' build.log | awk '{print $2,$3}' | sort | uniq -d
+        # The cost is that some shared crates compile twice under diverging
+        # feature sets — accepted: a build that ships beats a faster one that
+        # never produces an artifact. The daemon lands in
+        # target/<triple>/release/meridian; the "Stage the real daemon" step
+        # copies it over the stub before bundling.
         run: |
+          cargo build --release --locked --target ${{ matrix.target }} \
+            -p meridian --bin meridian
           npx tauri build --no-bundle --target ${{ matrix.target }} \
-            ${{ needs.prepare.outputs.channel == 'staging' && '--config src-tauri/tauri.staging.conf.json' || '' }} \
-            -- -p meridian --bin meridian
+            ${{ needs.prepare.outputs.channel == 'staging' && '--config src-tauri/tauri.staging.conf.json' || '' }}
 
       - name: Stage the real daemon for bundling
         # Replaces the stub with the binary the same invocation just produced.
@@ -473,163 +489,10 @@ jobs:
           security delete-keychain "${RUNNER_TEMP}/meridian-signing.keychain-db" 2>/dev/null || true
           rm -f "${RUNNER_TEMP}/apple-api-key.p8" "${RUNNER_TEMP}/certificate.p12"
 
-  windows:
-    name: Windows x86_64
-    needs: prepare
-    runs-on: windows-latest
-    timeout-minutes: 60
-    permissions:
-      contents: write
-    env:
-      SQLX_OFFLINE: "true"
-      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
-      MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
-      MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
-      MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
-      MERIDIAN_CHANNEL: ${{ needs.prepare.outputs.channel }}
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.tag }}
-          persist-credentials: false
-
-      - name: Authenticate git for the private screenpipe-fork dependency
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: |
-          git config --global \
-            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
-            "https://github.com/Meridiona/screenpipe-fork"
-
-      - name: Install Rust 1.93.1
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.93.1"
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # Same reasoning as the macOS job — the old release.yml Windows job
-          # used a BARE rust-cache, so it keyed on the job name and could never
-          # share with anything.
-          add-job-id-key: false
-          shared-key: windows-release-x86_64
-          cache-directories: |
-            ~/.cargo/registry/src
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/pre-main' || startsWith(github.ref, 'refs/tags/v') }}
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: "npm"
-          cache-dependency-path: |
-            ui/package-lock.json
-            tray/package-lock.json
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Stamp the version
-        shell: bash
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        # REQUIRED, and it was a real bug: this job checks out the TAG, and on
-        # the staging channel that tag points at a tree where the version was
-        # never committed (.releaserc.staging.json has no @semantic-release/git
-        # plugin). Without this, the installer was built at whatever the
-        # manifests last held on the branch — v1.72.0-staging.5 produced
-        # `Meridian_1.71.0_x64-setup.exe` — while the manifest advertised the
-        # real version. A Windows app would update, report the old version, see
-        # the same update again, and loop.
-        run: bash scripts/set-version.sh "$VERSION"
-
-      - name: Install UI + tray deps
-        shell: bash
-        run: |
-          (cd ui && npm ci --no-audit --no-fund)
-          (cd tray && npm ci --no-audit --no-fund)
-
-      - name: Stub the daemon so tauri-build's resource check passes
-        shell: bash
-        run: |
-          mkdir -p target/release
-          : > target/release/meridian.exe
-
-      - name: Compile daemon + tray (NSIS)
-        shell: bash
-        # Same single-invocation reasoning as macOS — the old
-        # `npm run build:windows` ran `cargo build --bin meridian` and then
-        # `tauri build`, paying the identical double-compile (960 crates in the
-        # logs for what should be ~775).
-        #
-        # tauri.windows.conf.json auto-merges (NSIS target + meridian.exe
-        # resource); the staging config is layered on top when relevant.
-        run: |
-          cd tray && npx tauri build --no-bundle \
-            ${{ needs.prepare.outputs.channel == 'staging' && '--config src-tauri/tauri.staging.conf.json' || '' }} \
-            -- -p meridian --bin meridian
-
-      - name: Stage the real daemon and bundle
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp target/release/meridian.exe target/release/meridian.exe.stub || true
-          cd tray && npx tauri bundle \
-            ${{ needs.prepare.outputs.channel == 'staging' && '--config src-tauri/tauri.staging.conf.json' || '' }}
-
-      - name: Upload the installer and its manifest fragment
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.prepare.outputs.tag }}
-          VERSION: ${{ needs.prepare.outputs.version }}
-          PYTHONIOENCODING: "utf-8" # cp1252 cannot encode the ✓ the merge script prints
-        run: |
-          set -euo pipefail
-          NSIS_DIR="target/release/bundle/nsis"
-          setup="$(ls "${NSIS_DIR}"/*-setup.exe 2>/dev/null | head -1)"
-          [ -n "${setup}" ] || { echo "::error::no NSIS installer in ${NSIS_DIR}"; exit 1; }
-          sig="${setup}.sig"
-          [ -f "${sig}" ] || { echo "::error::missing updater signature ${sig}"; exit 1; }
-
-          cp "${setup}" "${NSIS_DIR}/Meridian-setup.exe"
-          gh release upload "${TAG}" "${NSIS_DIR}/Meridian-setup.exe" --clobber
-
-          # Fragment for the publish job — SAME SHAPE as the macOS runners
-          # produce, i.e. a full manifest carrying only this platform's keys
-          # under `platforms`. The wrapper is not decoration: the composer keys
-          # off it, and a bare {key: entry} map would contribute nothing and
-          # fail the completeness check with a confusing "missing windows-x86_64"
-          # rather than "your fragment is malformed".
-          #
-          # Both the plain and the `-nsis` spelling are emitted. tauri-plugin-
-          # updater >= 2.10 also looks up {os}-{arch}-{installer}, and
-          # tauri-action's updaterJsonPreferNsis defaults to FALSE "for legacy
-          # reasons" — meaning MSI would win over NSIS where both exist. We ship
-          # NSIS only, so publishing both spellings removes the ambiguity.
-          python3 - "$VERSION" "$TAG" "${sig}" > updater-windows.json <<'PY'
-          import sys, json, pathlib
-          version, tag, sigpath = sys.argv[1], sys.argv[2], sys.argv[3]
-          sig = pathlib.Path(sigpath).read_text().strip()
-          if not sig:
-              sys.exit("::error::updater signature file is empty")
-          url = f"https://github.com/Meridiona/meridian/releases/download/{tag}/Meridian-setup.exe"
-          entry = {"signature": sig, "url": url}
-          print(json.dumps({
-              "version": version,
-              "platforms": {"windows-x86_64": entry, "windows-x86_64-nsis": entry},
-          }, indent=2))
-          PY
-          gh release upload "${TAG}" updater-windows.json --clobber
-
   # ── Stage 3: compose the manifest, verify, publish ──────────────────────────
   publish:
     name: Compose manifest + publish
-    needs: [prepare, macos, windows]
+    needs: [prepare, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -661,7 +524,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p frag && cd frag
-          for f in updater-aarch64-apple-darwin.json updater-x86_64-apple-darwin.json updater-windows.json; do
+          for f in updater-aarch64-apple-darwin.json; do
             gh release download "${TAG}" --pattern "$f" --output "$f" --clobber \
               || echo "::warning::fragment $f absent"
           done
@@ -682,7 +545,7 @@ jobs:
           actual="$(gh release view "${TAG}" --json assets --jq '[.assets[].name] | join(" ")')"
           echo "assets: ${actual}"
           missing=""
-          for want in .dmg .app.tar.gz .app.tar.gz.sig Meridian-setup.exe; do
+          for want in .dmg .app.tar.gz .app.tar.gz.sig; do
             case " ${actual} " in *"${want}"*) ;; *) missing="${missing} ${want}";; esac
           done
           if [ -n "${missing}" ]; then
@@ -695,7 +558,7 @@ jobs:
           python3 - <<'PY'
           import json, sys
           m = json.load(open("latest.json"))
-          need = {"darwin-aarch64", "darwin-x86_64", "windows-x86_64"}
+          need = {"darwin-aarch64"}
           missing = [k for k in need if not m["platforms"].get(k, {}).get("url")]
           if missing:
               sys.exit(f"::error::latest.json missing populated keys: {missing}")

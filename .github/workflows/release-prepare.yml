@@ -116,6 +116,20 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: true # semantic-release pushes the tag
+          # *** LOAD-BEARING: persist the PAT, not the default GITHUB_TOKEN. ***
+          # checkout stores THIS token as the git credential, and semantic-release
+          # reuses it to push the version tag. GitHub deliberately does NOT
+          # re-trigger workflows for refs pushed with GITHUB_TOKEN (the recursion
+          # guard) — so a tag pushed with the default token lands silently and
+          # release-build.yml (its ONLY trigger is `push: tags: v*-staging*`)
+          # never fires. That is exactly the "tagged, but nothing built" failure
+          # we hit on v1.72.0-staging.6. A push made with the org PAT is
+          # attributed to a user, so the tag-push event fires normally and the
+          # build runs. release-build.yml lives only on pre-main, so a tag push
+          # is the ONE trigger that can reach it — workflow_dispatch /
+          # repository_dispatch / workflow_run all require the workflow on the
+          # default branch, which it is not.
+          token: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-node@v4
         with:

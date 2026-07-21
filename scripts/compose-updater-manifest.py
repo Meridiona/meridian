@@ -70,7 +70,10 @@ from datetime import datetime, timezone
 # defaults to FALSE "for legacy reasons" — meaning MSI wins over NSIS when both
 # are present. We ship NSIS, so we publish both spellings pointing at the same
 # installer and the preference never gets a chance to pick wrong.
-REQUIRED = ("darwin-aarch64", "darwin-x86_64", "windows-x86_64")
+# STAGING IS APPLE-SILICON-ONLY, FOR NOW — see release-build.yml's macos matrix.
+# Restore ("darwin-aarch64", "darwin-x86_64", "windows-x86_64") when Intel and
+# Windows are re-added to the build matrix.
+REQUIRED = ("darwin-aarch64",)
 
 MINIMUM_RE = re.compile(r"^Minimum-Version:\s*\d+\.\d+\.\d+\s*$", re.MULTILINE)
 
