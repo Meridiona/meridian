@@ -22,9 +22,11 @@ import { LOCAL_PROVIDER } from '@/lib/api-types'
 import {
   useTaskComposer, setNote, setTitle, setDescription, setIssueType, setTarget,
   draftFromNote, createTask, canCreate, resetComposer, titleWords, MIN_TITLE_WORDS,
+  boardProviderFor, isBoardTarget,
 } from '@/components/plan/useTaskComposer'
 import { FOCUS, PRIMARY_BTN } from '@/components/plan/planStyles'
 import { GeneratingBar } from '@/components/GeneratingBar'
+import { ProviderIcon } from '@/components/ProviderIcon'
 
 const INPUT = 'w-full px-3 py-2 rounded-lg mt-body'
 const inputStyle = {
@@ -72,6 +74,17 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
     noteRef.current?.focus()
   }, [])
 
+  // A tracker can be disconnected in Settings while this composer sits open, stranding
+  // `target` on a provider that is no longer connected — the create would then fail at
+  // the daemon with nothing the user could have seen coming. Re-point at the surviving
+  // board choice; if none survives, fall back to Personal rather than filing blind.
+  useEffect(() => {
+    if (!isBoardTarget(s)) return
+    if (trackers.some(t => t.id === s.target)) return
+    setTarget(boardProviderFor(s, trackers.map(t => t.id)) ?? LOCAL_PROVIDER)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.target, trackers])
+
   // The create landed — let the parent close/refresh. Kept as an effect so the store,
   // not the click handler, is the single source of "it worked".
   useEffect(() => {
@@ -83,6 +96,9 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
   const creating = s.phase === 'creating'
   const ready = canCreate(s)
   const words = titleWords(s.title)
+  // Null exactly when no tracker is connected - the whole "Where" block is then moot.
+  const boardProvider = boardProviderFor(s, trackers.map(t => t.id))
+  const onBoard = isBoardTarget(s)
 
   return (
     <div className={hero ? 'w-full max-w-[560px] mx-auto' : 'flex flex-col min-h-0 h-full'}>
@@ -188,23 +204,49 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
         </div>
 
         {/* ── Where it goes. Solo users have no choice to make, so none is shown.
-             Every connected tracker gets its own option - someone on Jira AND
-             GitHub must be able to reach both, not just whichever sorts first. */}
-        {trackers.length > 0 && (
+             ONE board option, not one per tracker: "personal vs. my team sees this" is
+             the decision that matters, and which tracker it lands on is a detail of
+             that choice - so it lives inside the option as a picker rather than
+             fanning the row out into N cards that all say the same sentence. */}
+        {boardProvider && (
           <div className="mt-4">
             <FieldLabel>Where</FieldLabel>
             <div role="radiogroup" aria-label="Where to create this task"
-              className={`grid gap-2 ${trackers.length > 1 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2'}`}>
+              className="grid gap-2 grid-cols-1 sm:grid-cols-2">
               <TargetOption
-                selected={s.target === LOCAL_PROVIDER} onSelect={() => setTarget(LOCAL_PROVIDER)}
+                selected={!onBoard} onSelect={() => setTarget(LOCAL_PROVIDER)}
                 label="Keep personal" hint="Only in Meridian. Nothing is posted to your board."
               />
-              {trackers.map(t => (
-                <TargetOption key={t.id}
-                  selected={s.target === t.id} onSelect={() => setTarget(t.id)}
-                  label={`Create in ${t.name}`} hint={`Files a real ${t.name} ticket your team can see.`}
-                />
-              ))}
+              <TargetOption
+                selected={onBoard} onSelect={() => setTarget(boardProvider)}
+                label={trackers.length > 1 ? 'Create on your board' : `Create in ${trackers[0].name}`}
+                hint={trackers.length > 1
+                  ? 'Files a real ticket your team can see. Pick where:'
+                  : `Files a real ${trackers[0].name} ticket your team can see.`}>
+                {/* Only worth showing when there is genuinely a choice - with one
+                    tracker connected the label above already names it. */}
+                {trackers.length > 1 && (
+                  <div role="radiogroup" aria-label="Which tracker to file in" className="flex flex-wrap gap-1.5 mt-2">
+                    {trackers.map(t => {
+                      const picked = onBoard && s.target === t.id
+                      return (
+                        <button key={t.id} role="radio" aria-checked={picked}
+                          onClick={() => setTarget(t.id)}
+                          className={`mt-chip inline-flex items-center gap-1.5 px-2 py-1 rounded-md transition-colors ${FOCUS}`}
+                          style={{
+                            border: `1px solid ${picked ? 'var(--color-state-approved)' : 'var(--t-ctrl-border)'}`,
+                            background: picked ? 'color-mix(in srgb, var(--color-state-approved) 14%, transparent)' : 'var(--t-ctrl)',
+                            color: picked ? 'var(--t-title)' : 'var(--t-faint)',
+                            fontWeight: picked ? 700 : 500,
+                          }}>
+                          <ProviderIcon provider={t.id} size={12} />
+                          {t.name}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </TargetOption>
             </div>
           </div>
         )}
@@ -242,19 +284,27 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
 }
 
 /** One "where does this go" choice. A radio, not a toggle - both options are equally
- *  legible, because filing on a shared board is a decision worth reading first. */
-function TargetOption({ selected, onSelect, label, hint }: {
+ *  legible, because filing on a shared board is a decision worth reading first.
+ *
+ *  `children` (the tracker picker) sits OUTSIDE the button element, inside the same
+ *  bordered shell: a button nested in a button is invalid HTML, and browsers recover
+ *  from it by dropping one of them. */
+function TargetOption({ selected, onSelect, label, hint, children }: {
   selected: boolean; onSelect: () => void; label: string; hint: string
+  children?: React.ReactNode
 }) {
   return (
-    <button role="radio" aria-checked={selected} onClick={onSelect}
-      className={`text-left rounded-lg px-3 py-2.5 transition-colors ${FOCUS}`}
+    <div className="rounded-lg px-3 py-2.5 transition-colors"
       style={{
         border: `1px solid ${selected ? 'var(--color-state-approved)' : 'var(--t-ctrl-border)'}`,
         background: selected ? 'color-mix(in srgb, var(--color-state-approved) 8%, transparent)' : 'var(--t-ctrl)',
       }}>
-      <span className="mt-body-sm block" style={{ fontWeight: 700, color: 'var(--t-title)' }}>{label}</span>
-      <span className="mt-body-sm block mt-0.5" style={{ color: 'var(--t-faint)', fontSize: 11.5, lineHeight: 1.4 }}>{hint}</span>
-    </button>
+      <button role="radio" aria-checked={selected} onClick={onSelect}
+        className={`text-left w-full ${FOCUS}`} style={{ background: 'transparent' }}>
+        <span className="mt-body-sm block" style={{ fontWeight: 700, color: 'var(--t-title)' }}>{label}</span>
+        <span className="mt-body-sm block mt-0.5" style={{ color: 'var(--t-faint)', fontSize: 11.5, lineHeight: 1.4 }}>{hint}</span>
+      </button>
+      {children}
+    </div>
   )
 }

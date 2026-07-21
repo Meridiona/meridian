@@ -50,6 +50,9 @@ export interface WorklogState {
   retarget: (taskKey: string) => void
   /** Drop one ticket the AI matched, keeping the rest. */
   dismiss: (taskKey: string) => void
+  /** Choose which connected tracker a PROPOSED new ticket is created on. A no-op
+   *  on a matched draft, where each target carries its own provider. */
+  setProvider: (provider: string) => void
 }
 
 const errMsg = (e: unknown): string =>
@@ -166,6 +169,29 @@ function runDismiss(day: string, taskId: string, taskKey: string) {
     .catch((e) => patch(key, { phase: 'idle', error: errMsg(e) }))
 }
 
+/** Choose which tracker a PROPOSED new ticket gets created on.
+ *
+ *  Only meaningful on the propose branch: a matched draft's provider is per-ticket
+ *  and the command refuses there. Like retarget/dismiss it's a plain DB write, so it
+ *  reuses the `approving` phase - "a write is in flight, don't touch the draft" - and
+ *  renders from the updated draft the server returns. */
+function runSetProvider(day: string, taskId: string, provider: string) {
+  const key = keyOf(day, taskId)
+  const cur = store.get(key)
+  if (cur?.phase === 'approving' || cur?.phase === 'generating') return
+  // Already there — skipping the round-trip keeps a tap on the selected chip from
+  // flickering the panel through a write state for no change.
+  if (cur?.draft?.provider === provider) return
+  patch(key, { phase: 'approving', error: null })
+  mutate<DayTaskWorklogDraft>(API, 'set_worklog_provider', {
+    day,
+    task_id: taskId,
+    provider,
+  })
+    .then((r) => patch(key, { draft: r, phase: 'idle', loaded: true, error: r.error ?? null }))
+    .catch((e) => patch(key, { phase: 'idle', error: errMsg(e) }))
+}
+
 /** Retarget the draft at a user-picked ticket. Unlike generate this is a plain DB
  *  write (no LLM, no CLI spawn), so it resolves in milliseconds — but it still
  *  goes through the store, because the panel can unmount mid-flight like anything
@@ -229,6 +255,13 @@ export function useWorklog(day: string, taskId: string): WorklogState {
     dismiss: (taskKey: string) => {
       setConfirming(false)
       runDismiss(day, taskId, taskKey)
+    },
+    // Changing where a proposed ticket lands invalidates a pending confirm: the
+    // user is now agreeing to create it on a different board than the one the
+    // confirm prompt named.
+    setProvider: (provider: string) => {
+      setConfirming(false)
+      runSetProvider(day, taskId, provider)
     },
   }
 }

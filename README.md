@@ -15,7 +15,7 @@ You finish something good — and then you have to go *log* it. Update the statu
 
 It runs quietly on your Mac or PC, understands what you're working on, and keeps your tickets in **Jira, GitHub Issues, and Linear** current — so you never start a timer, fill out a form, or drag a card again.
 
-Not a time tracker you fill out. Not a dashboard you check. A background layer that keeps your project management honest while you stay in the work.
+Not a time tracker you fill out. It's a private timeline of your day - browse it anytime to see what you actually did, task by task - plus a background layer that keeps your project management honest while you stay in the work.
 
 ## Demo
 

@@ -30,7 +30,7 @@ import { ProviderIcon } from '@/components/ProviderIcon'
 import type { SettingsSection } from './settings/types'
 
 export function Toolbar({
-  day, isToday, onShiftDay, isSolo, connectedProviderName, connectedProviderId, onOpenSettings, onOpenReport, onOpenWhatsNew, onOpenSummary,
+  day, isToday, onShiftDay, isSolo, connectedProviderName, connectedProviderIds, onOpenSettings, onOpenReport, onOpenWhatsNew, onOpenSummary,
   showLlmLab = false, onOpenLlmLab,
 }: {
   day: string
@@ -38,7 +38,8 @@ export function Toolbar({
   onShiftDay: (delta: number) => void
   isSolo: boolean
   connectedProviderName: string | null
-  connectedProviderId: string | null
+  /** Every connected provider - each one gets its brand mark in the pill. */
+  connectedProviderIds: string[]
   onOpenSettings: (section?: SettingsSection) => void
   onOpenReport: () => void
   onOpenWhatsNew: () => void
@@ -107,8 +108,10 @@ export function Toolbar({
         <span className="w-px h-5" style={{ background: 'var(--t-hair)' }} />
         <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 bg-ctrl"
           style={{ border: '1px solid var(--t-ctrl-border)' }}>
-          {connectedProviderId
-            ? <ProviderIcon provider={connectedProviderId} size={12} />
+          {connectedProviderIds.length > 0
+            ? <span className="inline-flex items-center gap-1">
+                {connectedProviderIds.map(id => <ProviderIcon key={id} provider={id} size={12} />)}
+              </span>
             : <span className="inline-block w-1.5 h-1.5 rounded-full"
                 style={{ background: isSolo ? 'var(--t-faint)' : 'var(--color-state-proposal)' }} />}
           <span className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>{connectionLabel}</span>

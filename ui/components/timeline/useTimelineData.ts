@@ -218,15 +218,17 @@ export function useTimelineData(day: string) {
 
   const hourBuckets = useMemo(() => bucketByHour(items), [items])
 
-  // Solo iff no tracker is connected; connectedProviderName/Id are the single
-  // connected provider's display name/id when EXACTLY one is on, else null.
-  const { isSolo, connectedProviderName, connectedProviderId } = useMemo(() => {
-    if (!integrations) return { isSolo: false, connectedProviderName: null as string | null, connectedProviderId: null as string | null }
+  // Solo iff no tracker is connected. connectedProviderIds lists EVERY connected
+  // provider (registry order, so the toolbar pill and the Settings banner agree);
+  // connectedProviderName is the display name only when exactly one is on, since
+  // the pill falls back to a generic "Connected" label once there are several.
+  const { isSolo, connectedProviderName, connectedProviderIds } = useMemo(() => {
+    if (!integrations) return { isSolo: false, connectedProviderName: null as string | null, connectedProviderIds: [] as TrackerId[] }
     const on = PROVIDER_IDS.filter(id => integrations[id])
     return {
       isSolo: on.length === 0,
       connectedProviderName: on.length === 1 ? TRACKER_BY_ID[on[0]].name : null,
-      connectedProviderId: on.length === 1 ? on[0] : null,
+      connectedProviderIds: on,
     }
   }, [integrations])
 
@@ -248,7 +250,7 @@ export function useTimelineData(day: string) {
   return {
     items, hourBuckets, counts, loading, busy, isToday, day, draftedIds,
     act, reject, saveEdit, rematch, proposedAct, saveProposedTitle, saveProposedBody, approveAll,
-    actions, integrations, isSolo, connectedProviderName, connectedProviderId, tasks, cleanupIssueCount, today,
+    actions, integrations, isSolo, connectedProviderName, connectedProviderIds, tasks, cleanupIssueCount, today,
     hourStatus, capturing, hourReports, refetchTasks,
   }
 }

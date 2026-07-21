@@ -489,13 +489,77 @@ function armNotificationActions() {
   } catch (e) { dbg(`notification listener threw: ${e}`) }
 }
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
-function boot() {
+// ── Sign-in gate ────────────────────────────────────────────────────────────
+// The popover is locked until an account email is persisted Rust-side
+// (get_account_email) — the mirror of the dashboard window's Clerk session.
+// Signing in itself happens in the dashboard (its inline sign-in screen), since
+// this vanilla-JS popover can't host Clerk (React); the lock's CTA just routes
+// there. Re-checked on focus so a sign-in / sign-out in the dashboard is
+// reflected here the next time the popover is shown.
+const signinLock = $('signin-lock')
+let signedInKnown = null // last applied state; avoids redundant re-renders
+let liveStarted = false // the live popover machinery (below) runs at most once
+
+function resizeToLock() {
+  const h = Math.ceil(signinLock.getBoundingClientRect().height)
+  if (h < 40) return
+  try {
+    const { LogicalSize, getCurrentWindow } = window.__TAURI__.window
+    getCurrentWindow().setSize(new LogicalSize(344, h)).catch(() => {})
+  } catch {}
+}
+
+// The live popover: health ticker, status, update check, app info, notification
+// actions. Extracted from boot() so it also starts on a sign-in that happens
+// while the popover is already open (checkAuth -> applyAuthGate). Idempotent.
+function startLivePopover() {
+  if (liveStarted) return
+  liveStarted = true
   startTicker()
   invoke('get_status').then((s) => { render(s); resizeToContent() }).catch(() => {})
   checkUpdate()
   loadAppInfo()
   armNotificationActions()
+}
+
+function applyAuthGate(signedIn) {
+  if (signedIn === signedInKnown) return
+  signedInKnown = signedIn
+  if (signedIn) {
+    signinLock.hidden = true
+    popEl.hidden = false
+    lastFitH = 0 // force resizeToContent to re-fit the real popover
+    startLivePopover()
+    resizeToContent()
+  } else {
+    popEl.hidden = true
+    signinLock.hidden = false
+    resizeToLock()
+  }
+}
+
+async function checkAuth() {
+  try {
+    const email = await invoke('get_account_email')
+    applyAuthGate(!!email)
+  } catch {
+    // A transient read failure must not lock the user out of their own app —
+    // fail open (the dashboard's Clerk gate is the authoritative check).
+    applyAuthGate(true)
+  }
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+function boot() {
+  $('signin-lock-btn').addEventListener('click', () => invoke('open_dashboard').catch(console.error))
+  // Re-evaluate the lock every time the popover regains focus — sign-in and
+  // sign-out both happen in the dashboard window, not here.
+  try {
+    __TAURI__.window.getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => { if (focused) checkAuth() })
+      .catch(() => {})
+  } catch {}
+  checkAuth()
 }
 
 // Under the DOM test harness (ui/__tests__/popover-health-panel.test.ts) the

@@ -2,6 +2,36 @@
 members = [".", "meridian-core", "meridian-oauth", "tray/src-tauri"]
 resolver = "2"
 
+# Release profile — every value here is cargo's DEFAULT, stated explicitly so
+# the reasoning survives. This block is a GUARD, not a tuning: the two knobs
+# people reach for when they want a "more optimised" release build both make
+# this workspace's build 1.5-2x SLOWER for no runtime gain worth having.
+#
+#   lto = true / "fat"    1.5-2x slower to build (Tauri's own docs say so) for
+#                         a ~20-30% smaller binary. We link a ~768-crate closure;
+#                         this is the single most expensive thing you could add.
+#   codegen-units = 1     MEASURED SLOWER than the default 16 — alacritty#6467
+#                         benchmarked cu=1/2/6/12/16/256 and cu=1 came out ~13%
+#                         behind. It is not a free win; it is a regression.
+#   panic = "abort"       ~5-10% less codegen, but breaks catch_unwind and
+#                         changes crash behaviour. We ship a data daemon; no.
+#
+# opt-level stays at 3: the session distiller's embedder does real matmul work
+# (candle + Accelerate), so dropping to 2 is a runtime regression we have not
+# measured. Revisit only with a benchmark in hand.
+#
+# strip stays "none": `debug = false` already keeps these binaries small, and
+# the symbol table is what makes a shipped user's exported-diagnostics backtrace
+# readable. Build-time cost of keeping it is nil.
+[profile.release]
+opt-level     = 3
+lto           = false
+codegen-units = 16
+debug         = false
+strip         = "none"
+panic         = "unwind"
+incremental   = false
+
 [package]
 name = "meridian"
 version = "1.74.0"

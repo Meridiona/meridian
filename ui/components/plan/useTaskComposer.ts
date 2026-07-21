@@ -46,6 +46,10 @@ export interface ComposerState {
   issueType: string
   /** `'local'` = personal, or a provider id to file a real ticket. */
   target: string
+  /** The provider the "on your board" option is currently pointed at, remembered
+   *  across a trip through Personal so flipping back doesn't silently re-pick the
+   *  first tracker. Null until the user has chosen one. Never `'local'`. */
+  boardProvider: string | null
   phase: ComposerPhase
   /** True once a draft landed and the user hasn't edited the field yet - drives the
    *  small "Drafted" chip. Cleared per-field on first keystroke. */
@@ -68,6 +72,7 @@ const EMPTY: ComposerState = Object.freeze({
   // shared team board is outward-facing and hard to undo, so it must be a deliberate
   // click rather than what a mis-tap does on a morning planning screen.
   target: LOCAL_PROVIDER,
+  boardProvider: null,
   phase: 'idle' as ComposerPhase,
   titleDrafted: false,
   descriptionDrafted: false,
@@ -102,7 +107,30 @@ export const setTitle = (title: string) => patch({ title, titleDrafted: false })
 export const setDescription = (description: string) =>
   patch({ description, descriptionDrafted: false })
 export const setIssueType = (issueType: string) => patch({ issueType })
-export const setTarget = (target: string) => patch({ target })
+/** Point the composer at Personal or at one specific provider.
+ *
+ *  Picking a provider also remembers it as the board choice, so the "on your board"
+ *  option stays on the tracker the user last chose rather than snapping back to
+ *  whichever tracker happens to sort first. */
+export const setTarget = (target: string) =>
+  patch(target === LOCAL_PROVIDER ? { target } : { target, boardProvider: target })
+
+/** Which provider the board option represents right now, given the trackers that are
+ *  actually connected.
+ *
+ *  Falls back to the first connected tracker when nothing has been chosen yet, and ALSO
+ *  when the remembered choice is no longer connected - a tracker can be disconnected in
+ *  Settings while the composer sits open, and filing at a dead provider would fail at
+ *  the daemon with nothing the user could have seen coming. Returns null only when there
+ *  is no tracker at all, in which case no board option is offered. */
+export const boardProviderFor = (s: ComposerState, trackerIds: string[]): string | null => {
+  if (trackerIds.length === 0) return null
+  if (s.boardProvider && trackerIds.includes(s.boardProvider)) return s.boardProvider
+  return trackerIds[0]
+}
+
+/** True when the composer will file a real ticket (as opposed to keeping it personal). */
+export const isBoardTarget = (s: ComposerState): boolean => s.target !== LOCAL_PROVIDER
 
 /** Wipe the composer back to a blank slate (on open, and after a successful create). */
 export const resetComposer = () => {

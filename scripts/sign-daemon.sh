@@ -17,7 +17,18 @@
 # hashes, so it has to carry its final signature before Tauri seals the outer
 # bundle. Re-signing it afterwards would invalidate the app's seal.
 #
-#   bash scripts/sign-daemon.sh            # signs target/release/meridian
+#   bash scripts/sign-daemon.sh                          # target/release/meridian
+#   MERIDIAN_DAEMON_BIN=path/to/meridian bash scripts/sign-daemon.sh
+#   bash scripts/sign-daemon.sh path/to/meridian
+#
+# The path is overridable but its DEFAULT is deliberately not derived from
+# MERIDIAN_TARGET like the other release scripts. tauri.conf.json's
+# `bundle.resources` names the literal path `target/release/meridian`, so
+# whatever ends up there is what gets bundled — a per-arch build must still
+# place its thin daemon at that exact path before `tauri build` runs (see
+# build-daemon-universal.sh's note). Keying this script off the triple instead
+# would sign target/<triple>/release/meridian and leave the binary that actually
+# ships unsigned, which notarization only discovers at the very end of a release.
 #
 # NO-OP unless APPLE_SIGNING_IDENTITY names a real Developer ID cert. Local dev
 # builds (ad-hoc "-" or the self-signed "Meridian Dev" identity from
@@ -28,7 +39,14 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN="${REPO_ROOT}/target/release/meridian"
+# Positional arg wins over the env var wins over the default, so a caller can
+# override without exporting. A relative override resolves against the repo root
+# (not the caller's cwd) to match how every other path in these scripts behaves.
+DAEMON_BIN="${1:-${MERIDIAN_DAEMON_BIN:-target/release/meridian}}"
+case "${DAEMON_BIN}" in
+    /*) BIN="${DAEMON_BIN}" ;;
+    *)  BIN="${REPO_ROOT}/${DAEMON_BIN}" ;;
+esac
 IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
 
 # Only a real Developer ID cert is worth signing with here — see the header.
@@ -46,7 +64,7 @@ esac
 # --timestamp        : secure timestamp from Apple's TSA, also mandatory (needs
 #                      network; a signature without one is rejected by notary).
 # --force            : replace the ad-hoc signature cargo/ld left behind.
-echo "→ sign-daemon: signing target/release/meridian as '${IDENTITY}'"
+echo "→ sign-daemon: signing ${DAEMON_BIN} as '${IDENTITY}'"
 codesign --force --options runtime --timestamp --sign "${IDENTITY}" "${BIN}"
 codesign --verify --strict --verbose=2 "${BIN}"
 

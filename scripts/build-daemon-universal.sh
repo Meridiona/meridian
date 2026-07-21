@@ -14,6 +14,17 @@
 # up at target/release/meridian, so it needs no changes for a universal build.
 #
 #   bash scripts/build-daemon-universal.sh
+#
+# PER-ARCH BUILDS DO NOT USE THIS SCRIPT. It is the universal path only: it
+# exists purely to produce the fat binary, and lipo-ing one slice is a no-op
+# with extra steps. A per-arch job builds the daemon for its own triple
+# (`cargo build --locked --release --bin meridian --target <triple>`) and copies
+# the result to target/release/meridian itself. That destination is NOT
+# negotiable in either mode — tauri.conf.json's `bundle.resources` names the
+# literal path `target/release/meridian`, so a per-arch job that leaves its
+# daemon only under target/<triple>/release/ would bundle whatever stale binary
+# happens to sit at the fixed path, or fail the build outright. sign-daemon.sh
+# then signs whatever landed there, thin or fat, with no changes needed.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

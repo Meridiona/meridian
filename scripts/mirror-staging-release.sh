@@ -15,6 +15,19 @@
 # tarball stays on the immutable versioned release.
 #
 #   scripts/mirror-staging-release.sh <version>
+#   MERIDIAN_TARGET=aarch64-apple-darwin scripts/mirror-staging-release.sh <version>
+#
+# MERIDIAN_TARGET selects the target triple's bundle tree, defaulting to
+# universal-apple-darwin so the current staging path is untouched.
+#
+# CAUTION for the per-arch world: this script CLOBBERS latest.json on the fixed
+# updater-staging tag. That is correct while one job owns the whole manifest, as
+# the universal build does. Two per-arch runners each mirroring their own
+# fragment here would race and leave the staging channel covering whichever arch
+# finished last. So under a per-arch release the MERGED manifest must be
+# mirrored by the join job, once, and this script should be called (if at all)
+# only for its DMG upload. The arch-suffixed DMG name below is safe to upload
+# concurrently precisely because the two runners no longer share a filename.
 set -euo pipefail
 
 VERSION="${1:?usage: mirror-staging-release.sh <version>}"
@@ -23,14 +36,38 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
 TAG="updater-staging"
-# `--target universal-apple-darwin` bundles under target/universal-apple-darwin/,
-# not plain target/release/.
-MAC="target/universal-apple-darwin/release/bundle/macos"
-DMG="target/universal-apple-darwin/release/bundle/dmg/Meridian.dmg"
+# `tauri build --target <triple>` bundles under target/<triple>/, not plain
+# target/release/.
+TARGET="${MERIDIAN_TARGET:-universal-apple-darwin}"
+MAC="target/${TARGET}/release/bundle/macos"
 LATEST="${MAC}/latest.json"
 
-# package-updater.sh skips latest.json when updater artifacts weren't signed
-# (no TAURI_SIGNING_PRIVATE_KEY). Nothing to mirror then — no-op, don't fail.
+# Must mirror package-updater.sh's stable-DMG naming exactly — it is the file
+# this uploads. Plain Meridian.dmg for universal keeps the staging tester's
+# download link (…/releases/download/updater-staging/Meridian.dmg) working.
+case "${TARGET}" in
+  universal-apple-darwin) STABLE_DMG="Meridian.dmg" ;;
+  aarch64-apple-darwin)   STABLE_DMG="Meridian-aarch64.dmg" ;;
+  x86_64-apple-darwin)    STABLE_DMG="Meridian-x64.dmg" ;;
+  *) echo "✗ mirror-staging-release: unsupported MERIDIAN_TARGET '${TARGET}'" >&2; exit 1 ;;
+esac
+DMG="target/${TARGET}/release/bundle/dmg/${STABLE_DMG}"
+
+# Deliberately hardcoded to latest.json, NOT the triple-keyed fragment name
+# package-updater.sh emits per-arch (updater-<triple>.json). Under a per-arch
+# build there is no finished manifest on this runner to mirror — only half of
+# one — so this finds nothing and the whole script no-ops.
+#
+# Note that the early exit below is BEFORE the DMG upload, so a per-arch run
+# publishes no staging DMG either. That is the safe default (nothing raced,
+# nothing half-published) but it means the join job owns BOTH the merged
+# latest.json and the staging DMG uploads. If per-arch staging DMGs are wanted
+# from the build runners instead, this early exit has to move below the DMG
+# block — a deliberate change, not something to fix by accident.
+#
+# The same no-op also covers the original case: package-updater.sh skips
+# latest.json entirely when updater artifacts weren't signed (no
+# TAURI_SIGNING_PRIVATE_KEY). Nothing to mirror then either — don't fail.
 if [[ ! -f "${LATEST}" ]]; then
   echo "→ ${LATEST} absent — updater artifacts not built; skipping staging mirror"
   exit 0
@@ -59,5 +96,5 @@ echo "✓ ${TAG}/latest.json ← v${VERSION}"
 # auto-update (latest.json's url points at the versioned tarball) — convenience.
 if [[ -f "${DMG}" ]]; then
   gh release upload "${TAG}" "${DMG}" --clobber
-  echo "✓ ${TAG}/Meridian.dmg ← v${VERSION}"
+  echo "✓ ${TAG}/${STABLE_DMG} ← v${VERSION}"
 fi

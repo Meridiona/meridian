@@ -17,6 +17,13 @@
 # Apple.
 #
 #   bash scripts/notarize-dmg.sh <version>
+#   MERIDIAN_TARGET=aarch64-apple-darwin bash scripts/notarize-dmg.sh <version>
+#
+# MERIDIAN_TARGET selects which `target/<triple>/release/bundle` tree to look in.
+# It defaults to universal-apple-darwin so every existing caller (semantic-release
+# prepareCmd, release-staging.yml) keeps working with no change at all. The
+# per-arch release path sets it to aarch64-apple-darwin / x86_64-apple-darwin,
+# one per runner; each runner notarizes only its own DMG.
 #
 # NO-OP unless APPLE_SIGNING_IDENTITY names a real Developer ID cert, so local
 # dev builds don't try (and fail) to reach Apple's notary service. When it IS a
@@ -29,10 +36,13 @@ VERSION="${VERSION#v}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
-# `--target universal-apple-darwin` bundles under target/universal-apple-darwin/
-# (not plain target/release/) and its DMG filename suffix isn't the fixed
-# "_aarch64" a single-arch build used — glob for it rather than hardcode.
-DMG_DIR="target/universal-apple-darwin/release/bundle/dmg"
+# `tauri build --target <triple>` bundles under target/<triple>/, not plain
+# target/release/. The DMG filename's arch suffix differs per target (universal
+# builds don't carry the fixed "_aarch64" a single-arch build used, and a
+# per-arch build's suffix is tauri-bundler's own arch spelling, not the triple)
+# — so glob for it rather than trying to reconstruct the name.
+TARGET="${MERIDIAN_TARGET:-universal-apple-darwin}"
+DMG_DIR="target/${TARGET}/release/bundle/dmg"
 DMG="$(ls "${DMG_DIR}"/Meridian_${VERSION}_*.dmg 2>/dev/null | head -1)"
 IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
 
