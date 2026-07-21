@@ -117,7 +117,7 @@ function Row({ title, sub, time, done, tint, chip, delay, onClick }: {
 
         {chip && (
           <span
-            className="shrink-0 mt-chip rounded-full px-2 py-1"
+            className="shrink-0 mt-chip rounded-full px-2 py-1 whitespace-nowrap"
             style={{
               background: 'color-mix(in srgb, var(--accent) 14%, transparent)',
               color: 'var(--accent)',
@@ -192,9 +192,9 @@ export function WorkList({ tasks, plan, planned, onSelect, onOpenTask, delay = 0
               // Everything in this half of the list is real tracked work, so the
               // box is ticked. That is the deterministic fact - it happened.
               done
-              // Work that was not on the plan reads as a good thing, never as a
-              // stray - "bonus", not "extra".
-              chip={planned && !ticket ? 'bonus' : undefined}
+              // Work beyond the plan should read as accomplishment - you did MORE
+              // than you set out to - not as a stray or a freebie. "Went further".
+              chip={planned && !ticket ? 'went further' : undefined}
               delay={delay + 0.04 * n}
               onClick={() => onSelect(t, indexInDay)}
             />
