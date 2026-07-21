@@ -14,7 +14,7 @@
 //   - Azure DevOps   → `discover_azure_devops` (PAT → org → project) then
 //                      `save_integration_token`.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { mutate, openExternal } from '@/lib/bridge'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import { TRACKERS } from '@/lib/integrations'
@@ -203,15 +203,91 @@ function ModeTab({ label, active, onClick }: { label: string; active: boolean; o
   )
 }
 
+// ── Device-flow checklist step ───────────────────────────────────────────────
+// One row of the GitHub device-flow checklist: a status badge (done ✓ / active
+// numbered / waiting spinner / todo dimmed) + a title + the step's content.
+function DeviceStep({ n, state, title, children }: {
+  n: number; state: 'done' | 'active' | 'todo' | 'waiting'; title: string; children?: ReactNode
+}) {
+  const badge =
+    state === 'done' ? (
+      <span className="flex items-center justify-center w-5 h-5 rounded-full text-[11px]"
+        style={{ background: 'var(--color-state-approved)', color: '#fff' }}>✓</span>
+    ) : state === 'waiting' ? (
+      <span className="block w-5 h-5 rounded-full animate-spin"
+        style={{ border: '2px solid var(--t-hair)', borderTopColor: 'var(--color-state-proposal)' }} />
+    ) : (
+      <span className="flex items-center justify-center w-5 h-5 rounded-full text-[11px] font-semibold"
+        style={{
+          border: `1.5px solid ${state === 'active' ? 'var(--color-state-proposal)' : 'var(--t-hair)'}`,
+          color: state === 'active' ? 'var(--color-state-proposal)' : 'var(--t-faint-2)',
+        }}>{n}</span>
+    )
+  return (
+    <div className="flex gap-3" style={{ opacity: state === 'todo' ? 0.5 : 1, transition: 'opacity 0.2s' }}>
+      <div className="shrink-0 mt-0.5">{badge}</div>
+      <div className="flex-1 min-w-0">
+        <p className="text-[13px] font-medium" style={{ color: 'var(--t-title)' }}>{title}</p>
+        {children && <div className="mt-2">{children}</div>}
+      </div>
+    </div>
+  )
+}
+
+// ── GitHub "Organization access" schematic ───────────────────────────────────
+// A theme-aware inline SVG (not a real screenshot — CSP blocks external images
+// and a screenshot would leak real orgs + go stale) illustrating GitHub's
+// authorize page: one already-granted org and one with a highlighted "Grant"
+// button an arrow points at, so first-timers know exactly what to click.
+function GitHubGrantHint() {
+  const hair = 'var(--t-hair)'
+  const card = 'var(--t-card)'
+  const muted = 'var(--t-faint-2)'
+  const accent = 'var(--color-state-proposal)'
+  const ok = 'var(--color-state-approved)'
+  return (
+    <svg viewBox="0 0 280 120" role="img"
+      aria-label="On GitHub's authorize page, click Grant or Request next to each organisation"
+      className="w-full" style={{ maxWidth: 300, height: 'auto' }}>
+      {/* card */}
+      <rect x="1" y="1" width="198" height="112" rx="8" style={{ fill: card, stroke: hair }} strokeWidth="1" />
+      <text x="14" y="21" style={{ fill: muted }} fontSize="9" fontWeight="600">Organization access</text>
+      {/* row 1 — already granted */}
+      <circle cx="21" cy="46" r="7" style={{ fill: hair }} />
+      <rect x="35" y="42" width="66" height="7" rx="3.5" style={{ fill: hair }} />
+      <rect x="149" y="38" width="40" height="17" rx="8.5" style={{ fill: 'none', stroke: ok }} strokeWidth="1.3" />
+      <text x="169" y="50" textAnchor="middle" style={{ fill: ok }} fontSize="9" fontWeight="700">✓</text>
+      {/* row 2 — needs a grant (highlighted) */}
+      <circle cx="21" cy="78" r="7" style={{ fill: hair }} />
+      <rect x="35" y="74" width="58" height="7" rx="3.5" style={{ fill: hair }} />
+      <rect x="149" y="70" width="40" height="17" rx="8.5" style={{ fill: accent }} />
+      <text x="169" y="82" textAnchor="middle" style={{ fill: '#fff' }} fontSize="8" fontWeight="700">Grant</text>
+      {/* arrow from the callout to the Grant button — a straight shaft plus a
+          hand-computed triangular head whose three points are all derived from
+          the shaft's own direction vector, so the head stays aligned with the
+          line (the old curve + freehand triangle didn't and rendered broken). */}
+      <line x1="232" y1="94" x2="199" y2="83" style={{ stroke: accent }} strokeWidth="1.6" strokeLinecap="round" />
+      <polygon points="191,80 198,87 201,79" style={{ fill: accent }} />
+      <text x="266" y="97" textAnchor="end" style={{ fill: accent }} fontSize="9" fontWeight="600">click for</text>
+      <text x="266" y="109" textAnchor="end" style={{ fill: accent }} fontSize="9" fontWeight="600">each org</text>
+    </svg>
+  )
+}
+
 // ── Browser OAuth (start_oauth + poll) ───────────────────────────────────────
 // A thin view over `oauthStore` — all flow state and the poll loop live in the
 // store (integrationConnectStore.ts) so an in-flight attempt (crucially the
 // device code the user is typing at github.com) survives this panel unmounting.
 function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () => void }) {
   const { status, error, deviceCode, verifyUri, apiKeyPrompt, apiKey } = useConnectStore(oauthStore, tracker.id)
-  // Momentary "Copied" feedback on the device-code copy button. Local (not in the
-  // store) — it's a 1.5 s visual flourish, not flow state worth surviving unmount.
+  // `copied` is the momentary label flash on the copy button (reverts after 1.5s).
+  // `copiedOnce` / `opened` are the PERSISTENT checklist ticks — they must not
+  // revert, and they gate the next step (Step 2's Open button unlocks only after
+  // a copy). All local: a 3-step checklist for one in-flight connect, not state
+  // worth surviving an accordion collapse (the device code itself lives in the store).
   const [copied, setCopied] = useState(false)
+  const [copiedOnce, setCopiedOnce] = useState(false)
+  const [opened, setOpened] = useState(false)
 
   // On mount, clear a settled (done/error) attempt back to idle — but never
   // touch a 'waiting' one, which is the in-flight state we exist to preserve.
@@ -268,53 +344,67 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
       {status === 'waiting' && (
         <div className="space-y-2">
           {deviceCode ? (
-            <>
-              {/* Step 1 — copy the one-time code. The Copy button flips to
-                  "Copied" for 1.5 s so the click is unmistakably acknowledged. */}
-              <p className="text-[12px] font-medium" style={{ color: 'var(--t-muted)' }}>
-                <span style={{ color: 'var(--t-faint-2)' }}>Step 1.</span> Copy this one-time code:
+            // A guided 3-step checklist. Steps 1 and 2 are actions in OUR UI, so
+            // they self-tick (copiedOnce / opened). Step 3 happens entirely on
+            // GitHub's own authorize page — which is cross-origin in the user's
+            // real browser, so we CANNOT observe per-org Grant clicks or tick them
+            // as they happen; it stays a spinner until the whole flow succeeds, at
+            // which point OAuthSetup swaps this view for the project picker. Do not
+            // try to auto-tick per org — there is no signal for it.
+            <div className="space-y-3">
+              <p className="text-[13px] font-semibold" style={{ color: 'var(--t-title)' }}>
+                Connect GitHub - 3 quick steps
               </p>
-              <div className="flex items-center gap-2">
-                <code className="font-mono text-[16px] tracking-[0.2em] px-3 py-1.5 rounded-md border"
-                  style={{ color: 'var(--t-title)', background: 'var(--t-card)', borderColor: 'var(--t-hair)' }}>
-                  {deviceCode}
-                </code>
+
+              <DeviceStep n={1} state={copiedOnce ? 'done' : 'active'} title="Copy your one-time code">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <code className="font-mono text-[18px] tracking-[0.25em] px-3 py-2 rounded-md border"
+                    style={{ color: 'var(--t-title)', background: 'var(--t-card)', borderColor: 'var(--t-hair)' }}>
+                    {deviceCode}
+                  </code>
+                  <button
+                    onClick={() => {
+                      void navigator.clipboard?.writeText(deviceCode).catch(() => {})
+                      setCopiedOnce(true); setCopied(true)
+                      setTimeout(() => setCopied(false), 1500)
+                    }}
+                    className="text-[12px] px-3 py-2 rounded-md font-medium transition-colors"
+                    style={{
+                      color: '#fff',
+                      background: copied ? 'var(--color-state-approved)' : 'var(--color-state-proposal)',
+                      border: 'none', cursor: 'pointer',
+                    }}>
+                    {copied ? '✓ Copied' : 'Copy code'}
+                  </button>
+                </div>
+              </DeviceStep>
+
+              <DeviceStep n={2} state={opened ? 'done' : copiedOnce ? 'active' : 'todo'} title="Open GitHub and paste the code">
                 <button
-                  onClick={() => {
-                    void navigator.clipboard?.writeText(deviceCode).catch(() => {})
-                    setCopied(true)
-                    setTimeout(() => setCopied(false), 1500)
-                  }}
-                  className="text-[11px] px-2 py-1 rounded-md transition-colors"
+                  disabled={!copiedOnce}
+                  onClick={() => { openExternal(verifyUri ?? 'https://github.com/login/device'); setOpened(true) }}
+                  className="text-[12px] px-3 py-2 rounded-md font-medium inline-flex items-center gap-1.5 transition-opacity"
                   style={{
-                    color: copied ? 'var(--color-state-approved)' : 'var(--color-state-proposal)',
-                    border: `1px solid ${copied ? 'var(--color-state-approved)' : 'var(--t-hair)'}`,
-                    cursor: 'pointer', background: 'transparent',
+                    background: 'var(--color-state-proposal)', color: '#fff',
+                    opacity: copiedOnce ? 1 : 0.45, border: 'none',
+                    cursor: copiedOnce ? 'pointer' : 'not-allowed',
                   }}>
-                  {copied ? '✓ Copied' : 'Copy'}
+                  Open GitHub ↗
                 </button>
-              </div>
-              {/* Step 2 — open GitHub and paste the code. The browser is opened
-                  automatically when the flow starts; the link is the fallback. */}
-              <p className="text-[12px] font-medium mt-1" style={{ color: 'var(--t-muted)' }}>
-                <span style={{ color: 'var(--t-faint-2)' }}>Step 2.</span> Open GitHub and enter the code at{' '}
-                <a href={verifyUri ?? 'https://github.com/login/device'}
-                  onClick={(e) => { e.preventDefault(); openExternal(verifyUri ?? 'https://github.com/login/device') }}
-                  style={{ color: 'var(--color-state-proposal)', cursor: 'pointer' }}>
-                  {(verifyUri ?? 'https://github.com/login/device').replace(/^https?:\/\//, '')} ↗
-                </a>
-              </p>
-              {/* Step 3 — the per-org grant. GitHub renders a "Grant"/"Request"
-                  button next to each organisation on its own authorize page and
-                  requires a click per org; an OAuth app cannot pre-grant them, so
-                  we tell the user to expect it rather than let it look broken. */}
-              <p className="text-[12px] font-medium mt-1" style={{ color: 'var(--t-muted)' }}>
-                <span style={{ color: 'var(--t-faint-2)' }}>Step 3.</span> On GitHub&apos;s authorize page, click <strong>Grant</strong> (or <strong>Request</strong>) next to each organisation you want Meridian to access - GitHub requires this per organisation.
-              </p>
-              <p className="text-[11px]" style={{ color: 'var(--t-faint-2)' }}>
-                Your browser should have opened automatically - if not, use the link above. Waiting for authorization…
-              </p>
-            </>
+                <p className="text-[11px] mt-1.5" style={{ color: 'var(--t-faint-2)' }}>
+                  {copiedOnce
+                    ? 'Opens github.com/login/device - paste the code into the box there.'
+                    : 'Copy the code first, then this button opens GitHub.'}
+                </p>
+              </DeviceStep>
+
+              <DeviceStep n={3} state="waiting" title="Grant each organisation, then Authorize">
+                <GitHubGrantHint />
+                <p className="text-[11px] mt-2 leading-relaxed" style={{ color: 'var(--t-faint-2)' }}>
+                  GitHub lists your organisations separately - click <strong>Grant</strong> (or <strong>Request</strong>) next to each one you want Meridian to access, then press Authorize. Waiting for GitHub…
+                </p>
+              </DeviceStep>
+            </div>
           ) : (
             <>
               <p className="text-[12px]" style={{ color: 'var(--t-muted)' }}>Your browser should have opened. Authorize the app, then come back here.</p>
@@ -334,7 +424,21 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
       )}
       {status === 'done' && (
         tracker.id === 'github'
-          ? <GitHubProjectPicker onSuccess={onSuccess} />
+          ? (
+            // Continue the SAME checklist rather than swapping to a disconnected
+            // screen: steps 1-3 collapse to plain done ticks (their interactive
+            // controls no longer matter - the code was copied, GitHub was opened,
+            // access was granted) and the project picker becomes Step 4, the next
+            // active item in the same list.
+            <div className="space-y-3">
+              <DeviceStep n={1} state="done" title="Copy your one-time code" />
+              <DeviceStep n={2} state="done" title="Open GitHub and paste the code" />
+              <DeviceStep n={3} state="done" title="Granted organisation access on GitHub" />
+              <DeviceStep n={4} state="active" title="Choose your boards">
+                <GitHubProjectPicker onSuccess={onSuccess} />
+              </DeviceStep>
+            </div>
+          )
           : <p className="text-[12px]" style={{ color: 'var(--color-state-approved)' }}>✓ Connected! Your tasks will appear shortly.</p>
       )}
       {status === 'error' && (
@@ -413,11 +517,16 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
   return (
     <div className="px-4 pb-4 pt-2 space-y-3" style={{ background: 'var(--t-box)' }}>
       <p className="text-[12px] leading-relaxed" style={{ color: 'var(--t-muted)' }}>
-        {method.hint}{' '}
-        {method.url && (
-          <a href={method.url} onClick={(e) => { e.preventDefault(); openExternal(method.url!) }} style={{ color: 'var(--color-state-proposal)' }}>Open ↗</a>
-        )}
+        {method.hint}
       </p>
+      {method.url && (
+        <button
+          onClick={() => openExternal(method.url!)}
+          className="text-[12px] px-3 py-2 rounded-md font-medium inline-flex items-center gap-1.5"
+          style={{ background: 'var(--color-state-proposal)', color: '#fff', border: 'none', cursor: 'pointer' }}>
+          Open {tracker.name} ↗
+        </button>
+      )}
       {method.fields.map((f) => (
         <Field key={f.name} field={f} value={values[f.name] ?? ''}
           onChange={(v) => setValues((s) => ({ ...s, [f.name]: v }))}
@@ -587,7 +696,15 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
 
   if (loading) return <p className="text-[11px]" style={{ color: 'var(--ink-3)' }}>Loading your GitHub Projects…</p>
 
-  if (loadError) return <p className="text-[12px]" style={{ color: 'var(--status-error-text)' }}>{loadError}</p>
+  if (loadError) return (
+    <div className="space-y-2">
+      <p className="text-[12px]" style={{ color: 'var(--status-error-text)' }}>{loadError}</p>
+      <button onClick={() => githubEnsureLoaded()} className="text-[11px] px-3 py-1.5 rounded-md"
+        style={{ color: 'var(--color-state-proposal)', border: '1px solid var(--t-hair)', cursor: 'pointer', background: 'transparent' }}>
+        Retry
+      </button>
+    </div>
+  )
 
   if (!projects || projects.length === 0) {
     return (

@@ -18,6 +18,7 @@ import { TRACKER_BY_ID } from '../lib/integrations'
 const uiRoot = import.meta.dir + '/..'
 const view = readFileSync(uiRoot + '/components/IntegrationConnect.tsx', 'utf8')
 const rustCmd = readFileSync(uiRoot + '/../tray/src-tauri/src/commands/integrations.rs', 'utf8')
+const store = readFileSync(uiRoot + '/components/integrationConnectStore.ts', 'utf8')
 
 // ── PAT flow metadata (ui/lib/integrations.ts) ───────────────────────────────
 describe('GitHub PAT metadata', () => {
@@ -46,29 +47,75 @@ describe('GitHub PAT metadata', () => {
   })
 })
 
-// ── Device-flow copy button + numbered steps (IntegrationConnect.tsx) ─────────
-describe('device-flow code entry UI', () => {
-  it('flips the copy button to a "Copied" state on click', () => {
-    expect(view).toMatch(/setCopied\(true\)/)
-    expect(view).toMatch(/copied \? '✓ Copied' : 'Copy'/)
-    // The flourish is local, momentary state — reverted on a timer.
+// ── Device-flow guided checklist (IntegrationConnect.tsx) ────────────────────
+describe('device-flow guided checklist', () => {
+  it('renders three DeviceStep items — the first two self-ticking, the third waiting', () => {
+    expect(view).toMatch(/<DeviceStep n=\{1\} state=\{copiedOnce \? 'done' : 'active'\}/)
+    expect(view).toMatch(/<DeviceStep n=\{2\} state=\{opened \? 'done' : copiedOnce \? 'active' : 'todo'\}/)
+    // Step 3 happens on GitHub (cross-origin) — it can never self-tick, so it
+    // stays a spinner ('waiting'), not a checkbox.
+    expect(view).toMatch(/<DeviceStep n=\{3\} state="waiting"/)
+  })
+
+  it('records a PERSISTENT copy tick separate from the transient label flash', () => {
+    // copiedOnce gates step 2 and must not revert; copied is the 1.5s label flash.
+    expect(view).toMatch(/const \[copiedOnce, setCopiedOnce\] = useState\(false\)/)
+    expect(view).toMatch(/setCopiedOnce\(true\); setCopied\(true\)/)
+    expect(view).toMatch(/copied \? '✓ Copied' : 'Copy code'/)
     expect(view).toMatch(/setTimeout\(\(\) => setCopied\(false\)/)
   })
 
-  it('presents copy, enter, and per-org grant as three numbered steps', () => {
-    expect(view).toContain('Step 1.')
-    expect(view).toContain('Step 2.')
-    expect(view).toContain('Step 3.')
+  it('gates the Open-GitHub button on a copy, and that button is the sole opener', () => {
+    // The button is disabled until the code is copied, then opens the verify URI
+    // via the Tauri opener (target="_blank" is dropped in the webview).
+    expect(view).toMatch(/disabled=\{!copiedOnce\}/)
+    expect(view).toMatch(/openExternal\(verifyUri \?\? 'https:\/\/github\.com\/login\/device'\); setOpened\(true\)/)
+    expect(view).toContain('Open GitHub ↗')
   })
 
-  it('warns that org access must be granted per-org on GitHub (it cannot be pre-granted)', () => {
-    expect(view).toMatch(/GitHub requires this per organisation/)
+  it('still explains the per-org Grant/Request, with an accessible schematic image', () => {
+    expect(view).toMatch(/<strong>Grant<\/strong> \(or <strong>Request<\/strong>\)/)
+    // The illustration is an inline SVG with an aria-label (not a real screenshot).
+    expect(view).toContain('<GitHubGrantHint />')
+    expect(view).toMatch(/role="img"[\s\S]*?aria-label="On GitHub's authorize page, click Grant or Request/)
   })
 
-  it('opens the verification link through the Tauri opener, not a raw new tab', () => {
-    // target="_blank" is dropped inside the Tauri webview (see external-links);
-    // openExternal routes through the opener plugin instead.
-    expect(view).toMatch(/openExternal\(verifyUri \?\? 'https:\/\/github\.com\/login\/device'\)/)
+  it('draws the callout arrow as a straight shaft plus a single triangular head', () => {
+    // Regression guard: the old head was two freehand relative line segments
+    // whose directions didn't agree with each other or the shaft, so it
+    // rendered as a broken zigzag instead of a triangle. A <line> + <polygon>
+    // can't independently drift out of alignment the same way — the polygon's
+    // three points are the sole source of the head's shape.
+    expect(view).toMatch(/<line x1="232" y1="94" x2="199" y2="83"/)
+    expect(view).toMatch(/<polygon points="191,80 198,87 201,79"/)
+    // The old curve + freehand-triangle path pair must be gone, not just added
+    // alongside — otherwise both would render.
+    expect(view).not.toMatch(/<path d="M244 92 Q 210 96 194 82"/)
+    expect(view).not.toMatch(/l -2 -8 z/)
+  })
+})
+
+// ── Backend: the browser is no longer auto-opened (integrations.rs + sys.rs) ──
+describe('device flow no longer auto-opens the browser', () => {
+  it('drops the open_url_detached call so the UI button is the sole opener', () => {
+    // The connect checklist gates opening GitHub on a copy; auto-opening the tab
+    // up front would contradict that. Removed from start_oauth_github_device.
+    expect(rustCmd).not.toContain('open_url_detached(&device.verification_uri)')
+  })
+
+  it('removes the now-orphaned open_url_detached helper itself (no dead code)', () => {
+    const sys = readFileSync(uiRoot + '/../tray/src-tauri/src/sys.rs', 'utf8')
+    expect(sys).not.toContain('fn open_url_detached')
+    expect(sys).not.toContain('fn is_web_url')
+  })
+})
+
+// ── Project picker continues the checklist as Step 4 (IntegrationConnect.tsx) ─
+describe('the project picker appears as the next step, not a separate screen', () => {
+  it('collapses steps 1-3 to done ticks and renders the picker inside Step 4', () => {
+    expect(view).toMatch(
+      /status === 'done' && \([\s\S]*?<DeviceStep n=\{1\} state="done"[\s\S]*?<DeviceStep n=\{2\} state="done"[\s\S]*?<DeviceStep n=\{3\} state="done"[\s\S]*?<DeviceStep n=\{4\} state="active"[\s\S]*?<GitHubProjectPicker onSuccess=\{onSuccess\} \/>/
+    )
   })
 })
 
@@ -89,5 +136,41 @@ describe('backend still accepts the project_ids the picker submits', () => {
     // The UI field was removed, but GitHubProjectPicker.githubSave() submits
     // { project_ids } to save_integration_token — so the Rust mapping MUST stay.
     expect(rustCmd).toContain('("project_ids", "GITHUB_PROJECT_IDS")')
+  })
+})
+
+// ── Regression: a failed discovery must not permanently block a retry ────────
+describe('githubEnsureLoaded allows retrying after a failed discovery', () => {
+  it('does not skip a re-fetch when the last attempt ended in loadError', () => {
+    // THE BUG: the .catch() branch sets loaded:true on FAILURE too (so the UI
+    // isn't stuck spinning forever), but the old guard `if (s.loaded || s.saving)
+    // return` treated that identically to a SUCCESSFUL load. Once any single
+    // discovery attempt failed, the store latched permanently: every later
+    // connect attempt (a fresh PAT, a fresh OAuth run) silently reused the same
+    // stale error, because resetGithubPickerIfSaved() only clears state once a
+    // save succeeds — which can never happen while the picker shows no projects.
+    expect(store).toMatch(/if \(\(s\.loaded && !s\.loadError\) \|\| s\.saving\) return/)
+    // The old, buggy guard must be gone, not just superseded.
+    expect(store).not.toMatch(/if \(s\.loaded \|\| s\.saving\) return/)
+  })
+})
+
+// ── The picker offers a manual Retry, not just collapse/reopen ───────────────
+describe('a failed discovery shows an explicit Retry action', () => {
+  it('renders a Retry button that calls githubEnsureLoaded again', () => {
+    expect(view).toMatch(/if \(loadError\) return \([\s\S]*?onClick=\{\(\) => githubEnsureLoaded\(\)\}[\s\S]*?Retry/)
+  })
+})
+
+// ── PAT flow: the token-page link is a real button ────────────────────────────
+describe('the token-creation link is a button, not an inline text link', () => {
+  it('renders "Open <Tracker> ↗" as a styled button calling openExternal', () => {
+    expect(view).toMatch(/<button\s+onClick=\{\(\) => openExternal\(method\.url!\)\}[\s\S]*?Open \{tracker\.name\} ↗/)
+  })
+
+  it('no longer buries the link inside the hint paragraph', () => {
+    // The hint and the Open button are now two separate elements, not one
+    // paragraph with an inline <a> — easier to see, and unambiguously clickable.
+    expect(view).not.toMatch(/\{method\.hint\}\{' '\}\s*\{method\.url && \(\s*<a /)
   })
 })
