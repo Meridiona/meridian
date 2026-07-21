@@ -1,0 +1,151 @@
+name: Cache warm (macOS release)
+
+# SEEDS THE RELEASE COMPILE CACHE ON `main`. SHIPS NOTHING.
+#
+# ── WHY THIS EXISTS ──────────────────────────────────────────────────────────
+#
+# Because release-build.yml is triggered by a TAG, and GitHub scopes Actions
+# caches by ref. A workflow run may restore caches created in
+#
+#     • its own ref, or
+#     • the DEFAULT branch (main)
+#
+# and nothing else. It cannot read a sibling tag's cache, and it cannot read
+# pre-main's.
+#
+# Every release cuts a NEW tag (v1.72.0-staging.6, .7, .8 …), so each build
+# saved its 1.45GB cache under its own tag ref and the next tag started from
+# nothing. Measured on run 29812896206: `Compile daemon + tray` took
+# 1495s — ~25 of the 24-minute build. Notarization, by contrast, was 79s. The
+# cold compile IS the build time; everything else is rounding error.
+#
+# The fix is to make a release-shaped cache exist on the DEFAULT branch, which
+# every tag build can read. Nothing else on main produces one: release-build
+# runs on tags (saves to tag scope) and ci.yml compiles a different profile
+# under a different shared-key. Hence this job — its ONLY output is a warm
+# cache under `refs/heads/main`.
+#
+# ── WHY IT COMPILES THE SAME WAY release-build DOES ──────────────────────────
+#
+# rust-cache keys on the shared-key + runner + toolchain + lockfile, and the
+# cache is only useful if the target/ it saves matches the fingerprints a
+# release build will look for. So this mirrors release-build.yml's macOS job
+# exactly: same runner, same pinned toolchain, same target triple, the same two
+# cargo invocations, the same shared-key. Change that job's compile step and
+# you must change this one, or the cache silently stops matching and every
+# release quietly goes cold again — the failure is invisible, it just gets slow.
+#
+# It deliberately does NOT sign, notarize, bundle or publish. It is a compile
+# and a cache write.
+
+on:
+  # Every push to main re-seeds the cache with whatever production is at, so a
+  # release cut minutes later is warm.
+  push:
+    branches: [main]
+  # Nightly, so staging tags stay warm even during a long stretch with no
+  # production release. 04:00 UTC — off-peak for GitHub's macOS runner pool.
+  schedule:
+    - cron: "0 4 * * *"
+  # For seeding on demand (e.g. right after this lands, rather than waiting for
+  # the first nightly).
+  workflow_dispatch:
+
+# One warm at a time. Two would race to write the same cache key and the loser's
+# upload is wasted; never cancel a run that may be mid-save.
+concurrency:
+  group: cache-warm
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  SQLX_OFFLINE: "true"
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "3"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  warm:
+    name: Warm the aarch64 release cache
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # MUST match release-build.yml's macOS job byte for byte — this is the
+          # whole point of the workflow. `add-job-id-key: false` keeps the key
+          # free of this job's name so release-build computes the same one.
+          add-job-id-key: false
+          shared-key: macos-release-aarch64-apple-darwin
+          cache-directories: |
+            ~/.cargo/registry/src
+          # Unconditional: this job only ever runs on main (push/schedule) or by
+          # hand, and writing the main-scoped cache is its entire purpose.
+          save-if: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            ui/package-lock.json
+            tray/package-lock.json
+
+      - name: Install UI + tray deps
+        # `tauri build` runs the UI build as its beforeBuildCommand, so the node
+        # deps are a prerequisite of compiling at all.
+        run: |
+          (cd ui && npm ci --no-audit --no-fund)
+          (cd tray && npm ci --no-audit --no-fund)
+
+      - name: Stub the daemon so tauri-build's resource check passes
+        # tauri-build only STATS bundle.resources during compilation; a
+        # zero-byte placeholder satisfies it. Same trick as ci.yml and
+        # release-build.yml.
+        run: |
+          mkdir -p target/release
+          : > target/release/meridian
+
+      - name: Compile daemon + tray (aarch64-apple-darwin)
+        working-directory: tray
+        # IDENTICAL to release-build.yml's compile step. Two invocations, for the
+        # reason documented there: `tauri build` injects
+        # `--features tauri/custom-protocol`, which cargo cannot apply to the
+        # `-p meridian` scope (no tauri dependency), so the two crates cannot
+        # share one invocation.
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin \
+            -p meridian --bin meridian
+          npx tauri build --no-bundle --target aarch64-apple-darwin \
+            --config src-tauri/tauri.staging.conf.json
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Cache warm"
+            echo "Seeded \`macos-release-aarch64-apple-darwin\` under \`refs/heads/main\`."
+            echo ""
+            echo "Tag-triggered release builds restore from the default branch, so"
+            echo "staging and production tags both start warm."
+          } >> "$GITHUB_STEP_SUMMARY"
