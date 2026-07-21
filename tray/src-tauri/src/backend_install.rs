@@ -82,10 +82,10 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
             return;
         }
     };
-    let home = match std::env::var("HOME") {
-        Ok(h) => PathBuf::from(h),
-        Err(_) => {
-            tracing::warn!("backend_install: HOME unset — cannot stage backend");
+    let home = match meridian_core::paths::home_dir() {
+        Some(h) => h,
+        None => {
+            tracing::warn!("backend_install: home directory could not be resolved — cannot stage backend");
             return;
         }
     };
@@ -194,7 +194,8 @@ async fn register_service(backend: &Path, home: &Path, daemon_bin: &Path) -> Res
 
 /// Register the staged daemon to run at login and keep running.
 ///
-/// Windows: a **per-user scheduled task**, via `schtasks.exe`.
+/// Windows: a **per-user scheduled task**, via `schtasks.exe`, falling back to
+/// a Startup-folder launcher when that's blocked.
 ///
 /// # Why not a Windows Service
 ///
@@ -213,8 +214,56 @@ async fn register_service(backend: &Path, home: &Path, daemon_bin: &Path) -> Res
 /// `schtasks.exe` is used rather than the `windows-service` crate because this
 /// needs the Task Scheduler, not the Service Control Manager, and shelling out
 /// avoids taking a dependency for one idempotent call.
+///
+/// # Fallback: some machines refuse `schtasks /Create`
+///
+/// Managed/corporate machines can have Task Scheduler creation locked down by
+/// policy for standard (non-elevated) users — `schtasks` then fails with
+/// "Access is denied" even though the service itself is running fine. Rather
+/// than leave the daemon permanently unstarted on those machines, a failed
+/// `schtasks /Create` falls back to [`install_startup_folder_launcher`]: a
+/// hidden VBScript dropped in the user's Startup folder, which Windows runs
+/// at every login with no Task Scheduler involvement. It loses `KeepAlive`
+/// (no restart if the daemon crashes — the same trade-off the retired `Run`
+/// registry key would have had), but that is strictly better than "never
+/// starts at all".
 #[cfg(target_os = "windows")]
 async fn register_service(_backend: &Path, home: &Path, daemon_bin: &Path) -> Result<(), String> {
+    match register_scheduled_task(daemon_bin).await {
+        Ok(()) => {
+            // A prior run on this same machine may have left a Startup-folder
+            // fallback behind (e.g. a policy that has since been relaxed) —
+            // clear it so the daemon isn't launched twice at next login.
+            let _ = remove_startup_folder_launcher().await;
+            tracing::info!(
+                task = WINDOWS_TASK_NAME,
+                home = %home.display(),
+                "backend_install: scheduled task registered"
+            );
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "backend_install: schtasks registration failed — falling back to a Startup-folder launcher"
+            );
+            install_startup_folder_launcher(daemon_bin).await?;
+            // Nothing else will start the daemon until next login — start it now.
+            let _ = tokio::process::Command::new(daemon_bin).spawn();
+            tracing::info!(
+                home = %home.display(),
+                "backend_install: Startup-folder launcher installed"
+            );
+            Ok(())
+        }
+    }
+}
+
+/// `schtasks /Create` (+ a best-effort immediate `/Run`) for the daemon's
+/// per-user login task. Split out from [`register_service`] so a failure here
+/// is a recoverable `Err` the caller can fall back from, not a hard stop.
+#[cfg(target_os = "windows")]
+async fn register_scheduled_task(daemon_bin: &Path) -> Result<(), String> {
     // `/F` replaces an existing task, so re-registering on every update is
     // idempotent — the role `launchctl bootout` + `bootstrap` plays on macOS.
     //
@@ -251,13 +300,60 @@ async fn register_service(_backend: &Path, home: &Path, daemon_bin: &Path) -> Re
         .args(["/Run", "/TN", WINDOWS_TASK_NAME])
         .output()
         .await;
-
-    tracing::info!(
-        task = WINDOWS_TASK_NAME,
-        home = %home.display(),
-        "backend_install: scheduled task registered"
-    );
     Ok(())
+}
+
+/// File name of the Startup-folder fallback launcher. `.vbs` (not `.bat`/`.cmd`)
+/// specifically so it runs via `wscript.exe` with no console window flash —
+/// `WScript.Shell.Run`'s third argument (`0`) is the hidden window style, the
+/// same effect `KeepAlive`-less silence needs.
+#[cfg(target_os = "windows")]
+const STARTUP_LAUNCHER_NAME: &str = "MeridianDaemon.vbs";
+
+/// `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup` — every file
+/// directly inside runs once per login, no registration step required. This
+/// is the one directory Windows treats as "run these at logon" without going
+/// through Task Scheduler or the registry, which is exactly what a
+/// policy-restricted machine still allows a standard user to write to.
+#[cfg(target_os = "windows")]
+fn startup_folder() -> Result<PathBuf, String> {
+    let appdata = std::env::var("APPDATA").map_err(|_| "%APPDATA% is not set".to_string())?;
+    Ok(PathBuf::from(appdata).join(r"Microsoft\Windows\Start Menu\Programs\Startup"))
+}
+
+/// Write the hidden-launch VBScript to the Startup folder. Idempotent:
+/// overwrites unconditionally, same as `schtasks /Create /F`.
+#[cfg(target_os = "windows")]
+async fn install_startup_folder_launcher(daemon_bin: &Path) -> Result<(), String> {
+    let dir = startup_folder()?;
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
+    let script = dir.join(STARTUP_LAUNCHER_NAME);
+    // VBScript has no backslash-escaping to worry about — only `"` needs
+    // doubling to embed a literal quote, wrapping the path so a space
+    // anywhere in it (a differently-named Windows profile, say) can't split
+    // `Run`'s argument.
+    let contents = format!(
+        "CreateObject(\"WScript.Shell\").Run \"\"\"{}\"\"\", 0, False\r\n",
+        daemon_bin.display()
+    );
+    tokio::fs::write(&script, contents)
+        .await
+        .map_err(|e| format!("write {}: {e}", script.display()))
+}
+
+/// Remove a previously-installed Startup-folder launcher. Best-effort: a
+/// missing file is not an error, and any other failure is swallowed by the
+/// caller (this only ever runs opportunistically after `schtasks` succeeds).
+#[cfg(target_os = "windows")]
+async fn remove_startup_folder_launcher() -> Result<(), String> {
+    let path = startup_folder()?.join(STARTUP_LAUNCHER_NAME);
+    match tokio::fs::remove_file(&path).await {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("remove {}: {e}", path.display())),
+    }
 }
 
 /// Task Scheduler name for the daemon's per-user login task.

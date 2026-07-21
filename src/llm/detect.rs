@@ -709,11 +709,25 @@ fn probe_current_path(bin: &str) -> Option<PathBuf> {
 /// install as npm-shimmed `.cmd` files, not bare `.exe`s — `CreateProcess` only appends a
 /// `PATHEXT` extension automatically when spawning *by name*, not when we hand back (and a
 /// caller later spawns) an absolute path, so the extension has to be resolved right here.
+///
+/// `PATHEXT` extensions are tried BEFORE the bare name, not after. npm's global install
+/// writes THREE files per CLI — `claude` (an extensionless POSIX shebang script, for
+/// WSL/Git-Bash), `claude.cmd`, and `claude.ps1` — all in the same directory. The bare
+/// `claude` file `is_file()` just as truly as `claude.cmd` does, so checking it first
+/// resolves to the POSIX script: no `.cmd`/`.bat` extension, so `windows_shell_wrapper`
+/// doesn't route it through `cmd /C` either, and it gets handed to `CreateProcess` as a
+/// literal shebang text file — `os error 193, %1 is not a valid Win32 application`, on a
+/// machine where `claude` undeniably "works". A real `cmd.exe`/PowerShell prompt never
+/// makes this mistake because PATHEXT resolution always wins over an extensionless match;
+/// the bare name is kept only as a last-resort fallback for a genuinely extensionless
+/// native binary.
 #[cfg(windows)]
 fn path_candidate_names(bin: &str) -> Vec<String> {
     let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
-    std::iter::once(bin.to_string())
-        .chain(exts.split(';').filter(|e| !e.is_empty()).map(|ext| format!("{bin}{ext}")))
+    exts.split(';')
+        .filter(|e| !e.is_empty())
+        .map(|ext| format!("{bin}{ext}"))
+        .chain(std::iter::once(bin.to_string()))
         .collect()
 }
 
@@ -839,6 +853,48 @@ mod tests {
             .await
             .is_none());
         assert!(probe_candidates("meridian-definitely-not-a-real-binary").is_none());
+    }
+
+    /// npm's global install writes an extensionless POSIX shebang script (`claude`)
+    /// alongside `claude.cmd` in the SAME directory, for WSL/Git-Bash use. Both
+    /// `is_file()`. A resolver that checks the bare name before `PATHEXT` extensions
+    /// would match the shebang script instead — which then fails to spawn as a native
+    /// binary (`os error 193`) even though `claude` plainly "works" on this machine.
+    /// This reproduces exactly that directory layout and asserts the `.CMD` file wins.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn probe_current_path_prefers_pathext_over_a_bare_extensionless_shim() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "meridian-detect-pathext-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bare = dir.join("meridian-fake-cli");
+        let shimmed = dir.join("meridian-fake-cli.CMD");
+        std::fs::write(&bare, "#!/bin/sh\necho fake\n").unwrap();
+        std::fs::write(&shimmed, "@echo fake\r\n").unwrap();
+
+        let original_path = std::env::var_os("PATH");
+        let new_path = match &original_path {
+            Some(p) => std::env::join_paths(std::iter::once(dir.clone()).chain(std::env::split_paths(p))).unwrap(),
+            None => dir.clone().into_os_string(),
+        };
+        std::env::set_var("PATH", &new_path);
+
+        let found = probe_current_path("meridian-fake-cli");
+
+        match original_path {
+            Some(p) => std::env::set_var("PATH", p),
+            None => std::env::remove_var("PATH"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            found.as_deref(),
+            Some(shimmed.as_path()),
+            "resolved {found:?}, expected the .CMD shim, not the bare shebang script"
+        );
     }
 
     /// `MERIDIAN_HOME` is a process-global env var and cargo runs tests in parallel threads
