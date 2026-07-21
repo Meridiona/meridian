@@ -10,7 +10,13 @@
 # packages/meridian-mcp/package.json, and tray/src-tauri/tauri.conf.json (the
 # version the DMG auto-updater compares against — MUST be bumped BEFORE the tray
 # build so the packaged .app bakes the release version, not a stale 0.1.0).
-# Uses BSD sed (the release runs on macOS).
+#
+# Runs on BOTH macOS (release-build.yml's per-arch build job) and Linux
+# (release-prepare.yml's ubuntu-latest exec prepareCmd) — everything below
+# goes through python3, not sed, because `sed -i` is not portable between BSD
+# (macOS) and GNU (Linux): `sed -i '' -E '...'` works on BSD but on GNU sed the
+# `''` is consumed as the script itself, not the in-place suffix, and the real
+# expression gets treated as a filename.
 set -euo pipefail
 
 VER="${1:?usage: set-version.sh <version>}"
@@ -18,13 +24,21 @@ VER="${VER#v}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
-# TOML: the single top-level `version = "..."` line ([package] / [project]).
-sed -i '' -E "s/^version = \"[^\"]*\"/version = \"${VER}\"/" Cargo.toml
-
-# JSON manifests via python (reliable; preserves structure).
 python3 - "${VER}" <<'PY'
-import json, sys
+import json, re, sys
 ver = sys.argv[1]
+
+# Cargo.toml: the single top-level `version = "..."` line ([package]).
+with open("Cargo.toml") as fh:
+    cargo_toml = fh.read()
+cargo_toml, n = re.subn(
+    r'(?m)^version = "[^"]*"', f'version = "{ver}"', cargo_toml, count=1
+)
+if n != 1:
+    sys.exit(f"set-version: expected exactly one top-level version in Cargo.toml, patched {n}")
+with open("Cargo.toml", "w") as fh:
+    fh.write(cargo_toml)
+
 targets = [
     "ui/package.json",
     "packages/meridian-mcp/package.json",
@@ -48,7 +62,6 @@ for path in targets:
 # `cargo build --locked` would fail the release). "meridian" is a workspace path
 # crate, so only its own version line changes — the dependency graph is untouched,
 # leaving rust-cache's restore behaviour the same as the Cargo.toml bump already is.
-import re
 with open("Cargo.lock") as fh:
     lock = fh.read()
 lock, n = re.subn(
