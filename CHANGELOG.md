@@ -1,3 +1,9 @@
+## [1.74.1](https://github.com/Meridiona/meridian/compare/v1.74.0...v1.74.1) (2026-07-21)
+
+### 🐛 Bug Fixes
+
+* **ci:** fail the release when a merge to main tags nothing ([dae5588](https://github.com/Meridiona/meridian/commit/dae5588cbfc54bdb3311aa6326ec1e00fbb849a1)), closes [#517](https://github.com/Meridiona/meridian/issues/517) [#522](https://github.com/Meridiona/meridian/issues/522) [#522](https://github.com/Meridiona/meridian/issues/522)
+
 ## [1.74.0](https://github.com/Meridiona/meridian/compare/v1.73.0...v1.74.0) (2026-07-20)
 
 ### 🚀 Features
