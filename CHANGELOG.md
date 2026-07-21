@@ -1,3 +1,50 @@
+## [1.75.0](https://github.com/Meridiona/meridian/compare/v1.74.2...v1.75.0) (2026-07-21)
+
+### 🚀 Features
+
+* **auth:** make sign-in compulsory across dashboard and tray popover ([#520](https://github.com/Meridiona/meridian/issues/520)) ([76ff547](https://github.com/Meridiona/meridian/commit/76ff54726e7b85fde0e832cda48f0356920ba75b))
+* **ci:** migrate production onto the Silicon-only two-workflow pipeline ([#515](https://github.com/Meridiona/meridian/issues/515)) ([c1df554](https://github.com/Meridiona/meridian/commit/c1df5543b48808246e063816bae375cae641e945))
+* **plan:** add a Refresh button when a tracker is connected ([e898fab](https://github.com/Meridiona/meridian/commit/e898fab0a30a30af5fb80c5acd4a0abc23ea2866))
+* **tasks:** let the plan's task-detail dialog change status, incl. personal tasks ([4c8980c](https://github.com/Meridiona/meridian/commit/4c8980c38d83254cf9cb455c5c7c36a3d2e5fde2))
+* **ui:** guided device-flow checklist, project-picker continuity, fix latched discovery error ([36d2bab](https://github.com/Meridiona/meridian/commit/36d2babaf45f7e1a6c00af4dfeb86fb638cb3d06))
+* **ui:** streamline the GitHub connect flow (device copy state, PAT project picker) ([389f199](https://github.com/Meridiona/meridian/commit/389f199648a7dea7602504224a5417bb17c859aa))
+* **ui:** surface the empty daily-plan CTA at the top of the sidebar ([1092f9d](https://github.com/Meridiona/meridian/commit/1092f9d0c6c32f1466db6de9b0012337df4e797e))
+* **worklog:** choose which tracker a proposed ticket is created on ([f3ebc02](https://github.com/Meridiona/meridian/commit/f3ebc02c291ecee9d079b1054460eb956ed6b755))
+
+### 🐛 Bug Fixes
+
+* **capture:** bump screenpipe-fork to disable sck-rs on every macOS version ([d4e467b](https://github.com/Meridiona/meridian/commit/d4e467b63c8c898111cf1f48f1d6bc9c53c0ceb7)), closes [Meridiona/screenpipe-fork#3](https://github.com/Meridiona/screenpipe-fork/issues/3)
+* **ci:** a pre-main merge produces a downloadable macOS Silicon staging build ([#513](https://github.com/Meridiona/meridian/issues/513)) ([17672ac](https://github.com/Meridiona/meridian/commit/17672ac5c5578d5b65f2431eacdcebedf1ac6071))
+* **ci:** address CodeRabbit review on [#528](https://github.com/Meridiona/meridian/issues/528) ([32436f8](https://github.com/Meridiona/meridian/commit/32436f865465f0eb4f56893606fdc401adfb2488))
+* **ci:** auto-cut staging on every pre-main push, drop the fragile marker ([#512](https://github.com/Meridiona/meridian/issues/512)) ([52894cf](https://github.com/Meridiona/meridian/commit/52894cf17999e2e839433a0ce42d7c2f0923b112))
+* **ci:** bind the tag through env, stop persisting the checkout token ([#518](https://github.com/Meridiona/meridian/issues/518)) ([1c05647](https://github.com/Meridiona/meridian/commit/1c05647c14957b540b2433be9f9390c057920f40))
+* **ci:** make staging release manual-only, not commit-message triggered ([#511](https://github.com/Meridiona/meridian/issues/511)) ([6ae54ea](https://github.com/Meridiona/meridian/commit/6ae54ea2334bc8f6f91a6b6fb0ea5adcd92c3aef)), closes [#508](https://github.com/Meridiona/meridian/issues/508)
+* **ci:** unset notarization creds for staging instead of blanking them ([#516](https://github.com/Meridiona/meridian/issues/516)) ([f7bc754](https://github.com/Meridiona/meridian/commit/f7bc7545280d407b3ff5af3ae44b18bb1e72bd1a))
+* **tray:** match PostHog daily_usage to dashboard stats, make sends retry-safe ([#505](https://github.com/Meridiona/meridian/issues/505)) ([7cd3f72](https://github.com/Meridiona/meridian/commit/7cd3f720b79e85fb08dbac771baffb6fbfba2ba9))
+* **tray:** reconcile a stale daemon_quiet notice on tray restart ([ac8c073](https://github.com/Meridiona/meridian/commit/ac8c073dcbb3f38801a2ed0b825e23cc7917c3bd))
+* **ui:** move the empty-plan nudge into the Today's focus section ([e76272b](https://github.com/Meridiona/meridian/commit/e76272b5b3fab10b1f4d6f779abc1d4417f20dd7))
+* **ui:** remove the Tasks entry row from the timeline's right panel ([00edb4e](https://github.com/Meridiona/meridian/commit/00edb4e84753d4bd822a5a9aca5a90efc33dead2))
+* **ui:** stop day-task timeline drawing future hours and clipping card text ([5dae9ca](https://github.com/Meridiona/meridian/commit/5dae9cabfcd696aa83363cc68167d0675fe83a29))
+* **ui:** stop StatusBanner clicks from bubbling to the dialog overlay ([c914e25](https://github.com/Meridiona/meridian/commit/c914e25267897379c1739c359bcd18811214451f))
+* **ui:** use a plain hyphen, not an em-dash, in the GitHub PAT reload-warning ([a716076](https://github.com/Meridiona/meridian/commit/a71607640dfe9fe508efe7d3c09b37bbd58ca784))
+
+### ⚡ Performance
+
+* **ci:** warm the release cache on main and skip staging notarization ([#514](https://github.com/Meridiona/meridian/issues/514)) ([f9368c4](https://github.com/Meridiona/meridian/commit/f9368c4935550d4a2dfa9e798ed07d4534a75f2f))
+
+### 🤖 CI
+
+* bump the screenpipe MIT-pin guard to the sck-rs universal-disable rev ([ddcb621](https://github.com/Meridiona/meridian/commit/ddcb62128c029b7999bf20502f240c18ed5d6622)), closes [#2](https://github.com/Meridiona/meridian/issues/2)
+* merge main into pre-main to clear the ci.yml conflict for [#528](https://github.com/Meridiona/meridian/issues/528) ([480ce70](https://github.com/Meridiona/meridian/commit/480ce70fe87431d57bbffa08be45ecbd1689e0e4)), closes [#526](https://github.com/Meridiona/meridian/issues/526)
+* new prepare + tag-triggered release pipeline (staging only, for now) + faster CI ([#508](https://github.com/Meridiona/meridian/issues/508)) ([6b4aa96](https://github.com/Meridiona/meridian/commit/6b4aa96eb89d8723dd95b43b4663bba40ac8b952)), closes [semantic-release#1849](https://github.com/Meridiona/semantic-release/issues/1849) [alacritty#6467](https://github.com/Meridiona/alacritty/issues/6467)
+* stop re-running the suite on pre-main → main release PRs ([#521](https://github.com/Meridiona/meridian/issues/521)) ([afb5e63](https://github.com/Meridiona/meridian/commit/afb5e631e49c544828fc8f9422e436bdd4472280))
+* sync the release-pipeline fixes back from main ([90b10d4](https://github.com/Meridiona/meridian/commit/90b10d46f224a0d6774f43bbf3ca19009eabc279)), closes [#523](https://github.com/Meridiona/meridian/issues/523) [#525](https://github.com/Meridiona/meridian/issues/525)
+
+### ✅ Tests
+
+* **tray:** add an end-to-end DB check for the stale-notice restart fix ([1e1ad19](https://github.com/Meridiona/meridian/commit/1e1ad198e17265b2e149e9f949e4dbef2a51a196))
+* **ui:** cover the toolbar's multi-provider Connected pill ([e36e605](https://github.com/Meridiona/meridian/commit/e36e605efffd6ee54f282a6d6438abdd1eceb5ba))
+
 ## [1.74.2](https://github.com/Meridiona/meridian/compare/v1.74.1...v1.74.2) (2026-07-21)
 
 ### 🐛 Bug Fixes
