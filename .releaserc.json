@@ -71,6 +71,12 @@
       }
     ],
     [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "bash scripts/set-version.sh ${nextRelease.version}"
+      }
+    ],
+    [
       "@semantic-release/github",
       {
         "successComment": false,
