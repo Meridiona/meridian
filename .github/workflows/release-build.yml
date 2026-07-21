@@ -267,22 +267,16 @@ jobs:
       # SIGNING is unconditional — an updated app is still Gatekeeper-checked
       # against its Developer ID signature when it relaunches, on every channel.
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      # NOTARIZATION IS STABLE-ONLY. `tauri bundle` notarizes the .app only when
-      # it finds these two, so blanking them on staging turns the bundle step
-      # into sign-without-notarize.
-      #
-      # Why that is safe on staging and NOT on stable: Gatekeeper only enforces
-      # notarization on a QUARANTINED app, and the quarantine flag is set by the
-      # thing that downloaded it — a browser. Staging is delivered exclusively by
-      # tauri-plugin-updater, which unpacks the tarball itself and sets no
-      # quarantine flag, so the relaunched app is verified on its signature (and
-      # the updater's own minisign key) and never consults a notarization ticket.
-      # Stable ships a DMG that new users download in a browser, which IS
-      # quarantined — dropping notarization there would give every new user
-      # "Apple cannot check it for malicious software". Hence: staging skips,
-      # stable always notarizes.
-      APPLE_API_KEY: ${{ needs.prepare.outputs.channel == 'stable' && secrets.APPLE_API_KEY || '' }}
-      APPLE_API_ISSUER: ${{ needs.prepare.outputs.channel == 'stable' && secrets.APPLE_API_ISSUER || '' }}
+      # Notarization credentials. These are set UNCONDITIONALLY and the staging
+      # skip is done by UNSETTING them in the bundle step — see the long note
+      # there. Do NOT try to gate them here with `cond && secret || ''`: an
+      # Actions expression that yields '' still DEFINES the variable as an empty
+      # string, Tauri reads "defined" as "credentials present", and notarytool
+      # is invoked with `--issuer ''` — which fails the whole bundle with
+      # "The value '' is invalid for '--issuer <issuer>'". That is exactly how
+      # v1.72.0-staging.7 died.
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
       TAURI_BUNDLER_DMG_IGNORE_CI: "true"
       # Selects target/<triple>/release/bundle for every script below.
       MERIDIAN_TARGET: ${{ matrix.target }}
@@ -422,6 +416,8 @@ jobs:
 
       - name: Bundle, sign and notarize the app
         working-directory: tray
+        env:
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
         # `tauri bundle` runs ZERO cargo invocations — it packages what is
         # already in target/. It signs the .app, notarizes it, staples it, then
         # produces the DMG and the updater tarball.
@@ -429,7 +425,43 @@ jobs:
         # It does NOT notarize the DMG. tauri-bundler's dmg.rs contains no
         # notarize call at all (tauri-apps/tauri#7533, open since 2023) — hence
         # the separate step below.
+        #
+        # ── WHY STAGING UNSETS THE NOTARIZATION CREDENTIALS HERE ──────────────
+        #
+        # Tauri decides to notarize by LOOKING FOR the credentials, and it treats
+        # a defined-but-empty variable as present. So the skip cannot be done by
+        # gating the `env:` block with `cond && secret || ''` — that still defines
+        # the variables, and notarytool then runs with `--issuer ''` and kills the
+        # whole bundle:
+        #
+        #     The value '' is invalid for '--issuer <issuer>': must be a valid UUID
+        #
+        # (v1.72.0-staging.7 died exactly there.) APPLE_API_KEY_PATH makes it
+        # worse: .github/actions/import-apple-cert writes the .p8 and exports the
+        # path UNCONDITIONALLY via GITHUB_ENV, so it is present no matter what the
+        # job env says. `unset` in this shell is therefore the only reliable gate —
+        # it removes them from the environment tauri actually inherits.
+        #
+        # Why skipping is safe on staging and NOT on stable: Gatekeeper enforces
+        # notarization only on a QUARANTINED app, and the quarantine flag is set by
+        # whatever downloaded it — a browser. Staging is delivered exclusively by
+        # tauri-plugin-updater, which unpacks the tarball itself and sets no flag,
+        # so the relaunched app is verified on its Developer ID signature (still
+        # applied below) plus the updater's minisign key, and never consults a
+        # notarization ticket. Stable ships a DMG new users download in a browser —
+        # dropping notarization there would greet every new user with "Apple cannot
+        # check it for malicious software".
+        #
+        # SIGNING is unaffected: APPLE_SIGNING_IDENTITY and the keychain stay in
+        # place, so the .app is still Developer ID signed on every channel.
         run: |
+          set -euo pipefail
+          if [ "${CHANNEL}" != "stable" ]; then
+            unset APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH
+            echo "→ ${CHANNEL}: signing without notarization (updater-only delivery)"
+          else
+            echo "→ stable: signing AND notarizing"
+          fi
           npx tauri bundle --target ${{ matrix.target }} --bundles app,dmg \
             ${{ needs.prepare.outputs.channel == 'staging' && '--config src-tauri/tauri.staging.conf.json' || '' }}
 
