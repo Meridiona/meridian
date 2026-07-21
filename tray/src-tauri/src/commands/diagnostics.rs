@@ -53,8 +53,9 @@ pub async fn export_diagnostics_bundle(app: tauri::AppHandle) -> Result<String, 
 /// `~/Downloads/meridian-diagnostics-<unix_micros>.tar.gz` — a location every
 /// user can find without knowing about `~/.meridian/telemetry/`.
 fn default_export_path() -> anyhow::Result<std::path::PathBuf> {
-    let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME not set"))?;
-    let dir = std::path::PathBuf::from(home).join("Downloads");
+    let home = meridian_core::paths::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("home directory could not be resolved"))?;
+    let dir = home.join("Downloads");
     std::fs::create_dir_all(&dir)?;
     let micros = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

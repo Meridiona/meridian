@@ -71,7 +71,7 @@ pub(crate) fn detect_install_mode() -> InstallMode {
     }
     #[cfg(not(debug_assertions))]
     {
-        let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
+        let home = meridian_core::paths::home_dir();
         if let Some(p) = home.as_ref().map(|h| h.join(".meridian/.env")) {
             if p.exists() {
                 return InstallMode::Canonical(p);
@@ -111,9 +111,7 @@ pub(crate) fn canonical_env_path() -> Option<std::path::PathBuf> {
     }
     #[cfg(not(debug_assertions))]
     {
-        std::env::var("HOME")
-            .ok()
-            .map(|h| std::path::PathBuf::from(h).join(".meridian/.env"))
+        meridian_core::paths::home_dir().map(|h| h.join(".meridian/.env"))
     }
 }
 
@@ -206,12 +204,12 @@ pub(crate) fn meridian_bin() -> String {
     }
     #[cfg(not(debug_assertions))]
     {
-        if let Ok(home) = std::env::var("HOME") {
+        if let Some(home) = meridian_core::paths::home_dir() {
             // `~/.meridian/bin/meridian` is the DMG path (staged by `backend_install`) —
             // native, no runtime deps, so it works under launchd's minimal PATH; the
             // `~/.local/bin` node wrapper is the last resort.
-            for rel in ["/.meridian/bin/meridian", "/.local/bin/meridian"] {
-                let p = std::path::PathBuf::from(format!("{home}{rel}"));
+            for rel in [".meridian/bin/meridian", ".local/bin/meridian"] {
+                let p = home.join(rel);
                 if p.exists() {
                     return p.to_string_lossy().into_owned();
                 }
@@ -241,9 +239,10 @@ pub(crate) fn cli_cwd() -> Result<std::path::PathBuf, String> {
     }
     #[cfg(not(debug_assertions))]
     {
-        let home = std::env::var("HOME")
-            .map_err(|_| "HOME env var not set - cannot locate ~/.meridian".to_string())?;
-        let cwd = std::path::PathBuf::from(&home).join(".meridian");
+        let home = meridian_core::paths::home_dir().ok_or_else(|| {
+            "home directory could not be resolved - cannot locate ~/.meridian".to_string()
+        })?;
+        let cwd = home.join(".meridian");
         if !cwd.exists() {
             std::fs::create_dir_all(&cwd)
                 .map_err(|e| format!("could not create ~/.meridian: {e}"))?;
@@ -299,8 +298,8 @@ pub(crate) fn meridian_db_path() -> String {
             return p;
         }
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let p = format!("{}/.meridian/meridian.db", home);
+    let home = meridian_core::paths::home_dir_or_cwd();
+    let p = format!("{}/.meridian/meridian.db", home.display());
     tracing::info!(source = ?mode, path = %p, "meridian_db resolved (default)");
     p
 }

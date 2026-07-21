@@ -360,15 +360,43 @@ else{document.querySelector('h2').textContent='No token in URL. Try again.';}\
 /// argument is a window-title slot, not part of the command — the empty `""`
 /// there is required, otherwise `start` misreads a quoted URL as the title and
 /// never opens it.
+///
+/// The whole `/C ...` line is built with [`CommandExt::raw_arg`] rather than
+/// passed as normal `args` elements: `Command`'s automatic Windows quoting
+/// only wraps an argument in `"..."` when it contains a space, tab, or `"` —
+/// an authorize URL has none of those, only `&`-joined query params, so it
+/// went out unquoted. `cmd.exe` then parsed each unescaped `&` as a command
+/// separator and only the query string up to the FIRST `&` ever reached the
+/// browser (`response_type=code`, with `client_id`/`redirect_uri`/`scope`/
+/// `state` silently dropped as bogus follow-on commands) — the exact shape of
+/// Atlassian's "authorize request was incomplete or invalid" and GitHub's
+/// consent page hanging on a `redirect_uri`-less Authorize click. Wrapping the
+/// URL in real quotes inside the raw command line protects `&` from cmd.exe's
+/// tokenizer the way it would from an interactive prompt. The URL can't itself
+/// contain a `"` — [`encode`] percent-encodes anything outside the unreserved
+/// set — so this quoting is always safe.
+#[cfg(target_os = "windows")]
+fn open_browser(url: &str) {
+    use std::os::windows::process::CommandExt;
+    tracing::info!(
+        url,
+        "if it doesn't open automatically, open this URL yourself"
+    );
+    let result = std::process::Command::new("cmd")
+        .arg("/C")
+        .raw_arg(format!("start \"\" \"{url}\""))
+        .spawn();
+    if let Err(e) = result {
+        tracing::warn!(error = %e, "failed to launch the system browser");
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
 fn open_browser(url: &str) {
     tracing::info!(
         url,
         "if it doesn't open automatically, open this URL yourself"
     );
-    #[cfg(target_os = "windows")]
-    let result = std::process::Command::new("cmd")
-        .args(["/C", "start", "", url])
-        .spawn();
     #[cfg(target_os = "macos")]
     let result = std::process::Command::new("open").arg(url).spawn();
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
