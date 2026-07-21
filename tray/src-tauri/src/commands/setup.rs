@@ -14,11 +14,17 @@
 
 /// Returns `true` on the first launch — no `~/.meridian/onboarded` flag exists.
 /// The wizard auto-opens when `true` and is skipped on subsequent launches.
+///
+/// Uses [`meridian_core::paths::meridian_dir`] rather than a raw `HOME`
+/// env var read — `HOME` is unset on Windows, which used to make this fall
+/// back to a bogus `.`-relative (cwd) path instead of `%USERPROFILE%\.meridian`.
 #[tauri::command]
 #[tracing::instrument]
 pub async fn is_first_run() -> bool {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    !std::path::Path::new(&format!("{home}/.meridian/onboarded")).exists()
+    match meridian_core::paths::meridian_dir() {
+        Some(dir) => !dir.join("onboarded").exists(),
+        None => true,
+    }
 }
 
 /// Write `~/.meridian/onboarded` (RFC-3339 timestamp) to mark wizard completion.
@@ -26,8 +32,8 @@ pub async fn is_first_run() -> bool {
 #[tauri::command]
 #[tracing::instrument]
 pub async fn mark_setup_complete() -> Result<(), String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let dir = std::path::PathBuf::from(format!("{home}/.meridian"));
+    let dir = meridian_core::paths::meridian_dir()
+        .ok_or_else(|| "could not resolve home directory".to_string())?;
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| format!("create ~/.meridian: {e}"))?;
@@ -36,6 +42,15 @@ pub async fn mark_setup_complete() -> Result<(), String> {
         .map_err(|e| format!("write onboarded: {e}"))?;
     tracing::info!("setup: onboarded flag written");
     Ok(())
+}
+
+/// The current OS, for the wizard to adapt its copy/steps — e.g. the
+/// Permissions step is macOS-only (Windows capture needs no TCC-style grant;
+/// see `screenpipe_a11y::platform::windows`) and is skipped entirely when this
+/// returns `"windows"`.
+#[tauri::command]
+pub fn get_platform() -> &'static str {
+    std::env::consts::OS
 }
 
 /// Returns `true` when the current process (the tray) has Accessibility trust.

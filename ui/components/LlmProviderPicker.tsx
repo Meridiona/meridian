@@ -147,10 +147,14 @@ export function useLlmProviderDetection() {
   return { status, scanning, testingIds, installingIds, signingIds, testOne, install, signIn, rescan: detect }
 }
 
-/** One tile in the top-level chooser: logo + name + a badge, nothing else. */
-function ChooserTile({ id, name, badge, selected, subtitle, onOpen }: {
+/** One tile in the top-level chooser: logo + name + a badge, nothing else.
+ *  `warning`, when set, replaces the normal badge/subtitle with a confirmed problem —
+ *  either "not installed" (a real probe came up empty) or "erroring" (the last real
+ *  test failed, e.g. a spawn error). Both come from real signals, never an
+ *  unprobed/slow state, so a card never falsely flags a provider that's actually fine. */
+function ChooserTile({ id, name, badge, selected, subtitle, warning, onOpen }: {
   id: LlmProviderId; name: string; badge: string; selected: boolean
-  subtitle?: string; onOpen: () => void
+  subtitle?: string; warning?: { label: string; message: string }; onOpen: () => void
 }) {
   return (
     <button onClick={onOpen} className="flex flex-col text-left h-full"
@@ -170,12 +174,23 @@ function ChooserTile({ id, name, badge, selected, subtitle, onOpen }: {
           <ProviderLogo id={id} size={21} />
         </span>
         {selected && (
-          <span className="font-mono" style={{
-            fontSize: 9, letterSpacing: '.09em', color: 'var(--color-state-approved)',
-            border: '1px solid var(--color-state-approved)',
-            background: 'color-mix(in srgb, var(--color-state-approved) 10%, transparent)',
-            borderRadius: 4, padding: '1.5px 5px', whiteSpace: 'nowrap',
-          }}>IN USE</span>
+          // Selected-but-confirmed-broken must not say "IN USE" — that reads as
+          // "working", which is exactly wrong when the daemon can't spawn/find it.
+          warning ? (
+            <span className="font-mono" style={{
+              fontSize: 9, letterSpacing: '.09em', color: 'var(--color-state-pending)',
+              border: '1px solid var(--color-state-pending)',
+              background: 'color-mix(in srgb, var(--color-state-pending) 10%, transparent)',
+              borderRadius: 4, padding: '1.5px 5px', whiteSpace: 'nowrap',
+            }}>{warning.label}</span>
+          ) : (
+            <span className="font-mono" style={{
+              fontSize: 9, letterSpacing: '.09em', color: 'var(--color-state-approved)',
+              border: '1px solid var(--color-state-approved)',
+              background: 'color-mix(in srgb, var(--color-state-approved) 10%, transparent)',
+              borderRadius: 4, padding: '1.5px 5px', whiteSpace: 'nowrap',
+            }}>IN USE</span>
+          )
         )}
       </div>
       <div className="flex flex-col" style={{ gap: 4 }}>
@@ -183,7 +198,11 @@ function ChooserTile({ id, name, badge, selected, subtitle, onOpen }: {
         <span className="font-mono self-start" style={{
           fontSize: 8.5, letterSpacing: '.09em', color: 'var(--t-faint)',
         }}>{badge}</span>
-        {subtitle && <span style={{ fontSize: 11, lineHeight: 1.4, color: 'var(--t-muted)' }}>{subtitle}</span>}
+        {warning ? (
+          <span style={{ fontSize: 11, lineHeight: 1.4, color: 'var(--color-state-pending)' }}>
+            {warning.message}
+          </span>
+        ) : subtitle && <span style={{ fontSize: 11, lineHeight: 1.4, color: 'var(--t-muted)' }}>{subtitle}</span>}
       </div>
     </button>
   )
@@ -255,13 +274,27 @@ export default function LlmProviderPicker({
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 10 }}>
         {CHOOSER_PROVIDER_IDS.map((id) => {
           const p = llmProvider(id)
+          const probed = status[id]
+          const isSelected = value === id
+          const warning =
+            probed && !probed.installed
+              ? {
+                  label: 'NOT DETECTED',
+                  message: isSelected
+                    ? "Selected, but the CLI isn't installed on this machine."
+                    : 'Not installed on this machine.',
+                }
+              : probed?.last_test?.outcome.status === 'failed'
+                ? { label: 'ERROR', message: probed.last_test.outcome.message }
+                : undefined
           return (
             <ChooserTile
               key={id}
               id={id}
               name={p.name}
               badge={LLM_RECOMMENDED_BADGE}
-              selected={value === id}
+              selected={isSelected}
+              warning={warning}
               onOpen={() => setOpenId(id)}
             />
           )
