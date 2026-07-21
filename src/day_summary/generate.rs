@@ -1,57 +1,51 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-//! Compose a day's summary: collect the evidence, ask the model, validate, persist.
+//! Compose a day's summary: collect the evidence, ask the model, fold, score, persist.
 //!
 //! # The shape of the call
 //! ONE LLM call through [`crate::llm::complete`], so it obeys the user's global
 //! provider choice like every other prose call in the product. There is no repair
 //! round: a second call would double the latency of a ~1 minute action to rescue
-//! answers that a capable model does not produce in the first place. An invalid
-//! panel is dropped and counted; the drop reasons on the span are what say whether
-//! that judgement is holding.
+//! answers a capable model does not produce in the first place.
 //!
 //! # Nothing here can fail the screen
-//! A bad LLM call or an unparseable answer degrades to [`fallback_panels`] with
-//! `fallback = 1`. The one thing that DOES propagate is a collect failure — if the
-//! day's data cannot be read there is nothing to summarise, and pretending
-//! otherwise would show a confident empty review of a day that had work in it.
+//! A bad LLM call or an unparseable answer degrades to `fallback = 1` — no prose,
+//! but the plan ledger and its arithmetic still persist, because those are computed
+//! from the database and never needed the model. The one thing that DOES propagate
+//! is a collect failure: if the day's data cannot be read there is nothing to
+//! summarise, and pretending otherwise would show a confident empty review of a day
+//! that had work in it.
 //!
-//! **`fallback` does NOT mean "no charts".** Zero panels is a correct and common
-//! answer: the prose is the feature and the prompt says charts are optional, so a
-//! summary with a good narrative and no chart is the normal outcome, not a
-//! degraded one. An answer whose panels were all invalid keeps its narrative and
-//! simply shows no chart — only a summary that could not be composed AT ALL falls
-//! back.
+//! # Where the number comes from
+//! Not from here, and not from the model. [`meridian_core::day_evidence::adherence`]
+//! folds the locked matches over the model's verdicts and does the arithmetic; this
+//! module only parses, hands off, and writes down what comes back. That split is
+//! what makes the percentage on the screen reproducible.
 //!
 //! # Related
 //! - [`meridian_core::day_evidence`] — the evidence.
-//! - [`super::validate`] — the two-layer spec check.
+//! - [`meridian_core::day_evidence::adherence`] — the fold and the score.
 //! - [`crate::pm_worklog::generate`] — the sibling flow this mirrors.
 
 use anyhow::{Context, Result};
-use meridian_core::day_summaries::{self, DaySummary, SummaryPanel, SummaryUpsert};
+use meridian_core::day_summaries::{
+    self, DaySummary, DaySummaryInsight, DayTheme, Outcome, SummaryUpsert,
+};
 use meridian_core::SqlitePool;
 use serde_json::{json, Value};
 use tracing::field::Empty;
 
-use super::validate;
 use crate::llm::config::LlmConfig;
 use crate::llm::{self, prompts, PromptRequest};
-use meridian_core::day_evidence::{self, datasets};
+use meridian_core::day_evidence::{
+    self,
+    adherence::{self, ModelVerdict},
+};
 use meridian_core::settings::load_runtime_settings;
 
-/// Generous: the answer carries prose plus up to two Vega-Lite specs, and a layered
-/// spec is verbose. Truncation here reads as a parse failure downstream, which is a
-/// confusing way to discover the budget was too small.
-const GENERATE_MAX_TOKENS: u32 = 8000;
-
-/// At most two, and often none. The schema says so too, but a schema is a request
-/// on three of five providers, so the cap is enforced here as well.
-///
-/// This was 4, and 4 is how the screen first shipped looking like a monitoring
-/// dashboard: a pie of categories, a bar of totals, and two more that restated
-/// them. Panels are optional now — the prose is the feature and a chart has to earn
-/// its place beside it.
-const MAX_PANELS: usize = 2;
+/// Generous: the answer carries prose plus a verdict per planned ticket. Truncation
+/// reads as a parse failure downstream, which is a confusing way to discover the
+/// budget was too small.
+const GENERATE_MAX_TOKENS: u32 = 4000;
 
 /// Per-workstream log lines are the richest prose input and the easiest to blow a
 /// context window with. Same posture as `SESSION_TEXT_CAP`: cap it, and record what
@@ -63,12 +57,19 @@ const MAX_LOG_LINES_PER_WORKSTREAM: usize = 12;
 /// hours would silently lose the parts of the day the model most needs).
 const MAX_HOUR_REPORT_CHARS: usize = 600;
 
-/// What the model answered, before validation.
-#[derive(Debug, Clone)]
+/// The plan ticket description the model is shown. Enough to judge what a ticket is
+/// about; not so much that ten of them crowd out the day's own log lines, which are
+/// the evidence it actually has to reason from.
+const MAX_PLAN_DESCRIPTION_CHARS: usize = 240;
+
+/// What the model answered, before folding.
+#[derive(Debug, Clone, Default)]
 struct Answer {
+    headline: String,
     narrative: String,
-    insights: Vec<String>,
-    panels: Vec<SummaryPanel>,
+    insights: Vec<DaySummaryInsight>,
+    verdicts: Vec<ModelVerdict>,
+    themes: Vec<DayTheme>,
 }
 
 /// Parse the model's answer, tolerantly.
@@ -78,57 +79,109 @@ struct Answer {
 /// some providers, so drift is expected rather than exceptional.
 ///
 /// `None` means the text was not JSON at all — that, and only that, is the parse
-/// failure that triggers the fallback. An empty `panels` array is a perfectly good
-/// answer (charts are optional), and a missing `narrative` costs prose rather than
-/// the screen.
+/// failure that triggers the fallback. Every individual field degrades on its own:
+/// a missing narrative costs prose, a missing verdict costs one ledger line.
 fn parse_answer(text: &str) -> Option<Answer> {
     let v = llm::parse_json_object(text)?;
 
-    let narrative = v
-        .get("narrative")
-        .and_then(|n| n.as_str())
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+    let string_at = |key: &str| -> String {
+        v.get(key)
+            .and_then(|n| n.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
 
     let insights = v
         .get("insights")
         .and_then(|i| i.as_array())
         .map(|a| {
             a.iter()
-                .filter_map(|s| s.as_str())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
+                .filter_map(|i| {
+                    // Tolerate the pre-068 shape (a bare string) as well as the
+                    // object: a provider that ignores the schema and copies an
+                    // older example should cost the `learned` flag, not the line.
+                    let text = match i {
+                        Value::String(s) => s.trim().to_string(),
+                        _ => i.get("text")?.as_str()?.trim().to_string(),
+                    };
+                    if text.is_empty() {
+                        return None;
+                    }
+                    Some(DaySummaryInsight {
+                        text,
+                        learned: i.get("learned").and_then(|l| l.as_bool()).unwrap_or(false),
+                    })
+                })
                 .collect()
         })
         .unwrap_or_default();
 
-    let panels = v
-        .get("panels")
+    let verdicts = v
+        .get("plan_verdicts")
         .and_then(|p| p.as_array())
         .map(|a| {
             a.iter()
                 .filter_map(|p| {
-                    // A panel with no spec is not a panel. Everything else is
-                    // recoverable: an untitled chart still shows its point.
-                    let spec = p.get("spec")?.clone();
-                    if !spec.is_object() {
+                    // A verdict with no ticket cannot be applied to anything.
+                    let task_key = p.get("task_key")?.as_str()?.trim().to_string();
+                    if task_key.is_empty() {
                         return None;
                     }
-                    Some(SummaryPanel {
-                        title: p
-                            .get("title")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("")
+                    Some(ModelVerdict {
+                        task_key,
+                        // An unrecognised outcome reads as `not_touched` — see
+                        // `Outcome::parse`. Guessing generously is how the one
+                        // number on the screen stops meaning anything.
+                        outcome: Outcome::parse(
+                            p.get("outcome")
+                                .and_then(|o| o.as_str())
+                                .unwrap_or_default(),
+                        ),
+                        evidence: p
+                            .get("evidence")
+                            .and_then(|e| e.as_str())
+                            .unwrap_or_default()
                             .trim()
                             .to_string(),
-                        why: p
-                            .get("why")
-                            .and_then(|w| w.as_str())
-                            .unwrap_or("")
-                            .trim()
-                            .to_string(),
-                        spec,
+                        day_task_ids: p
+                            .get("day_task_ids")
+                            .and_then(|d| d.as_array())
+                            .map(|ids| {
+                                ids.iter()
+                                    .filter_map(|i| i.as_str())
+                                    .map(str::to_string)
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let themes = v
+        .get("themes")
+        .and_then(|t| t.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|t| {
+                    let title = t.get("title")?.as_str()?.trim().to_string();
+                    if title.is_empty() {
+                        return None;
+                    }
+                    Some(DayTheme {
+                        title,
+                        day_task_ids: t
+                            .get("day_task_ids")
+                            .and_then(|d| d.as_array())
+                            .map(|ids| {
+                                ids.iter()
+                                    .filter_map(|i| i.as_str())
+                                    .map(str::to_string)
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
                     })
                 })
                 .collect()
@@ -136,45 +189,12 @@ fn parse_answer(text: &str) -> Option<Answer> {
         .unwrap_or_default();
 
     Some(Answer {
-        narrative,
+        headline: string_at("headline"),
+        narrative: string_at("narrative"),
         insights,
-        panels,
+        verdicts,
+        themes,
     })
-}
-
-/// The deterministic panel used when the model gives us nothing usable.
-///
-/// ONE panel, not a set. This path runs when there is no narrative to show, and the
-/// honest response to "the model could not tell you about your day" is a plain
-/// picture of what happened - not three charts arranged to look like an answer. It
-/// was a set of three (sittings + a category pie + an app bar) back when panels
-/// were mandatory, and it was as much of a dashboard as the thing it was standing
-/// in for.
-///
-/// Hand-checked against the validator by `tests::the_fallback_panels_are_themselves_valid`:
-/// a fallback that fails to render would turn a degraded screen into a broken one,
-/// which is the one outcome this whole path exists to prevent.
-pub fn fallback_panels() -> Vec<SummaryPanel> {
-    vec![SummaryPanel {
-        title: "What the day looked like".to_string(),
-        why: "the day's sittings on one time axis".to_string(),
-        spec: json!({
-            "data": {"name": "segments"},
-            "mark": {"type": "bar", "cornerRadius": 3},
-            "encoding": {
-                "x":  {"field": "start_min", "type": "quantitative",
-                       "title": null,
-                       "axis": {"labelExpr": "format(floor(datum.value/60),'02') + ':00'"},
-                       "scale": {"domain": [0, 1440]}},
-                "x2": {"field": "end_min"},
-                "y":  {"field": "title", "type": "nominal", "title": null},
-                "tooltip": [
-                    {"field": "title", "type": "nominal", "title": "work"},
-                    {"field": "minutes", "type": "quantitative", "title": "minutes"}
-                ]
-            }
-        }),
-    }]
 }
 
 /// Render the day's evidence as the user message.
@@ -187,21 +207,17 @@ fn build_user_prompt(ev: &day_evidence::Evidence) -> String {
     // infer it from a bag of scalars, it spends its two sentences reciting numbers
     // the reader can see an inch away.
     s.push_str(
-        "\n`focus_s`, `coding_s` and `task_count` are ALREADY DISPLAYED on this screen as \
-         FOCUS, CODING and the count of things you did. Do not read them back. Use them to \
-         understand the day.\n",
+        "\n`focus_s`, `coding_s` and `task_count` are ALREADY DISPLAYED on this screen. \
+         Do not read them back. Use them to understand the day.\n",
     );
 
-    s.push_str("\n=== DATASETS (the only names and fields you may reference) ===\n");
-    s.push_str(&datasets::describe());
-
-    s.push_str("\n=== THE DATA ===\n");
-    for (name, rows) in &ev.datasets {
-        s.push_str(&format!("\n{name} = {rows}\n"));
-    }
-
     if !ev.workstream_logs.is_empty() {
-        s.push_str("\n=== WHAT EACH WORKSTREAM INVOLVED (prose evidence, not chartable) ===\n");
+        // The workstream ids are load-bearing on the no-plan branch: `themes`
+        // references them, and a theme naming an id that was never shown is
+        // dropped at render.
+        s.push_str(
+            "\n=== WORKSTREAMS - WHAT YOU ACTUALLY DID (the only ids you may reference) ===\n",
+        );
         for w in &ev.workstream_logs {
             s.push_str(&format!(
                 "\n{} - {} ({} min)\n",
@@ -221,7 +237,7 @@ fn build_user_prompt(ev: &day_evidence::Evidence) -> String {
         // stays; the hour labels are demoted to what they actually are, a capture
         // artefact.
         s.push_str(
-            "\n=== EVIDENCE OF WHAT THE WORK INVOLVED (prose, not chartable) ===\n\
+            "\n=== FURTHER EVIDENCE OF WHAT THE WORK INVOLVED ===\n\
              Grouped by hour ONLY because that is how it was captured. The hour labels are \
              not part of the story - do not sequence your answer around them, and never \
              quote one.\n",
@@ -230,6 +246,47 @@ fn build_user_prompt(ev: &day_evidence::Evidence) -> String {
             let trimmed: String = r.chars().take(MAX_HOUR_REPORT_CHARS).collect();
             s.push_str(&format!("{h:02}:00 - {trimmed}\n"));
         }
+    }
+
+    if ev.planned {
+        s.push_str("\n=== TODAY'S PLAN - what you committed to this morning ===\n");
+        s.push_str("Return exactly one entry in `plan_verdicts` for each. `themes` must be [].\n");
+        for p in &ev.plan {
+            let desc: String = p
+                .description
+                .chars()
+                .take(MAX_PLAN_DESCRIPTION_CHARS)
+                .collect();
+            s.push_str(&format!("\n{} - {}\n", p.task_key, p.title));
+            if let Some(epic) = p.epic.as_deref().filter(|e| !e.is_empty()) {
+                s.push_str(&format!("  epic: {epic}\n"));
+            }
+            if !desc.trim().is_empty() {
+                s.push_str(&format!("  about: {}\n", desc.trim()));
+            }
+        }
+
+        // The locked half. Shown rather than hidden on purpose: these are the
+        // day's firmest facts about what got finished, and the model writes better
+        // prose knowing them. It is told plainly that arguing is pointless.
+        let settled = adherence::prematch(&ev.plan, &ev.tasks);
+        if !settled.is_empty() {
+            s.push_str(
+                "\n=== ALREADY ESTABLISHED (locked - your outcome for these is ignored) ===\n",
+            );
+            for m in &settled {
+                s.push_str(&format!(
+                    "{} - done, because {}\n",
+                    m.task_key,
+                    m.evidence.reason()
+                ));
+            }
+        }
+    } else {
+        s.push_str(
+            "\n=== NO PLAN WAS SET FOR THIS DAY ===\n\
+             `plan_verdicts` must be []. Group the workstreams above into `themes` instead.\n",
+        );
     }
 
     s
@@ -248,10 +305,14 @@ fn build_user_prompt(ev: &day_evidence::Evidence) -> String {
 #[tracing::instrument(name = "day_summary.generate", skip(pool), fields(
     llm_provider = Empty,
     model = Empty,
-    panels_returned = Empty,
-    panels_kept = Empty,
-    panels_dropped = Empty,
-    drop_reasons = Empty,
+    planned = Empty,
+    plan_items = Empty,
+    verdicts_returned = Empty,
+    certain_matches = Empty,
+    achievement_pct = Empty,
+    unplanned_minutes = Empty,
+    themes = Empty,
+    learned = Empty,
     fallback = Empty,
     prompt_chars = Empty,
 ))]
@@ -262,6 +323,8 @@ pub async fn generate(pool: &SqlitePool, day_local: &str) -> Result<DaySummary> 
     let ev = day_evidence::collect(pool, day_local)
         .await
         .context("day_summary: collecting the day's evidence")?;
+    span.record("planned", ev.planned);
+    span.record("plan_items", ev.plan.len());
 
     let user = build_user_prompt(&ev);
     span.record("prompt_chars", user.len());
@@ -302,71 +365,69 @@ pub async fn generate(pool: &SqlitePool, day_local: &str) -> Result<DaySummary> 
     // `llm_provider_model` directly. This module has no business knowing which
     // settings key backs the choice or that an absent one means "the provider's
     // default"; that is `llm::config`'s job, and a second reader of the same key is
-    // how the two quietly disagree the next time it moves. Read at call time, like
-    // the resolver reads the provider, so changing it in Settings takes effect on the
-    // next generate rather than the next restart.
+    // how the two quietly disagree the next time it moves.
     let model = LlmConfig::from_settings(&load_runtime_settings()).model;
     span.record("model", model.as_str());
 
-    // ── validate ──────────────────────────────────────────────────────────────
-    let returned = answer.as_ref().map(|a| a.panels.len()).unwrap_or(0);
-    let mut kept: Vec<SummaryPanel> = Vec::new();
-    let mut reasons: Vec<String> = Vec::new();
-
-    if let Some(a) = &answer {
-        for p in &a.panels {
-            match validate::check(p) {
-                Ok(()) => kept.push(p.clone()),
-                Err(r) => {
-                    tracing::warn!(
-                        day = day_local,
-                        title = %p.title,
-                        reason = %r,
-                        tag = r.tag(),
-                        "daily summary: dropping an invalid panel"
-                    );
-                    reasons.push(r.tag().to_string());
-                }
-            }
-        }
-    }
-    kept.truncate(MAX_PANELS);
-
-    // ZERO PANELS IS A CORRECT ANSWER, not a failure. The prompt says charts are
-    // optional and most days genuinely need none, so the fallback trigger is the
-    // ANSWER being absent — a failed call or an unparseable one — never an empty
-    // panel list. This read `kept.is_empty()` when panels were mandatory; leaving
-    // it that way would throw away a perfectly good narrative for exactly the days
-    // the model judged best told in words alone, which is the common case.
     let fallback = answer.is_none();
-    let (narrative, insights, panels) = match answer {
-        Some(a) => (a.narrative, a.insights, kept),
-        // No narrative on the fallback path: there is no prose to show, and writing
-        // a replacement is exactly what this feature must not do. One honest chart
-        // of what happened, and nothing claimed about it.
-        None => (String::new(), Vec::new(), fallback_panels()),
-    };
+    let a = answer.unwrap_or_default();
+    span.record("verdicts_returned", a.verdicts.len());
 
-    // Record every field on BOTH paths, `""`/`0` included. OpenObserve only learns
-    // a field once a record carries it, so a dashboard filtering on `drop_reasons`
-    // errors until some record has one. Same reason worklog.generate stamps an
-    // empty matched_task_key on the propose branch. See daily-summary.json.
-    span.record("panels_returned", returned);
-    span.record("panels_kept", panels.len());
-    span.record("panels_dropped", reasons.len());
-    span.record("drop_reasons", reasons.join(","));
+    // THE FOLD. Runs on BOTH paths, fallback included: the plan ledger is computed
+    // from the database, so a failed model call costs the prose and nothing else.
+    // A screen that shows "3 of 5, two worklogged" with no narrative is still worth
+    // opening; one that shows nothing because a provider was rate-limited is not.
+    let ledger = adherence::resolve(&ev.plan, &ev.tasks, &a.verdicts);
+    span.record(
+        "certain_matches",
+        ledger.verdicts.iter().filter(|v| v.certain).count(),
+    );
+    span.record("achievement_pct", ledger.adherence.achievement_pct);
+    span.record("unplanned_minutes", ledger.adherence.unplanned_minutes);
+
+    // A theme pointing at a workstream the model was never shown (or invented) would
+    // render as an empty bar, so it is dropped here rather than at paint time.
+    let known: std::collections::HashSet<&str> = ev
+        .workstream_logs
+        .iter()
+        .map(|w| w.task_id.as_str())
+        .collect();
+    let themes: Vec<DayTheme> = a
+        .themes
+        .into_iter()
+        .map(|t| DayTheme {
+            title: t.title,
+            day_task_ids: t
+                .day_task_ids
+                .into_iter()
+                .filter(|id| known.contains(id.as_str()))
+                .collect(),
+        })
+        .filter(|t| !t.day_task_ids.is_empty())
+        .collect();
+
+    // Record every field on BOTH paths, `""`/`0` included. OpenObserve only learns a
+    // field once a record carries it, so a dashboard filtering on one errors until
+    // some record has it. Same reason worklog.generate stamps an empty
+    // matched_task_key on the propose branch. See daily-summary.json.
+    span.record("themes", themes.len());
+    span.record("learned", a.insights.iter().filter(|i| i.learned).count());
     span.record("fallback", fallback);
 
     let now = chrono::Utc::now().to_rfc3339();
     let up = SummaryUpsert {
         day: day_local.to_string(),
-        narrative,
-        insights,
-        panels,
+        headline: a.headline,
+        narrative: a.narrative,
+        insights: a.insights,
+        plan: ledger.verdicts,
+        adherence: ledger.adherence,
+        themes,
         provider,
         model,
         fallback,
         generated_at: now,
+        evidence_at: ev.evidence_at,
     };
     day_summaries::upsert_summary(pool, &up)
         .await
@@ -374,21 +435,26 @@ pub async fn generate(pool: &SqlitePool, day_local: &str) -> Result<DaySummary> 
 
     tracing::info!(
         day = day_local,
-        panels = up.panels.len(),
-        dropped = reasons.len(),
+        planned = ev.planned,
+        achievement_pct = up.adherence.achievement_pct,
+        themes = up.themes.len(),
         fallback,
         "daily summary composed"
     );
 
     Ok(DaySummary {
         day: up.day,
+        headline: up.headline,
         narrative: up.narrative,
         insights: up.insights,
-        panels: up.panels,
+        plan: up.plan,
+        adherence: up.adherence,
+        themes: up.themes,
         provider: up.provider,
         model: up.model,
         fallback: up.fallback,
         generated_at: up.generated_at,
+        evidence_at: up.evidence_at,
     })
 }
 
@@ -397,16 +463,15 @@ pub async fn get(pool: &SqlitePool, day_local: &str) -> Result<Option<DaySummary
     day_summaries::get_day_summary(pool, day_local).await
 }
 
-/// What the screen renders besides the model's words: the datasets each panel binds
-/// to, and the headline scalars shown beside the prose.
+/// The deterministic half of what the screen renders: the day's aggregate datasets
+/// and its headline scalars.
 ///
-/// Read live rather than stored with the spec: the day's data keeps moving, and a
-/// frozen copy would render a chart that silently disagrees with the timeline
-/// beside it. See migration 064's header.
+/// Read live rather than stored alongside the summary: the day keeps moving, and a
+/// frozen copy would disagree with the timeline beside it.
 ///
-/// Mirrors the tray's `get_day_summary_data` exactly — the tray reads
-/// `day_evidence` directly rather than spawning this, so the two shapes are kept
-/// identical deliberately: this is the debugging view of what the screen is given
+/// Mirrors the tray's `get_day_summary_data` exactly — the tray reads `day_evidence`
+/// directly rather than spawning this, so the two shapes are kept identical
+/// deliberately: this is the debugging view of what the screen is given
 /// (`meridian day-summary-data --day X | jq .scalars`), and it is worth nothing if
 /// it shows something else.
 pub async fn panel_data(pool: &SqlitePool, day_local: &str) -> Result<Value> {
@@ -414,6 +479,7 @@ pub async fn panel_data(pool: &SqlitePool, day_local: &str) -> Result<Value> {
     Ok(json!({
         "datasets": Value::Object(ev.datasets),
         "scalars": ev.scalars,
+        "evidence_at": ev.evidence_at,
     }))
 }
 
@@ -421,61 +487,69 @@ pub async fn panel_data(pool: &SqlitePool, day_local: &str) -> Result<Value> {
 mod tests {
     use super::*;
 
-    /// The fallback is the safety net under every other failure path. If it does
-    /// not itself pass the validator, a degraded screen becomes a broken one.
     #[test]
-    fn the_fallback_panels_are_themselves_valid() {
-        for p in fallback_panels() {
-            assert_eq!(validate::check(&p), Ok(()), "fallback panel {:?}", p.title);
-        }
-    }
-
-    /// The fallback stands in for a summary that could not be written. One honest
-    /// chart is the whole of it — a set of three was itself a dashboard, which is
-    /// the thing this screen must not be.
-    #[test]
-    fn the_fallback_is_a_single_panel() {
-        assert_eq!(fallback_panels().len(), 1);
-        assert!(fallback_panels().len() <= MAX_PANELS);
-    }
-
-    /// Zero panels is a CORRECT answer, so an answer that parsed must never be
-    /// treated as a fallback just because the model chose no chart. Pins the rule
-    /// the `fallback` flag encodes; `kept.is_empty()` here would silently discard
-    /// the narrative on exactly the days best told in words alone.
-    #[test]
-    fn an_answer_with_no_panels_is_still_an_answer() {
+    fn parses_a_well_formed_planned_answer() {
         let a = parse_answer(
-            r#"{"narrative":"A deep day on one thing.","insights":["x"],"panels":[]}"#,
-        )
-        .expect("an empty panel list is valid, not a parse failure");
-        assert!(a.panels.is_empty());
-        assert_eq!(a.narrative, "A deep day on one thing.");
-    }
-
-    #[test]
-    fn parses_a_well_formed_answer() {
-        let a = parse_answer(
-            r#"{"narrative": "A long day.",
-                "insights": ["Six threads, one long.", "  "],
-                "panels": [{"title": "T", "why": "W", "spec": {"mark": "bar"}}]}"#,
+            r#"{"headline": "A good day, one detour",
+                "narrative": "You closed the rework and **the triage bug pulled you sideways**.",
+                "insights": [{"text": "Most of the depth landed in one stretch.", "learned": false},
+                             {"text": "ATTACH does not carry a rekey.", "learned": true},
+                             {"text": "  ", "learned": false}],
+                "plan_verdicts": [{"task_key": "KAN-1", "outcome": "done", "evidence": "shipped it"},
+                                  {"task_key": "KAN-2", "outcome": "partial", "evidence": "started"}],
+                "themes": []}"#,
         )
         .unwrap();
-        assert_eq!(a.narrative, "A long day.");
+        assert_eq!(a.headline, "A good day, one detour");
         // Blank insight lines are dropped rather than rendered as empty rows.
-        assert_eq!(a.insights, vec!["Six threads, one long."]);
-        assert_eq!(a.panels.len(), 1);
-        assert_eq!(a.panels[0].title, "T");
+        assert_eq!(a.insights.len(), 2);
+        assert!(a.insights[1].learned);
+        assert_eq!(a.verdicts.len(), 2);
+        assert_eq!(a.verdicts[1].outcome, Outcome::Partial);
+    }
+
+    #[test]
+    fn parses_a_well_formed_unplanned_answer() {
+        let a = parse_answer(
+            r#"{"headline": "One problem, all the way down",
+                "narrative": "n", "insights": [],
+                "plan_verdicts": [],
+                "themes": [{"title": "Session distiller rework", "day_task_ids": ["T1", "T3"]},
+                           {"title": "", "day_task_ids": ["T9"]}]}"#,
+        )
+        .unwrap();
+        assert!(a.verdicts.is_empty());
+        // An untitled theme is not a theme.
+        assert_eq!(a.themes.len(), 1);
+        assert_eq!(a.themes[0].day_task_ids, vec!["T1", "T3"]);
+    }
+
+    /// An outcome outside the enum must not be credited — the parser routes it to
+    /// the least flattering reading rather than dropping the ledger line, so the
+    /// ticket still appears and the score still adds up.
+    #[test]
+    fn an_invented_outcome_reads_as_not_touched() {
+        let a = parse_answer(
+            r#"{"plan_verdicts":[{"task_key":"KAN-1","outcome":"mostly done","evidence":"e"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(a.verdicts[0].outcome, Outcome::NotTouched);
+    }
+
+    /// A provider that ignores the schema and writes bare strings costs the
+    /// `learned` flag, not the whole insight list.
+    #[test]
+    fn tolerates_the_older_bare_string_insight_shape() {
+        let a = parse_answer(r#"{"insights":["one line","another"]}"#).unwrap();
+        assert_eq!(a.insights.len(), 2);
+        assert!(!a.insights[0].learned);
     }
 
     /// Copilot fences its JSON and Cursor wraps it in prose; the shared tolerant
     /// parser handles both, and this pins that we go through it.
     #[test]
     fn parses_a_fenced_answer() {
-        let a = parse_answer(
-            "Here you go:\n```json\n{\"narrative\":\"x\",\"insights\":[],\"panels\":[]}\n```",
-        )
-        .unwrap();
+        let a = parse_answer("Here you go:\n```json\n{\"narrative\":\"x\"}\n```").unwrap();
         assert_eq!(a.narrative, "x");
     }
 
@@ -484,28 +558,28 @@ mod tests {
         assert!(parse_answer("I could not do that.").is_none());
     }
 
-    /// Drift on the prose fields costs prose, not the screen. (Note the direction:
-    /// the prose is the feature and the panels are optional, so this is the
-    /// expensive kind of drift — but degrading beats erroring either way.)
+    /// Drift on any single field costs that field, never the screen.
     #[test]
-    fn tolerates_a_missing_narrative_and_insights() {
-        let a = parse_answer(r#"{"panels": [{"spec": {"mark": "bar"}}]}"#).unwrap();
-        assert_eq!(a.narrative, "");
+    fn tolerates_a_missing_everything() {
+        let a = parse_answer(r#"{"narrative": "just prose"}"#).unwrap();
+        assert_eq!(a.narrative, "just prose");
+        assert!(a.headline.is_empty());
         assert!(a.insights.is_empty());
-        assert_eq!(a.panels.len(), 1);
+        assert!(a.verdicts.is_empty());
+        assert!(a.themes.is_empty());
     }
 
-    /// A "panel" with no spec, or a non-object spec, is not a panel.
+    /// A verdict with no ticket cannot be applied to anything, and one with a blank
+    /// key would silently match nothing while looking like it did.
     #[test]
-    fn drops_panels_without_a_usable_spec() {
+    fn drops_verdicts_without_a_ticket() {
         let a = parse_answer(
-            r#"{"narrative":"x","insights":[],
-                "panels":[{"title":"no spec"},
-                          {"title":"string spec","spec":"bar"},
-                          {"title":"ok","spec":{"mark":"bar"}}]}"#,
+            r#"{"plan_verdicts":[{"outcome":"done","evidence":"e"},
+                                 {"task_key":"  ","outcome":"done","evidence":"e"},
+                                 {"task_key":"KAN-1","outcome":"done","evidence":"e"}]}"#,
         )
         .unwrap();
-        assert_eq!(a.panels.len(), 1);
-        assert_eq!(a.panels[0].title, "ok");
+        assert_eq!(a.verdicts.len(), 1);
+        assert_eq!(a.verdicts[0].task_key, "KAN-1");
     }
 }

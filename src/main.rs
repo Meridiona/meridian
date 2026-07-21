@@ -536,11 +536,12 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // `meridian day-summary-data --day YYYY-MM-DD` — the named datasets a
-    // summary's panels bind to, as one JSON object. Read-only, no LLM. The tray
-    // reads these straight from meridian-core rather than spawning this; it exists
-    // for debugging a chart (`meridian day-summary-data --day X | jq .segments`),
-    // which is otherwise invisible — a stored spec carries no data at all.
+    // `meridian day-summary-data --day YYYY-MM-DD` — the deterministic half of the
+    // summary screen (the day's aggregate datasets, its headline scalars, and the
+    // evidence stamp) as one JSON object. Read-only, no LLM. The tray reads these
+    // straight from meridian-core rather than spawning this; it exists for checking
+    // what the screen was actually given
+    // (`meridian day-summary-data --day X | jq .scalars`).
     if std::env::args().nth(1).as_deref() == Some("day-summary-data") {
         let args: Vec<String> = std::env::args().collect();
         let flag = |name: &str| -> Option<String> {

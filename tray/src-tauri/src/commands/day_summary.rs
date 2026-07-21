@@ -10,13 +10,16 @@
 //! - [`get_day_summary`] — read a stored summary on screen open. A plain DB read,
 //!   so it is a **direct meridian-core call**, not a spawn: this runs on every open
 //!   and a process launch per open would be felt.
-//! - [`get_day_summary_data`] — the rows each panel's spec binds to.
+//! - [`get_day_summary_data`] — the deterministic half of the screen, plus the
+//!   staleness verdict.
 //!
 //! # Why the data is a separate command
-//! A stored panel carries FORM only: its spec says `{"data": {"name": "segments"}}`
-//! and nothing else. The rows are read live here and injected at render, so a chart
-//! can never drift from the timeline beside it (migration 064 has the full why).
-//! That also means these two commands are always called together.
+//! The composed summary is a cached artefact; the day underneath it keeps moving.
+//! Reading the live figures separately is what lets the screen show today's real
+//! focus total beside prose written an hour ago, and it is where the staleness
+//! check lives — `get_day_summary_data` already collects the evidence, so it can
+//! answer "has this day moved on since the summary was written" for the price of one
+//! extra indexed row rather than a second full collect.
 //!
 //! # Who calls this
 //! Registered in `lib.rs`'s `invoke_handler!`; consumed by
@@ -38,10 +41,10 @@ use super::cli_exec::run_meridian_json;
 /// <d>` (argv, no shell) with the same 150 s budget as its worklog sibling — one
 /// LLM call, one budget.
 ///
-/// This does not fail on a bad answer: the CLI falls back to a deterministic panel
-/// set rather than erroring, so an `Err` here means the DB or the spawn, never the
-/// model. The returned summary's `fallback` flag is what says the model came up
-/// short.
+/// This does not fail on a bad answer: the CLI keeps the deterministically computed
+/// plan ledger and drops only the prose, so an `Err` here means the DB or the spawn,
+/// never the model. The returned summary's `fallback` flag is what says the model
+/// came up short.
 #[tauri::command]
 #[tracing::instrument]
 pub async fn generate_day_summary(
@@ -60,7 +63,8 @@ pub async fn generate_day_summary(
         %day,
         provider = %summary.provider,
         model = %summary.model,
-        panels = summary.panels.len(),
+        planned = summary.adherence.planned,
+        achievement_pct = summary.adherence.achievement_pct,
         fallback = summary.fallback,
         "day-summary served"
     );
@@ -86,18 +90,23 @@ pub async fn get_day_summary(
         })
 }
 
-/// Everything the summary screen renders besides the model's own words:
-/// `{datasets: {segments: [...], …}, scalars: {focus_s, coding_s, task_count, …}}`.
+/// Everything the summary screen renders that does not come from the model:
+/// `{datasets, scalars: {focus_s, coding_s, task_count, planned, …}, evidence_at,
+/// stale}`.
 ///
-/// **The datasets** are what each panel's spec binds to by name — a stored spec
-/// carries form only, so the rows are fetched here and injected at render.
+/// **The scalars** come from here rather than being derived in the frontend on
+/// purpose: `focus_s` and `coding_s` must be the SAME values the home page shows,
+/// and `coding_s` in particular is agent time folded into the coding category — a
+/// rule that already exists once in [`meridian_core::day_evidence`] and would be a
+/// second, drifting copy if the screen recomputed it. `planned` is the branch
+/// between the two versions of the screen.
 ///
-/// **The scalars** are the screen's headline numbers, and they come from here rather
-/// than being derived in the frontend on purpose: `focus_s` and `coding_s` must be
-/// the SAME values the home page shows, and `coding_s` in particular is agent time
-/// folded into the coding category — a rule that already exists once in
-/// [`meridian_core::day_evidence`] and would be a second, drifting copy if the
-/// screen recomputed it.
+/// **`stale`** says the day has moved on far enough since the stored summary was
+/// composed that it is worth recomposing (see
+/// [`meridian_core::day_summaries::is_stale`]). It is answered here, rather than by
+/// a fourth command, because this one has already paid for the evidence collect —
+/// and it is answered in Rust rather than by the frontend comparing two timestamps,
+/// because "far enough" is a product rule, not a rendering detail.
 ///
 /// The prose evidence ([`meridian_core::day_evidence::Evidence`]'s hour reports and
 /// workstream logs) is deliberately NOT returned: it is the model's input, not the
@@ -118,9 +127,26 @@ pub async fn get_day_summary_data(
             tracing::warn!(error = %e, "get_day_summary_data failed");
             e.to_string()
         })?;
-    tracing::info!(day = %date, datasets = ev.datasets.len(), "day-summary data served");
+
+    // A missing summary is NOT stale: there is nothing to recompose, and the screen
+    // shows its own "compose this day" state instead. Only an existing one can go
+    // out of date.
+    let stale = match meridian_core::day_summaries::get_day_summary(pool, &date).await {
+        Ok(Some(s)) => meridian_core::day_summaries::is_stale(&s.evidence_at, &ev.evidence_at),
+        _ => false,
+    };
+
+    tracing::info!(
+        day = %date,
+        datasets = ev.datasets.len(),
+        planned = ev.planned,
+        stale,
+        "day-summary data served"
+    );
     Ok(serde_json::json!({
         "datasets": serde_json::Value::Object(ev.datasets),
         "scalars": ev.scalars,
+        "evidence_at": ev.evidence_at,
+        "stale": stale,
     }))
 }

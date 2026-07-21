@@ -205,71 +205,91 @@ pub fn plan_task_draft_schema() -> Value {
     })
 }
 
-/// The daily-summary prompt — the AI-composed end-of-day review. Takes a day's
-/// evidence (workstreams, their segments, time by app/category, the hourly shape,
-/// and the hour reports as prose) and returns a narrative, a few insight lines, and
-/// 2-4 Vega-Lite specs it chose itself. Same one-prompt-all-providers rule.
+/// The daily-summary prompt — the end-of-day review. Takes a day's evidence
+/// (workstreams and their log lines, time by app/category, the hourly shape, the
+/// hour reports as prose, and the day's committed plan) and returns a headline, a
+/// narrative, a few insight lines, and either a verdict per planned ticket or a
+/// grouping of what an unplanned day turned out to be about. Same
+/// one-prompt-all-providers rule.
 ///
-/// The daily plan is deliberately NOT an input: this is what the day WAS, not what
-/// was promised, and mixing them turns a review into a scorecard.
+/// The daily plan used to be deliberately withheld, on the grounds that mixing
+/// intent into a review turns it into a scorecard. That was right about the risk
+/// and wrong about the fix — the question a person has at the end of a day is
+/// whether it went the way they meant it to. The scorecard risk is handled by the
+/// prompt's tone contract instead.
 pub const DAILY_SUMMARY: &str = include_str!("../../assets/prompts/daily-summary.md");
 
 /// The JSON shape the daily-summary call must answer in.
 ///
-/// `spec` is deliberately an **unconstrained object**: it is a whole raw Vega-Lite
-/// spec, and Vega-Lite's own schema is 1.8 MB with 458 definitions — inlining a
-/// subset of it here would be a second, drifting copy of someone else's grammar,
-/// and would also cap what the model is allowed to express, which is the one thing
-/// this feature is for. Validity is established after the fact instead, against the
-/// real schema, in `crate::day_summary::validate`.
+/// Note what is NOT here: any category, kind, or severity on an insight. An earlier
+/// shape had one (`achieved` / `overperformed` / `drifted` / `learned`) and every
+/// label turned an observation into a verdict on the person, which is precisely
+/// what this screen must not do. The single flag that survives is `learned`, and it
+/// is a bonus rather than a slot — its floor is zero on purpose.
 ///
-/// That has a real consequence worth stating: on a schema-enforcing backend the
-/// bounds here are hard token-level cuts, so the FSM can guarantee the WRAPPER is
-/// well-formed but nothing about the spec inside it. Hence `panels` is bounded
-/// (0-2, the screen holds no more) while its contents are not, and hence the
-/// validator — not the schema — is what keeps a broken chart off the screen.
-///
-/// `why` is required on purpose: asking the model to justify the form is what makes
-/// it consider fit at all, rather than reaching for a bar chart every time.
+/// Note also what the model is NEVER asked for: a percentage, a count, or a
+/// duration. Those are computed from its verdicts in
+/// `meridian_core::day_evidence::adherence`, so the number on the screen is
+/// reproducible and cannot contradict the list beside it.
 pub fn daily_summary_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
+            "headline": {"type": "string"},
             "narrative": {"type": "string"},
             "insights": {
-                "type": "array",
-                "items": {"type": "string"},
-                "minItems": 2,
-                "maxItems": 3
-            },
-            "panels": {
                 "type": "array",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "title": {"type": "string"},
-                        "why":   {"type": "string"},
-                        // A whole Vega-Lite spec. See the doc comment above.
-                        "spec":  {"type": "object"}
+                        "text":    {"type": "string"},
+                        "learned": {"type": "boolean"}
                     },
-                    "required": ["title", "why", "spec"],
+                    "required": ["text", "learned"],
                     "additionalProperties": false
                 },
-                // There is NO floor, and that is the point: an empty array is a
-                // correct, common answer. A required panel is a panel invented to
-                // satisfy a requirement, and four such panels is how this screen
-                // first came out looking like a monitoring dashboard rather than
-                // something a person would want to read. Charts are optional; the
-                // prose is the feature.
-                //
-                // The ceiling is what the screen holds and what stays uncluttered.
-                // Code caps it too (MAX_PANELS) — a schema is only genuinely
-                // enforced on Claude.
+                "minItems": 2,
+                "maxItems": 4
+            },
+            "plan_verdicts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "task_key": {"type": "string"},
+                        "outcome":  {"type": "string",
+                                     "enum": ["done", "partial", "not_touched"]},
+                        "evidence": {"type": "string"},
+                        // Ids, never a duration — the model points and the code
+                        // measures. Same contract `themes` uses.
+                        "day_task_ids": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["task_key", "outcome", "evidence", "day_task_ids"],
+                    "additionalProperties": false
+                },
+                // No floor and no ceiling: a day with no plan answers `[]`, and a
+                // day with one answers exactly as many entries as it has tickets.
+                // MAX_PLAN_TASKS caps the plan itself, so bounding it twice would
+                // only give the two numbers a chance to disagree.
+                "minItems": 0
+            },
+            "themes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title":        {"type": "string"},
+                        "day_task_ids": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["title", "day_task_ids"],
+                    "additionalProperties": false
+                },
+                // The other half of the same either/or: `[]` on a planned day.
                 "minItems": 0,
-                "maxItems": 2
+                "maxItems": 4
             }
         },
-        "required": ["narrative", "insights", "panels"],
+        "required": ["headline", "narrative", "insights", "plan_verdicts", "themes"],
         "additionalProperties": false
     })
 }
@@ -323,11 +343,6 @@ mod tests {
         assert!(PLAN_TASK_DRAFT.contains("NOT ALL WORK IS ENGINEERING"));
         assert!(PLAN_TASK_DRAFT.contains("NEVER NAME THE PERSON"));
         assert!(PLAN_TASK_DRAFT.contains("Return a JSON object with these fields:"));
-        // The data-binding rule is the load-bearing one: it is what makes a
-        // hallucinated number impossible, since the model never gets to write a
-        // value down.
-        assert!(DAILY_SUMMARY.contains("NEVER write `\"data\": {\"values\": [...]}`"));
-        assert!(DAILY_SUMMARY.contains("bind data by name, never inline"));
         assert!(DAILY_SUMMARY.contains("INVENT NOTHING"));
         assert!(DAILY_SUMMARY.contains("NEVER NAME THE PERSON"));
         // The rest stop it becoming the thing it must not be. `DO NOT REPLAY THE
@@ -338,59 +353,81 @@ mod tests {
         assert!(DAILY_SUMMARY.contains("THIS IS NOT A REPORT AND NOT A TIMESHEET"));
         assert!(DAILY_SUMMARY.contains("DO NOT REPLAY THE DAY IN ORDER"));
         assert!(DAILY_SUMMARY.contains("NEVER cite clock times"));
-        assert!(DAILY_SUMMARY.contains("CHOOSE THE FORM FROM THE DATA"));
-        // Charts being optional is the other correction: asking for panels is how
-        // the screen became a dashboard of four charts nobody wanted.
-        assert!(DAILY_SUMMARY.contains("CHARTS ARE OPTIONAL AND USUALLY UNNECESSARY"));
-        assert!(DAILY_SUMMARY.contains("NEVER MORE THAN 2"));
-    }
-
-    #[test]
-    fn daily_summary_schema_bounds_the_wrapper_but_not_the_spec() {
-        let s = daily_summary_schema();
-        assert_eq!(s["required"], json!(["narrative", "insights", "panels"]));
-        let panels = &s["properties"]["panels"];
-        // The screen is prose first — code enforces this too, but a schema-enforcing
-        // backend should never even offer a third panel.
-        assert_eq!(panels["maxItems"], json!(2));
-        // NO floor, asserted rather than left to prose: a required panel is a panel
-        // invented to satisfy a requirement. Zero is a correct answer.
-        assert_eq!(panels["minItems"], json!(0));
-        let panel = &panels["items"];
-        assert_eq!(panel["required"], json!(["title", "why", "spec"]));
-        // `spec` is deliberately unconstrained: it is a whole raw Vega-Lite spec,
-        // and constraining it here would both duplicate a 1.8 MB grammar and cap
-        // what the model may express. `day_summary::validate` is what checks it.
-        assert_eq!(panel["properties"]["spec"], json!({"type": "object"}));
-    }
-
-    /// The prompt's worked examples name real datasets. If a dataset is renamed in
-    /// `meridian_core::day_evidence::datasets` the examples must move with it, or the model is
-    /// taught a contract the validator then rejects.
-    #[test]
-    fn daily_summary_examples_only_name_real_datasets() {
-        // Deliberately ONE example now, not three. Every example is a suggestion the
-        // model takes, and a prompt that showed a pie chart got a pie chart back —
-        // so what remains teaches the binding contract and nothing about the answer.
-        let name = "segments";
-        assert!(
-            DAILY_SUMMARY.contains(&format!("\"name\": \"{name}\"")),
-            "prompt example references dataset {name}"
-        );
-        assert!(
-            meridian_core::day_evidence::datasets::by_name(name).is_some(),
-            "prompt example names dataset '{name}', which no longer exists"
-        );
-        // Every field the example encodes must be real, for the same reason.
-        for (ds, field) in [
-            ("segments", "start_min"),
-            ("segments", "end_min"),
-            ("segments", "title"),
-            ("segments", "minutes"),
-        ] {
+        // The tone contract is what keeps a planned-vs-actual screen from reading
+        // as a scorecard. Showing the model the plan without it produced exactly
+        // the "you only managed three of five" register this whole screen exists
+        // to avoid, so the banned words are pinned individually.
+        assert!(DAILY_SUMMARY.contains("The tone contract"));
+        assert!(DAILY_SUMMARY.contains("Credit what got done BEFORE naming what did not"));
+        for word in ["drifted", "failed", "wasted", "only managed"] {
             assert!(
-                meridian_core::day_evidence::datasets::has_field(ds, field),
-                "prompt example encodes {ds}.{field}, which no longer exists"
+                DAILY_SUMMARY.contains(&format!("\"{word}\"")),
+                "the tone contract must ban the word {word:?} by name"
+            );
+        }
+        assert!(DAILY_SUMMARY.contains("WORK THAT WAS NOT PLANNED IS STILL WORK"));
+        // The locked-prematch rule: without it the model argues with a posted
+        // worklog and its answer is silently discarded, which wastes the call.
+        assert!(DAILY_SUMMARY.contains("SOME OUTCOMES ARE ALREADY SETTLED"));
+        // `learned` must be allowed to be zero, or every day sprouts a fake lesson.
+        assert!(
+            DAILY_SUMMARY.contains("Most days have none, and returning none is the right answer")
+        );
+        // The emphasis convention is the only markup the screen renders; if the
+        // prompt stops teaching it, `**` reaches the reader as literal asterisks.
+        assert!(DAILY_SUMMARY.contains("wrap a phrase in double asterisks"));
+        assert!(DAILY_SUMMARY.contains("Use it AT MOST TWICE"));
+        // The charts are gone, along with the whole Vega system. If any of this
+        // comes back the screen is regressing to a dashboard.
+        assert!(!DAILY_SUMMARY.to_lowercase().contains("vega"));
+        assert!(!DAILY_SUMMARY.to_lowercase().contains("chart"));
+    }
+
+    #[test]
+    fn daily_summary_schema_asks_for_verdicts_and_never_for_a_score() {
+        let s = daily_summary_schema();
+        assert_eq!(
+            s["required"],
+            json!([
+                "headline",
+                "narrative",
+                "insights",
+                "plan_verdicts",
+                "themes"
+            ])
+        );
+
+        // An insight is text plus one bonus flag. NO category enum: a label turns
+        // an observation into a verdict on the person, which is what made the first
+        // version of this screen feel like a scorecard.
+        let insight = &s["properties"]["insights"]["items"];
+        assert_eq!(insight["required"], json!(["text", "learned"]));
+        assert_eq!(insight["properties"]["learned"], json!({"type": "boolean"}));
+        assert!(
+            insight["properties"].get("kind").is_none(),
+            "insights must not carry a category"
+        );
+
+        // The outcome vocabulary is closed — a model that invents a fourth word
+        // would land on `not_touched` in the parser, which is the honest default
+        // but a silent one.
+        let verdict = &s["properties"]["plan_verdicts"]["items"];
+        assert_eq!(
+            verdict["properties"]["outcome"]["enum"],
+            json!(["done", "partial", "not_touched"])
+        );
+        // Both arrays are floor-zero: every day is one case or the other, and a
+        // required entry is an entry invented to satisfy a requirement.
+        assert_eq!(s["properties"]["plan_verdicts"]["minItems"], json!(0));
+        assert_eq!(s["properties"]["themes"]["minItems"], json!(0));
+
+        // The score is computed, never asked for. If a number ever appears in this
+        // schema the ring and the ledger beside it can disagree.
+        let props = s["properties"].as_object().unwrap();
+        for banned in ["achievement_pct", "minutes", "score", "percent"] {
+            assert!(
+                !props.contains_key(banned),
+                "the model must not report {banned}"
             );
         }
     }

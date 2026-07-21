@@ -1,51 +1,57 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// The daily summary: one screen, composed by the model, about how a day went.
+// The daily summary: one screen answering one question - did the day go the way
+// you meant it to?
 //
-// THE PROSE IS THE FEATURE. This screen exists to tell someone how their day went
-// in words they would actually want to read, and to make them feel good about it.
-// The narrative gets the room and the type size; the stat row gives it three honest
-// anchors; charts are OPTIONAL (0-2, the model decides) and sit underneath.
+// TWO SCREENS, ONE LAYOUT. A day with a committed plan gets the segmented ring and
+// a ledger of what became of each planned ticket. A day without one gets the same
+// space given to what the day turned out to be about, sized by real measured time.
+// Neither is a degraded version of the other, and the no-plan case is NOT nagged
+// about the plan it did not make.
 //
-// It shipped once the other way round — four charts in a grid with the prose
-// squeezed into a strip above them — and it read as a monitoring dashboard, which is
-// the one thing it must not be. If something has to give here, it is the charts.
+// THE PROSE IS STILL THE FEATURE. The headline and narrative get the type size and
+// the room; the ring anchors them; everything else is quiet. The narrative renders
+// `**emphasis**` (see Emphasis.tsx) so drift and breakthroughs can be said IN the
+// sentence rather than stamped on a card as a category.
 //
-// ONE SCREEN, NO PAGE SCROLL: min-h-0 all the way down, and the panel count is
-// capped server-side (MAX_PANELS = 2).
+// This screen shipped once as prose squeezed above a grid of model-authored
+// Vega-Lite charts, and it read as a monitoring dashboard - the one thing it must
+// not be. There are no charts here now, and no chart library: every mark is a
+// handful of SVG built for this screen.
 //
-// Nothing here decides what to show. The narrative, the insights, which charts and
-// what form each takes all come from the model; this lays them out. The specs carry
-// FORM only, so the real rows are fetched separately (get_day_summary_data) and
-// injected by VegaPanel at render.
+// NUMBERS ARE NOT THE MODEL'S. The percentage, the counts and every duration are
+// computed in Rust from the plan ledger (`day_evidence::adherence`), so the ring
+// and the list beside it are two views of one array. The model contributes
+// judgement and prose only.
+//
+// ONE SCREEN, NO PAGE SCROLL at the top level: min-h-0 all the way down, and the
+// body scrolls internally when a long plan needs it.
 //
 // Clicking a workstream opens the SAME DayTaskDetailPanel the timeline uses, in a
-// dialog — so generate/approve/retarget/dismiss all work here with no new worklog
+// dialog - so generate/approve/retarget/dismiss all work here with no new worklog
 // code (useWorklog is keyed by (day, taskId) in a module store, so a generate
 // started here survives closing the dialog).
 
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { load, invoke } from '@/lib/bridge'
 import type { DaySummary, DaySummaryData, DayTask, DayTasksResponse } from '@/lib/api-types'
 import { DayTaskDetailPanel, type DayTaskDetail } from '@/components/timeline/DayTaskDetailPanel'
 import { taskHue } from '@/components/timeline/dayTaskKit'
 import { hhmmToMin } from '@/components/timeline/dayTaskLayout'
 import { formatDayLabel } from '@/components/timeline/types'
+import { fmtDur } from '@/components/atoms'
 import type { SettingsSection } from '@/components/timeline/settings/types'
-import { VegaPanel } from './VegaPanel'
+import { AchievementRing } from './AchievementRing'
+import { DayShape } from './DayShape'
+import { Emphasis } from './Emphasis'
+import { Insights } from './Insights'
+import { PlanLedger } from './PlanLedger'
+import { Workstreams } from './Workstreams'
 
 const API = '/api/day-summary' // vestigial route label the bridge wants (Tauri-only now)
-
-/** Seconds as the home page writes them ("3h 47m"), so the two agree on sight. */
-function fmtDur(s: number): string {
-  const h = Math.floor(s / 3600)
-  const m = Math.round((s % 3600) / 60)
-  if (h === 0) return `${m}m`
-  return m === 0 ? `${h}h` : `${h}h ${m}m`
-}
 
 /** Build the timeline's own detail payload from a DayTask, so the reused panel gets
  *  exactly the shape it already expects. Mirrors DayTaskColumn's construction. */
@@ -81,18 +87,10 @@ function NavBtn({ glyph, label, onClick, disabled }: {
   )
 }
 
-/** One headline number. Big value, quiet label — the value is the thing. */
-function Stat({ value, label }: { value: string; label: string }) {
-  return (
-    <div className="shrink-0">
-      <p className="leading-none" style={{
-        color: 'var(--t-title)', fontSize: 30, fontWeight: 600, letterSpacing: '-0.02em',
-      }}>
-        {value}
-      </p>
-      <p className="mt-label mt-1.5" style={{ color: 'var(--t-faint-2)' }}>{label}</p>
-    </div>
-  )
+/** A hairline section break. Named so the three call sites stay identical - the
+ *  rhythm of this screen is mostly the whitespace between its blocks. */
+function Rule() {
+  return <div className="shrink-0 my-6" style={{ height: 1, background: 'var(--t-hair)' }} />
 }
 
 export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSettings, onOpenTask }: {
@@ -103,6 +101,7 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
   onOpenSettings: (section?: SettingsSection) => void
   onOpenTask: (key: string, title?: string) => void
 }) {
+  const reduce = useReducedMotion()
   const [summary, setSummary] = useState<DaySummary | null>(null)
   const [data, setData] = useState<DaySummaryData | null>(null)
   const [tasks, setTasks] = useState<DayTask[]>([])
@@ -110,27 +109,12 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<DayTaskDetail | null>(null)
+  const [hovered, setHovered] = useState<number | null>(null)
 
-  // Re-read everything on a day change. The summary and its data must come from
-  // the same day or a chart would render one day's rows under another's title.
-  useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    setSelected(null)
-    setError(null)
-    Promise.allSettled([
-      load<DaySummary | null>(API, 'get_day_summary', { day }),
-      load<DaySummaryData>(API, 'get_day_summary_data', { day }),
-      load<DayTasksResponse>('/api/day-tasks', 'get_day_tasks', { day }),
-    ]).then(([s, d, t]) => {
-      if (cancelled) return
-      setSummary(s.status === 'fulfilled' ? s.value : null)
-      setData(d.status === 'fulfilled' ? d.value : null)
-      setTasks(t.status === 'fulfilled' ? (t.value?.tasks ?? []) : [])
-      setLoading(false)
-    })
-    return () => { cancelled = true }
-  }, [day])
+  // Which days have already had their one silent refresh. A ref, not state: it must
+  // not trigger a render, and it must survive the day flipping back and forth so a
+  // user paging through the week cannot spend an LLM call per arrow press.
+  const refreshed = useRef<Set<string>>(new Set())
 
   const generate = useCallback(async () => {
     setGenerating(true)
@@ -138,8 +122,8 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
     try {
       const s = await invoke<DaySummary>('generate_day_summary', { day })
       setSummary(s)
-      // Re-read the rows alongside: a regenerate can be minutes after the last
-      // fold, and the panels must bind to what is true now.
+      // Re-read the live figures alongside: a regenerate can be minutes after the
+      // last fold, and the deterministic half must bind to what is true now.
       await load<DaySummaryData>(API, 'get_day_summary_data', { day })
         .then(setData)
         .catch(() => {})
@@ -150,19 +134,50 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
     }
   }, [day])
 
+  // Re-read everything on a day change. All three must come from the same day or
+  // one day's ledger would render under another's prose.
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setSelected(null)
+    setHovered(null)
+    setError(null)
+    Promise.allSettled([
+      load<DaySummary | null>(API, 'get_day_summary', { day }),
+      load<DaySummaryData>(API, 'get_day_summary_data', { day }),
+      load<DayTasksResponse>('/api/day-tasks', 'get_day_tasks', { day }),
+    ]).then(([s, d, t]) => {
+      if (cancelled) return
+      const existing = s.status === 'fulfilled' ? s.value : null
+      const live = d.status === 'fulfilled' ? d.value : null
+      setSummary(existing)
+      setData(live)
+      setTasks(t.status === 'fulfilled' ? (t.value?.tasks ?? []) : [])
+      setLoading(false)
+
+      // The day has moved on since this was written - recompose quietly, once.
+      // Staleness is decided in Rust (`day_summaries::is_stale`); all this decides
+      // is that it happens at most once per day per session, so reopening the
+      // screen twice in a minute does not queue two calls.
+      if (existing && live?.stale && !refreshed.current.has(day)) {
+        refreshed.current.add(day)
+        void generate()
+      }
+    })
+    return () => { cancelled = true }
+  }, [day, generate])
+
   const dayLabel = isToday ? 'Today' : formatDayLabel(day)
   const hasWork = tasks.length > 0
   const sc = data?.scalars
-  const panels = summary?.panels ?? []
-
-  // The workstreams, in the timeline's own order and colours, so a task looks the
-  // same here as it does there.
-  const details = useMemo(() => tasks.map((t, i) => detailOf(t, i, day)), [tasks, day])
+  // The plan branch comes from the LIVE scalars rather than the stored summary, so
+  // a day planned after its summary was composed still gets the right screen.
+  const planned = (sc?.planned ?? false) && (summary?.plan.length ?? 0) > 0
 
   return (
     <div className="absolute inset-0 z-50 flex flex-col rise" style={{ background: 'var(--win-bg)' }}>
       {/* Header — deliberately quiet. The day belongs to the body, not a title bar. */}
-      <div className="shrink-0 flex items-center justify-between px-6 py-3">
+      <div className="shrink-0 flex items-center justify-between px-8 py-3">
         <div className="flex items-center gap-2.5 min-w-0">
           <NavBtn glyph="‹" label="Previous day" onClick={() => onShiftDay(-1)} />
           <p className="mt-label px-1 truncate" style={{ color: 'var(--t-muted)' }}>{dayLabel}</p>
@@ -183,7 +198,7 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
                 color: summary ? 'var(--t-muted)' : '#fff',
                 border: summary ? '1px solid var(--t-hair)' : '1px solid transparent',
               }}>
-              {generating ? 'Composing…' : summary ? 'Regenerate' : 'Generate summary'}
+              {generating ? 'Composing…' : summary ? 'Regenerate' : 'Compose summary'}
             </button>
           )}
           <button onClick={onClose} aria-label="Close"
@@ -194,9 +209,7 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
         </div>
       </div>
 
-      {/* Body. min-h-0 all the way down is what keeps this inside the viewport
-          instead of growing a page scrollbar. */}
-      <div className="flex-1 min-h-0 flex flex-col px-6 pb-5">
+      <div className="flex-1 min-h-0 flex flex-col px-8 pb-6">
         {loading ? (
           <Centered text="Reading your day…" />
         ) : !hasWork ? (
@@ -204,103 +217,122 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
         ) : !summary ? (
           <Centered
             text={generating
-              ? 'Reading the whole day and deciding what is worth saying. This takes about a minute.'
+              ? 'Reading the whole day and working out what is worth saying. This takes about a minute.'
               : 'Compose a summary to see how this day actually went.'}
           />
         ) : (
-          <>
-            {/* The headline row. `task_count` excludes anything under half an hour
-                — see TASK_MIN_MINUTES — because a count that includes every glance
-                is a number the reader sees through instantly. */}
-            {sc && (
-              <div className="shrink-0 flex items-start gap-10 pt-1 pb-6">
-                <Stat
-                  value={String(sc.task_count)}
-                  label={sc.task_count === 1 ? 'thing you moved forward' : 'things you moved forward'}
+          // The one scroll on this screen. A ten-ticket plan plus a long day of
+          // workstreams genuinely does not fit, and clipping it would be worse
+          // than letting the body scroll under a fixed header.
+          <div className="flex-1 min-h-0 overflow-y-auto -mx-2 px-2">
+            {/* ── The hero ──────────────────────────────────────────────────── */}
+            <div className="flex items-center gap-9 pt-2">
+              {planned && summary.adherence.planned > 0 && (
+                <AchievementRing
+                  plan={summary.plan}
+                  adherence={summary.adherence}
+                  activeIndex={hovered}
+                  onHover={setHovered}
                 />
-                <div className="shrink-0 self-stretch" style={{ width: 1, background: 'var(--t-hair)' }} />
-                <Stat value={fmtDur(sc.focus_s)} label="focus" />
-                {sc.coding_s > 0 && <Stat value={fmtDur(sc.coding_s)} label="coding" />}
+              )}
+
+              <div className="flex-1 min-w-0">
+                {summary.headline && (
+                  <motion.h2
+                    style={{
+                      font: '800 25px var(--font-sans)',
+                      letterSpacing: '-0.03em',
+                      lineHeight: 1.15,
+                      color: 'var(--t-title)',
+                      maxWidth: '22ch',
+                    }}
+                    initial={reduce ? false : { opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: reduce ? 0 : 0.35, delay: reduce ? 0 : 0.1 }}
+                  >
+                    {summary.headline}
+                  </motion.h2>
+                )}
+
+                {summary.narrative && (
+                  <motion.p
+                    className={summary.headline ? 'mt-3' : ''}
+                    style={{
+                      color: 'var(--t-muted)',
+                      maxWidth: '56ch',
+                      font: '450 16px/1.62 var(--font-sans)',
+                      letterSpacing: '-0.008em',
+                    }}
+                    initial={reduce ? false : { opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: reduce ? 0 : 0.35, delay: reduce ? 0 : 0.16 }}
+                  >
+                    <Emphasis text={summary.narrative} />
+                  </motion.p>
+                )}
+
+                {/* The unplanned tail, said plainly and WITHOUT apology - work that
+                    was not on the plan is still work, and usually the interesting
+                    half of the day. */}
+                {planned && summary.adherence.unplanned_minutes > 0 && (
+                  <p className="mt-body-sm mt-4" style={{ color: 'var(--t-faint-2)' }}>
+                    {fmtDur(summary.adherence.unplanned_minutes * 60)} went to work that was not on the plan
+                  </p>
+                )}
+
+                {summary.fallback && (
+                  <p className="mt-body-sm mt-4" style={{ color: 'var(--t-faint-2)' }}>
+                    The write-up could not be composed this time - what is below is measured, not written.
+                  </p>
+                )}
               </div>
-            )}
-
-            {/* The narrative. The biggest text on the screen, and the whole point of
-                it. `panels.length === 0` is the COMMON, correct case — when the model
-                chose no chart, the prose takes the room rather than the layout
-                leaving a hole where a chart was supposed to be. */}
-            <div className={panels.length === 0 ? 'flex-1 min-h-0 flex flex-col justify-center' : 'shrink-0'}>
-              {summary.narrative && (
-                <p style={{
-                  color: 'var(--t-title)',
-                  maxWidth: '58ch',
-                  fontSize: panels.length === 0 ? 25 : 19,
-                  lineHeight: 1.55,
-                  letterSpacing: '-0.011em',
-                  fontWeight: 400,
-                }}>
-                  {summary.narrative}
-                </p>
-              )}
-
-              {summary.insights.length > 0 && (
-                <ul className="flex flex-col gap-2 mt-6" style={{ maxWidth: '58ch' }}>
-                  {summary.insights.map((i, n) => (
-                    <li key={n} className="flex gap-3 items-baseline">
-                      <span className="shrink-0 rounded-full" style={{
-                        width: 4, height: 4, background: 'var(--accent)', transform: 'translateY(-2px)',
-                      }} />
-                      <span className="mt-body" style={{ color: 'var(--t-muted)' }}>{i}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-
-              {summary.fallback && (
-                <p className="mt-body-sm mt-4" style={{ color: 'var(--t-faint-2)' }}>
-                  A plain view of the day - the summary could not be composed this time.
-                </p>
-              )}
             </div>
 
             {error && (
-              <p className="shrink-0 mt-body-sm mt-3" style={{ color: 'var(--severity-must)' }}>{error}</p>
+              <p className="mt-body-sm mt-4" style={{ color: 'var(--severity-must)' }}>{error}</p>
             )}
 
-            {/* The panels, if the model wanted any. Rendered ONLY when present — no
-                empty frames, no placeholder. */}
-            {panels.length > 0 && data && (
-              <div className="flex-1 min-h-0 grid gap-4 mt-6" style={{
-                gridTemplateColumns: panels.length === 1 ? '1fr' : 'repeat(2, minmax(0, 1fr))',
-              }}>
-                {panels.map((p, i) => (
-                  <VegaPanel key={`${day}-${i}-${p.title}`} panel={p} data={data.datasets} />
-                ))}
-              </div>
+            {summary.insights.length > 0 && (
+              <>
+                <Rule />
+                <Insights insights={summary.insights} delay={0.24} />
+              </>
             )}
 
-            {/* The day's workstreams — the way into a worklog for any of them. */}
-            {details.length > 0 && (
-              <div className="shrink-0 flex items-center gap-2 flex-wrap pt-5">
-                {details.map(d => (
-                  <button key={d.id} onClick={() => setSelected(d)}
-                    title={`${d.title} - ${d.minutes} min`}
-                    className="rounded-full px-3 py-1.5 mt-body-sm transition-transform hover:-translate-y-px"
-                    style={{
-                      background: `color-mix(in srgb, ${d.hue} 10%, var(--t-card))`,
-                      border: `1px solid color-mix(in srgb, ${d.hue} 28%, transparent)`,
-                      color: 'var(--t-title)',
-                      maxWidth: 260,
-                    }}>
-                    <span className="inline-block rounded-full mr-2 align-middle"
-                      style={{ width: 6, height: 6, background: d.hue }} />
-                    <span className="align-middle truncate inline-block" style={{ maxWidth: 210 }}>
-                      {d.title}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </>
+            {/* ── The plan, or what the day turned out to be ────────────────── */}
+            {planned ? (
+              <>
+                <Rule />
+                <p className="mt-label mb-1.5" style={{ color: 'var(--t-faint-2)' }}>
+                  What you set out to do
+                </p>
+                <PlanLedger
+                  plan={summary.plan}
+                  activeIndex={hovered}
+                  onHover={setHovered}
+                  onOpenTask={onOpenTask}
+                />
+              </>
+            ) : summary.themes.length > 0 ? (
+              <>
+                <Rule />
+                <DayShape
+                  themes={summary.themes}
+                  tasks={tasks}
+                  focusSeconds={sc?.focus_s ?? 0}
+                  switchCount={sc?.switch_count ?? 0}
+                />
+              </>
+            ) : null}
+
+            {/* ── The way into a worklog for any of it ──────────────────────── */}
+            <Rule />
+            <Workstreams
+              tasks={tasks}
+              delay={0.3}
+              onSelect={(t, i) => setSelected(detailOf(t, i, day))}
+            />
+          </div>
         )}
       </div>
 
