@@ -197,16 +197,22 @@ export function buildTimelineScale(
   const segments = factor === 1 ? natural : natural.map(s => ({ ...s, loPx: s.loPx * factor, hiPx: s.hiPx * factor }))
   const colHeight = naturalPx * factor
 
+  // Rounded to a whole device pixel: cards render on their own composited
+  // layer (`.dt-card { will-change: transform }` in globals.css), and a
+  // layer that sits at a fractional pixel offset doesn't get pixel-snapped —
+  // Chromium/WebKit sub-pixel-interpolate it instead, which reads as the
+  // card's text being a little soft/blurred. The proportional math above
+  // stays float-precise; only the final on-screen position is snapped.
   const toPx = (min: number): number => {
     const clamped = Math.max(win.lo, Math.min(win.hi, min))
     for (const seg of segments) {
       if (clamped >= seg.loMin && clamped <= seg.hiMin) {
         const span = seg.hiMin - seg.loMin
         const t = span > 0 ? (clamped - seg.loMin) / span : 0
-        return seg.loPx + t * (seg.hiPx - seg.loPx)
+        return Math.round(seg.loPx + t * (seg.hiPx - seg.loPx))
       }
     }
-    return segments.length > 0 ? segments[segments.length - 1].hiPx : 0
+    return segments.length > 0 ? Math.round(segments[segments.length - 1].hiPx) : 0
   }
 
   return { pxPerMin, colHeight, toPx }

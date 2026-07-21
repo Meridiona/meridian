@@ -106,13 +106,13 @@ meridian = { path = "../.." }
 # screen capture + Apple Vision OCR. Optional → only pulled by the `capture`
 # feature (heavy: ScreenCaptureKit/cidre/sck-rs). Private repo: local builds use
 # the user's git credentials; CI needs a deploy token (future).
-screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "825b038d845d7dcc8c1387b2707899b352417233", optional = true }
+screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "064c44ccd8c50716f21eec1663e1350e848ca5f5", optional = true }
 # Sibling crate in the same fork: the accessibility-tree walker (slice 3b).
 # `tree::create_tree_walker` walks the focused window's AX tree → structured
 # text — the PRIMARY signal for Electron/Chromium apps (VS Code, Slack), which
 # expose nothing to OCR-free a11y until the walker sets AXManualAccessibility
 # itself. Optional → only the `capture` feature pulls it.
-screenpipe-a11y = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "825b038d845d7dcc8c1387b2707899b352417233", optional = true }
+screenpipe-a11y = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "064c44ccd8c50716f21eec1663e1350e848ca5f5", optional = true }
 # Console log subscriber for capture-enabled non-otel runs (otel installs its
 # own). Makes the `capture: …` logs visible during a `cargo run --features capture`.
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
@@ -191,3 +191,8 @@ capture = [
 # whatever happens to exist on the machine running the tests.
 [dev-dependencies]
 tempfile = "3"
+# Test-only: an in-memory migrated DB for poll::refresh's stale-notice
+# reconciliation test — `meridian_core::SqlitePool` is the pool type, but
+# querying result rows needs sqlx itself, which the tray binary otherwise
+# never touches directly (all DB access goes through meridian/meridian-core).
+sqlx = { version = "0.7", default-features = false, features = ["sqlite", "runtime-tokio-rustls", "migrate"] }

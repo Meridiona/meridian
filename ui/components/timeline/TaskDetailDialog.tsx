@@ -10,13 +10,19 @@
 // — only the daily-plan caller wires them, everyone else gets a read-only dialog.
 // A personal (provider 'local') task additionally gets an inline Edit affordance
 // for its title/description (see `editableTask`) — tracker-owned tickets never do.
+// The status badge is always a live `StatusPicker` (same component + hook as the
+// Tasks page's TasksDetailPane) — moving a tracker ticket writes through to the
+// tracker, and moving a personal task's To Do/In Progress/Done writes straight to
+// our own DB; both get the same optimistic patch + Undo banner.
 
 'use client'
 
 import { useEffect, useState } from 'react'
-import { LOCAL_PROVIDER, type TaskDetail } from '@/lib/api-types'
+import { LOCAL_PROVIDER, type TaskDetail, type TaskStatusTarget } from '@/lib/api-types'
 import { load, openExternal } from '@/lib/bridge'
 import { editTask } from '@/components/plan/useTaskComposer'
+import { StatusPicker } from './StatusPicker'
+import { useTaskStatusChange, StatusBanner } from './useTaskStatusChange'
 
 export function TaskDetailDialog({
   taskKey, fallbackTitle, onClose, inToday, canEdit = true, onAdd, onRemove, day, editableTask = true,
@@ -49,6 +55,20 @@ export function TaskDetailDialog({
   const [draftDescription, setDraftDescription] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+
+  // Same status-change plumbing as the Tasks page's detail pane
+  // (TasksDetailPane.tsx) — the mutate call, optimistic patch, and Undo/redirect
+  // banner all live in the shared hook, so this dialog gets identical behavior
+  // (including a personal task's To Do/In Progress/Done lifecycle, which
+  // `set_task_status` now also serves — see meridian_core::task_create's
+  // local-status helpers) rather than a second implementation.
+  const patchTaskStatus = (key: string, status: string, isTerminal: boolean) =>
+    setDetail(d => d && d.key === key ? { ...d, status, is_terminal: isTerminal } : d)
+  const { statusBusyKey, undo, note, handleSetStatus, handleUndo, dismissUndo, dismissNote } =
+    useTaskStatusChange(patchTaskStatus)
+  const statusTarget: TaskStatusTarget | null = detail
+    ? { key: detail.key, provider: detail.provider, status: detail.status, is_terminal: detail.is_terminal }
+    : null
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
@@ -109,12 +129,9 @@ export function TaskDetailDialog({
                 {detail.issue_type}
               </span>
             )}
-            {detail?.status && (
-              <span className="mt-body-sm inline-flex items-center gap-1.5" style={{ color: 'var(--t-muted)' }}>
-                <span className="inline-block w-1.5 h-1.5 rounded-full"
-                  style={{ background: detail.is_terminal ? 'var(--color-state-approved)' : 'var(--color-state-proposal)' }} />
-                {detail.status}
-              </span>
+            {statusTarget && (
+              <StatusPicker task={statusTarget} onPick={o => handleSetStatus(statusTarget, o)}
+                busy={statusBusyKey === statusTarget.key} />
             )}
             <button onClick={onClose} aria-label="Close"
               className="ml-auto inline-flex items-center justify-center rounded-full bg-wrap shrink-0"
@@ -216,6 +233,10 @@ export function TaskDetailDialog({
             )}
           </div>
         )}
+      </div>
+      <div onClick={e => e.stopPropagation()}>
+        <StatusBanner undo={undo} note={note} busy={!!statusBusyKey}
+          onUndo={handleUndo} onDismissUndo={dismissUndo} onDismissNote={dismissNote} />
       </div>
     </div>
   )

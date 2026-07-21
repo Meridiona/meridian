@@ -152,6 +152,13 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, hourS
   )
   const firstHour = Math.floor(win.lo / 60)
   const lastHour = Math.ceil(win.hi / 60)
+  // The current hour hasn't happened yet past `nowHour`'s own tick, so the
+  // rail must never draw one past it — see the `h > firstHour && hourHasWork(...
+  // h - 1)` rule below, which otherwise reads the still-open current hour as
+  // "work just stopped" and ticks the NEXT hour (e.g. a "5 PM" tick at 4:51
+  // PM, before 5 PM has arrived) purely because the live hour has a band.
+  const nowHour = isToday ? new Date().getHours() : -1
+  const tickCeiling = isToday && nowHour >= 0 ? Math.min(lastHour, nowHour) : lastHour
   // Whole-hour ticks (7 AM, 8 AM, ...) — an idle run only keeps the hour work
   // just stopped in (e.g. "1 AM" right after a 12 AM sitting ends); it does
   // NOT also keep the idle hour right before work resumes, since the resumed
@@ -168,7 +175,7 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, hourS
   // the same size, active or collapsed.
   const hourLines = useMemo(() => {
     const shown = new Set<number>([firstHour])
-    for (let h = firstHour; h <= lastHour; h++) {
+    for (let h = firstHour; h <= tickCeiling; h++) {
       if (hourHasWork(laidBase, win, h) || (h > firstHour && hourHasWork(laidBase, win, h - 1))) {
         shown.add(h)
       }
@@ -179,7 +186,7 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, hourS
       if (top >= -1 && top <= colHeight + 1) out.push({ hour: h, top })
     }
     return out
-  }, [firstHour, lastHour, toPx, colHeight, laidBase, win])
+  }, [firstHour, tickCeiling, toPx, colHeight, laidBase, win])
 
   const taskCount = laid.length
 
@@ -200,8 +207,7 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, hourS
   //      window ended 16:22 and 38 of the hour's 60 minutes map to no pixels at
   //      all. There is no band to draw into.
   // Below the last card it reads as what it actually is: the day so far, and then
-  // the hour still in progress.
-  const nowHour = isToday ? new Date().getHours() : -1
+  // the hour still in progress. (`nowHour` is computed above, alongside `tickCeiling`.)
   const liveStatus = isToday ? hourStatus.find(s => s.hour === nowHour) : undefined
   // The current hour hasn't ended, so it is almost never `generating` — the DB
   // only flips that for the seconds the /worklog_hour call is in flight. `queued`
@@ -443,8 +449,28 @@ function TaskBand({ laid, hue, toPx, selected, dimmed, onSelect }: {
   // however many bullets fit exactly, pushing the card past its own height
   // and getting silently clipped by overflow:hidden (a half-cut-off bullet
   // line with no "+more" to explain it).
+  //
+  // The header's real height varies (a long title wraps to 2 lines, a short
+  // one sits on 1), so a flat 52/74px guess under-budgets a wrapped title —
+  // that's what let a wrapped-title card overflow silently with no "+N more"
+  // (the slot math thought there was room that the actual DOM didn't have).
+  // headerRef measures the real title+meta block instead of guessing.
+  const headerRef = useRef<HTMLDivElement>(null)
+  const [headerH, setHeaderH] = useState<number | null>(null)
+  useLayoutEffect(() => {
+    const el = headerRef.current
+    if (!el) return
+    const measure = () => setHeaderH(el.offsetHeight)
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [laid.task.title, laid.task.posted_provider, showMeta, compact])
   const summary = laid.task.summary ?? []
-  const summarySlots = height >= SUMMARY_MIN_PX ? Math.floor((height - (showMeta ? 74 : 52)) / SUMMARY_LINE_PX) : 0
+  const GAP_ABOVE_SUMMARY_PX = 8 // the summary block's own mt-2
+  const summarySlots = height >= SUMMARY_MIN_PX
+    ? Math.floor((height - (headerH ?? (showMeta ? 74 : 52)) - GAP_ABOVE_SUMMARY_PX) / SUMMARY_LINE_PX)
+    : 0
   const previewLines =
     summary.length === 0
       ? 0
@@ -504,45 +530,47 @@ function TaskBand({ laid, hue, toPx, selected, dimmed, onSelect }: {
             the title dot is dropped and the title is centred against the rail —
             a second dot beside a short rail just read as misaligned clutter. On
             a taller card the dot anchors the top of the header next to the rail. */}
-        <div className="flex gap-2" style={{ alignItems: compact ? 'center' : 'flex-start' }}>
-          {!compact && (
-            <span className="shrink-0 rounded-full" style={{ width: 7, height: 7, background: hue, marginTop: 4 }} />
-          )}
-          <span className="mt-card-title flex-1 min-w-0"
-            style={{ color: 'var(--t-title)', lineHeight: 1.25, display: '-webkit-box', WebkitLineClamp: compact ? 1 : 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-            {laid.task.title || 'Activity'}
-          </span>
-          {/* "Synced to {tracker}" pill — shown once this task's worklog is posted,
-              so the timeline itself flags which cards are on the PM board. In-flow
-              at the row's end (never clipped by the card's rounded corner) and
-              vertically centred on compact cards. Non-interactive; the detail
-              panel carries the clickable link. */}
-          {laid.task.posted_provider && (
-            <PostedPill
-              provider={laid.task.posted_provider}
-              targetKey={laid.task.posted_target_key}
-              alignTop={!compact}
-            />
-          )}
-        </div>
-
-        {showMeta && (
-          <div className="flex items-center gap-2 mt-1.5 flex-wrap" style={{ paddingLeft: 15 }}>
-            {laid.task.minutes > 0 && (
-              <span className="mt-mono-sm" style={{ fontSize: 10.5, fontWeight: 700, color: hue }}>
-                {fmtDur(laid.task.minutes * 60)}
-              </span>
+        <div ref={headerRef}>
+          <div className="flex gap-2" style={{ alignItems: compact ? 'center' : 'flex-start' }}>
+            {!compact && (
+              <span className="shrink-0 rounded-full" style={{ width: 7, height: 7, background: hue, marginTop: 4 }} />
             )}
-            <span className="mt-mono-sm" style={{ fontSize: 10, color: 'var(--t-faint)' }}>
-              {taskRangeLabel(laid)}
+            <span className="mt-card-title flex-1 min-w-0"
+              style={{ color: 'var(--t-title)', lineHeight: 1.25, display: '-webkit-box', WebkitLineClamp: compact ? 1 : 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+              {laid.task.title || 'Activity'}
             </span>
-            {hasBreak && (
-              <span className="mt-mono-sm" style={{ fontSize: 9.5, color: 'var(--t-faint)', opacity: 0.85 }}>
-                · {laid.segments.length} sittings
-              </span>
+            {/* "Synced to {tracker}" pill — shown once this task's worklog is posted,
+                so the timeline itself flags which cards are on the PM board. In-flow
+                at the row's end (never clipped by the card's rounded corner) and
+                vertically centred on compact cards. Non-interactive; the detail
+                panel carries the clickable link. */}
+            {laid.task.posted_provider && (
+              <PostedPill
+                provider={laid.task.posted_provider}
+                targetKey={laid.task.posted_target_key}
+                alignTop={!compact}
+              />
             )}
           </div>
-        )}
+
+          {showMeta && (
+            <div className="flex items-center gap-2 mt-1.5 flex-wrap" style={{ paddingLeft: 15 }}>
+              {laid.task.minutes > 0 && (
+                <span className="mt-mono-sm" style={{ fontSize: 10.5, fontWeight: 700, color: hue }}>
+                  {fmtDur(laid.task.minutes * 60)}
+                </span>
+              )}
+              <span className="mt-mono-sm" style={{ fontSize: 10, color: 'var(--t-faint)' }}>
+                {taskRangeLabel(laid)}
+              </span>
+              {hasBreak && (
+                <span className="mt-mono-sm" style={{ fontSize: 9.5, color: 'var(--t-faint)', opacity: 0.85 }}>
+                  · {laid.segments.length} sittings
+                </span>
+              )}
+            </div>
+          )}
+        </div>
 
         {previewLines > 0 && (
           <div className="mt-2" style={{ paddingLeft: 15 }}>

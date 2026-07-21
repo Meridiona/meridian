@@ -353,10 +353,18 @@ const GH_KEY = 'github'
 const ghSet = (next: Partial<GithubPickerState>) => githubPickerStore.set(GH_KEY, next)
 const ghGet = () => githubPickerStore.get(GH_KEY)
 
-/** Load the board list once. No-op if already loaded or a save is in flight. */
+/** Load the board list once. No-op if already loaded (successfully) or a save
+ *  is in flight — but a PRIOR FAILURE must not block a retry. The `.catch()`
+ *  below also sets `loaded: true` on error (so the picker isn't stuck showing
+ *  a spinner forever), which without the `!s.loadError` check here made a
+ *  single failed attempt (e.g. a transient race, or an attempt made before a
+ *  token existed) latch permanently: `resetGithubPickerIfSaved()` only clears
+ *  state once a save succeeds, and a save can never succeed while the picker
+ *  has no projects to show — so every later, valid connect attempt (a fresh
+ *  PAT, a fresh OAuth run) silently reused the same stale error forever. */
 export function githubEnsureLoaded(): void {
   const s = ghGet()
-  if (s.loaded || s.saving) return
+  if ((s.loaded && !s.loadError) || s.saving) return
   ghSet({ loading: true, loadError: null })
   load<{ projects?: GithubProject[] }>('/api/integrations/github/discover', 'discover_github_projects')
     .then((json) => ghSet({ projects: json.projects ?? [], loading: false, loaded: true }))

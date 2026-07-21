@@ -1099,11 +1099,15 @@ fn start_oauth_in_process(provider: String) -> Result<StartOAuthResponse, String
 /// headless, so the user never saw the one-time code and it always timed out).
 ///
 /// Requests the device/user code synchronously so the UI can display it
-/// immediately, opens the browser to the verification URI, then spawns a
-/// background task that polls for the token and — on success — writes
-/// `GITHUB_TOKEN` to the active `.env` (the daemon reads it there) and reloads
-/// the daemon. On failure it writes the `.error` sentinel that
+/// immediately, then spawns a background task that polls for the token and — on
+/// success — writes `GITHUB_TOKEN` to the active `.env` (the daemon reads it
+/// there) and reloads the daemon. On failure it writes the `.error` sentinel that
 /// [`get_oauth_status`] surfaces. Returns `user_code`/`verification_uri` for the UI.
+///
+/// The browser is **not** opened here: the connect UI's device-flow checklist
+/// gates its "Open GitHub" button on the user first copying the code, and that
+/// button is the sole opener (via `openExternal`). Auto-opening would jump the
+/// user to GitHub before they've copied, contradicting the guided steps.
 async fn start_oauth_github_device(provider: String) -> Result<StartOAuthResponse, String> {
     // Resolve the client id: `.env` override wins, else the baked-in default.
     // Reading .env (not process env) matches start_oauth_in_process — the daemon
@@ -1150,9 +1154,11 @@ async fn start_oauth_github_device(provider: String) -> Result<StartOAuthRespons
         }
     };
 
-    // Open the browser to the verification page. Non-fatal if it fails — the UI
-    // also shows the code + link for manual entry.
-    crate::sys::open_url_detached(&device.verification_uri);
+    // NOTE: we deliberately do NOT open the browser here. The connect UI gates
+    // the "Open GitHub" button on the user having first copied the one-time code
+    // (see IntegrationConnect.tsx's device-flow checklist) — auto-opening the tab
+    // before they copy contradicts that guided flow. The UI's button is now the
+    // sole trigger (it calls openExternal with this verification_uri).
 
     let user_code = device.user_code.clone();
     let verification_uri = device.verification_uri.clone();

@@ -1017,6 +1017,46 @@ async fn local_task_edits_round_trip() {
 }
 
 #[tokio::test]
+async fn local_task_moves_through_the_in_progress_status() {
+    // The richer todo/in_progress/done picker a personal task's StatusPicker now
+    // offers (same UI as a tracker ticket) — set_local_terminal only ever wrote
+    // "To Do"/"Done"; this is the middle status it couldn't reach.
+    let pool = make_task_create_pool().await;
+    let key = meridian_core::task_create::create_local_task(&pool, "T", "d", "Task", "t0")
+        .await
+        .unwrap();
+
+    let in_progress = meridian_core::task_create::resolve_local_status("in_progress").unwrap();
+    assert_eq!(in_progress.name, "In Progress");
+    assert!(meridian_core::task_create::set_local_status(
+        &pool,
+        &key,
+        in_progress.name,
+        in_progress.category == "done",
+        "t1",
+    )
+    .await
+    .unwrap());
+
+    let (status, terminal) = meridian_core::task_create::local_task_current(&pool, &key)
+        .await
+        .unwrap()
+        .expect("the task must still exist");
+    assert_eq!(status, "In Progress");
+    assert!(!terminal, "In Progress is not a terminal category");
+
+    // Case-insensitive name resolution (the Undo path passes back a status NAME,
+    // same contract as a real tracker's `resolve_choice`).
+    assert_eq!(
+        meridian_core::task_create::resolve_local_status("DONE")
+            .unwrap()
+            .id,
+        "done"
+    );
+    assert!(meridian_core::task_create::resolve_local_status("bogus").is_none());
+}
+
+#[tokio::test]
 async fn insert_task_is_idempotent_on_a_double_submit() {
     let pool = make_task_create_pool().await;
     let t = meridian_core::task_create::NewTask {

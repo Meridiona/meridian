@@ -10,9 +10,9 @@ on:
   # and running CI on it re-tests a tree CI has already passed twice: once on
   # each commit's own feature PR, and again on the push to pre-main. main holds
   # nothing pre-main lacks except semantic-release's own `chore(release): X`
-  # version bumps (which carry GitHub's skip-CI marker — deliberately NOT spelled
-  # out here; see the release-prepare guard for why quoting it literally is a
-  # hazard),
+  # version bumps (which used to carry GitHub's skip-CI marker — deliberately NOT
+  # spelled out here; see the release-prepare guard for why quoting it literally
+  # is a hazard),
   # so the merge introduces no code that has not already been through the suite.
   #
   # This is NOT the same situation as a feature PR. There, two independently
@@ -268,7 +268,12 @@ jobs:
           #   1bc2ba88 adityaharishch  fix(a11y): prune browser tab strip …
           #   4f9ba866 adityaharishch  Merge pull request #1 (same, ours)
           #   825b038d Akarsh Hegde    fix(screen): disable sck-rs on macOS 26
-          expected="825b038d845d7dcc8c1387b2707899b352417233"
+          #
+          # 2026-07-21, 825b038d -> 064c44cc. Two commits, all Meridiona-
+          # authored, no upstream merge:
+          #   552e7f8b adityaharishch  Merge pull request #2 (825b038d, already audited above)
+          #   064c44cc Akarsh Hegde    fix(screen): disable sck-rs unconditionally, not just on macOS 26+
+          expected="064c44ccd8c50716f21eec1663e1350e848ca5f5"
           f="tray/src-tauri/Cargo.toml"
           fail=0
           for crate in screenpipe-screen screenpipe-a11y; do
