@@ -209,6 +209,9 @@ function ModeTab({ label, active, onClick }: { label: string; active: boolean; o
 // device code the user is typing at github.com) survives this panel unmounting.
 function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () => void }) {
   const { status, error, deviceCode, verifyUri, apiKeyPrompt, apiKey } = useConnectStore(oauthStore, tracker.id)
+  // Momentary "Copied" feedback on the device-code copy button. Local (not in the
+  // store) — it's a 1.5 s visual flourish, not flow state worth surviving unmount.
+  const [copied, setCopied] = useState(false)
 
   // On mount, clear a settled (done/error) attempt back to idle — but never
   // touch a 'waiting' one, which is the in-flight state we exist to preserve.
@@ -266,12 +269,10 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
         <div className="space-y-2">
           {deviceCode ? (
             <>
-              <p className="text-[12px]" style={{ color: 'var(--t-muted)' }}>
-                Enter this code at{' '}
-                <a href={verifyUri ?? 'https://github.com/login/device'} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-state-proposal)' }}>
-                  {(verifyUri ?? 'https://github.com/login/device').replace(/^https?:\/\//, '')} ↗
-                </a>{' '}
-                (your browser should have opened it):
+              {/* Step 1 — copy the one-time code. The Copy button flips to
+                  "Copied" for 1.5 s so the click is unmistakably acknowledged. */}
+              <p className="text-[12px] font-medium" style={{ color: 'var(--t-muted)' }}>
+                <span style={{ color: 'var(--t-faint-2)' }}>Step 1.</span> Copy this one-time code:
               </p>
               <div className="flex items-center gap-2">
                 <code className="font-mono text-[16px] tracking-[0.2em] px-3 py-1.5 rounded-md border"
@@ -279,13 +280,40 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
                   {deviceCode}
                 </code>
                 <button
-                  onClick={() => { void navigator.clipboard?.writeText(deviceCode).catch(() => {}) }}
-                  className="text-[11px] px-2 py-1 rounded-md"
-                  style={{ color: 'var(--color-state-proposal)', border: '1px solid var(--t-hair)', cursor: 'pointer', background: 'transparent' }}>
-                  Copy
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(deviceCode).catch(() => {})
+                    setCopied(true)
+                    setTimeout(() => setCopied(false), 1500)
+                  }}
+                  className="text-[11px] px-2 py-1 rounded-md transition-colors"
+                  style={{
+                    color: copied ? 'var(--color-state-approved)' : 'var(--color-state-proposal)',
+                    border: `1px solid ${copied ? 'var(--color-state-approved)' : 'var(--t-hair)'}`,
+                    cursor: 'pointer', background: 'transparent',
+                  }}>
+                  {copied ? '✓ Copied' : 'Copy'}
                 </button>
               </div>
-              <p className="text-[11px]" style={{ color: 'var(--t-faint-2)' }}>Waiting for authorization…</p>
+              {/* Step 2 — open GitHub and paste the code. The browser is opened
+                  automatically when the flow starts; the link is the fallback. */}
+              <p className="text-[12px] font-medium mt-1" style={{ color: 'var(--t-muted)' }}>
+                <span style={{ color: 'var(--t-faint-2)' }}>Step 2.</span> Open GitHub and enter the code at{' '}
+                <a href={verifyUri ?? 'https://github.com/login/device'}
+                  onClick={(e) => { e.preventDefault(); openExternal(verifyUri ?? 'https://github.com/login/device') }}
+                  style={{ color: 'var(--color-state-proposal)', cursor: 'pointer' }}>
+                  {(verifyUri ?? 'https://github.com/login/device').replace(/^https?:\/\//, '')} ↗
+                </a>
+              </p>
+              {/* Step 3 — the per-org grant. GitHub renders a "Grant"/"Request"
+                  button next to each organisation on its own authorize page and
+                  requires a click per org; an OAuth app cannot pre-grant them, so
+                  we tell the user to expect it rather than let it look broken. */}
+              <p className="text-[12px] font-medium mt-1" style={{ color: 'var(--t-muted)' }}>
+                <span style={{ color: 'var(--t-faint-2)' }}>Step 3.</span> On GitHub&apos;s authorize page, click <strong>Grant</strong> (or <strong>Request</strong>) next to each organisation you want Meridian to access - GitHub requires this per organisation.
+              </p>
+              <p className="text-[11px]" style={{ color: 'var(--t-faint-2)' }}>
+                Your browser should have opened automatically - if not, use the link above. Waiting for authorization…
+              </p>
             </>
           ) : (
             <>
@@ -340,7 +368,13 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
       // save_integration_token (Rust) writes .env + reloads the daemon.
       const res = await mutate<{ ok: boolean; reloaded: boolean }>('/api/auth/token', 'save_integration_token', { provider: tracker.id, fields: values })
       setDone(true); setReloadWarning(res?.reloaded === false)
-      clearProviderNotice(tracker.id); onSuccess?.()
+      clearProviderNotice(tracker.id)
+      // GitHub defers onSuccess to its Projects picker (rendered in the done
+      // branch below), which fires it once a board is actually saved. Firing it
+      // now would reload integrations, flip the row to "connected", and unmount
+      // this panel — tearing the picker away before the user picks. Mirrors
+      // OAuthSetup's github handling. Every other provider is done on save.
+      if (tracker.id !== 'github') onSuccess?.()
     } catch (e) {
       setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not save credentials')
     } finally {
@@ -349,6 +383,21 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
   }
 
   if (done) {
+    // GitHub: the token alone doesn't sync anything — a Projects v2 board must be
+    // selected too. Show the same discover-and-tick picker the browser OAuth flow
+    // uses (discover_github_projects → save_integration_token with project_ids).
+    if (tracker.id === 'github') {
+      return (
+        <div className="px-4 pb-4 pt-2" style={{ background: 'var(--t-box)' }}>
+          <GitHubProjectPicker onSuccess={onSuccess} />
+          {reloadWarning && (
+            <p className="text-[11px] mt-2" style={{ color: 'var(--t-faint)' }}>
+              The daemon wasn&apos;t running — credentials saved, will take effect on next start.
+            </p>
+          )}
+        </div>
+      )
+    }
     return (
       <div className="px-4 pb-4 pt-2" style={{ background: 'var(--t-box)' }}>
         <p className="text-[12px]" style={{ color: 'var(--color-state-approved)' }}>✓ Connected! Your tasks will appear shortly.</p>
