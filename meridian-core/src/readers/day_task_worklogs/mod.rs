@@ -382,7 +382,28 @@ pub async fn upsert_draft(
 /// `WHERE state = 'drafted'` mirrors [`upsert_draft`]'s guard — once approved, the
 /// ticket may already exist on the old provider, and re-pointing the row would make
 /// it name a board the ticket is not on.
-#[tracing::instrument(skip(pool))]
+///
+/// # Parameters
+/// * `day_local` — local day key (`YYYY-MM-DD`), half of the row's composite key.
+/// * `task_id` — the day-task this draft belongs to; the other half of the key.
+/// * `provider` — tracker id to file the proposed ticket on. Validated against the
+///   CONNECTED trackers by the caller ([`crate::commands::set_worklog_provider`] in
+///   the tray) — this fn writes whatever it is handed.
+/// * `now` — RFC3339 timestamp written to `updated_at`; passed in so the core stays
+///   deterministic and testable.
+///
+/// # Returns
+/// The row as it stands after the update, re-read via `read_back`.
+///
+/// # Errors
+/// * The row is no longer `drafted` (already approved) — the message names the
+///   provider the ticket now lives on.
+/// * The row is a MATCH draft (`propose_title IS NULL`) — providers are per-target
+///   there, so there is nothing at draft level to set.
+///
+/// Both surface as an error rather than a silent no-op so the UI can explain why.
+/// Also clears `last_error`: the previous failure was against the old tracker.
+#[tracing::instrument(skip(pool), err)]
 pub async fn set_draft_provider(
     pool: &SqlitePool,
     day_local: &str,
@@ -418,7 +439,11 @@ pub async fn set_draft_provider(
             "this draft posts to tickets that already exist - each one lives on its own board"
         );
     }
-    tracing::info!(provider, "worklog: proposal tracker chosen by the user");
+    tracing::info!(
+        provider,
+        rows = res.rows_affected(),
+        "worklog: proposal tracker chosen by the user"
+    );
 
     read_back(pool, day_local, task_id).await
 }

@@ -364,7 +364,7 @@ pub struct SetWorklogProviderBody {
 /// probe `get_integrations` shows the user. An id that isn't connected is refused
 /// rather than written and left to fail later inside the approve.
 #[tauri::command]
-#[tracing::instrument(skip(pool))]
+#[tracing::instrument(skip(pool), err)]
 pub async fn set_worklog_provider(
     pool: State<'_, Option<meridian_core::SqlitePool>>,
     body: SetWorklogProviderBody,

@@ -164,6 +164,13 @@ jobs:
       - name: Assert the tag matches the committed version
         env:
           VERSION: ${{ steps.ctx.outputs.version }}
+          # Bound through env, never interpolated into `run:`. A tag name is a
+          # PUSHABLE ref — anyone who can push `v*` chooses this string, so
+          # expanding it into the shell would let a tag name carrying shell
+          # metacharacters execute on the runner. Same reason RAW_TAG above is
+          # bound rather than interpolated.
+          CHANNEL: ${{ steps.ctx.outputs.channel }}
+          TAG: ${{ steps.ctx.outputs.tag }}
         # The version is an INPUT to this pipeline, read from the repo, never
         # recomputed. This is the Zed/clash-verge guard: if the tag and the
         # manifests disagree we would build binaries stamped with one version
@@ -179,13 +186,13 @@ jobs:
         # config DOES commit the bump, can be checked.
         run: |
           set -euo pipefail
-          if [ "${{ steps.ctx.outputs.channel }}" != "stable" ]; then
+          if [ "${CHANNEL}" != "stable" ]; then
             echo "→ staging channel: version is stamped from the tag, nothing committed to compare"
             exit 0
           fi
           manifest="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
           if [ "${manifest}" != "${VERSION}" ]; then
-            echo "::error::tag ${{ steps.ctx.outputs.tag }} does not match Cargo.toml version ${manifest}."
+            echo "::error::tag ${TAG} does not match Cargo.toml version ${manifest}."
             exit 1
           fi
           echo "✓ Cargo.toml version ${manifest} matches the tag"
