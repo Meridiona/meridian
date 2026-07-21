@@ -52,20 +52,30 @@ name: Release (prepare)
 # version cheaply (or read it from the repo), then build from an immutable ref.
 
 on:
+  # MANUAL ONLY. Cutting a staging release is a deliberate act — you go to
+  # Actions -> "Release (prepare)" -> Run workflow. There is intentionally NO
+  # `push:` trigger.
+  #
+  # It USED to trigger on every push to pre-main and gate on a
+  # `[staging-release]` string in the commit message. That backfired: a squash
+  # merge folds every PR commit's BODY into the merge message, and this repo's
+  # own workflow comments quote the literal marker `[staging-release]` — so
+  # merging a PR that merely TOUCHED these files cut an unintended staging
+  # release (v1.72.0-staging.6, deleted). A substring match on a commit message
+  # you do not fully control is not a safe trigger. Manual dispatch removes the
+  # whole class of accident: a release happens only when a human clicks the
+  # button, never as a side effect of a merge.
+  #
+  # STAGING ONLY, FOR NOW. Production still cuts via the old monolithic
+  # release.yml on `main`; this two-workflow pipeline is being proven on staging
+  # first. When production migrates, add a `main` dispatch path (still manual)
+  # and widen release-build.yml's tag filter to stable tags.
   workflow_dispatch:
     inputs:
       dry_run:
         description: "Analyse commits and report the next version without tagging"
         type: boolean
         default: false
-  push:
-    # STAGING ONLY, FOR NOW. Production releases still run through the old
-    # monolithic release.yml on `main` — this new two-workflow pipeline is being
-    # proven on the staging channel first (the ask: don't touch the production
-    # path until staging demonstrates it is actually faster). Once validated,
-    # a follow-up flips `main` over by adding it back here and pointing
-    # release-build.yml's tag filter at stable tags too.
-    branches: [pre-main]
 
 # Serialise: two prepare runs would race to tag. cancel-in-progress stays false
 # because a half-finished semantic-release run can have already pushed a tag.
@@ -82,13 +92,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # pushes the version-bump commit and the tag
-    # A `push` to pre-main only prepares a release when the commit asks for it.
-    # Without this every merge would cut a staging release. workflow_dispatch is
-    # always honoured. (`[release]` is intentionally NOT accepted here — this
-    # workflow is staging-only for now; production cuts via release.yml on main.)
-    if: >-
-      ${{ github.event_name == 'workflow_dispatch'
-          || contains(github.event.head_commit.message, '[staging-release]') }}
+    # The workflow is workflow_dispatch-only (see `on:` above), so there is no
+    # event-gating left to do — reaching this job already means a human clicked
+    # Run workflow. No `if:` guard on a commit-message substring, which is what
+    # previously cut an accidental release.
     outputs:
       released: ${{ steps.run.outputs.released }}
       version: ${{ steps.run.outputs.version }}
