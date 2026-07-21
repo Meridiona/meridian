@@ -3,10 +3,9 @@
 // The right panel's default state (no hour selected). Layout mirrors the
 // design mock: eyebrow + greeting + summary line, drafts-to-review CTA,
 // board-cleanup CTA, a "Today's focus" plan checklist, a "Today" mini-card
-// row (Focus / Drafts — Drafts opens the swipeable review dialog), the
-// time-by-app chart, and a Tasks entry
-// point (connected users only for the CTAs/plan; solo users get the greeting
-// + Today cards + time-by-app). Narrative + metric fields are adapted from
+// row (Focus / Drafts — Drafts opens the swipeable review dialog), and the
+// time-by-app chart (connected users only for the CTAs/plan; solo users get
+// the greeting + Today cards + time-by-app). Narrative + metric fields are adapted from
 // the retired TodayView's data; the plan checklist reads the same get_plan
 // the Daily plan modal uses. The checkbox writes through for real rather than
 // being decorative — via set_plan_task_done, which routes a personal task to
@@ -35,7 +34,7 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
   onOpenTask: (key: string, title?: string, editable?: boolean) => void
   onOpenSettings: (section?: SettingsSection) => void
 }) {
-  const { today, isSolo, items, cleanupIssueCount, tasks, isToday, day } = data
+  const { today, isSolo, items, cleanupIssueCount, isToday, day } = data
   const dayLabel = isToday ? 'Today' : formatDayLabel(day)
   // "Today's focus" only reads right on today; a past date shows that day's plan
   // under a neutral "Focus" heading (the day itself is already named above).
@@ -89,7 +88,6 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
   const loggedItems = items.filter(i => !i.is_proposed && (i.state === 'approved' || i.state === 'posted'))
   const loggedCount = loggedItems.length
   const loggedSeconds = loggedItems.reduce((a, i) => a + (i.time_spent_seconds || 0), 0)
-  const activeTaskCount = tasks.filter(t => !t.is_terminal).length
 
   // "Today's focus" — the locked daily plan. The checkbox writes through to the
   // real tracker (close/reopen), so `overrideTerminal` holds the optimistic
@@ -283,13 +281,6 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
         </div>
       )}
 
-      {/* Tasks entry pulls from the connected tracker — with no PM
-          integration there's nothing to pull, so it would always read
-          "0 active". Connected users only. */}
-      {!isSolo && (
-        <EntryRow label="Tasks" hint={`${activeTaskCount} active`} onClick={() => onOpen('tasks')} />
-      )}
-
       <div className="rounded-xl p-5 bg-card" style={{ border: '1px solid var(--t-card-border)' }}>
         <div className="flex items-center justify-between mb-2.5">
           <SectionHeading>Time by app</SectionHeading>
@@ -360,18 +351,6 @@ function EmptyPlanNudge({ onOpen }: { onOpen: () => void }) {
         <p className="mt-body-sm mt-0.5" style={{ color: 'var(--t-muted)' }}>Add a few tasks so Meridian can help you stay on track</p>
       </span>
       <span style={{ color: 'var(--color-state-proposal)' }}>→</span>
-    </button>
-  )
-}
-
-function EntryRow({ label, hint, onClick }: { label: string; hint: string; onClick: () => void }) {
-  return (
-    <button onClick={onClick}
-      className="w-full flex items-center gap-3 rounded-xl px-5 py-3.5 bg-card"
-      style={{ border: '1px solid var(--t-card-border)' }}>
-      <span className="mt-title text-title flex-1 text-left">{label}</span>
-      <span className="mt-mono-sm text-[11px]" style={{ color: 'var(--t-faint)' }}>{hint}</span>
-      <span style={{ color: 'var(--t-faint)' }}>›</span>
     </button>
   )
 }
