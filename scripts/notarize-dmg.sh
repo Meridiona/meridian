@@ -42,6 +42,13 @@ cd "${REPO_ROOT}"
 # per-arch build's suffix is tauri-bundler's own arch spelling, not the triple)
 # — so glob for it rather than trying to reconstruct the name.
 TARGET="${MERIDIAN_TARGET:-universal-apple-darwin}"
+# Same validation as package-updater.sh / mirror-staging-release.sh: fail on the
+# typo'd/unsupported target here rather than falling through to the generic "no
+# DMG found" error below, which doesn't say why.
+case "${TARGET}" in
+  universal-apple-darwin|aarch64-apple-darwin|x86_64-apple-darwin) ;;
+  *) echo "✗ notarize-dmg: unsupported MERIDIAN_TARGET '${TARGET}'" >&2; exit 1 ;;
+esac
 DMG_DIR="target/${TARGET}/release/bundle/dmg"
 DMG="$(ls "${DMG_DIR}"/Meridian_${VERSION}_*.dmg 2>/dev/null | head -1)"
 IDENTITY="${APPLE_SIGNING_IDENTITY:-}"

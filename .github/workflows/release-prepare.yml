@@ -277,11 +277,18 @@ jobs:
 
       - name: Summary
         if: always()
+        # Bound through env, not interpolated into `run:` — same reason as the
+        # RAW_TAG/VERSION binding elsewhere: a `run:` step is attacker-reachable
+        # via the expression's source, so step outputs go through env rather
+        # than straight into the shell script.
+        env:
+          RELEASED: ${{ steps.run.outputs.released }}
+          TAG: ${{ steps.run.outputs.tag }}
         run: |
           {
             echo "### Release prepare"
-            if [ "${{ steps.run.outputs.released }}" = "true" ]; then
-              echo "Tagged \`${{ steps.run.outputs.tag }}\`."
+            if [ "${RELEASED}" = "true" ]; then
+              echo "Tagged \`${TAG}\`."
               echo ""
               echo "\`release-build.yml\` builds and publishes it."
             else

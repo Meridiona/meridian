@@ -133,11 +133,16 @@ jobs:
         # `--features tauri/custom-protocol`, which cargo cannot apply to the
         # `-p meridian` scope (no tauri dependency), so the two crates cannot
         # share one invocation.
+        #
+        # No `--config src-tauri/tauri.staging.conf.json`: this job only ever
+        # runs on `main` (see the header), which release-build.yml always builds
+        # with the default (stable) Tauri config — never the staging one. Passing
+        # the staging config here would warm a cache under a different Tauri
+        # fingerprint than the stable release build actually compiles with.
         run: |
           cargo build --release --locked --target aarch64-apple-darwin \
             -p meridian --bin meridian
-          npx tauri build --no-bundle --target aarch64-apple-darwin \
-            --config src-tauri/tauri.staging.conf.json
+          npx tauri build --no-bundle --target aarch64-apple-darwin
 
       - name: Summary
         if: always()
