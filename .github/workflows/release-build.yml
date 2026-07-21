@@ -8,20 +8,20 @@ name: Release (build & publish)
 # build ref demands the opposite, and a 30-minute build makes the conflict
 # certain rather than theoretical).
 #
-# THIS FILE REPLACES release-staging.yml (the staging channel only, for now).
-# Production still builds through the old monolithic release.yml on main — this
-# faster per-arch pipeline is being proven on staging first, and only once it
-# demonstrably beats the old path will production be migrated onto it (widen the
-# tag filter below to `v*` and re-add `main` to release-prepare.yml).
+# THIS FILE REPLACES BOTH release-staging.yml AND the old monolithic
+# release.yml, which have been deleted. It is now the ONLY build path, for both
+# channels, and the channel is derived from the tag — so stable and staging
+# cannot drift from each other:
 #
-# The channel is derived from the tag, so when production does migrate there is
-# still exactly one build path that cannot drift from itself:
+#     v1.75.0            -> stable   (browser-downloaded DMG; notarized;
+#                                     served from `releases/latest`)
+#     v1.72.0-staging.6  -> staging  (updater-only; NOT notarized;
+#                                     served from `updater-staging`)
 #
-#     v1.73.0            -> stable   (published to the `updater` channel)
-#     v1.72.0-staging.6  -> staging  (published to `updater-staging`)
-#
-# Until then only the staging line is reachable (the tag filter excludes stable
-# tags), and the stable branch of the channel logic is dormant but ready.
+# The two differ in exactly three places, all keyed off `prepare`'s `channel`
+# output: the staging tauri config, whether APPLE_API_* is passed (notarization),
+# and the DMG-notarize step. Everything else — compile, signing, packaging,
+# verification, publishing — is one shared path.
 #
 # ── SHAPE ────────────────────────────────────────────────────────────────────
 #
@@ -31,10 +31,15 @@ name: Release (build & publish)
 #      |
 #   publish   ubuntu   compose latest.json · verify asset set · draft -> public
 #
-# STAGING IS APPLE-SILICON-ONLY, FOR NOW. Intel (macOS x86_64) and Windows were
+# BOTH CHANNELS ARE APPLE-SILICON-ONLY. Intel (macOS x86_64) and Windows were
 # removed — the same call that made CI macOS-Silicon-only. Silicon is the
 # shipped platform, and a single native aarch64 build is the smallest thing that
 # can fail: no cross-compile, no second notarization chain, no Windows runner.
+#
+# This DOES drop shipped platforms: production previously published a universal
+# (arm64+x86_64) DMG and a Windows `Meridian-setup.exe` — see v1.74.0. Existing
+# Intel and Windows installs will find no newer release on their updater
+# endpoint and simply stop updating; they are not broken, just frozen.
 # The matrix is still a `matrix.include` fan-out so restoring the other targets
 # is a one-line re-add (see the macos job's matrix comment + the header note in
 # compose-updater-manifest.py). The old pipeline ran Windows SEQUENTIALLY after
@@ -78,14 +83,15 @@ name: Release (build & publish)
 
 on:
   push:
-    # STAGING TAGS ONLY, FOR NOW. semantic-release cuts staging as prereleases
-    # like `v1.72.0-staging.6`, and the `-staging` infix is what this filter
-    # keys on. A production tag (`v1.73.0`, no infix) deliberately does NOT match
-    # — production still builds through the old monolithic release.yml on main,
-    # and matching `v*` here would make BOTH pipelines fire on the same prod tag.
-    # When production migrates onto this pipeline, widen this to `["v*"]` (and
-    # add `main` back to release-prepare.yml) in the same change.
-    tags: ["v*-staging*"]
+    # EVERY release tag, both channels. `v1.75.0` builds stable, `v1.75.0-staging.3`
+    # builds staging; the channel is derived from the tag string in `prepare`, so
+    # one pipeline serves both and they cannot drift apart.
+    #
+    # This was `v*-staging*` while the pipeline was being proven on staging and
+    # the old monolithic release.yml still owned `main` — matching `v*` then
+    # would have made BOTH pipelines fire on the same production tag. That
+    # workflow has since been deleted, so `v*` is now unambiguous.
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
