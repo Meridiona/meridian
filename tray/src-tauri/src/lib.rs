@@ -251,10 +251,8 @@ pub fn run() {
                                     let pop_w = 344_i32;
                                     let icon_pos = rect.position.to_physical::<i32>(1.0);
                                     let icon_size = rect.size.to_physical::<i32>(1.0);
-                                    let pop_h = win
-                                        .outer_size()
-                                        .map(|s| s.height as i32)
-                                        .unwrap_or(0);
+                                    let pop_h =
+                                        win.outer_size().map(|s| s.height as i32).unwrap_or(0);
                                     let (x, y) = tray_anchor_position(
                                         (icon_pos.x, icon_pos.y),
                                         (icon_size.width, icon_size.height),

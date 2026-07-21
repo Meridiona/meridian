@@ -59,7 +59,10 @@ fn candidate_dirs() -> Vec<PathBuf> {
         .map(|a| vec![PathBuf::from(a).join("npm").to_string_lossy().into_owned()])
         .unwrap_or_default();
     #[cfg(not(windows))]
-    let platform: Vec<String> = vec!["/opt/homebrew/bin".to_string(), "/usr/local/bin".to_string()];
+    let platform: Vec<String> = vec![
+        "/opt/homebrew/bin".to_string(),
+        "/usr/local/bin".to_string(),
+    ];
 
     [
         home.join(".local/bin").to_string_lossy().into_owned(),
@@ -633,7 +636,9 @@ pub async fn resolve_cli(bin: &str) -> Option<PathBuf> {
 
     let found = match probe_current_path(bin) {
         Some(p) => Some(p),
-        None => probe_login_shell(bin).await.or_else(|| probe_candidates(bin)),
+        None => probe_login_shell(bin)
+            .await
+            .or_else(|| probe_candidates(bin)),
     }?;
 
     tracing::debug!(bin, path = %found.display(), "resolved CLI path");
@@ -877,7 +882,10 @@ mod tests {
 
         let original_path = std::env::var_os("PATH");
         let new_path = match &original_path {
-            Some(p) => std::env::join_paths(std::iter::once(dir.clone()).chain(std::env::split_paths(p))).unwrap(),
+            Some(p) => {
+                std::env::join_paths(std::iter::once(dir.clone()).chain(std::env::split_paths(p)))
+                    .unwrap()
+            }
             None => dir.clone().into_os_string(),
         };
         std::env::set_var("PATH", &new_path);

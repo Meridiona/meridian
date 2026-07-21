@@ -85,7 +85,9 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
     let home = match meridian_core::paths::home_dir() {
         Some(h) => h,
         None => {
-            tracing::warn!("backend_install: home directory could not be resolved — cannot stage backend");
+            tracing::warn!(
+                "backend_install: home directory could not be resolved — cannot stage backend"
+            );
             return;
         }
     };

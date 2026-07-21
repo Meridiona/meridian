@@ -361,7 +361,10 @@ else{document.querySelector('h2').textContent='No token in URL. Try again.';}\
 /// there is required, otherwise `start` misreads a quoted URL as the title and
 /// never opens it.
 fn open_browser(url: &str) {
-    tracing::info!(url, "if it doesn't open automatically, open this URL yourself");
+    tracing::info!(
+        url,
+        "if it doesn't open automatically, open this URL yourself"
+    );
     #[cfg(target_os = "windows")]
     let result = std::process::Command::new("cmd")
         .args(["/C", "start", "", url])
