@@ -217,8 +217,11 @@ async fn upsert(
 
 /// Delete `pm_tasks` rows no longer returned by the active-task fetch (closed,
 /// reassigned, etc.) — EXCEPT a task_key that has worklog history
-/// (`pm_worklogs`), which is kept forever so a completed card's title never
-/// disappears from the timeline once it's closed.
+/// (`pm_worklogs`) or sits on a daily plan (`daily_plan`), both kept forever:
+/// worklog history so a completed card's title never disappears from the
+/// timeline once it's closed, daily-plan membership so closing a "today's
+/// focus" item from the plan checkbox doesn't delete the very row its Undo
+/// (reopen) needs — see `src/plan_tasks/done.rs`.
 async fn prune(pool: &SqlitePool, fetched_keys: &[String]) -> Result<usize> {
     let placeholders = fetched_keys
         .iter()
@@ -240,7 +243,8 @@ async fn prune(pool: &SqlitePool, fetched_keys: &[String]) -> Result<usize> {
 
     let task_sql = format!(
         "DELETE FROM pm_tasks WHERE provider = 'trello' AND task_key NOT IN ({placeholders}) \
-         AND task_key NOT IN (SELECT DISTINCT task_key FROM pm_worklogs)"
+         AND task_key NOT IN (SELECT DISTINCT task_key FROM pm_worklogs) \
+         AND task_key NOT IN (SELECT DISTINCT task_key FROM daily_plan)"
     );
     let mut q = sqlx::query(&task_sql);
     for key in fetched_keys {

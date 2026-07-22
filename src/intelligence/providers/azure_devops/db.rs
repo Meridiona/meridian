@@ -11,8 +11,11 @@ use sqlx::SqlitePool;
 
 /// Delete `pm_tasks` rows no longer returned by the active-task fetch (closed,
 /// reassigned, etc.) — EXCEPT a task_key that has worklog history
-/// (`pm_worklogs`), which is kept forever so a completed work item's title
-/// never disappears from the timeline once it's closed.
+/// (`pm_worklogs`) or sits on a daily plan (`daily_plan`), both kept forever:
+/// worklog history so a completed work item's title never disappears from the
+/// timeline once it's closed, daily-plan membership so closing a "today's
+/// focus" item from the plan checkbox doesn't delete the very row its Undo
+/// (reopen) needs — see `src/plan_tasks/done.rs`.
 pub(super) async fn prune(pool: &SqlitePool, kept_keys: &[String]) -> Result<()> {
     if kept_keys.is_empty() {
         sqlx::query(
@@ -24,7 +27,8 @@ pub(super) async fn prune(pool: &SqlitePool, kept_keys: &[String]) -> Result<()>
         .context("pruning all azure_devops pm_task_embeddings")?;
         sqlx::query(
             "DELETE FROM pm_tasks WHERE provider = 'azure_devops' \
-             AND task_key NOT IN (SELECT DISTINCT task_key FROM pm_worklogs)",
+             AND task_key NOT IN (SELECT DISTINCT task_key FROM pm_worklogs) \
+             AND task_key NOT IN (SELECT DISTINCT task_key FROM daily_plan)",
         )
         .execute(pool)
         .await
@@ -52,7 +56,8 @@ pub(super) async fn prune(pool: &SqlitePool, kept_keys: &[String]) -> Result<()>
     let sql_tasks = format!(
         "DELETE FROM pm_tasks \
          WHERE provider = 'azure_devops' AND task_key NOT IN ({placeholders}) \
-         AND task_key NOT IN (SELECT DISTINCT task_key FROM pm_worklogs)"
+         AND task_key NOT IN (SELECT DISTINCT task_key FROM pm_worklogs) \
+         AND task_key NOT IN (SELECT DISTINCT task_key FROM daily_plan)"
     );
     let mut q2 = sqlx::query(&sql_tasks);
     for k in kept_keys {
