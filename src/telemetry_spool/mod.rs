@@ -26,6 +26,7 @@ use anyhow::{Context, Result};
 
 pub mod cli;
 pub(crate) mod launchd_log_cap;
+pub mod redact;
 pub mod render;
 pub(crate) mod retention;
 pub mod shipper;
@@ -145,15 +146,21 @@ impl std::fmt::Display for ShipError {
 
 /// POST one OTLP payload to `endpoint`, classifying any failure so the caller can
 /// quarantine a permanently-rejected payload without stalling the whole queue.
+///
+/// `auth_header` is the FULL `Authorization` header value including its scheme
+/// (`Basic <b64>` for the dev path, `Bearer <token>` for the central path) —
+/// see [`crate::observability::AuthCredential::header_value`]. Passing the
+/// whole value (rather than just the base64) keeps the scheme decision in one
+/// place and lets both callers (the shipper and `telemetry import`) share it.
 pub async fn ship_one(
     client: &reqwest::Client,
     endpoint: &str,
-    auth_b64: &str,
+    auth_header: &str,
     bytes: Vec<u8>,
 ) -> Result<(), ShipError> {
     let resp = client
         .post(endpoint)
-        .header("Authorization", format!("Basic {auth_b64}"))
+        .header("Authorization", auth_header)
         .header("Content-Type", "application/x-protobuf")
         .body(bytes)
         .send()

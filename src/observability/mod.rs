@@ -79,7 +79,9 @@ mod install_mode;
 mod otlp_target;
 use install_mode::capture_disabled;
 use otlp_target::DEFAULT_OTLP_ENDPOINT;
-pub use otlp_target::{is_otlp_configured, resolve_otlp_endpoint, resolve_otlp_target, OtlpTarget};
+pub use otlp_target::{
+    is_otlp_configured, resolve_otlp_endpoint, resolve_otlp_target, AuthCredential, OtlpTarget,
+};
 
 /// Type alias for the hot-reload handle. The `S = Registry` parameter reflects
 /// that the reload layer is installed directly on `tracing_subscriber::Registry`
