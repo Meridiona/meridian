@@ -20,7 +20,9 @@
 //!    records at `WARN` and above, and spans whose status is `ERROR`. Everything
 //!    else is dropped. This is both the volume lever and a privacy lever — the
 //!    high-volume `INFO`/`DEBUG`/`SPAN` records that carry the content-bearing
-//!    attributes never reach the ship leg at all.
+//!    attributes never reach the ship leg at all. A tight [`NOISE_SUBSTRINGS`]
+//!    denylist additionally drops known-benign WARN repeaters that would flood
+//!    the backend without adding signal.
 //! 2. **Allowlist by value type + key.** For every attribute that survives rule
 //!    1, we keep it only if it cannot carry free-text content:
 //!    - numeric (`int`/`double`) and `bool` values are kept unconditionally —
@@ -142,6 +144,19 @@ const FREE_TEXT_KEYS: &[&str] = &[
     "otel.status_description",
 ];
 
+/// Known-benign, high-frequency WARN messages dropped from the ship leg even
+/// though they pass the severity filter — they repeat every poll and would
+/// flood the central backend without adding signal (the screenpipe
+/// noise-allowlist lesson). Matched case-insensitively as a substring of the
+/// log body, so entries MUST be lowercase. Keep this list tight: it is a
+/// denylist over an otherwise-shipped severity, so an over-broad entry silently
+/// hides real warnings.
+const NOISE_SUBSTRINGS: &[&str] = &[
+    // Fires every poll (~60s) when an approved worklog has no PM provider
+    // configured — a benign configuration state, not a fault.
+    "approved worklog waiting but its provider is not configured",
+];
+
 /// Result of running [`redact_and_filter`] on one spooled payload.
 pub enum Redacted {
     /// Nothing survived the error-only filter. The shipper should archive the
@@ -195,7 +210,8 @@ fn redact_logs(bytes: &[u8]) -> Redacted {
             }
             let before = sl.log_records.len();
             stats.records_in += before;
-            sl.log_records.retain(log_is_error);
+            sl.log_records
+                .retain(|lr| log_is_error(lr) && !log_is_noise(lr));
             stats.records_out += sl.log_records.len();
             for lr in &mut sl.log_records {
                 stats.attrs_dropped += redact_attributes(&mut lr.attributes);
@@ -264,6 +280,20 @@ fn log_is_error(lr: &LogRecord) -> bool {
         lr.severity_text.to_ascii_uppercase().as_str(),
         "WARN" | "WARNING" | "ERROR" | "FATAL" | "CRITICAL"
     )
+}
+
+/// True when a WARN+ record is known-benign, high-frequency noise (see
+/// [`NOISE_SUBSTRINGS`]) — dropped from the ship leg so one repeating message
+/// can't flood the backend. Non-string bodies never match.
+fn log_is_noise(lr: &LogRecord) -> bool {
+    let Some(AnyValue {
+        value: Some(Value::StringValue(body)),
+    }) = lr.body.as_ref()
+    else {
+        return false;
+    };
+    let lower = body.to_ascii_lowercase();
+    NOISE_SUBSTRINGS.iter().any(|n| lower.contains(n))
 }
 
 /// A span ships iff its status code is ERROR. UNSET/OK spans (the overwhelming
@@ -716,6 +746,37 @@ mod tests {
         assert!(msg.contains("/Users/<user>/"), "path scrubbed: {msg}");
         assert!(msg.contains("<url>"), "url scrubbed: {msg}");
         assert!(!msg.contains("akarsh"), "username leaked: {msg}");
+    }
+
+    #[test]
+    fn known_noise_warn_is_dropped_but_real_warn_survives() {
+        let noise = {
+            let mut r = log_record(13, vec![]);
+            r.body = Some(AnyValue {
+                value: Some(any_value::Value::StringValue(
+                    "approved worklog waiting but its provider is not configured — not posting"
+                        .to_string(),
+                )),
+            });
+            r
+        };
+        let real = {
+            let mut r = log_record(13, vec![]);
+            r.body = Some(AnyValue {
+                value: Some(any_value::Value::StringValue(
+                    "disk write failed".to_string(),
+                )),
+            });
+            r
+        };
+        let bytes = encode_logs(vec![noise, real]);
+        let Redacted::Payload { bytes, stats } = redact_and_filter("logs", &bytes) else {
+            panic!("expected payload");
+        };
+        assert_eq!(stats.records_in, 2);
+        assert_eq!(stats.records_out, 1, "noise dropped, real WARN kept");
+        let kept = decode_logs(&bytes);
+        assert_eq!(kept.len(), 1);
     }
 
     #[test]
