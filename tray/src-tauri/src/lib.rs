@@ -1005,17 +1005,29 @@ fn set_process_display_name(name: &str) {
 /// spawning fresh ones, so pausing then resuming is idempotent. Does nothing
 /// when Screen Recording is not granted (logs and returns).
 ///
-/// **Joins the previous UI-event recorder thread before spawning its
-/// replacement.** That thread's `run_app_observer` (screenpipe-a11y)
-/// registers `NotificationGuard`s on the shared `NSWorkspace` notification
-/// center and unregisters them on stop; spawning a new recorder while the
-/// old one is still mid-teardown puts two threads on that one shared
-/// singleton at once, which has produced a double-free abort
+/// **The new UI-event recorder generation waits for the previous one to
+/// fully tear down before registering its own observers.** That thread's
+/// `run_app_observer` (screenpipe-a11y) registers `NotificationGuard`s on
+/// the shared `NSWorkspace` notification center and unregisters them on
+/// stop; letting a new recorder register while the old one is still
+/// mid-teardown puts two threads on that one shared singleton at once,
+/// which has produced a double-free abort
 /// (`BUG_IN_CLIENT_OF_LIBMALLOC_POINTER_BEING_FREED_WAS_NOT_ALLOCATED` under
-/// `removeObserver:`/`_Block_release`) in production. The join is bounded —
-/// the old thread only blocks on its own recorder's `handle.stop()`, at most
-/// a few hundred ms — and only runs on a restart (pause/resume, launch),
-/// never on the steady-state capture path.
+/// `removeObserver:`/`_Block_release`) in production.
+///
+/// That wait happens on the **new recorder's own OS thread**, never on this
+/// function's caller: the old thread's teardown isn't actually bounded (a
+/// backpressured UI-event channel can leave it blocked in `blocking_send`
+/// well past its own 500ms poll), so joining it inline here could stall
+/// whichever thread called `start_capture` — including a tokio worker, when
+/// called from an async command handler.
+///
+/// The whole stop/spawn/store sequence runs under one `AppState` lock held
+/// for this entire function, so two overlapping `start_capture` calls (e.g.
+/// a schedule auto-resume racing a user-triggered resume) can't each spawn
+/// a generation and clobber each other's stored thread handle — which would
+/// leave the loser's generation unjoined by any future restart and reopen
+/// the same race.
 ///
 /// # Who calls this
 /// Once from `lib.rs`'s `setup()` on launch, and again from
@@ -1065,26 +1077,23 @@ pub(crate) fn start_capture(
     // usual downstream `should_drop_frame` check to catch — see
     // `ScreenpipeEngine::ignored_urls`.
     let ignored_urls = settings.ignored_urls.clone();
-    let capture_ignore = {
-        let s = app_state.lock().unwrap();
-        *s.capture_ignore.lock().unwrap() =
-            capture_ignore::CaptureIgnore::new(&settings.ignored_apps, &settings.ignored_urls);
-        s.capture_ignore.clone()
-    };
+    // Held from here through the end of the function — see the doc comment
+    // above for why the whole stop/spawn/store sequence must be one critical
+    // section rather than separate lock/unlock pairs. Nothing spawned below
+    // touches `app_state`, so there's no deadlock risk, only serialization
+    // of concurrent `start_capture` calls.
+    let mut s = app_state.lock().unwrap();
+    *s.capture_ignore.lock().unwrap() =
+        capture_ignore::CaptureIgnore::new(&settings.ignored_apps, &settings.ignored_urls);
+    let capture_ignore = s.capture_ignore.clone();
 
-    // Drop any previous cancel senders — this signals the old tasks to exit —
-    // then join the old UI-event recorder thread so its screenpipe-a11y
-    // observer teardown fully completes before we spawn a replacement below
-    // (see this fn's doc comment for why that ordering matters).
-    let previous_ui_recorder_thread = {
-        let mut s = app_state.lock().unwrap();
-        drop(s.engine_cancel.take());
-        drop(s.ui_consumer_cancel.take());
-        s.ui_recorder_thread.take()
-    };
-    if let Some(handle) = previous_ui_recorder_thread {
-        let _ = handle.join();
-    }
+    // Drop any previous cancel senders — this signals the old tasks to exit.
+    // The old UI-event recorder thread's own teardown (screenpipe-a11y
+    // unregistering its NSWorkspace observers) is awaited below, inside the
+    // new recorder thread rather than here — see the doc comment.
+    drop(s.engine_cancel.take());
+    drop(s.ui_consumer_cancel.take());
+    let previous_ui_recorder_thread = s.ui_recorder_thread.take();
 
     // Cancellation channels: dropping the Sender exits the receiving task.
     // tauri::async_runtime::spawn works from any thread (incl. macOS main);
@@ -1221,13 +1230,30 @@ pub(crate) fn start_capture(
             }
         }
     });
-    let ui_recorder_thread =
-        std::thread::spawn(move || capture::ui_events::run_ui_event_recorder(ui_tx));
+    let ui_recorder_thread = std::thread::spawn(move || {
+        // Wait for the outgoing generation's screenpipe-a11y NSWorkspace
+        // observers to fully unregister before this generation registers its
+        // own — on this dedicated thread, never on start_capture's caller
+        // (see the fn's doc comment for why that distinction matters).
+        if let Some(previous) = previous_ui_recorder_thread {
+            if let Err(panic) = previous.join() {
+                let msg = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "non-string panic payload".to_string());
+                tracing::error!(
+                    panic = %msg,
+                    "capture: previous ui-event recorder thread panicked during restart"
+                );
+            }
+        }
+        capture::ui_events::run_ui_event_recorder(ui_tx);
+    });
 
     // Store senders + thread handle in state; dropping the senders (on pause)
     // cancels the tasks, and the next start_capture joins the handle before
     // spawning a replacement.
-    let mut s = app_state.lock().unwrap();
     s.engine_cancel = Some(engine_cancel_tx);
     s.ui_consumer_cancel = Some(ui_cancel_tx);
     s.ui_recorder_thread = Some(ui_recorder_thread);
