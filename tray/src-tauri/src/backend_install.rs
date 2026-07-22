@@ -106,10 +106,50 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
         return;
     }
 
+    // `ensure_backend_installed` runs off the setup hook, after `app.manage(db_pool)`
+    // (see `lib.rs`), so the pool is already there to raise/clear against —
+    // `None` only when the DB itself couldn't be opened, in which case there's
+    // nowhere to write a notice anyway.
+    let pool = app
+        .try_state::<Option<meridian_core::SqlitePool>>()
+        .and_then(|s| s.inner().clone());
+
     tracing::info!(hash = %bundled_hash, "backend_install: installing bundled backend");
     if let Err(e) = install(&backend, &home).await {
         tracing::error!(error = %e, "backend_install: install failed — will retry next launch");
+        // Previously silent beyond the log line: staging/registration can fail
+        // for reasons a user can actually act on (antivirus quarantining the
+        // staged exe, a locked-down profile denying the write, a full disk),
+        // and until the health-check's 2-strike "went quiet" eventually fires
+        // there was no in-app signal at all — and even then, no reason. Surface
+        // it immediately and specifically instead of waiting on that generic
+        // banner.
+        if let Some(p) = pool.as_ref() {
+            if let Err(notice_err) = meridian::notices::raise_typed(
+                p,
+                meridian::notices::Notice {
+                    id: "tray.backend_install_failed",
+                    severity: "error",
+                    title: "Meridian couldn't finish installing.",
+                    detail: &e,
+                    remedy: None,
+                    event_key: "system.health",
+                    deep_link: Some("/logs"),
+                },
+            )
+            .await
+            {
+                tracing::warn!(error = %notice_err, "backend-install-failure notice raise failed");
+            }
+        }
         return;
+    }
+    if let Some(p) = pool.as_ref() {
+        if let Err(e) =
+            meridian::notices::clear_typed(p, "tray.backend_install_failed", "system.health").await
+        {
+            tracing::warn!(error = %e, "backend-install-failure notice clear failed");
+        }
     }
 
     // Persist the marker only on full success so a partial install retries.
