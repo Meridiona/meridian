@@ -1,3 +1,26 @@
+## [1.75.1](https://github.com/Meridiona/meridian/compare/v1.75.0...v1.75.1) (2026-07-22)
+
+### 🐛 Bug Fixes
+
+* address CodeRabbit review findings on PR [#539](https://github.com/Meridiona/meridian/issues/539) ([b5a10b7](https://github.com/Meridiona/meridian/commit/b5a10b725d49f344e9cb999e9a12e763703d310d))
+* **llm,tray:** resolve two more Windows-only daemon/CLI-detection bugs ([abb2ad7](https://github.com/Meridiona/meridian/commit/abb2ad73d5a328d0b51e801e1bc9128c43c6b05d))
+* **llm:** find and spawn provider CLIs correctly on Windows ([72bacc5](https://github.com/Meridiona/meridian/commit/72bacc5def04877d1fd80429994fb481e9c9a163))
+* **oauth:** open the system browser on Windows, not just macOS ([30eef72](https://github.com/Meridiona/meridian/commit/30eef72bca761f78231ce140a1b7ee2538c73d83))
+* **release:** wire set-version.sh back into semantic-release via exec ([5e7b3ea](https://github.com/Meridiona/meridian/commit/5e7b3ead6af6a6b8b5c8a75c57f7249d9071cd0f))
+* **tray:** read real Windows notification permission instead of the plugin's Granted stub ([ed1ad16](https://github.com/Meridiona/meridian/commit/ed1ad16ca52098e6168a2b4b3af852615ead828f))
+* **tray:** stop hardcoding Accessibility/Screen Recording as ungranted on Windows ([9a4d05e](https://github.com/Meridiona/meridian/commit/9a4d05ec5f41c1f18a1bcb7eca0c1a4d6ec48fbe))
+* **tray:** Windows popover/tooltip position, onboarding, setup wizard ([0777257](https://github.com/Meridiona/meridian/commit/0777257b2759ddf2a4cb829556c58fffe0ffee30))
+
+### 🤖 CI
+
+* make the staging release manual-only, not merge-triggered ([1f878a9](https://github.com/Meridiona/meridian/commit/1f878a9f1a8d3ba0d6c935b3721b31720cd33b65))
+* **release:** restore Windows to the release-build pipeline ([08b080b](https://github.com/Meridiona/meridian/commit/08b080be188fce8efdc9f11af8bf555977230a76))
+
+### 🎨 Styles
+
+* run cargo fmt (fixes CI fmt check failure) ([66f075e](https://github.com/Meridiona/meridian/commit/66f075e2f1358747d457c2d9b95108604a03a29e))
+* satisfy cargo fmt --check (CI failure on macOS Rust job) ([04ae827](https://github.com/Meridiona/meridian/commit/04ae827f9769454ea9062ffa32697eccf9cb2110))
+
 ## [1.75.0](https://github.com/Meridiona/meridian/compare/v1.74.2...v1.75.0) (2026-07-21)
 
 ### 🚀 Features
