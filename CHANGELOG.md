@@ -1,3 +1,41 @@
+## [1.77.0](https://github.com/Meridiona/meridian/compare/v1.76.0...v1.77.0) (2026-07-22)
+
+### 🚀 Features
+
+* **cleanup:** replace the native date input with an interactive calendar ([cdf0e2e](https://github.com/Meridiona/meridian/commit/cdf0e2ee5efd3d8201a1ea5a130074bef904e90f))
+* **summary:** give composing its own screen instead of one static line ([c3ec779](https://github.com/Meridiona/meridian/commit/c3ec77914c0c4a6fcc0eaf59a4c5fc25856cad96))
+* **summary:** make plan adherence deterministic and auto-compose at end of day ([ebdb8af](https://github.com/Meridiona/meridian/commit/ebdb8af29e519ba1ba3fefdce4b4f0a2be6baef8))
+* **summary:** rebuild the daily summary around planned vs actual ([c679adb](https://github.com/Meridiona/meridian/commit/c679adb0a3dadcf6c6e4387cdd216aee4a90e5a5))
+* **summary:** redesign the daily summary around a ring, cards, and a single checklist ([eeeaef1](https://github.com/Meridiona/meridian/commit/eeeaef10d4785602f12d044b71bcdb81960e2acf))
+* **worklog:** escalate personal tasks to a real ticket, per-ticket update bodies ([49f4a02](https://github.com/Meridiona/meridian/commit/49f4a02a3108eb14ba58c2171f920b75e32234c1))
+
+### 🐛 Bug Fixes
+
+* **capture:** address CodeRabbit findings on the a11y restart fix (PR [#553](https://github.com/Meridiona/meridian/issues/553)) ([27f3964](https://github.com/Meridiona/meridian/commit/27f3964c42af863b28bc040b967d01178b312f6c)), closes [#552](https://github.com/Meridiona/meridian/issues/552)
+* **capture:** serialize UI-event recorder restarts to stop an a11y observer double-free ([1919053](https://github.com/Meridiona/meridian/commit/1919053950dbcb5483acdf08ca4215d1f3a12697))
+* **cleanup:** stop the date picker popover clipping against the card ([070d189](https://github.com/Meridiona/meridian/commit/070d189f3d51ee95cad0acdd0b65ba703130f765))
+* **jira:** surface correct remedy for OAuth vs API-token sync failures ([57c4ba4](https://github.com/Meridiona/meridian/commit/57c4ba42ce9559aa1b3080e237ebab49d2c57ff7))
+* **plan:** keep daily-plan tasks alive through provider prune ([d6b2f8a](https://github.com/Meridiona/meridian/commit/d6b2f8a7424139955cec3e834e32c672d6cca2bb))
+* **summary:** badge unplanned work "went further" to read as accomplishment ([19ee96c](https://github.com/Meridiona/meridian/commit/19ee96cae7a7309ca6ba3ec9afe2126a737aa0bf))
+* **summary:** key the plan list by ticket so the rows reconcile with the ring ([66a4ffa](https://github.com/Meridiona/meridian/commit/66a4ffaf7a708e0d7811a9bad671c6eb1ee663ea))
+* **summary:** label unplanned work "bonus", not "extra" ([5b825ef](https://github.com/Meridiona/meridian/commit/5b825ef79eff875165fec5f0463d9258334684ea))
+* **summary:** tick the checkbox for a planned ticket that closed with no tracked work ([41c4d55](https://github.com/Meridiona/meridian/commit/41c4d55e26898016da87d1ecf69136119d22de77))
+* **worklog:** address PR [#532](https://github.com/Meridiona/meridian/issues/532) review - escalation idempotency, summary races, docs ([f99fe5b](https://github.com/Meridiona/meridian/commit/f99fe5b1b026864f5a960f08a70991ae67ca5003))
+
+### ♻️ Refactoring
+
+* **summary:** put the daily summary in a card with real structure ([76fe559](https://github.com/Meridiona/meridian/commit/76fe559b9093f24a8b122dd860c4d95e66971a49))
+
+### 🎨 Styles
+
+* **timeline:** drop green/yellow/red-ish hues from day-task cards ([9a75a52](https://github.com/Meridiona/meridian/commit/9a75a52758582144d1a002ce8de1707edbdfcbaf))
+
+### 🔧 Chores
+
+* **deps:** bump screenpipe-fork license pin to 3c99154 (a11y double-free fix) ([0ae7d89](https://github.com/Meridiona/meridian/commit/0ae7d89c85724c94292c882408a54c48922b078f)), closes [#552](https://github.com/Meridiona/meridian/issues/552) [#3](https://github.com/Meridiona/meridian/issues/3)
+* **merge:** merge pre-main into feat/daily-summary-rebuild ([598abfc](https://github.com/Meridiona/meridian/commit/598abfcc9d170d0d089b30204fdf9d1581f36cc5))
+* **ui:** temporarily hide the Board Cleanup view ([a8aad69](https://github.com/Meridiona/meridian/commit/a8aad69a1fe1591e934da002b4a0b35843d30618))
+
 ## [1.76.0](https://github.com/Meridiona/meridian/compare/v1.75.1...v1.76.0) (2026-07-22)
 
 ### 🚀 Features
