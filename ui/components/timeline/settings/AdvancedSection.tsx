@@ -37,6 +37,7 @@ export function AdvancedSection({ settings, setSettings, patch, save }: {
   const [llmStatus, setLlmStatus] = useState<SaveStatus>('idle')
   const [jiraStatus, setJiraStatus] = useState<SaveStatus>('idle')
   const [logLevelStatus, setLogLevelStatus] = useState<SaveStatus>('idle')
+  const [errorReportingStatus, setErrorReportingStatus] = useState<SaveStatus>('idle')
   const { status: exportStatus, path: exportPath, errorMsg: exportError, exportBundle } = useExportDiagnostics()
 
   return (
@@ -71,6 +72,10 @@ export function AdvancedSection({ settings, setSettings, patch, save }: {
         {exportStatus === 'error' && (
           <span className="text-[12px]" style={{ color: 'var(--color-state-pending)' }}>{exportError ?? 'Export failed'}</span>
         )}
+        <FieldRow label="Share Error Reports" description="Send error-level logs to the Meridian team to help fix crashes and bugs. Off by default. File paths, URLs, emails, and captured content are removed on your device before anything is sent - your screen activity, OCR text, and window titles are never included.">
+          <Switch checked={settings.error_reporting_consent} onCheckedChange={v => patch({ error_reporting_consent: v })} />
+        </FieldRow>
+        <SaveButton status={errorReportingStatus} onClick={() => save({ error_reporting_consent: settings.error_reporting_consent }, setErrorReportingStatus)} />
       </SectionCard>
 
       <SectionCard>
