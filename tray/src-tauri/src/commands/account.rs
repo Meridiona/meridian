@@ -92,9 +92,7 @@ struct AccountState {
 }
 
 fn account_path() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(|h| PathBuf::from(h).join(".meridian/account.json"))
+    meridian_core::paths::home_dir().map(|h| h.join(".meridian/account.json"))
 }
 
 /// Persist the signed-in user's email after the setup wizard's sign-in step

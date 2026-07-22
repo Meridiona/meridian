@@ -213,7 +213,7 @@ pub struct IntegrationsResponse {
 }
 
 fn home() -> Option<PathBuf> {
-    std::env::var("HOME").ok().map(PathBuf::from)
+    meridian_core::paths::home_dir()
 }
 
 /// Parse a `.env` file using dotenvy so edge cases (export prefix, quoted

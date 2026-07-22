@@ -437,12 +437,10 @@ pub async fn dismiss_worklog_target(
 #[tauri::command]
 #[tracing::instrument]
 pub async fn plan_dismissed() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    if home.is_empty() {
+    let Some(home) = meridian_core::paths::home_dir() else {
         return;
-    }
-    let marker =
-        meridian_core::plan_marker::marker_path(&std::path::Path::new(&home).join(".meridian"));
+    };
+    let marker = meridian_core::plan_marker::marker_path(&home.join(".meridian"));
     if meridian_core::plan_marker::restamp_if_today(&marker, &chrono::Local::now()) {
         tracing::info!("plan_dismissed: nudge hold-back clock restarted");
     }

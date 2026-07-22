@@ -123,9 +123,7 @@ struct AnalyticsState {
 }
 
 fn analytics_state_path() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(|h| PathBuf::from(h).join(".meridian/analytics_state.json"))
+    meridian_core::paths::home_dir().map(|h| h.join(".meridian/analytics_state.json"))
 }
 
 /// Load the state file, creating a fresh one (new random `distinct_id`) if
