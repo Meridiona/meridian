@@ -7,10 +7,20 @@
 // contract as StatusPicker (outside-click + Escape), and the same `value`/
 // `onChange` shape the native input had (`YYYY-MM-DD` string, `''` = unset),
 // so it drops straight into `Control` with no change to the fix-apply flow.
+//
+// Rendered through a portal into `document.body`, positioned by the trigger's
+// live `getBoundingClientRect()` (recomputed on scroll/resize while open),
+// rather than absolutely inside the trigger's own DOM position. CleanupCard's
+// outer card is `overflow-hidden` (for its rounded corners + accent border),
+// so an in-place absolute popover got silently clipped by that ancestor —
+// reading as the popup "cutting" against the card edge before the card's own
+// layout settled. A portal escapes that ancestor entirely, so it's clipped
+// only by the real viewport, same as any native OS-level dropdown.
 
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 const WEEKDAY_LABELS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']
 const MONTH_LABELS = [
@@ -54,15 +64,54 @@ export function DatePicker({ value, onChange, placeholder = 'Set due date' }: {
   // is actually clicked.
   const [viewYear, setViewYear] = useState(() => (selected ?? today).getFullYear())
   const [viewMonth, setViewMonth] = useState(() => (selected ?? today).getMonth())
-  const ref = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const popoverRef = useRef<HTMLDivElement>(null)
+  // Popover's fixed-position coords, in viewport pixels — null until the first
+  // measurement lands, so nothing renders (and nothing can flash unpositioned
+  // at the origin) before that.
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null)
+
+  // Re-measure the trigger and place the popover just under it, clamped so a
+  // trigger near the right/bottom edge doesn't push the 260px-wide, ~300px-tall
+  // panel off-screen. Runs on open, and on every scroll/resize while open so a
+  // reflow elsewhere (e.g. the modal's own content settling) can't leave it
+  // pointing at stale coordinates.
+  const reposition = () => {
+    const el = triggerRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    const width = 260
+    const left = Math.min(r.left, window.innerWidth - width - 8)
+    const top = Math.min(r.bottom + 4, window.innerHeight - 320)
+    setCoords({ top: Math.max(8, top), left: Math.max(8, left) })
+  }
+
+  useLayoutEffect(() => {
+    if (!open) return
+    reposition()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
 
   useEffect(() => {
     if (!open) return
-    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false) }
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node
+      if (triggerRef.current?.contains(t) || popoverRef.current?.contains(t)) return
+      setOpen(false)
+    }
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
     document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
-    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
+    // capture:true — a scroll deep inside the modal's own scroll region doesn't
+    // bubble to window in every browser, but it does fire in the capture phase.
+    window.addEventListener('scroll', reposition, true)
+    window.addEventListener('resize', reposition)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+      window.removeEventListener('scroll', reposition, true)
+      window.removeEventListener('resize', reposition)
+    }
   }, [open])
 
   const toggle = () => {
@@ -100,19 +149,20 @@ export function DatePicker({ value, onChange, placeholder = 'Set due date' }: {
   const todayKey = toDateKey(today)
 
   return (
-    <div className="relative inline-block flex-1 min-w-0" ref={ref}>
+    <>
       <button
+        ref={triggerRef}
         onClick={toggle}
-        className="w-full text-left mt-body-sm inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5"
+        className="flex-1 min-w-0 text-left mt-body-sm inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5"
         style={{ border: '1px solid var(--t-input-border)', background: 'var(--t-input)', color: value ? 'var(--t-title)' : 'var(--t-faint)' }}>
         <span aria-hidden style={{ fontSize: 12 }}>📅</span>
         <span className="flex-1 truncate">{value ? formatDisplay(value) : placeholder}</span>
         <span style={{ fontSize: 9, opacity: 0.6 }}>▾</span>
       </button>
 
-      {open && (
-        <div className="absolute z-50 mt-1 rounded-xl overflow-hidden"
-          style={{ width: 260, background: 'var(--t-card)', border: '1px solid var(--t-card-border)', boxShadow: '0 12px 34px -12px rgba(0,0,0,0.4)' }}>
+      {open && coords && typeof document !== 'undefined' && createPortal(
+        <div ref={popoverRef} className="fixed z-50 rounded-xl overflow-hidden"
+          style={{ top: coords.top, left: coords.left, width: 260, background: 'var(--t-card)', border: '1px solid var(--t-card-border)', boxShadow: '0 12px 34px -12px rgba(0,0,0,0.4)' }}>
           <div className="flex items-center justify-between px-3 py-2.5" style={{ borderBottom: '1px solid var(--t-hair)' }}>
             <button onClick={() => shiftMonth(-1)} aria-label="Previous month"
               className="inline-flex items-center justify-center rounded-md" style={{ width: 22, height: 22, color: 'var(--t-muted)' }}>‹</button>
@@ -157,8 +207,9 @@ export function DatePicker({ value, onChange, placeholder = 'Set due date' }: {
               <button onClick={() => { onChange(''); setOpen(false) }} className="mt-body-sm" style={{ color: 'var(--t-faint)' }}>Clear</button>
             )}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
-    </div>
+    </>
   )
 }
