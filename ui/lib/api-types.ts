@@ -442,6 +442,9 @@ export interface IntegrationsResponse {
   // true once GITHUB_PROJECT_IDS is set — github alone only means the OAuth
   // token exists; sync additionally needs at least one selected project.
   github_projects_selected: boolean
+  // true once JIRA_PROJECT_KEYS is set — jira alone means either auth mode is
+  // live; sync additionally needs at least one selected project.
+  jira_projects_selected: boolean
   sync_errors: Partial<Record<string, string>>
 }
 

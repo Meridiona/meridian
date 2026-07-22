@@ -34,18 +34,16 @@
 //!   What's New modal.
 
 use crate::commands::whats_new;
-use std::path::Path;
 use tauri::Manager;
 
 /// Once per app version, open the dashboard on the What's New modal. See the
 /// module docs for the gate order and rationale.
 #[tracing::instrument(skip(app))]
 pub(crate) async fn maybe_auto_open_whats_new(app: &tauri::AppHandle) {
-    let home = std::env::var("HOME").unwrap_or_default();
-    if home.is_empty() {
+    let Some(home) = meridian_core::paths::home_dir() else {
         return;
-    }
-    let home = Path::new(&home);
+    };
+    let home = home.as_path();
     let current_version = app.package_info().version.to_string();
 
     // 1. Already seen this version — the common case on every tick after the

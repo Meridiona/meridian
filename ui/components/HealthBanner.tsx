@@ -34,7 +34,7 @@ export default function HealthBanner() {
     const isNotFound = health.error?.toLowerCase().includes('not found') ?? false
     const bannerTitle = isNotFound ? 'Database not found' : 'Database schema mismatch'
     const defaultDetail = isNotFound
-      ? <>Start the daemon: <code className="text-xs font-mono">launchctl load ~/Library/LaunchAgents/com.meridiona.daemon.plist</code></>
+      ? 'Restart Meridian to start the daemon.'
       : <>The database needs migration: <code className="text-xs font-mono">meridian migrate-db</code></>
     return (
       <div
@@ -51,7 +51,7 @@ export default function HealthBanner() {
               <strong>{bannerTitle}</strong>
             </p>
             <p className="text-xs mt-0.5" style={{ color: 'var(--ink-3)' }}>
-              {isNotFound ? defaultDetail : (health.error ?? defaultDetail)}
+              {health.error ?? defaultDetail}
             </p>
           </div>
         </div>

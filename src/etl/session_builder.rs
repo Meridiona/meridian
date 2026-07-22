@@ -3,12 +3,42 @@
 use anyhow::Result;
 
 use crate::db::meridian::ActiveSession;
-use crate::db::screenpipe::{AudioSnippet, SignalEvent, WindowTitleCount};
+use crate::db::screenpipe::{AudioSnippet, SecondaryScreenEvent, SignalEvent, WindowTitleCount};
 use crate::etl::extractor::BlockContext;
 use crate::etl::text_merge::merge_session_texts;
 use crate::intelligence::session_categorizer::{categorize, SessionSignals};
 
 const AUDIO_SNIPPET_CAP: usize = 50;
+/// Caps how many secondary-monitor OCR samples accumulate on one session —
+/// context, not the primary activity signal, so it doesn't need the same
+/// depth as audio. Mirrors the historical `OCR_SAMPLE_CAP` (dropped in
+/// migration 014 when the primary path moved to a merged `session_text`).
+const SECONDARY_SCREEN_CAP: usize = 20;
+
+/// Appends `new` secondary-screen samples onto `existing`, deduplicating by
+/// (monitor, app, window, text) and stopping at [`SECONDARY_SCREEN_CAP`] —
+/// same treatment as `audio_snippets`.
+fn merge_secondary_screens(
+    existing: &[SecondaryScreenEvent],
+    new: &[SecondaryScreenEvent],
+) -> Vec<SecondaryScreenEvent> {
+    let mut merged: Vec<SecondaryScreenEvent> = existing.to_vec();
+    for sample in new {
+        if merged.len() >= SECONDARY_SCREEN_CAP {
+            break;
+        }
+        let is_dup = merged.iter().any(|e| {
+            e.monitor_name == sample.monitor_name
+                && e.app_name == sample.app_name
+                && e.window_name == sample.window_name
+                && e.text == sample.text
+        });
+        if !is_dup {
+            merged.push(sample.clone());
+        }
+    }
+    merged
+}
 
 struct ClassifyInput<'a> {
     app_name: &'a str,
@@ -67,6 +97,10 @@ pub(super) fn build_active_session(
         category,
         confidence,
         session_text: Some(ctx.session_text.clone()),
+        secondary_screens: Some(serde_json::to_string(&merge_secondary_screens(
+            &[],
+            &ctx.secondary_screens,
+        ))?),
     })
 }
 
@@ -82,6 +116,7 @@ pub(super) fn build_active_session(
 /// - `window_titles`: counts from identical titles are incremented; new titles are appended.
 /// - `audio_snippets`: appended, capped at `AUDIO_SNIPPET_CAP`.
 /// - `signals`: all new signals appended.
+/// - `secondary_screens`: appended, deduplicated, capped at `SECONDARY_SCREEN_CAP`.
 /// - `session_text`: when `session_text_override` is `Some(text)`, that text is used
 ///   directly (full rebuild from all frames — avoids chrome leaks from early sub-threshold
 ///   batches). When `None`, falls back to the additive `merge_session_texts` path.
@@ -126,6 +161,14 @@ pub(super) fn merge_into_active(
         .unwrap_or_default();
     signals.extend(ctx.signals.iter().cloned());
 
+    let existing_secondary_screens: Vec<SecondaryScreenEvent> = existing
+        .secondary_screens
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    let secondary_screens =
+        merge_secondary_screens(&existing_secondary_screens, &ctx.secondary_screens);
+
     let merged_session_text = match session_text_override {
         Some(text) => text,
         None => merge_session_texts(
@@ -159,6 +202,7 @@ pub(super) fn merge_into_active(
         category,
         confidence,
         session_text: Some(merged_session_text),
+        secondary_screens: Some(serde_json::to_string(&secondary_screens)?),
     })
 }
 
@@ -320,7 +364,56 @@ pub(super) fn vscode_project(window_name: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_coding_agent_terminal;
+    use super::{is_coding_agent_terminal, merge_secondary_screens, SECONDARY_SCREEN_CAP};
+    use crate::db::screenpipe::SecondaryScreenEvent;
+
+    fn sample(monitor: &str, app: &str, window: &str, text: &str) -> SecondaryScreenEvent {
+        SecondaryScreenEvent {
+            monitor_name: monitor.to_string(),
+            app_name: Some(app.to_string()),
+            window_name: Some(window.to_string()),
+            text: text.to_string(),
+            timestamp: "2026-01-01T00:00:00.000000Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn merge_secondary_screens_deduplicates_identical_samples() {
+        let existing = vec![sample("DELL U2718Q", "Slack", "general", "hello")];
+        let new = vec![sample("DELL U2718Q", "Slack", "general", "hello")];
+        let merged = merge_secondary_screens(&existing, &new);
+        assert_eq!(
+            merged.len(),
+            1,
+            "identical (monitor, app, window, text) must not duplicate"
+        );
+    }
+
+    #[test]
+    fn merge_secondary_screens_keeps_distinct_samples() {
+        let existing = vec![sample("DELL U2718Q", "Slack", "general", "hello")];
+        let new = vec![sample("DELL U2718Q", "Slack", "general", "goodbye")];
+        let merged = merge_secondary_screens(&existing, &new);
+        assert_eq!(
+            merged.len(),
+            2,
+            "different text on the same window is a distinct sample"
+        );
+    }
+
+    #[test]
+    fn merge_secondary_screens_caps_at_limit() {
+        let existing: Vec<SecondaryScreenEvent> = Vec::new();
+        let new: Vec<SecondaryScreenEvent> = (0..SECONDARY_SCREEN_CAP + 10)
+            .map(|i| sample("DELL U2718Q", "Slack", "general", &format!("msg {i}")))
+            .collect();
+        let merged = merge_secondary_screens(&existing, &new);
+        assert_eq!(
+            merged.len(),
+            SECONDARY_SCREEN_CAP,
+            "must stop at SECONDARY_SCREEN_CAP"
+        );
+    }
 
     #[test]
     fn detects_claude_code_spinner() {

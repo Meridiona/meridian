@@ -372,8 +372,8 @@ pub async fn upsert_active_session(
             id, app_name, started_at, last_seen_at,
             window_titles, audio_snippets, signals,
             min_frame_id, max_frame_id, frame_count, idle_frame_count,
-            category, confidence, session_text
-        ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            category, confidence, session_text, secondary_screens
+        ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
         ON CONFLICT (id) DO UPDATE SET
             app_name         = excluded.app_name,
             started_at       = excluded.started_at,
@@ -387,7 +387,8 @@ pub async fn upsert_active_session(
             idle_frame_count = excluded.idle_frame_count,
             category         = excluded.category,
             confidence       = excluded.confidence,
-            session_text     = excluded.session_text
+            session_text     = excluded.session_text,
+            secondary_screens = excluded.secondary_screens
         "#,
     )
     .bind(&session.app_name)
@@ -403,6 +404,7 @@ pub async fn upsert_active_session(
     .bind(&session.category)
     .bind(session.confidence)
     .bind(&session.session_text)
+    .bind(&session.secondary_screens)
     .execute(pool)
     .await
     .context("upsert_active_session: upsert failed")?;
@@ -445,8 +447,8 @@ pub async fn close_active_session_with(
             window_titles, audio_snippets, signals,
             min_frame_id, max_frame_id, frame_count,
             idle_frame_count, etl_run_id,
-            category, confidence, session_text
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            category, confidence, session_text, secondary_screens
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
         "#,
     )
     .bind(&active.app_name)
@@ -464,6 +466,7 @@ pub async fn close_active_session_with(
     .bind(&active.category)
     .bind(active.confidence)
     .bind(&active.session_text)
+    .bind(&active.secondary_screens)
     .execute(pool)
     .await
     .context("close_active_session_with: insert into app_sessions failed")?;

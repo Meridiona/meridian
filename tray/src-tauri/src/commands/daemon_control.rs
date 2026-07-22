@@ -157,7 +157,46 @@ pub async fn restart() -> Result<(), String> {
     // Task Scheduler has no atomic restart, so end-then-run. `/End` failing is
     // fine (the task may not be running); only `/Run` failing is an error.
     let _ = schtasks(&["/End", "/TN", TASK_NAME]).await;
-    schtasks(&["/Run", "/TN", TASK_NAME]).await
+    match schtasks(&["/Run", "/TN", TASK_NAME]).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // `/Run` fails outright — not "task exists but isn't running" — on
+            // any machine where `schtasks /Create` was blocked by policy at
+            // install time (see `backend_install::register_service`): there is
+            // no "Meridian Daemon" task to run, only the Startup-folder VBScript
+            // fallback, which fires once at login and never again. Without this,
+            // a daemon that later crashes on one of those machines stays dead
+            // until the next login — restart() would report success on nothing.
+            // Spawning the staged binary directly is the same recovery
+            // `register_service` already does for a fresh install; the daemon's
+            // own single-instance guard (`daemon_already_running`) makes this
+            // safe to attempt even if the task turns out to still be alive.
+            tracing::warn!(
+                error = %e,
+                "schtasks /Run failed - falling back to spawning the staged daemon directly"
+            );
+            spawn_staged_daemon().map_err(|spawn_err| {
+                format!("schtasks /Run failed ({e}); direct spawn also failed: {spawn_err}")
+            })
+        }
+    }
+}
+
+/// Launch `~/.meridian/bin/meridian.exe` directly, bypassing the Task
+/// Scheduler entirely. Used only as [`restart`]'s fallback when no scheduled
+/// task exists to run.
+#[cfg(target_os = "windows")]
+fn spawn_staged_daemon() -> Result<(), String> {
+    let home = meridian_core::paths::home_dir()
+        .ok_or_else(|| "home directory could not be resolved".to_string())?;
+    let daemon_bin = home.join(".meridian").join("bin").join("meridian.exe");
+    if !daemon_bin.exists() {
+        return Err(format!("no staged daemon at {}", daemon_bin.display()));
+    }
+    std::process::Command::new(&daemon_bin)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("spawn {} failed: {e}", daemon_bin.display()))
 }
 
 #[cfg(target_os = "windows")]

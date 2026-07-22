@@ -21,11 +21,9 @@ const CHANNEL_COLOR: Record<AppInfo['channel'], string> = {
 
 export function AccountSection() {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
-  const [signedInEmail, setSignedInEmail] = useState<string | null>(null)
 
   useEffect(() => {
     load<AppInfo>('/api/app-info', 'get_app_info').then(setAppInfo).catch(() => {})
-    invoke<string | null>('get_account_email').then(setSignedInEmail).catch(() => {})
   }, [])
 
   return (
@@ -41,13 +39,10 @@ export function AccountSection() {
       <SectionCard>
         <SectionHeader>Account</SectionHeader>
         <AccountAuthControl
-          knownEmail={signedInEmail}
           onSignedIn={(email) => {
-            setSignedInEmail(email)
             invoke('save_account_email', { email }).catch(() => {})
           }}
           onSignedOut={() => {
-            setSignedInEmail(null)
             invoke('clear_account_email').catch(() => {})
           }}
         />
