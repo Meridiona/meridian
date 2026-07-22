@@ -1043,6 +1043,12 @@ pub(crate) fn start_capture(
     // shared handle, so a Settings change never needs a capture restart.
     let settings = meridian_core::settings::load_runtime_settings();
     let pause_on_streaming_video = settings.pause_on_streaming_video;
+    // Handed to the engine's secondary-monitor sweep (multi-screen capture):
+    // unlike the primary a11y/OCR path, those windows are never
+    // system-focused, so the fork never resolves their `browser_url` for the
+    // usual downstream `should_drop_frame` check to catch — see
+    // `ScreenpipeEngine::ignored_urls`.
+    let ignored_urls = settings.ignored_urls.clone();
     let capture_ignore = {
         let s = app_state.lock().unwrap();
         *s.capture_ignore.lock().unwrap() =
@@ -1063,46 +1069,86 @@ pub(crate) fn start_capture(
     let (engine_cancel_tx, mut engine_cancel_rx) = tokio::sync::oneshot::channel::<()>();
     let (ui_cancel_tx, mut ui_cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<capture::CapturedFrame>(64);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<capture::CaptureItem>(64);
 
     // Frame consumer: exits when engine task finishes (tx drops → rx returns None).
+    // Handles both item shapes the engine can send — the primary per-tick frame
+    // and secondary-monitor context samples (multi-screen capture) — through the
+    // same ignore-list gate, routed to their own tables.
     let consumer_pool = pool.clone();
     let frame_ignore = capture_ignore.clone();
     tauri::async_runtime::spawn(async move {
-        while let Some(frame) = rx.recv().await {
-            tracing::debug!(
-                ts = %frame.timestamp,
-                app = ?frame.app_name,
-                chars = frame.text.len(),
-                "capture: frame received"
-            );
-            // User ignore list (apps + website domains): drop the frame before it
-            // is ever persisted, so an ignored app/site leaves no trace on the
-            // timeline. Going forward only — history is untouched.
-            if frame_ignore
-                .lock()
-                .unwrap()
-                .should_drop_frame(frame.app_name.as_deref(), frame.browser_url.as_deref())
-            {
-                tracing::debug!(
-                    app = ?frame.app_name,
-                    "capture: frame ignored (user ignore list) — not persisted"
-                );
-                continue;
-            }
-            let Some(p) = consumer_pool.as_ref() else {
-                continue;
-            };
-            let row = meridian_core::CaptureFrameInsert {
-                timestamp: frame.timestamp,
-                app_name: frame.app_name,
-                window_name: frame.window_name,
-                browser_url: frame.browser_url,
-                text: frame.text,
-                text_source: frame.text_source.as_str().to_string(),
-            };
-            if let Err(e) = meridian_core::insert_capture_frame(p, &row).await {
-                tracing::warn!(error = %e, "capture: failed to persist frame");
+        while let Some(item) = rx.recv().await {
+            match item {
+                capture::CaptureItem::Frame(frame) => {
+                    tracing::debug!(
+                        ts = %frame.timestamp,
+                        app = ?frame.app_name,
+                        chars = frame.text.len(),
+                        "capture: frame received"
+                    );
+                    // User ignore list (apps + website domains): drop the frame before it
+                    // is ever persisted, so an ignored app/site leaves no trace on the
+                    // timeline. Going forward only — history is untouched.
+                    if frame_ignore
+                        .lock()
+                        .unwrap()
+                        .should_drop_frame(frame.app_name.as_deref(), frame.browser_url.as_deref())
+                    {
+                        tracing::debug!(
+                            app = ?frame.app_name,
+                            "capture: frame ignored (user ignore list) — not persisted"
+                        );
+                        continue;
+                    }
+                    let Some(p) = consumer_pool.as_ref() else {
+                        continue;
+                    };
+                    let row = meridian_core::CaptureFrameInsert {
+                        timestamp: frame.timestamp,
+                        app_name: frame.app_name,
+                        window_name: frame.window_name,
+                        browser_url: frame.browser_url,
+                        text: frame.text,
+                        text_source: frame.text_source.as_str().to_string(),
+                    };
+                    if let Err(e) = meridian_core::insert_capture_frame(p, &row).await {
+                        tracing::warn!(error = %e, "capture: failed to persist frame");
+                    }
+                }
+                capture::CaptureItem::Secondary(sample) => {
+                    tracing::debug!(
+                        ts = %sample.timestamp,
+                        monitor = %sample.monitor_name,
+                        app = ?sample.app_name,
+                        chars = sample.text.len(),
+                        "capture: secondary-screen sample received"
+                    );
+                    if frame_ignore
+                        .lock()
+                        .unwrap()
+                        .should_drop_frame(sample.app_name.as_deref(), None)
+                    {
+                        tracing::debug!(
+                            app = ?sample.app_name,
+                            "capture: secondary-screen sample ignored (user ignore list) — not persisted"
+                        );
+                        continue;
+                    }
+                    let Some(p) = consumer_pool.as_ref() else {
+                        continue;
+                    };
+                    let row = meridian_core::CaptureSecondaryScreenInsert {
+                        timestamp: sample.timestamp,
+                        monitor_name: sample.monitor_name,
+                        app_name: sample.app_name,
+                        window_name: sample.window_name,
+                        text: sample.text,
+                    };
+                    if let Err(e) = meridian_core::insert_capture_secondary_screen(p, &row).await {
+                        tracing::warn!(error = %e, "capture: failed to persist secondary-screen sample");
+                    }
+                }
             }
         }
     });
@@ -1113,6 +1159,7 @@ pub(crate) fn start_capture(
     tauri::async_runtime::spawn(async move {
         let engine = ScreenpipeEngine {
             pause_on_streaming_video,
+            ignored_urls,
         };
         tokio::select! {
             _ = &mut engine_cancel_rx => {
