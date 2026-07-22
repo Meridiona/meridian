@@ -4,28 +4,25 @@
 // Settings → Account's sign-in/sign-out control — see `../signin.tsx` for
 // why this module (and everything it imports) is only ever loaded through a
 // `next/dynamic(..., { ssr: false })` boundary, never imported directly.
+//
+// Unlike SignInWidget and RequireSignIn, this does NOT wrap itself in a
+// ClerkGate: Settings is only ever reachable from inside the dashboard,
+// which RequireSignIn (app/page.tsx) already wraps in one ClerkProvider.
+// A second <ClerkProvider> here would nest inside that one, and
+// @clerk/react hard-refuses that ("You've added multiple <ClerkProvider>
+// components") — the exact crash this used to throw, caught by
+// ClerkErrorBoundary and shown as a generic "not configured" message that
+// had nothing to do with configuration. useClerk()/useSignedInEmail() below
+// read from RequireSignIn's already-live provider instead.
 
 import { useState } from 'react'
 import { useClerk } from '@clerk/react'
 import { Btn, Spinner } from '../atoms'
 import { useSignedInEmail } from './useSignedInEmail'
-import { ClerkGate } from './ClerkGate'
 import { GateLoading, AccountIdentityRow } from './identity'
 import { EmailCodeForm } from './EmailCodeForm'
 
 const SIGNED_IN_CAPTION = 'Signed in with a one-time email code'
-
-/** Optimistic render for the moment between mount and Clerk finishing its
- *  own (async) session check — used as `ClerkGate`'s Suspense fallback when
- *  the Rust-persisted email (`get_account_email`) is already known, so
- *  Settings → Account shows the identity immediately instead of a bare
- *  spinner on every open, matching how account pages elsewhere avoid a
- *  needless loading flash for state they already have cached. Sign out isn't
- *  wired yet at this point (no live Clerk instance) — a static spinner in
- *  its place, swapped for the real button the moment Clerk resolves. */
-function KnownAccountFallback({ email }: { email: string }) {
-  return <AccountIdentityRow email={email} caption={SIGNED_IN_CAPTION} action={<Spinner size={13} width={1.8} />} />
-}
 
 /** An identity row (avatar, email, how they signed in) with a Sign out
  *  action, or the sign-in form if not signed in yet — the standard "who am I
@@ -88,19 +85,13 @@ function AccountStatus({ onSignedIn, onSignedOut }: {
   )
 }
 
-/** Settings → Account's sign-in/sign-out control. `knownEmail` (the
- *  Rust-persisted email, passed by `AccountSection`) renders instantly while
- *  Clerk's own async session check is still in flight — see
- *  `KnownAccountFallback`. */
-export function AccountAuthControl({ onSignedIn, onSignedOut, knownEmail }: {
+/** Settings → Account's sign-in/sign-out control. Renders straight into the
+ *  dashboard's existing Clerk session (see the module doc above) — Clerk is
+ *  already loaded by the time Settings is reachable, so `AccountStatus`'s
+ *  own `!isLoaded` check is the only loading state this needs. */
+export function AccountAuthControl({ onSignedIn, onSignedOut }: {
   onSignedIn: (email: string) => void
   onSignedOut: () => void
-  knownEmail?: string | null
 }) {
-  const fallback = knownEmail ? <KnownAccountFallback email={knownEmail} /> : <GateLoading />
-  return (
-    <ClerkGate notInTauriMessage="Open Meridian to manage sign-in." fallback={fallback}>
-      {() => <AccountStatus onSignedIn={onSignedIn} onSignedOut={onSignedOut} />}
-    </ClerkGate>
-  )
+  return <AccountStatus onSignedIn={onSignedIn} onSignedOut={onSignedOut} />
 }

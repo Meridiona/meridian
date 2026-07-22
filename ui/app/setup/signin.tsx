@@ -49,16 +49,15 @@ export function SignInWidget({ onSignedIn }: { onSignedIn: (email: string) => vo
 }
 
 /** Settings → Account's sign-in/sign-out control (see AccountSection.tsx) —
- *  same Clerk session as the setup wizard, but this one shows who's signed
- *  in and lets them sign out, since that's the whole reason to visit it.
- *  `knownEmail` is the Rust-persisted email — passed straight through so the
- *  identity row can render before Clerk's own session check resolves. */
-export function AccountAuthControl({ onSignedIn, onSignedOut, knownEmail }: {
+ *  same live Clerk session as the rest of the dashboard (RequireSignIn
+ *  already established it; see AccountAuthControl.tsx's module doc for why
+ *  this must NOT mount a second ClerkProvider), shows who's signed in and
+ *  lets them sign out. */
+export function AccountAuthControl({ onSignedIn, onSignedOut }: {
   onSignedIn: (email: string) => void
   onSignedOut: () => void
-  knownEmail?: string | null
 }) {
-  return <AccountAuthControlImpl onSignedIn={onSignedIn} onSignedOut={onSignedOut} knownEmail={knownEmail} />
+  return <AccountAuthControlImpl onSignedIn={onSignedIn} onSignedOut={onSignedOut} />
 }
 
 /** Product-wide sign-in gate for the dashboard window — renders `children`
