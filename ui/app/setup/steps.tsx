@@ -176,7 +176,15 @@ function IntelligenceBody({ wiz }: { wiz: Wiz }) {
 }
 
 // ── Welcome (pre-step intro) ──────────────────────────────────────────────────
-export function Welcome({ onBegin, steps }: { onBegin: () => void; steps: StepMeta[] }) {
+export function Welcome({ onBegin, steps, ready, error, onRetry }: {
+  onBegin: () => void
+  steps: StepMeta[]
+  /** False until `get_platform` resolves — "Get started" stays disabled so the
+   *  step list (which depends on platform) can't reshape after the user begins. */
+  ready: boolean
+  error: boolean
+  onRetry: () => void
+}) {
   const points = [
     { t: 'On-device', d: 'Your screen is read and understood locally on your device, never uploaded.' },
     { t: 'Automatic', d: 'Builds an accurate timeline of the tickets you worked on, then drafts the updates for you.' },
@@ -207,7 +215,16 @@ export function Welcome({ onBegin, steps }: { onBegin: () => void; steps: StepMe
           </div>
         ))}
       </div>
-      <Btn onClick={onBegin} style={{ padding: '11px 26px', fontSize: 13.5 }}>Get started</Btn>
+      {error ? (
+        <div className="flex flex-col items-center" style={{ gap: 8 }}>
+          <p style={{ fontSize: 12, color: 'var(--color-state-pending)' }}>Couldn't detect your platform - try again.</p>
+          <Btn onClick={onRetry} style={{ padding: '11px 26px', fontSize: 13.5 }}>Retry</Btn>
+        </div>
+      ) : (
+        <Btn onClick={onBegin} disabled={!ready} style={{ padding: '11px 26px', fontSize: 13.5 }}>
+          {ready ? 'Get started' : 'Preparing setup…'}
+        </Btn>
+      )}
       <p className="font-mono" style={{ fontSize: 10.5, letterSpacing: '.04em', color: 'var(--t-faint)', marginTop: 14 }}>{steps.length} quick steps · about a minute</p>
     </div>
   )

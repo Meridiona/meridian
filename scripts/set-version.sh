@@ -29,13 +29,15 @@ import json, re, sys
 ver = sys.argv[1]
 
 # Cargo.toml: the single top-level `version = "..."` line ([package]).
+# Count matches BEFORE substituting — re.subn(count=1) only ever returns 0 or
+# 1, so checking its own `n` can never catch "more than one match".
+cargo_version_re = re.compile(r'(?m)^version = "[^"]*"')
 with open("Cargo.toml") as fh:
     cargo_toml = fh.read()
-cargo_toml, n = re.subn(
-    r'(?m)^version = "[^"]*"', f'version = "{ver}"', cargo_toml, count=1
-)
+n = len(cargo_version_re.findall(cargo_toml))
 if n != 1:
-    sys.exit(f"set-version: expected exactly one top-level version in Cargo.toml, patched {n}")
+    sys.exit(f"set-version: expected exactly one top-level version in Cargo.toml, found {n}")
+cargo_toml = cargo_version_re.sub(f'version = "{ver}"', cargo_toml, count=1)
 with open("Cargo.toml", "w") as fh:
     fh.write(cargo_toml)
 
@@ -62,16 +64,15 @@ for path in targets:
 # `cargo build --locked` would fail the release). "meridian" is a workspace path
 # crate, so only its own version line changes — the dependency graph is untouched,
 # leaving rust-cache's restore behaviour the same as the Cargo.toml bump already is.
+lock_meridian_re = re.compile(
+    r'(?ms)^(\[\[package\]\]\nname = "meridian"\nversion = ")[^"]*(")'
+)
 with open("Cargo.lock") as fh:
     lock = fh.read()
-lock, n = re.subn(
-    r'(?ms)^(\[\[package\]\]\nname = "meridian"\nversion = ")[^"]*(")',
-    lambda m: m.group(1) + ver + m.group(2),
-    lock,
-    count=1,
-)
+n = len(lock_meridian_re.findall(lock))
 if n != 1:
-    sys.exit(f"set-version: expected exactly one [[package]] meridian in Cargo.lock, patched {n}")
+    sys.exit(f"set-version: expected exactly one [[package]] meridian in Cargo.lock, found {n}")
+lock = lock_meridian_re.sub(lambda m: m.group(1) + ver + m.group(2), lock, count=1)
 with open("Cargo.lock", "w") as fh:
     fh.write(lock)
 print(f"set version {ver} across all manifests + Cargo.lock")

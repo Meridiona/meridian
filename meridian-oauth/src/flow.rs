@@ -355,20 +355,20 @@ else{document.querySelector('h2').textContent='No token in URL. Try again.';}\
 /// is always logged too, so a failed/headless launch still leaves the user a
 /// way to continue by pasting it manually.
 ///
-/// `start` on Windows is a cmd.exe builtin, not a standalone executable, so it
-/// has to be invoked through the shell rather than spawned directly. Its first
-/// argument is a window-title slot, not part of the command — the empty `""`
-/// there is required, otherwise `start` misreads a quoted URL as the title and
-/// never opens it.
+/// Windows launches via `explorer.exe`, not `cmd /C start`: the authorize URLs
+/// passed here always carry `&`-separated query params (client_id, redirect_uri,
+/// state, scope), and `cmd.exe` re-parses its whole command line for shell
+/// metacharacters like `&` regardless of Win32 argv quoting — it would split the
+/// URL at the first `&` and try to run the tail as a second command, truncating
+/// the authorize URL. `explorer.exe` takes the URL as a literal argument handed
+/// straight to the registered protocol handler, with no shell re-parsing.
 fn open_browser(url: &str) {
     tracing::info!(
         url,
         "if it doesn't open automatically, open this URL yourself"
     );
     #[cfg(target_os = "windows")]
-    let result = std::process::Command::new("cmd")
-        .args(["/C", "start", "", url])
-        .spawn();
+    let result = std::process::Command::new("explorer").arg(url).spawn();
     #[cfg(target_os = "macos")]
     let result = std::process::Command::new("open").arg(url).spawn();
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]

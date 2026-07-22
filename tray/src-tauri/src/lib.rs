@@ -258,6 +258,7 @@ pub fn run() {
                                         (icon_size.width, icon_size.height),
                                         (pop_w, pop_h),
                                         cfg!(target_os = "windows"),
+                                        monitor_work_area(&win),
                                     );
                                     let _ = win.set_position(tauri::Position::Physical(
                                         tauri::PhysicalPosition::new(x, y),
@@ -312,6 +313,7 @@ pub fn run() {
                                     (icon_size.width, icon_size.height),
                                     (tt_w, tt_h),
                                     cfg!(target_os = "windows"),
+                                    monitor_work_area(&tt),
                                 );
                                 let _ = tt.set_position(tauri::Position::Physical(
                                     tauri::PhysicalPosition::new(x, y),
@@ -665,6 +667,11 @@ fn reopen_target(onboarded: bool) -> ReopenTarget {
 /// the bottom of the screen — invisible, not just misplaced. `anchor_above`
 /// picks which side; callers pass `cfg!(target_os = "windows")`.
 ///
+/// `monitor_bounds` is `(left, top, right, bottom)` of the target monitor's
+/// work area (see [`monitor_work_area`]) — clamping against it, not just
+/// zero, is what keeps a right-edge tray icon (common on Windows multi-monitor
+/// setups) from placing the window past the monitor's right or bottom edge.
+///
 /// Pure and platform-independent so it's unit-testable without a live window —
 /// same rationale as [`is_onboarded`] / [`reopen_target`] above.
 fn tray_anchor_position(
@@ -672,24 +679,56 @@ fn tray_anchor_position(
     icon_size: (i32, i32),
     win_size: (i32, i32),
     anchor_above: bool,
+    monitor_bounds: (i32, i32, i32, i32),
 ) -> (i32, i32) {
-    let x = (icon_pos.0 + icon_size.0 / 2 - win_size.0 / 2).max(0);
+    let (mon_left, mon_top, mon_right, mon_bottom) = monitor_bounds;
+    let x = (icon_pos.0 + icon_size.0 / 2 - win_size.0 / 2)
+        .max(mon_left)
+        .min(mon_right - win_size.0);
     let y = if anchor_above {
-        (icon_pos.1 - win_size.1).max(0)
+        icon_pos.1 - win_size.1
     } else {
         icon_pos.1 + icon_size.1
     };
+    let y = y.max(mon_top).min(mon_bottom - win_size.1);
     (x, y)
+}
+
+/// The window's current monitor's work area as `(left, top, right, bottom)` in
+/// physical pixels — the work area excludes the taskbar/menu bar, so clamping
+/// against it can't still place a window behind either.
+///
+/// Falls back to an effectively unbounded rect when Tauri can't resolve a
+/// monitor (headless CI, a monitor unplugged mid-call) so callers degrade to
+/// the old zero-only clamp instead of failing the whole positioning step.
+fn monitor_work_area(window: &tauri::WebviewWindow) -> (i32, i32, i32, i32) {
+    match window.current_monitor() {
+        Ok(Some(monitor)) => {
+            let area = monitor.work_area();
+            (
+                area.position.x,
+                area.position.y,
+                area.position.x + area.size.width as i32,
+                area.position.y + area.size.height as i32,
+            )
+        }
+        _ => (0, 0, i32::MAX, i32::MAX),
+    }
 }
 
 #[cfg(test)]
 mod tray_anchor_position_tests {
     use super::tray_anchor_position;
 
+    const UNBOUNDED: (i32, i32, i32, i32) = (0, 0, i32::MAX, i32::MAX);
+    // A 1920x1080 monitor at the origin, work area only (no taskbar cutout —
+    // irrelevant to these tests since they probe the left/top/right clamps).
+    const SCREEN_1080P: (i32, i32, i32, i32) = (0, 0, 1920, 1080);
+
     #[test]
     fn below_places_top_edge_at_icon_bottom() {
         // macOS-style: icon near the top of the screen, popover grows downward.
-        let (x, y) = tray_anchor_position((1500, 0), (24, 24), (344, 400), false);
+        let (x, y) = tray_anchor_position((1500, 0), (24, 24), (344, 400), false, UNBOUNDED);
         assert_eq!(x, 1500 + 12 - 172); // centred under the icon
         assert_eq!(y, 24); // flush with the icon's bottom edge
     }
@@ -697,14 +736,14 @@ mod tray_anchor_position_tests {
     #[test]
     fn above_places_bottom_edge_at_icon_top() {
         // Windows-style: icon near the bottom of the screen, popover grows upward.
-        let (x, y) = tray_anchor_position((1500, 1040), (24, 24), (344, 400), true);
+        let (x, y) = tray_anchor_position((1500, 1040), (24, 24), (344, 400), true, UNBOUNDED);
         assert_eq!(x, 1500 + 12 - 172); // centred over the icon, same as below
         assert_eq!(y, 1040 - 400); // flush with the icon's top edge
     }
 
     #[test]
     fn x_never_goes_negative_when_icon_is_near_the_left_edge() {
-        let (x, _) = tray_anchor_position((5, 0), (24, 24), (344, 400), false);
+        let (x, _) = tray_anchor_position((5, 0), (24, 24), (344, 400), false, UNBOUNDED);
         assert_eq!(x, 0);
     }
 
@@ -712,8 +751,25 @@ mod tray_anchor_position_tests {
     fn above_never_goes_negative_when_window_is_taller_than_the_icons_offset() {
         // A pathologically tall window anchored above a near-top icon must clamp
         // to 0 rather than requesting a negative y (off the top of the screen).
-        let (_, y) = tray_anchor_position((100, 50), (24, 24), (344, 2000), true);
+        let (_, y) = tray_anchor_position((100, 50), (24, 24), (344, 2000), true, UNBOUNDED);
         assert_eq!(y, 0);
+    }
+
+    #[test]
+    fn x_clamps_to_the_monitors_right_edge() {
+        // A tray icon hard against the right edge of a 1920px-wide monitor —
+        // centring the 344px popover under it would push its right edge past
+        // 1920, common on Windows multi-monitor taskbars.
+        let (x, _) = tray_anchor_position((1900, 1040), (24, 24), (344, 400), true, SCREEN_1080P);
+        assert_eq!(x, 1920 - 344); // flush with the monitor's right edge, not overflowing it
+    }
+
+    #[test]
+    fn y_clamps_to_the_monitors_bottom_edge() {
+        // macOS-style anchor-below near the bottom of a short/rotated monitor:
+        // the popover must not extend past the work area's bottom edge.
+        let (_, y) = tray_anchor_position((100, 700), (24, 24), (344, 400), false, SCREEN_1080P);
+        assert_eq!(y, 1080 - 400);
     }
 }
 
