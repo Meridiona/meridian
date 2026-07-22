@@ -73,13 +73,29 @@ pub(super) async fn refresh_health(
 
     let Some(pool) = pool else { return };
     if notify_down {
+        // A confirmed outage (2nd consecutive failed poll, not a transient
+        // blip) is worth one automatic recovery attempt before bothering the
+        // user — most causes (a crashed process, a machine where the
+        // scheduled task/launchd agent lost track of it) self-heal from a
+        // plain restart, and someone who isn't watching the tray shouldn't
+        // have to notice the banner and click "Restart daemon" for that.
+        // Best-effort: either outcome still raises the notice below, just
+        // with detail reflecting whether the attempt worked.
+        let restart_result = crate::commands::daemon_control::restart().await;
+        let detail = if let Err(e) = &restart_result {
+            tracing::warn!(error = %e, "daemon-health auto-restart attempt failed");
+            "Tried to restart it automatically and that failed too. Tap to check what happened."
+        } else {
+            tracing::info!("daemon-health auto-restart attempted");
+            "Tried restarting it automatically — give it a moment."
+        };
         if let Err(e) = meridian::notices::raise_typed(
             pool,
             meridian::notices::Notice {
                 id: "tray.daemon_quiet",
                 severity: "warning",
                 title: "Meridian went quiet.",
-                detail: "Tap to check what happened.",
+                detail,
                 remedy: None,
                 event_key: "system.health",
                 deep_link: Some("/logs"),
