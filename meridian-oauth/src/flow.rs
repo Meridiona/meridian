@@ -375,6 +375,13 @@ else{document.querySelector('h2').textContent='No token in URL. Try again.';}\
 /// tokenizer the way it would from an interactive prompt. The URL can't itself
 /// contain a `"` — [`encode`] percent-encodes anything outside the unreserved
 /// set — so this quoting is always safe.
+/// The `raw_arg` line itself, pulled out as a pure function so the quoting
+/// shape is unit-testable without mocking `Command::spawn`.
+#[cfg(target_os = "windows")]
+fn windows_start_line(url: &str) -> String {
+    format!("start \"\" \"{url}\"")
+}
+
 #[cfg(target_os = "windows")]
 fn open_browser(url: &str) {
     use std::os::windows::process::CommandExt;
@@ -384,7 +391,7 @@ fn open_browser(url: &str) {
     );
     let result = std::process::Command::new("cmd")
         .arg("/C")
-        .raw_arg(format!("start \"\" \"{url}\""))
+        .raw_arg(windows_start_line(url))
         .spawn();
     if let Err(e) = result {
         tracing::warn!(error = %e, "failed to launch the system browser");
@@ -482,6 +489,32 @@ mod tests {
         assert_eq!(decode("a%20b"), "a b");
         assert_eq!(decode("abc-_123"), "abc-_123");
         assert_eq!(decode("x%2Fy"), "x/y");
+    }
+
+    /// The regression this whole PR exists for: a URL with `&`-joined query
+    /// params must come out fully wrapped in real quotes, so cmd.exe's
+    /// tokenizer can never see an unescaped `&` and split the command line.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_start_line_quotes_the_whole_url() {
+        let url = "https://auth.atlassian.com/authorize?response_type=code&client_id=abc&redirect_uri=http%3A%2F%2F127.0.0.1%3A9123%2Fcallback&state=xyz";
+        let line = windows_start_line(url);
+        assert_eq!(line, format!("start \"\" \"{url}\""));
+        // The URL's own `&`s must all land strictly inside the quoted span.
+        let open = line.find('"').unwrap();
+        let close = line.rfind('"').unwrap();
+        assert!(
+            close > open + 1,
+            "URL must be wrapped in a non-empty quoted span"
+        );
+        for (i, c) in line.char_indices() {
+            if c == '&' {
+                assert!(
+                    i > open && i < close,
+                    "found an `&` outside the quoted span at byte {i}: {line}"
+                );
+            }
+        }
     }
 
     #[test]

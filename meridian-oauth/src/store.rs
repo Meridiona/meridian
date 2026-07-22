@@ -44,9 +44,23 @@ impl OAuthTokens {
     }
 }
 
+/// The current user's home directory. `$HOME` is normally unset on Windows,
+/// so `dirs::home_dir()` (the platform profile-directory API, `%USERPROFILE%`
+/// there) is the fallback — the same resolution order as
+/// `meridian_core::paths::home_dir()`, duplicated here rather than taken as a
+/// dependency: `meridian_core` pulls in sqlx/libsqlite3-sys for its DB layer,
+/// which this config-free, daemon-and-tray-shared crate deliberately has no
+/// reason to carry for one directory lookup.
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 fn oauth_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".meridian").join("oauth")
+    home_dir().join(".meridian").join("oauth")
 }
 
 /// Reject a provider name that isn't a plain identifier, so a token/lock path can

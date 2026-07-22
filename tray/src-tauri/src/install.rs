@@ -299,7 +299,11 @@ pub(crate) fn meridian_db_path() -> String {
         }
     }
     let home = meridian_core::paths::home_dir_or_cwd();
-    let p = format!("{}/.meridian/meridian.db", home.display());
+    let p = home
+        .join(".meridian")
+        .join("meridian.db")
+        .display()
+        .to_string();
     tracing::info!(source = ?mode, path = %p, "meridian_db resolved (default)");
     p
 }

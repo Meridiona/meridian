@@ -85,7 +85,7 @@ async fn check_database() -> (bool, Option<String>) {
         Err(_) => (
             false,
             Some(format!(
-                "Database not found — start the daemon: {}",
+                "meridian.db not found - start the daemon: {}",
                 start_daemon_hint()
             )),
         ),
@@ -102,12 +102,13 @@ fn start_daemon_hint() -> String {
     "launchctl load ~/Library/LaunchAgents/com.meridiona.daemon.plist".to_string()
 }
 
-#[cfg(target_os = "windows")]
-fn start_daemon_hint() -> String {
-    "run the \"Meridian Daemon\" task in Task Scheduler, or restart Meridian".to_string()
-}
+// Windows shares the generic "restart Meridian" hint below rather than
+// naming the "Meridian Daemon" Task Scheduler entry: `register_service`
+// falls back to a Startup-folder launcher (no Task Scheduler entry at all)
+// on machines where policy blocks `schtasks /Create`, so pointing at Task
+// Scheduler wouldn't always apply.
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(target_os = "macos"))]
 fn start_daemon_hint() -> String {
     "restart Meridian".to_string()
 }
