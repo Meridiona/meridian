@@ -29,6 +29,7 @@ const integrations = (on: TrackerId[]): IntegrationsResponse => ({
   trello: on.includes('trello'),
   azure_devops: on.includes('azure_devops'),
   github_projects_selected: false,
+  jira_projects_selected: false,
   sync_errors: {},
 })
 

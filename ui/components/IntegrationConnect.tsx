@@ -26,8 +26,9 @@ import {
   azureStore, azureLookupOrgs, azureSelectOrg, azureSubmitManualOrg, azureConnect,
   setAzurePat, setAzureSelectedProject, setAzureManualOrg, resetAzureIfSettled,
   githubPickerStore, githubEnsureLoaded, githubToggle, githubSave, resetGithubPickerIfSaved,
+  jiraPickerStore, jiraEnsureLoaded, jiraToggle, jiraSave, resetJiraPickerIfSaved,
 } from '@/components/integrationConnectStore'
-import type { GithubProject } from '@/components/integrationConnectStore'
+import type { GithubProject, JiraProject } from '@/components/integrationConnectStore'
 
 // ── Main list ─────────────────────────────────────────────────────────────────
 export default function ConnectTrackers({
@@ -93,7 +94,8 @@ export default function ConnectTrackers({
               {isOpen && connected && (
                 <ConnectedPanel tracker={t} syncError={syncError} disconnecting={disconnecting === t.id}
                   onDisconnect={() => handleDisconnect(t.id)} onChanged={onChanged}
-                  githubProjectsSelected={integrations?.github_projects_selected} />
+                  githubProjectsSelected={integrations?.github_projects_selected}
+                  jiraProjectsSelected={integrations?.jira_projects_selected} />
               )}
               {isOpen && !connected && <TrackerSetup tracker={t} onSuccess={onChanged} />}
             </div>
@@ -106,11 +108,13 @@ export default function ConnectTrackers({
 
 // ── Connected (manage / disconnect / re-authorize) ───────────────────────────
 function ConnectedPanel({
-  tracker, syncError, disconnecting, onDisconnect, onChanged, githubProjectsSelected,
+  tracker, syncError, disconnecting, onDisconnect, onChanged, githubProjectsSelected, jiraProjectsSelected,
 }: {
   tracker: Tracker; syncError?: string; disconnecting: boolean; onDisconnect: () => void; onChanged?: () => void
   /** Only meaningful for tracker.id === 'github' — undefined for every other tracker. */
   githubProjectsSelected?: boolean
+  /** Only meaningful for tracker.id === 'jira' — undefined for every other tracker. */
+  jiraProjectsSelected?: boolean
 }) {
   const [reauthorizing, setReauthorizing] = useState(false)
   const [pickingProjects, setPickingProjects] = useState(false)
@@ -121,6 +125,10 @@ function ConnectedPanel({
   // exactly the gap a token connected outside the OAuth-connect picker (or an
   // account connected before this picker existed) is stuck in.
   const needsGithubProjects = tracker.id === 'github' && githubProjectsSelected === false
+  // Jira's analogue — a connection (OAuth OR API token) alone doesn't sync
+  // anything either; a project must be picked too (discover_jira_projects →
+  // save_integration_token).
+  const needsJiraProjects = tracker.id === 'jira' && jiraProjectsSelected === false
 
   return (
     <div className="px-4 pb-4 pt-2" style={{ background: 'var(--t-box)' }}>
@@ -146,9 +154,22 @@ function ConnectedPanel({
           </button>
         </div>
       )}
+      {needsJiraProjects && !reauthorizing && !pickingProjects && (
+        <div className="mb-3 rounded-md px-3 py-2" style={{ background: 'var(--status-info-bg)', border: '1px solid var(--status-info-border)' }}>
+          <p className="text-[12px] leading-relaxed" style={{ color: 'var(--status-info-text)' }}>
+            No Jira projects selected - tasks won&apos;t sync yet.
+          </p>
+          <button onClick={() => setPickingProjects(true)} className="mt-2 text-[11px] px-3 py-1 rounded-md"
+            style={{ background: 'var(--status-info-text)', color: '#fff', cursor: 'pointer' }}>
+            Select Projects
+          </button>
+        </div>
+      )}
       {pickingProjects ? (
         <div className="mb-1">
-          <GitHubProjectPicker onSuccess={() => { setPickingProjects(false); onChanged?.() }} />
+          {tracker.id === 'github'
+            ? <GitHubProjectPicker onSuccess={() => { setPickingProjects(false); onChanged?.() }} />
+            : <JiraProjectPicker onSuccess={() => { setPickingProjects(false); onChanged?.() }} />}
           <button onClick={() => setPickingProjects(false)} className="mt-2 text-[11px]" style={{ color: 'var(--ink-4)', cursor: 'pointer' }}>Cancel</button>
         </div>
       ) : reauthorizing ? (
@@ -400,13 +421,14 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
   // touch a 'waiting' one, which is the in-flight state we exist to preserve.
   useEffect(() => { resetOAuthIfSettled(tracker.id) }, [tracker.id])
 
-  // Fire onSuccess when the flow completes. GitHub defers this to its Projects
-  // picker (rendered below for status==='done'), which calls onSuccess once a
-  // board is actually saved. Every other provider is done the moment its store
-  // exists. The store poll sets 'done' whether or not this panel is mounted; if
-  // it isn't, reopening reloads integrations anyway, so nothing is missed.
+  // Fire onSuccess when the flow completes. GitHub and Jira both defer this to
+  // their Projects pickers (rendered below for status==='done'), which call
+  // onSuccess once a project is actually saved. Every other provider is done
+  // the moment its store exists. The store poll sets 'done' whether or not
+  // this panel is mounted; if it isn't, reopening reloads integrations anyway,
+  // so nothing is missed.
   useEffect(() => {
-    if (status === 'done' && tracker.id !== 'github') onSuccess?.()
+    if (status === 'done' && tracker.id !== 'github' && tracker.id !== 'jira') onSuccess?.()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, tracker.id])
 
@@ -546,7 +568,14 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
               </DeviceStep>
             </div>
           )
-          : <p className="text-[12px]" style={{ color: 'var(--color-state-approved)' }}>✓ Connected! Your tasks will appear shortly.</p>
+          : tracker.id === 'jira'
+            ? (
+              <div className="space-y-2">
+                <p className="text-[12px]" style={{ color: 'var(--color-state-approved)' }}>✓ Connected! Choose which projects to sync:</p>
+                <JiraProjectPicker onSuccess={onSuccess} />
+              </div>
+            )
+            : <p className="text-[12px]" style={{ color: 'var(--color-state-approved)' }}>✓ Connected! Your tasks will appear shortly.</p>
       )}
       {status === 'error' && (
         <div className="space-y-2">
@@ -585,7 +614,7 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
       // now would reload integrations, flip the row to "connected", and unmount
       // this panel — tearing the picker away before the user picks. Mirrors
       // OAuthSetup's github handling. Every other provider is done on save.
-      if (tracker.id !== 'github') onSuccess?.()
+      if (tracker.id !== 'github' && tracker.id !== 'jira') onSuccess?.()
     } catch (e) {
       setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not save credentials')
     } finally {
@@ -594,13 +623,15 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
   }
 
   if (done) {
-    // GitHub: the token alone doesn't sync anything — a Projects v2 board must be
+    // GitHub/Jira: the token alone doesn't sync anything — a project must be
     // selected too. Show the same discover-and-tick picker the browser OAuth flow
-    // uses (discover_github_projects → save_integration_token with project_ids).
-    if (tracker.id === 'github') {
+    // uses (discover_github_projects / discover_jira_projects → save_integration_token).
+    if (tracker.id === 'github' || tracker.id === 'jira') {
       return (
         <div className="px-4 pb-4 pt-2" style={{ background: 'var(--t-box)' }}>
-          <GitHubProjectPicker onSuccess={onSuccess} />
+          {tracker.id === 'github'
+            ? <GitHubProjectPicker onSuccess={onSuccess} />
+            : <JiraProjectPicker onSuccess={onSuccess} />}
           {reloadWarning && (
             <p className="text-[11px] mt-2" style={{ color: 'var(--t-faint)' }}>
               The daemon wasn&apos;t running - credentials saved, will take effect on next start.
@@ -847,6 +878,68 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
       </div>
       {saveError && <p className="text-[11px]" style={{ color: 'var(--status-error-text)' }}>{saveError}</p>}
       <button onClick={() => void githubSave()} disabled={selected.size === 0 || saving} className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
+        style={{ background: 'var(--accent)', color: '#fff', opacity: (selected.size === 0 || saving) ? 0.5 : 1, cursor: (selected.size === 0 || saving) ? 'not-allowed' : 'pointer' }}>
+        {saving ? 'Saving…' : selected.size === 0 ? 'Select a project' : `Sync ${selected.size} project${selected.size === 1 ? '' : 's'}`}
+      </button>
+      {reloadWarning && (
+        <p className="text-[11px]" style={{ color: 'var(--t-faint)' }}>
+          The daemon wasn&apos;t running — saved, will take effect on next start.
+        </p>
+      )}
+    </div>
+  )
+}
+
+// ── Jira project picker (discover_jira_projects → save_integration_token) ────
+// Runs right after a Jira connect succeeds — OAuth (OAuthSetup's status==='done'
+// branch) OR API token (TokenSetup's done branch) — AND from ConnectedPanel's
+// "no projects selected" prompt. Same component, three entry points, since the
+// underlying gap (connected, no project chosen) is identical across all of them.
+// A thin view over `jiraPickerStore` so the discovered project list and the
+// user's checkbox selection survive the panel unmounting. Flat list (no
+// owner grouping — a Jira site's projects have no GitHub-org analogue).
+function JiraProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
+  const { projects, selected, loading, saving, loadError, saveError, reloadWarning, saved } = useConnectStore(jiraPickerStore, 'jira')
+
+  // Load once (store-guarded), and clear a completed save so reopening re-discovers.
+  useEffect(() => { resetJiraPickerIfSaved(); jiraEnsureLoaded() }, [])
+  useEffect(() => { if (saved) onSuccess?.(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [saved])
+
+  if (loading) return <p className="text-[11px]" style={{ color: 'var(--ink-3)' }}>Loading your Jira projects…</p>
+
+  if (loadError) return (
+    <div className="space-y-2">
+      <p className="text-[12px]" style={{ color: 'var(--status-error-text)' }}>{loadError}</p>
+      <button onClick={() => jiraEnsureLoaded()} className="text-[11px] px-3 py-1.5 rounded-md"
+        style={{ color: 'var(--color-state-proposal)', border: '1px solid var(--t-hair)', cursor: 'pointer', background: 'transparent' }}>
+        Retry
+      </button>
+    </div>
+  )
+
+  if (!projects || projects.length === 0) {
+    return (
+      <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-3)' }}>
+        No Jira projects found for this account.
+      </p>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
+        Pick which Jira projects to sync tasks from.
+      </p>
+      <div className="space-y-1 max-h-48 overflow-y-auto">
+        {projects.map((p: JiraProject) => (
+          <label key={p.id} className="flex items-center gap-2 py-1 text-[12px]" style={{ color: 'var(--ink)' }}>
+            <input type="checkbox" checked={selected.has(p.id)} onChange={() => jiraToggle(p.id)} />
+            {p.name} <span style={{ color: 'var(--ink-4)' }}>({p.key})</span>
+          </label>
+        ))}
+      </div>
+      {saveError && <p className="text-[11px]" style={{ color: 'var(--status-error-text)' }}>{saveError}</p>}
+      <button onClick={() => void jiraSave()} disabled={selected.size === 0 || saving} className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
         style={{ background: 'var(--accent)', color: '#fff', opacity: (selected.size === 0 || saving) ? 0.5 : 1, cursor: (selected.size === 0 || saving) ? 'not-allowed' : 'pointer' }}>
         {saving ? 'Saving…' : selected.size === 0 ? 'Select a project' : `Sync ${selected.size} project${selected.size === 1 ? '' : 's'}`}
       </button>
