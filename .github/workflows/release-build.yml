@@ -388,6 +388,12 @@ jobs:
           # companion write token is a SECRET (MERIDIAN_CENTRAL_TELEMETRY_TOKEN);
           # both must be present for a build to ship.
           MERIDIAN_CENTRAL_OTLP_ENDPOINT: ${{ vars.MERIDIAN_CENTRAL_OTLP_ENDPOINT }}
+          # Baked into the TRAY at compile time via option_env! (tray/src-tauri/
+          # src/crash.rs) for native-crash reporting to Sentry. A Sentry DSN is
+          # embeddable in clients (it only permits SENDING events, not reading),
+          # so a repo variable, not a secret. Unset → the tray never initialises
+          # Sentry, exactly like a source build.
+          MERIDIAN_SENTRY_DSN: ${{ vars.MERIDIAN_SENTRY_DSN }}
         # TWO cargo invocations: the daemon binary, then the tray app.
         #
         # The old shape tried to do both in one invocation by passing
@@ -677,6 +683,10 @@ jobs:
           # + src/observability/otlp_target.rs). Repo variable, not a secret;
           # unset → central error shipping stays inert.
           MERIDIAN_CENTRAL_OTLP_ENDPOINT: ${{ vars.MERIDIAN_CENTRAL_OTLP_ENDPOINT }}
+          # Baked into the tray .exe via option_env! (tray crash.rs) for Sentry
+          # native-crash reporting. Client-embeddable DSN → repo variable; unset
+          # → the tray never initialises Sentry.
+          MERIDIAN_SENTRY_DSN: ${{ vars.MERIDIAN_SENTRY_DSN }}
         run: |
           if [ "${CHANNEL}" = "staging" ]; then
             npm run build:windows:staging

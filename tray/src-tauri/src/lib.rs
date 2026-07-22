@@ -23,6 +23,7 @@ mod capture;
 // it must exist in non-capture builds too (nothing reads it there — harmless).
 mod capture_ignore;
 mod commands;
+mod crash;
 mod deep_link;
 
 /// Lowercase product name as macOS reports it after [`set_process_display_name`].
@@ -53,6 +54,21 @@ use tauri::{
 };
 
 pub fn run() {
+    // Native-crash capture (Phase 2B). MUST be first: `tauri-plugin-sentry`'s
+    // minidump reporter relaunches this exe in a special reporter mode that has
+    // to short-circuit before any app work. `crash::init_client()` returns None
+    // — and Sentry stays entirely off — unless the user has error reporting
+    // enabled AND a DSN was baked into this release build (see crash.rs). The
+    // client guard is held for the process lifetime; the minidump reporter and
+    // the plugin (below) only wire up when the client actually initialised.
+    let sentry_client = crash::init_client();
+    #[cfg(not(target_os = "ios"))]
+    // Closure (not the bare fn) so `&ClientInitGuard` deref-coerces to the
+    // `&Client` the reporter wants.
+    let _sentry_minidump = sentry_client
+        .as_ref()
+        .map(|c| tauri_plugin_sentry::minidump::init(c));
+
     // Tray telemetry. Emit the tray's own spans + logs (service.name =
     // meridian-tray) into the shared OTLP spool — the same one the daemon writes
     // and its shipper drains. In a PACKAGED install this is how tray errors
@@ -82,6 +98,13 @@ pub fn run() {
         // Registered unconditionally; the check is a no-op in a source/dev run
         // (the running binary isn't a packaged `.app` for the updater to swap).
         .plugin(tauri_plugin_updater::Builder::new().build());
+    // Sentry webview + backend integration (Phase 2B) — only when the crash
+    // client initialised (consent + baked DSN). This injects @sentry/browser
+    // into the webview and routes its events through the Rust client so JS and
+    // native crashes share one project + device context.
+    if let Some(client) = &sentry_client {
+        builder = builder.plugin(tauri_plugin_sentry::init(client));
+    }
     // Clerk email sign-in on the setup wizard (see commands::account and
     // ui/app/setup/signin.tsx). `ClerkPluginBuilder::build()` HARD-FAILS
     // `.setup()` (killing the whole tray, not just sign-in) when the

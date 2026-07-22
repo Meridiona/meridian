@@ -102,6 +102,17 @@ tracing = "0.1"
 # redacted + error-only) in release too, not just under a dev feature. The OTel
 # machinery is already linked via this dep, so the init call adds no new deps.
 meridian = { path = "../.." }
+# Native-crash capture (Phase 2B): minidumps + fingerprint grouping + release
+# health for the tray — the crash class the OTLP spool structurally can't see
+# (segfault, panic before the logger inits, OOM). `tauri-plugin-sentry` re-exports
+# sentry-rust-minidump, so that is NOT listed separately. Deliberately WITHOUT the
+# `tracing` feature: logged errors already egress via the OTLP pipeline (Phase
+# 2A), so Sentry stays scoped to crashes/panics and nothing is double-reported.
+# rustls transport to match the tray's existing TLS stack (no native-tls/openssl).
+# Inert without a baked DSN + user consent (see `crash.rs`) — a source build
+# never talks to Sentry.
+sentry = { version = "0.42", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls"] }
+tauri-plugin-sentry = "0.5"
 # Forked screenpipe @ last-MIT 892199f74 (Meridiona/screenpipe-fork). In-process
 # screen capture + Apple Vision OCR. Optional → only pulled by the `capture`
 # feature (heavy: ScreenCaptureKit/cidre/sck-rs). Private repo: local builds use

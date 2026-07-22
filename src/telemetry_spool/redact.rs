@@ -401,7 +401,11 @@ fn clamp(s: String) -> String {
 /// tokens/hashes/base64 blobs. It cannot catch every possible content fragment,
 /// so it is paired with the error-only filter (which already excludes the
 /// high-volume content-bearing INFO/SPAN records) and the [`clamp`] length cap.
-fn scrub_text(s: &str) -> String {
+///
+/// `pub` because the tray's Sentry `before_send` (`crash.rs`, Phase 2B) runs the
+/// exact same scrub over crash event messages/exception values, so the on-device
+/// redaction is identical whether an error egresses via the OTLP spool or Sentry.
+pub fn scrub_text(s: &str) -> String {
     static RULES: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
     let rules = RULES.get_or_init(|| {
         vec![
