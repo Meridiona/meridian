@@ -1002,6 +1002,18 @@ fn set_process_display_name(name: &str) {
 /// spawning fresh ones, so pausing then resuming is idempotent. Does nothing
 /// when Screen Recording is not granted (logs and returns).
 ///
+/// **Joins the previous UI-event recorder thread before spawning its
+/// replacement.** That thread's `run_app_observer` (screenpipe-a11y)
+/// registers `NotificationGuard`s on the shared `NSWorkspace` notification
+/// center and unregisters them on stop; spawning a new recorder while the
+/// old one is still mid-teardown puts two threads on that one shared
+/// singleton at once, which has produced a double-free abort
+/// (`BUG_IN_CLIENT_OF_LIBMALLOC_POINTER_BEING_FREED_WAS_NOT_ALLOCATED` under
+/// `removeObserver:`/`_Block_release`) in production. The join is bounded —
+/// the old thread only blocks on its own recorder's `handle.stop()`, at most
+/// a few hundred ms — and only runs on a restart (pause/resume, launch),
+/// never on the steady-state capture path.
+///
 /// # Who calls this
 /// Once from `lib.rs`'s `setup()` on launch, and again from
 /// `commands::pause_for_duration` on resume.
@@ -1057,11 +1069,18 @@ pub(crate) fn start_capture(
         s.capture_ignore.clone()
     };
 
-    // Drop any previous cancel senders — this signals the old tasks to exit.
-    {
+    // Drop any previous cancel senders — this signals the old tasks to exit —
+    // then join the old UI-event recorder thread so its screenpipe-a11y
+    // observer teardown fully completes before we spawn a replacement below
+    // (see this fn's doc comment for why that ordering matters).
+    let previous_ui_recorder_thread = {
         let mut s = app_state.lock().unwrap();
         drop(s.engine_cancel.take());
         drop(s.ui_consumer_cancel.take());
+        s.ui_recorder_thread.take()
+    };
+    if let Some(handle) = previous_ui_recorder_thread {
+        let _ = handle.join();
     }
 
     // Cancellation channels: dropping the Sender exits the receiving task.
@@ -1199,12 +1218,16 @@ pub(crate) fn start_capture(
             }
         }
     });
-    std::thread::spawn(move || capture::ui_events::run_ui_event_recorder(ui_tx));
+    let ui_recorder_thread =
+        std::thread::spawn(move || capture::ui_events::run_ui_event_recorder(ui_tx));
 
-    // Store senders in state; dropping them (on pause) cancels the tasks.
+    // Store senders + thread handle in state; dropping the senders (on pause)
+    // cancels the tasks, and the next start_capture joins the handle before
+    // spawning a replacement.
     let mut s = app_state.lock().unwrap();
     s.engine_cancel = Some(engine_cancel_tx);
     s.ui_consumer_cancel = Some(ui_cancel_tx);
+    s.ui_recorder_thread = Some(ui_recorder_thread);
     tracing::info!("capture: engine and ui recorder started");
 }
 
