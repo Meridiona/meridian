@@ -254,6 +254,54 @@ pub async fn plan_handled(pool: &SqlitePool, date: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// A day's plan as the *review* side needs it: the committed rows and whether
+/// the dev actually stood behind them.
+///
+/// Distinct from [`PlanResponse`] on purpose. That one is the planner screen's
+/// payload and carries `suggestions` + `available`, which means scoring the whole
+/// board — real work that the daily summary has no use for. This is the read for
+/// anyone asking "what did they say they would do today?".
+#[derive(Debug, Clone, Serialize)]
+pub struct DayPlan {
+    /// The committed rows, in plan order. Empty when nothing was committed.
+    pub items: Vec<PlanItem>,
+    /// `daily_plan_meta.confirmed_at IS NOT NULL`. Note this is ALSO true after a
+    /// skip — see [`plan_handled`] — which is why `skipped` must be checked too.
+    pub confirmed: bool,
+    /// The ritual was dismissed rather than answered.
+    pub skipped: bool,
+}
+
+impl DayPlan {
+    /// The canonical "they planned this day" test, matching what the planner UI
+    /// (`PlanView.tsx`) and the focus checklist (`OverviewPanel.tsx`) both use:
+    /// confirmed, not skipped, and actually holding something. A confirmed but
+    /// empty plan is a day with no plan, not a day that planned nothing.
+    pub fn is_planned(&self) -> bool {
+        self.confirmed && !self.skipped && !self.items.is_empty()
+    }
+}
+
+/// Read one day's committed plan without scoring the board.
+///
+/// # Who calls this
+/// [`crate::day_evidence::collect`] — the daily summary's planned-vs-actual side.
+#[tracing::instrument(skip(pool))]
+pub async fn plan_for_day(
+    pool: &SqlitePool,
+    date: &str,
+    today: NaiveDate,
+) -> anyhow::Result<DayPlan> {
+    let meta = load_meta(pool, date).await?;
+    let items = load_plan(pool, date, today).await?;
+    tracing::debug!(rows = items.len(), "plan.read.day_plan");
+    Ok(DayPlan {
+        items,
+        confirmed: meta.confirmed_at.is_some(),
+        skipped: meta.skipped == 1,
+    })
+}
+
 /// task_keys committed on the most recent planned day strictly before `date`.
 async fn carryover_keys(pool: &SqlitePool, date: &str) -> anyhow::Result<HashSet<String>> {
     if !table_exists(pool, "daily_plan").await {

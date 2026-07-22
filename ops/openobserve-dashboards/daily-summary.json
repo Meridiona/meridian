@@ -1,7 +1,7 @@
 {
   "version": 8,
   "title": "Daily Summary",
-  "description": "The AI-composed end-of-day review (span `day_summary.generate`, service meridian-rust). ONE centralised LLM call reads the day's evidence (`day_evidence.collect`) and answers with a narrative, a few insights, and 2-4 raw Vega-Lite specs it chose itself. The model picks the FORM; it never supplies a NUMBER - every spec binds its data by name and the real rows are injected at render, so a hallucinated figure has nowhere to live.\n\nWHAT TO WATCH: `fallback` is the report card. Raw Vega-Lite emission was chosen over a constrained schema, which means no provider is correct by construction and validity rests entirely on validation + fallback. A rising fallback rate, or `drop_reasons` clustering on `vega_lite_schema`, is the signal that the decision needs revisiting (the answer would be a narrower schema, not more retries - there is no repair loop, on purpose: a second call would double a ~1 minute action's latency).\n\n`drop_reasons` tags: vega_lite_schema (failed the real grammar) | inline_data (tried to supply its own numbers) | unknown_dataset | unknown_field | missing_data_name. Each row's full trace carries the llm.request(prompt+input)/llm.response(output) subspans. Click a row for the trace.",
+  "description": "The end-of-day review (span `day_summary.generate`, service meridian-rust). ONE centralised LLM call reads the day's evidence (`day_evidence.collect`) and answers with ONLY a headline and three insight cards. The plan ledger - which committed tickets were done, the counts, the percentage, every duration - is resolved DETERMINISTICALLY in Rust (`day_evidence::adherence::resolve_deterministic`) from the worklog match rows the drafts already wrote; the model is never asked to judge the plan.\n\nWHAT TO WATCH: `fallback` is the report card - the call failed or the answer was not JSON, so the day lost its cards (the ring and checklist survive, being computed). `done` against `plan_items` is the day's adherence. Because the ledger no longer depends on the model, a fallback costs prose only.\n\nThere is no repair loop, on purpose: a second call would double a ~1 minute action's latency. Each row's full trace carries the llm.request(prompt+input)/llm.response(output) subspans. Click a row for the trace.",
   "variables": {
     "list": [],
     "showDynamicFilters": true
@@ -71,7 +71,7 @@
           "id": "m_fallback",
           "type": "metric",
           "title": "Fallback rate %",
-          "description": "Share of generations where the model produced NO usable panel and the deterministic set was substituted. This is the feature's report card: raw Vega-Lite emission was chosen over a constrained schema, and this number is what says whether that holds.",
+          "description": "Share of generations where the model produced NO usable prose (the call failed or the answer was not JSON), so the cards were dropped. The ring and checklist are computed and survive, so this is a prose-loss rate, not a broken screen.",
           "config": {
             "show_legends": false,
             "no_value_replacement": "0",
@@ -121,10 +121,10 @@
           }
         },
         {
-          "id": "m_dropped",
+          "id": "m_certain",
           "type": "metric",
-          "title": "Panels dropped",
-          "description": "Panels the validator rejected across all generations in range",
+          "title": "Tickets done",
+          "description": "Committed plan tickets resolved DONE, summed over the range - a ticket a drafted/posted worklog matched, or one that went terminal. Deterministic, never the model's call. Against `plan_items` this is the range's plan adherence.",
           "config": {
             "show_legends": false,
             "no_value_replacement": "0",
@@ -133,7 +133,7 @@
           "queryType": "sql",
           "queries": [
             {
-              "query": "SELECT sum(panels_dropped) as y_axis_1 FROM \"default\" WHERE operation_name='day_summary.generate'",
+              "query": "SELECT sum(done) as y_axis_1 FROM \"default\" WHERE operation_name='day_summary.generate'",
               "customQuery": true,
               "fields": {
                 "stream": "default",
@@ -141,7 +141,7 @@
                 "x": [],
                 "y": [
                   {
-                    "label": "Panels dropped",
+                    "label": "Tickets done",
                     "alias": "y_axis_1",
                     "column": "y_axis_1",
                     "color": "#e0a052",
@@ -173,10 +173,10 @@
           }
         },
         {
-          "id": "m_kept",
+          "id": "m_plan_items",
           "type": "metric",
-          "title": "Panels kept",
-          "description": "Panels that passed validation and reached the screen",
+          "title": "Planned tickets scored",
+          "description": "Committed plan rows the ledger covered, summed over the range. Zero across the board means nobody is confirming a daily plan, which is the no-plan branch of the screen rather than a fault.",
           "config": {
             "show_legends": false,
             "no_value_replacement": "0",
@@ -185,7 +185,7 @@
           "queryType": "sql",
           "queries": [
             {
-              "query": "SELECT sum(panels_kept) as y_axis_1 FROM \"default\" WHERE operation_name='day_summary.generate'",
+              "query": "SELECT sum(plan_items) as y_axis_1 FROM \"default\" WHERE operation_name='day_summary.generate'",
               "customQuery": true,
               "fields": {
                 "stream": "default",
@@ -193,7 +193,7 @@
                 "x": [],
                 "y": [
                   {
-                    "label": "Panels kept",
+                    "label": "Planned tickets",
                     "alias": "y_axis_1",
                     "column": "y_axis_1",
                     "color": "#52a852",
@@ -288,17 +288,17 @@
           }
         },
         {
-          "id": "t_drops",
+          "id": "t_adherence",
           "type": "table",
-          "title": "Why panels were dropped",
-          "description": "The drop-reason tags per generation: vega_lite_schema | inline_data | missing_data_name | unknown_dataset | unknown_field. `inline_data` means the model tried to supply its own numbers - the one rule that keeps hallucinated figures off the screen.",
+          "title": "Plan adherence per day",
+          "description": "Every day that had a committed plan: how many tickets it held, how many were done, the computed achievement percentage, and the minutes of substantial work no planned ticket accounted for. `unplanned_minutes` is not a fault - it is usually the interesting half of the day.",
           "config": {
             "show_legends": false
           },
           "queryType": "sql",
           "queries": [
             {
-              "query": "SELECT day_local as x_axis_1, drop_reasons as x_axis_2, panels_dropped as y_axis_1, model as x_axis_3 FROM \"default\" WHERE operation_name='day_summary.generate' AND panels_dropped > 0 ORDER BY panels_dropped DESC",
+              "query": "SELECT day_local as x_axis_1, plan_items as y_axis_1, done as y_axis_2, achievement_pct as y_axis_3, unplanned_minutes as y_axis_4 FROM \"default\" WHERE operation_name='day_summary.generate' AND planned = true ORDER BY _timestamp DESC",
               "customQuery": true,
               "fields": {
                 "stream": "default",
@@ -313,33 +313,37 @@
                     "havingConditions": [],
                     "sortBy": "ASC",
                     "aggregationFunction": null
-                  },
-                  {
-                    "label": "Reasons",
-                    "alias": "x_axis_2",
-                    "column": "x_axis_2",
-                    "color": null,
-                    "isDerived": false,
-                    "havingConditions": [],
-                    "sortBy": "ASC",
-                    "aggregationFunction": null
-                  },
-                  {
-                    "label": "Model",
-                    "alias": "x_axis_3",
-                    "column": "x_axis_3",
-                    "color": null,
-                    "isDerived": false,
-                    "havingConditions": [],
-                    "sortBy": "ASC",
-                    "aggregationFunction": null
                   }
                 ],
                 "y": [
                   {
-                    "label": "Dropped",
+                    "label": "Planned",
                     "alias": "y_axis_1",
                     "column": "y_axis_1",
+                    "color": "#5960b2",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Done",
+                    "alias": "y_axis_2",
+                    "column": "y_axis_2",
+                    "color": "#5960b2",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Achievement %",
+                    "alias": "y_axis_3",
+                    "column": "y_axis_3",
+                    "color": "#5960b2",
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Unplanned minutes",
+                    "alias": "y_axis_4",
+                    "column": "y_axis_4",
                     "color": "#5960b2",
                     "isDerived": false,
                     "havingConditions": []
@@ -372,7 +376,7 @@
           "id": "c_latency",
           "type": "line",
           "title": "Generation latency (ms)",
-          "description": "day_summary.generate wall time. One LLM call plus a ~100ms Vega-Lite schema compile on the first call of a process.",
+          "description": "day_summary.generate wall time. One LLM call for the headline and cards; the deterministic ledger adds only a DB read.",
           "config": {
             "show_legends": true,
             "legends_position": "bottom",
@@ -443,14 +447,14 @@
           "id": "t_runs",
           "type": "table",
           "title": "Recent generations",
-          "description": "Every generation: the day summarised, who served it, how many panels survived, and the prompt size actually sent (post-cap). Click a row for the full trace - the llm.request/llm.response subspans carry the exact prompt and the exact answer.",
+          "description": "Every generation: the day summarised, who served it, whether it had a plan, what the ledger came to, and the prompt size actually sent (post-cap). Click a row for the full trace - the llm.request/llm.response subspans carry the exact prompt and the exact answer.",
           "config": {
             "show_legends": false
           },
           "queryType": "sql",
           "queries": [
             {
-              "query": "SELECT day_local as x_axis_1, llm_provider as x_axis_2, model as x_axis_3, panels_returned as y_axis_1, panels_kept as y_axis_2, panels_dropped as y_axis_3, prompt_chars as y_axis_4, fallback as x_axis_4 FROM \"default\" WHERE operation_name='day_summary.generate' ORDER BY _timestamp DESC",
+              "query": "SELECT day_local as x_axis_1, llm_provider as x_axis_2, model as x_axis_3, planned as x_axis_4, fallback as x_axis_5, plan_items as y_axis_1, done as y_axis_2, achievement_pct as y_axis_3, unplanned_minutes as y_axis_4, insights as y_axis_5, prompt_chars as y_axis_6 FROM \"default\" WHERE operation_name='day_summary.generate' ORDER BY _timestamp DESC",
               "customQuery": true,
               "fields": {
                 "stream": "default",
@@ -487,9 +491,19 @@
                     "aggregationFunction": null
                   },
                   {
-                    "label": "Fallback",
+                    "label": "Planned",
                     "alias": "x_axis_4",
                     "column": "x_axis_4",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": [],
+                    "sortBy": "ASC",
+                    "aggregationFunction": null
+                  },
+                  {
+                    "label": "Fallback",
+                    "alias": "x_axis_5",
+                    "column": "x_axis_5",
                     "color": null,
                     "isDerived": false,
                     "havingConditions": [],
@@ -499,7 +513,7 @@
                 ],
                 "y": [
                   {
-                    "label": "Returned",
+                    "label": "Plan items",
                     "alias": "y_axis_1",
                     "column": "y_axis_1",
                     "color": null,
@@ -507,7 +521,7 @@
                     "havingConditions": []
                   },
                   {
-                    "label": "Kept",
+                    "label": "Done",
                     "alias": "y_axis_2",
                     "column": "y_axis_2",
                     "color": null,
@@ -515,7 +529,7 @@
                     "havingConditions": []
                   },
                   {
-                    "label": "Dropped",
+                    "label": "Achievement %",
                     "alias": "y_axis_3",
                     "column": "y_axis_3",
                     "color": null,
@@ -523,9 +537,25 @@
                     "havingConditions": []
                   },
                   {
-                    "label": "Prompt chars",
+                    "label": "Themes",
                     "alias": "y_axis_4",
                     "column": "y_axis_4",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Learned",
+                    "alias": "y_axis_5",
+                    "column": "y_axis_5",
+                    "color": null,
+                    "isDerived": false,
+                    "havingConditions": []
+                  },
+                  {
+                    "label": "Prompt chars",
+                    "alias": "y_axis_6",
+                    "column": "y_axis_6",
                     "color": null,
                     "isDerived": false,
                     "havingConditions": []

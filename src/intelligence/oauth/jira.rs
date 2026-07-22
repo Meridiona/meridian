@@ -22,8 +22,10 @@ use crate::config::JiraConfig;
 pub use meridian_oauth::jira::*;
 
 /// True when all three Basic-auth fields are non-empty after trimming. Extracted
-/// so the eligibility check can be unit-tested without touching the OAuth store.
-fn has_basic_auth(jira: &JiraConfig) -> bool {
+/// so the eligibility check can be unit-tested without touching the OAuth store,
+/// and so callers outside this module (e.g. the sync-error remedy mapping in
+/// `providers::jira`) can tell which auth path a failure came from.
+pub(crate) fn has_basic_auth(jira: &JiraConfig) -> bool {
     !jira.base_url.trim().is_empty()
         && !jira.email.trim().is_empty()
         && !jira.api_token.trim().is_empty()

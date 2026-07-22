@@ -166,6 +166,11 @@ pub struct AppState {
     /// Dropping this sender cancels the UI event consumer task, which causes the OS
     /// recorder thread to exit (it checks `tx.is_closed()` every 500ms).
     pub ui_consumer_cancel: Option<oneshot::Sender<()>>,
+    /// Handle to the OS thread running `capture::ui_events::run_ui_event_recorder`.
+    /// `start_capture` joins this before spawning a replacement — see its
+    /// doc comment for why a synchronous handoff here matters (a screenpipe-a11y
+    /// double-free otherwise reachable when two recorder generations overlap).
+    pub ui_recorder_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Default for AppState {
@@ -201,6 +206,7 @@ impl Default for AppState {
             last_menu_state: HealthStatus::Unknown,
             engine_cancel: None,
             ui_consumer_cancel: None,
+            ui_recorder_thread: None,
         }
     }
 }

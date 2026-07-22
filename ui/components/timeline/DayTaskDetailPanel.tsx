@@ -28,7 +28,7 @@ import type { SettingsSection } from './settings/types'
 import { Bullets, Field, LinkChip } from './dayTaskKit'
 import { useWorklog, type WorklogState } from './useWorklog'
 import { WorklogTicketPicker } from './WorklogTicketPicker'
-import { DraftTargets } from './WorklogTargets'
+import { DraftTargets, UpdateBody, hasPerTicketUpdates } from './WorklogTargets'
 
 /** Join tracker names for prose: `['Jira']`→"Jira", `['Jira','Linear']`→"Jira and
  *  Linear", more →"Jira, Linear and GitHub". */
@@ -203,21 +203,10 @@ function DraftPreview({ draft, hue, busy, trackers, onOpenTask, onDismiss, onSet
         style={{ border: `1px solid color-mix(in srgb, ${hue} 26%, transparent)`, background: `color-mix(in srgb, ${hue} 5%, var(--t-card))` }}>
         <DraftTargets draft={draft} busy={busy} trackers={trackers} onOpenTask={onOpenTask}
           onDismiss={onDismiss} onSetProvider={onSetProvider} />
-        {draft.update.summary && (
-          <p className="mt-body-sm" style={{ color: 'var(--t-title)', fontSize: 12.5, lineHeight: 1.55 }}>{draft.update.summary}</p>
-        )}
-        {draft.update.sections
-          .filter((sec) => sec.heading.trim() && sec.points.some((p) => p.trim()))
-          .map((sec, i) => (
-            <Field key={`${sec.heading}-${i}`} label={sec.heading}>
-              <Bullets items={sec.points.filter((p) => p.trim())} size={12} />
-            </Field>
-          ))}
-        {draft.update.status && (
-          <Field label="Status">
-            <p className="mt-body-sm" style={{ color: 'var(--t-muted)', fontSize: 12, lineHeight: 1.5 }}>{draft.update.status}</p>
-          </Field>
-        )}
+        {/* When the model split the work per ticket, each body renders inside its
+            own target row (DraftTargets). The shared block is only for the propose
+            branch and single/legacy matches, where there's one body for the draft. */}
+        {!hasPerTicketUpdates(draft) && <UpdateBody update={draft.update} />}
       </div>
       <DraftProvenance draft={draft} />
     </div>
@@ -280,7 +269,8 @@ function WorklogFooter({ wl, hue, linkedTicket, integrations, trackers, onOpenSe
         <GeneratingBar hue={hue} label="Generating your worklog…"
           detail="Reading your work, comparing it against today's tasks and drafting the update - you can keep using Meridian while this runs." />
       ) : posted ? (
-        <PostedBar done={done} linkedTicket={linkedTicket} provider={draft?.provider ?? ''} />
+        <PostedBar done={done} linkedTicket={linkedTicket} provider={draft?.provider ?? ''}
+          hue={hue} busy={busy} onRegenerate={generate} />
       ) : !draft ? (
         noTracker
           ? <ConnectTrackerCta hue={hue} onConnect={() => onOpenSettings('integrations')} />
@@ -303,7 +293,10 @@ function WorklogFooter({ wl, hue, linkedTicket, integrations, trackers, onOpenSe
  *  Lists every ticket rather than the day-task's `linked_ticket`: that column holds
  *  one key, so a two-ticket update would silently report half of what it did. The
  *  linked ticket is only the fallback for a row posted before the draft existed. */
-function PostedBar({ done, linkedTicket, provider }: { done: PostedLink[]; linkedTicket: string | null; provider: string }) {
+function PostedBar({ done, linkedTicket, provider, hue, busy, onRegenerate }: {
+  done: PostedLink[]; linkedTicket: string | null; provider: string
+  hue: string; busy: boolean; onRegenerate: () => void
+}) {
   const links: PostedLink[] = done.length > 0
     ? done
     : linkedTicket ? [{ task_key: linkedTicket, browse_url: null, provider }] : []
@@ -312,19 +305,35 @@ function PostedBar({ done, linkedTicket, provider }: { done: PostedLink[]; linke
   // is the one to badge.
   const meta = PROVIDER_META[links[0]?.provider ?? provider]
   return (
-    <div className="space-y-1.5">
-      <span className="inline-flex items-center gap-1.5 rounded-full py-1 pl-1 pr-3"
-        style={{ background: `color-mix(in srgb, ${meta?.color ?? 'var(--color-state-approved)'} 14%, transparent)` }}>
-        <ProviderGlyph provider={links[0]?.provider ?? provider} size={18} />
-        <span className="mt-body-sm" style={{ color: meta?.color ?? 'var(--color-state-approved)', fontSize: 12.5, fontWeight: 700 }}>
-          Posted{links.length > 1 ? ` to ${links.length} tickets` : links[0] ? ` to ${links[0].task_key}` : ''}
+    <div className="space-y-2.5">
+      <div className="space-y-1.5">
+        <span className="inline-flex items-center gap-1.5 rounded-full py-1 pl-1 pr-3"
+          style={{ background: `color-mix(in srgb, ${meta?.color ?? 'var(--color-state-approved)'} 14%, transparent)` }}>
+          <ProviderGlyph provider={links[0]?.provider ?? provider} size={18} />
+          <span className="mt-body-sm" style={{ color: meta?.color ?? 'var(--color-state-approved)', fontSize: 12.5, fontWeight: 700 }}>
+            Posted{links.length > 1 ? ` to ${links.length} tickets` : links[0] ? ` to ${links[0].task_key}` : ''}
+          </span>
         </span>
-      </span>
-      {links.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          {links.map((l) => <LinkChip key={l.task_key} label={l.task_key} url={l.browse_url} />)}
-        </div>
-      )}
+        {links.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {links.map((l) => <LinkChip key={l.task_key} label={l.task_key} url={l.browse_url} />)}
+          </div>
+        )}
+      </div>
+      {/* Posting appends a comment and can't be undone, but work keeps going - so
+          the posted update goes stale. Regenerate drafts a fresh follow-up from the
+          work done since; approving it posts a NEW comment (the one already on the
+          tracker stays). Kept quiet (a text link, not a button) so it never reads as
+          "your post didn't land". */}
+      <div className="flex items-center gap-1.5" style={{ color: 'var(--t-faint)', fontSize: 11.5 }}>
+        <span>Kept working on this?</span>
+        <button onClick={onRegenerate} disabled={busy}
+          className="inline-flex items-center gap-1 rounded"
+          style={{ color: hue, fontWeight: 700, opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer', textDecoration: 'underline' }}
+          title="Regenerate a fresh update and post it as a follow-up comment">
+          <span aria-hidden>↻</span> Regenerate
+        </button>
+      </div>
     </div>
   )
 }

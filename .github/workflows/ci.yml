@@ -273,7 +273,13 @@ jobs:
           # authored, no upstream merge:
           #   552e7f8b adityaharishch  Merge pull request #2 (825b038d, already audited above)
           #   064c44cc Akarsh Hegde    fix(screen): disable sck-rs unconditionally, not just on macOS 26+
-          expected="064c44ccd8c50716f21eec1663e1350e848ca5f5"
+          #
+          # 2026-07-22, 064c44cc -> 3c99154. Two commits, all Meridiona-
+          # authored, no upstream merge (ae39b5f is a no-op merge wrapper —
+          # its tree is identical to 064c44cc, already audited above):
+          #   ae39b5f  Akarsh Hegde    Merge pull request #3 (064c44cc, already audited above)
+          #   3c99154  adityaharishch  fix(a11y): serialize workspace-observer registration to stop a double-free
+          expected="3c99154833b8087b1e215e5af748721096c46f01"
           f="tray/src-tauri/Cargo.toml"
           fail=0
           for crate in screenpipe-screen screenpipe-a11y; do
