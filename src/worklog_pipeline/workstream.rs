@@ -180,6 +180,16 @@ pub async fn run(pool: &SqlitePool, day_local: &str, hour_label: &str, report: &
         let rows = to_rows(&sanitized, day_local, &prior, &now);
         task_db::replace_day_tasks(pool, day_local, &rows, &now).await?;
 
+        // Re-apply the user's dismiss/merge corrections onto the freshly-rewritten
+        // day: the fold re-derives grouping from scratch, so without this it would
+        // resurrect a dismissed workstream or re-split a merge. Best-effort - a
+        // reconcile failure must never fail the hour's fold.
+        if let Err(e) =
+            meridian_core::day_task_corrections::reconcile(pool, day_local, &now).await
+        {
+            tracing::warn!(day = day_local, error = %e, "worklog: day-task correction reconcile failed after fold");
+        }
+
         tracing::info!(
             hour = hour_label,
             n_tasks = rows.len(),

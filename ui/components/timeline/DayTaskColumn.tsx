@@ -73,7 +73,7 @@ const META_MIN_PX = 62
 const SUMMARY_MIN_PX = 104
 const SUMMARY_LINE_PX = 17 // approx line height of a preview line
 
-export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, hourStatus = [], capturing = null, isSolo = false }: {
+export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, refreshToken = 0, hourStatus = [], capturing = null, isSolo = false }: {
   day: string
   isToday: boolean
   // Selection is owned by the shell so the clicked task's detail can render in
@@ -85,6 +85,10 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, hourS
   // straight into this real timeline). When set, the column renders exactly
   // these tasks and never fetches or polls — the caller owns the data.
   tasks?: DayTask[]
+  // Bumped by the shell after a dismiss/merge so this self-fetching column
+  // reloads immediately (rather than waiting out the 30 s poll). Ignored on the
+  // injected-tasks path, which owns its data.
+  refreshToken?: number
   // The live-hour strip's inputs. Passed down rather than fetched here (this
   // column otherwise reads its own data): useTimelineData already loads and
   // polls get_hour_status for the shell, and a second poller for the same rows
@@ -131,7 +135,7 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, hourS
     // Only the live day keeps changing; a past day is settled.
     const id = isToday ? setInterval(fetchTasks, 30_000) : undefined
     return () => { alive = false; if (id) clearInterval(id) }
-  }, [day, isToday, tasks])
+  }, [day, isToday, tasks, refreshToken])
 
   // Two-pass layout: the window (and thus the pixel scale) depends only on the
   // tasks' real footprints, so lay out once lane-agnostically to size the column,
