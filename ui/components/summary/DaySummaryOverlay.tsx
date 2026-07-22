@@ -42,6 +42,7 @@ import { hhmmToMin } from '@/components/timeline/dayTaskLayout'
 import { formatDayLabel } from '@/components/timeline/types'
 import { fmtDur } from '@/components/atoms'
 import type { SettingsSection } from '@/components/timeline/settings/types'
+import type { RuntimeSettings } from '@/lib/settings'
 import { Composing } from './Composing'
 import { DayScore } from './DayScore'
 import { Insights } from './Insights'
@@ -135,6 +136,15 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<DayTaskDetail | null>(null)
   const [hovered, setHovered] = useState<number | null>(null)
+  // The end-of-day time the user chose, if any — drives the pre-compose copy that
+  // tells them when this builds itself. `null` = no time set (never scheduled).
+  const [autoTime, setAutoTime] = useState<string | null>(null)
+
+  useEffect(() => {
+    load<RuntimeSettings>('/api/settings', 'get_settings')
+      .then(s => setAutoTime(s.worklog_auto_generate_time))
+      .catch(() => {})
+  }, [])
 
   // Which days have already had their one silent refresh. A ref, not state: it must
   // not trigger a render, and it must survive the day flipping back and forth so a
@@ -150,6 +160,9 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
+  // Recompose the prose only (Regenerate on an existing summary, and the quiet
+  // staleness refresh). The deterministic ledger binds to whatever worklogs are
+  // already drafted — it does not draft new ones.
   const generate = useCallback(async () => {
     setGenerating(true)
     setError(null)
@@ -163,6 +176,25 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
         .catch(() => {})
     } catch (e) {
       setError(e instanceof Error ? e.message : typeof e === 'string' ? e : 'Could not compose the summary')
+    } finally {
+      setGenerating(false)
+    }
+  }, [day])
+
+  // "Generate now" — the same work the end-of-day pass does, on demand: draft the
+  // day's worklogs FIRST, then compose over the fresh matches. Slow (a worklog is
+  // one LLM call per qualifying task), so the Composing state covers the wait.
+  const generateNow = useCallback(async () => {
+    setGenerating(true)
+    setError(null)
+    try {
+      const s = await invoke<DaySummary>('generate_day_summary_now', { day })
+      setSummary(s)
+      await load<DaySummaryData>(API, 'get_day_summary_data', { day })
+        .then(setData)
+        .catch(() => {})
+    } catch (e) {
+      setError(e instanceof Error ? e.message : typeof e === 'string' ? e : 'Could not generate the summary')
     } finally {
       setGenerating(false)
     }
@@ -259,15 +291,17 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
           </div>
 
           <div className="flex items-center gap-2.5 shrink-0">
-            {hasWork && (
+            {/* Only once a summary exists: pre-compose, the CTA lives in the body
+                where the scheduling copy explains what "Generate now" will do. */}
+            {hasWork && summary && (
               <button onClick={generate} disabled={generating}
                 className="rounded-full px-3.5 py-1.5 mt-label transition-opacity disabled:opacity-50 hover:opacity-85"
                 style={{
-                  background: summary ? 'transparent' : 'var(--accent)',
-                  color: summary ? 'var(--t-muted)' : '#fff',
-                  border: summary ? '1px solid var(--t-hair)' : '1px solid transparent',
+                  background: 'transparent',
+                  color: 'var(--t-muted)',
+                  border: '1px solid var(--t-hair)',
                 }}>
-                {generating ? 'Composing…' : summary ? 'Regenerate' : 'Compose summary'}
+                {generating ? 'Composing…' : 'Regenerate'}
               </button>
             )}
             <button onClick={onClose} aria-label="Close"
@@ -291,10 +325,7 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
         ) : generating && !summary ? (
           <Composing planned={sc?.planned ?? false} />
         ) : !summary ? (
-          <Centered
-            title="How did this day go?"
-            text="Compose a summary and Meridian will read the whole day back to you - what you got through, what took the time, and how it sat against your plan."
-          />
+          <PreCompose autoTime={autoTime} onGenerate={generateNow} />
         ) : (
           // The one scroll on this screen. A ten-ticket plan plus a long day of
           // workstreams genuinely does not fit, and clipping it would be worse
@@ -401,6 +432,49 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
         )}
       </AnimatePresence>
       </div>
+    </div>
+  )
+}
+
+/** "18:00" → "6:00 PM". Falls back to the raw string on anything unparseable. */
+function fmtClock(hhmm: string): string {
+  const [h, m] = hhmm.split(':').map(Number)
+  if (Number.isNaN(h) || Number.isNaN(m)) return hhmm
+  const ampm = h < 12 ? 'AM' : 'PM'
+  const h12 = h % 12 === 0 ? 12 : h % 12
+  return `${h12}:${String(m).padStart(2, '0')} ${ampm}`
+}
+
+/** The pre-compose screen: what happens on its own, and the way to do it now.
+ *
+ *  When an end-of-day time is set, this is not an empty state but a promise - at
+ *  that time Meridian drafts the worklogs, composes this summary, and notifies the
+ *  user to review it. "Generate now" is the same work, on demand, for when they
+ *  don't want to wait. With no time set, it is an invitation to do it now (and a
+ *  pointer to schedule it). */
+function PreCompose({ autoTime, onGenerate }: {
+  autoTime: string | null
+  onGenerate: () => void
+}) {
+  return (
+    <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-4 px-8 text-center">
+      <p style={{
+        font: '800 21px var(--font-sans)',
+        letterSpacing: '-0.025em',
+        color: 'var(--t-title)',
+      }}>
+        How did this day go?
+      </p>
+      <p className="mt-body" style={{ color: 'var(--t-faint-2)', maxWidth: '50ch', lineHeight: 1.6 }}>
+        {autoTime
+          ? `At ${fmtClock(autoTime)} Meridian will draft your worklogs and put this summary together, then notify you to review them. You can do it now instead.`
+          : 'Meridian will draft your worklogs and read the whole day back to you - what you got through, what took the time, and how it sat against your plan. Set an end-of-day time in Settings to have this build itself, or do it now.'}
+      </p>
+      <button onClick={onGenerate}
+        className="rounded-full px-5 py-2 mt-label transition-opacity hover:opacity-85"
+        style={{ background: 'var(--t-title)', color: 'var(--t-panel)', fontWeight: 700 }}>
+        Generate now
+      </button>
     </div>
   )
 }

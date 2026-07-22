@@ -94,7 +94,16 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter", "chrono", "
 tracing-opentelemetry = "0.28"
 opentelemetry = "0.27"
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio", "logs"] }
-opentelemetry-otlp = { version = "0.27", default-features = false, features = ["http-proto", "reqwest-client", "trace", "logs"] }
+# NB: `reqwest-rustls`, NOT `reqwest-client`. The latter routes through
+# `opentelemetry-http/reqwest`, which enables reqwest with its DEFAULT features
+# — and one of those is native-tls. Cargo feature unification is additive, so
+# that single feature flips native-tls ON for the WHOLE workspace, silently
+# defeating the `default-features = false` we set on every direct reqwest dep
+# (here, meridian-oauth, tray) and compiling a second entire TLS stack
+# (native-tls + hyper-tls, plus openssl on Linux) alongside the rustls one we
+# actually use. `reqwest-rustls` routes through `opentelemetry-http/reqwest-rustls`
+# instead, so nothing in the graph turns native-tls on and it drops out entirely.
+opentelemetry-otlp = { version = "0.27", default-features = false, features = ["http-proto", "reqwest-rustls", "trace", "logs"] }
 opentelemetry-appender-tracing = { version = "0.27", features = ["experimental_metadata_attributes"] }
 opentelemetry-semantic-conventions = "0.27"
 # Direct dep (was transitive-only via opentelemetry-otlp): decodes spooled

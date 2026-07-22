@@ -312,6 +312,11 @@ export interface WorklogTarget {
   outcome_unknown: boolean
   /** Why this ticket failed, if it did. Its siblings may have succeeded. */
   error: string | null
+  /** This ticket's OWN update - the slice of the work that advanced it. When one
+   *  day-task advances two tickets, each gets its own body, so they never receive
+   *  the same comment. `null`/absent falls back to the draft-level `update` (the
+   *  propose branch, a manual retarget, pre-070 rows). */
+  update?: GeneratedWorklogUpdate | null
 }
 
 // A brand-new task to create when no existing task fits (created on approve).
@@ -358,8 +363,9 @@ export interface DayTaskWorklogDraft {
 }
 
 /** One ticket the worklog picker can retarget a draft at (tray
- *  `get_board_tickets`). The whole open board - unlike the matcher's candidates,
- *  which are only the day's planned tasks. */
+ *  `get_board_tickets`). The open board plus personal tasks (`provider ===
+ *  'local'`, filed onto their own row rather than posted) - unlike the matcher's
+ *  candidates, which are only the day's planned tasks. */
 export interface BoardTicket {
   task_key: string
   provider: string
@@ -431,6 +437,13 @@ export interface TaskDetail {
   start_date: string | null
   description: string
   acceptance_criteria: string | null
+  // The worklog update Meridian auto-logged onto this personal task (provider
+  // 'local') the last time its day-work matched here - null when nothing has
+  // been logged, or for a real tracker ticket (whose updates are comments on the
+  // tracker, not on the row). Shown in the task dialog so the user can read the
+  // auto-posted update and decide whether to escalate it onto a real tracker.
+  local_worklog_text: string | null
+  local_worklog_posted_at: string | null
 }
 
 // ── Integrations (`get_integrations`) ────────────────────────────────────────

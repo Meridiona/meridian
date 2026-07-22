@@ -147,6 +147,17 @@ pub async fn fetch_open_board(pool: &SqlitePool, postable_only: bool) -> Result<
 /// refuse — a personal task has nothing to post to, and letting it default would
 /// aim the write at Jira. `meridian::pm_worklog::generate::resolve_provider_for_key`
 /// and the tray's `retarget_day_task_worklog` both do exactly that.
+///
+/// **Plan-snapshot fallback.** A focus task that was marked Done leaves `pm_tasks`
+/// (checking it off closes the real ticket, which prunes it off the board), but it
+/// is still on the day's committed plan via the snapshot captured at plan time
+/// ([`crate::plan`]). Without a fallback its provider would resolve to `None`, and
+/// the worklog matcher drops any match it can't resolve — so a day's work logged
+/// against the very ticket that finishing it just closed would silently vanish.
+/// So when `pm_tasks` has no row, the provider is read from the most recent
+/// `daily_plan` snapshot for the key (the provider doesn't change across days, so
+/// day-agnostic is fine). Degrades to `None` on a pre-044 DB (no `task_snapshot`),
+/// exactly as before.
 #[tracing::instrument(skip(pool))]
 pub async fn provider_for_key(pool: &SqlitePool, task_key: &str) -> Result<Option<String>> {
     let row: Option<(String,)> =
@@ -156,7 +167,27 @@ pub async fn provider_for_key(pool: &SqlitePool, task_key: &str) -> Result<Optio
             .instrument(tracing::debug_span!("board.read.provider_for_key"))
             .await
             .context("resolving the provider for a ticket")?;
-    Ok(row.map(|(p,)| p))
+    if let Some((p,)) = row {
+        return Ok(Some(p));
+    }
+
+    // Left the board (a Done focus task, pruned from pm_tasks) — recover the
+    // provider from the plan snapshot so its worklog still resolves. Any error
+    // (pre-044 DB with no task_snapshot column, no JSON1) degrades to None, the
+    // same answer this fn gave before the fallback existed.
+    let snap: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT json_extract(task_snapshot, '$.provider') \
+         FROM daily_plan \
+         WHERE task_key = ? AND task_snapshot IS NOT NULL \
+         ORDER BY plan_date DESC LIMIT 1",
+    )
+    .bind(task_key)
+    .fetch_optional(pool)
+    .instrument(tracing::debug_span!("board.read.provider_for_key.snapshot"))
+    .await
+    .ok()
+    .flatten();
+    Ok(snap.and_then(|(p,)| p))
 }
 
 #[cfg(test)]

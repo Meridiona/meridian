@@ -15,8 +15,19 @@
 
 import { useEffect, useState } from 'react'
 import { LOCAL_PROVIDER, type TaskDetail } from '@/lib/api-types'
-import { load, openExternal } from '@/lib/bridge'
+import { load, invoke, openExternal } from '@/lib/bridge'
 import { editTask } from '@/components/plan/useTaskComposer'
+import { refreshPlan } from '@/components/plan/planStore'
+import { WorklogTicketPicker } from './WorklogTicketPicker'
+
+/** The tray's escalate-command reply: the real ticket a personal task graduated
+ *  to, plus a browse URL when one can be formed. */
+interface EscalateResponse {
+  linked_ticket: string
+  provider: string
+  browse_url: string | null
+  created: boolean
+}
 
 export function TaskDetailDialog({
   taskKey, fallbackTitle, onClose, inToday, canEdit = true, onAdd, onRemove, day, editableTask = true,
@@ -49,6 +60,11 @@ export function TaskDetailDialog({
   const [draftDescription, setDraftDescription] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  // Escalation: promote this personal task onto a real tracker (create a new
+  // ticket, or match an existing one) and post its auto-logged update there.
+  const [escalating, setEscalating] = useState(false)
+  const [escalateError, setEscalateError] = useState<string | null>(null)
+  const [picking, setPicking] = useState(false)
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
@@ -95,6 +111,39 @@ export function TaskDetailDialog({
       .finally(() => setSaving(false))
   }
 
+  /** The task just GRADUATED into a real ticket - it isn't personal anymore.
+   *  Morph the open dialog into that ticket in place (new key/provider/url) so it
+   *  stops offering escalation and shows itself as the real ticket; the logged
+   *  update rides along on the row, so it stays visible. Later opens come from the
+   *  now-repointed plan already keyed to the real ticket. */
+  function onEscalated(res: EscalateResponse) {
+    setDetail(d => d && { ...d, key: res.linked_ticket, provider: res.provider, url: res.browse_url ?? '' })
+    setPicking(false)
+    // The plan is now keyed to the real ticket - refresh Today's focus so the card
+    // stops showing this as a personal task.
+    if (day) refreshPlan(day)
+  }
+
+  function convertToTicket() {
+    if (escalating) return
+    setEscalating(true)
+    setEscalateError(null)
+    invoke<EscalateResponse>('escalate_personal_task_create', { taskKey })
+      .then(onEscalated)
+      .catch(e => setEscalateError(e instanceof Error ? e.message : 'Couldn’t create the ticket'))
+      .finally(() => setEscalating(false))
+  }
+
+  function matchToTicket(targetKey: string) {
+    if (escalating) return
+    setEscalating(true)
+    setEscalateError(null)
+    invoke<EscalateResponse>('escalate_personal_task_match', { taskKey, targetKey })
+      .then(onEscalated)
+      .catch(e => setEscalateError(e instanceof Error ? e.message : 'Couldn’t post to that ticket'))
+      .finally(() => setEscalating(false))
+  }
+
   return (
     <div className="absolute inset-0 z-50 flex items-start justify-center p-6 sm:p-10 rise"
       style={{ background: 'rgba(20,16,40,0.5)', backdropFilter: 'blur(3px)' }} onClick={onClose}>
@@ -103,7 +152,7 @@ export function TaskDetailDialog({
         onClick={e => e.stopPropagation()}>
         <div className="px-7 pt-6 pb-5 border-b shrink-0" style={{ borderColor: 'var(--t-hair)' }}>
           <div className="flex items-center gap-2 mb-2.5">
-            <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text">{taskKey}</span>
+            <span className="mt-mono-sm text-[11px] px-1.5 py-0.5 rounded bg-key-bg text-key-text">{detail?.key ?? taskKey}</span>
             {detail?.issue_type && (
               <span className="mt-chip px-1.5 py-0.5 rounded" style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)' }}>
                 {detail.issue_type}
@@ -168,6 +217,73 @@ export function TaskDetailDialog({
                   <p className="mt-body whitespace-pre-wrap" style={{ color: 'var(--t-muted)' }}>{detail.acceptance_criteria}</p>
                 </div>
               )}
+              {detail?.local_worklog_text && (
+                <div className="rounded-xl p-4" style={{ background: 'color-mix(in srgb, var(--accent) 7%, transparent)', border: '1px solid var(--t-hair)' }}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <p className="mt-label" style={{ color: 'var(--t-faint)' }}>Logged update</p>
+                    <span className="mt-chip px-1.5 py-0.5 rounded" style={{ background: 'color-mix(in srgb, var(--accent) 14%, transparent)', color: 'var(--accent)' }}>
+                      auto-logged
+                    </span>
+                    {detail.local_worklog_posted_at && (
+                      <span className="mt-body-sm ml-auto" style={{ color: 'var(--t-faint-2)' }}>{fmtWhen(detail.local_worklog_posted_at)}</span>
+                    )}
+                  </div>
+                  <p className="mt-body whitespace-pre-wrap" style={{ color: 'var(--t-muted)' }}>{detail.local_worklog_text}</p>
+
+                  {/* Escalation. A personal task's update lives only on the task -
+                      promote it onto a real tracker if the work belongs there, which
+                      GRADUATES it into that ticket (it stops being personal). Once
+                      graduated the dialog is showing the real ticket, so the buttons
+                      give way to a note that the work is now tracked there. */}
+                  <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--t-hair)' }}>
+                    {!isPersonal ? (
+                      <p className="mt-body-sm inline-flex items-center gap-1.5" style={{ color: 'var(--t-muted)' }}>
+                        <span aria-hidden>↗</span> Now tracked on your board as
+                        {detail.url ? (
+                          <button onClick={() => openExternal(detail.url)}
+                            title={`Open ${detail.key}`}
+                            className="mt-mono-sm px-1.5 py-0.5 rounded bg-key-bg text-key-text"
+                            style={{ cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: 2 }}>
+                            {detail.key}
+                          </button>
+                        ) : (
+                          <span className="mt-mono-sm px-1.5 py-0.5 rounded bg-key-bg text-key-text">{detail.key}</span>
+                        )}
+                      </p>
+                    ) : picking ? (
+                      <WorklogTicketPicker
+                        current={null}
+                        busy={escalating}
+                        excludeLocal
+                        title="Match this to which ticket?"
+                        onPick={matchToTicket}
+                        onCancel={() => setPicking(false)}
+                      />
+                    ) : (
+                      <>
+                        <p className="mt-body-sm mb-2" style={{ color: 'var(--t-faint)' }}>
+                          This is a personal task, so it isn&apos;t logged to your PM provider. Create a ticket and post it, or match it to an existing one - either way it becomes a real ticket on your board.
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <button onClick={convertToTicket} disabled={escalating}
+                            className="mt-body-sm px-3 py-1.5 rounded-lg"
+                            style={{ background: 'var(--t-title)', color: 'var(--t-panel)', fontWeight: 700, opacity: escalating ? 0.6 : 1 }}>
+                            {escalating ? 'Working…' : 'Create a ticket & post'}
+                          </button>
+                          <button onClick={() => { setEscalateError(null); setPicking(true) }} disabled={escalating}
+                            className="mt-body-sm px-3 py-1.5 rounded-lg bg-ctrl"
+                            style={{ border: '1px solid var(--t-ctrl-border)', color: 'var(--t-muted)', opacity: escalating ? 0.6 : 1 }}>
+                            Match to existing ticket
+                          </button>
+                        </div>
+                      </>
+                    )}
+                    {escalateError && (
+                      <p className="mt-body-sm mt-2" style={{ color: 'var(--color-state-pending)' }}>{escalateError}</p>
+                    )}
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -219,6 +335,18 @@ export function TaskDetailDialog({
       </div>
     </div>
   )
+}
+
+/** "logged 2:14 PM" style stamp for the auto-logged update - date only when it
+ *  wasn't today, so a same-day log reads as a time and an older one as a date. */
+function fmtWhen(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const now = new Date()
+  const sameDay = d.toDateString() === now.toDateString()
+  return sameDay
+    ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : d.toLocaleDateString([], { month: 'short', day: 'numeric' })
 }
 
 function MetaBit({ label, value, warn = false }: { label: string; value: string; warn?: boolean }) {

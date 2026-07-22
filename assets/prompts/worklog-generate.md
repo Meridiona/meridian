@@ -3,16 +3,16 @@ You take one day-level workstream — a developer's whole story of work on a sin
 Meridian passively captured this developer's screen across the day and distilled one strand of that work into the WORKSTREAM below (a title plus a short whole-story summary). Below it is TODAY'S PLANNED TASKS — the handful of tickets this developer committed to that morning. Decide which planned tasks, if any, this workstream actually advanced; if none fits, propose one new ticket for it; and always write the status update.
 
 Return a JSON object with these fields:
-- `matches`: every candidate this workstream advanced, each as `{ "task_key": "...", "confidence": 0.0-1.0 }`, strongest first — or `[]`.
+- `matches`: every candidate this workstream advanced, each as `{ "task_key": "...", "confidence": 0.0-1.0, "update": { "summary": "...", "sections": [ { "heading": "...", "points": ["...", "..."] } ], "status": "..." } }`, strongest first — or `[]`. Each match's `update` is about THAT ticket only (see THE STATUS UPDATE below).
 - `propose`: a new ticket `{ "issue_type": "Task"|"Bug", "title": "...", "description": "..." }` — or `null`.
-- `update`: the status update `{ "summary": "...", "sections": [ { "heading": "...", "points": ["...", "..."] } ], "status": "..." }`.
+- `update`: the workstream-level status update `{ "summary": "...", "sections": [ { "heading": "...", "points": ["...", "..."] } ], "status": "..." }` — the comment for a `propose`, and the fallback shape for matches.
 - `reasoning`: 2-4 sentences on what the developer actually did and why it does or does not map to the candidates.
 
 `matches` and `propose` are MUTUALLY EXCLUSIVE. Either `matches` is non-empty and `propose` is `null`, or `matches` is `[]` and `propose` is set — never both, never neither. `update` and `reasoning` are ALWAYS present.
 
 MATCHING — fill `matches` (and leave `propose` null) when planned tasks genuinely fit
 - The candidates are ONLY today's planned tasks, never the whole board. This list is short on purpose: it is what the developer said they would work on today. A ticket that is not listed is not matchable here — if the work belongs to one, the right answer is `propose`, and a human can redirect it afterwards. Never invent or guess a `task_key` that is not in the list.
-- MATCH EVERY TICKET THIS WORK GENUINELY ADVANCED — one, two, or several. A single strand of a day often moves more than one planned task, and the same status update is posted to each one you list. There is no "pick the best one" rule.
+- MATCH EVERY TICKET THIS WORK GENUINELY ADVANCED — one, two, or several. A single strand of a day often moves more than one planned task, and EACH ticket you list gets its OWN status update about only what advanced THAT ticket (see THE STATUS UPDATE below). There is no "pick the best one" rule.
 - But each ticket must EARN its place independently. Do not list a second ticket because it is related to the first, or to hedge between two candidates you cannot choose between. Apply the test below to each candidate separately, as if it were the only one offered: if you would not match it alone, do not match it alongside another. Listing a ticket puts a comment on it, and a wrong one is noise on someone's board.
 - A PLANNED TASK MAY ALREADY BE MARKED DONE. That does NOT disqualify it — it is usually the OPPOSITE. Checking a task off closes its ticket, so a task shown as Done is very often the one this very work completed. Judge it on whether the work advanced it, exactly as you would any other candidate.
 - Only match a candidate whose SPECIFIC goal this workstream demonstrably advanced — work that moved THAT ticket measurably closer to done.
@@ -29,10 +29,12 @@ PROPOSING — set `propose` (and leave `matches` empty) ONLY when nothing fits a
 - `title`: a clear, high-level name a PM understands at a glance (<=80 chars), imperative, describing the OUTCOME or capability — not the implementation detail. Plain language: prefer "Stop activity reports from dropping ticket numbers" over "Fix KAN-key regex strip". No ticket key, no file or function names, no trailing period.
 - `description`: 2-4 sentences defining the WORK ITEM — its scope and intent — the way a ticket reads when it is CREATED, before anyone starts. Write it forward-looking and present-tense: state the problem/goal and what needs doing, in language a non-technical PM follows. NEVER write it as a past-tense log ("Developer fixed…", "Resolved…", "This involved…"). Invent nothing that isn't in the workstream.
 
-THE STATUS UPDATE — always write `update`
-Write ONE update for the workstream. It is posted verbatim to every ticket in `matches`, so write it about the WORK, not about any one ticket — never address a specific ticket or its goal.
+THE STATUS UPDATE — a per-ticket `update` on each match, plus the workstream `update`
+EACH matched ticket gets its OWN `update` — write it about ONLY the part of this work that advanced THAT ticket. When one strand advances two tickets, the two updates MUST be different: each describes its own ticket's slice, not the whole strand. Do NOT post the same body to both. Ground each in the work that actually moved THAT ticket; if a ticket was advanced only a little, its update is short. Never name the ticket or its goal inside its own update — just report the work that moved it.
 
-This is a high-level update for a manager, PM, or teammate scanning the ticket — the story of what moved forward on this strand of work, NOT a time worklog and NOT a list of every keystroke. Ground every statement in the workstream summary; invent nothing. If the evidence is thin, write less — never pad with plausible-sounding work.
+Also always write the top-level `update`: the workstream-level story of the whole strand. For a `propose`, this is the new ticket's comment. When you `match`, it is the fallback — write it, but the per-match updates are what post.
+
+Each `update` (per-ticket and workstream) is a high-level update for a manager, PM, or teammate scanning the ticket — the story of what moved forward, NOT a time worklog and NOT a list of every keystroke. Ground every statement in the workstream summary; invent nothing. If the evidence is thin, write less — never pad with plausible-sounding work.
 - `summary`: 1-3 sentences, plain English, leading with the outcome — what got done and where the work now stands, in terms a non-specialist can follow.
 - `sections`: the notable substance grouped under a few short HEADINGS you choose to fit THIS work — or `[]` when nothing stands out to group (let `summary` carry it). Each section is `{ "heading": "...", "points": ["...", "..."] }`.
     - Choose 0-4 headings that match what was actually done; the heading names the kind of point, the points are short concrete bullets under it. Do NOT force a section that doesn't fit, and do NOT split one real point across headings to look fuller.

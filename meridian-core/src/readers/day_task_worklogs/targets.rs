@@ -26,6 +26,7 @@
 //! # Related
 //! - [`super`] — the parent draft (the propose branch, the update, the lifecycle).
 
+use super::GeneratedWorklogUpdate;
 use crate::SqlitePool;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -63,6 +64,13 @@ pub struct WorklogTarget {
     pub outcome_unknown: bool,
     /// The last failure posting to THIS ticket, if any. Others may have succeeded.
     pub error: Option<String>,
+    /// This ticket's OWN status update (migration 070). When one day-task's work
+    /// advances several tickets, each gets a body about only its slice, so this is
+    /// what posts here. `None` falls back to the draft-level [`super::DayTaskWorklogDraft::update`]:
+    /// the propose branch, pre-070 rows, and any match the model gave no per-ticket
+    /// update. The poster and the panel both resolve the fallback.
+    #[serde(default)]
+    pub update: Option<GeneratedWorklogUpdate>,
 }
 
 /// A target to write — the subset a caller knows before anything is posted.
@@ -72,6 +80,8 @@ pub struct TargetInput {
     pub provider: String,
     pub confidence: f64,
     pub manual: bool,
+    /// This ticket's own generated update, or `None` to post the draft-level one.
+    pub update: Option<GeneratedWorklogUpdate>,
 }
 
 #[derive(FromRow)]
@@ -85,6 +95,7 @@ struct RawTarget {
     browse_url: Option<String>,
     post_attempt_at: Option<String>,
     last_error: Option<String>,
+    update_json: Option<String>,
 }
 
 impl From<RawTarget> for WorklogTarget {
@@ -102,6 +113,13 @@ impl From<RawTarget> for WorklogTarget {
             posted_comment_id: r.posted_comment_id,
             browse_url: r.browse_url,
             error: r.last_error,
+            // A blank/unparseable blob degrades to the draft-level fallback rather
+            // than erroring — a stored update should never block reading the target.
+            update: r
+                .update_json
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .and_then(|s| serde_json::from_str::<GeneratedWorklogUpdate>(s).ok()),
         }
     }
 }
@@ -117,7 +135,8 @@ pub async fn load(
 ) -> anyhow::Result<Vec<WorklogTarget>> {
     let rows = sqlx::query_as::<_, RawTarget>(
         "SELECT t.task_key, t.provider, t.confidence, t.manual, pt.title AS task_title, \
-                t.posted_comment_id, t.browse_url, t.post_attempt_at, t.last_error \
+                t.posted_comment_id, t.browse_url, t.post_attempt_at, t.last_error, \
+                t.update_json \
          FROM day_task_worklog_targets t \
          LEFT JOIN pm_tasks pt ON pt.task_key = t.task_key \
          WHERE t.day_local = ? AND t.task_id = ? \
@@ -278,10 +297,16 @@ async fn insert_at(
     position: i64,
     now: &str,
 ) -> anyhow::Result<()> {
+    // Serialize the per-ticket update to JSON, or NULL to post the draft-level one.
+    let update_json = t
+        .update
+        .as_ref()
+        .and_then(|u| serde_json::to_string(u).ok());
     sqlx::query(
         "INSERT OR IGNORE INTO day_task_worklog_targets \
-            (day_local, task_id, task_key, provider, confidence, manual, position, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (day_local, task_id, task_key, provider, confidence, manual, position, created_at, \
+             update_json) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(day_local)
     .bind(task_id)
@@ -291,6 +316,7 @@ async fn insert_at(
     .bind(i64::from(t.manual))
     .bind(position)
     .bind(now)
+    .bind(update_json)
     .execute(&mut *conn)
     .instrument(tracing::debug_span!(
         "day_task_worklogs.write.targets_insert"

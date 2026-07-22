@@ -107,16 +107,23 @@ pub fn workstream_schema() -> Value {
 /// The "Generate worklog" prompt — one combined, provider-agnostic call behind the
 /// day-task card action. Takes a day-level workstream + the day's planned tasks and
 /// returns, in one pass: `matches` XOR `propose` (advance the existing tickets this
-/// work moved — one or several — or draft a new one), plus a high-level `update`
-/// (summary / free-form `sections` / status) posted as a comment on each matched
-/// ticket. Same one-prompt-all-providers rule as the others.
+/// work moved — one or several — or draft a new one). Each match carries its OWN
+/// high-level `update` (summary / free-form `sections` / status), so two tickets on
+/// one strand never get the same comment; the top-level `update` is the proposal's
+/// body and the per-match fallback. Same one-prompt-all-providers rule as the others.
 pub const WORKLOG_GENERATE: &str = include_str!("../../assets/prompts/worklog-generate.md");
 
 /// The JSON shape the "Generate worklog" call must answer in. `matches` is an array
 /// (a day's strand of work can advance several planned tasks) and `propose` is a
 /// nullable object; the model takes exactly one branch — a non-empty `matches` XOR
-/// a `propose` — and code enforces that after parsing. `update` is required with a
-/// `summary`, free-form `sections`, and a `status` line; `reasoning` is required.
+/// a `propose` — and code enforces that after parsing. `reasoning` is required.
+///
+/// Each `matches[]` item carries its OWN `update` (summary / free-form `sections` /
+/// status), because one strand of work that advances two tickets must NOT post the
+/// same body to both — each ticket gets a comment about only its slice. The
+/// top-level `update` is the workstream-level one: it is the comment for a `propose`
+/// (the new ticket), and the fallback for any match whose per-ticket update is
+/// missing (an un-schema'd backend, a parse gap). Both are required in the schema.
 ///
 /// `propose` is `["object", "null"]` so a schema-enforcing backend can emit `null`
 /// for the branch it didn't take; neither branch is in `required`, so a backend that
@@ -132,9 +139,34 @@ pub fn worklog_generate_schema() -> Value {
                     "type": "object",
                     "properties": {
                         "task_key":   {"type": "string"},
-                        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                        // Each matched ticket gets its OWN update, about only the
+                        // slice of the work that advanced THIS ticket - so two
+                        // tickets on one strand never receive the same body. Same
+                        // shape as the top-level `update`.
+                        "update": {
+                            "type": "object",
+                            "properties": {
+                                "summary": {"type": "string"},
+                                "sections": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "heading": {"type": "string"},
+                                            "points":  {"type": "array", "items": {"type": "string"}}
+                                        },
+                                        "required": ["heading", "points"],
+                                        "additionalProperties": false
+                                    }
+                                },
+                                "status": {"type": "string"}
+                            },
+                            "required": ["summary", "sections", "status"],
+                            "additionalProperties": false
+                        }
                     },
-                    "required": ["task_key", "confidence"],
+                    "required": ["task_key", "confidence", "update"],
                     "additionalProperties": false
                 }
             },
@@ -302,6 +334,10 @@ mod tests {
         // hedge is a comment on someone's board.
         assert!(WORKLOG_GENERATE.contains("MATCH EVERY TICKET THIS WORK GENUINELY ADVANCED"));
         assert!(WORKLOG_GENERATE.contains("EARN its place independently"));
+        // Each match's body is its OWN slice — two tickets on one strand must not
+        // get the same comment. This is the whole point of the per-match `update`.
+        assert!(WORKLOG_GENERATE.contains("EACH matched ticket gets its OWN"));
+        assert!(WORKLOG_GENERATE.contains("MUST be different"));
         assert!(WORKLOG_GENERATE.to_lowercase().contains("status update"));
         assert!(WORKLOG_GENERATE.contains("NEVER NAME THE PERSON"));
         // The task-draft prompt's whole design rests on it being a FORMATTER, not an
@@ -417,10 +453,19 @@ mod tests {
         assert_eq!(props["matches"]["type"], json!("array"));
         assert_eq!(props["propose"]["type"], json!(["object", "null"]));
         assert_eq!(s["required"], json!(["update", "reasoning"]));
-        // Each match carries a task_key + a 0-1 confidence.
+        // Each match carries a task_key + a 0-1 confidence + its OWN update, so two
+        // tickets on one strand never get the same body.
         let m = &props["matches"]["items"]["properties"];
         assert_eq!(m["task_key"]["type"], json!("string"));
         assert_eq!(m["confidence"]["maximum"], json!(1));
+        assert_eq!(
+            props["matches"]["items"]["required"],
+            json!(["task_key", "confidence", "update"])
+        );
+        assert_eq!(
+            m["update"]["required"],
+            json!(["summary", "sections", "status"])
+        );
         // The propose branch carries issue_type / title / description.
         let p = &props["propose"]["properties"];
         assert_eq!(p["issue_type"]["type"], json!("string"));

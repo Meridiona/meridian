@@ -71,6 +71,40 @@ pub async fn generate_day_summary(
     Ok(summary)
 }
 
+/// The on-demand "Generate now" path: draft the day's worklogs FIRST, then compose
+/// the summary — the same work the scheduled end-of-day pass does, run because the
+/// user pressed the button rather than because the clock reached their chosen time.
+/// Spawns `meridian day-summary --day <d> --now`.
+///
+/// A far longer budget than [`generate_day_summary`]: the `--now` flag drafts a
+/// worklog per qualifying day-task, each its own LLM call, in sequence — minutes,
+/// not the single call the bare compose is. The screen shows its "Composing…" state
+/// throughout, so the wait is visible rather than a frozen click.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn generate_day_summary_now(
+    day: String,
+) -> Result<meridian_core::day_summaries::DaySummary, String> {
+    if day.is_empty() {
+        return Err("day is required".to_string());
+    }
+    let summary: meridian_core::day_summaries::DaySummary = run_meridian_json(
+        &["day-summary", "--day", &day, "--now"],
+        Duration::from_secs(600),
+        "day-summary-now",
+    )
+    .await?;
+    tracing::info!(
+        %day,
+        provider = %summary.provider,
+        planned = summary.adherence.planned,
+        done = summary.adherence.done,
+        fallback = summary.fallback,
+        "day-summary (generate now) served"
+    );
+    Ok(summary)
+}
+
 /// Read the stored summary for a day, or `None` when it has never been generated.
 #[tauri::command]
 #[tracing::instrument(skip(pool))]

@@ -5,6 +5,25 @@
 //! then — on approve — creates the ticket if proposed, posts the update as a plain
 //! comment on each ticket, and links the day-task.
 //!
+//! # Personal (local) tasks are valid matches too - and auto-logged
+//! To the AI there is no "personal vs PM" split: a day's work is matched against
+//! ONE candidate pool that mixes real tickets and tasks the user only tracks in
+//! Meridian (`pm_tasks.provider = 'local'`). A match resolving to a personal task
+//! stays a match, same as any real ticket - it is never quietly converted into a
+//! new-ticket proposal.
+//!
+//! The difference is what "posting" means. A personal task has no external
+//! tracker thread, so its update is written straight onto the task's own row
+//! ([`post_to_local_task`]) - a purely local write with no outward side effect.
+//! Because nothing leaves the machine, there is nothing to gate behind the
+//! deliberate human "Approve & post" click that a real board comment needs: so
+//! [`generate`] AUTO-LOGS personal matches at draft time
+//! ([`auto_log_local_targets`]). The user opens the personal task and the update
+//! is already there. Real-tracker targets in the same draft are left untouched -
+//! they still wait for approval. From the personal task the user can later
+//! escalate it into a real ticket (or match it to an existing one) and post
+//! externally - a separate, deliberate choice.
+//!
 //! # Partial delivery is a real state
 //! Approving across several tickets is not atomic, and a comment cannot be
 //! un-posted. Two can take the update and the third refuse, so each target carries
@@ -37,6 +56,7 @@ use meridian_core::day_task_worklogs::{
     self, DayTaskWorklogDraft, DraftUpsert, GeneratedWorklogPropose, GeneratedWorklogUpdate,
     TargetInput, WorklogSection,
 };
+use meridian_core::task_create::LOCAL_PROVIDER;
 
 use crate::config::Config;
 use crate::llm::{self, parse_json_object, prompts, PromptRequest};
@@ -95,8 +115,25 @@ pub async fn generate(
         matched_task_key = Empty,
         proposed = Empty,
         n_candidates = Empty,
+        reopened = Empty,
     );
     async move {
+        // "Still working on this" after a post: a posted worklog can be stale by
+        // the time more work lands, so a manual regenerate is allowed to start a
+        // fresh follow-up cycle. Flip a `posted` row back to `drafted` first so the
+        // upsert below can overwrite it; the comment already on the tracker stays
+        // (posting is append-only and can't be undone), and approving the new draft
+        // posts an updated comment. No-op for a row that isn't posted. This only
+        // reaches a posted row via the explicit user "Regenerate" - auto-generate
+        // never calls generate() for a task that already has any row.
+        let now_reopen = chrono::Utc::now().to_rfc3339();
+        let reopened =
+            day_task_worklogs::reopen_posted(pool, day_local, task_id, &now_reopen).await?;
+        tracing::Span::current().record("reopened", reopened);
+        if reopened {
+            tracing::info!("worklog: reopened a posted draft for regeneration");
+        }
+
         let (req, n_candidates) = generate_request(pool, day_local, task_id).await?;
         tracing::Span::current().record("n_candidates", n_candidates);
 
@@ -115,11 +152,21 @@ pub async fn generate(
         let (draft_provider, targets) = match (parsed.matches.is_empty(), &parsed.propose) {
             (false, None) => {
                 let targets = resolve_targets(pool, &parsed.matches).await?;
+
+                // A match stays a match - including a PERSONAL (`local`) task. A
+                // planned personal task the work belongs to is shown and drafted
+                // exactly like a real ticket; on approve it posts to that task's
+                // own row (see `post_to_local_task`). If the user would rather
+                // point this at a real tracker, the panel's "Match to one of my
+                // tickets instead" picker (which lists personal tasks AND real
+                // tickets) is the deliberate, human choice - we never silently
+                // convert a personal match into a new-ticket proposal for them.
                 let keys: Vec<&str> = targets.iter().map(|t| t.task_key.as_str()).collect();
                 tracing::Span::current().record("matched_task_key", keys.join(","));
                 tracing::Span::current().record("proposed", false);
-                // A draft-level provider is only consulted for a proposal, and this
-                // isn't one; name the first target's so the field is never empty.
+                // A draft-level provider is only consulted for a proposal, and
+                // this isn't one; name the first target's so the field is
+                // never empty.
                 (targets[0].provider.clone(), targets)
             }
             (true, Some(_)) => {
@@ -152,6 +199,17 @@ pub async fn generate(
         let draft = day_task_worklogs::upsert_draft(pool, day_local, task_id, upsert, &now)
             .await
             .context("persisting the generated worklog draft")?;
+
+        // Auto-log personal (local) matches on the spot. A personal task has no
+        // external tracker thread, so writing the update onto its own row has no
+        // outward side effect - there is nothing to "approve" the way posting a
+        // comment to someone's real board needs a deliberate human click. So we do
+        // it here, at draft time: the user opens the personal task and the update
+        // is already there. Real-tracker targets in the same draft are untouched -
+        // they still wait for "Approve & post". Best-effort: a local write that
+        // fails just leaves that target as an ordinary unposted draft target the
+        // user can still approve by hand.
+        let draft = auto_log_local_targets(pool, day_local, task_id, &draft).await;
 
         tracing::info!(
             provider = draft.provider,
@@ -396,7 +454,6 @@ async fn approve_inner(
         bail!("this update has no ticket to post to - pick one, or regenerate the draft");
     }
 
-    let body = render_update_body(&draft.update);
     let mut out: Vec<PostedTarget> = Vec::with_capacity(targets.len());
 
     for t in &targets {
@@ -463,7 +520,16 @@ async fn approve_inner(
             continue;
         }
 
-        match super::post_comment::post_comment(config, &t.provider, &t.task_key, &body).await {
+        // This ticket's OWN body — the slice of the work that advanced it — falling
+        // back to the workstream update when the model gave no per-ticket one. Two
+        // tickets on one strand thus get different comments.
+        let body = render_update_body(t.update.as_ref().unwrap_or(&draft.update));
+        let posted = if t.provider == LOCAL_PROVIDER {
+            post_to_local_task(pool, &t.task_key, &body, &now).await
+        } else {
+            super::post_comment::post_comment(config, &t.provider, &t.task_key, &body).await
+        };
+        match posted {
             Ok(comment_id) => {
                 let browse = browse_url(config, &t.provider, &t.task_key);
                 day_task_worklogs::mark_posted(
@@ -698,10 +764,13 @@ fn render_doc(issue_type: &str, title: &str, epic: &str, desc: &str) -> String {
 ///
 /// Terminal candidates are kept deliberately: checking a task off the plan closes
 /// the real ticket, and dropping it here would delete exactly the task the dev
-/// just finished from the set used to log the work that finished it. Personal
-/// (`'local'`) tasks are dropped, because this draft ends in `post_comment` to a
-/// real tracker and a personal task has nowhere to post
-/// (see [`meridian_core::task_create`]).
+/// just finished from the set used to log the work that finished it.
+///
+/// Personal (`'local'`) tasks are INCLUDED: a day's work can belong to a task the
+/// user is tracking only in Meridian, not just a real ticket. What happens on a
+/// match resolving to one is decided in [`generate`]/[`approve_inner`] - it either
+/// posts locally (no tracker connected) or is promoted into a create/match against
+/// a real tracker (one is connected), never here.
 #[tracing::instrument(skip(pool))]
 async fn fetch_plan_candidates(pool: &SqlitePool, day_local: &str) -> Result<Vec<Candidate>> {
     let planned = meridian_core::plan::load_plan_candidates(pool, day_local)
@@ -710,7 +779,6 @@ async fn fetch_plan_candidates(pool: &SqlitePool, day_local: &str) -> Result<Vec
     let total = planned.len();
     let candidates: Vec<Candidate> = planned
         .into_iter()
-        .filter(|t| t.provider != meridian_core::task_create::LOCAL_PROVIDER)
         .map(|t| Candidate {
             doc: render_doc(
                 &t.issue_type,
@@ -746,6 +814,9 @@ async fn resolve_targets(pool: &SqlitePool, matches: &[ParsedMatch]) -> Result<V
                 provider,
                 confidence: m.confidence,
                 manual: false,
+                // This ticket's own generated update, or None to fall back to the
+                // workstream update at post time.
+                update: m.update.clone(),
             }),
             None => tracing::warn!(
                 task_key = m.task_key,
@@ -764,25 +835,19 @@ async fn resolve_targets(pool: &SqlitePool, matches: &[ParsedMatch]) -> Result<V
     Ok(out)
 }
 
-/// The provider that owns `task_key`, if it's a known ticket.
-///
-/// Defence in depth against a personal task reaching `post_comment`: the candidate
-/// list already excludes them, but a model can hallucinate a key it was never shown,
-/// and [`meridian_core::board::provider_for_key`]'s `COALESCE(provider,'jira')`
-/// would then route a `LOCAL-3` "match" straight at Jira. Refuse it explicitly.
+/// The provider that owns `task_key`, if it's a known ticket - `"local"` for a
+/// personal task, same as any real tracker's name. Callers decide what a
+/// `"local"` target means (post locally, or get promoted to a real tracker); this
+/// just resolves the fact.
 async fn resolve_provider_for_key(pool: &SqlitePool, task_key: &str) -> Result<Option<String>> {
-    let row = meridian_core::board::provider_for_key(pool, task_key)
+    meridian_core::board::provider_for_key(pool, task_key)
         .await
-        .context("resolving provider for matched ticket")?;
-    if row.as_deref() == Some(meridian_core::task_create::LOCAL_PROVIDER) {
-        bail!("the AI matched a personal task, which has no tracker to post to - try regenerating");
-    }
-    Ok(row)
+        .context("resolving provider for matched ticket")
 }
 
 /// Any existing task_key of `provider` — GitHub needs one to infer owner/repo on
 /// create. Harmless elsewhere. Best-effort: `None` on any error.
-async fn fetch_sample_task_key(pool: &SqlitePool, provider: &str) -> Option<String> {
+pub(crate) async fn fetch_sample_task_key(pool: &SqlitePool, provider: &str) -> Option<String> {
     sqlx::query_as::<_, (String,)>("SELECT task_key FROM pm_tasks WHERE provider = ? LIMIT 1")
         .bind(provider)
         .fetch_optional(pool)
@@ -790,6 +855,119 @@ async fn fetch_sample_task_key(pool: &SqlitePool, provider: &str) -> Option<Stri
         .ok()
         .flatten()
         .map(|(k,)| k)
+}
+
+/// Auto-log every LOCAL target of a freshly-generated draft onto its personal
+/// task's own row, marking each posted, then return the re-read draft so those
+/// targets come back already-posted. Non-local targets are left untouched (they
+/// still need the deliberate "Approve & post"). Best-effort throughout: any
+/// failure is logged and the original draft is returned unchanged, so the user
+/// can always fall back to approving that target by hand.
+async fn auto_log_local_targets(
+    pool: &SqlitePool,
+    day_local: &str,
+    task_id: &str,
+    draft: &DayTaskWorklogDraft,
+) -> DayTaskWorklogDraft {
+    let has_local = draft
+        .targets
+        .iter()
+        .any(|t| t.provider == LOCAL_PROVIDER && !t.posted);
+    if !has_local {
+        return draft.clone();
+    }
+
+    let mut logged = 0u32;
+    for t in &draft.targets {
+        if t.provider != LOCAL_PROVIDER || t.posted {
+            continue;
+        }
+        // This personal task's own update (or the workstream fallback), same
+        // per-ticket body split the real-tracker post path uses.
+        let body = render_update_body(t.update.as_ref().unwrap_or(&draft.update));
+        let now = chrono::Utc::now().to_rfc3339();
+        // Claim → write → mark, exactly as approve does, so the crash-safety and
+        // idempotency guarantees are identical - a local write is cheap but still
+        // must never leave a half-posted row.
+        match day_task_worklogs::targets::begin_post(pool, day_local, task_id, &t.task_key, &now)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(e) => {
+                tracing::warn!(task_key = t.task_key, error = %e, "worklog: could not claim personal task for auto-log");
+                continue;
+            }
+        }
+        match post_to_local_task(pool, &t.task_key, &body, &now).await {
+            Ok(comment_id) => {
+                if let Err(e) = day_task_worklogs::mark_posted(
+                    pool,
+                    day_local,
+                    task_id,
+                    &t.task_key,
+                    &comment_id,
+                    None,
+                    &now,
+                )
+                .await
+                {
+                    tracing::warn!(task_key = t.task_key, error = %e, "worklog: auto-logged the personal task but could not mark it posted");
+                } else {
+                    logged += 1;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(task_key = t.task_key, error = %e, "worklog: auto-log to personal task failed - left for manual approve");
+                if let Err(revert_err) =
+                    day_task_worklogs::targets::revert_post(pool, day_local, task_id, &t.task_key)
+                        .await
+                {
+                    tracing::warn!(error = %revert_err, task_key = t.task_key, "worklog: failed to revert personal auto-log claim");
+                }
+            }
+        }
+    }
+
+    if logged == 0 {
+        return draft.clone();
+    }
+    tracing::info!(
+        day = day_local,
+        task_id,
+        logged,
+        "worklog: auto-logged personal matches"
+    );
+    // Re-read so posted local targets come back as posted rather than the caller
+    // holding the pre-post snapshot.
+    match day_task_worklogs::get_day_task_worklog(pool, day_local, task_id).await {
+        Ok(Some(fresh)) => fresh,
+        _ => draft.clone(),
+    }
+}
+
+/// "Post" a worklog update to a personal task: there is no external tracker
+/// thread to comment on, so the update text is written directly onto the task's
+/// own row instead. Returns a synthetic id so the same `mark_posted` bookkeeping
+/// built for a real comment id still has something non-null to record.
+async fn post_to_local_task(
+    pool: &SqlitePool,
+    task_key: &str,
+    body: &str,
+    now: &str,
+) -> Result<String> {
+    sqlx::query(
+        "UPDATE pm_tasks SET local_worklog_text = ?, local_worklog_posted_at = ? \
+         WHERE task_key = ? AND provider = ?",
+    )
+    .bind(body)
+    .bind(now)
+    .bind(task_key)
+    .bind(LOCAL_PROVIDER)
+    .execute(pool)
+    .await
+    .context("storing the worklog on the personal task")?;
+    Ok("local".to_string())
 }
 
 /// Set `day_tasks.linked_ticket = target_key` for the card.
@@ -820,6 +998,10 @@ async fn link_day_task(
 struct ParsedMatch {
     task_key: String,
     confidence: f64,
+    /// This ticket's own update — the slice of the work that advanced IT. `None`
+    /// when the model gave none (an un-schema'd backend, a parse gap); the poster
+    /// then falls back to the workstream-level [`ParsedAnswer::update`].
+    update: Option<GeneratedWorklogUpdate>,
 }
 
 /// The validated model answer.
@@ -869,6 +1051,34 @@ fn parse_answer(text: &str) -> Option<ParsedAnswer> {
             .unwrap_or_default()
     };
 
+    // Parse one `update` object (shared by the top-level update and each match's
+    // per-ticket one). `None` when the object is absent or entirely empty — the
+    // caller then falls back to the workstream update, so an un-schema'd backend
+    // that omits per-match updates still posts something.
+    let parse_update = |u: &serde_json::Value| -> Option<GeneratedWorklogUpdate> {
+        let summary = u
+            .get("summary")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let secs = u.get("sections").map(&sections).unwrap_or_default();
+        let status = u
+            .get("status")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if summary.is_empty() && secs.is_empty() && status.is_empty() {
+            return None;
+        }
+        Some(GeneratedWorklogUpdate {
+            summary,
+            sections: secs,
+            status,
+        })
+    };
+
     // matches — 0..N objects, each needing a non-empty task_key. Order is the
     // model's (strongest first) and is preserved all the way to the panel.
     //
@@ -885,6 +1095,7 @@ fn parse_answer(text: &str) -> Option<ParsedAnswer> {
         Some(ParsedMatch {
             task_key,
             confidence: confidence.clamp(0.0, 1.0),
+            update: m.get("update").and_then(&parse_update),
         })
     };
     let mut matches: Vec<ParsedMatch> = v
@@ -925,24 +1136,7 @@ fn parse_answer(text: &str) -> Option<ParsedAnswer> {
         })
     });
 
-    let update = v
-        .get("update")
-        .map(|u| GeneratedWorklogUpdate {
-            summary: u
-                .get("summary")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string(),
-            sections: u.get("sections").map(&sections).unwrap_or_default(),
-            status: u
-                .get("status")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string(),
-        })
-        .unwrap_or_default();
+    let update = v.get("update").and_then(&parse_update).unwrap_or_default();
 
     let reasoning = v
         .get("reasoning")
@@ -1006,7 +1200,7 @@ pub fn hydrate_browse_url(config: &Config, draft: &mut DayTaskWorklogDraft) {
 
 /// Best-effort human browse URL for a target key, without an auth round trip
 /// (mirrors `intelligence::ticket_update::browse_url`). Empty → `None`.
-fn browse_url(config: &Config, provider: &str, key: &str) -> Option<String> {
+pub(crate) fn browse_url(config: &Config, provider: &str, key: &str) -> Option<String> {
     use crate::config::PmProviderConfig as P;
     let url = config
         .pm_providers
@@ -1211,27 +1405,24 @@ WHAT WAS DONE:\n\
     }
 
     #[tokio::test]
-    async fn fetch_plan_candidates_excludes_personal_tasks() {
-        // This draft ends in post_comment to a real tracker. A personal task has
-        // nowhere to post, so offering one as a candidate could only ever produce a
-        // draft that fails at the last step.
+    async fn fetch_plan_candidates_includes_personal_tasks() {
+        // A day's work can belong to a task tracked only in Meridian - it's a
+        // valid candidate same as any tracker's ticket. What posting to it means
+        // is decided later (locally, or promoted to a real ticket), not here.
         let pool = db().await;
         seed(&pool, "KAN-1", "jira").await;
         seed(&pool, "LOCAL-1", "local").await;
         plan(&pool, "2026-07-16", "KAN-1").await;
         plan(&pool, "2026-07-16", "LOCAL-1").await;
 
-        let keys: Vec<String> = fetch_plan_candidates(&pool, "2026-07-16")
+        let mut keys: Vec<String> = fetch_plan_candidates(&pool, "2026-07-16")
             .await
             .unwrap()
             .into_iter()
             .map(|c| c.task_key)
             .collect();
-        assert_eq!(
-            keys,
-            vec!["KAN-1".to_string()],
-            "a personal task can be planned, but never posted to - so never a candidate"
-        );
+        keys.sort();
+        assert_eq!(keys, vec!["KAN-1".to_string(), "LOCAL-1".to_string()]);
     }
 
     #[tokio::test]
@@ -1247,16 +1438,14 @@ WHAT WAS DONE:\n\
     }
 
     #[tokio::test]
-    async fn resolve_provider_refuses_a_personal_task() {
-        // Defence in depth: the model can hallucinate a key it was never shown, and
-        // COALESCE(provider,'jira') would route it straight at Jira.
+    async fn resolve_provider_resolves_a_personal_task_as_local() {
         let pool = db().await;
         seed(&pool, "LOCAL-1", "local").await;
         seed(&pool, "KAN-1", "jira").await;
 
-        assert!(
-            resolve_provider_for_key(&pool, "LOCAL-1").await.is_err(),
-            "a hallucinated personal-task match must be refused, not posted to jira"
+        assert_eq!(
+            resolve_provider_for_key(&pool, "LOCAL-1").await.unwrap(),
+            Some("local".to_string())
         );
         assert_eq!(
             resolve_provider_for_key(&pool, "KAN-1").await.unwrap(),
@@ -1297,6 +1486,30 @@ WHAT WAS DONE:\n\
         )
         .unwrap();
         assert_eq!(matched(&a), vec!["KAN-1", "KAN-2"]);
+    }
+
+    /// The multi-match body split: each match carries its OWN update, and a match
+    /// with none falls back (`None`) to the workstream update at post time.
+    #[test]
+    fn parse_reads_a_per_match_update_and_falls_back() {
+        let a = parse_answer(
+            r#"{"matches":[
+                    {"task_key":"KAN-1","confidence":0.9,
+                     "update":{"summary":"Wired auth","sections":[],"status":"In progress"}},
+                    {"task_key":"KAN-2","confidence":0.85}],
+                "propose":null,"update":{"summary":"strand","sections":[],"status":""},
+                "reasoning":"both moved"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            a.matches[0].update.as_ref().unwrap().summary,
+            "Wired auth",
+            "the first match keeps its own body"
+        );
+        assert!(
+            a.matches[1].update.is_none(),
+            "a match with no update falls back to the workstream one"
+        );
     }
 
     /// Every draft generated before multi-match used the singular `match` object,
@@ -1386,10 +1599,12 @@ WHAT WAS DONE:\n\
                 ParsedMatch {
                     task_key: "KAN-1".into(),
                     confidence: 0.9,
+                    update: None,
                 },
                 ParsedMatch {
                     task_key: "KAN-404".into(),
                     confidence: 0.8,
+                    update: None,
                 },
             ],
         )
@@ -1415,10 +1630,31 @@ WHAT WAS DONE:\n\
             &[ParsedMatch {
                 task_key: "KAN-404".into(),
                 confidence: 0.9,
+                update: None,
             }],
         )
         .await
         .is_err());
+    }
+
+    #[tokio::test]
+    async fn post_to_local_task_writes_the_update_onto_the_tasks_own_row() {
+        let pool = db().await;
+        seed(&pool, "LOCAL-1", "local").await;
+
+        let id = post_to_local_task(&pool, "LOCAL-1", "Did the thing", "2026-07-16T12:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(id, "local");
+
+        let row: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT local_worklog_text, local_worklog_posted_at FROM pm_tasks WHERE task_key = 'LOCAL-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0.as_deref(), Some("Did the thing"));
+        assert_eq!(row.1.as_deref(), Some("2026-07-16T12:00:00Z"));
     }
 
     #[test]
