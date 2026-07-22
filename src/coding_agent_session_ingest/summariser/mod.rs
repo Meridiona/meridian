@@ -88,32 +88,6 @@ pub(crate) struct Capture {
     pub stderr: String,
 }
 
-/// `claude`, `codex`, etc. install as npm-shimmed `.cmd`/`.bat` files on Windows, not PE
-/// executables — `CreateProcess` (what `Command::spawn` calls) refuses to run one directly
-/// and fails with "os error 193, %1 is not a valid Win32 application", even though the exact
-/// same path runs fine typed into a terminal (the shell recognises the extension and
-/// re-invokes it through `cmd.exe` itself; `CreateProcess` doesn't). Route those through
-/// `cmd.exe /C` explicitly. Anything else — a real `.exe`, or any non-Windows target —
-/// returns `None` and spawns directly, unchanged.
-#[cfg(windows)]
-fn windows_shell_wrapper(target: &Path) -> Option<Command> {
-    let is_script = target
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"));
-    if !is_script {
-        return None;
-    }
-    let mut cmd = Command::new("cmd");
-    cmd.arg("/C").arg(target);
-    Some(cmd)
-}
-
-#[cfg(not(windows))]
-fn windows_shell_wrapper(_target: &Path) -> Option<Command> {
-    None
-}
-
 /// Spawn `program args`, feed `stdin_text`, capture stdout/stderr with a hard
 /// timeout. `kill_on_drop` guarantees a timed-out child is reaped (no leak);
 /// stdin is written from a concurrent task so a large prompt can't deadlock the
@@ -136,7 +110,15 @@ pub(crate) async fn run_capture(
     // does have a working `PATH` behaves exactly as before.
     let resolved = crate::llm::detect::resolve_cli(program).await;
     let target = resolved.as_deref().unwrap_or_else(|| Path::new(program));
-    let mut cmd = windows_shell_wrapper(target).unwrap_or_else(|| Command::new(target));
+    // `claude`, `codex`, etc. install as npm-shimmed `.cmd`/`.bat` files on
+    // Windows, not PE executables. Do NOT hand-wrap these in `cmd.exe /C` —
+    // `Command::new(target)` already detects a `.bat`/`.cmd` target and routes
+    // it through `cmd.exe` internally, with cmd.exe-safe argument escaping
+    // (the fix for the "BatBadBut" class of bugs, GHSA-q455-m56c-85mh). A
+    // manual `cmd.arg("/C").arg(target)` wrapper bypasses that safe escaping —
+    // `args` below can carry session-derived prompt text, so a hand-rolled
+    // wrapper reopens exactly the injection std's built-in handling closes.
+    let mut cmd = Command::new(target);
     cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

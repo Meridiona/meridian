@@ -182,6 +182,23 @@ macOS has **no per-notification duration API**. What we have:
    genuinely requires a bundle). Windows has no bundle concept, so it detects
    the *dev* case instead — an executable under `target\debug\` or
    `target\release\` — and treats everything else as installed.
+9. **The plugin's `permission_state()` / `request_permission()` are hardcoded
+   to `Granted` on Windows** (`tauri-plugin-notifications-0.4.6/src/desktop.rs`
+   — the notify-rust backend has no permission API of its own). Taken at face
+   value this makes `system.notif_permission` unraisable on Windows even when
+   the user has turned Meridian's notifications off in Settings.
+   `sys::notification_permission_state` works around it: on Windows it bypasses
+   the plugin and reads `ToastNotifier::Setting()` (`Windows.UI.Notifications`)
+   directly, using the same AUMID (`app.config().identifier`) notify-rust
+   delivers toasts under — see `sys::windows_notification_setting`. No
+   "request" dialog exists on that path (WinRT has none), so
+   `commands::setup::request_notifications` re-reads the same WinRT state on
+   Windows instead of calling the plugin's stub, and `open_permission_pane`'s
+   `"notifications"` case opens `ms-settings:notifications` rather than a
+   macOS `x-apple.systempreferences:` URL. All three are one shared code path
+   with the macOS/dashboard-banner machinery (`poll/permissions.rs`), so any
+   future notification producer inherits this for free — nothing to wire up
+   per event_key.
 
 ## Testing a new notification
 
@@ -223,7 +240,7 @@ registered`, `outbox toast delivered`, `notification action event: {...}`,
 | `system.pause` | `system_fault` | View | — (stamp only) — pause/resume, folded off the `sys::notify` bypass |
 | `system.health` | `system_fault` | View | — (stamp only) — daemon went-quiet/back-online, folded off the bypass |
 | `system.update` | `system_fault`\* | View\* | — (stamp only) — update check/download/failure, folded off the bypass. \*Discrete one-shot events (not raise/clear state), so these go through `notifications::enqueue` directly rather than `notices::raise_typed` — see `tray/src-tauri/src/update.rs::notify_update` |
-| `system.notif_permission` | `system_fault` | View | — (stamp only) — macOS notification permission revoked; the one notice guaranteed to reach the user via the dashboard banner even when toasts themselves are broken |
+| `system.notif_permission` | `system_fault` | View | — (stamp only) — notification permission revoked (macOS TCC or, since gotcha #9, Windows' `ToastNotifier::Setting()`); the one notice guaranteed to reach the user via the dashboard banner even when toasts themselves are broken |
 | `system.capture_permission` | `system_fault` | View | — (stamp only) — Accessibility/Screen Recording revoked mid-session |
 | `system.disk_low` | `system_fault` | View | — (stamp only) — `~/.meridian`'s volume below 2 GB free |
 | `pm_worklog.{provider}` | `system_fault` | View | — (stamp only) — a worklog post to the tracker failed permanently |

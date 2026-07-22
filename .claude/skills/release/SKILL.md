@@ -93,6 +93,7 @@ the branch dropdown set to `pre-main`) — it is no longer cut automatically on
 every merge to `pre-main`.
 
 ### 4. Monitor Build Status
+
 ```bash
 gh run list --workflow=release-prepare.yml --limit=5
 gh run list --workflow=release-build.yml --limit=5

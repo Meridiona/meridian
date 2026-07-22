@@ -355,55 +355,20 @@ else{document.querySelector('h2').textContent='No token in URL. Try again.';}\
 /// is always logged too, so a failed/headless launch still leaves the user a
 /// way to continue by pasting it manually.
 ///
-/// `start` on Windows is a cmd.exe builtin, not a standalone executable, so it
-/// has to be invoked through the shell rather than spawned directly. Its first
-/// argument is a window-title slot, not part of the command — the empty `""`
-/// there is required, otherwise `start` misreads a quoted URL as the title and
-/// never opens it.
-///
-/// The whole `/C ...` line is built with [`CommandExt::raw_arg`] rather than
-/// passed as normal `args` elements: `Command`'s automatic Windows quoting
-/// only wraps an argument in `"..."` when it contains a space, tab, or `"` —
-/// an authorize URL has none of those, only `&`-joined query params, so it
-/// went out unquoted. `cmd.exe` then parsed each unescaped `&` as a command
-/// separator and only the query string up to the FIRST `&` ever reached the
-/// browser (`response_type=code`, with `client_id`/`redirect_uri`/`scope`/
-/// `state` silently dropped as bogus follow-on commands) — the exact shape of
-/// Atlassian's "authorize request was incomplete or invalid" and GitHub's
-/// consent page hanging on a `redirect_uri`-less Authorize click. Wrapping the
-/// URL in real quotes inside the raw command line protects `&` from cmd.exe's
-/// tokenizer the way it would from an interactive prompt. The URL can't itself
-/// contain a `"` — [`encode`] percent-encodes anything outside the unreserved
-/// set — so this quoting is always safe.
-/// The `raw_arg` line itself, pulled out as a pure function so the quoting
-/// shape is unit-testable without mocking `Command::spawn`.
-#[cfg(target_os = "windows")]
-fn windows_start_line(url: &str) -> String {
-    format!("start \"\" \"{url}\"")
-}
-
-#[cfg(target_os = "windows")]
-fn open_browser(url: &str) {
-    use std::os::windows::process::CommandExt;
-    tracing::info!(
-        url,
-        "if it doesn't open automatically, open this URL yourself"
-    );
-    let result = std::process::Command::new("cmd")
-        .arg("/C")
-        .raw_arg(windows_start_line(url))
-        .spawn();
-    if let Err(e) = result {
-        tracing::warn!(error = %e, "failed to launch the system browser");
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
+/// Windows launches via `explorer.exe`, not `cmd /C start`: the authorize URLs
+/// passed here always carry `&`-separated query params (client_id, redirect_uri,
+/// state, scope), and `cmd.exe` re-parses its whole command line for shell
+/// metacharacters like `&` regardless of Win32 argv quoting — it would split the
+/// URL at the first `&` and try to run the tail as a second command, truncating
+/// the authorize URL. `explorer.exe` takes the URL as a literal argument handed
+/// straight to the registered protocol handler, with no shell re-parsing.
 fn open_browser(url: &str) {
     tracing::info!(
         url,
         "if it doesn't open automatically, open this URL yourself"
     );
+    #[cfg(target_os = "windows")]
+    let result = std::process::Command::new("explorer").arg(url).spawn();
     #[cfg(target_os = "macos")]
     let result = std::process::Command::new("open").arg(url).spawn();
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -489,32 +454,6 @@ mod tests {
         assert_eq!(decode("a%20b"), "a b");
         assert_eq!(decode("abc-_123"), "abc-_123");
         assert_eq!(decode("x%2Fy"), "x/y");
-    }
-
-    /// The regression this whole PR exists for: a URL with `&`-joined query
-    /// params must come out fully wrapped in real quotes, so cmd.exe's
-    /// tokenizer can never see an unescaped `&` and split the command line.
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_start_line_quotes_the_whole_url() {
-        let url = "https://auth.atlassian.com/authorize?response_type=code&client_id=abc&redirect_uri=http%3A%2F%2F127.0.0.1%3A9123%2Fcallback&state=xyz";
-        let line = windows_start_line(url);
-        assert_eq!(line, format!("start \"\" \"{url}\""));
-        // The URL's own `&`s must all land strictly inside the quoted span.
-        let open = line.find('"').unwrap();
-        let close = line.rfind('"').unwrap();
-        assert!(
-            close > open + 1,
-            "URL must be wrapped in a non-empty quoted span"
-        );
-        for (i, c) in line.char_indices() {
-            if c == '&' {
-                assert!(
-                    i > open && i < close,
-                    "found an `&` outside the quoted span at byte {i}: {line}"
-                );
-            }
-        }
     }
 
     #[test]

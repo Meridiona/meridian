@@ -211,21 +211,89 @@ pub fn retract_toast(app: &tauri::AppHandle, id: i64) {
     }
 }
 
-/// Current macOS notification authorization, shared by the setup wizard's
-/// probe ([`crate::commands::setup::check_notifications`]) and the background
+/// Current notification authorization, shared by the setup wizard's probe
+/// ([`crate::commands::setup::check_notifications`]) and the background
 /// re-check ([`crate::poll::permissions`]) so the two never drift. `None`
 /// covers both "plugin absent" (unbundled run) and a probe error — callers
 /// that need to distinguish those log separately; both mean "can't toast".
+///
+/// **macOS** asks the plugin, which is a real `UNUserNotificationCenter`
+/// authorization read. **Windows** does NOT ask the plugin: its notify-rust
+/// backend has no permission API of its own — `permission_state()` is
+/// hardcoded to always return `Granted` (see
+/// `tauri-plugin-notifications-0.4.6/src/desktop.rs`) — so this instead reads
+/// [`windows_notification_setting`], the real WinRT read.
 pub async fn notification_permission_state(
     app: &tauri::AppHandle,
 ) -> Option<tauri_plugin_notifications::PermissionState> {
-    let nf = notifier(app)?;
-    match nf.permission_state().await {
-        Ok(state) => Some(state),
-        Err(e) => {
-            tracing::warn!(error = %e, "notification permission probe failed");
-            None
+    let _nf = notifier(app)?; // plugin absent (unbundled run) — same "can't toast" gate on every OS
+
+    #[cfg(target_os = "windows")]
+    {
+        match windows_notification_setting(app) {
+            Ok(setting) => Some(windows_permission_state(setting)),
+            Err(e) => {
+                tracing::warn!(error = %e, "windows notification setting probe failed");
+                None
+            }
         }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        match _nf.permission_state().await {
+            Ok(state) => Some(state),
+            Err(e) => {
+                tracing::warn!(error = %e, "notification permission probe failed");
+                None
+            }
+        }
+    }
+}
+
+/// Read the Windows toast-notification setting for this app via WinRT —
+/// `Settings > System > Notifications`, not TCC (Windows has no such
+/// authorization dialog; see [`is_bundled`]'s doc comment on the platform gap
+/// this mirrors for Accessibility/Screen Recording). A pure status read, no
+/// prompt: WinRT exposes no "request" API for toast permission, only the
+/// Settings page itself (see [`crate::commands::system::open_permission_pane`]
+/// `"notifications"`).
+///
+/// Queried under the SAME app identity notify-rust delivers toasts under —
+/// `ToastNotificationManager::CreateToastNotifierWithId` with the Tauri
+/// bundle identifier as AUMID — because that's the only identity Windows has
+/// a setting for; reading a different one would silently answer the wrong
+/// question. `tauri-winrt-notification`'s `Toast::show()` creates its
+/// notifier the identical way, so the two calls are guaranteed to agree.
+#[cfg(target_os = "windows")]
+fn windows_notification_setting(
+    app: &tauri::AppHandle,
+) -> windows::core::Result<windows::UI::Notifications::NotificationSetting> {
+    use windows::core::HSTRING;
+    use windows::UI::Notifications::ToastNotificationManager;
+    let aumid = HSTRING::from(&app.config().identifier);
+    ToastNotificationManager::CreateToastNotifierWithId(&aumid)?.Setting()
+}
+
+/// Map WinRT's `NotificationSetting` to the plugin's `PermissionState` so the
+/// wizard and the background re-check both branch on the same tri-state
+/// vocabulary as macOS. `Enabled` is the only variant that means the user can
+/// see a toast; every `Disabled*` variant (for-this-app, for-the-user, by
+/// group policy, by manifest) is a dead end the wizard can't distinguish
+/// between anyway — there is exactly one recovery action for all of them
+/// (`open_permission_pane` `"notifications"`), so collapsing them to `Denied`
+/// loses no actionable information. Pure and free-standing so it's testable
+/// without a live `AppHandle` / real WinRT call.
+#[cfg(target_os = "windows")]
+fn windows_permission_state(
+    setting: windows::UI::Notifications::NotificationSetting,
+) -> tauri_plugin_notifications::PermissionState {
+    use tauri_plugin_notifications::PermissionState;
+    use windows::UI::Notifications::NotificationSetting;
+    if setting == NotificationSetting::Enabled {
+        PermissionState::Granted
+    } else {
+        PermissionState::Denied
     }
 }
 
@@ -233,6 +301,18 @@ pub async fn notification_permission_state(
 /// (`AXIsProcessTrusted`) — a pure status read, no prompt. Shared by the setup
 /// wizard's probe ([`crate::commands::setup::check_accessibility`]) and the
 /// background re-check ([`crate::poll::permissions`]).
+///
+/// **Windows has no TCC analogue** — UI Automation (what the Windows capture
+/// fork uses in place of the Accessibility API) needs no user grant, so
+/// there is nothing to preflight. `true` here is not "granted", it's "not
+/// applicable"; the wizard has no third state, and treating it as granted is
+/// what actually reflects reality — the alternative (`false`) makes the
+/// wizard's Accessibility card permanently un-satisfiable on Windows: a
+/// REQUIRED card with a grant button that opens a macOS-only Settings pane
+/// (`open_permission_pane` has no Windows arm for it), blocking `Continue`
+/// forever. Mirrors `screenpipe_a11y::platform::windows`'s own
+/// always-granted stance (see the Cargo.toml note on `cidre`) — this
+/// function had drifted from that and hardcoded `false` instead.
 pub fn accessibility_trusted() -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -245,7 +325,7 @@ pub fn accessibility_trusted() -> bool {
         unsafe { AXIsProcessTrusted() }
     }
     #[cfg(not(target_os = "macos"))]
-    false
+    true
 }
 
 /// Whether the tray process holds macOS Screen Recording permission
@@ -253,6 +333,12 @@ pub fn accessibility_trusted() -> bool {
 /// by the setup wizard's probe
 /// ([`crate::commands::setup::check_screen_recording`]) and the background
 /// re-check ([`crate::poll::permissions`]).
+///
+/// **Windows has no TCC analogue** — Windows Graphics Capture needs no user
+/// grant either, same reasoning as [`accessibility_trusted`]: `true` reflects
+/// "not applicable", and `false` would permanently block the wizard's
+/// REQUIRED Screen Recording card behind a grant button with no Windows
+/// Settings pane to send the user to.
 pub fn screen_recording_trusted() -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -264,7 +350,7 @@ pub fn screen_recording_trusted() -> bool {
         unsafe { CGPreflightScreenCaptureAccess() }
     }
     #[cfg(not(target_os = "macos"))]
-    false
+    true
 }
 
 /// Register the fixed interactive-category set (`meridian_core`'s
@@ -418,5 +504,51 @@ mod tests {
             "Meridian",
             "meridian-tray"
         ])));
+    }
+
+    /// [`super::windows_permission_state`] is the sole place that decides
+    /// which WinRT settings still let a toast through — get this wrong and
+    /// either `system.notif_permission` never fires (false Granted) or fires
+    /// permanently (false Denied) for every Windows install.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_enabled_setting_maps_to_granted() {
+        use tauri_plugin_notifications::PermissionState;
+        use windows::UI::Notifications::NotificationSetting;
+        assert_eq!(
+            super::windows_permission_state(NotificationSetting::Enabled),
+            PermissionState::Granted
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_every_disabled_variant_maps_to_denied() {
+        use tauri_plugin_notifications::PermissionState;
+        use windows::UI::Notifications::NotificationSetting;
+        for setting in [
+            NotificationSetting::DisabledForApplication,
+            NotificationSetting::DisabledForUser,
+            NotificationSetting::DisabledByGroupPolicy,
+            NotificationSetting::DisabledByManifest,
+        ] {
+            assert_eq!(
+                super::windows_permission_state(setting),
+                PermissionState::Denied,
+                "{setting:?} must not be reported as Granted"
+            );
+        }
+    }
+
+    /// Regression guard: these two must report `true` on Windows (see the
+    /// doc comments) or the wizard's Accessibility/Screen Recording cards
+    /// become permanently un-satisfiable REQUIRED gates with no Windows
+    /// Settings pane to send the user to — this was an actual bug (`false`
+    /// hardcoded, contradicting the docs) caught by running the wizard.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn non_macos_accessibility_and_screen_recording_are_not_applicable_so_report_true() {
+        assert!(super::accessibility_trusted());
+        assert!(super::screen_recording_trusted());
     }
 }

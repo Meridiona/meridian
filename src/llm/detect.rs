@@ -707,7 +707,7 @@ fn probe_current_path(bin: &str) -> Option<PathBuf> {
     let names = path_candidate_names(bin);
     std::env::split_paths(&path)
         .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
-        .find(|p| p.is_file())
+        .find(|p| p.is_absolute() && p.is_file())
 }
 
 /// The file name(s) `bin` could actually be on disk. On Windows, `claude`/`codex`/etc.
@@ -719,9 +719,10 @@ fn probe_current_path(bin: &str) -> Option<PathBuf> {
 /// writes THREE files per CLI — `claude` (an extensionless POSIX shebang script, for
 /// WSL/Git-Bash), `claude.cmd`, and `claude.ps1` — all in the same directory. The bare
 /// `claude` file `is_file()` just as truly as `claude.cmd` does, so checking it first
-/// resolves to the POSIX script: no `.cmd`/`.bat` extension, so `windows_shell_wrapper`
-/// doesn't route it through `cmd /C` either, and it gets handed to `CreateProcess` as a
-/// literal shebang text file — `os error 193, %1 is not a valid Win32 application`, on a
+/// resolves to the POSIX script: no `.cmd`/`.bat` extension, so `Command::new`'s own
+/// `.bat`/`.cmd` auto-detection doesn't route it through `cmd.exe` either, and it gets
+/// handed to `CreateProcess` as a literal shebang text file — `os error 193, %1 is not
+/// a valid Win32 application`, on a
 /// machine where `claude` undeniably "works". A real `cmd.exe`/PowerShell prompt never
 /// makes this mistake because PATHEXT resolution always wins over an extensionless match;
 /// the bare name is kept only as a last-resort fallback for a genuinely extensionless
