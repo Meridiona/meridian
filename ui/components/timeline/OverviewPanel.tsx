@@ -198,6 +198,10 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
         )}
       </div>
 
+      {/* Board Cleanup CTA — temporarily disabled (not deleted); re-enable by
+          uncommenting this block. This was the only UI entry point into the
+          Cleanup flow (see also MeridianTimelineShell.tsx's `'cleanup'`
+          modal-render branch, disabled alongside it).
       {!isSolo && cleanupIssueCount > 0 && (
         <button onClick={() => onOpen('cleanup')}
           className="w-full text-left rounded-xl px-4 py-3 flex items-center gap-2.5"
@@ -211,6 +215,7 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
           <span style={{ color: 'var(--color-state-pending)' }}>→</span>
         </button>
       )}
+      */}
 
       {/* Editing is a today-only action — you plan the day you're in, not the
           past. On a past date the section is read-only: it shows that day's

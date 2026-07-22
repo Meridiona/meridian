@@ -244,9 +244,12 @@ export default function MeridianTimelineShell() {
         <ReviewModal items={items} actions={data.actions} focusKey={reviewFocusKey}
           onClose={() => { setActiveModal(null); setReviewFocusKey(null) }} />
       )}
+      {/* Board Cleanup — temporarily disabled (not deleted); re-enable by
+          uncommenting this alongside OverviewPanel.tsx's CTA.
       {activeModal === 'cleanup' && (
         <CleanupModal onClose={() => { setActiveModal(null); data.refetchTasks() }} />
       )}
+      */}
       {activeModal === 'settings' && (
         <SettingsModal onClose={() => setActiveModal(null)} initialSection={settingsSection} />
       )}
