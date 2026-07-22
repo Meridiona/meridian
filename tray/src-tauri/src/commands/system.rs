@@ -104,30 +104,69 @@ pub async fn take_pending_deep_link(app: tauri::AppHandle) -> Result<Option<Stri
     Ok(crate::deep_link::take_pending(&app))
 }
 
-/// Deep-link straight to a macOS privacy pane in System Settings. `pane` is
-/// one of the wizard's known keys; anything else is rejected so the frontend
-/// can't open an arbitrary URL. We always offer this button regardless of
-/// current grant state — the user may need to fix a revoked permission too.
-/// Dismisses the popover (see [`dismiss_popover`]) once `pane` is known
-/// valid — a no-op when called from the setup wizard, where the popover is
-/// already hidden. Validated before dismissing rather than after: an
-/// unknown `pane` used to dismiss the popover and then return `Err` with no
-/// System Settings pane opened, losing the popover for nothing.
+/// Deep-link straight to the OS's notification/privacy settings pane. `pane`
+/// is one of the wizard's known keys; anything else is rejected so the
+/// frontend can't open an arbitrary URL. We always offer this button
+/// regardless of current grant state — the user may need to fix a revoked
+/// permission too. Dismisses the popover (see [`dismiss_popover`]) once
+/// `pane` is known valid — a no-op when called from the setup wizard, where
+/// the popover is already hidden. Validated before dismissing rather than
+/// after: an unknown `pane` used to dismiss the popover and then return `Err`
+/// with no settings pane opened, losing the popover for nothing.
+///
+/// Only `"notifications"` is reachable on Windows: `check_accessibility` /
+/// `check_screen_recording` always report `true` there (no TCC analogue —
+/// see the Cargo.toml note on `cidre`), so the wizard's grant button for
+/// those two never renders, and this command never receives their pane keys.
 #[tauri::command]
 pub async fn open_permission_pane(app: tauri::AppHandle, pane: String) -> Result<(), String> {
-    let url = match pane.as_str() {
-        "screen_recording" => {
+    #[cfg(target_os = "windows")]
+    let url = permission_pane_url(&pane)?;
+    #[cfg(not(target_os = "windows"))]
+    let url = permission_pane_url(&pane, &app.config().identifier)?;
+    dismiss_popover(&app);
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// Resolve a wizard pane key to its OS settings URL — the pure half of
+/// [`open_permission_pane`], factored out so the mapping is unit-testable
+/// without a live `AppHandle`.
+///
+/// Windows has no per-app deep link into the notification pane the way
+/// macOS's `?id=<bundle-id>` does — `ms-settings:notifications` opens the
+/// general Notifications & actions page, which lists Meridian once it has
+/// delivered its first toast under its AUMID (see
+/// `sys::windows_notification_setting`). It's also the only pane reachable
+/// here in practice: `check_accessibility` / `check_screen_recording` always
+/// report `true` on Windows (no TCC analogue — see the Cargo.toml note on
+/// `cidre`), so the wizard's grant button for those two never renders.
+#[cfg(target_os = "windows")]
+fn permission_pane_url(pane: &str) -> Result<String, String> {
+    match pane {
+        "notifications" => Ok("ms-settings:notifications".to_string()),
+        other => Err(format!("unknown permission pane: {other}")),
+    }
+}
+
+/// macOS pane resolution — `identifier` is the app's bundle id, needed only
+/// by the `"notifications"` case (see the doc comment inline below).
+#[cfg(not(target_os = "windows"))]
+fn permission_pane_url(pane: &str, identifier: &str) -> Result<String, String> {
+    match pane {
+        "screen_recording" => Ok(
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
-                .to_string()
-        }
-        "accessibility" => {
+                .to_string(),
+        ),
+        "accessibility" => Ok(
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-                .to_string()
-        }
-        "input_monitoring" => {
+                .to_string(),
+        ),
+        "input_monitoring" => Ok(
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
-                .to_string()
-        }
+                .to_string(),
+        ),
         // Notification authorization lives under Notifications, not Privacy &
         // Security. Anchored to our own bundle id so this opens Meridian's
         // specific notification detail pane (Allow toggle, Alert Style, …)
@@ -137,16 +176,11 @@ pub async fn open_permission_pane(app: tauri::AppHandle, pane: String) -> Result
         // supports even though it's otherwise undocumented. This is the deny
         // recovery path: macOS shows the authorization dialog exactly once, so
         // after a deny the wizard can only send the user here.
-        "notifications" => format!(
-            "x-apple.systempreferences:com.apple.preference.notifications?id={}",
-            app.config().identifier
-        ),
-        other => return Err(format!("unknown permission pane: {other}")),
-    };
-    dismiss_popover(&app);
-    app.opener()
-        .open_url(url, None::<&str>)
-        .map_err(|e| e.to_string())
+        "notifications" => Ok(format!(
+            "x-apple.systempreferences:com.apple.preference.notifications?id={identifier}"
+        )),
+        other => Err(format!("unknown permission pane: {other}")),
+    }
 }
 
 /// Open an external URL with its default OS handler — browser for `http(s)`,
@@ -277,5 +311,58 @@ mod tests {
         assert!(!is_openable_url(""));
         // Multibyte content must not panic the scheme check.
         assert!(!is_openable_url("héllo→"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_notifications_pane_opens_the_general_settings_page() {
+        assert_eq!(
+            permission_pane_url("notifications").unwrap(),
+            "ms-settings:notifications"
+        );
+    }
+
+    /// Accessibility/Screen Recording never reach this command in practice on
+    /// Windows (see the doc comment on `permission_pane_url`), but the
+    /// rejection must still be graceful rather than panicking if the
+    /// frontend ever sends one.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_rejects_macos_only_panes() {
+        assert!(permission_pane_url("accessibility").is_err());
+        assert!(permission_pane_url("screen_recording").is_err());
+        assert!(permission_pane_url("bogus").is_err());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn macos_notifications_pane_is_anchored_to_the_bundle_id() {
+        assert_eq!(
+            permission_pane_url("notifications", "com.meridiona.meridian").unwrap(),
+            "x-apple.systempreferences:com.apple.preference.notifications?id=com.meridiona.meridian"
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn macos_known_panes_resolve_without_the_bundle_id() {
+        assert_eq!(
+            permission_pane_url("screen_recording", "com.meridiona.meridian").unwrap(),
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        );
+        assert_eq!(
+            permission_pane_url("accessibility", "com.meridiona.meridian").unwrap(),
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        );
+        assert_eq!(
+            permission_pane_url("input_monitoring", "com.meridiona.meridian").unwrap(),
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn macos_unknown_pane_is_rejected() {
+        assert!(permission_pane_url("bogus", "com.meridiona.meridian").is_err());
     }
 }

@@ -130,11 +130,15 @@ fn notification_state_label(state: tauri_plugin_notifications::PermissionState) 
     }
 }
 
-/// Current macOS notification authorization for the wizard's Notifications card.
+/// Current notification authorization for the wizard's Notifications card —
+/// a real `UNUserNotificationCenter` read on macOS, a real WinRT
+/// `ToastNotifier::Setting()` read on Windows (see
+/// [`crate::sys::notification_permission_state`]).
 ///
 /// Returns `granted` / `denied` / `prompt` (never asked — requesting will show
-/// the system dialog) / `unavailable` (unbundled run: the plugin registers only
-/// inside a `.app` bundle, so `tauri dev` has no notification backend at all).
+/// the system dialog; Windows never reports this, see [`request_notifications`]) /
+/// `unavailable` (unbundled run: the plugin registers only inside a bundled
+/// install, so `tauri dev` has no notification backend at all).
 ///
 /// Unlike the TCC probes above this is not a boolean: `denied` and `prompt`
 /// need different grant actions (macOS shows the authorization dialog exactly
@@ -159,21 +163,39 @@ pub async fn check_notifications(app: tauri::AppHandle) -> String {
 /// re-prompt: the call returns `denied` unchanged and the frontend falls back
 /// to opening the System Settings pane
 /// ([`crate::commands::system::open_permission_pane`] `"notifications"`).
+///
+/// **Windows has no request dialog to surface** — WinRT exposes only a
+/// passive `ToastNotifier::Setting()` read (see
+/// [`crate::sys::notification_permission_state`]), no equivalent of
+/// `UNUserNotificationCenter`'s one-shot authorization prompt. So on Windows
+/// this command skips the (stubbed, always-`Granted`) plugin call entirely
+/// and just re-reads the real WinRT state — `denied` there drives the same
+/// frontend fallback to the Settings pane as a macOS deny.
 #[tauri::command]
 #[tracing::instrument(skip(app))]
 pub async fn request_notifications(app: tauri::AppHandle) -> String {
-    let Some(nf) = crate::sys::notifier(&app) else {
-        return "unavailable".into();
-    };
-    match nf.request_permission().await {
-        Ok(state) => {
-            let label = notification_state_label(state);
-            tracing::info!(state = label, "setup: requested notification permission");
-            label.into()
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "setup: notification permission request failed");
-            "unavailable".into()
+    #[cfg(target_os = "windows")]
+    {
+        return match crate::sys::notification_permission_state(&app).await {
+            Some(state) => notification_state_label(state).into(),
+            None => "unavailable".into(),
+        };
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let Some(nf) = crate::sys::notifier(&app) else {
+            return "unavailable".into();
+        };
+        match nf.request_permission().await {
+            Ok(state) => {
+                let label = notification_state_label(state);
+                tracing::info!(state = label, "setup: requested notification permission");
+                label.into()
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "setup: notification permission request failed");
+                "unavailable".into()
+            }
         }
     }
 }
