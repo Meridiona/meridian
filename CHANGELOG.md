@@ -1,3 +1,28 @@
+## [1.76.0](https://github.com/Meridiona/meridian/compare/v1.75.1...v1.76.0) (2026-07-22)
+
+### 🚀 Features
+
+* **capture:** capture context from secondary monitors ([236b46e](https://github.com/Meridiona/meridian/commit/236b46eb1344b39141e9d43f79433c6828c556ff))
+* **integrations:** add View tasks and Sync now to connected tracker cards ([51a1df7](https://github.com/Meridiona/meridian/commit/51a1df7ccafd0020731fc0d8c07cf7642e7d2950))
+* **jira:** add multi-select project picker for Jira, mirroring GitHub ([e640dfa](https://github.com/Meridiona/meridian/commit/e640dfaed8dcd0949045f3366002ea627f1cdca8))
+
+### 🐛 Bug Fixes
+
+* address PR [#540](https://github.com/Meridiona/meridian/issues/540) review comments ([f054e65](https://github.com/Meridiona/meridian/commit/f054e65fcbb774634e5f1e270e1109484c82dbc5))
+* address PR [#542](https://github.com/Meridiona/meridian/issues/542) review comments ([dd88ab8](https://github.com/Meridiona/meridian/commit/dd88ab8f4bd5a46cabc15cbd199a78f5b35e5831))
+* **capture:** exclude the focused monitor by is_focused, not name matching ([fae04b6](https://github.com/Meridiona/meridian/commit/fae04b6c1fcd503d498bdc9a252f256f8d5f274f))
+* **health:** use Vec::contains to satisfy clippy on Windows ([770439e](https://github.com/Meridiona/meridian/commit/770439e13f89f06240868befd06e7553f3bc0436))
+* **oauth:** open browser via rundll32 on Windows ([736af8d](https://github.com/Meridiona/meridian/commit/736af8d8528b4f4bcedc8746056414adbcd69f36))
+* **ui:** guard ProviderTasks.fetchTasks against overlapping stale responses ([e5110ba](https://github.com/Meridiona/meridian/commit/e5110ba628ab44613fee45cb2dbd7265a10f8810)), closes [#542](https://github.com/Meridiona/meridian/issues/542)
+* **ui:** stop AccountAuthControl mounting a second ClerkProvider ([0fd5942](https://github.com/Meridiona/meridian/commit/0fd5942bace80f65807cb914aa2b5ed467a5a01e))
+* **windows:** make daemon recovery resilient beyond the HOME fix, and stop meridian_bin silently missing the staged exe ([0278532](https://github.com/Meridiona/meridian/commit/027853204019be773a3a95e0ebdde1309c947c8b))
+* **windows:** resolve HOME via meridian_core::paths, quote OAuth browser-launch URLs ([207f592](https://github.com/Meridiona/meridian/commit/207f592360f5cff4f0875a2f7661ca9472a5fdd3))
+
+### 🔧 Chores
+
+* add .gitattributes to force LF line endings ([9c80d68](https://github.com/Meridiona/meridian/commit/9c80d6899641877616db1a8a807b035d9f20282c))
+* raise the forced-update floor to 1.75.0 ([301e929](https://github.com/Meridiona/meridian/commit/301e92937bbcbbaafbac513d60411da7f74af89f))
+
 ## [1.75.1](https://github.com/Meridiona/meridian/compare/v1.75.0...v1.75.1) (2026-07-22)
 
 ### 🐛 Bug Fixes
