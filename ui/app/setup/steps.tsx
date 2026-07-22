@@ -176,9 +176,17 @@ function IntelligenceBody({ wiz }: { wiz: Wiz }) {
 }
 
 // ── Welcome (pre-step intro) ──────────────────────────────────────────────────
-export function Welcome({ onBegin }: { onBegin: () => void }) {
+export function Welcome({ onBegin, steps, ready, error, onRetry }: {
+  onBegin: () => void
+  steps: StepMeta[]
+  /** False until `get_platform` resolves — "Get started" stays disabled so the
+   *  step list (which depends on platform) can't reshape after the user begins. */
+  ready: boolean
+  error: boolean
+  onRetry: () => void
+}) {
   const points = [
-    { t: 'On-device', d: 'Your screen is read and understood locally on your Mac, never uploaded.' },
+    { t: 'On-device', d: 'Your screen is read and understood locally on your device, never uploaded.' },
     { t: 'Automatic', d: 'Builds an accurate timeline of the tickets you worked on, then drafts the updates for you.' },
     { t: 'Connected', d: 'Works with Jira, Linear, GitHub, Trello, and Azure DevOps.' },
   ]
@@ -207,8 +215,17 @@ export function Welcome({ onBegin }: { onBegin: () => void }) {
           </div>
         ))}
       </div>
-      <Btn onClick={onBegin} style={{ padding: '11px 26px', fontSize: 13.5 }}>Get started</Btn>
-      <p className="font-mono" style={{ fontSize: 10.5, letterSpacing: '.04em', color: 'var(--t-faint)', marginTop: 14 }}>{STEPS.length} quick steps · about a minute</p>
+      {error ? (
+        <div className="flex flex-col items-center" style={{ gap: 8 }}>
+          <p style={{ fontSize: 12, color: 'var(--color-state-pending)' }}>Couldn't detect your platform - try again.</p>
+          <Btn onClick={onRetry} style={{ padding: '11px 26px', fontSize: 13.5 }}>Retry</Btn>
+        </div>
+      ) : (
+        <Btn onClick={onBegin} disabled={!ready} style={{ padding: '11px 26px', fontSize: 13.5 }}>
+          {ready ? 'Get started' : 'Preparing setup…'}
+        </Btn>
+      )}
+      <p className="font-mono" style={{ fontSize: 10.5, letterSpacing: '.04em', color: 'var(--t-faint)', marginTop: 14 }}>{steps.length} quick steps · about a minute</p>
     </div>
   )
 }
@@ -257,10 +274,16 @@ export interface StepMeta {
   canNext: (w: Wiz) => boolean
 }
 
-// Permissions stays first (capture needs them); the AI-provider choice comes
-// last so the user has connected their trackers and signed in before picking
-// which model writes their summaries.
-export const STEPS: StepMeta[] = [
+// Permissions stays first on macOS (capture needs them); the AI-provider
+// choice comes last so the user has connected their trackers and signed in
+// before picking which model writes their summaries.
+//
+// Permissions is macOS-only: Windows capture (UIA + WGC) has no TCC-style
+// consent system — screenpipe_a11y::platform::windows reports every grant as
+// already true — so there is nothing for that step to request, and its copy
+// ("Two macOS permissions...") is actively wrong on Windows. `buildSteps`
+// drops it entirely there rather than rendering an always-green no-op card.
+const ALL_STEPS: StepMeta[] = [
   {
     id: 'permissions', n: '01', label: 'Permissions', kicker: 'Access',
     title: 'Let Meridian see your work',
@@ -298,3 +321,10 @@ export const STEPS: StepMeta[] = [
     canNext: () => true,
   },
 ]
+
+/** Platform-specific step list. `n` is renumbered to the filtered position so
+ *  the rail never shows a gap (e.g. "02, 03, 04" with only three steps). */
+export function buildSteps(platform: string | null): StepMeta[] {
+  const steps = platform === 'windows' ? ALL_STEPS.filter((s) => s.id !== 'permissions') : ALL_STEPS
+  return steps.map((s, i) => ({ ...s, n: String(i + 1).padStart(2, '0') }))
+}

@@ -46,17 +46,32 @@ use super::{resolver::backend_for, LlmConfig, LlmError, PromptRequest};
 const PROBE_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// Where these CLIs actually land, for when the login shell is unavailable or too slow.
+///
+/// Unix-only paths — Windows has no `probe_login_shell` to fall back FROM (see
+/// [`resolve_cli`]), so it never reaches this tier for the common case anyway. The one
+/// Windows location worth listing is npm's global bin, `%APPDATA%\npm`, for the rare case
+/// where a fresh shell's `PATH` hasn't picked it up yet even though `PATH` is otherwise
+/// trustworthy on this platform.
 fn candidate_dirs() -> Vec<PathBuf> {
     let home = meridian_core::paths::home_dir_or_cwd();
+    #[cfg(windows)]
+    let platform: Vec<String> = std::env::var("APPDATA")
+        .map(|a| vec![PathBuf::from(a).join("npm").to_string_lossy().into_owned()])
+        .unwrap_or_default();
+    #[cfg(not(windows))]
+    let platform: Vec<String> = vec![
+        "/opt/homebrew/bin".to_string(),
+        "/usr/local/bin".to_string(),
+    ];
+
     [
         home.join(".local/bin").to_string_lossy().into_owned(),
         home.join(".npm-global/bin").to_string_lossy().into_owned(),
         home.join(".bun/bin").to_string_lossy().into_owned(),
         home.join(".volta/bin").to_string_lossy().into_owned(),
-        "/opt/homebrew/bin".to_string(),
-        "/usr/local/bin".to_string(),
     ]
     .into_iter()
+    .chain(platform)
     .map(PathBuf::from)
     .collect()
 }
@@ -599,8 +614,15 @@ static RESOLVED_BINS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, PathB
 /// `scripts/com.meridiona.daemon.plist` sets a rich `PATH` for it, which is exactly why
 /// the bug only ever showed up in the tray's Test Connection.
 ///
-/// Returns `None` when neither probe finds the binary; callers fall back to the bare name
-/// so a working `PATH` still behaves as before.
+/// Returns `None` when no probe finds the binary; callers fall back to the bare name so a
+/// working `PATH` still behaves as before.
+///
+/// [`probe_current_path`] runs first and is the ONLY tier that matters on Windows: there is
+/// no Finder-style PATH stripping there, so a GUI/daemon process already sees the same
+/// `PATH` a terminal does — the login-shell probe below would just fail outright (no
+/// `/bin/zsh`, no `$SHELL`) and waste up to [`PROBE_TIMEOUT`] doing it. It also short-circuits
+/// the slow shell spawn on macOS whenever the current process's `PATH` is already good (e.g.
+/// the daemon's launchd-configured one, per the `resolve_cli` doc above).
 pub async fn resolve_cli(bin: &str) -> Option<PathBuf> {
     if let Some(hit) = RESOLVED_BINS
         .get_or_init(Default::default)
@@ -612,9 +634,12 @@ pub async fn resolve_cli(bin: &str) -> Option<PathBuf> {
         return Some(hit);
     }
 
-    let found = probe_login_shell(bin)
-        .await
-        .or_else(|| probe_candidates(bin))?;
+    let found = match probe_current_path(bin) {
+        Some(p) => Some(p),
+        None => probe_login_shell(bin)
+            .await
+            .or_else(|| probe_candidates(bin)),
+    }?;
 
     tracing::debug!(bin, path = %found.display(), "resolved CLI path");
     RESOLVED_BINS
@@ -673,6 +698,50 @@ fn probe_candidates(bin: &str) -> Option<PathBuf> {
         .find(|p| p.exists())
 }
 
+/// Check the CURRENT process's own `PATH` for `bin` — the cheap, no-subprocess probe that
+/// [`probe_login_shell`]/[`probe_candidates`] exist to work AROUND on macOS (a Finder-launched
+/// `.app` gets a stripped `PATH` there, so trusting it isn't safe). Windows has no equivalent
+/// stripping, so this tier alone is normally sufficient there.
+fn probe_current_path(bin: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let names = path_candidate_names(bin);
+    std::env::split_paths(&path)
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+        .find(|p| p.is_absolute() && p.is_file())
+}
+
+/// The file name(s) `bin` could actually be on disk. On Windows, `claude`/`codex`/etc.
+/// install as npm-shimmed `.cmd` files, not bare `.exe`s — `CreateProcess` only appends a
+/// `PATHEXT` extension automatically when spawning *by name*, not when we hand back (and a
+/// caller later spawns) an absolute path, so the extension has to be resolved right here.
+///
+/// `PATHEXT` extensions are tried BEFORE the bare name, not after. npm's global install
+/// writes THREE files per CLI — `claude` (an extensionless POSIX shebang script, for
+/// WSL/Git-Bash), `claude.cmd`, and `claude.ps1` — all in the same directory. The bare
+/// `claude` file `is_file()` just as truly as `claude.cmd` does, so checking it first
+/// resolves to the POSIX script: no `.cmd`/`.bat` extension, so `Command::new`'s own
+/// `.bat`/`.cmd` auto-detection doesn't route it through `cmd.exe` either, and it gets
+/// handed to `CreateProcess` as a literal shebang text file — `os error 193, %1 is not
+/// a valid Win32 application`, on a
+/// machine where `claude` undeniably "works". A real `cmd.exe`/PowerShell prompt never
+/// makes this mistake because PATHEXT resolution always wins over an extensionless match;
+/// the bare name is kept only as a last-resort fallback for a genuinely extensionless
+/// native binary.
+#[cfg(windows)]
+fn path_candidate_names(bin: &str) -> Vec<String> {
+    let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    exts.split(';')
+        .filter(|e| !e.is_empty())
+        .map(|ext| format!("{bin}{ext}"))
+        .chain(std::iter::once(bin.to_string()))
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn path_candidate_names(bin: &str) -> Vec<String> {
+    vec![bin.to_string()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,6 +762,18 @@ mod tests {
     #[tokio::test]
     async fn resolve_cli_returns_an_absolute_existing_path() {
         let found = resolve_cli("sh").await.expect("sh must resolve");
+        assert!(found.is_absolute(), "not absolute: {}", found.display());
+        assert!(found.exists(), "does not exist: {}", found.display());
+    }
+
+    /// Windows analogue of the unix test above. `cmd` is guaranteed present (`%SystemRoot%\
+    /// System32` is always on the default `PATH`) and is reachable ONLY through
+    /// `probe_current_path` — there is no login shell or unix candidate dir that could find
+    /// it — so a pass here proves that tier actually runs on this platform.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn resolve_cli_returns_an_absolute_existing_path() {
+        let found = resolve_cli("cmd").await.expect("cmd must resolve");
         assert!(found.is_absolute(), "not absolute: {}", found.display());
         assert!(found.exists(), "does not exist: {}", found.display());
     }
@@ -778,6 +859,51 @@ mod tests {
             .await
             .is_none());
         assert!(probe_candidates("meridian-definitely-not-a-real-binary").is_none());
+    }
+
+    /// npm's global install writes an extensionless POSIX shebang script (`claude`)
+    /// alongside `claude.cmd` in the SAME directory, for WSL/Git-Bash use. Both
+    /// `is_file()`. A resolver that checks the bare name before `PATHEXT` extensions
+    /// would match the shebang script instead — which then fails to spawn as a native
+    /// binary (`os error 193`) even though `claude` plainly "works" on this machine.
+    /// This reproduces exactly that directory layout and asserts the `.CMD` file wins.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn probe_current_path_prefers_pathext_over_a_bare_extensionless_shim() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "meridian-detect-pathext-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bare = dir.join("meridian-fake-cli");
+        let shimmed = dir.join("meridian-fake-cli.CMD");
+        std::fs::write(&bare, "#!/bin/sh\necho fake\n").unwrap();
+        std::fs::write(&shimmed, "@echo fake\r\n").unwrap();
+
+        let original_path = std::env::var_os("PATH");
+        let new_path = match &original_path {
+            Some(p) => {
+                std::env::join_paths(std::iter::once(dir.clone()).chain(std::env::split_paths(p)))
+                    .unwrap()
+            }
+            None => dir.clone().into_os_string(),
+        };
+        std::env::set_var("PATH", &new_path);
+
+        let found = probe_current_path("meridian-fake-cli");
+
+        match original_path {
+            Some(p) => std::env::set_var("PATH", p),
+            None => std::env::remove_var("PATH"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            found.as_deref(),
+            Some(shimmed.as_path()),
+            "resolved {found:?}, expected the .CMD shim, not the bare shebang script"
+        );
     }
 
     /// `MERIDIAN_HOME` is a process-global env var and cargo runs tests in parallel threads
