@@ -15,6 +15,19 @@ use sqlx::SqlitePool;
 /// (for the connect-status indicators) and `system_notices` (for the global
 /// UI fault bus that surfaces banners on every page).
 pub async fn stamp_sync_error(pool: &SqlitePool, provider: &str, error: &str) -> Result<()> {
+    stamp_sync_error_with_remedy(pool, provider, error, None).await
+}
+
+/// Like [`stamp_sync_error`], but lets the caller override the default
+/// per-provider remedy text. Needed when a provider supports more than one
+/// auth method (e.g. Jira's static API token vs. OAuth) and the generic
+/// remedy would point at the wrong one — see `providers::jira::refresh_if_stale`.
+pub async fn stamp_sync_error_with_remedy(
+    pool: &SqlitePool,
+    provider: &str,
+    error: &str,
+    remedy_override: Option<&str>,
+) -> Result<()> {
     sqlx::query(
         "INSERT INTO pm_sync_state (provider, last_synced_at, last_error)
          VALUES (?, '1970-01-01T00:00:00Z', ?)
@@ -42,6 +55,7 @@ pub async fn stamp_sync_error(pool: &SqlitePool, provider: &str, error: &str) ->
         ),
         _ => ("PM sync failing", None),
     };
+    let remedy = remedy_override.or(remedy);
     let _ = crate::notices::raise(
         pool,
         &format!("pm.{provider}"),
