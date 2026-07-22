@@ -130,11 +130,15 @@ describe('the project picker appears as the next step, not a separate screen', (
 // ── PAT flow → project picker wiring (IntegrationConnect.tsx) ─────────────────
 describe('PAT flow shows the project picker after save', () => {
   it('renders GitHubProjectPicker in TokenSetup for github once the token is saved', () => {
-    expect(view).toMatch(/if \(tracker\.id === 'github'\) \{[\s\S]*?<GitHubProjectPicker onSuccess=\{onSuccess\} \/>/)
+    // Jira shares this done-branch (its token/OAuth connect also needs a
+    // project picked), so the github check is now one arm of an || rather
+    // than a standalone condition — the GitHubProjectPicker render itself is
+    // unchanged.
+    expect(view).toMatch(/if \(tracker\.id === 'github' \|\| tracker\.id === 'jira'\) \{[\s\S]*?<GitHubProjectPicker onSuccess=\{onSuccess\} \/>/)
   })
 
   it('defers onSuccess for github so the picker is not unmounted before a board is picked', () => {
-    expect(view).toMatch(/if \(tracker\.id !== 'github'\) onSuccess\?\.\(\)/)
+    expect(view).toMatch(/if \(tracker\.id !== 'github' && tracker\.id !== 'jira'\) onSuccess\?\.\(\)/)
   })
 })
 

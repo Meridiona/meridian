@@ -546,6 +546,7 @@ pub fn run() {
             commands::disconnect_integration,
             commands::discover_azure_devops,
             commands::discover_github_projects,
+            commands::discover_jira_projects,
             commands::save_integration_token,
             commands::start_oauth,
             commands::cancel_oauth,

@@ -1,8 +1,8 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// Module-level state for the three long-running "connect a tracker" flows in
+// Module-level state for the long-running "connect a tracker" flows in
 // IntegrationConnect.tsx — browser/device OAuth, Azure DevOps (PAT → org →
-// project), and the GitHub Projects v2 picker.
+// project), the GitHub Projects v2 picker, and the Jira project picker.
 //
 // WHY A STORE INSTEAD OF useState IN THE COMPONENTS: each flow is rendered
 // inside an accordion row that unmounts the moment the user collapses it,
@@ -398,4 +398,85 @@ export async function githubSave(): Promise<void> {
  *  discover). Preserves an in-progress selection that hasn't been saved. */
 export function resetGithubPickerIfSaved(): void {
   if (ghGet().saved) githubPickerStore.set(GH_KEY, { ...GH_EMPTY })
+}
+
+// ── Jira project picker ───────────────────────────────────────────────────────
+// Mirrors the GitHub Projects v2 picker above, but for Jira's `/rest/api/3/project/search`
+// (works under EITHER auth mode — OAuth or API token — the tray command resolves
+// whichever is live). A flat list rather than `byOwner`-grouped: a Jira site's
+// projects have no owner grouping analogous to a GitHub org.
+
+export type JiraProject = { id: string; key: string; name: string }
+
+export interface JiraPickerState {
+  projects: JiraProject[] | null
+  selected: Set<string>
+  loading: boolean
+  saving: boolean
+  loaded: boolean
+  loadError: string | null
+  saveError: string | null
+  reloadWarning: boolean
+  saved: boolean
+}
+
+const JIRA_PICKER_EMPTY: JiraPickerState = Object.freeze({
+  projects: null,
+  selected: new Set<string>(),
+  loading: true,
+  saving: false,
+  loaded: false,
+  loadError: null,
+  saveError: null,
+  reloadWarning: false,
+  saved: false,
+})
+
+export const jiraPickerStore = createKeyedStore<JiraPickerState>(JIRA_PICKER_EMPTY)
+
+const JIRA_KEY = 'jira'
+const jpSet = (next: Partial<JiraPickerState>) => jiraPickerStore.set(JIRA_KEY, next)
+const jpGet = () => jiraPickerStore.get(JIRA_KEY)
+
+/** Load the project list once. No-op if already loaded (successfully) or a save
+ *  is in flight — but a PRIOR FAILURE must not block a retry, same reasoning as
+ *  [`githubEnsureLoaded`] (a stale error must not latch forever across a fresh
+ *  OAuth or token connect attempt). */
+export function jiraEnsureLoaded(): void {
+  const s = jpGet()
+  if ((s.loaded && !s.loadError) || s.saving) return
+  jpSet({ loading: true, loadError: null })
+  load<{ projects?: JiraProject[] }>('/api/integrations/jira/discover', 'discover_jira_projects')
+    .then((json) => jpSet({ projects: json.projects ?? [], loading: false, loaded: true }))
+    .catch((e) => jpSet({ loadError: errMsg(e, 'Failed to load Jira projects'), loading: false, loaded: true }))
+}
+
+export function jiraToggle(id: string): void {
+  const next = new Set(jpGet().selected)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  jpSet({ selected: next })
+}
+
+export async function jiraSave(): Promise<void> {
+  const { projects, selected, saving } = jpGet()
+  if (selected.size === 0 || saving) return
+  const keys = (projects ?? []).filter((p) => selected.has(p.id)).map((p) => p.key)
+  jpSet({ saving: true, saveError: null })
+  try {
+    const res = await mutate<{ ok: boolean; reloaded: boolean }>('/api/auth/token', 'save_integration_token', {
+      provider: JIRA_KEY,
+      fields: { project_keys: keys.join(',') },
+    })
+    jpSet({ reloadWarning: res?.reloaded === false, saving: false, saved: true })
+    clearProviderNotice(JIRA_KEY)
+  } catch (e) {
+    jpSet({ saveError: errMsg(e, 'Could not save project selection'), saving: false })
+  }
+}
+
+/** Reset the picker so reopening after a completed save starts fresh (a fresh
+ *  discover). Preserves an in-progress selection that hasn't been saved. */
+export function resetJiraPickerIfSaved(): void {
+  if (jpGet().saved) jiraPickerStore.set(JIRA_KEY, { ...JIRA_PICKER_EMPTY })
 }
