@@ -74,7 +74,8 @@ pub(super) async fn check_permissions(app: &tauri::AppHandle, pool: &SqlitePool)
 const NOTIFICATION_REMEDY: &str =
     "Open Settings \u{2192} System \u{2192} Notifications to re-grant it.";
 #[cfg(not(target_os = "windows"))]
-const NOTIFICATION_REMEDY: &str = "Open System Settings \u{2192} Privacy & Security to re-grant it.";
+const NOTIFICATION_REMEDY: &str =
+    "Open System Settings \u{2192} Privacy & Security to re-grant it.";
 
 async fn check_notification_permission(app: &tauri::AppHandle, pool: &SqlitePool) {
     let denied = matches!(

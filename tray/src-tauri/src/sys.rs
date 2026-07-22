@@ -269,8 +269,8 @@ pub async fn notification_permission_state(
 fn windows_notification_setting(
     app: &tauri::AppHandle,
 ) -> windows::core::Result<windows::UI::Notifications::NotificationSetting> {
-    use windows::UI::Notifications::ToastNotificationManager;
     use windows::core::HSTRING;
+    use windows::UI::Notifications::ToastNotificationManager;
     let aumid = HSTRING::from(&app.config().identifier);
     ToastNotificationManager::CreateToastNotifierWithId(&aumid)?.Setting()
 }
