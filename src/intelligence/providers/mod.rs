@@ -78,25 +78,40 @@ pub async fn clear_sync_error(pool: &SqlitePool, provider: &str) -> Result<()> {
     Ok(())
 }
 
-/// Flag worklog-retained rows that fell out of the active-task fetch as
-/// off-board (`is_terminal = 1`).
+/// Flag worklog- or daily-plan-retained rows that fell out of the active-task
+/// fetch as off-board (`is_terminal = 1`).
 ///
 /// Every provider's `prune` deletes `pm_tasks` rows the active-task fetch no
-/// longer returns — EXCEPT those with `pm_worklogs` history, which are kept
-/// forever so the timeline still has their title. The gap: a kept row's
-/// `is_terminal` was frozen at whatever it was when the task last appeared in
-/// the fetch, so a ticket that goes Done or is reassigned away while it has
-/// worklog history lingers on the board as "active" indefinitely (the board is
+/// longer returns — EXCEPT those with `pm_worklogs` history or `daily_plan`
+/// membership, which are kept forever so the timeline still has their title
+/// and the plan checkbox's Undo (reopen) still has a row to act on.
+///
+/// **On the unbounded `daily_plan` retention (intentional):** a task_key that
+/// ever appeared on any day's plan stays unpruneable in `pm_tasks` for the life
+/// of the install — `daily_plan` has no TTL/GC. This is deliberate and mirrors the
+/// `pm_worklogs` history retention beside it: a past day's plan, and any worklog
+/// resolved against those tickets, must still render the ticket's title long after
+/// it left the active board, so scoping this to a recency window would silently
+/// break historical plan/worklog views for older tickets. The growth is human-
+/// paced (a handful of planned tasks per day), so the row count it pins is small
+/// and bounded in practice by how much a person actually plans — not by ticket
+/// churn — which is why we accept keeping them over losing historical resolution.
+///
+/// The gap: a
+/// kept row's `is_terminal` was frozen at whatever it was when the task last
+/// appeared in the fetch, so a ticket that goes Done or is reassigned away
+/// while retained lingers on the board as "active" indefinitely (the board is
 /// `WHERE is_terminal = 0`). The active-task fetch is, by construction, exactly
 /// "assigned to me AND not-done AND in-scope-type", so any row NOT in
 /// `fetched_keys` is no longer one of those — it belongs off the board. We stamp
 /// it terminal (kept for the timeline, hidden from the board and from worklog
-/// candidate matching, which also filters `is_terminal = 0`). If the ticket is
+/// candidate matching, which also filters `is_terminal = 0`; the plan checkbox
+/// itself reads `is_terminal` straight off this row). If the ticket is
 /// reassigned back / reopened it returns in the next fetch and the upsert resets
 /// `is_terminal` from its real status, so this self-corrects.
 ///
-/// `fetched_keys` empty (you have zero active tasks) → every worklog-retained
-/// row for this provider is stamped. Returns the number of rows flagged.
+/// `fetched_keys` empty (you have zero active tasks) → every retained row for
+/// this provider is stamped. Returns the number of rows flagged.
 pub async fn mark_retained_offboard(
     pool: &SqlitePool,
     provider: &str,
@@ -111,7 +126,8 @@ pub async fn mark_retained_offboard(
         "UPDATE pm_tasks SET is_terminal = 1 \
          WHERE provider = ? AND is_terminal = 0 \
            AND task_key NOT IN ({placeholders}) \
-           AND task_key IN (SELECT DISTINCT task_key FROM pm_worklogs WHERE provider = ?)"
+           AND (task_key IN (SELECT DISTINCT task_key FROM pm_worklogs WHERE provider = ?) \
+                OR task_key IN (SELECT DISTINCT task_key FROM daily_plan))"
     );
     let mut q = sqlx::query(&sql).bind(provider);
     for key in fetched_keys {

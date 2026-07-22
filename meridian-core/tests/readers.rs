@@ -1196,6 +1196,57 @@ async fn a_planned_ticket_off_the_board_resolves_from_its_snapshot() {
     );
 }
 
+/// A Done focus task pruned from `pm_tasks` still resolves its provider from the
+/// plan snapshot — so the worklog matcher doesn't drop the very ticket that
+/// finishing it just closed. A live `pm_tasks` row still wins; an unknown key is
+/// still `None`.
+#[tokio::test]
+async fn provider_for_key_falls_back_to_the_plan_snapshot() {
+    let pool = make_board_pool().await;
+
+    // KAN-315: a Done focus task, gone from pm_tasks, only its plan snapshot left.
+    sqlx::query(
+        "INSERT INTO daily_plan (plan_date, task_key, position, origin, task_snapshot, created_at, updated_at) \
+         VALUES ('2026-07-21', 'KAN-315', 0, 'manual', ?, '2026-07-21T00:00:00Z', '2026-07-21T00:00:00Z')",
+    )
+    .bind(r#"{"title":"Design daily summary","provider":"jira"}"#)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // KAN-1: still on the board — the live row must win over any snapshot.
+    sqlx::query(
+        "INSERT INTO pm_tasks (task_key, title, provider, status_raw, is_terminal, updated_at) \
+         VALUES ('KAN-1', 'T', 'github', 'To Do', 0, '2026-07-21T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        meridian_core::board::provider_for_key(&pool, "KAN-315")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("jira"),
+        "a pruned focus task recovers its provider from the plan snapshot"
+    );
+    assert_eq!(
+        meridian_core::board::provider_for_key(&pool, "KAN-1")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("github"),
+        "a live pm_tasks row wins over any snapshot"
+    );
+    assert_eq!(
+        meridian_core::board::provider_for_key(&pool, "NOPE-1")
+            .await
+            .unwrap(),
+        None,
+        "a key on neither the board nor any plan is still unknown"
+    );
+}
+
 /// The candidate description is the FULL text, not the plan card's excerpt.
 ///
 /// `PlanItem.description` is truncated to ~130 chars for display. Feeding that to

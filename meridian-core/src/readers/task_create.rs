@@ -21,8 +21,6 @@
 //! synced at all"), so the sites that must EXCLUDE `'local'` are listed here and
 //! must stay in sync:
 //!
-//! - `src/pm_worklog/generate.rs` `fetch_open_candidates` (+ `resolve_provider_for_key`)
-//!   — never match a task we cannot post a comment to.
 //! - `src/intelligence/task_triage/store.rs` `load_board` — board hygiene must not
 //!   offer tracker fixes for a personal task.
 //! - `src/intelligence/task_triage/store.rs` `prune_orphans` — its empty-board guard
@@ -33,7 +31,11 @@
 //!
 //! Everything else reads `pm_tasks` unscoped ON PURPOSE — that is the payoff:
 //! `plan::build_available`, `plan::load_plan`, `task_detail`, `today`, `tasks` and
-//! `src/daily_plan.rs`'s nudge all pick personal tasks up for free.
+//! `src/daily_plan.rs`'s nudge all pick personal tasks up for free. Deliberately
+//! NOT excluded: `src/pm_worklog/generate.rs`'s worklog matcher, which now treats a
+//! personal task as a valid match target and posts to it (writing onto the row
+//! itself, or promoting it to a real ticket if a tracker is connected) instead of
+//! refusing it.
 //!
 //! # Who calls this
 //! `src/plan_tasks/{create,edit}.rs` (daemon) → the `meridian plan-task-create` /

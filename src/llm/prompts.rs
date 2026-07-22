@@ -107,16 +107,23 @@ pub fn workstream_schema() -> Value {
 /// The "Generate worklog" prompt — one combined, provider-agnostic call behind the
 /// day-task card action. Takes a day-level workstream + the day's planned tasks and
 /// returns, in one pass: `matches` XOR `propose` (advance the existing tickets this
-/// work moved — one or several — or draft a new one), plus a high-level `update`
-/// (summary / free-form `sections` / status) posted as a comment on each matched
-/// ticket. Same one-prompt-all-providers rule as the others.
+/// work moved — one or several — or draft a new one). Each match carries its OWN
+/// high-level `update` (summary / free-form `sections` / status), so two tickets on
+/// one strand never get the same comment; the top-level `update` is the proposal's
+/// body and the per-match fallback. Same one-prompt-all-providers rule as the others.
 pub const WORKLOG_GENERATE: &str = include_str!("../../assets/prompts/worklog-generate.md");
 
 /// The JSON shape the "Generate worklog" call must answer in. `matches` is an array
 /// (a day's strand of work can advance several planned tasks) and `propose` is a
 /// nullable object; the model takes exactly one branch — a non-empty `matches` XOR
-/// a `propose` — and code enforces that after parsing. `update` is required with a
-/// `summary`, free-form `sections`, and a `status` line; `reasoning` is required.
+/// a `propose` — and code enforces that after parsing. `reasoning` is required.
+///
+/// Each `matches[]` item carries its OWN `update` (summary / free-form `sections` /
+/// status), because one strand of work that advances two tickets must NOT post the
+/// same body to both — each ticket gets a comment about only its slice. The
+/// top-level `update` is the workstream-level one: it is the comment for a `propose`
+/// (the new ticket), and the fallback for any match whose per-ticket update is
+/// missing (an un-schema'd backend, a parse gap). Both are required in the schema.
 ///
 /// `propose` is `["object", "null"]` so a schema-enforcing backend can emit `null`
 /// for the branch it didn't take; neither branch is in `required`, so a backend that
@@ -132,9 +139,34 @@ pub fn worklog_generate_schema() -> Value {
                     "type": "object",
                     "properties": {
                         "task_key":   {"type": "string"},
-                        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                        // Each matched ticket gets its OWN update, about only the
+                        // slice of the work that advanced THIS ticket - so two
+                        // tickets on one strand never receive the same body. Same
+                        // shape as the top-level `update`.
+                        "update": {
+                            "type": "object",
+                            "properties": {
+                                "summary": {"type": "string"},
+                                "sections": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "heading": {"type": "string"},
+                                            "points":  {"type": "array", "items": {"type": "string"}}
+                                        },
+                                        "required": ["heading", "points"],
+                                        "additionalProperties": false
+                                    }
+                                },
+                                "status": {"type": "string"}
+                            },
+                            "required": ["summary", "sections", "status"],
+                            "additionalProperties": false
+                        }
                     },
-                    "required": ["task_key", "confidence"],
+                    "required": ["task_key", "confidence", "update"],
                     "additionalProperties": false
                 }
             },
@@ -205,71 +237,62 @@ pub fn plan_task_draft_schema() -> Value {
     })
 }
 
-/// The daily-summary prompt — the AI-composed end-of-day review. Takes a day's
-/// evidence (workstreams, their segments, time by app/category, the hourly shape,
-/// and the hour reports as prose) and returns a narrative, a few insight lines, and
-/// 2-4 Vega-Lite specs it chose itself. Same one-prompt-all-providers rule.
+/// The daily-summary prompt — the end-of-day review. Takes a day's evidence
+/// (workstreams and their log lines, time by app/category, the hourly shape, the
+/// hour reports as prose, and the day's committed plan with its ALREADY-COMPUTED
+/// outcome) and returns a headline plus two-to-three free-text insight cards, and
+/// nothing else. It does NOT judge the plan or return per-ticket verdicts — which
+/// tickets got done is a database fact computed in Rust and handed to the model as
+/// given (see [`daily_summary_schema`]). The old narrative and the model-authored
+/// Vega-Lite panels were removed in the rebuild. Same one-prompt-all-providers rule.
 ///
-/// The daily plan is deliberately NOT an input: this is what the day WAS, not what
-/// was promised, and mixing them turns a review into a scorecard.
+/// The daily plan used to be deliberately withheld, on the grounds that mixing
+/// intent into a review turns it into a scorecard. That was right about the risk
+/// and wrong about the fix — the question a person has at the end of a day is
+/// whether it went the way they meant it to. The scorecard risk is handled by the
+/// prompt's tone contract instead.
 pub const DAILY_SUMMARY: &str = include_str!("../../assets/prompts/daily-summary.md");
 
-/// The JSON shape the daily-summary call must answer in.
+/// The JSON shape the daily-summary call must answer in: a headline and the three
+/// insight cards, and NOTHING ELSE.
 ///
-/// `spec` is deliberately an **unconstrained object**: it is a whole raw Vega-Lite
-/// spec, and Vega-Lite's own schema is 1.8 MB with 458 definitions — inlining a
-/// subset of it here would be a second, drifting copy of someone else's grammar,
-/// and would also cap what the model is allowed to express, which is the one thing
-/// this feature is for. Validity is established after the fact instead, against the
-/// real schema, in `crate::day_summary::validate`.
+/// The model is not asked to judge the plan. Which committed tickets got done is a
+/// database fact - the worklog matcher already decided it - so the whole ledger, the
+/// ring, the counts, and every duration are resolved in Rust
+/// (`meridian_core::day_evidence::adherence::resolve_deterministic`) and handed to
+/// the model as GIVEN. It writes prose about a day whose outcome is already settled;
+/// it never returns a verdict, a percentage, a count, or a duration.
 ///
-/// That has a real consequence worth stating: on a schema-enforcing backend the
-/// bounds here are hard token-level cuts, so the FSM can guarantee the WRAPPER is
-/// well-formed but nothing about the spec inside it. Hence `panels` is bounded
-/// (0-2, the screen holds no more) while its contents are not, and hence the
-/// validator — not the schema — is what keeps a broken chart off the screen.
-///
-/// `why` is required on purpose: asking the model to justify the form is what makes
-/// it consider fit at all, rather than reaching for a bar chart every time.
+/// The insight cards carry no category, kind, tone, or severity. A fixed vocabulary
+/// for those headings (`achieved` / `overperformed` / `drifted`) would make every
+/// day fill the same slots whether or not it had anything to put in them - which is
+/// how a review turns into a scorecard. Both fields are free text; the card's colour
+/// comes from its position on the screen, so the model never classifies what it
+/// found.
 pub fn daily_summary_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "narrative": {"type": "string"},
+            "headline": {"type": "string"},
             "insights": {
-                "type": "array",
-                "items": {"type": "string"},
-                "minItems": 2,
-                "maxItems": 3
-            },
-            "panels": {
                 "type": "array",
                 "items": {
                     "type": "object",
                     "properties": {
                         "title": {"type": "string"},
-                        "why":   {"type": "string"},
-                        // A whole Vega-Lite spec. See the doc comment above.
-                        "spec":  {"type": "object"}
+                        "text":  {"type": "string"}
                     },
-                    "required": ["title", "why", "spec"],
+                    "required": ["title", "text"],
                     "additionalProperties": false
                 },
-                // There is NO floor, and that is the point: an empty array is a
-                // correct, common answer. A required panel is a panel invented to
-                // satisfy a requirement, and four such panels is how this screen
-                // first came out looking like a monitoring dashboard rather than
-                // something a person would want to read. Charts are optional; the
-                // prose is the feature.
-                //
-                // The ceiling is what the screen holds and what stays uncluttered.
-                // Code caps it too (MAX_PANELS) — a schema is only genuinely
-                // enforced on Claude.
-                "minItems": 0,
-                "maxItems": 2
+                // Three is the shape the screen is built for. Two is allowed
+                // because a thin day genuinely has less to say, and padding it out
+                // is worse than a short row.
+                "minItems": 2,
+                "maxItems": 3
             }
         },
-        "required": ["narrative", "insights", "panels"],
+        "required": ["headline", "insights"],
         "additionalProperties": false
     })
 }
@@ -313,6 +336,10 @@ mod tests {
         // hedge is a comment on someone's board.
         assert!(WORKLOG_GENERATE.contains("MATCH EVERY TICKET THIS WORK GENUINELY ADVANCED"));
         assert!(WORKLOG_GENERATE.contains("EARN its place independently"));
+        // Each match's body is its OWN slice — two tickets on one strand must not
+        // get the same comment. This is the whole point of the per-match `update`.
+        assert!(WORKLOG_GENERATE.contains("EACH matched ticket gets its OWN"));
+        assert!(WORKLOG_GENERATE.contains("MUST be different"));
         assert!(WORKLOG_GENERATE.to_lowercase().contains("status update"));
         assert!(WORKLOG_GENERATE.contains("NEVER NAME THE PERSON"));
         // The task-draft prompt's whole design rests on it being a FORMATTER, not an
@@ -323,11 +350,6 @@ mod tests {
         assert!(PLAN_TASK_DRAFT.contains("NOT ALL WORK IS ENGINEERING"));
         assert!(PLAN_TASK_DRAFT.contains("NEVER NAME THE PERSON"));
         assert!(PLAN_TASK_DRAFT.contains("Return a JSON object with these fields:"));
-        // The data-binding rule is the load-bearing one: it is what makes a
-        // hallucinated number impossible, since the model never gets to write a
-        // value down.
-        assert!(DAILY_SUMMARY.contains("NEVER write `\"data\": {\"values\": [...]}`"));
-        assert!(DAILY_SUMMARY.contains("bind data by name, never inline"));
         assert!(DAILY_SUMMARY.contains("INVENT NOTHING"));
         assert!(DAILY_SUMMARY.contains("NEVER NAME THE PERSON"));
         // The rest stop it becoming the thing it must not be. `DO NOT REPLAY THE
@@ -338,59 +360,72 @@ mod tests {
         assert!(DAILY_SUMMARY.contains("THIS IS NOT A REPORT AND NOT A TIMESHEET"));
         assert!(DAILY_SUMMARY.contains("DO NOT REPLAY THE DAY IN ORDER"));
         assert!(DAILY_SUMMARY.contains("NEVER cite clock times"));
-        assert!(DAILY_SUMMARY.contains("CHOOSE THE FORM FROM THE DATA"));
-        // Charts being optional is the other correction: asking for panels is how
-        // the screen became a dashboard of four charts nobody wanted.
-        assert!(DAILY_SUMMARY.contains("CHARTS ARE OPTIONAL AND USUALLY UNNECESSARY"));
-        assert!(DAILY_SUMMARY.contains("NEVER MORE THAN 2"));
-    }
-
-    #[test]
-    fn daily_summary_schema_bounds_the_wrapper_but_not_the_spec() {
-        let s = daily_summary_schema();
-        assert_eq!(s["required"], json!(["narrative", "insights", "panels"]));
-        let panels = &s["properties"]["panels"];
-        // The screen is prose first — code enforces this too, but a schema-enforcing
-        // backend should never even offer a third panel.
-        assert_eq!(panels["maxItems"], json!(2));
-        // NO floor, asserted rather than left to prose: a required panel is a panel
-        // invented to satisfy a requirement. Zero is a correct answer.
-        assert_eq!(panels["minItems"], json!(0));
-        let panel = &panels["items"];
-        assert_eq!(panel["required"], json!(["title", "why", "spec"]));
-        // `spec` is deliberately unconstrained: it is a whole raw Vega-Lite spec,
-        // and constraining it here would both duplicate a 1.8 MB grammar and cap
-        // what the model may express. `day_summary::validate` is what checks it.
-        assert_eq!(panel["properties"]["spec"], json!({"type": "object"}));
-    }
-
-    /// The prompt's worked examples name real datasets. If a dataset is renamed in
-    /// `meridian_core::day_evidence::datasets` the examples must move with it, or the model is
-    /// taught a contract the validator then rejects.
-    #[test]
-    fn daily_summary_examples_only_name_real_datasets() {
-        // Deliberately ONE example now, not three. Every example is a suggestion the
-        // model takes, and a prompt that showed a pie chart got a pie chart back —
-        // so what remains teaches the binding contract and nothing about the answer.
-        let name = "segments";
-        assert!(
-            DAILY_SUMMARY.contains(&format!("\"name\": \"{name}\"")),
-            "prompt example references dataset {name}"
-        );
-        assert!(
-            meridian_core::day_evidence::datasets::by_name(name).is_some(),
-            "prompt example names dataset '{name}', which no longer exists"
-        );
-        // Every field the example encodes must be real, for the same reason.
-        for (ds, field) in [
-            ("segments", "start_min"),
-            ("segments", "end_min"),
-            ("segments", "title"),
-            ("segments", "minutes"),
-        ] {
+        // The tone contract is what keeps a planned-vs-actual screen from reading
+        // as a scorecard. Showing the model the plan without it produced exactly
+        // the "you only managed three of five" register this whole screen exists
+        // to avoid, so the banned words are pinned individually.
+        assert!(DAILY_SUMMARY.contains("The tone contract"));
+        assert!(DAILY_SUMMARY.contains("Credit what got done BEFORE naming what did not"));
+        for word in ["drifted", "failed", "wasted", "only managed"] {
             assert!(
-                meridian_core::day_evidence::datasets::has_field(ds, field),
-                "prompt example encodes {ds}.{field}, which no longer exists"
+                DAILY_SUMMARY.contains(&format!("\"{word}\"")),
+                "the tone contract must ban the word {word:?} by name"
+            );
+        }
+        assert!(DAILY_SUMMARY.contains("WORK THAT WAS NOT PLANNED IS STILL WORK"));
+        // The plan outcome is GIVEN, already computed. The model describes it and
+        // never re-derives it - if this clause goes, it starts second-guessing the
+        // deterministic ledger.
+        assert!(DAILY_SUMMARY.contains("ALREADY DECIDED"));
+        // The three insight cards each have a job; if the prompt stops teaching the
+        // jobs the model reverts to three interchangeable remarks.
+        assert!(DAILY_SUMMARY.contains("How the day went overall"));
+        assert!(DAILY_SUMMARY.contains("The standout win"));
+        assert!(DAILY_SUMMARY.contains("A nice find"));
+        // Card 1 must be free to name an off-plan or thin day without scolding.
+        assert!(DAILY_SUMMARY.contains("never as a scolding"));
+        // The charts are gone, along with the whole Vega system. If any of this
+        // comes back the screen is regressing to a dashboard.
+        assert!(!DAILY_SUMMARY.to_lowercase().contains("vega"));
+        assert!(!DAILY_SUMMARY.to_lowercase().contains("chart"));
+    }
+
+    #[test]
+    fn daily_summary_schema_is_headline_and_cards_only() {
+        let s = daily_summary_schema();
+        // The model answers ONLY a headline and the cards. The plan ledger is
+        // resolved deterministically in Rust, so a verdict/theme/narrative field
+        // here would be work the model is asked to do and the code then ignores.
+        assert_eq!(s["required"], json!(["headline", "insights"]));
+        for gone in ["plan_verdicts", "themes", "narrative"] {
+            assert!(
+                s["properties"].get(gone).is_none(),
+                "the model must no longer return {gone}"
+            );
+        }
+
+        // An insight is a heading the model writes itself and a line under it, both
+        // FREE TEXT. A closed vocabulary anywhere in here is a set of slots, and
+        // slots get filled whether or not the day had anything to put in them.
+        let insight = &s["properties"]["insights"]["items"];
+        assert_eq!(insight["required"], json!(["title", "text"]));
+        assert_eq!(insight["properties"]["title"], json!({"type": "string"}));
+        for closed in ["kind", "tone", "category", "severity"] {
+            assert!(
+                insight["properties"].get(closed).is_none(),
+                "an insight must never carry a {closed:?}"
+            );
+        }
+        assert_eq!(s["properties"]["insights"]["minItems"], json!(2));
+        assert_eq!(s["properties"]["insights"]["maxItems"], json!(3));
+
+        // No number of any kind is asked for. The score is computed, so a number in
+        // this schema is one the ring and the checklist beside it could disagree with.
+        let props = s["properties"].as_object().unwrap();
+        for banned in ["achievement_pct", "minutes", "score", "percent"] {
+            assert!(
+                !props.contains_key(banned),
+                "the model must not report {banned}"
             );
         }
     }
@@ -420,10 +455,19 @@ mod tests {
         assert_eq!(props["matches"]["type"], json!("array"));
         assert_eq!(props["propose"]["type"], json!(["object", "null"]));
         assert_eq!(s["required"], json!(["update", "reasoning"]));
-        // Each match carries a task_key + a 0-1 confidence.
+        // Each match carries a task_key + a 0-1 confidence + its OWN update, so two
+        // tickets on one strand never get the same body.
         let m = &props["matches"]["items"]["properties"];
         assert_eq!(m["task_key"]["type"], json!("string"));
         assert_eq!(m["confidence"]["maximum"], json!(1));
+        assert_eq!(
+            props["matches"]["items"]["required"],
+            json!(["task_key", "confidence", "update"])
+        );
+        assert_eq!(
+            m["update"]["required"],
+            json!(["summary", "sections", "status"])
+        );
         // The propose branch carries issue_type / title / description.
         let p = &props["propose"]["properties"];
         assert_eq!(p["issue_type"]["type"], json!("string"));

@@ -453,10 +453,12 @@ async fn main() -> Result<()> {
 
     // `meridian day-summary --day YYYY-MM-DD` — compose the day's summary: ONE
     // provider-agnostic LLM call that reads the day's evidence and answers with a
-    // narrative, a few insights, and the Vega-Lite specs it chose. Prints ONE JSON
-    // line: the summary object. Regenerate = the same command (UPSERT overwrites).
-    // Never fails on a bad answer — it falls back to a deterministic panel set, so
-    // a non-zero exit here means the DB or the day's data, not the model.
+    // headline and two-to-three free-text insight cards. The plan ledger (which
+    // tickets got done, the ring, the counts) is computed deterministically in Rust,
+    // NOT asked of the model. Prints ONE JSON line: the summary object. Regenerate =
+    // the same command (UPSERT overwrites). Never fails on a bad answer — the
+    // deterministic ledger still renders, so a non-zero exit here means the DB or
+    // the day's data, not the model.
     if std::env::args().nth(1).as_deref() == Some("day-summary") {
         let args: Vec<String> = std::env::args().collect();
         let flag = |name: &str| -> Option<String> {
@@ -465,6 +467,11 @@ async fn main() -> Result<()> {
                 .and_then(|i| args.get(i + 1).cloned())
         };
         let day = flag("--day").unwrap_or_default();
+        // `--now`: draft the day's worklogs first (the on-demand "Generate now"
+        // path), so the deterministic plan ledger binds to fresh matches instead of
+        // only what happened to be drafted already. Without it, day-summary just
+        // composes over the current state (the quiet staleness recompose).
+        let run_worklogs = args.iter().any(|a| a == "--now");
         if day.is_empty() {
             eprintln!("day-summary: --day is required");
             std::process::exit(2);
@@ -475,6 +482,9 @@ async fn main() -> Result<()> {
         let obs_guard = observability::init("meridian-rust").ok();
         match setup_db(&cfg.meridian_db_uri()).await {
             Ok(pool) => {
+                if run_worklogs {
+                    meridian::pm_worklog::auto_generate::generate_now(&pool, &cfg, &day).await;
+                }
                 match meridian::day_summary::generate::generate(&pool, &day).await {
                     Ok(summary) => {
                         println!("{}", serde_json::to_string(&summary).unwrap_or_default())
@@ -536,11 +546,12 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // `meridian day-summary-data --day YYYY-MM-DD` — the named datasets a
-    // summary's panels bind to, as one JSON object. Read-only, no LLM. The tray
-    // reads these straight from meridian-core rather than spawning this; it exists
-    // for debugging a chart (`meridian day-summary-data --day X | jq .segments`),
-    // which is otherwise invisible — a stored spec carries no data at all.
+    // `meridian day-summary-data --day YYYY-MM-DD` — the deterministic half of the
+    // summary screen (the day's aggregate datasets, its headline scalars, and the
+    // evidence stamp) as one JSON object. Read-only, no LLM. The tray reads these
+    // straight from meridian-core rather than spawning this; it exists for checking
+    // what the screen was actually given
+    // (`meridian day-summary-data --day X | jq .scalars`).
     if std::env::args().nth(1).as_deref() == Some("day-summary-data") {
         let args: Vec<String> = std::env::args().collect();
         let flag = |name: &str| -> Option<String> {
@@ -712,6 +723,96 @@ async fn main() -> Result<()> {
             }
             Err(e) => {
                 eprintln!("worklog-generate-approve: open db: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
+        }
+        return Ok(());
+    }
+
+    // `meridian worklog-escalate-create --task LOCAL-7` — escalate a personal
+    // task onto a real tracker: create a new ticket seeded from the task's
+    // title/description and post its logged update there, then keep-and-link the
+    // personal task. Prints ONE JSON line: the EscalateResult.
+    if std::env::args().nth(1).as_deref() == Some("worklog-escalate-create") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let task = flag("--task").unwrap_or_default();
+        if task.is_empty() {
+            eprintln!("worklog-escalate-create: --task is required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        let obs_guard = observability::init("meridian-rust").ok();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                match meridian::pm_worklog::escalate::escalate_create(&pool, &cfg, &task).await {
+                    Ok(res) => println!("{}", serde_json::to_string(&res).unwrap_or_default()),
+                    Err(e) => {
+                        pool.close().await;
+                        if let Some(g) = obs_guard {
+                            g.shutdown().await;
+                        }
+                        eprintln!("worklog-escalate-create: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+                pool.close().await;
+            }
+            Err(e) => {
+                eprintln!("worklog-escalate-create: open db: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
+        }
+        return Ok(());
+    }
+
+    // `meridian worklog-escalate-match --task LOCAL-7 --target KAN-12` — post a
+    // personal task's logged update onto an EXISTING real ticket, then
+    // keep-and-link the personal task. Prints ONE JSON line: the EscalateResult.
+    if std::env::args().nth(1).as_deref() == Some("worklog-escalate-match") {
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1).cloned())
+        };
+        let task = flag("--task").unwrap_or_default();
+        let target = flag("--target").unwrap_or_default();
+        if task.is_empty() || target.is_empty() {
+            eprintln!("worklog-escalate-match: --task and --target are required");
+            std::process::exit(2);
+        }
+        let cfg = Config::from_env();
+        let obs_guard = observability::init("meridian-rust").ok();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                match meridian::pm_worklog::escalate::escalate_match(&pool, &cfg, &task, &target)
+                    .await
+                {
+                    Ok(res) => println!("{}", serde_json::to_string(&res).unwrap_or_default()),
+                    Err(e) => {
+                        pool.close().await;
+                        if let Some(g) = obs_guard {
+                            g.shutdown().await;
+                        }
+                        eprintln!("worklog-escalate-match: {e:#}");
+                        std::process::exit(1);
+                    }
+                }
+                pool.close().await;
+            }
+            Err(e) => {
+                eprintln!("worklog-escalate-match: open db: {e:#}");
                 std::process::exit(1);
             }
         }

@@ -279,6 +279,20 @@ export interface DayTasksResponse {
   tasks: DayTask[]
 }
 
+/**
+ * How long a workstream must run to count as something you *did*.
+ *
+ * Mirrors `meridian_core::day_evidence::TASK_MIN_MINUTES`. Below this it is a
+ * detour, a glance, or a context switch that happened to earn a title - real, and
+ * shown on the timeline, but a list of "what you did today" that includes every
+ * five-minute glance is a list the reader sees through instantly.
+ *
+ * Lives here rather than as a literal in the one component that filters on it, so
+ * the two sides move together. The scalars carry the server's own value as
+ * `task_min_minutes`; prefer that when it is to hand.
+ */
+export const TASK_MIN_MINUTES = 30
+
 // ── Generate worklog (`generate_day_task_worklog` / `get_day_task_worklog` /
 //    `approve_day_task_worklog`) ───────────────────────────────────────────────
 // One centralised, provider-agnostic AI call takes a day-task's whole-story
@@ -310,6 +324,11 @@ export interface WorklogTarget {
   outcome_unknown: boolean
   /** Why this ticket failed, if it did. Its siblings may have succeeded. */
   error: string | null
+  /** This ticket's OWN update - the slice of the work that advanced it. When one
+   *  day-task advances two tickets, each gets its own body, so they never receive
+   *  the same comment. `null`/absent falls back to the draft-level `update` (the
+   *  propose branch, a manual retarget, pre-070 rows). */
+  update?: GeneratedWorklogUpdate | null
 }
 
 // A brand-new task to create when no existing task fits (created on approve).
@@ -355,9 +374,21 @@ export interface DayTaskWorklogDraft {
   updated_at: string
 }
 
+/** The tray's escalate-command reply (`escalate_personal_task_create` /
+ *  `escalate_personal_task_match`): the real ticket a personal task graduated to,
+ *  plus a browse URL when one can be formed. `created` is true when a brand-new
+ *  ticket was filed (vs matched onto an existing one). */
+export interface EscalateResponse {
+  linked_ticket: string
+  provider: string
+  browse_url: string | null
+  created: boolean
+}
+
 /** One ticket the worklog picker can retarget a draft at (tray
- *  `get_board_tickets`). The whole open board - unlike the matcher's candidates,
- *  which are only the day's planned tasks. */
+ *  `get_board_tickets`). The open board plus personal tasks (`provider ===
+ *  'local'`, filed onto their own row rather than posted) - unlike the matcher's
+ *  candidates, which are only the day's planned tasks. */
 export interface BoardTicket {
   task_key: string
   provider: string
@@ -429,6 +460,13 @@ export interface TaskDetail {
   start_date: string | null
   description: string
   acceptance_criteria: string | null
+  // The worklog update Meridian auto-logged onto this personal task (provider
+  // 'local') the last time its day-work matched here - null when nothing has
+  // been logged, or for a real tracker ticket (whose updates are comments on the
+  // tracker, not on the row). Shown in the task dialog so the user can read the
+  // auto-posted update and decide whether to escalate it onto a real tracker.
+  local_worklog_text: string | null
+  local_worklog_posted_at: string | null
 }
 
 // ── Integrations (`get_integrations`) ────────────────────────────────────────
@@ -712,47 +750,86 @@ export interface WhatsNewData {
 
 // ── Daily summary (`get_day_summary` / `generate_day_summary`) ────────────────
 
-/** One visualisation the model chose for a day. */
-export interface SummaryPanel {
+/** One observation about the day.
+ *
+ *  Deliberately has NO category, kind, or severity. An earlier shape did
+ *  (`achieved` / `overperformed` / `drifted`) and every label turned an
+ *  observation into a verdict on the person, which is what made this screen feel
+ *  like a scorecard. */
+export interface DaySummaryInsight {
+  /** The card's heading, in the model's own words. FREE TEXT, never from a fixed
+   *  set — a closed vocabulary would make every day fill the same slots whether or
+   *  not it had anything to put in them. May be empty on a legacy row. */
   title: string
-  /** The model's reason for choosing THIS form for THIS data. */
-  why: string
-  /**
-   * A raw Vega-Lite spec. Server-validated before it ever reaches here, and its
-   * data is always bound BY NAME (`{"data": {"name": "segments"}}`) — the real
-   * rows come from `get_day_summary_data` and are injected at render, so a stored
-   * chart can never disagree with the timeline beside it. Typed `unknown` rather
-   * than `any`: nothing here should read into it, only hand it to vega-embed.
-   */
-  spec: unknown
+  text: string
 }
 
-/** A day's composed review. `null` from `get_day_summary` until one is generated. */
+/** How a planned ticket actually went. */
+export type PlanOutcome = 'done' | 'partial' | 'not_touched'
+
+/** One planned ticket and what became of it. One entry per committed ticket,
+ *  always — a ticket the model never mentioned is `not_touched`, so the ledger is
+ *  exactly as long as the plan was. */
+export interface PlanVerdict {
+  task_key: string
+  title: string
+  outcome: PlanOutcome
+  /** One short line saying why. A fact when `certain`, the model's evidence
+   *  otherwise, and empty when nothing could be said at all. */
+  evidence: string
+  /** Measured minutes attributable to it; 0 when no workstream could be tied. */
+  minutes: number
+  /** The day-task ids this outcome was read off. The work list uses them to mark a
+   *  row as on-plan, so the join is the ledger's, not a title match. */
+  day_task_ids: string[]
+  /** The outcome came from the DATABASE (a posted worklog, a linked ticket, a
+   *  closed ticket), not from the model, which cannot overturn it. */
+  certain: boolean
+  provider: string
+  url: string
+}
+
+/** The day's plan arithmetic. Every field is computed server-side from `plan`, so
+ *  the ring and the ledger beside it are two views of one array. */
+export interface Adherence {
+  planned: number
+  done: number
+  partial: number
+  not_touched: number
+  /** `round(100 * (done + partial/2) / planned)`; 0 when nothing was planned. */
+  achievement_pct: number
+  /** Minutes of substantial work no planned ticket accounts for. Not a reproach. */
+  unplanned_minutes: number
+}
+
+/** A day's composed review. `null` from `get_day_summary` until one is generated.
+ *
+ *  The plan side (`plan`, `adherence`) is resolved deterministically in Rust from
+ *  the worklog matches - never from the model - so it holds even on the fallback
+ *  path. The model only writes `headline` and `insights`. */
 export interface DaySummary {
   day: string
-  /** The model's prose. Empty on the fallback path. */
-  narrative: string
-  insights: string[]
-  /**
-   * 0, 1 or 2. **Empty is a correct, common answer** — charts are optional and
-   * most days are best told in words alone, so an empty array means the model
-   * judged none worth showing, NOT that something failed (see `fallback`).
-   */
-  panels: SummaryPanel[]
+  /** A short warm line above everything. Empty on the fallback path. */
+  headline: string
+  /** The three insight cards. Empty on the fallback path. */
+  insights: DaySummaryInsight[]
+  /** One verdict per planned ticket; empty when the day had no plan. */
+  plan: PlanVerdict[]
+  adherence: Adherence
   /** Who ACTUALLY answered — the resolver degrades to local on failure. */
   provider: string
   /** The model override in force (`sonnet`/`haiku`), or '' for the default. */
   model: string
   /**
    * The summary could not be composed at all (the call failed, or the answer was
-   * unparseable) and one deterministic chart was substituted. Not an error — the
-   * screen always renders — but it is why the narrative is empty when it is.
-   *
-   * NOT the same as `panels` being empty: a summary with no charts and a good
-   * narrative is the normal, intended outcome.
+   * unparseable). Not an error — `plan` and `adherence` are computed from the
+   * database and still hold — but it is why the prose is empty when it is.
    */
   fallback: boolean
   generated_at: string
+  /** The newest activity this was composed from. Compared against the live day to
+   *  decide staleness; '' on rows written before migration 068. */
+  evidence_at: string
 }
 
 /** The day's headline numbers, as `day_evidence` derives them. */
@@ -770,13 +847,27 @@ export interface DaySummaryScalars {
   agent_s: number
   session_count: number
   switch_count: number
+  /** The day had a committed plan (confirmed, not skipped, not empty). THE branch
+   *  between the two versions of the summary screen. */
+  planned: boolean
+  /** How many tickets that plan held; 0 when `planned` is false. */
+  planned_count: number
 }
 
-/** What `get_day_summary_data` returns: the panels' rows plus the screen's numbers. */
+/** What `get_day_summary_data` returns: the day's live figures and whether the
+ *  stored summary has fallen behind them. */
 export interface DaySummaryData {
-  /** name → rows. What a panel's spec binds to by name. */
+  /** name → rows: the day's aggregate shape (`segments`, `apps`, `categories`,
+   *  `hours`, `workstreams`). */
   datasets: Record<string, Record<string, unknown>[]>
   scalars: DaySummaryScalars
+  /** Newest tracked activity in the day right now, RFC3339. */
+  evidence_at: string
+  /** The day has moved on far enough since the stored summary was composed to be
+   *  worth recomposing. Decided in Rust (`day_summaries::is_stale`) because "far
+   *  enough" is a product rule, not a rendering detail. False when there is no
+   *  stored summary — there is nothing to recompose. */
+  stale: boolean
 }
 
 // ── Recent captured apps (`get_recent_capture_apps`) ─────────────────────────

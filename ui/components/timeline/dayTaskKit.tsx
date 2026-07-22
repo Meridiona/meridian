@@ -16,11 +16,11 @@ import { openExternal } from '@/lib/bridge'
 // (which owns task order) into the panel, so a given task is always the same hue.
 export const TASK_HUES = [
   'var(--color-state-proposal)',
-  'var(--color-state-approved)',
-  'var(--color-state-pending)',
+  '#3B82F6',
+  '#D946EF',
   '#8b7cf6',
-  '#f0883e',
-  '#4cc9b0',
+  '#6366F1',
+  '#64748B',
 ] as const
 
 /** The workstream hue for task `id` (its "T<n>" index when parseable, else the

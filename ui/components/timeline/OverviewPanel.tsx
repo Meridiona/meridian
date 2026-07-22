@@ -34,7 +34,9 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
   onOpenTask: (key: string, title?: string, editable?: boolean) => void
   onOpenSettings: (section?: SettingsSection) => void
 }) {
-  const { today, isSolo, items, cleanupIssueCount, isToday, day } = data
+  // `cleanupIssueCount` is still on `data` (computed in useTimelineData) for when
+  // the Board Cleanup CTA below re-enables; not destructured while it's disabled.
+  const { today, isSolo, items, isToday, day } = data
   const dayLabel = isToday ? 'Today' : formatDayLabel(day)
   // "Today's focus" only reads right on today; a past date shows that day's plan
   // under a neutral "Focus" heading (the day itself is already named above).
@@ -186,6 +188,10 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
         )}
       </div>
 
+      {/* Board Cleanup CTA — temporarily disabled (not deleted); re-enable by
+          uncommenting this block. This was the only UI entry point into the
+          Cleanup flow (see also MeridianTimelineShell.tsx's `'cleanup'`
+          modal-render branch, disabled alongside it).
       {!isSolo && cleanupIssueCount > 0 && (
         <button onClick={() => onOpen('cleanup')}
           className="w-full text-left rounded-xl px-4 py-3 flex items-center gap-2.5"
@@ -199,6 +205,7 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
           <span style={{ color: 'var(--color-state-pending)' }}>→</span>
         </button>
       )}
+      */}
 
       {/* Editing is a today-only action — you plan the day you're in, not the
           past. On a past date the section is read-only: it shows that day's
@@ -329,13 +336,14 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
   )
 }
 
-// The plan feature's empty-state CTA, promoted to the top of the panel so it's
-// the first thing a user sees rather than the 4th card down. Soft/pastel
-// (color-mix over the panel surface, same recipe as the cleanup/tracker-connect
-// CTAs elsewhere in this file) so it reads as an inviting nudge, not a warning
-// — purple (--color-state-proposal) matches the rest of the plan feature's own
-// color language (the "Edit plan"/progress-bar/done-check accents), so this
-// reads as the same feature rather than a new, unrelated color.
+// The plan feature's empty-state CTA, promoted to the top of the "Today's focus"
+// section so it's the first thing a user sees there rather than a plain dashed
+// box at the bottom. Soft/pastel (color-mix over the panel surface, same recipe
+// as the cleanup/tracker-connect CTAs elsewhere in this file) so it reads as an
+// inviting nudge, not a warning — purple (--color-state-proposal) matches the
+// rest of the plan feature's own color language (the "Edit plan"/progress-bar/
+// done-check accents), so this reads as the same feature rather than a new,
+// unrelated color.
 function EmptyPlanNudge({ onOpen }: { onOpen: () => void }) {
   return (
     <button onClick={onOpen}

@@ -525,9 +525,12 @@ pub fn run() {
             commands::set_task_status,
             commands::generate_day_task_worklog,
             commands::approve_day_task_worklog,
+            commands::escalate_personal_task_create,
+            commands::escalate_personal_task_match,
             // An LLM call, so it lives with the writes despite reading nothing back
             // but its own result.
             commands::generate_day_summary,
+            commands::generate_day_summary_now,
             commands::dismiss_notification,
             commands::record_notification_response,
             commands::delete_notice,

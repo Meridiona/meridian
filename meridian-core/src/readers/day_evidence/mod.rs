@@ -1,38 +1,49 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-//! A day's evidence, gathered into the named datasets its summary is composed from.
+//! A day's evidence: what was planned, what was actually done, and the aggregate
+//! shape of the day, gathered into the named datasets its summary is composed from.
 //!
-//! # Two kinds of output, on purpose
-//! - **Datasets** ([`Evidence::datasets`]) are chartable rows. They are what a
-//!   summary panel's spec binds to by name, and they are injected into the chart at
-//!   render — the model only ever names them, never their values.
+//! # Three kinds of output, on purpose
+//! - **Datasets** ([`Evidence::datasets`]) are aggregate rows — time by app, by
+//!   category, by hour, and the day's sittings. They are the deterministic shape of
+//!   the day, and the model only ever names them, never their values.
 //! - **Prose evidence** (workstream log lines, the hourly reports) is what the
-//!   narrative is written FROM. It is not chartable and never becomes a dataset:
-//!   putting free text on an axis is how you get a chart nobody can read.
+//!   insight cards are written FROM.
+//! - **The plan** ([`Evidence::plan`]) and the resolved [`Evidence::ledger`] —
+//!   the planned-vs-actual side, settled deterministically from the worklog match
+//!   map ([`adherence::resolve_deterministic`]), no model involved.
 //!
 //! # Why this is in meridian-core and not with the rest of day_summary
 //! It is a pure DB read with no LLM in it, and BOTH sides need it: the daemon to
-//! build the prompt, and the tray to inject the real rows at render (a stored spec
-//! carries form only — see migration 064). Keeping it here means the tray reads it
-//! directly instead of spawning the CLI on every screen open, and there is exactly
-//! one definition of "what happened that day".
+//! build the prompt, and the tray to serve the screen's deterministic half. Keeping
+//! it here means the tray reads it directly instead of spawning the CLI on every
+//! screen open, and there is exactly one definition of "what happened that day".
 //!
 //! # Reuse, don't re-query
 //! Everything comes from the existing readers ([`crate::day_tasks`],
-//! [`crate::today`], [`crate::coding_agents`], [`crate::hour_text`]). A second
-//! implementation of "what happened today" would drift from the timeline, and a
-//! summary that disagrees with the screen beside it is worse than no summary.
+//! [`crate::today`], [`crate::coding_agents`], [`crate::hour_text`],
+//! [`crate::plan`]). A second implementation of "what happened today" would drift
+//! from the timeline, and a summary that disagrees with the screen beside it is
+//! worse than no summary.
 //!
-//! # The daily plan is deliberately absent
-//! This is what you DID, not what you promised. The plan is a different question
-//! and mixing it in would turn a review into a scorecard.
+//! # The plan used to be deliberately absent
+//! It was, on the grounds that mixing intent into a review turns it into a
+//! scorecard. That was right about the risk and wrong about the fix: the question a
+//! person actually has at the end of a day is whether it went the way they meant it
+//! to, and refusing to answer it does not make the screen kinder, only less useful.
+//! The scorecard risk is handled where it belongs — in the prompt's tone contract,
+//! which forbids grading the person.
 //!
 //! # Related
 //! - [`datasets`] — declares the names and fields this must produce.
+//! - [`adherence`] — resolves the deterministic ledger from the worklog match map.
+//! - [`crate::day_task_worklogs::targets`] — the match map's source.
 //! - [`crate::day_summaries`] — where the composed summary is persisted.
 
+pub mod adherence;
 pub mod datasets;
 
 use crate::intervals::{intersect_seconds, Interval};
+use crate::plan::{DayPlan, PlanItem};
 use crate::SqlitePool;
 use anyhow::Context;
 use serde::Serialize;
@@ -56,9 +67,33 @@ pub struct Evidence {
     /// Day-level totals that need no chart to be interesting.
     pub scalars: Value,
     /// Per-workstream running log lines — the prose the narrative is built from.
+    /// **Substantial workstreams only** (see [`TASK_MIN_MINUTES`]), so the model
+    /// cannot name a piece of work the screen will not show.
     pub workstream_logs: Vec<WorkstreamLog>,
     /// `(hour, report)` for hours that reached the report stage.
     pub hour_reports: Vec<(i64, String)>,
+    /// The day's committed plan, in plan order. Empty when there was none.
+    #[serde(skip)]
+    pub plan: Vec<PlanItem>,
+    /// The deterministic plan ledger: one verdict per committed ticket and the
+    /// achievement arithmetic, resolved from the worklog match map with no LLM (see
+    /// [`adherence::resolve_deterministic`]). Empty verdicts + zeroed adherence when
+    /// the day had no plan. This is the source of truth for the ring and the
+    /// checklist; the model only writes the prose beside it.
+    #[serde(skip)]
+    pub ledger: adherence::DayLedger,
+    /// Whether that plan was actually committed — `confirmed && !skipped && !empty`.
+    /// The one flag callers should branch on; see [`DayPlan::is_planned`].
+    pub planned: bool,
+    /// Every day-task, unfiltered. The ledger needs the brief ones too: a matched
+    /// day-task credits its ticket however few minutes it ran, and dropping it here
+    /// would drop that credit.
+    #[serde(skip)]
+    pub tasks: Vec<crate::day_tasks::DayTask>,
+    /// The newest tracked activity in the day, RFC3339, or empty when the day is
+    /// empty. Stamped onto the summary so a later open can tell whether the day has
+    /// moved on since it was composed.
+    pub evidence_at: String,
 }
 
 /// One workstream's title and its running log, for the prose side.
@@ -112,6 +147,26 @@ fn hour_interval(day: &str, h: i64) -> Option<Interval> {
     })
 }
 
+/// `minutes` past local midnight on `day`, as an RFC3339 instant.
+///
+/// Used to stamp the newest activity a summary was composed from. Deriving it from
+/// the workstream segments rather than a `MAX(timestamp)` query keeps this a pure
+/// function of what the model was actually shown - the point of the stamp is "has
+/// the thing I summarised changed", and a clock reading that moves while the day's
+/// content does not would make every reopen look stale.
+fn day_instant(day: &str, minutes: i64) -> Option<String> {
+    use chrono::{Duration, Local, NaiveDate, TimeZone};
+    let date = NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()?;
+    let midnight = Local
+        .from_local_datetime(&date.and_hms_opt(0, 0, 0)?)
+        .single()?;
+    Some(
+        (midnight + Duration::minutes(minutes))
+            .to_utc()
+            .to_rfc3339(),
+    )
+}
+
 /// Build the day's evidence.
 // Named explicitly: `#[instrument]` defaults to the fn name ("collect"), which
 // says nothing in a trace tree. The dotted form matches the house convention and
@@ -131,11 +186,33 @@ pub async fn collect(pool: &SqlitePool, day: &str) -> anyhow::Result<Evidence> {
     let reports = crate::hour_text::get_hour_reports(pool, day)
         .await
         .context("day_evidence: get_hour_reports")?;
+    // The plan is read with `plan_for_day`, not the planner's own `get_plan`: that
+    // one also scores the whole board to build suggestions, which is real work for
+    // an answer nobody here reads.
+    let plan: DayPlan = crate::plan::plan_for_day(pool, day, chrono::Local::now().date_naive())
+        .await
+        .context("day_evidence: plan_for_day")?;
+    // The deterministic plan-adherence input: which planned tickets the day's
+    // drafted/posted worklogs matched. Read here so the ledger is resolved once, in
+    // this one reader, and every caller (daemon prose, tray screen) sees one shape.
+    let matches = crate::day_task_worklogs::targets::matched_tickets_for_day(pool, day)
+        .await
+        .context("day_evidence: matched_tickets_for_day")?;
+    // A confirmed-but-empty or skipped/reopened plan is a day with no plan, so it
+    // scores against no tickets. Emptying the items here means the ledger, the
+    // scalars, and the stored plan all branch on one decision.
+    let planned = plan.is_planned();
+    let plan_items: Vec<PlanItem> = if planned {
+        plan.items.clone()
+    } else {
+        Vec::new()
+    };
 
     // ── workstreams + segments ────────────────────────────────────────────────
     let mut workstreams: Vec<Value> = Vec::new();
     let mut segments: Vec<Value> = Vec::new();
     let mut workstream_logs: Vec<WorkstreamLog> = Vec::new();
+    let mut last_min_of_day: i64 = 0;
 
     for t in &day_tasks.tasks {
         let mins: Vec<(i64, i64)> = t
@@ -147,6 +224,7 @@ pub async fn collect(pool: &SqlitePool, day: &str) -> anyhow::Result<Evidence> {
 
         let first_min = mins.iter().map(|(a, _)| *a).min();
         let last_min = mins.iter().map(|(_, b)| *b).max();
+        last_min_of_day = last_min_of_day.max(last_min.unwrap_or(0));
 
         for (a, b) in &mins {
             segments.push(json!({
@@ -158,23 +236,32 @@ pub async fn collect(pool: &SqlitePool, day: &str) -> anyhow::Result<Evidence> {
             }));
         }
 
-        workstreams.push(json!({
-            "task_id": t.id,
-            "title": t.title,
-            // `minutes` is the reader's own summed-segment figure — never
-            // recomputed here, so the summary and the timeline can't disagree.
-            "minutes": t.minutes,
-            "segment_count": mins.len(),
-            "first_min": first_min.unwrap_or(0),
-            "last_min": last_min.unwrap_or(0),
-        }));
+        if t.minutes >= TASK_MIN_MINUTES {
+            workstreams.push(json!({
+                "task_id": t.id,
+                "title": t.title,
+                // `minutes` is the reader's own summed-segment figure — never
+                // recomputed here, so the summary and the timeline can't disagree.
+                "minutes": t.minutes,
+                "segment_count": mins.len(),
+                "first_min": first_min.unwrap_or(0),
+                "last_min": last_min.unwrap_or(0),
+            }));
+        }
 
-        workstream_logs.push(WorkstreamLog {
-            task_id: t.id.clone(),
-            title: t.title.clone(),
-            minutes: t.minutes,
-            lines: t.summary.clone(),
-        });
+        // The 30-minute floor, applied to the PROSE side only. The model writes the
+        // narrative and names the day's themes from these lines, and the screen
+        // lists exactly the same set - so anything it is shown here it can point
+        // at. The `segments` dataset above keeps every sitting, because that is
+        // aggregate shape rather than a claim about what got done.
+        if t.minutes >= TASK_MIN_MINUTES {
+            workstream_logs.push(WorkstreamLog {
+                task_id: t.id.clone(),
+                title: t.title.clone(),
+                minutes: t.minutes,
+                lines: t.summary.clone(),
+            });
+        }
     }
 
     // ── apps ──────────────────────────────────────────────────────────────────
@@ -288,7 +375,26 @@ pub async fn collect(pool: &SqlitePool, day: &str) -> anyhow::Result<Evidence> {
         "agent_s": today.agent_s,
         "session_count": today.session_count,
         "switch_count": today.switch_count,
+        // Whether the day had a plan at all. On the screen this is the branch
+        // between an achievement ring and a picture of what the day turned out to
+        // be about, so it belongs with the other facts the frontend reads directly.
+        "planned": planned,
+        "planned_count": plan_items.len(),
     });
+
+    // Resolve the ledger from the effective plan (empty on a no-plan day → zeroed
+    // adherence) and the day's measured tasks. No LLM: the ring and the checklist
+    // are computed here, once.
+    let ledger = adherence::resolve_deterministic(&plan_items, &day_tasks.tasks, &matches);
+
+    // The stamp the staleness check compares against: the end of the last sitting
+    // the day contains. An empty day gets an empty stamp rather than midnight,
+    // which would read as "there was activity at 00:00".
+    let evidence_at = if day_tasks.tasks.is_empty() {
+        String::new()
+    } else {
+        day_instant(day, last_min_of_day).unwrap_or_default()
+    };
 
     for (name, rows) in &datasets {
         tracing::debug!(dataset = %name, rows = rows.as_array().map(|a| a.len()).unwrap_or(0));
@@ -296,12 +402,17 @@ pub async fn collect(pool: &SqlitePool, day: &str) -> anyhow::Result<Evidence> {
     tracing::info!(
         day,
         workstreams = day_tasks.tasks.len(),
+        substantial = workstream_logs.len(),
         segments = datasets["segments"]
             .as_array()
             .map(|a| a.len())
             .unwrap_or(0),
         apps = datasets["apps"].as_array().map(|a| a.len()).unwrap_or(0),
         hour_reports = hour_reports.len(),
+        planned,
+        plan_items = plan_items.len(),
+        done = ledger.adherence.done,
+        achievement_pct = ledger.adherence.achievement_pct,
         "day evidence collected"
     );
 
@@ -311,6 +422,14 @@ pub async fn collect(pool: &SqlitePool, day: &str) -> anyhow::Result<Evidence> {
         scalars,
         workstream_logs,
         hour_reports,
+        planned,
+        // Emptied unless the plan was genuinely committed (see `plan_items` above):
+        // a skipped day can still have leftover rows, and a reopened one keeps its
+        // old ones - scoring either would invent a promise never made.
+        plan: plan_items,
+        ledger,
+        tasks: day_tasks.tasks,
+        evidence_at,
     })
 }
 

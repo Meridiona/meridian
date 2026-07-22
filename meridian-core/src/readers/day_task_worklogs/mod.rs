@@ -362,6 +362,47 @@ pub async fn upsert_draft(
     read_back(pool, day_local, task_id).await
 }
 
+/// Reopen a `posted` row for regeneration: flip it back to `drafted` so the next
+/// [`upsert_draft`] can overwrite it with a fresh follow-up draft.
+///
+/// This is the "still working on this — log an update" path AFTER a worklog has
+/// already been posted. Posting appends a comment to the tracker and CANNOT be
+/// undone, so this does NOT try to: the comment(s) already on the board stay
+/// exactly where they are. It only clears the local `posted` lock so a new cycle
+/// can begin. On the next successful generate, [`upsert_draft`]'s guard (now
+/// matching, since the row is `drafted` again) runs [`targets::replace`], which
+/// deletes the old target rows — including their `posted_comment_id`s — and
+/// inserts fresh, unposted targets. That is intended: the follow-up approve posts
+/// a NEW comment capturing the work done since, rather than editing the old one.
+///
+/// Scoped to `posted` ONLY. An `approved` row is mid-post (a partial or failed
+/// delivery the approve-retry owns); reopening it could clear the record of
+/// targets whose comments are already live and let the next approve double-post
+/// them. A `drafted` row is already open, so this is a no-op there too.
+///
+/// Returns `true` if a `posted` row was reopened, `false` if there was nothing to
+/// reopen (no row, or it was already `drafted`/`approved`).
+#[tracing::instrument(skip(pool))]
+pub async fn reopen_posted(
+    pool: &SqlitePool,
+    day_local: &str,
+    task_id: &str,
+    now: &str,
+) -> anyhow::Result<bool> {
+    let res = sqlx::query(
+        "UPDATE day_task_worklogs SET state = 'drafted', last_error = NULL, updated_at = ? \
+         WHERE day_local = ? AND task_id = ? AND state = 'posted'",
+    )
+    .bind(now)
+    .bind(day_local)
+    .bind(task_id)
+    .execute(pool)
+    .instrument(tracing::debug_span!("day_task_worklogs.write.reopen"))
+    .await
+    .context("reopening a posted worklog for regeneration")?;
+    Ok(res.rows_affected() > 0)
+}
+
 /// Choose which tracker a still-`drafted` PROPOSAL will create its new ticket on.
 ///
 /// A proposal's provider is assigned at generate time as "the first configured
@@ -509,6 +550,8 @@ pub async fn retarget_draft(
             provider: provider.to_string(),
             confidence: 1.0,
             manual: true,
+            // A hand-picked single ticket takes the workstream's draft-level update.
+            update: None,
         }],
         now,
     )
@@ -621,6 +664,8 @@ pub async fn mark_created(
             // the UI from inventing a confidence score for it.
             confidence: 1.0,
             manual: true,
+            // The freshly created ticket takes the draft-level (proposal) update.
+            update: None,
         },
         now,
     )
