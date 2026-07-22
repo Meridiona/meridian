@@ -106,7 +106,7 @@ meridian = { path = "../.." }
 # screen capture + Apple Vision OCR. Optional → only pulled by the `capture`
 # feature (heavy: ScreenCaptureKit/cidre/sck-rs). Private repo: local builds use
 # the user's git credentials; CI needs a deploy token (future).
-screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "3c99154", optional = true }
+screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "3c99154833b8087b1e215e5af748721096c46f01", optional = true }
 # Sibling crate in the same fork: the accessibility-tree walker (slice 3b).
 # `tree::create_tree_walker` walks the focused window's AX tree → structured
 # text — the PRIMARY signal for Electron/Chromium apps (VS Code, Slack), which
@@ -118,7 +118,7 @@ screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev 
 # recording session started before the outgoing one finished unregistering
 # its NSWorkspace observers. See `start_capture` in `../src/lib.rs` for the
 # matching caller-side fix (joining the old recorder thread before restart).
-screenpipe-a11y = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "3c99154", optional = true }
+screenpipe-a11y = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "3c99154833b8087b1e215e5af748721096c46f01", optional = true }
 # Console log subscriber for capture-enabled non-otel runs (otel installs its
 # own). Makes the `capture: …` logs visible during a `cargo run --features capture`.
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
