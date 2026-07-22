@@ -23,7 +23,7 @@ import { TaskDetailDialog } from '@/components/timeline/TaskDetailDialog'
 import { dayString } from '@/components/timeline/types'
 import type { PlanResponse, IntegrationsResponse } from '@/lib/api-types'
 import { MAX_PLAN_TASKS } from '@/lib/api-types'
-import { load as bridgeLoad } from '@/lib/bridge'
+import { load as bridgeLoad, mutate as bridgeMutate } from '@/lib/bridge'
 import { connectedTrackers } from '@/lib/integrations'
 import { usePlan, refreshPlan, planAction, pausePlanRefresh } from '@/components/plan/planStore'
 
@@ -50,6 +50,8 @@ export default function PlanView() {
   const [capHit, setCapHit] = useState(false)
   const [openTask, setOpenTask] = useState<CardTask | null>(null)
   const [trackers, setTrackers] = useState<ReturnType<typeof connectedTrackers>>([])
+  const [syncing, setSyncing] = useState(false)
+  const [syncError, setSyncError] = useState(false)
   const draggingRef = useRef(false)
 
   const derive = useCallback((d: PlanResponse) => {
@@ -85,6 +87,19 @@ export default function PlanView() {
     const id = setInterval(() => load(false), 30_000)
     return () => clearInterval(id)
   }, [load])
+
+  // Pull the latest tickets from every connected tracker before re-deriving the
+  // board — same `sync_tasks` command and refresh-after pattern as the Tasks
+  // page's own Refresh button (TasksPanel.tsx's handleSync). Only meaningful
+  // with a tracker connected: personal-only plans have nothing to sync.
+  const handleSync = useCallback(() => {
+    if (syncing) return
+    setSyncing(true); setSyncError(false)
+    bridgeMutate('/api/tasks/sync', 'sync_tasks', {})
+      .then(() => load(true))
+      .catch(() => setSyncError(true))
+      .finally(() => setSyncing(false))
+  }, [syncing, load])
 
   // Which trackers are connected decides whether the composer offers a "file it on
   // my board" choice at all. A failure here is not fatal: [] means personal-only,
@@ -230,7 +245,21 @@ export default function PlanView() {
     <DragDropContext onDragStart={() => { draggingRef.current = true; pausePlanRefresh(true) }} onDragEnd={onDragEnd}>
       <div className="flex-1 min-h-0 flex flex-col">
         <header className="shrink-0 flex items-center justify-between gap-4 px-6 pt-5 pb-4 border-b" style={{ borderColor: 'var(--t-hair)' }}>
-          <p className="mt-label" style={{ color: 'var(--t-faint)' }}>{dateLabel}</p>
+          <div className="flex items-center gap-3">
+            <p className="mt-label" style={{ color: 'var(--t-faint)' }}>{dateLabel}</p>
+            {/* Only meaningful with a tracker connected — a personal-only plan
+                has nothing on a remote board to pull. Same sync + button
+                treatment as the Tasks page's Refresh (TasksPanel.tsx). */}
+            {trackers.length > 0 && (
+              <button onClick={handleSync} disabled={syncing}
+                className="mt-body-sm px-2.5 py-1 rounded-md bg-ctrl inline-flex items-center gap-1.5"
+                style={{ border: `1px solid ${syncError ? 'var(--color-state-pending)' : 'var(--t-ctrl-border)'}`, color: syncError ? 'var(--color-state-pending)' : 'var(--t-muted)', opacity: syncing ? 0.6 : 1 }}
+                title="Pull latest tickets from your trackers">
+                <span style={{ display: 'inline-block', animation: syncing ? 'spin 1s linear infinite' : 'none' }}>{syncError ? '⚠' : '↻'}</span>
+                {syncing ? 'Syncing…' : syncError ? 'Sync failed' : 'Refresh'}
+              </button>
+            )}
+          </div>
           <div className="text-right shrink-0">
             {confirmedMode
               ? (editing

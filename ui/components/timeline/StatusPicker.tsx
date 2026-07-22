@@ -13,7 +13,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { load } from '@/lib/bridge'
-import type { TaskSummary, StatusListResponse, TaskStatusOption } from '@/lib/api-types'
+import type { TaskStatusTarget, StatusListResponse, TaskStatusOption } from '@/lib/api-types'
 
 // Canonical category → a dot colour, so a status reads as done / active / to-do
 // at a glance regardless of provider.
@@ -26,7 +26,7 @@ function categoryColor(category: string, isTerminal: boolean): string {
 }
 
 export function StatusPicker({ task, onPick, busy }: {
-  task: TaskSummary
+  task: TaskStatusTarget
   onPick: (option: TaskStatusOption) => void
   busy: boolean
 }) {

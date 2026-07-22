@@ -5,8 +5,8 @@ use anyhow::Result;
 use sqlx::SqlitePool;
 
 use crate::db::screenpipe::{
-    get_audio_snippets, get_frame_full_texts, get_signals, get_window_titles, AudioSnippet,
-    SignalEvent, WindowTitleCount,
+    get_audio_snippets, get_frame_full_texts, get_secondary_screen_events, get_signals,
+    get_window_titles, AudioSnippet, SecondaryScreenEvent, SignalEvent, WindowTitleCount,
 };
 use crate::etl::session_builder::{is_coding_agent_terminal, is_vscode_like};
 use crate::etl::text_merge::build_session_text;
@@ -27,6 +27,9 @@ pub struct BlockContext {
     pub window_titles: Vec<WindowTitleCount>,
     pub audio_snippets: Vec<AudioSnippet>,
     pub signals: Vec<SignalEvent>,
+    /// OCR samples from monitors other than the one this block's app was
+    /// focused on — context, not activity (see [`crate::db::screenpipe::get_secondary_screen_events`]).
+    pub secondary_screens: Vec<SecondaryScreenEvent>,
     /// Deduplicated, timestamped union of all frame full_text for this block.
     pub session_text: String,
 }
@@ -49,6 +52,7 @@ pub struct BlockContext {
         window_title_count = tracing::field::Empty,
         audio_snippet_count = tracing::field::Empty,
         signal_count = tracing::field::Empty,
+        secondary_screen_count = tracing::field::Empty,
         session_text_bytes = tracing::field::Empty,
     )
 )]
@@ -61,16 +65,18 @@ pub async fn extract_block_context(
     max_frame_id: i64,
     frame_count: i64,
 ) -> Result<BlockContext> {
-    let (window_titles_res, audio_res, signals_res, frames_res) = tokio::join!(
+    let (window_titles_res, audio_res, signals_res, secondary_screens_res, frames_res) = tokio::join!(
         get_window_titles(meridian, min_frame_id, max_frame_id, app_name),
         get_audio_snippets(meridian, started_at, ended_at),
         get_signals(meridian, started_at, ended_at),
+        get_secondary_screen_events(meridian, started_at, ended_at),
         get_frame_full_texts(meridian, min_frame_id, max_frame_id),
     );
 
     let session_text = build_session_text(&frames_res?);
     let audio_snippets = audio_res?;
     let signals = signals_res?;
+    let secondary_screens = secondary_screens_res?;
 
     // get_window_titles queries capture_frames by frame-id range and sees ALL
     // frames in that range — including coding-agent terminal frames that were
@@ -84,6 +90,7 @@ pub async fn extract_block_context(
     tracing::Span::current().record("window_title_count", window_titles.len());
     tracing::Span::current().record("audio_snippet_count", audio_snippets.len());
     tracing::Span::current().record("signal_count", signals.len());
+    tracing::Span::current().record("secondary_screen_count", secondary_screens.len());
     tracing::Span::current().record("session_text_bytes", session_text.len());
 
     tracing::debug!(
@@ -91,6 +98,7 @@ pub async fn extract_block_context(
         window_titles = window_titles.len(),
         audio_snippets = audio_snippets.len(),
         signals = signals.len(),
+        secondary_screens = secondary_screens.len(),
         session_text_bytes = session_text.len(),
         "block context extracted"
     );
@@ -105,6 +113,7 @@ pub async fn extract_block_context(
         window_titles,
         audio_snippets,
         signals,
+        secondary_screens,
         session_text,
     })
 }

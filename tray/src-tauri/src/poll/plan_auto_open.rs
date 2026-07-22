@@ -41,11 +41,10 @@ use std::path::Path;
 /// docs for the gate order and rationale.
 #[tracing::instrument(skip(app, pool))]
 pub(crate) async fn maybe_auto_open_plan(app: &tauri::AppHandle, pool: &meridian_core::SqlitePool) {
-    let home = std::env::var("HOME").unwrap_or_default();
-    if home.is_empty() {
+    let Some(home) = meridian_core::paths::home_dir() else {
         return;
-    }
-    let meridian_dir = Path::new(&home).join(".meridian");
+    };
+    let meridian_dir = home.join(".meridian");
     let now = chrono::Local::now();
     let today = now.format("%Y-%m-%d").to_string();
 

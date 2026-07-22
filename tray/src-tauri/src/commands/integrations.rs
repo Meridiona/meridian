@@ -76,8 +76,18 @@ const ENV_OAUTH_PROVIDERS: [&str; 1] = ["github"];
 const TOKEN_KEYS: &[(&str, &[&str])] = &[
     // Jira connects via OAuth AND via API token (base URL + email + token), so a
     // disconnect must strip these env keys in addition to removing the OAuth json
-    // — otherwise a token-connected Jira can never be disconnected.
-    ("jira", &["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"]),
+    // — otherwise a token-connected Jira can never be disconnected. JIRA_PROJECT_KEYS
+    // is the project picker's selection (see discover_jira_projects) and must go too,
+    // or a reconnect would silently inherit the previous account's project scope.
+    (
+        "jira",
+        &[
+            "JIRA_BASE_URL",
+            "JIRA_EMAIL",
+            "JIRA_API_TOKEN",
+            "JIRA_PROJECT_KEYS",
+        ],
+    ),
     ("github", &["GITHUB_TOKEN", "GITHUB_PROJECT_IDS"]),
     ("linear", &["LINEAR_API_KEY", "LINEAR_TEAM_IDS"]),
     (
@@ -110,6 +120,11 @@ const TOKEN_FIELD_MAP: &[(&str, &[(&str, &str)])] = &[
             ("base_url", "JIRA_BASE_URL"),
             ("email", "JIRA_EMAIL"),
             ("api_token", "JIRA_API_TOKEN"),
+            // Written by the project picker (discover_jira_projects → save here) on
+            // top of EITHER auth mode — API token or a browser-OAuth session. See
+            // missing_required's oauth_connected branch for why this can be saved
+            // with none of the three fields above present in the payload.
+            ("project_keys", "JIRA_PROJECT_KEYS"),
         ],
     ),
     (
@@ -166,18 +181,39 @@ const TOKEN_REQUIRED: &[(&str, &[&str])] = &[
 /// [`get_integrations`], which would otherwise accept the save and then report the
 /// provider disconnected.
 ///
+/// `oauth_connected` covers the Jira analogue of the GitHub gap above, with one
+/// twist: GitHub's OAuth (device flow) writes `GITHUB_TOKEN` straight into
+/// `.env`, so `existing` alone already proves it happened. Jira's browser-OAuth
+/// writes to `~/.meridian/oauth/jira.json` instead — a file `existing` (a parsed
+/// `.env`) can never see — so a jira project-keys-only save (from
+/// [`discover_jira_projects`]'s picker, run after an OAuth connect with no API
+/// token ever set) would otherwise report the three basic-auth fields missing
+/// even though Jira is fully connected. Meaningful only for `provider == "jira"`;
+/// every other provider ignores it.
+///
 /// # Who calls this
 /// [`save_integration_token`], which turns a non-empty result into its error.
 fn missing_required(
     provider: &str,
     updates: &BTreeMap<String, String>,
     existing: &HashMap<String, String>,
+    oauth_connected: bool,
 ) -> Vec<&'static str> {
-    TOKEN_REQUIRED
+    let required = TOKEN_REQUIRED
         .iter()
         .find(|(p, _)| *p == provider)
         .map(|(_, r)| *r)
-        .unwrap_or(&[])
+        .unwrap_or(&[]);
+
+    // A projects-only submit (none of the basic-auth fields in this payload) on
+    // top of an already-live OAuth session needs nothing further from this check.
+    // A submit that DOES include a basic-auth field is a real (re)connect attempt
+    // and must still be validated normally, even if OAuth also happens to exist.
+    if provider == "jira" && oauth_connected && !required.iter().any(|k| updates.contains_key(*k)) {
+        return Vec::new();
+    }
+
+    required
         .iter()
         .copied()
         .filter(|k| match updates.get(*k) {
@@ -209,11 +245,16 @@ pub struct IntegrationsResponse {
     /// project (see [`discover_github_projects`]). Lets the UI tell "connected,
     /// token only" apart from "connected and actually syncing."
     pub github_projects_selected: bool,
+    /// `true` once `JIRA_PROJECT_KEYS` is set — mirrors
+    /// [`Self::github_projects_selected`] for Jira (see
+    /// [`discover_jira_projects`]). `jira` alone means EITHER auth mode is live;
+    /// this additionally means at least one project was picked to sync.
+    pub jira_projects_selected: bool,
     pub sync_errors: BTreeMap<String, String>,
 }
 
 fn home() -> Option<PathBuf> {
-    std::env::var("HOME").ok().map(PathBuf::from)
+    meridian_core::paths::home_dir()
 }
 
 /// Parse a `.env` file using dotenvy so edge cases (export prefix, quoted
@@ -335,6 +376,7 @@ pub async fn get_integrations(
         trello: on.contains(&"trello"),
         azure_devops: on.contains(&"azure_devops"),
         github_projects_selected: is_set(&env, "GITHUB_PROJECT_IDS"),
+        jira_projects_selected: is_set(&env, "JIRA_PROJECT_KEYS"),
         sync_errors,
     })
 }
@@ -513,15 +555,21 @@ pub async fn save_integration_token(body: SaveTokenBody) -> Result<serde_json::V
     // it twice stalls the reactor twice for the same answer.
     let mode = crate::install::detect_install_mode();
     let existing = mode.env_path().map(parse_env).unwrap_or_default();
-    let missing = missing_required(provider, &updates, &existing);
+    let oauth_connected = provider == "jira" && oauth_file_exists("jira");
+    let missing = missing_required(provider, &updates, &existing, oauth_connected);
     if !missing.is_empty() {
         return Err(format!("Missing: {}", missing.join(", ")));
     }
 
     // Jira API token must win over a stale OAuth session: resolve() already
     // prefers the token, but removing the store keeps the UI/get_integrations
-    // unambiguous about which auth is live.
-    if provider == "jira" {
+    // unambiguous about which auth is live. Gated on an ACTUAL basic-auth field
+    // being submitted — a projects-only save (see `oauth_connected` above) must
+    // not delete the very OAuth session it's riding on.
+    let is_basic_auth_submit = updates.contains_key("JIRA_BASE_URL")
+        || updates.contains_key("JIRA_EMAIL")
+        || updates.contains_key("JIRA_API_TOKEN");
+    if provider == "jira" && is_basic_auth_submit {
         if let Some(home) = home() {
             let _ = std::fs::remove_file(home.join(".meridian/oauth/jira.json"));
         }
@@ -882,6 +930,162 @@ pub async fn discover_github_projects() -> Result<GithubDiscoverResponse, String
     let projects = flatten_github_projects(&body);
     tracing::info!(count = projects.len(), "github projects discovered");
     Ok(GithubDiscoverResponse { projects })
+}
+
+/// One Jira project, returned by [`discover_jira_projects`].
+#[derive(Debug, Clone, Serialize)]
+pub struct JiraProjectOption {
+    /// Numeric Jira project id — informational only; `JIRA_PROJECT_KEYS` stores
+    /// [`Self::key`], the identifier the JQL in
+    /// `src/intelligence/providers/jira/fetch.rs` and every other Jira read path
+    /// key off.
+    pub id: String,
+    pub key: String,
+    pub name: String,
+}
+
+/// `{ projects }` — mirrors [`GithubDiscoverResponse`].
+#[derive(Debug, Serialize)]
+pub struct JiraDiscoverResponse {
+    pub projects: Vec<JiraProjectOption>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Deserialize)]
+struct JiraProjectSearchPage {
+    values: Vec<JiraProjectSearchItem>,
+    /// Defensively defaults to `true` (stop paginating) rather than `false` — a
+    /// response shape Jira changed out from under this parser should fail safe
+    /// by returning what it got, not loop forever re-requesting the same page.
+    #[serde(rename = "isLast", default = "default_true")]
+    is_last: bool,
+}
+
+#[derive(Deserialize)]
+struct JiraProjectSearchItem {
+    id: String,
+    key: String,
+    name: String,
+}
+
+/// Parse one `/rest/api/3/project/search` page into `(projects, is_last)`. Pure
+/// function so pagination termination is unit-testable against hand-built
+/// fixtures without a live Jira site. An unparseable body (e.g. an error page
+/// serialised as JSON) reports zero projects and `is_last = true` so the caller
+/// stops rather than looping.
+fn parse_jira_projects_page(body: &serde_json::Value) -> (Vec<JiraProjectOption>, bool) {
+    let page: JiraProjectSearchPage = match serde_json::from_value(body.clone()) {
+        Ok(p) => p,
+        Err(_) => return (Vec::new(), true),
+    };
+    let projects = page
+        .values
+        .into_iter()
+        .map(|v| JiraProjectOption {
+            id: v.id,
+            key: v.key,
+            name: v.name,
+        })
+        .collect();
+    (projects, page.is_last)
+}
+
+/// Resolve a [`meridian_oauth::jira::JiraReqCtx`] for Jira discovery, tray-side.
+/// Mirrors the daemon's `src/intelligence/oauth/jira::resolve` (API token beats
+/// a stored OAuth session — a set `JIRA_API_TOKEN` always wins) but reads
+/// `.env` directly rather than depending on the daemon's `JiraConfig`, the same
+/// crate-boundary reason [`discover_github_projects`] reads `GITHUB_TOKEN`
+/// directly instead of calling into daemon code.
+async fn resolve_jira_ctx() -> Result<meridian_oauth::jira::JiraReqCtx, String> {
+    let mode = crate::install::detect_install_mode();
+    let env = mode.env_path().map(parse_env).unwrap_or_default();
+    let has_basic = is_set(&env, "JIRA_BASE_URL")
+        && is_set(&env, "JIRA_EMAIL")
+        && is_set(&env, "JIRA_API_TOKEN");
+    if has_basic {
+        return Ok(meridian_oauth::jira::JiraReqCtx::Basic {
+            base_url: env.get("JIRA_BASE_URL").cloned().unwrap_or_default(),
+            email: env.get("JIRA_EMAIL").cloned().unwrap_or_default(),
+            api_token: env.get("JIRA_API_TOKEN").cloned().unwrap_or_default(),
+        });
+    }
+    if oauth_file_exists("jira") {
+        let tokens = meridian_oauth::jira::ensure_fresh()
+            .await
+            .map_err(|e| format!("Could not refresh Jira session: {e}"))?;
+        return Ok(meridian_oauth::jira::JiraReqCtx::OAuth {
+            token: tokens.access_token,
+            cloud_id: tokens.cloud_id,
+            site_url: tokens.site_url,
+        });
+    }
+    Err("Jira is not connected yet".to_string())
+}
+
+/// List the Jira projects the connected account/site can see (the Jira
+/// analogue of [`discover_github_projects`]) — works under EITHER auth mode,
+/// API token or browser OAuth, via [`resolve_jira_ctx`]. Paginates
+/// `/rest/api/3/project/search` (50/page) until Jira reports `isLast`, so a
+/// site with more than one page of projects isn't silently truncated the way a
+/// single-call discovery would be.
+///
+/// # Who calls this
+/// `ui/components/IntegrationConnect.tsx`'s `JiraProjectPicker`, both right
+/// after a Jira connect (OAuth or token) succeeds and from the "connected but
+/// no projects selected" prompt in `ConnectedPanel` — mirrors
+/// [`discover_github_projects`]'s two entry points.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn discover_jira_projects() -> Result<JiraDiscoverResponse, String> {
+    let ctx = resolve_jira_ctx().await?;
+    let client = reqwest::Client::new();
+
+    const PAGE_SIZE: u64 = 50;
+    let mut projects = Vec::new();
+    let mut start_at: u64 = 0;
+    loop {
+        let url = ctx.api_url("/rest/api/3/project/search");
+        let resp = ctx
+            .apply(client.get(&url))
+            .query(&[
+                ("startAt", start_at.to_string()),
+                ("maxResults", PAGE_SIZE.to_string()),
+            ])
+            .timeout(Duration::from_secs(15))
+            .send()
+            .instrument(tracing::debug_span!("integrations.jira.projects", start_at))
+            .await
+            .map_err(|e| format!("Could not reach Jira: {e}"))?;
+
+        let status = resp.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return Err(
+                "Jira credentials invalid or missing project access — reconnect Jira".to_string(),
+            );
+        }
+        if !status.is_success() {
+            return Err(format!("Jira returned HTTP {status}"));
+        }
+
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Could not parse Jira response: {e}"))?;
+        let (mut page, is_last) = parse_jira_projects_page(&body);
+        let page_len = page.len() as u64;
+        projects.append(&mut page);
+        if is_last || page_len == 0 {
+            break;
+        }
+        start_at += page_len;
+    }
+
+    projects.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+    tracing::info!(count = projects.len(), "jira projects discovered");
+    Ok(JiraDiscoverResponse { projects })
 }
 
 /// POST body for [`start_oauth`] (`{ provider }`).
@@ -1306,6 +1510,7 @@ mod tests {
             "github",
             &updates(&[("GITHUB_PROJECT_IDS", "PVT_1,PVT_2")]),
             &env_of(&[("GITHUB_TOKEN", "gho_live_token")]),
+            false,
         );
         assert!(
             missing.is_empty(),
@@ -1321,6 +1526,7 @@ mod tests {
             "github",
             &updates(&[("GITHUB_PROJECT_IDS", "PVT_1")]),
             &env_of(&[]),
+            false,
         );
         assert_eq!(missing, vec!["GITHUB_TOKEN"]);
     }
@@ -1334,6 +1540,7 @@ mod tests {
             "github",
             &updates(&[("GITHUB_PROJECT_IDS", "PVT_1")]),
             &env_of(&[("GITHUB_TOKEN", "your-token-here")]),
+            false,
         );
         assert_eq!(missing, vec!["GITHUB_TOKEN"]);
     }
@@ -1349,6 +1556,7 @@ mod tests {
             "github",
             &updates(&[("GITHUB_TOKEN", "your-token-here")]),
             &env_of(&[]),
+            false,
         );
         assert_eq!(missing, vec!["GITHUB_TOKEN"]);
     }
@@ -1365,6 +1573,7 @@ mod tests {
             "github",
             &updates(&[("GITHUB_TOKEN", "your-token-here")]),
             &env_of(&[("GITHUB_TOKEN", "ghp_valid_and_working")]),
+            false,
         );
         assert_eq!(missing, vec!["GITHUB_TOKEN"]);
     }
@@ -1377,6 +1586,7 @@ mod tests {
             "github",
             &updates(&[("GITHUB_TOKEN", "ghp_fresh")]),
             &env_of(&[]),
+            false,
         );
         assert!(missing.is_empty());
     }
@@ -1387,7 +1597,12 @@ mod tests {
     #[test]
     fn jira_reports_every_unset_key_and_accepts_a_partial_edit() {
         assert_eq!(
-            missing_required("jira", &updates(&[("JIRA_EMAIL", "a@b.c")]), &env_of(&[])),
+            missing_required(
+                "jira",
+                &updates(&[("JIRA_EMAIL", "a@b.c")]),
+                &env_of(&[]),
+                false
+            ),
             vec!["JIRA_BASE_URL", "JIRA_API_TOKEN"]
         );
         assert!(missing_required(
@@ -1397,15 +1612,93 @@ mod tests {
                 ("JIRA_BASE_URL", "https://x.atlassian.net"),
                 ("JIRA_API_TOKEN", "ATATT3x"),
             ]),
+            false,
         )
         .is_empty());
+    }
+
+    /// The Jira analogue of the GitHub project-ids-alone test above, but for a
+    /// browser-OAuth session rather than a token in `.env`: a projects-only save
+    /// (no basic-auth fields in the payload) must be accepted once OAuth is
+    /// connected, even though NONE of the three basic-auth keys are set anywhere.
+    #[test]
+    fn jira_project_keys_alone_are_enough_when_oauth_is_connected() {
+        let missing = missing_required(
+            "jira",
+            &updates(&[("JIRA_PROJECT_KEYS", "KAN,ENG")]),
+            &env_of(&[]),
+            true,
+        );
+        assert!(
+            missing.is_empty(),
+            "an OAuth session must satisfy the requirement for a projects-only save, got {missing:?}"
+        );
+    }
+
+    /// The guard for the above: with no OAuth session AND no basic auth anywhere,
+    /// a projects-only save must still be refused.
+    #[test]
+    fn jira_project_keys_alone_still_fail_with_no_auth_anywhere() {
+        let missing = missing_required(
+            "jira",
+            &updates(&[("JIRA_PROJECT_KEYS", "KAN")]),
+            &env_of(&[]),
+            false,
+        );
+        assert_eq!(
+            missing,
+            vec!["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"]
+        );
+    }
+
+    /// A real (re)connect attempt — the payload includes a basic-auth field —
+    /// must still be validated normally even when a stale OAuth session exists;
+    /// `oauth_connected` only excuses a PURE projects-only submit.
+    #[test]
+    fn jira_basic_auth_submit_is_still_validated_even_when_oauth_connected() {
+        let missing = missing_required(
+            "jira",
+            &updates(&[("JIRA_EMAIL", "a@b.c")]),
+            &env_of(&[]),
+            true,
+        );
+        assert_eq!(missing, vec!["JIRA_BASE_URL", "JIRA_API_TOKEN"]);
     }
 
     /// A provider with no required entry (trello: its app key is baked in for
     /// production builds) is unconstrained.
     #[test]
     fn a_provider_with_no_required_keys_is_unconstrained() {
-        assert!(missing_required("trello", &updates(&[]), &env_of(&[])).is_empty());
+        assert!(missing_required("trello", &updates(&[]), &env_of(&[]), false).is_empty());
+    }
+
+    /// [`parse_jira_projects_page`] pulls id/key/name from `values[]` and passes
+    /// `isLast` through verbatim — this is the pagination termination signal
+    /// [`discover_jira_projects`] loops on.
+    #[test]
+    fn parse_jira_projects_page_reads_values_and_is_last() {
+        let body = serde_json::json!({
+            "values": [
+                {"id": "10001", "key": "KAN", "name": "Kanban Project"},
+                {"id": "10002", "key": "ENG", "name": "Engineering"},
+            ],
+            "isLast": false,
+        });
+        let (projects, is_last) = parse_jira_projects_page(&body);
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[0].key, "KAN");
+        assert_eq!(projects[1].name, "Engineering");
+        assert!(!is_last);
+    }
+
+    /// A body that doesn't match the expected shape (e.g. an unexpected error
+    /// page) must stop pagination rather than looping — `is_last` defaults to
+    /// `true` and no projects are returned.
+    #[test]
+    fn parse_jira_projects_page_fails_safe_on_unparseable_body() {
+        let (projects, is_last) = parse_jira_projects_page(&serde_json::json!({"unexpected": 1}));
+        assert!(projects.is_empty());
+        assert!(is_last);
     }
 
     #[test]

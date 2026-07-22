@@ -109,7 +109,16 @@ pub(crate) async fn run_capture(
     // only ever surfaced in the tray. Falls back to the bare name so a process that
     // does have a working `PATH` behaves exactly as before.
     let resolved = crate::llm::detect::resolve_cli(program).await;
-    let mut cmd = Command::new(resolved.as_deref().unwrap_or_else(|| Path::new(program)));
+    let target = resolved.as_deref().unwrap_or_else(|| Path::new(program));
+    // `claude`, `codex`, etc. install as npm-shimmed `.cmd`/`.bat` files on
+    // Windows, not PE executables. Do NOT hand-wrap these in `cmd.exe /C` —
+    // `Command::new(target)` already detects a `.bat`/`.cmd` target and routes
+    // it through `cmd.exe` internally, with cmd.exe-safe argument escaping
+    // (the fix for the "BatBadBut" class of bugs, GHSA-q455-m56c-85mh). A
+    // manual `cmd.arg("/C").arg(target)` wrapper bypasses that safe escaping —
+    // `args` below can carry session-derived prompt text, so a hand-rolled
+    // wrapper reopens exactly the injection std's built-in handling closes.
+    let mut cmd = Command::new(target);
     cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -11,13 +11,18 @@
 //! ffmpeg/video-encode dependency is pulled, and it's the "we store only text,
 //! never screenshots" privacy property.
 //!
-//! Frames flow over an mpsc channel ([`FrameTx`]) so the consumer can be swapped
-//! without touching the engine: a logger now (slice 2), a `meridian.db` writer
-//! later (slice 4). Mirrors the columns meridian's ETL reads (`src/db/screenpipe.rs`).
+//! Items flow over an mpsc channel ([`FrameTx`] of [`CaptureItem`]) so the
+//! consumer can be swapped without touching the engine: a logger now (slice 2),
+//! a `meridian.db` writer later (slice 4). Mirrors the columns meridian's ETL
+//! reads (`src/db/screenpipe.rs`). Two item shapes travel the same channel:
+//! [`CapturedFrame`] (the per-tick primary window — defines session
+//! boundaries) and [`SecondaryScreenSample`] (OCR text from other connected
+//! monitors — context folded onto whichever session is open, never a
+//! boundary of its own; multi-screen capture).
 //!
 //! # Who calls this
 //! `lib.rs`'s setup hook spawns the engine (behind the `capture` feature) + a
-//! consumer task; the engine sends [`CapturedFrame`]s, the consumer drains them.
+//! consumer task; the engine sends [`CaptureItem`]s, the consumer drains them.
 //!
 //! # Related
 //! - Obsidian `Decisions/Bucket 2 implementation plan - in-process capture.md` — the slice plan.
@@ -73,9 +78,36 @@ pub struct CapturedFrame {
     pub text_source: TextSource,
 }
 
-/// Channel the engine pushes frames onto. A bounded mpsc so a slow consumer
-/// applies backpressure to the capture loop rather than growing unbounded.
-pub type FrameTx = tokio::sync::mpsc::Sender<CapturedFrame>;
+/// One OCR sample from a monitor OTHER than the one holding the
+/// currently-focused window (multi-screen capture). Context, not activity:
+/// it never defines a session boundary on its own — the ETL folds it onto
+/// whichever session is open when the block containing `timestamp` closes
+/// (see `meridian_core::CaptureSecondaryScreenInsert` / migration 068).
+#[derive(Debug, Clone)]
+pub struct SecondaryScreenSample {
+    /// When the sample was captured.
+    pub timestamp: DateTime<Utc>,
+    /// Display name (`SafeMonitor::name()`, falling back to `stable_id()` when empty).
+    pub monitor_name: String,
+    /// Foreground app on that monitor's topmost window, if known.
+    pub app_name: Option<String>,
+    pub window_name: Option<String>,
+    /// OCR text of that window.
+    pub text: String,
+}
+
+/// One item the engine can push: the primary per-tick frame (defines session
+/// boundaries) or a secondary-monitor context sample (never does).
+#[derive(Debug, Clone)]
+pub enum CaptureItem {
+    Frame(CapturedFrame),
+    Secondary(SecondaryScreenSample),
+}
+
+/// Channel the engine pushes captured items onto. A bounded mpsc so a slow
+/// consumer applies backpressure to the capture loop rather than growing
+/// unbounded.
+pub type FrameTx = tokio::sync::mpsc::Sender<CaptureItem>;
 
 /// An in-process capture backend. [`run`](CaptureEngine::run) drives a capture
 /// loop until the process exits, sending each extracted frame on `tx`. Returns

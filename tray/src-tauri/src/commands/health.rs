@@ -84,13 +84,33 @@ async fn check_database() -> (bool, Option<String>) {
         Ok(_) => (true, None),
         Err(_) => (
             false,
-            Some(
-                "Database not found — start the daemon: \
-                 launchctl load ~/Library/LaunchAgents/com.meridiona.daemon.plist"
-                    .to_string(),
-            ),
+            Some(format!(
+                "meridian.db not found - start the daemon: {}",
+                start_daemon_hint()
+            )),
         ),
     }
+}
+
+/// Platform-specific instructions for manually (re-)starting the daemon —
+/// used only in the health banner's "database not found" message, so a user
+/// stuck on a broken autostart has something concrete to try. Must stay in
+/// sync with how each platform's `backend_install::register_service` starts
+/// the daemon at login.
+#[cfg(target_os = "macos")]
+fn start_daemon_hint() -> String {
+    "launchctl load ~/Library/LaunchAgents/com.meridiona.daemon.plist".to_string()
+}
+
+// Windows shares the generic "restart Meridian" hint below rather than
+// naming the "Meridian Daemon" Task Scheduler entry: `register_service`
+// falls back to a Startup-folder launcher (no Task Scheduler entry at all)
+// on machines where policy blocks `schtasks /Create`, so pointing at Task
+// Scheduler wouldn't always apply.
+
+#[cfg(not(target_os = "macos"))]
+fn start_daemon_hint() -> String {
+    "restart Meridian".to_string()
 }
 
 /// Walk the last 200 lines of `~/.meridian/logs/a11y-helper.log` for a trust

@@ -157,6 +157,18 @@ export interface SetStatusResponse {
   new_status: TaskStatusOption | null
 }
 
+// The minimal shape `StatusPicker`/`useTaskStatusChange` need to drive a status
+// change — deliberately narrower than `TaskSummary` so `TaskDetail` (the plan's
+// task-detail dialog) can be passed straight in too, without an adapter. Both
+// `TaskSummary` and `TaskDetail` already carry every one of these fields, so
+// either satisfies this structurally.
+export interface TaskStatusTarget {
+  key: string
+  provider: string
+  status: string
+  is_terminal: boolean
+}
+
 // ── Worklogs (`get_worklogs`) ────────────────────────────────────────────────
 
 export interface WorklogBullet {
@@ -362,6 +374,17 @@ export interface DayTaskWorklogDraft {
   updated_at: string
 }
 
+/** The tray's escalate-command reply (`escalate_personal_task_create` /
+ *  `escalate_personal_task_match`): the real ticket a personal task graduated to,
+ *  plus a browse URL when one can be formed. `created` is true when a brand-new
+ *  ticket was filed (vs matched onto an existing one). */
+export interface EscalateResponse {
+  linked_ticket: string
+  provider: string
+  browse_url: string | null
+  created: boolean
+}
+
 /** One ticket the worklog picker can retarget a draft at (tray
  *  `get_board_tickets`). The open board plus personal tasks (`provider ===
  *  'local'`, filed onto their own row rather than posted) - unlike the matcher's
@@ -457,6 +480,9 @@ export interface IntegrationsResponse {
   // true once GITHUB_PROJECT_IDS is set — github alone only means the OAuth
   // token exists; sync additionally needs at least one selected project.
   github_projects_selected: boolean
+  // true once JIRA_PROJECT_KEYS is set — jira alone means either auth mode is
+  // live; sync additionally needs at least one selected project.
+  jira_projects_selected: boolean
   sync_errors: Partial<Record<string, string>>
 }
 

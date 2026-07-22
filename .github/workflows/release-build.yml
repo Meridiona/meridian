@@ -28,23 +28,23 @@ name: Release (build & publish)
 #   prepare   ubuntu   validate tag == manifest version · create DRAFT release
 #      |
 #      +--> build (macOS aarch64) --+
+#      +--> build (Windows x86_64) -+
 #      |
 #   publish   ubuntu   compose latest.json · verify asset set · draft -> public
 #
-# BOTH CHANNELS ARE APPLE-SILICON-ONLY. Intel (macOS x86_64) and Windows were
-# removed — the same call that made CI macOS-Silicon-only. Silicon is the
-# shipped platform, and a single native aarch64 build is the smallest thing that
-# can fail: no cross-compile, no second notarization chain, no Windows runner.
+# macOS is Apple-Silicon-only (Intel/x86_64 was removed — see the macos job's
+# matrix comment). Windows was ALSO removed at the same time this pipeline was
+# rewritten and has since been restored as its own job below, running in
+# PARALLEL with macOS (not sequentially after it, the way the old monolithic
+# release.yml ran it — that added ~38 minutes of critical path for no reason
+# other than being written before this pipeline had a fan-out shape at all).
 #
-# This DOES drop shipped platforms: production previously published a universal
-# (arm64+x86_64) DMG and a Windows `Meridian-setup.exe` — see v1.74.0. Existing
-# Intel and Windows installs will find no newer release on their updater
-# endpoint and simply stop updating; they are not broken, just frozen.
-# The matrix is still a `matrix.include` fan-out so restoring the other targets
-# is a one-line re-add (see the macos job's matrix comment + the header note in
-# compose-updater-manifest.py). The old pipeline ran Windows SEQUENTIALLY after
-# the entire macOS chain, adding ~38 minutes of critical path; keeping this a
-# flat fan-out means re-adding it never reintroduces that.
+# Production still does not publish a macOS Intel build: existing Intel
+# installs find no newer release on their updater endpoint and simply stop
+# updating; they are not broken, just frozen. Restoring that one is a genuine
+# one-line matrix re-add (see the macos job's matrix comment + the header note
+# in compose-updater-manifest.py) since the Windows restoration below already
+# proves the fan-out shape handles a second platform correctly.
 #
 # ── WHY PER-ARCH macOS INSTEAD OF ONE UNIVERSAL BINARY ───────────────────────
 #
@@ -249,14 +249,15 @@ jobs:
         include:
           - arch: aarch64
             target: aarch64-apple-darwin
-          # STAGING IS APPLE-SILICON-ONLY, FOR NOW. Intel (x86_64-apple-darwin)
-          # and Windows are intentionally not built here — the same decision that
-          # made CI macOS-Silicon-only. Silicon is the shipped platform, and a
-          # native aarch64 build on an Apple-Silicon runner has the smallest
-          # failure surface (no cross-compile, no notarization of a second arch).
-          # To restore Intel: re-add the `x86_64-apple-darwin` include, put back
-          # the `windows` job + `darwin-x86_64`/`windows-x86_64` in the publish
-          # completeness check, and widen REQUIRED in compose-updater-manifest.py.
+          # macOS Intel (x86_64-apple-darwin) is intentionally not built here —
+          # Silicon is the shipped platform, and a native aarch64 build on an
+          # Apple-Silicon runner has the smallest failure surface (no
+          # cross-compile, no notarization of a second arch). To restore it:
+          # re-add the `x86_64-apple-darwin` include, add `darwin-x86_64` to the
+          # publish completeness check, and widen REQUIRED in
+          # compose-updater-manifest.py. (Windows was the other platform
+          # dropped alongside Intel when this pipeline was first written; it
+          # has since been restored as its own parallel `windows` job below.)
     env:
       # Compile-time secrets — every one is baked into the binary by build.rs or
       # option_env!, so a MISSING value produces no error, just a shipped app
@@ -561,10 +562,153 @@ jobs:
           security delete-keychain "${RUNNER_TEMP}/meridian-signing.keychain-db" 2>/dev/null || true
           rm -f "${RUNNER_TEMP}/apple-api-key.p8" "${RUNNER_TEMP}/certificate.p12"
 
+  windows:
+    name: Windows x86_64
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 60 # same cap as macos — bound a hung build instead of falling back to GitHub's 360-minute default
+    permissions:
+      contents: write # uploads assets into the draft
+    env:
+      # Same compile-time constants the macOS job bakes in (see its `env:`
+      # comment) — these are cross-platform values (OAuth client ids, public
+      # analytics keys), not macOS-specific ones, so skipping them here would
+      # silently ship a Windows build with Jira sign-in, GitHub device flow,
+      # analytics, or Clerk sign-in missing. Keep this list in sync with the
+      # macOS job's, minus the Apple-only signing/notarization secrets.
+      MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
+      MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
+      MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+      MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
+      MERIDIAN_CHANNEL: ${{ needs.prepare.outputs.channel }}
+      MERIDIAN_HF_ENDPOINT: https://hf.meridiona.com
+      # The updater's minisign keypair is cross-platform — the SAME key signs
+      # the macOS tarball and the Windows installer, and the pubkey baked into
+      # tauri.conf.json verifies both. Consumed by `createUpdaterArtifacts` at
+      # bundle time, same as on macOS.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    defaults:
+      run:
+        # Every step below is a POSIX script (or invokes one) shared with the
+        # macOS job — `git config --global url.insteadOf`, scripts/*.sh. The
+        # Windows runner image ships Git Bash for exactly this reason; using
+        # it here means these steps do not need a second, PowerShell-flavoured
+        # copy maintained in parallel.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The TAG — same immutable ref every other job in this pipeline
+          # builds from.
+          ref: ${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          # No explicit target: windows-latest's host triple (x86_64-pc-windows-msvc)
+          # is exactly what we ship, so plain `cargo build --release` already
+          # produces it — unlike the macOS job, which cross-arch-targets a
+          # single shared runner.
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Keyed by triple only, same reasoning as the macOS job — one warm
+          # cache shared across every workflow that compiles this target.
+          add-job-id-key: false
+          shared-key: windows-release-x86_64-pc-windows-msvc
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/pre-main' || startsWith(github.ref, 'refs/tags/v') }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            ui/package-lock.json
+            tray/package-lock.json
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      - name: Stamp the version
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: bash scripts/set-version.sh "$VERSION"
+
+      - name: Install UI + tray deps
+        # Same reasoning as the macOS job: the UI must build before the tray
+        # compiles (frontendDist is embedded at compile time by generate_context!),
+        # so it is not hoisted into `prepare` and shared as an artifact.
+        run: |
+          (cd ui && npm ci --no-audit --no-fund)
+          (cd tray && npm ci --no-audit --no-fund)
+
+      - name: Build the daemon + tray (NSIS)
+        working-directory: tray
+        # `tauri.windows.conf.json` swaps the bundle to NSIS and points
+        # bundle.resources at the daemon exe automatically for this target —
+        # no stub step is needed the way the macOS job needs one: the
+        # extensionless `target/release/meridian` resource entry from the base
+        # config is explicitly NULLED OUT by tauri.windows.conf.json, replaced
+        # with `target/release/meridian.exe`, which `cargo build --bin meridian`
+        # already produces at exactly that path with no cross-target copy step.
+        env:
+          # Bound through env rather than interpolated into `run:`, same
+          # reason as VERSION/CHANNEL/TAG elsewhere in this file — `${{ }}`
+          # inside `run:` is the template-injection shape.
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+        run: |
+          if [ "${CHANNEL}" = "staging" ]; then
+            npm run build:windows:staging
+          else
+            npm run build:windows
+          fi
+
+      - name: Package the updater artifacts
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: bash scripts/package-updater-windows.sh "$VERSION"
+
+      - name: Upload this platform's assets into the draft
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          NSIS_DIR: target/release/bundle/nsis
+        # Same name-collision hazard as the macOS job's upload step: only the
+        # stable-named, arch-suffixed copies go up, never the bare
+        # `*-setup.exe` tauri-bundler itself produced (which is versioned, so
+        # it would not collide today, but IS the same pattern package-updater.sh
+        # exists to avoid depending on staying stable across bundler versions).
+        run: |
+          set -euo pipefail
+
+          # Static paths, not globs — package-updater-windows.sh names every
+          # file it produces exactly, so a missing one means that script
+          # didn't run or silently skipped (e.g. no TAURI_SIGNING_PRIVATE_KEY),
+          # not that a glob matched nothing.
+          assets=(
+            "${NSIS_DIR}/Meridian-x86_64-setup.exe"
+            "${NSIS_DIR}/Meridian-x86_64-setup.exe.sig"
+            "${NSIS_DIR}/updater-windows.json"
+          )
+          for a in "${assets[@]}"; do
+            [ -f "$a" ] || { echo "::error::missing expected asset $a — package-updater-windows.sh did not run or did not produce it"; exit 1; }
+            echo "  → $(basename "$a")"
+          done
+
+          gh release upload "${TAG}" --clobber "${assets[@]}"
+
   # ── Stage 3: compose the manifest, verify, publish ──────────────────────────
   publish:
     name: Compose manifest + publish
-    needs: [prepare, macos]
+    needs: [prepare, macos, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -596,7 +740,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p frag && cd frag
-          for f in updater-aarch64-apple-darwin.json; do
+          for f in updater-aarch64-apple-darwin.json updater-windows.json; do
             gh release download "${TAG}" --pattern "$f" --output "$f" --clobber \
               || echo "::warning::fragment $f absent"
           done
@@ -617,7 +761,7 @@ jobs:
           actual="$(gh release view "${TAG}" --json assets --jq '[.assets[].name] | join(" ")')"
           echo "assets: ${actual}"
           missing=""
-          for want in .dmg .app.tar.gz .app.tar.gz.sig; do
+          for want in .dmg .app.tar.gz .app.tar.gz.sig -setup.exe -setup.exe.sig; do
             case " ${actual} " in *"${want}"*) ;; *) missing="${missing} ${want}";; esac
           done
           if [ -n "${missing}" ]; then
@@ -625,12 +769,14 @@ jobs:
             exit 1
           fi
 
-          # Every platform key must be populated — an empty url/signature is how
-          # a partial manifest reaches users looking complete.
+          # Every REQUIRED platform key must be populated — an empty url/signature
+          # is how a partial manifest reaches users looking complete. The
+          # `-nsis` alias is deliberately not checked here — see REQUIRED's
+          # comment in compose-updater-manifest.py.
           python3 - <<'PY'
           import json, sys
           m = json.load(open("latest.json"))
-          need = {"darwin-aarch64"}
+          need = {"darwin-aarch64", "windows-x86_64"}
           missing = [k for k in need if not m["platforms"].get(k, {}).get("url")]
           if missing:
               sys.exit(f"::error::latest.json missing populated keys: {missing}")

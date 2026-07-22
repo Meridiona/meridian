@@ -1,5 +1,5 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-//! Periodic re-checks of the macOS permissions the notification system and
+//! Periodic re-checks of the OS permissions the notification system and
 //! capture pipeline depend on.
 //!
 //! Each of these is checked exactly once during onboarding
@@ -12,6 +12,15 @@
 //! reads `system_notices` independent of the toast channel, so it's the one
 //! notice guaranteed to reach the user even when the thing it's reporting is
 //! "toasts are broken."
+//!
+//! The notification leg is the one check that is genuinely cross-platform:
+//! [`crate::sys::notification_permission_state`] reads a real
+//! `UNUserNotificationCenter` authorization on macOS and a real WinRT
+//! `ToastNotifier::Setting()` on Windows, so this raises `system.notif_permission`
+//! identically on either OS. Accessibility and Screen Recording stay
+//! macOS-only checks in practice — Windows has no TCC analogue, so
+//! [`crate::sys::accessibility_trusted`] / [`crate::sys::screen_recording_trusted`]
+//! report `true` there and their `check_bool_permission` calls never fire.
 //!
 //! # Related
 //! - [`crate::sys::notification_permission_state`] / [`crate::sys::accessibility_trusted`] /
@@ -40,6 +49,7 @@ pub(super) async fn check_permissions(app: &tauri::AppHandle, pool: &SqlitePool)
         "system.capture_permission",
         "Accessibility access is off",
         "Meridian can't see window and app activity without it, so tracking has effectively stopped.",
+        "Open System Settings \u{2192} Privacy & Security to re-grant it.",
         crate::sys::accessibility_trusted(),
     )
     .await;
@@ -49,10 +59,23 @@ pub(super) async fn check_permissions(app: &tauri::AppHandle, pool: &SqlitePool)
         "system.capture_permission",
         "Screen Recording access is off",
         "Meridian can't read on-screen text without it, so tracking has effectively stopped.",
+        "Open System Settings \u{2192} Privacy & Security to re-grant it.",
         crate::sys::screen_recording_trusted(),
     )
     .await;
 }
+
+/// Notifications-specific remedy text — the one `check_bool_permission` caller
+/// that now fires on both platforms. macOS keeps the exact original copy
+/// unchanged (Accessibility/Screen Recording still use the same string
+/// inline); only Windows — new behaviour, nothing to stay compatible with —
+/// gets an OS-accurate string instead of the macOS pane name.
+#[cfg(target_os = "windows")]
+const NOTIFICATION_REMEDY: &str =
+    "Open Settings \u{2192} System \u{2192} Notifications to re-grant it.";
+#[cfg(not(target_os = "windows"))]
+const NOTIFICATION_REMEDY: &str =
+    "Open System Settings \u{2192} Privacy & Security to re-grant it.";
 
 async fn check_notification_permission(app: &tauri::AppHandle, pool: &SqlitePool) {
     let denied = matches!(
@@ -65,6 +88,7 @@ async fn check_notification_permission(app: &tauri::AppHandle, pool: &SqlitePool
         "system.notif_permission",
         "Notifications are off",
         "Meridian can't show reminders or alerts without them.",
+        NOTIFICATION_REMEDY,
         !denied,
     )
     .await;
@@ -80,6 +104,7 @@ async fn check_bool_permission(
     event_key: &str,
     title: &str,
     detail: &str,
+    remedy: &'static str,
     granted: bool,
 ) {
     let result = if granted {
@@ -92,7 +117,7 @@ async fn check_bool_permission(
                 severity: "warning",
                 title,
                 detail,
-                remedy: Some("Open System Settings \u{2192} Privacy & Security to re-grant it."),
+                remedy: Some(remedy),
                 event_key,
                 deep_link: Some("/settings"),
             },
@@ -101,5 +126,35 @@ async fn check_bool_permission(
     };
     if let Err(e) = result {
         tracing::warn!(error = %e, id, "permission notice write failed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NOTIFICATION_REMEDY;
+
+    /// Windows-only behaviour: `system.notif_permission` can now actually
+    /// fire on Windows (see `sys::notification_permission_state`), so its
+    /// remedy needs to point somewhere that exists on Windows — the macOS
+    /// "Privacy & Security" pane name would be actively wrong there.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_remedy_points_to_windows_settings() {
+        assert_eq!(
+            NOTIFICATION_REMEDY,
+            "Open Settings \u{2192} System \u{2192} Notifications to re-grant it."
+        );
+    }
+
+    /// Regression guard for the explicit "don't touch macOS behaviour"
+    /// requirement: this must stay byte-for-byte the string that shipped
+    /// before the Windows notification-permission probe existed.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn non_windows_remedy_is_unchanged_from_the_original_copy() {
+        assert_eq!(
+            NOTIFICATION_REMEDY,
+            "Open System Settings \u{2192} Privacy & Security to re-grant it."
+        );
     }
 }

@@ -70,10 +70,14 @@ from datetime import datetime, timezone
 # defaults to FALSE "for legacy reasons" — meaning MSI wins over NSIS when both
 # are present. We ship NSIS, so we publish both spellings pointing at the same
 # installer and the preference never gets a chance to pick wrong.
-# STAGING IS APPLE-SILICON-ONLY, FOR NOW — see release-build.yml's macos matrix.
-# Restore ("darwin-aarch64", "darwin-x86_64", "windows-x86_64") when Intel and
-# Windows are re-added to the build matrix.
-REQUIRED = ("darwin-aarch64",)
+# macOS Intel is still not built — see release-build.yml's macos matrix
+# comment. Restore "darwin-x86_64" here too if that changes.
+# `windows-x86_64-nsis` is NOT required even though the windows job always
+# emits it alongside `windows-x86_64` (see package-updater-windows.sh): it is
+# a same-payload alias for newer updater-plugin clients, not a distinct
+# platform, so its absence alone must never fail a release the bare key
+# already covers.
+REQUIRED = ("darwin-aarch64", "windows-x86_64")
 
 MINIMUM_RE = re.compile(r"^Minimum-Version:\s*\d+\.\d+\.\d+\s*$", re.MULTILINE)
 

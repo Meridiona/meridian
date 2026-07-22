@@ -92,9 +92,7 @@ struct AccountState {
 }
 
 fn account_path() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(|h| PathBuf::from(h).join(".meridian/account.json"))
+    meridian_core::paths::home_dir().map(|h| h.join(".meridian/account.json"))
 }
 
 /// Persist the signed-in user's email after the setup wizard's sign-in step
@@ -112,7 +110,7 @@ pub async fn save_account_email(email: String) -> Result<(), String> {
     if email.is_empty() || !email.contains('@') {
         return Err("save_account_email: not a valid email address".into());
     }
-    let path = account_path().ok_or("save_account_email: HOME is not set")?;
+    let path = account_path().ok_or("save_account_email: home directory could not be resolved")?;
     // Crash-safe write via the shared helper. It's sync, so run it on the
     // blocking pool rather than stalling the async command's executor thread.
     let state = AccountState {

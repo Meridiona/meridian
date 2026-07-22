@@ -116,11 +116,11 @@ pub fn mark_whats_new_seen(home: &Path, current_version: &str) -> std::io::Resul
 #[tauri::command]
 #[tracing::instrument(skip(app))]
 pub fn mark_whats_new_seen_cmd(app: tauri::AppHandle) {
-    let Ok(home) = std::env::var("HOME") else {
+    let Some(home) = meridian_core::paths::home_dir() else {
         return;
     };
     let current = app.package_info().version.to_string();
-    if let Err(e) = mark_whats_new_seen(Path::new(&home), &current) {
+    if let Err(e) = mark_whats_new_seen(&home, &current) {
         tracing::warn!(error = %e, "whats-new: failed to write last_seen_version");
     }
 }

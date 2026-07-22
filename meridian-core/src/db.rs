@@ -39,6 +39,10 @@ pub struct ActiveSession {
     pub category: String,
     pub confidence: f64,
     pub session_text: Option<String>,
+    /// OCR samples from monitors other than the one this session's app was
+    /// focused on — context, not activity (JSON array, see
+    /// `src/db/screenpipe.rs::SecondaryScreenEvent` on the daemon side).
+    pub secondary_screens: Option<String>,
 }
 
 /// Open an EXISTING meridian.db WITHOUT running migrations or creating the file.
@@ -76,7 +80,7 @@ pub async fn get_active_session(pool: &SqlitePool) -> anyhow::Result<Option<Acti
         SELECT id, app_name, started_at, last_seen_at,
                window_titles, audio_snippets, signals,
                min_frame_id, max_frame_id, frame_count, idle_frame_count,
-               category, confidence, session_text
+               category, confidence, session_text, secondary_screens
         FROM active_session WHERE id = 1
         "#,
     )

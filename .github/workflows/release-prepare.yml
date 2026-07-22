@@ -52,35 +52,36 @@ name: Release (prepare)
 # version cheaply (or read it from the repo), then build from an immutable ref.
 
 on:
-  # AUTO on every push to pre-main. Every merge to the staging branch runs
-  # semantic-release, which cuts a new staging prerelease WHENEVER there are
-  # releasable commits (feat/fix/perf/…) since the last staging tag — and does
-  # nothing when a merge carries only chore/docs/ci commits. That "does it
-  # warrant a release?" decision belongs to semantic-release's commit analysis,
-  # not to us. This is the canonical way semantic-release is meant to run: point
-  # it at the release branch and let it decide.
+  # AUTO only on push to main — that push is the deliberate pre-main → main
+  # release merge, and its whole purpose is to ship a stable version, so it
+  # stays automatic. Stable channel picks up .releaserc.json (committed,
+  # changelog + git plugins) below.
   #
-  # There is intentionally NO commit-message marker gate. The previous design
-  # gated on a `[staging-release]` substring, which backfired: a squash merge
-  # folds every PR commit BODY into the merge message, and this repo's own
-  # workflow comments quote the literal marker — so merging a PR that merely
-  # TOUCHED these files matched the gate and cut an unintended release
-  # (v1.72.0-staging.6, deleted). Running unconditionally on push and letting
-  # semantic-release judge the commits removes that whole class of accident:
-  # there is no fragile string match left to misfire.
+  # Staging is intentionally NOT auto-triggered on push to pre-main anymore.
+  # It used to fire on every merge to pre-main, cutting a new
+  # `vX.Y.Z-staging.N` prerelease per merge whether or not anyone wanted a
+  # staging build right then. That churned through macOS-runner minutes and
+  # notarization budget on every PR merge. Staging is now cut on demand only,
+  # via "Run workflow" (workflow_dispatch) with the branch dropdown set to
+  # `pre-main` — pick that branch in the Actions UI and dispatch.
   #
-  # BOTH CHANNELS. `pre-main` cuts staging prereleases, `main` cuts stable
-  # releases — one pipeline, so the two can never drift from each other. The old
-  # monolithic release.yml that used to own `main` has been deleted; leaving it
-  # in place would double-fire on every push here.
+  # There is intentionally NO commit-message marker gate on either trigger.
+  # The previous design gated staging auto-release on a `[staging-release]`
+  # substring, which backfired: a squash merge folds every PR commit BODY
+  # into the merge message, and this repo's own workflow comments quote the
+  # literal marker — so merging a PR that merely TOUCHED these files matched
+  # the gate and cut an unintended release (v1.72.0-staging.6, deleted).
   #
-  # Which channel a run is depends only on the branch, and it selects the
-  # semantic-release config below. The BUILD does not read this at all — it
-  # derives the channel from the tag it is handed, so there is exactly one
-  # source of truth for "is this stable or staging".
+  # Which channel a run is depends only on the branch it runs against
+  # (`GITHUB_REF_NAME`), and that selects the semantic-release config below.
+  # The BUILD does not read this at all — it derives the channel from the tag
+  # it is handed, so there is exactly one source of truth for "is this stable
+  # or staging".
   push:
-    branches: [pre-main, main]
-  # Kept for on-demand runs and version previews (dry_run) without a merge.
+    branches: [main]
+  # Staging releases are manual-only now: pick `pre-main` in the branch
+  # dropdown and dispatch. Also used for dry-run version previews on any
+  # branch without cutting anything.
   workflow_dispatch:
     inputs:
       dry_run:
@@ -103,10 +104,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # pushes the version-bump commit and the tag
-    # No `if:` gate. The job runs on every push to pre-main (and on manual
-    # dispatch); semantic-release itself decides whether the commits warrant a
-    # release. There is deliberately no commit-message substring match — that is
-    # what previously cut an accidental release (see `on:` above).
+    # No `if:` gate. The job runs on every push to main and on manual dispatch
+    # (e.g. against pre-main for a staging cut); semantic-release itself
+    # decides whether the commits warrant a release. There is deliberately no
+    # commit-message substring match — that is what previously cut an
+    # accidental release (see `on:` above).
     outputs:
       released: ${{ steps.run.outputs.released }}
       version: ${{ steps.run.outputs.version }}
@@ -277,11 +279,18 @@ jobs:
 
       - name: Summary
         if: always()
+        # Bound through env, not interpolated into `run:` — same reason as the
+        # RAW_TAG/VERSION binding elsewhere: a `run:` step is attacker-reachable
+        # via the expression's source, so step outputs go through env rather
+        # than straight into the shell script.
+        env:
+          RELEASED: ${{ steps.run.outputs.released }}
+          TAG: ${{ steps.run.outputs.tag }}
         run: |
           {
             echo "### Release prepare"
-            if [ "${{ steps.run.outputs.released }}" = "true" ]; then
-              echo "Tagged \`${{ steps.run.outputs.tag }}\`."
+            if [ "${RELEASED}" = "true" ]; then
+              echo "Tagged \`${TAG}\`."
               echo ""
               echo "\`release-build.yml\` builds and publishes it."
             else

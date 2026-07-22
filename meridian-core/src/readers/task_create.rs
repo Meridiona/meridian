@@ -237,7 +237,8 @@ pub async fn update_task_text(
 
 /// Mark a personal task done / not-done. The tracker equivalent is
 /// `ticket_update`'s `close`/`reopen`; same `provider = 'local'` scoping rationale as
-/// [`update_task_text`].
+/// [`update_task_text`]. A thin wrapper over [`set_local_status`] for the two callers
+/// (the plan checkbox, `src/plan_tasks/done.rs`) that only ever mean "done" or "To Do".
 #[tracing::instrument(skip(pool))]
 pub async fn set_local_terminal(
     pool: &SqlitePool,
@@ -245,12 +246,102 @@ pub async fn set_local_terminal(
     done: bool,
     now: &str,
 ) -> Result<bool> {
+    set_local_status(
+        pool,
+        task_key,
+        if done { "Done" } else { "To Do" },
+        done,
+        now,
+    )
+    .await
+}
+
+/// One status a personal task can be moved to. Unlike a real tracker, there is no
+/// workflow to ask — a personal task always offers exactly this fixed three-status
+/// lifecycle (todo/in_progress/done), mirroring the canonical categories a tracker's
+/// own statuses are normalised into (see `src/intelligence/ticket_update/statuses.rs`'s
+/// `StatusOption`) so the UI's `StatusPicker` treats a personal task identically to a
+/// tracker one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LocalStatusOption {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub category: &'static str,
+}
+
+/// The personal-task lifecycle, in display order. `id` doubles as the wire value the
+/// UI's `StatusPicker` sends back on a pick — there is no separate tracker-assigned id
+/// to preserve, unlike Jira's transition ids.
+pub const LOCAL_STATUSES: &[LocalStatusOption] = &[
+    LocalStatusOption {
+        id: "todo",
+        name: "To Do",
+        category: "todo",
+    },
+    LocalStatusOption {
+        id: "in_progress",
+        name: "In Progress",
+        category: "in_progress",
+    },
+    LocalStatusOption {
+        id: "done",
+        name: "Done",
+        category: "done",
+    },
+];
+
+/// Resolve a chosen status against [`LOCAL_STATUSES`]: an exact id match wins, else a
+/// case-insensitive name match — the same id-or-name contract
+/// `ticket_update::statuses::resolve_choice` uses for a real tracker, which is what
+/// lets the UI's Undo pass back the previous status's NAME uniformly for either kind
+/// of task.
+pub fn resolve_local_status(choice: &str) -> Option<&'static LocalStatusOption> {
+    LOCAL_STATUSES
+        .iter()
+        .find(|o| o.id.eq_ignore_ascii_case(choice))
+        .or_else(|| {
+            LOCAL_STATUSES
+                .iter()
+                .find(|o| o.name.eq_ignore_ascii_case(choice))
+        })
+}
+
+/// A personal task's current `(status_raw, is_terminal)`, or `None` if `task_key`
+/// isn't a personal task (unknown key, or owned by a real tracker).
+#[tracing::instrument(skip(pool))]
+pub async fn local_task_current(
+    pool: &SqlitePool,
+    task_key: &str,
+) -> Result<Option<(String, bool)>> {
+    let row: Option<(String, i64)> = sqlx::query_as(
+        "SELECT status_raw, is_terminal FROM pm_tasks WHERE task_key = ? AND provider = ?",
+    )
+    .bind(task_key)
+    .bind(LOCAL_PROVIDER)
+    .fetch_optional(pool)
+    .await
+    .context("reading the personal task's current status")?;
+    Ok(row.map(|(status, terminal)| (status, terminal != 0)))
+}
+
+/// Move a personal task to `status_name` (one of [`LOCAL_STATUSES`]'s display names),
+/// with `is_terminal` set from that status's category — the same two columns
+/// [`set_local_terminal`] used to write directly, now shared with the richer
+/// todo/in_progress/done picker.
+#[tracing::instrument(skip(pool))]
+pub async fn set_local_status(
+    pool: &SqlitePool,
+    task_key: &str,
+    status_name: &str,
+    is_terminal: bool,
+    now: &str,
+) -> Result<bool> {
     let res = sqlx::query(
         "UPDATE pm_tasks SET is_terminal = ?, status_raw = ?, updated_at = ? \
          WHERE task_key = ? AND provider = ?",
     )
-    .bind(i64::from(done))
-    .bind(if done { "Done" } else { "To Do" })
+    .bind(i64::from(is_terminal))
+    .bind(status_name)
     .bind(now)
     .bind(task_key)
     .bind(LOCAL_PROVIDER)
