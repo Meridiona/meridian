@@ -14,7 +14,7 @@
 //   - Azure DevOps   → `discover_azure_devops` (PAT → org → project) then
 //                      `save_integration_token`.
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { load, mutate, openExternal } from '@/lib/bridge'
 import type { IntegrationsResponse, TaskSummary, TasksResponse } from '@/lib/api-types'
 import { TRACKERS } from '@/lib/integrations'
@@ -187,12 +187,17 @@ function ProviderTasks({ tracker, expanded, onToggle, onSynced }: {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
   const [syncError, setSyncError] = useState<string | null>(null)
+  // The lazy load (on expand) and the sync-triggered reload can overlap — a
+  // fetch generation counter so a slower, older response can never overwrite
+  // a fresher one that already landed.
+  const fetchGen = useRef(0)
 
   const fetchTasks = () => {
+    const gen = ++fetchGen.current
     setLoadError(null)
     load<TasksResponse>('/api/tasks', 'get_tasks')
-      .then((d) => setTasks(d.tasks.filter((t) => t.provider === tracker.id)))
-      .catch((e) => setLoadError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not load tasks'))
+      .then((d) => { if (gen === fetchGen.current) setTasks(d.tasks.filter((t) => t.provider === tracker.id)) })
+      .catch((e) => { if (gen === fetchGen.current) setLoadError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not load tasks') })
   }
 
   // Load lazily — only once the user opens the list, and only the first time.
