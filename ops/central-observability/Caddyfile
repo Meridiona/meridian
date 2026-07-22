@@ -1,0 +1,19 @@
+# Caddy — TLS termination + reverse proxy for the central stack. Caddy
+# auto-provisions and renews Let's Encrypt certificates for these domains, so
+# installs get an HTTPS endpoint with no manual cert wrangling.
+#
+# The domains come from the environment (docker-compose passes GATEWAY_DOMAIN /
+# OO_UI_DOMAIN). DNS A-records for both must point at this VM before first boot,
+# or the ACME challenge fails.
+
+# Public ingest endpoint installs ship to. The OTLP paths (/v1/logs,
+# /v1/traces) are served by the collector's OTLP HTTP receiver on :4318.
+{$GATEWAY_DOMAIN} {
+	reverse_proxy otel-collector:4318
+}
+
+# OpenObserve web UI, on its own subdomain. This is where the team reads the
+# error logs/dashboards. OpenObserve does its own login (the ZO_ROOT creds).
+{$OO_UI_DOMAIN} {
+	reverse_proxy openobserve:5080
+}
