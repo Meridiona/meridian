@@ -15,11 +15,11 @@
 //                      `save_integration_token`.
 
 import { useEffect, useState, type ReactNode } from 'react'
-import { mutate, openExternal } from '@/lib/bridge'
-import type { IntegrationsResponse } from '@/lib/api-types'
+import { load, mutate, openExternal } from '@/lib/bridge'
+import type { IntegrationsResponse, TaskSummary, TasksResponse } from '@/lib/api-types'
 import { TRACKERS } from '@/lib/integrations'
 import type { Tracker, TokenField } from '@/lib/integrations'
-import { ProviderGlyph } from '@/components/atoms'
+import { ProviderGlyph, fmtDur } from '@/components/atoms'
 import {
   useConnectStore, clearProviderNotice,
   oauthStore, startOAuth, cancelOAuth, setOAuthApiKey, resetOAuthIfSettled,
@@ -114,6 +114,7 @@ function ConnectedPanel({
 }) {
   const [reauthorizing, setReauthorizing] = useState(false)
   const [pickingProjects, setPickingProjects] = useState(false)
+  const [showTasks, setShowTasks] = useState(false)
   const cleanError = syncError ? syncError.replace(/^permission_error: |^sync_error: /, '') : null
   // GitHub's token alone doesn't sync anything — a Projects v2 board must be
   // selected too (discover_github_projects → save_integration_token). This is
@@ -158,7 +159,8 @@ function ConnectedPanel({
         </div>
       ) : (
         <>
-          <p className="text-[12px] leading-relaxed mb-3" style={{ color: 'var(--t-faint)' }}>
+          <ProviderTasks tracker={tracker} expanded={showTasks} onToggle={() => setShowTasks((s) => !s)} onSynced={onChanged} />
+          <p className="text-[12px] leading-relaxed mb-3 mt-4" style={{ color: 'var(--t-faint)' }}>
             Disconnect removes the stored credentials. The daemon reloads automatically.
           </p>
           <button onClick={onDisconnect} disabled={disconnecting} className="text-[12px] px-3 py-1.5 rounded-md transition-opacity"
@@ -166,6 +168,106 @@ function ConnectedPanel({
             {disconnecting ? 'Disconnecting…' : `Disconnect ${tracker.name}`}
           </button>
         </>
+      )}
+    </div>
+  )
+}
+
+// ── View tasks + sync (per connected tracker) ────────────────────────────────
+// The "Task list" surface, folded into the tracker card. "View tasks" loads the
+// board via `get_tasks` and filters to THIS provider (TaskSummary.provider ===
+// tracker.id); "Sync now" runs `sync_tasks` (= `meridian tasks-sync`, all
+// providers — there is no per-provider sync command) then reloads the list and
+// the parent integrations state. Both tray commands already back the old
+// TasksPanel, so this reuses the exact data path.
+function ProviderTasks({ tracker, expanded, onToggle, onSynced }: {
+  tracker: Tracker; expanded: boolean; onToggle: () => void; onSynced?: () => void
+}) {
+  const [tasks, setTasks] = useState<TaskSummary[] | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [syncing, setSyncing] = useState(false)
+  const [syncError, setSyncError] = useState<string | null>(null)
+
+  const fetchTasks = () => {
+    setLoadError(null)
+    load<TasksResponse>('/api/tasks', 'get_tasks')
+      .then((d) => setTasks(d.tasks.filter((t) => t.provider === tracker.id)))
+      .catch((e) => setLoadError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not load tasks'))
+  }
+
+  // Load lazily — only once the user opens the list, and only the first time.
+  useEffect(() => { if (expanded && tasks === null && loadError === null) fetchTasks() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [expanded])
+
+  const handleSync = () => {
+    if (syncing) return
+    setSyncing(true); setSyncError(null)
+    mutate('/api/tasks/sync', 'sync_tasks', {})
+      .then(() => { fetchTasks(); onSynced?.() })
+      .catch((e) => setSyncError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Sync failed'))
+      .finally(() => setSyncing(false))
+  }
+
+  // Active (on-board) tasks first, then by time-touched-today — mirrors the board.
+  const sorted = tasks ? [...tasks].sort((a, b) => Number(b.on_board) - Number(a.on_board) || b.today_s - a.today_s) : null
+  const activeCount = tasks?.filter((t) => t.on_board).length ?? 0
+
+  return (
+    <div className="mb-1">
+      <div className="flex items-center gap-2">
+        <button onClick={onToggle}
+          className="text-[12px] px-3 py-1.5 rounded-md inline-flex items-center gap-1.5"
+          style={{ background: 'var(--t-ctrl, var(--t-card))', border: '1px solid var(--t-ctrl-border, var(--t-hair))', color: 'var(--t-muted)', cursor: 'pointer' }}>
+          <span className="inline-block transition-transform" style={{ transform: expanded ? 'rotate(90deg)' : 'none', color: 'var(--t-faint-2)' }}>›</span>
+          {expanded ? 'Hide tasks' : 'View tasks'}
+          {expanded && tasks !== null && (
+            <span className="text-[11px]" style={{ color: 'var(--t-faint-2)' }}>({activeCount})</span>
+          )}
+        </button>
+        <button onClick={handleSync} disabled={syncing}
+          className="text-[12px] px-3 py-1.5 rounded-md inline-flex items-center gap-1.5"
+          style={{ background: 'var(--color-state-proposal)', color: '#fff', border: 'none', opacity: syncing ? 0.6 : 1, cursor: syncing ? 'not-allowed' : 'pointer' }}
+          title="Pull the latest tasks from your trackers">
+          <span style={{ display: 'inline-block', animation: syncing ? 'spin 1s linear infinite' : 'none' }}>↻</span>
+          {syncing ? 'Syncing…' : 'Sync now'}
+        </button>
+      </div>
+
+      {syncError && <p className="text-[11px] mt-2" style={{ color: 'var(--status-error-dot)' }}>{syncError}</p>}
+
+      {expanded && (
+        <div className="mt-3 rounded-lg overflow-hidden" style={{ border: '1px solid var(--t-hair)', background: 'var(--t-card)' }}>
+          {loadError ? (
+            <div className="px-3 py-3">
+              <p className="text-[12px]" style={{ color: 'var(--status-error-dot)' }}>{loadError}</p>
+              <button onClick={fetchTasks} className="text-[11px] mt-2" style={{ color: 'var(--color-state-proposal)', cursor: 'pointer' }}>Retry</button>
+            </div>
+          ) : sorted === null ? (
+            <p className="text-[12px] px-3 py-3" style={{ color: 'var(--t-faint)' }}>Loading tasks…</p>
+          ) : sorted.length === 0 ? (
+            <p className="text-[12px] px-3 py-3 leading-relaxed" style={{ color: 'var(--t-muted)' }}>
+              No tasks assigned to you on {tracker.name}. Make sure issues are assigned to your account, then hit Sync now.
+            </p>
+          ) : (
+            <div className="max-h-64 overflow-y-auto">
+              {sorted.map((t, i) => (
+                <div key={t.key} className="flex items-center gap-2.5 px-3 py-2"
+                  style={{ borderTop: i > 0 ? '1px solid var(--t-hair)' : undefined, opacity: t.on_board ? 1 : 0.55 }}>
+                  <a href={t.url} onClick={(e) => { e.preventDefault(); if (t.url) openExternal(t.url) }}
+                    className="text-[11px] font-mono px-1.5 py-0.5 rounded shrink-0"
+                    style={{ background: 'var(--t-box)', color: 'var(--color-state-proposal)', cursor: t.url ? 'pointer' : 'default' }}
+                    title={t.url ? `Open ${t.key} ↗` : t.key}>
+                    {t.key}
+                  </a>
+                  <span className="text-[12px] truncate flex-1" style={{ color: 'var(--t-title)' }}>{t.title}</span>
+                  {!t.on_board && <span className="text-[10px] shrink-0" style={{ color: 'var(--t-faint-2)' }}>done</span>}
+                  <span className="text-[11px] font-mono shrink-0" style={{ color: t.today_s > 0 ? 'var(--t-muted)' : 'var(--t-faint-2)' }}>
+                    {t.today_s > 0 ? fmtDur(t.today_s) : '—'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
     </div>
   )
