@@ -13,9 +13,9 @@
 //!   everything.
 //! - **Canonical (packaged) install** (`~/.meridian/bin/meridian`): ships a
 //!   REDACTED, ERROR-ONLY stream to Meridian's central ingest gateway, Bearer
-//!   write-token auth, gated on the user's explicit `error_reporting_consent`.
-//!   The endpoint + token are release-baked constants (never user settings);
-//!   the shipper runs [`crate::telemetry_spool::redact`] before POSTing.
+//!   write-token auth, gated on `error_reporting_enabled` (opt-out, on by
+//!   default). The endpoint + token are release-baked constants (never user
+//!   settings); the shipper runs [`crate::telemetry_spool::redact`] before POSTing.
 //!
 //! # Who calls this
 //! - `telemetry_spool::shipper::run_tick()` — `resolve_otlp_target()` each
@@ -180,14 +180,15 @@ pub fn resolve_otlp_target() -> Option<OtlpTarget> {
 }
 
 /// Packaged-install path: ship a redacted, error-only stream to the central
-/// gateway, but ONLY with explicit user consent and only when the release-baked
-/// endpoint + token are present.
+/// gateway, but ONLY while error reporting is enabled (opt-out, on by default)
+/// and only when the release-baked endpoint + token are present.
 fn resolve_central_target(
     settings: &meridian_core::settings::RuntimeSettings,
 ) -> Option<OtlpTarget> {
-    // The sole gate for central shipping. Absent consent → nothing leaves the
-    // machine (capture-to-spool + `meridian logs` continue unaffected).
-    if !settings.error_reporting_consent {
+    // The sole gate for central shipping. If the user turned error reporting off
+    // → nothing leaves the machine (capture-to-spool + `meridian logs` continue
+    // unaffected).
+    if !settings.error_reporting_enabled {
         return None;
     }
 

@@ -72,10 +72,10 @@ export function AdvancedSection({ settings, setSettings, patch, save }: {
         {exportStatus === 'error' && (
           <span className="text-[12px]" style={{ color: 'var(--color-state-pending)' }}>{exportError ?? 'Export failed'}</span>
         )}
-        <FieldRow label="Share Error Reports" description="Send error-level logs to the Meridian team to help fix crashes and bugs. Off by default. File paths, URLs, emails, and captured content are removed on your device before anything is sent - your screen activity, OCR text, and window titles are never included.">
-          <Switch checked={settings.error_reporting_consent} onCheckedChange={v => patch({ error_reporting_consent: v })} />
+        <FieldRow label="Error Reporting" description="Meridian sends error-level logs to the team to help fix crashes and bugs. File paths, URLs, emails, and captured content are removed on your device first - your screen activity, OCR text, and window titles are never sent. On by default; turn it off here any time.">
+          <Switch checked={settings.error_reporting_enabled} onCheckedChange={v => patch({ error_reporting_enabled: v })} />
         </FieldRow>
-        <SaveButton status={errorReportingStatus} onClick={() => save({ error_reporting_consent: settings.error_reporting_consent }, setErrorReportingStatus)} />
+        <SaveButton status={errorReportingStatus} onClick={() => save({ error_reporting_enabled: settings.error_reporting_enabled }, setErrorReportingStatus)} />
       </SectionCard>
 
       <SectionCard>
