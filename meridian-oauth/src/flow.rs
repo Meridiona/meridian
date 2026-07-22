@@ -355,20 +355,29 @@ else{document.querySelector('h2').textContent='No token in URL. Try again.';}\
 /// is always logged too, so a failed/headless launch still leaves the user a
 /// way to continue by pasting it manually.
 ///
-/// Windows launches via `explorer.exe`, not `cmd /C start`: the authorize URLs
-/// passed here always carry `&`-separated query params (client_id, redirect_uri,
-/// state, scope), and `cmd.exe` re-parses its whole command line for shell
-/// metacharacters like `&` regardless of Win32 argv quoting — it would split the
-/// URL at the first `&` and try to run the tail as a second command, truncating
-/// the authorize URL. `explorer.exe` takes the URL as a literal argument handed
-/// straight to the registered protocol handler, with no shell re-parsing.
+/// Windows launches via `rundll32.exe url.dll,FileProtocolHandler`, not
+/// `cmd /C start` or `explorer.exe`. The authorize URLs passed here always carry
+/// `&`-separated query params (client_id, redirect_uri, state, scope), and
+/// `cmd.exe` re-parses its whole command line for shell metacharacters like `&`
+/// regardless of Win32 argv quoting — it would split the URL at the first `&` and
+/// run the tail as a second command. `explorer.exe` avoids that shell re-parsing
+/// but is unreliable for these long OAuth URLs: when it fails to parse the
+/// argument as a URL it silently falls back to opening a file window (the user's
+/// Documents folder) instead of the browser. `rundll32.exe
+/// url.dll,FileProtocolHandler` hands the URL straight to the registered protocol
+/// handler (ShellExecute "open") as a single literal argv argument — no shell
+/// re-parsing — and reliably opens the default browser with the full query string
+/// intact.
 fn open_browser(url: &str) {
     tracing::info!(
         url,
         "if it doesn't open automatically, open this URL yourself"
     );
     #[cfg(target_os = "windows")]
-    let result = std::process::Command::new("explorer").arg(url).spawn();
+    let result = std::process::Command::new("rundll32")
+        .arg("url.dll,FileProtocolHandler")
+        .arg(url)
+        .spawn();
     #[cfg(target_os = "macos")]
     let result = std::process::Command::new("open").arg(url).spawn();
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
