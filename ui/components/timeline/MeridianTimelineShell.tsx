@@ -22,7 +22,10 @@ import type { DayTaskDetail } from './DayTaskDetailPanel'
 import { RightPanel } from './RightPanel'
 import { FloatingDraftsPill } from './FloatingDraftsPill'
 import { ReviewModal } from './ReviewModal'
-import { CleanupModal } from './CleanupModal'
+// Board Cleanup temporarily disabled (not deleted) — re-enable by uncommenting
+// this import alongside the `'cleanup'` modal-render branch below and
+// OverviewPanel.tsx's CTA.
+// import { CleanupModal } from './CleanupModal'
 import { SettingsModal } from './SettingsModal'
 import { PlanModal } from './PlanModal'
 import { TasksModal } from './TasksModal'

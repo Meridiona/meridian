@@ -34,7 +34,9 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
   onOpenTask: (key: string, title?: string, editable?: boolean) => void
   onOpenSettings: (section?: SettingsSection) => void
 }) {
-  const { today, isSolo, items, cleanupIssueCount, isToday, day } = data
+  // `cleanupIssueCount` is still on `data` (computed in useTimelineData) for when
+  // the Board Cleanup CTA below re-enables; not destructured while it's disabled.
+  const { today, isSolo, items, isToday, day } = data
   const dayLabel = isToday ? 'Today' : formatDayLabel(day)
   // "Today's focus" only reads right on today; a past date shows that day's plan
   // under a neutral "Focus" heading (the day itself is already named above).

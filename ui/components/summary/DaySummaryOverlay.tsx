@@ -135,7 +135,6 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<DayTaskDetail | null>(null)
-  const [hovered, setHovered] = useState<number | null>(null)
   // The end-of-day time the user chose, if any — drives the pre-compose copy that
   // tells them when this builds itself. `null` = no time set (never scheduled).
   const [autoTime, setAutoTime] = useState<string | null>(null)
@@ -151,33 +150,57 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
   // user paging through the week cannot spend an LLM call per arrow press.
   const refreshed = useRef<Set<string>>(new Set())
 
+  // The day currently on screen, mirrored into a ref so an in-flight compose can
+  // tell whether the user navigated away before it resolved (and must not clobber
+  // the new day's state - see `generate`/`generateNow`).
+  const dayRef = useRef(day)
+  useEffect(() => { dayRef.current = day }, [day])
+
+  // A re-entry guard shared by both compose paths: a fast double-click (or a
+  // Regenerate + Generate-now overlap) must not fire two concurrent LLM calls. A
+  // ref rather than the `generating` state so the check sees the latest value
+  // synchronously, before React has re-rendered.
+  const composing = useRef(false)
+
   // Escape closes, as it does on every other overlay here (ModalShell's own
-  // convention). It was missing while this screen was a full-bleed takeover, and
-  // a card over a backdrop makes its absence obvious.
+  // convention). When the nested ticket-detail dialog is open, Escape backs out of
+  // THAT first (it has no Escape handling of its own) rather than closing the whole
+  // summary from under it.
   useEffect(() => {
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return
+      if (selected) { setSelected(null); return }
+      onClose()
+    }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onClose, selected])
 
   // Recompose the prose only (Regenerate on an existing summary, and the quiet
   // staleness refresh). The deterministic ledger binds to whatever worklogs are
   // already drafted — it does not draft new ones.
   const generate = useCallback(async () => {
+    if (composing.current) return
+    composing.current = true
     setGenerating(true)
     setError(null)
     try {
       const s = await invoke<DaySummary>('generate_day_summary', { day })
+      // The user may have paged to another day while this ran - a late response
+      // must not overwrite the day now on screen with the old day's content.
+      if (dayRef.current !== day) return
       setSummary(s)
       // Re-read the live figures alongside: a regenerate can be minutes after the
       // last fold, and the deterministic half must bind to what is true now.
-      await load<DaySummaryData>(API, 'get_day_summary_data', { day })
-        .then(setData)
-        .catch(() => {})
+      const d = await load<DaySummaryData>(API, 'get_day_summary_data', { day }).catch(() => null)
+      if (dayRef.current !== day) return
+      if (d) setData(d)
     } catch (e) {
+      if (dayRef.current !== day) return
       setError(e instanceof Error ? e.message : typeof e === 'string' ? e : 'Could not compose the summary')
     } finally {
-      setGenerating(false)
+      composing.current = false
+      if (dayRef.current === day) setGenerating(false)
     }
   }, [day])
 
@@ -185,18 +208,23 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
   // day's worklogs FIRST, then compose over the fresh matches. Slow (a worklog is
   // one LLM call per qualifying task), so the Composing state covers the wait.
   const generateNow = useCallback(async () => {
+    if (composing.current) return
+    composing.current = true
     setGenerating(true)
     setError(null)
     try {
       const s = await invoke<DaySummary>('generate_day_summary_now', { day })
+      if (dayRef.current !== day) return
       setSummary(s)
-      await load<DaySummaryData>(API, 'get_day_summary_data', { day })
-        .then(setData)
-        .catch(() => {})
+      const d = await load<DaySummaryData>(API, 'get_day_summary_data', { day }).catch(() => null)
+      if (dayRef.current !== day) return
+      if (d) setData(d)
     } catch (e) {
+      if (dayRef.current !== day) return
       setError(e instanceof Error ? e.message : typeof e === 'string' ? e : 'Could not generate the summary')
     } finally {
-      setGenerating(false)
+      composing.current = false
+      if (dayRef.current === day) setGenerating(false)
     }
   }, [day])
 
@@ -206,7 +234,6 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
     let cancelled = false
     setLoading(true)
     setSelected(null)
-    setHovered(null)
     setError(null)
     Promise.allSettled([
       load<DaySummary | null>(API, 'get_day_summary', { day }),
@@ -236,9 +263,14 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
   const dayLabel = isToday ? 'Today' : formatDayLabel(day)
   const hasWork = tasks.length > 0
   const sc = data?.scalars
-  // The plan branch comes from the LIVE scalars rather than the stored summary, so
-  // a day planned after its summary was composed still gets the right screen.
-  const planned = (sc?.planned ?? false) && (summary?.plan.length ?? 0) > 0
+  // The plan branch comes SOLELY from the LIVE scalars, not the stored summary, so
+  // a day planned after its summary was composed still gets the plan screen rather
+  // than being routed to the no-plan layout. The ledger the ring/checklist read
+  // (`summary.plan`) may lag until the next compose; a plan screen with a not-yet-
+  // recomposed ledger is the right screen, whereas the no-plan screen is the wrong
+  // one. (ANDing in `summary.plan.length` here was the bug: it flipped a genuinely
+  // planned day to the no-plan layout whenever the plan post-dated the summary.)
+  const planned = sc?.planned ?? false
 
   // Every tracked minute, sub-floor detours included: this is the "where did the day
   // go" figure, and rounding the short stretches out of it would make it disagree

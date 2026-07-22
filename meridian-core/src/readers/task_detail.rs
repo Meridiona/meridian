@@ -36,12 +36,14 @@ pub struct TaskDetail {
     pub start_date: Option<String>,
     pub description: String,
     pub acceptance_criteria: Option<String>,
-    /// The worklog update Meridian auto-logged onto this personal task the last
-    /// time its day-work matched here. Only ever set for `provider = 'local'`
-    /// tasks (a real ticket's updates live as comments on the tracker, not on the
-    /// row); `None` when nothing has been logged yet. This is what the task dialog
-    /// shows so the user can read the auto-posted update - and decide whether to
-    /// escalate it onto a real tracker.
+    /// The worklog update Meridian auto-logged onto this task's own row the last
+    /// time its day-work matched here. Set for `provider = 'local'` tasks (a real
+    /// ticket's updates live as comments on the tracker, not on the row) - AND
+    /// carried onto a real ticket's row when a personal task ESCALATES onto it
+    /// (`escalate::graduate_local_task`), so the update stays visible after the
+    /// task graduates. `None` when nothing has been logged. This is what the task
+    /// dialog shows so the user can read the auto-posted update - and, while still
+    /// personal, decide whether to escalate it onto a real tracker.
     pub local_worklog_text: Option<String>,
     /// When [`Self::local_worklog_text`] was last written (RFC3339), or `None`.
     pub local_worklog_posted_at: Option<String>,

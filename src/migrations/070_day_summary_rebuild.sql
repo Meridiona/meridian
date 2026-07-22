@@ -15,13 +15,18 @@
 -- row now also carries:
 --
 --   headline        one warm line above everything.
---   plan_json       one verdict per PLANNED ticket - done / partial / not_touched,
---                   with the evidence for it and the measured minutes.
---   adherence_json  the arithmetic: planned, done, partial, not_touched, the
---                   percentage, and the minutes of substantial work no planned
+--   plan_json       one verdict per PLANNED ticket - done or not_touched. The
+--                   outcome is BINARY: a ticket the day's work touched is done,
+--                   otherwise not_touched. (`partial` is retained in the wire enum
+--                   for back-compat but is never emitted.) Carries the evidence for
+--                   the verdict and the measured minutes.
+--   adherence_json  the arithmetic: planned, done, partial (always 0), not_touched,
+--                   the percentage, and the minutes of substantial work no planned
 --                   ticket accounts for.
---   themes_json     for a day with NO plan: what it turned out to be about,
---                   grouped by the model, pointing at real day_task ids.
+--   themes_json     UNUSED for now - kept only for wire back-compat. The generator
+--                   writes `[]` unconditionally and the LLM schema offers the model
+--                   no themes field, so nothing populates it. (It was intended to
+--                   hold, for a no-plan day, what the day turned out to be about.)
 --   evidence_at     the newest tracked activity the summary was composed from, so
 --                   reopening it hours later can tell the day has moved on and
 --                   quietly recompose rather than showing a summary of a morning.
@@ -37,7 +42,7 @@
 --
 -- INSIGHTS CHANGED SHAPE
 --
--- `insights_json` held bare strings; it now holds `{text, learned}` objects.
+-- `insights_json` held bare strings; it now holds `{title, text}` objects.
 -- Deliberately NOT migrated: the reader decodes tolerantly and an old row degrades
 -- to an empty insight list, which the next generate replaces. Rewriting historical
 -- prose into a shape the model never wrote it in would be inventing data, and a

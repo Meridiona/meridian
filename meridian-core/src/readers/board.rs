@@ -175,7 +175,7 @@ pub async fn provider_for_key(pool: &SqlitePool, task_key: &str) -> Result<Optio
     // provider from the plan snapshot so its worklog still resolves. Any error
     // (pre-044 DB with no task_snapshot column, no JSON1) degrades to None, the
     // same answer this fn gave before the fallback existed.
-    let snap: Option<(Option<String>,)> = sqlx::query_as(
+    let snap: Option<(Option<String>,)> = match sqlx::query_as(
         "SELECT json_extract(task_snapshot, '$.provider') \
          FROM daily_plan \
          WHERE task_key = ? AND task_snapshot IS NOT NULL \
@@ -185,8 +185,18 @@ pub async fn provider_for_key(pool: &SqlitePool, task_key: &str) -> Result<Optio
     .fetch_optional(pool)
     .instrument(tracing::debug_span!("board.read.provider_for_key.snapshot"))
     .await
-    .ok()
-    .flatten();
+    {
+        Ok(row) => row,
+        // Degrade to None (the answer this fn gave before the fallback existed),
+        // but say so at the failure boundary rather than swallowing it silently: a
+        // snapshot query that starts failing (pre-044 DB with no task_snapshot
+        // column, no JSON1) would otherwise strand every off-board worklog's
+        // provider with nothing in the logs pointing at why.
+        Err(e) => {
+            tracing::warn!(task_key, error = %e, "board: plan-snapshot provider fallback failed - resolving to None");
+            None
+        }
+    };
     Ok(snap.and_then(|(p,)| p))
 }
 

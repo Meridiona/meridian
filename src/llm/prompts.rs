@@ -239,10 +239,12 @@ pub fn plan_task_draft_schema() -> Value {
 
 /// The daily-summary prompt — the end-of-day review. Takes a day's evidence
 /// (workstreams and their log lines, time by app/category, the hourly shape, the
-/// hour reports as prose, and the day's committed plan) and returns a headline, a
-/// narrative, a few insight lines, and either a verdict per planned ticket or a
-/// grouping of what an unplanned day turned out to be about. Same
-/// one-prompt-all-providers rule.
+/// hour reports as prose, and the day's committed plan with its ALREADY-COMPUTED
+/// outcome) and returns a headline plus two-to-three free-text insight cards, and
+/// nothing else. It does NOT judge the plan or return per-ticket verdicts — which
+/// tickets got done is a database fact computed in Rust and handed to the model as
+/// given (see [`daily_summary_schema`]). The old narrative and the model-authored
+/// Vega-Lite panels were removed in the rebuild. Same one-prompt-all-providers rule.
 ///
 /// The daily plan used to be deliberately withheld, on the grounds that mixing
 /// intent into a review turns it into a scorecard. That was right about the risk

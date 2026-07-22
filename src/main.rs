@@ -453,10 +453,12 @@ async fn main() -> Result<()> {
 
     // `meridian day-summary --day YYYY-MM-DD` — compose the day's summary: ONE
     // provider-agnostic LLM call that reads the day's evidence and answers with a
-    // narrative, a few insights, and the Vega-Lite specs it chose. Prints ONE JSON
-    // line: the summary object. Regenerate = the same command (UPSERT overwrites).
-    // Never fails on a bad answer — it falls back to a deterministic panel set, so
-    // a non-zero exit here means the DB or the day's data, not the model.
+    // headline and two-to-three free-text insight cards. The plan ledger (which
+    // tickets got done, the ring, the counts) is computed deterministically in Rust,
+    // NOT asked of the model. Prints ONE JSON line: the summary object. Regenerate =
+    // the same command (UPSERT overwrites). Never fails on a bad answer — the
+    // deterministic ledger still renders, so a non-zero exit here means the DB or
+    // the day's data, not the model.
     if std::env::args().nth(1).as_deref() == Some("day-summary") {
         let args: Vec<String> = std::env::args().collect();
         let flag = |name: &str| -> Option<String> {
