@@ -53,11 +53,6 @@ const CAPTURE_INTERVAL: Duration = Duration::from_secs(2);
 /// on every 2s tick would be wasted work for content the user isn't looking at.
 const SECONDARY_SCREEN_EVERY_N_TICKS: u32 = 5;
 
-/// Identifies the window a tick's primary capture (a11y or OCR fallback)
-/// actually processed, so the secondary-monitor sweep can skip re-capturing
-/// the same window on whichever monitor it happens to live on.
-type WindowIdentity = (String, String);
-
 /// Outcome of the per-tick accessibility-tree walk — decides what (if anything)
 /// the OCR fallback does this tick.
 enum A11yOutcome {
@@ -147,7 +142,7 @@ impl CaptureEngine for ScreenpipeEngine {
                 && tokio::task::spawn_blocking(drm_detector::any_streaming_content_visible)
                     .await
                     .unwrap_or(false);
-            let primary_identity = match dispatch(
+            let primary_captured = match dispatch(
                 &tx,
                 outcome,
                 pause_on_streaming,
@@ -156,30 +151,23 @@ impl CaptureEngine for ScreenpipeEngine {
             )
             .await
             {
-                Ok(identity) => identity,
+                Ok(captured) => captured,
                 Err(e) => {
                     warn!(error = %e, "capture: tick failed (will retry)");
-                    None
+                    false
                 }
             };
 
             tick = tick.wrapping_add(1);
-            // Only sweep when this tick resolved a primary window: `None` means
-            // either a privacy Skip (never sweep — see capture_secondary_screens
-            // docs) or nothing was captured at all (streaming-blocked OCR, no
-            // focused window), in which case there's no identity to exclude.
-            if tick.is_multiple_of(SECONDARY_SCREEN_EVERY_N_TICKS) {
-                if let Some(identity) = &primary_identity {
-                    if let Err(e) = capture_secondary_screens(
-                        &tx,
-                        identity,
-                        &ignored_urls,
-                        skip_ocr_for_streaming,
-                    )
-                    .await
-                    {
-                        warn!(error = %e, "capture: secondary-monitor sweep failed (will retry next cycle)");
-                    }
+            // Only sweep when this tick actually resolved a primary window:
+            // `false` means either a privacy Skip (never sweep — see
+            // capture_secondary_screens docs) or nothing was captured at all
+            // (streaming-blocked OCR, no focused window).
+            if tick.is_multiple_of(SECONDARY_SCREEN_EVERY_N_TICKS) && primary_captured {
+                if let Err(e) =
+                    capture_secondary_screens(&tx, &ignored_urls, skip_ocr_for_streaming).await
+                {
+                    warn!(error = %e, "capture: secondary-monitor sweep failed (will retry next cycle)");
                 }
             }
 
@@ -358,10 +346,19 @@ fn a11y_content_is_thin(snap: &TreeSnapshot) -> bool {
 /// or run the OCR fallback. Best-effort — a failed OCR pass is logged and
 /// retried, never fatal (capture must not crash the tray).
 ///
-/// Returns the `(app_name, window_name)` of whatever was actually processed
-/// as this tick's primary window — `None` when nothing was (a privacy
-/// `Skip`, or a fallback that captured no legible window) — so the
-/// secondary-monitor sweep knows which window to exclude from its own pass.
+/// Returns whether a primary frame was actually captured+sent this tick —
+/// `false` when nothing was (a privacy `Skip`, or a fallback that captured no
+/// legible window) — so the secondary-monitor sweep knows whether to run at
+/// all this tick. It does NOT try to identify which window was captured:
+/// `capture_secondary_screens` excludes the focused window via
+/// `CapturedWindow::is_focused` instead, because the a11y walker's
+/// `app_name`/`window_name` (from the AX tree) and CGWindowList's (from the
+/// secondary sweep) describe the SAME window differently — e.g. a11y reports
+/// a focused terminal tab's title while CGWindowList reports the OS window
+/// title bar — so string-matching them to detect "same window" is unreliable
+/// (confirmed live: a11y saw app "Code"/window "Terminal - ⠂ …", CGWindowList
+/// saw app "Visual Studio Code"/window "⠐ … — meridian" for the identical
+/// window at the identical instant).
 ///
 /// `skip_ocr_for_streaming`: when true, the OCR fallback is skipped entirely
 /// for this tick — never invoking ScreenCaptureKit — because streaming
@@ -373,25 +370,21 @@ async fn dispatch(
     pause_on_streaming: bool,
     streaming_gate: &mut StreamingGate,
     skip_ocr_for_streaming: bool,
-) -> anyhow::Result<Option<WindowIdentity>> {
+) -> anyhow::Result<bool> {
     match outcome {
         A11yOutcome::Frame(frame) => {
-            let identity = (
-                frame.app_name.clone().unwrap_or_default(),
-                frame.window_name.clone().unwrap_or_default(),
-            );
             send_frame(tx, *frame, pause_on_streaming, streaming_gate).await;
-            Ok(Some(identity))
+            Ok(true)
         }
         // Privacy decision — never sweep other monitors this tick either (see
         // capture_secondary_screens' caller in `run`).
-        A11yOutcome::Skip => Ok(None),
+        A11yOutcome::Skip => Ok(false),
         A11yOutcome::FallBackToOcr => {
             if skip_ocr_for_streaming {
                 debug!(
                     "capture: skipping OCR fallback this tick — streaming content on screen (avoiding DRM blank/flicker)"
                 );
-                return Ok(None);
+                return Ok(false);
             }
             capture_once_ocr(tx, pause_on_streaming, streaming_gate).await
         }
@@ -403,13 +396,12 @@ async fn dispatch(
 /// frame carries the app/window/url the classifier keys on — matching
 /// meridian's per-app ETL model.
 ///
-/// Returns the identity of the first window it actually OCR'd and sent
-/// (normally there's exactly one), or `None` if nothing legible was found.
+/// Returns whether it actually OCR'd and sent at least one window.
 async fn capture_once_ocr(
     tx: &FrameTx,
     pause_on_streaming: bool,
     streaming_gate: &mut StreamingGate,
-) -> anyhow::Result<Option<WindowIdentity>> {
+) -> anyhow::Result<bool> {
     let monitors = screenpipe_screen::monitor::list_monitors().await;
     let Some(monitor) = monitors.into_iter().next() else {
         anyhow::bail!("no monitors enumerated (Screen Recording not granted yet?)");
@@ -423,7 +415,7 @@ async fn capture_once_ocr(
         .map_err(|e| anyhow::anyhow!("capture_all_visible_windows: {e}"))?;
 
     let now = Utc::now();
-    let mut identity = None;
+    let mut captured = false;
     for win in windows {
         if is_self_app(&win.app_name.to_lowercase()) {
             continue;
@@ -435,9 +427,7 @@ async fn capture_once_ocr(
             continue; // nothing legible in this window — skip it
         }
         debug!(app = %win.app_name, chars = text.len(), "capture: window OCR'd");
-        if identity.is_none() {
-            identity = Some((win.app_name.clone(), win.window_name.clone()));
-        }
+        captured = true;
         let frame = CapturedFrame {
             timestamp: now,
             app_name: Some(win.app_name),
@@ -450,7 +440,7 @@ async fn capture_once_ocr(
             break; // consumer backpressure / gone — end this tick
         }
     }
-    Ok(identity)
+    Ok(captured)
 }
 
 /// Non-blocking send: under backpressure drop the frame rather than stall the
@@ -506,19 +496,26 @@ async fn send_frame(
     }
 }
 
-/// Sweeps every connected monitor OTHER than the one hosting `primary`'s
-/// window, OCR's each one's topmost window, and sends the results as
-/// [`SecondaryScreenSample`]s. Context, not activity — never sent as a
+/// Sweeps every connected monitor, OCR's each one's topmost window, and
+/// sends the results as [`SecondaryScreenSample`]s — except the monitor
+/// currently holding the system-focused window, which the primary a11y/OCR
+/// path already covered this tick. Context, not activity — never sent as a
 /// [`CapturedFrame`], so it can never define a session boundary.
 ///
 /// Reuses `capture_all_visible_windows(&monitor, &filters, false)` — the same
 /// call the primary OCR fallback makes — which already resolves to "the
 /// topmost window on THIS monitor" via per-monitor z-order (not global
 /// focus), so no bounds/bookkeeping is needed to figure out which monitor
-/// hosts which window. A monitor whose topmost window matches `primary`
-/// exactly (same app + window name) is skipped — that's the monitor the
-/// primary a11y/OCR path already covered this tick; capturing it again here
-/// would be a redundant duplicate OCR of the same window.
+/// hosts which window. The focused window is excluded via
+/// `CapturedWindow::is_focused` (only one window system-wide can be `true`),
+/// **not** by matching its app/window name against the tick's primary
+/// capture — a11y's `app_name`/`window_name` (the AX tree) and
+/// CGWindowList's (this sweep) describe the same window differently enough
+/// that string-matching them missed real matches in practice (observed live:
+/// a11y "Code" / "Terminal - ⠂ …" vs. CGWindowList "Visual Studio Code" /
+/// "⠐ … — meridian" for the identical window at the identical instant),
+/// which would have silently double-captured the focused window as
+/// "secondary" content.
 ///
 /// Best-effort like the primary OCR path: a failed pass is logged and
 /// retried next sweep, never fatal.
@@ -534,7 +531,6 @@ async fn send_frame(
 /// on a non-focused screen isn't captured just because it's out of focus.
 async fn capture_secondary_screens(
     tx: &FrameTx,
-    primary: &WindowIdentity,
     ignored_urls: &[String],
     skip_ocr_for_streaming: bool,
 ) -> anyhow::Result<()> {
@@ -562,13 +558,11 @@ async fn capture_secondary_screens(
             if is_self_app(&win.app_name.to_lowercase()) {
                 continue;
             }
-            if (win.app_name.as_str(), win.window_name.as_str())
-                == (primary.0.as_str(), primary.1.as_str())
-            {
+            if win.is_focused {
                 debug!(
                     monitor = monitor.name(),
                     app = %win.app_name,
-                    "capture: secondary sweep skipping — same window already captured as primary this tick"
+                    "capture: secondary sweep skipping — this monitor holds the system-focused window (already captured as primary this tick)"
                 );
                 continue;
             }
