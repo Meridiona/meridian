@@ -36,7 +36,7 @@ fn is_exec(p: &Path) -> bool {
         p.is_file()
             && p.extension().and_then(|e| e.to_str()).is_some_and(|ext| {
                 let dotted = format!(".{}", ext.to_ascii_uppercase());
-                pathext().iter().any(|e| *e == dotted)
+                pathext().contains(&dotted)
             })
     }
 }

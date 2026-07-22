@@ -1,0 +1,30 @@
+# Normalize line endings to LF for all text files, on every platform.
+#
+# Without this, a Windows checkout with core.autocrlf=true rewrites every file
+# to CRLF. That breaks source-introspection tests (which string-match against
+# "\n") and any tool that assumes LF — none of which the macOS/Linux CI ever
+# sees, so the failures only surface on Windows. Declaring text=auto eol=lf
+# makes the working tree match the LF blobs Git already stores, so builds and
+# tests behave identically across macOS, Linux, and Windows.
+* text=auto eol=lf
+
+# Explicit binaries — never touch these (belt-and-suspenders over auto-detection).
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.icns  binary
+*.webp  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.wasm  binary
+*.db    binary
+*.dmg   binary
+*.exe   binary
+*.dll   binary
+*.mp4   binary
+*.zip   binary
+*.gz    binary
