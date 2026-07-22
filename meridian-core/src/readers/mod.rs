@@ -37,6 +37,10 @@ pub mod hour_text;
 /// The rolling day-level tasks (`day_tasks`, migration 058; no route — new work).
 pub mod day_tasks;
 
+/// User corrections to the inferred day-tasks — dismiss / merge (migration 074; no
+/// route — new work). Durable across the hourly fold via [`day_task_corrections::reconcile`].
+pub mod day_task_corrections;
+
 /// The generated-worklog ledger behind the day-task "Generate worklog" action
 /// (`day_task_worklogs`, migration 060; no route — new work).
 pub mod day_task_worklogs;

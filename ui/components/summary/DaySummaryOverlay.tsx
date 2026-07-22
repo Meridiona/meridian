@@ -456,6 +456,14 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
               <DayTaskDetailPanel
                 detail={selected}
                 onClose={() => setSelected(null)}
+                onCorrected={() => {
+                  // A dismiss/merge removed this task — close the detail and
+                  // re-read the day's tasks so the checklist below reflects it.
+                  setSelected(null)
+                  load<DayTasksResponse>('/api/day-tasks', 'get_day_tasks', { day })
+                    .then(r => setTasks(r.tasks))
+                    .catch(() => {})
+                }}
                 onOpenSettings={onOpenSettings}
                 onOpenTask={onOpenTask}
               />

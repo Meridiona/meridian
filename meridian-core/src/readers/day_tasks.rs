@@ -145,14 +145,16 @@ pub async fn get_day_tasks(pool: &SqlitePool, day: &str) -> anyhow::Result<DayTa
          FROM day_tasks dt \
          LEFT JOIN day_task_worklogs w \
                 ON w.day_local = dt.day_local AND w.task_id = dt.task_id \
-         WHERE dt.day_local = ? ORDER BY dt.task_id"
+         WHERE dt.day_local = ? AND COALESCE(dt.status, 'active') != 'dismissed' \
+         ORDER BY dt.task_id"
     } else {
         "SELECT task_id, title, summary, hours_json, \
                 COALESCE(segments_json, '[]') AS segments_json, \
                 CAST(COALESCE(minutes, 0) AS INTEGER) AS minutes, \
                 COALESCE(status, 'active') AS status, linked_ticket, \
                 NULL AS posted_provider, NULL AS posted_target_key, NULL AS posted_browse_url \
-         FROM day_tasks WHERE day_local = ? ORDER BY task_id"
+         FROM day_tasks WHERE day_local = ? AND COALESCE(status, 'active') != 'dismissed' \
+         ORDER BY task_id"
     };
 
     let rows = sqlx::query_as::<_, RawDayTask>(sql)
