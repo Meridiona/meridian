@@ -53,36 +53,25 @@ use tauri::{
 };
 
 pub fn run() {
-    // Dev-only (`--features otel`): export tray spans to OpenObserve via the
-    // daemon's OTLP setup, tagged service.name = meridian-tray. Held for the
-    // process lifetime. Compiled out entirely when the feature is off — release
-    // builds stay lean. `meridian` itself is always a dependency now (the
-    // "Export Diagnostics" command needs `telemetry_spool::build_export_bundle`
-    // unconditionally); this feature only gates installing a SECOND tracing
-    // subscriber for the tray's own spans.
+    // Tray telemetry. Emit the tray's own spans + logs (service.name =
+    // meridian-tray) into the shared OTLP spool — the same one the daemon writes
+    // and its shipper drains. In a PACKAGED install this is how tray errors
+    // reach the central backend (redacted, error-only, on the shipper's
+    // consent-gated central path): the tray is otherwise DARK in release, and it
+    // is the one process the user actually clicks. `meridian` is always a
+    // dependency (Export Diagnostics), so this only calls the existing init — it
+    // pulls in no new deps. In a debug build the daemon's init also installs a
+    // stdout mirror, so `cargo run` stays console-observable without a separate
+    // subscriber; capture-to-spool honours the MERIDIAN_TELEMETRY_DISABLED kill
+    // switch inside init().
     //
     // Must run INSIDE Tauri's Tokio runtime: the OTLP batch exporter spawns a
     // background task and panics ("no reactor running") if called before one
     // exists. `block_on` enters the global runtime so the spawn succeeds; the
-    // exporter task then lives on that runtime for the process lifetime.
-    #[cfg(feature = "otel")]
-    let _otel_guard =
+    // guard is held for the process lifetime so the exporter keeps flushing.
+    let _obs_guard =
         tauri::async_runtime::block_on(async { meridian::observability::init("meridian-tray") })
             .ok();
-
-    // Capture builds without otel have no subscriber, so the `capture: …` logs
-    // would be invisible. Install a console fmt subscriber (RUST_LOG-filtered,
-    // default info) so a `cargo run --features capture` runtime check is
-    // observable. Skipped under otel (which installs its own subscriber).
-    #[cfg(all(feature = "capture", not(feature = "otel")))]
-    {
-        use tracing_subscriber::{fmt, EnvFilter};
-        let _ = fmt()
-            .with_env_filter(
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-            )
-            .try_init();
-    }
 
     let app_state = Arc::new(Mutex::new(AppState::default()));
 

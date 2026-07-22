@@ -94,13 +94,13 @@ meridian-core = { path = "../../meridian-core" }
 meridian-oauth = { path = "../../meridian-oauth" }
 # Instrumentation facade for tray commands (no-op without a subscriber).
 tracing = "0.1"
-# Always available (not feature-gated): the shipped tray's "Export
-# Diagnostics" Settings action (`commands::diagnostics`) calls
-# `meridian::telemetry_spool::build_export_bundle` directly, so every build —
-# including a lean release build — needs it. The `otel` feature (below)
-# separately controls whether the tray ALSO installs `observability::init`'s
-# live tracing subscriber for itself (dev convenience only); that's the only
-# part that stays off by default.
+# Always available (not feature-gated), used by every build for two things: the
+# shipped tray's "Export Diagnostics" Settings action (`commands::diagnostics`)
+# calls `meridian::telemetry_spool::build_export_bundle`, and `run()` calls
+# `meridian::observability::init("meridian-tray")` UNCONDITIONALLY so the tray's
+# own spans/logs land in the shared spool (→ the daemon's shipper → central,
+# redacted + error-only) in release too, not just under a dev feature. The OTel
+# machinery is already linked via this dep, so the init call adds no new deps.
 meridian = { path = "../.." }
 # Forked screenpipe @ last-MIT 892199f74 (Meridiona/screenpipe-fork). In-process
 # screen capture + Apple Vision OCR. Optional → only pulled by the `capture`
@@ -113,10 +113,6 @@ screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev 
 # expose nothing to OCR-free a11y until the walker sets AXManualAccessibility
 # itself. Optional → only the `capture` feature pulls it.
 screenpipe-a11y = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "064c44ccd8c50716f21eec1663e1350e848ca5f5", optional = true }
-# Console log subscriber for capture-enabled non-otel runs (otel installs its
-# own). Makes the `capture: …` logs visible during a `cargo run --features capture`.
-tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
-
 # Raw Objective-C messaging to set NSWindow collectionBehavior directly: tao's
 # `set_visible_on_all_workspaces` only adds CanJoinAllSpaces, never the
 # FullScreenAuxiliary flag needed to float the popover over another app's
@@ -180,18 +176,11 @@ windows = { version = "0.61", features = ["UI_Notifications"] }
 # clippy`/`test` at the workspace root select the `meridian` package only — so
 # the macOS-only cidre/screenpipe-screen stack is not pulled into CI.)
 default = ["capture"]
-# Dev-only: installs `meridian::observability::init`'s live tracing subscriber
-# INSIDE the tray process itself (so tray-side spans/logs get the same
-# always-capture-to-spool treatment as the daemon). `meridian` itself is a
-# required dependency regardless (see above) — this feature is purely about
-# whether the tray ALSO calls `init()` for its own process.
-otel = []
 # Pulls the heavy forked screenpipe-screen stack (ScreenCaptureKit/cidre).
 capture = [
     "dep:screenpipe-screen",
     "dep:screenpipe-a11y",
     "dep:cidre",
-    "dep:tracing-subscriber",
 ]
 
 # Fixture trees for the install-path resolvers (dev_bin / dev_cwd), so the
