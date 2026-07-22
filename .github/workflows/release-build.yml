@@ -566,6 +566,7 @@ jobs:
     name: Windows x86_64
     needs: prepare
     runs-on: windows-latest
+    timeout-minutes: 60 # same cap as macos — bound a hung build instead of falling back to GitHub's 360-minute default
     permissions:
       contents: write # uploads assets into the draft
     env:
@@ -658,8 +659,13 @@ jobs:
         # config is explicitly NULLED OUT by tauri.windows.conf.json, replaced
         # with `target/release/meridian.exe`, which `cargo build --bin meridian`
         # already produces at exactly that path with no cross-target copy step.
+        env:
+          # Bound through env rather than interpolated into `run:`, same
+          # reason as VERSION/CHANNEL/TAG elsewhere in this file — `${{ }}`
+          # inside `run:` is the template-injection shape.
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
         run: |
-          if [ "${{ needs.prepare.outputs.channel }}" = "staging" ]; then
+          if [ "${CHANNEL}" = "staging" ]; then
             npm run build:windows:staging
           else
             npm run build:windows

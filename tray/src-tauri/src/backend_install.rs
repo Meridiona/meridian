@@ -251,7 +251,13 @@ async fn register_service(_backend: &Path, home: &Path, daemon_bin: &Path) -> Re
             );
             install_startup_folder_launcher(daemon_bin).await?;
             // Nothing else will start the daemon until next login — start it now.
-            let _ = tokio::process::Command::new(daemon_bin).spawn();
+            if let Err(e) = tokio::process::Command::new(daemon_bin).spawn() {
+                tracing::warn!(
+                    error = %e,
+                    bin = %daemon_bin.display(),
+                    "backend_install: immediate daemon start failed — will still run at next login via Startup folder"
+                );
+            }
             tracing::info!(
                 home = %home.display(),
                 "backend_install: Startup-folder launcher installed"

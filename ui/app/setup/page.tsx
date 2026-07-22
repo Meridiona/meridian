@@ -28,12 +28,18 @@ export default function SetupWizard() {
 
   // Platform gates which steps exist — Permissions is macOS-only (Windows
   // capture needs no TCC-style grant; see buildSteps in ./steps.tsx). `null`
-  // until resolved is treated as "include it" so the (Welcome-gated) first
-  // paint never has to un-render a step a moment later.
+  // until resolved. The Welcome screen (the only way past `welcome`) blocks
+  // "Get started" until this resolves, so `steps` can never change shape
+  // out from under a `step` index the user already navigated to — a late
+  // resolve reshaping the list AFTER the user has begun would otherwise let
+  // `step` point at the wrong step or past the end of a now-shorter list.
   const [platform, setPlatform] = useState<string | null>(null)
-  useEffect(() => {
-    invoke<string>('get_platform').then(setPlatform).catch(() => {})
+  const [platformError, setPlatformError] = useState(false)
+  const resolvePlatform = useCallback(() => {
+    setPlatformError(false)
+    invoke<string>('get_platform').then(setPlatform).catch(() => setPlatformError(true))
   }, [])
+  useEffect(() => { resolvePlatform() }, [resolvePlatform])
   const steps = useMemo(() => buildSteps(platform), [platform])
 
   // Step 1 — permissions (live)
@@ -240,7 +246,13 @@ export default function SetupWizard() {
         transformOrigin: 'center',
       }}>
         {welcome ? (
-          <Welcome onBegin={() => { setWelcome(false); setStep(0) }} steps={steps} />
+          <Welcome
+            onBegin={() => { setWelcome(false); setStep(0) }}
+            steps={steps}
+            ready={platform !== null}
+            error={platformError}
+            onRetry={resolvePlatform}
+          />
         ) : (
           <div className="flex" style={{ height: '100%' }}>
             <Rail step={step} done={done} wiz={wiz} steps={steps} goStep={goStep} />
