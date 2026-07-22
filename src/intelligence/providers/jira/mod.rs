@@ -458,7 +458,16 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
         Err(e) => {
             tracing::warn!(error = %e, "jira auth unavailable — keeping stale cache");
             let msg = format!("Jira auth failed — {e}");
-            let _ = super::stamp_sync_error(pool, "jira", &msg).await;
+            // Basic-auth (JIRA_API_TOKEN/JIRA_BASE_URL) and OAuth are mutually
+            // exclusive here — has_basic_auth() mirrors resolve()'s own choice —
+            // so the remedy must match whichever path this failure came from,
+            // not always point at the .env fields.
+            let remedy = if crate::intelligence::oauth::jira::has_basic_auth(jira) {
+                "Set JIRA_API_TOKEN and JIRA_BASE_URL in .env"
+            } else {
+                "Run: meridian oauth-login jira"
+            };
+            let _ = super::stamp_sync_error_with_remedy(pool, "jira", &msg, Some(remedy)).await;
             return Ok(None);
         }
     };
