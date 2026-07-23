@@ -1375,9 +1375,12 @@ async fn a_whole_list_write_refuses_past_the_cap() {
             Vec::new(),
         )
         .await
-        .expect_err("11 tasks must be refused");
+        .expect_err("one past the cap must be refused");
         assert!(
-            err.to_string().contains("up to 10 tasks"),
+            err.to_string().contains(&format!(
+                "up to {} tasks",
+                meridian_core::plan::MAX_PLAN_TASKS
+            )),
             "{action}: the user must be told the limit, got: {err}"
         );
     }
@@ -1388,7 +1391,7 @@ async fn a_whole_list_write_refuses_past_the_cap() {
     assert_eq!(n, 0, "a refused write must not half-apply");
 }
 
-/// Exactly the cap is fine — the limit is 10 tasks, not 9.
+/// Exactly the cap is fine — the limit is MAX_PLAN_TASKS tasks, not one fewer.
 #[tokio::test]
 async fn a_whole_list_write_accepts_exactly_the_cap() {
     let pool = make_board_pool().await;
@@ -1434,7 +1437,7 @@ async fn the_cap_counts_distinct_keys() {
     let mut keys: Vec<String> = (1..=meridian_core::plan::MAX_PLAN_TASKS)
         .map(|i| format!("KAN-{i}"))
         .collect();
-    keys.push("KAN-1".to_string()); // 11 entries, 10 distinct
+    keys.push("KAN-1".to_string()); // one more entry than distinct keys
 
     let body = meridian_core::plan::PlanBody {
         action: "set".to_string(),

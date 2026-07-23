@@ -554,7 +554,7 @@ export const LOCAL_PROVIDER = 'local'
  *  It matters beyond tidiness: the plan IS the worklog matcher's candidate set, so
  *  an eleventh task doesn't just clutter a list, it dilutes every match made
  *  against it. */
-export const MAX_PLAN_TASKS = 10
+export const MAX_PLAN_TASKS = 20
 
 /** An AI-drafted task, for the user to review and edit before creating.
  *  Every field may be empty: `error` set + empty fields is the honest answer when the
