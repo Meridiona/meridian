@@ -106,7 +106,7 @@ meridian = { path = "../.." }
 # screen capture + Apple Vision OCR. Optional → only pulled by the `capture`
 # feature (heavy: ScreenCaptureKit/cidre/sck-rs). Private repo: local builds use
 # the user's git credentials; CI needs a deploy token (future).
-screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "f13c631ce6bac1c5ecaecfef7ad44c08428d0724", optional = true }
+screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "b2e5b26", optional = true }
 # Sibling crate in the same fork: the accessibility-tree walker (slice 3b).
 # `tree::create_tree_walker` walks the focused window's AX tree → structured
 # text — the PRIMARY signal for Electron/Chromium apps (VS Code, Slack), which
@@ -119,16 +119,21 @@ screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev 
 # its NSWorkspace observers. See `start_capture` in `../src/lib.rs` for the
 # matching caller-side fix (joining the old recorder thread before restart).
 #
-# Bumped to f13c631 (branch fix/autorelease-pool-leaks off 3c99154): the same
-# double-free signature recurred on a plain pause (single teardown, no
-# restart race), pointing at a second cause the 3c99154 lock doesn't cover —
-# run_app_observer's manually-driven CFRunLoop never drained its autorelease
-# pool, so AX/ns::RunningApp reads from ax_focus_observer_callback and
-# reattach_observer() accumulated unreleased NSObjects for the entire capture
-# session. c29722d wraps each run-loop iteration in cidre::objc::ar_pool(...);
-# f13c631 applies the same fix to the ctx-capture worker thread; 8382e36 does
-# the equivalent for screenpipe-screen's per-frame window enumeration.
-screenpipe-a11y = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "f13c631ce6bac1c5ecaecfef7ad44c08428d0724", optional = true }
+# f13c631 (branch fix/autorelease-pool-leaks off 3c99154) wrapped
+# run_app_observer's run loop (and the ctx-capture worker / screenpipe-screen's
+# frame enumeration) in an autorelease pool — turned out NOT to fix the same
+# crash signature: it recurred on a plain pause (single teardown, no restart
+# race, reproduced within seconds of a fresh launch), so this isn't an
+# autorelease-accumulation bug. `-[NSWorkspaceNotificationCenter
+# removeObserver:name:object:]` itself aborts deterministically on macOS 26.3.
+#
+# Bumped to b2e5b26: run_app_observer now leaks its workspace-observer guards
+# (`std::mem::forget`) instead of dropping them, avoiding the crashing
+# removeObserver call entirely — see that commit's message and the updated
+# WORKSPACE_OBSERVER_LOCK doc comment in macos.rs for the full rationale.
+# Root-causing the actual Foundation-side bug needs native tooling (lldb /
+# Malloc Stack Logging) this pin bump doesn't attempt.
+screenpipe-a11y = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "b2e5b26", optional = true }
 # Console log subscriber for capture-enabled non-otel runs (otel installs its
 # own). Makes the `capture: …` logs visible during a `cargo run --features capture`.
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
