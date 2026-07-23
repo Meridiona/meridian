@@ -41,6 +41,11 @@
 
 use std::path::{Path, PathBuf};
 
+// Used only by the Windows service-registration spawns below (schtasks / taskkill
+// / tasklist / the daemon launch) to suppress their console-window flash; the
+// trait method is a no-op on other platforms and would be an unused import there.
+#[cfg(target_os = "windows")]
+use meridian_core::proc_ext::NoWindow;
 use tauri::Manager;
 
 /// SHA-256 of a file as a lowercase hex string — the bundled-daemon update marker.
@@ -195,6 +200,14 @@ async fn install(backend: &Path, home: &Path) -> Result<(), String> {
         migrate_legacy_bundle_env(home).await;
     }
 
+    // Windows keeps a running exe's pages mapped, so overwriting it fails with
+    // "the process cannot access the file" (os error 32) — and this isn't just
+    // a first-install concern: `ensure_backend_installed` re-stages on every
+    // version bump while the *previous* build's daemon is still alive from an
+    // earlier login. Stop it first so the copy below can succeed.
+    #[cfg(target_os = "windows")]
+    stop_running_daemon_before_stage().await;
+
     let daemon_bin = home.join(".meridian").join("bin").join(DAEMON_FILE);
     stage_binary(&backend.join(DAEMON_FILE), &daemon_bin).await?;
 
@@ -291,7 +304,7 @@ async fn register_service(_backend: &Path, home: &Path, daemon_bin: &Path) -> Re
             );
             install_startup_folder_launcher(daemon_bin).await?;
             // Nothing else will start the daemon until next login — start it now.
-            if let Err(e) = tokio::process::Command::new(daemon_bin).spawn() {
+            if let Err(e) = tokio::process::Command::new(daemon_bin).no_window().spawn() {
                 tracing::warn!(
                     error = %e,
                     bin = %daemon_bin.display(),
@@ -304,6 +317,59 @@ async fn register_service(_backend: &Path, home: &Path, daemon_bin: &Path) -> Re
             );
             Ok(())
         }
+    }
+}
+
+/// Stop any running instance of the staged daemon so [`stage_binary`] can
+/// overwrite `~/.meridian/bin/meridian.exe`. Best-effort on two fronts,
+/// because the daemon can be running via either path [`register_service`] may
+/// have taken:
+/// - `schtasks /End` stops it if the scheduled task is what launched it.
+/// - `taskkill /IM` also catches the Startup-folder-launcher fallback case,
+///   where the process was spawned directly by `wscript` and has no
+///   association with the scheduled task for `/End` to find.
+///
+/// Killing the process doesn't release its file handle instantaneously, so
+/// this polls (mirroring the launchd bootout wait in [`register_agent`])
+/// rather than proceeding immediately — a fixed sleep would either race a
+/// slow exit or pad every install with unnecessary wait time.
+#[cfg(target_os = "windows")]
+async fn stop_running_daemon_before_stage() {
+    let _ = tokio::process::Command::new("schtasks")
+        .args(["/End", "/TN", WINDOWS_TASK_NAME])
+        .no_window()
+        .output()
+        .await;
+    let _ = tokio::process::Command::new("taskkill")
+        .args(["/F", "/IM", DAEMON_FILE])
+        .no_window()
+        .output()
+        .await;
+    for _ in 0..10 {
+        if !daemon_process_running().await {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+}
+
+/// Whether a process named [`DAEMON_FILE`] currently shows up in `tasklist`.
+#[cfg(target_os = "windows")]
+async fn daemon_process_running() -> bool {
+    let out = tokio::process::Command::new("tasklist")
+        .args([
+            "/FI",
+            &format!("IMAGENAME eq {DAEMON_FILE}"),
+            "/FO",
+            "CSV",
+            "/NH",
+        ])
+        .no_window()
+        .output()
+        .await;
+    match out {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).contains(DAEMON_FILE),
+        Err(_) => false,
     }
 }
 
@@ -331,6 +397,7 @@ async fn register_scheduled_task(daemon_bin: &Path) -> Result<(), String> {
             "/TR",
         ])
         .arg(format!("\"{}\"", daemon_bin.display()))
+        .no_window()
         .output()
         .await
         .map_err(|e| format!("run schtasks: {e}"))?;
@@ -346,6 +413,7 @@ async fn register_scheduled_task(daemon_bin: &Path) -> Result<(), String> {
     // at login regardless.
     let _ = tokio::process::Command::new("schtasks")
         .args(["/Run", "/TN", WINDOWS_TASK_NAME])
+        .no_window()
         .output()
         .await;
     Ok(())

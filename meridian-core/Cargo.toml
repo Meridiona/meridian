@@ -22,6 +22,13 @@ dirs = "5"
 # Instrumentation facade only (~no-op without a subscriber) — the heavy OTLP
 # exporter is wired by the binary (daemon, or the tray's `otel` dev feature).
 tracing = "0.1"
+# Only the `process` feature, only for `proc_ext::NoWindow`'s impl on
+# `tokio::process::Command` (the std impl needs no dep). tokio is already in the
+# workspace tree via sqlx's tokio runtime and every binary that depends on this
+# crate (daemon, tray) already builds it with `full`, so feature-unification
+# means this adds nothing new to compile — it just brings the `process` module
+# into scope here.
+tokio = { version = "1", features = ["process"] }
 
 [dev-dependencies]
 # For the #[ignore]d golden-compare smoke test (runs get_today against the real DB).

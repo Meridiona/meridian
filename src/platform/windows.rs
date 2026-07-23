@@ -154,6 +154,7 @@ pub fn service_manifest(_label: &str) -> super::ServiceManifest {
 /// caller treats as every-CLI-running and defers to the idle backstop, so a
 /// failure here can never seal a live session early.
 pub async fn list_process_argvs() -> Option<Vec<String>> {
+    use meridian_core::proc_ext::NoWindow;
     let mut cmd = tokio::process::Command::new("powershell");
     cmd.args([
         "-NoProfile",
@@ -161,7 +162,8 @@ pub async fn list_process_argvs() -> Option<Vec<String>> {
         "-Command",
         "Get-CimInstance Win32_Process | ForEach-Object { $_.CommandLine }",
     ])
-    .kill_on_drop(true);
+    .kill_on_drop(true)
+    .no_window();
     // Longer than the Unix budget: PowerShell start-up plus a CIM query is
     // genuinely slower than `ps`, and this runs once every ten minutes.
     let output = tokio::time::timeout(std::time::Duration::from_secs(15), cmd.output())

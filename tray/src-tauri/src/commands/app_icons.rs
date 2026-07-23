@@ -138,7 +138,7 @@ pub fn get_app_icon(app_name: String) -> Result<Option<String>, String> {
     #[cfg(not(target_os = "macos"))]
     {
         tracing::debug!("app icon extraction is macOS-only");
-        return Ok(None);
+        Ok(None)
     }
 
     #[cfg(target_os = "macos")]

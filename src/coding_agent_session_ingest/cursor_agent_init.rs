@@ -197,7 +197,10 @@ async fn run_with_timeout(
     timeout: Duration,
     label: &str,
 ) -> anyhow::Result<std::process::Output> {
-    cmd.stdin(std::process::Stdio::null()).kill_on_drop(true);
+    use meridian_core::proc_ext::NoWindow;
+    cmd.stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .no_window();
     match tokio::time::timeout(timeout, cmd.output()).await {
         Ok(Ok(output)) => Ok(output),
         Ok(Err(e)) => anyhow::bail!("{label}: {e}"),
