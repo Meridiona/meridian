@@ -82,6 +82,16 @@ export function TasksPanel({ onOpenTask }: { onOpenTask: (key: string, title?: s
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // TaskDetailDialog is a separate modal layered on top of this panel (it never
+  // remounts this component), so a delete made there needs its own signal to
+  // drop the row from this already-fetched list — see that dialog's `deleteTask`.
+  useEffect(() => {
+    const onDeleted = () => fetchTasks()
+    window.addEventListener('meridian:task-deleted', onDeleted)
+    return () => window.removeEventListener('meridian:task-deleted', onDeleted)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const header = (
     <div className="flex items-center justify-between mb-5">
       <p className="mt-body-sm" style={{ color: 'var(--t-faint)' }}>
