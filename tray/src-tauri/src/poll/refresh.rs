@@ -103,6 +103,13 @@ pub(super) async fn refresh_health(
     if notify_down {
         // `notify_down` implies `attempt_restart` (both require the 2nd
         // consecutive failure), so `restart_result` is always `Some` here.
+        // Assert it rather than only documenting it, so a future refactor that
+        // breaks the invariant trips a test instead of silently rendering the
+        // failed-restart case as the success message.
+        debug_assert!(
+            restart_result.is_some(),
+            "notify_down implies attempt_restart, so restart_result must be Some"
+        );
         let detail = match &restart_result {
             Some(Err(_)) => {
                 "Tried to restart it automatically and that failed too. Tap to check what happened."
@@ -124,6 +131,35 @@ pub(super) async fn refresh_health(
         .await
         {
             tracing::warn!(error = %e, "daemon-health notice raise failed");
+        }
+    } else if attempt_restart && matches!(restart_result, Some(Err(_))) {
+        // Cold-start path: `daemon_was_healthy == false` suppressed `notify_down`
+        // above, AND the one automatic restart failed (e.g. `schtasks /Run`
+        // failed and `spawn_staged_daemon()` found no staged binary). Left alone
+        // this strands the user silently — `attempt_restart` fires only once per
+        // episode, so nothing else surfaces for this process lifetime. A failed
+        // recovery is news in its own right, independent of the went-quiet
+        // debounce the cold-start silence exists for, so raise the notice here
+        // regardless of `daemon_was_healthy`. Same `tray.daemon_quiet` id, so it
+        // dedupes with the warm-path notice and is cleared by the same
+        // `notify_back` / `reconcile_stale` paths once the daemon recovers. (The
+        // 5 s `run_daemon_watchdog` keeps retrying the restart in the meantime —
+        // this only fixes the *notification* gap, not the retry.)
+        if let Err(e) = meridian::notices::raise_typed(
+            pool,
+            meridian::notices::Notice {
+                id: "tray.daemon_quiet",
+                severity: "warning",
+                title: "Meridian went quiet.",
+                detail: "Couldn't restart it automatically. Tap to check what happened.",
+                remedy: None,
+                event_key: "system.health",
+                deep_link: Some("/logs"),
+            },
+        )
+        .await
+        {
+            tracing::warn!(error = %e, "daemon-health cold-start failure notice raise failed");
         }
     } else if notify_back {
         if let Err(e) =
@@ -479,6 +515,39 @@ mod tests {
         assert!(
             !f3.attempt_restart,
             "must not re-fire every subsequent failed tick"
+        );
+    }
+
+    /// Review follow-up: when a cold-down daemon's one restart attempt FAILS,
+    /// `refresh_health` raises `tray.daemon_quiet` regardless of
+    /// `daemon_was_healthy` (a failed recovery is news). This pins the invariant
+    /// that lets that notice be cleared by the ordinary recovery path rather
+    /// than leaking: `notify_back` keys off `consecutive_health_failures >= 2`,
+    /// NOT `daemon_was_healthy`, so a cold-start episode that reached the restart
+    /// (failures == 2) still fires `notify_back` on recovery.
+    #[test]
+    fn cold_start_failure_notice_is_cleared_on_recovery() {
+        let mut failures = 0u32;
+        let mut was_healthy = false; // cold start — never healthy this session
+        let mut reconciled = false;
+
+        decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled); // 1
+        let f2 = decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled); // 2
+        assert!(f2.attempt_restart, "restart attempted at the 2nd failure");
+        assert!(
+            !f2.notify_down,
+            "cold start stays silent on the went-quiet notice"
+        );
+        // Daemon stays down (restart failed); the counter keeps climbing.
+        decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled); // 3
+
+        // Recovery: notify_back must fire so the cold-start-failure notice
+        // (raised with the same `tray.daemon_quiet` id) gets cleared.
+        let recovered =
+            decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+        assert!(
+            recovered.notify_back,
+            "recovery must clear the cold-start failure notice"
         );
     }
 
