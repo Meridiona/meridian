@@ -21,6 +21,7 @@ export function CaptureSection({ settings, patch, save }: {
 }) {
   const [status, setStatus] = useState<SaveStatus>('idle')
   const [streamingStatus, setStreamingStatus] = useState<SaveStatus>('idle')
+  const [secondaryMonitorsStatus, setSecondaryMonitorsStatus] = useState<SaveStatus>('idle')
 
   return (
     <div className="max-w-[640px] flex flex-col gap-5">
@@ -75,6 +76,19 @@ export function CaptureSection({ settings, patch, save }: {
           onClick={() => save({
             pause_on_streaming_video: settings.pause_on_streaming_video,
           }, setStreamingStatus)}
+        />
+      </SectionCard>
+
+      <SectionCard>
+        <SectionHeader>Multiple monitors</SectionHeader>
+        <FieldRow label="Capture other monitors" description="On by default: Meridian glances at every connected monitor every so often, so work on a second screen shows up on your timeline whether or not it's the screen you're actively looking at. Turn this off if a second monitor may show things (a meeting, a personal window) you don't want tracked.">
+          <Switch checked={settings.capture_secondary_monitors} onCheckedChange={v => patch({ capture_secondary_monitors: v })} />
+        </FieldRow>
+        <SaveButton
+          status={secondaryMonitorsStatus}
+          onClick={() => save({
+            capture_secondary_monitors: settings.capture_secondary_monitors,
+          }, setSecondaryMonitorsStatus)}
         />
       </SectionCard>
 

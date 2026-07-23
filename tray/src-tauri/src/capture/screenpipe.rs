@@ -53,6 +53,21 @@ const CAPTURE_INTERVAL: Duration = Duration::from_secs(2);
 /// on every 2s tick would be wasted work for content the user isn't looking at.
 const SECONDARY_SCREEN_EVERY_N_TICKS: u32 = 5;
 
+/// How often (in ticks) the monitor list is re-enumerated — 15 × 2s = 30s.
+/// The list is otherwise held across ticks and reused, not re-fetched every
+/// tick: `list_monitors()`/`list_monitors_detailed()` does a full native
+/// enumeration (on macOS with ScreenCaptureKit enabled, a fresh
+/// `SCShareableContent` fetch — a known-flaky OS subsystem best not hammered
+/// on a 2s cadence for content that changes only on hotplug). Mirrors
+/// upstream screenpipe's own split between a slow monitor-watcher and a
+/// cached per-frame capture path (`vision_manager/monitor_watcher.rs` +
+/// `SafeMonitor`'s internal `cached_sck`/`cached_xcap` handles, MIT-era
+/// commit 920bbcfd2a "perf: cache monitor handle... capture retry with
+/// refresh"). A monitor that disconnects mid-window just fails its capture
+/// calls until the next refresh (logged, skipped) — the same graceful
+/// degradation `capture_secondary_screens` already had per-monitor.
+const MONITOR_REFRESH_EVERY_N_TICKS: u32 = 15;
+
 /// Outcome of the per-tick accessibility-tree walk — decides what (if anything)
 /// the OCR fallback does this tick.
 enum A11yOutcome {
@@ -81,12 +96,18 @@ pub struct ScreenpipeEngine {
     /// domain open on a non-focused screen still gets caught, via the fork's
     /// own title-based blocked-URL heuristic.
     pub ignored_urls: Vec<String>,
+    /// On by default (`RuntimeSettings::capture_secondary_monitors`) — a
+    /// second monitor is captured whether or not it's the screen the user is
+    /// actively looking at. Exposed as a Settings → Capture & Privacy toggle
+    /// for anyone who wants to turn it off.
+    pub capture_secondary_monitors: bool,
 }
 
 impl CaptureEngine for ScreenpipeEngine {
     async fn run(self, tx: FrameTx) -> anyhow::Result<()> {
         let pause_on_streaming = self.pause_on_streaming_video;
         let ignored_urls = self.ignored_urls;
+        let capture_secondary_monitors = self.capture_secondary_monitors;
         // Register with TCC + drive both prompts ourselves. Neither library
         // prompts on its own: screen-capture enumeration only PREFLIGHTS, and
         // the AX tree reads nothing until this process is a trusted AX client.
@@ -106,13 +127,23 @@ impl CaptureEngine for ScreenpipeEngine {
         // motivating case). Lives for the whole engine run, single-threaded.
         let mut streaming_gate = StreamingGate::new();
 
-        // Counts ticks so the secondary-monitor sweep runs on its own slower
-        // cadence (see SECONDARY_SCREEN_EVERY_N_TICKS) without a second timer.
+        // Enumerated ONCE here, then held across ticks and only refreshed on
+        // its own slow cadence (MONITOR_REFRESH_EVERY_N_TICKS) — see that
+        // constant's doc comment. `SafeMonitor` is `Clone` and internally
+        // caches its native handle, so reusing the same instances tick after
+        // tick is what actually makes that per-monitor cache do anything;
+        // re-listing every tick (the previous design) silently defeated it.
+        let mut monitors = screenpipe_screen::monitor::list_monitors().await;
+
+        // Counts ticks so the secondary-monitor sweep and the monitor-list
+        // refresh each run on their own slower cadence without a second timer.
         let mut tick: u32 = 0;
 
         info!(
             interval_s = CAPTURE_INTERVAL.as_secs(),
             secondary_screen_interval_s = CAPTURE_INTERVAL.as_secs() * SECONDARY_SCREEN_EVERY_N_TICKS as u64,
+            monitor_refresh_interval_s = CAPTURE_INTERVAL.as_secs() * MONITOR_REFRESH_EVERY_N_TICKS as u64,
+            capture_secondary_monitors,
             "capture: screenpipe engine started (a11y-tree + OCR fallback + secondary-monitor sweep)"
         );
         loop {
@@ -148,6 +179,7 @@ impl CaptureEngine for ScreenpipeEngine {
                 pause_on_streaming,
                 &mut streaming_gate,
                 skip_ocr_for_streaming,
+                &monitors,
             )
             .await
             {
@@ -159,13 +191,22 @@ impl CaptureEngine for ScreenpipeEngine {
             };
 
             tick = tick.wrapping_add(1);
+
+            if tick.is_multiple_of(MONITOR_REFRESH_EVERY_N_TICKS) {
+                monitors = screenpipe_screen::monitor::list_monitors().await;
+            }
+
             // Only sweep when this tick actually resolved a primary window:
             // `false` means either a privacy Skip (never sweep — see
             // capture_secondary_screens docs) or nothing was captured at all
             // (streaming-blocked OCR, no focused window).
-            if tick.is_multiple_of(SECONDARY_SCREEN_EVERY_N_TICKS) && primary_captured {
+            if capture_secondary_monitors
+                && tick.is_multiple_of(SECONDARY_SCREEN_EVERY_N_TICKS)
+                && primary_captured
+            {
                 if let Err(e) =
-                    capture_secondary_screens(&tx, &ignored_urls, skip_ocr_for_streaming).await
+                    capture_secondary_screens(&tx, &monitors, &ignored_urls, skip_ocr_for_streaming)
+                        .await
                 {
                     warn!(error = %e, "capture: secondary-monitor sweep failed (will retry next cycle)");
                 }
@@ -370,6 +411,7 @@ async fn dispatch(
     pause_on_streaming: bool,
     streaming_gate: &mut StreamingGate,
     skip_ocr_for_streaming: bool,
+    monitors: &[screenpipe_screen::monitor::SafeMonitor],
 ) -> anyhow::Result<bool> {
     match outcome {
         A11yOutcome::Frame(frame) => {
@@ -386,7 +428,7 @@ async fn dispatch(
                 );
                 return Ok(false);
             }
-            capture_once_ocr(tx, pause_on_streaming, streaming_gate).await
+            capture_once_ocr(tx, pause_on_streaming, streaming_gate, monitors).await
         }
     }
 }
@@ -397,20 +439,23 @@ async fn dispatch(
 /// meridian's per-app ETL model.
 ///
 /// Returns whether it actually OCR'd and sent at least one window.
+///
+/// `monitors` is the engine's cached list (see `MONITOR_REFRESH_EVERY_N_TICKS`)
+/// — this no longer re-enumerates on every call.
 async fn capture_once_ocr(
     tx: &FrameTx,
     pause_on_streaming: bool,
     streaming_gate: &mut StreamingGate,
+    monitors: &[screenpipe_screen::monitor::SafeMonitor],
 ) -> anyhow::Result<bool> {
-    let monitors = screenpipe_screen::monitor::list_monitors().await;
-    let Some(monitor) = monitors.into_iter().next() else {
+    let Some(monitor) = monitors.first() else {
         anyhow::bail!("no monitors enumerated (Screen Recording not granted yet?)");
     };
 
     // No app/title/url filters; focused window(s) only (`capture_unfocused = false`)
     // — we capture what the user is actively on, not every background window.
     let filters = WindowFilters::new(&[], &[], &[]);
-    let windows = capture_all_visible_windows(&monitor, &filters, false)
+    let windows = capture_all_visible_windows(monitor, &filters, false)
         .await
         .map_err(|e| anyhow::anyhow!("capture_all_visible_windows: {e}"))?;
 
@@ -529,8 +574,12 @@ async fn send_frame(
 /// (`is_title_suggesting_blocked_url`, used for exactly this "unfocused
 /// browser window, no URL available" case) so a known-ignored domain open
 /// on a non-focused screen isn't captured just because it's out of focus.
+///
+/// `monitors` is the engine's cached list (see `MONITOR_REFRESH_EVERY_N_TICKS`)
+/// — this no longer re-enumerates on every sweep.
 async fn capture_secondary_screens(
     tx: &FrameTx,
+    monitors: &[screenpipe_screen::monitor::SafeMonitor],
     ignored_urls: &[String],
     skip_ocr_for_streaming: bool,
 ) -> anyhow::Result<()> {
@@ -541,11 +590,10 @@ async fn capture_secondary_screens(
         return Ok(());
     }
 
-    let monitors = screenpipe_screen::monitor::list_monitors().await;
     let filters = WindowFilters::new(&[], &[], ignored_urls);
     let now = Utc::now();
 
-    for monitor in &monitors {
+    for monitor in monitors {
         let windows = match capture_all_visible_windows(monitor, &filters, false).await {
             Ok(w) => w,
             Err(e) => {

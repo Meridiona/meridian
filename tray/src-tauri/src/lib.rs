@@ -1077,6 +1077,8 @@ pub(crate) fn start_capture(
     // shared handle, so a Settings change never needs a capture restart.
     let settings = meridian_core::settings::load_runtime_settings();
     let pause_on_streaming_video = settings.pause_on_streaming_video;
+    // Off by default — see the field doc comment on RuntimeSettings.
+    let capture_secondary_monitors = settings.capture_secondary_monitors;
     // Handed to the engine's secondary-monitor sweep (multi-screen capture):
     // unlike the primary a11y/OCR path, those windows are never
     // system-focused, so the fork never resolves their `browser_url` for the
@@ -1198,6 +1200,7 @@ pub(crate) fn start_capture(
         let engine = ScreenpipeEngine {
             pause_on_streaming_video,
             ignored_urls,
+            capture_secondary_monitors,
         };
         tokio::select! {
             _ = &mut engine_cancel_rx => {
