@@ -243,7 +243,7 @@ export function Welcome({ onBegin, steps, ready, error, onRetry, downloadCount }
         }}>
           <p style={{ fontSize: 12, lineHeight: 1.55, color: 'var(--t-muted)' }}>
             You're the <span style={{ fontWeight: 600, color: 'var(--t-title)' }}>{ordinal(downloadCount)}</span> person
-            {' '}to let Meridian watch a day of their work. This only gets built by people like you actually using
+            {' '}to bring Meridian into their day. This only gets built by people like you actually using
             it - so if a day you cared about used to slip past unrecorded, it won't anymore. Glad you're here.
           </p>
         </div>
