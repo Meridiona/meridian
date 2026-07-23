@@ -40,3 +40,42 @@ impl NoWindow for tokio::process::Command {
         self
     }
 }
+
+// Windows-only: the trait does nothing off Windows, and `cmd.exe` (the console
+// child these exercise) exists only there. Both tests assert `.no_window()`
+// still produces a working spawn — the flag suppresses the console window, it
+// must not break launching the child. That the window is actually suppressed
+// was confirmed out-of-band on a real Windows host (a nested `cmd.exe →
+// powershell` grandchild reports a console `HWND` of 0 with the flag set and a
+// non-zero one without it); there is no non-flaky way to assert the window's
+// absence from a headless test, so these lock in the spawn-still-works half.
+#[cfg(all(test, windows))]
+mod tests {
+    use super::NoWindow;
+
+    #[test]
+    fn create_no_window_has_the_documented_value() {
+        assert_eq!(super::CREATE_NO_WINDOW, 0x0800_0000);
+    }
+
+    #[test]
+    fn no_window_std_command_still_spawns() {
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "exit 0"])
+            .no_window()
+            .status()
+            .expect("cmd should spawn with CREATE_NO_WINDOW set");
+        assert!(status.success());
+    }
+
+    #[tokio::test]
+    async fn no_window_tokio_command_still_spawns() {
+        let status = tokio::process::Command::new("cmd")
+            .args(["/C", "exit 0"])
+            .no_window()
+            .status()
+            .await
+            .expect("cmd should spawn with CREATE_NO_WINDOW set (tokio)");
+        assert!(status.success());
+    }
+}
