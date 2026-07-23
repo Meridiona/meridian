@@ -59,6 +59,16 @@ export function clockLabelFromIso(iso: string): string {
   return clockLabel(d.getHours() * 60 + d.getMinutes())
 }
 
+/** An RFC-3339 timestamp -> local minutes-from-midnight (same units as
+ *  `LaidSegment`/`toPx`), or `null` for an unparsable value. Used to place a
+ *  server-timestamped event (e.g. a `gaps` row) on the same minute axis the
+ *  task segments are laid out on. */
+export function minutesFromIso(iso: string): number | null {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  return d.getHours() * 60 + d.getMinutes()
+}
+
 /** 12-hour label for a whole hour-of-day (`0 -> "12 AM"`, `18 -> "6 PM"`). */
 export function hourClock(hour: number): string {
   const hod = ((hour % 24) + 24) % 24
