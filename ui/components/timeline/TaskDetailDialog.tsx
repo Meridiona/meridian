@@ -133,13 +133,22 @@ export function TaskDetailDialog({
 
   /** Delete this personal task: it stops appearing anywhere it's listed (today's
    *  plan, the Tasks board, suggestions) — see `meridian_core::task_create`'s
-   *  `delete_local_task` for why this is a hide, not a hard DB delete. */
+   *  `delete_local_task` for why this is a hide, not a hard DB delete.
+   *
+   *  This dialog is a shared modal layered on top of whatever surface opened it
+   *  (the Tasks board, the daily plan, a timeline card) — it never remounts that
+   *  surface, so its own already-fetched list would otherwise stay stale after a
+   *  successful delete. `onDeleted` covers the one caller that wires it
+   *  (PlanView); the `meridian:task-deleted` window event (same pattern as
+   *  NoticeBar's `meridian:open-tasks`) is the broadcast every OTHER list-owning
+   *  surface listens for instead of threading a callback through every opener. */
   function deleteTask() {
     if (deleting) return
     setDeleting(true)
     setDeleteError(null)
     invoke('delete_plan_task', { taskKey })
       .then(() => {
+        window.dispatchEvent(new CustomEvent('meridian:task-deleted', { detail: { taskKey } }))
         onDeleted?.()
         onClose()
       })
