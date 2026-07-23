@@ -48,7 +48,7 @@ export default function SetupWizard() {
   // rather than showing a placeholder.
   const [downloadCount, setDownloadCount] = useState<number | null>(null)
   useEffect(() => {
-    load<DownloadCountResponse>('/api/downloads-count', 'get_download_count')
+    load<DownloadCountResponse>('/api/download-count', 'get_download_count')
       .then((r) => setDownloadCount(r?.count ?? null))
       .catch(() => {})
   }, [])

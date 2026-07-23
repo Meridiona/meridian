@@ -17,7 +17,7 @@
 //!   `src/telemetry_spool/render.rs` — since the old JSONL-tailing `logs`
 //!   module and its dashboard consumer are both gone).
 //! - [`downloads`] — live Meridian download count for the setup wizard's
-//!   Welcome screen (`meridiona.com/api/downloads-count`).
+//!   Welcome screen (summed asset `download_count` off the GitHub releases API).
 //! - [`integrations`] — which trackers are connected (`/api/integrations`).
 //! - [`notices`]   — clear a fault banner (`/api/notices/[id]` DELETE).
 //! - [`notifications`] — the in-app banner dismiss write.

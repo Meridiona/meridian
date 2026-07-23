@@ -936,8 +936,8 @@ export interface InstallOutcome {
 
 /** Live Meridian download count for the setup wizard's Welcome screen.
  *  Mirrors `DownloadCount` in `tray/src-tauri/src/commands/downloads.rs`.
- *  `count` is null when the website was unreachable and there's no cached
- *  value yet — the Welcome screen just omits the line in that case. */
+ *  `count` is null when the GitHub releases API was unreachable and there's
+ *  no cached value yet — the Welcome screen just omits the line in that case. */
 export interface DownloadCountResponse {
   count: number | null
 }
