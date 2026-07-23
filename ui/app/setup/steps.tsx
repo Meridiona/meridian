@@ -176,7 +176,21 @@ function IntelligenceBody({ wiz }: { wiz: Wiz }) {
 }
 
 // ── Welcome (pre-step intro) ──────────────────────────────────────────────────
-export function Welcome({ onBegin, steps, ready, error, onRetry }: {
+
+/** `214` → `'214th'`, `1` → `'1st'`, `11`/`12`/`13` → `'11th'`/`'12th'`/`'13th'`
+ *  (the -11/-12/-13 exception to the usual 1/2/3 → st/nd/rd rule). */
+function ordinal(n: number): string {
+  const rem100 = n % 100
+  if (rem100 >= 11 && rem100 <= 13) return `${n}th`
+  switch (n % 10) {
+    case 1: return `${n}st`
+    case 2: return `${n}nd`
+    case 3: return `${n}rd`
+    default: return `${n}th`
+  }
+}
+
+export function Welcome({ onBegin, steps, ready, error, onRetry, downloadCount }: {
   onBegin: () => void
   steps: StepMeta[]
   /** False until `get_platform` resolves — "Get started" stays disabled so the
@@ -184,6 +198,11 @@ export function Welcome({ onBegin, steps, ready, error, onRetry }: {
   ready: boolean
   error: boolean
   onRetry: () => void
+  /** Live count of Meridian downloads so far (page.tsx's `get_download_count`
+   *  fetch), for the founder-note card below. `null` while loading or if the
+   *  website was unreachable — the card just doesn't render rather than
+   *  showing a placeholder or a stale-looking zero. */
+  downloadCount: number | null
 }) {
   const points = [
     { t: 'On-device', d: 'Your screen is read and understood locally on your device, never uploaded.' },
@@ -215,6 +234,21 @@ export function Welcome({ onBegin, steps, ready, error, onRetry }: {
           </div>
         ))}
       </div>
+      {downloadCount !== null && (
+        <div style={{
+          maxWidth: 360, width: '100%', textAlign: 'left', margin: '0 0 22px',
+          padding: '13px 15px', borderRadius: 13,
+          background: 'color-mix(in srgb, var(--color-state-proposal) 6%, transparent)',
+          border: '0.5px solid var(--t-card-border)',
+        }}>
+          <p style={{ fontSize: 12, lineHeight: 1.55, color: 'var(--t-muted)' }}>
+            Hey - you're the <span style={{ fontWeight: 600, color: 'var(--t-title)' }}>{ordinal(downloadCount)}</span> person
+            {' '}to give Meridian a shot. That still means a lot to me - every one of you is who I'm building this for: people
+            doing hard work who deserve to be seen for it. Welcome aboard.
+          </p>
+          <p style={{ fontSize: 12, color: 'var(--t-faint)', marginTop: 6 }}>- Aditya</p>
+        </div>
+      )}
       {error ? (
         <div className="flex flex-col items-center" style={{ gap: 8 }}>
           <p style={{ fontSize: 12, color: 'var(--color-state-pending)' }}>Couldn't detect your platform - try again.</p>

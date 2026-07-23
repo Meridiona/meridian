@@ -16,6 +16,8 @@
 //!   (also the local read path for `meridian logs`'s OTel-spool decode — see
 //!   `src/telemetry_spool/render.rs` — since the old JSONL-tailing `logs`
 //!   module and its dashboard consumer are both gone).
+//! - [`downloads`] — live Meridian download count for the setup wizard's
+//!   Welcome screen (`meridiona.com/api/downloads-count`).
 //! - [`integrations`] — which trackers are connected (`/api/integrations`).
 //! - [`notices`]   — clear a fault banner (`/api/notices/[id]` DELETE).
 //! - [`notifications`] — the in-app banner dismiss write.
@@ -45,6 +47,7 @@ pub mod daemon_control;
 pub mod dashboard;
 pub mod day_summary;
 pub mod diagnostics;
+pub mod downloads;
 pub mod health;
 pub mod integrations;
 pub mod llm_lab;
@@ -76,6 +79,7 @@ pub use daemon::*;
 pub use dashboard::*;
 pub use day_summary::*;
 pub use diagnostics::*;
+pub use downloads::*;
 pub use health::*;
 pub use integrations::*;
 pub use llm_lab::*;

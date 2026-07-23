@@ -568,6 +568,7 @@ pub fn run() {
             commands::is_first_run,
             commands::mark_setup_complete,
             commands::get_platform,
+            commands::get_download_count,
             commands::save_account_email,
             commands::get_account_email,
             commands::clear_account_email,

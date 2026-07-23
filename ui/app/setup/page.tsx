@@ -14,7 +14,7 @@ import { invoke, load, mutate, tauri } from '@/lib/bridge'
 import { buildSteps, Welcome, Completion } from './steps'
 import type { StepMeta, Wiz } from './steps'
 import type { NotifState } from './data'
-import type { IntegrationsResponse } from '@/lib/api-types'
+import type { DownloadCountResponse, IntegrationsResponse } from '@/lib/api-types'
 import type { RuntimeSettings } from '@/lib/settings'
 import { DEFAULT_LLM_PROVIDER, providerChoiceFields, type LlmProviderId } from '@/lib/llm-providers'
 import { useLlmProviderDetection } from '@/components/LlmProviderPicker'
@@ -41,6 +41,17 @@ export default function SetupWizard() {
   }, [])
   useEffect(() => { resolvePlatform() }, [resolvePlatform])
   const steps = useMemo(() => buildSteps(platform), [platform])
+
+  // The live "you're the Nth person" count for the Welcome screen — a warm
+  // one-time fetch (no polling; the number only needs to be roughly current).
+  // Stays null on any failure, which the Welcome screen treats as "say nothing"
+  // rather than showing a placeholder.
+  const [downloadCount, setDownloadCount] = useState<number | null>(null)
+  useEffect(() => {
+    load<DownloadCountResponse>('/api/downloads-count', 'get_download_count')
+      .then((r) => setDownloadCount(r?.count ?? null))
+      .catch(() => {})
+  }, [])
 
   // Step 1 — permissions (live)
   const [perms, setPerms] = useState<Wiz['perms']>({ accessibility: null, screen: null, notifications: null })
@@ -252,6 +263,7 @@ export default function SetupWizard() {
             ready={platform !== null}
             error={platformError}
             onRetry={resolvePlatform}
+            downloadCount={downloadCount}
           />
         ) : (
           <div className="flex" style={{ height: '100%' }}>
