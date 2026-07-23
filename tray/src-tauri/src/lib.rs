@@ -522,6 +522,7 @@ pub fn run() {
             commands::create_plan_task,
             commands::edit_plan_task,
             commands::set_plan_task_done,
+            commands::delete_plan_task,
             commands::triage_decision,
             commands::triage_ignore,
             commands::apply_ticket_fix,
