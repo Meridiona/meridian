@@ -43,11 +43,11 @@ const EXCERPT_LEN: usize = 130; // description excerpt length for card display
 /// The most tasks a day's plan may hold.
 ///
 /// A product limit, not a technical one. A plan is a statement of intent for one
-/// day, and a day that claims eleven tasks isn't a plan — it's a backlog, which
+/// day, and a day that claims dozens of tasks isn't a plan — it's a backlog, which
 /// makes the plan useless as the prior the worklog matcher now leans on
 /// ([`load_plan_candidates`]). Most focused days land on 1-3; the existing
 /// advisory nag in `PlanTodayColumn.tsx` fires at 5. This is the hard stop.
-pub const MAX_PLAN_TASKS: usize = 10;
+pub const MAX_PLAN_TASKS: usize = 20;
 
 // ── Types (field names match the TS interfaces byte-for-byte) ─────────────────
 
