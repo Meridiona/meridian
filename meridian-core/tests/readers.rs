@@ -889,6 +889,103 @@ async fn local_task_appears_on_the_board_and_is_not_done() {
 }
 
 #[tokio::test]
+async fn soft_deleting_a_personal_task_hides_it_everywhere_and_is_idempotent() {
+    // Deleting a personal task is a soft hide (`deleted_at`), migration 075: the
+    // row must stay (its key is never reissued), the second delete must be a
+    // no-op rather than an error, and the hidden task must vanish from both the
+    // available-plan reader (`build_available`) and the committed-plan reader
+    // (`build_plan_response`).
+    let pool = make_task_create_pool().await;
+
+    let today = chrono::Local::now().date_naive();
+    let date = today.format("%Y-%m-%d").to_string();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let recent_since = (chrono::Local::now()
+        - Duration::days(meridian_core::plan::RECENT_WORK_DAYS))
+    .format("%Y-%m-%d")
+    .to_string();
+
+    // Create a personal task and commit it to today's plan.
+    let key =
+        meridian_core::task_create::create_local_task(&pool, "Draft the memo", "d", "Task", "t0")
+            .await
+            .unwrap();
+    let available =
+        meridian_core::plan::build_available(&pool, &date, today, now_ms, &recent_since)
+            .await
+            .unwrap();
+    assert!(
+        available.iter().any(|a| a.key == key),
+        "sanity: the task is on the board before deletion"
+    );
+    let body = meridian_core::plan::PlanBody {
+        action: "confirm".into(),
+        date: Some(date.clone()),
+        task_key: None,
+        task_keys: Some(vec![key.clone()]),
+    };
+    meridian_core::plan::apply_plan_action(&pool, &body, &date, today, "t0", available.clone())
+        .await
+        .unwrap();
+    let before = meridian_core::plan::build_plan_response(&pool, &date, today, available.clone())
+        .await
+        .unwrap();
+    assert!(
+        before.plan.iter().any(|p| p.task_key == key),
+        "sanity: the task is in the committed plan before deletion"
+    );
+
+    // First delete hides the row; a second is idempotent (no-op, not an error).
+    assert!(
+        meridian_core::task_create::delete_local_task(&pool, &key, "t1")
+            .await
+            .unwrap(),
+        "first delete reports a row changed"
+    );
+    assert!(
+        !meridian_core::task_create::delete_local_task(&pool, &key, "t2")
+            .await
+            .unwrap(),
+        "re-deleting an already-hidden task is a no-op"
+    );
+    assert!(
+        meridian_core::task_create::task_exists(&pool, &key)
+            .await
+            .unwrap(),
+        "soft delete keeps the row so its key is never reissued"
+    );
+
+    // Excluded from the available-plan reader.
+    let available_after =
+        meridian_core::plan::build_available(&pool, &date, today, now_ms, &recent_since)
+            .await
+            .unwrap();
+    assert!(
+        !available_after.iter().any(|a| a.key == key),
+        "a hidden task must leave build_available"
+    );
+
+    // Excluded from the committed-plan reader, even though its daily_plan row remains.
+    let after =
+        meridian_core::plan::build_plan_response(&pool, &date, today, available_after.clone())
+            .await
+            .unwrap();
+    assert!(
+        !after.plan.iter().any(|p| p.task_key == key),
+        "a hidden task must leave the committed plan"
+    );
+
+    // Key allocation is preserved: the next personal task climbs past the hidden one.
+    let next = meridian_core::task_create::create_local_task(&pool, "Next", "d", "Task", "t3")
+        .await
+        .unwrap();
+    assert_eq!(
+        next, "LOCAL-2",
+        "a hidden task's key must never be reissued"
+    );
+}
+
+#[tokio::test]
 async fn local_task_survives_a_provider_scoped_prune() {
     // THE load-bearing invariant. Every sync's prune is `WHERE provider = '<tracker>'`,
     // which is what makes it structurally unable to see a 'local' row. If a future

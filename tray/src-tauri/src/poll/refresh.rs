@@ -17,6 +17,7 @@ use crate::state::{ActiveSession, AppState, HealthStatus, TodayBreakdown};
 use meridian_core::SqlitePool;
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
+use tracing::Instrument;
 
 /// Run the local health check, fold it into [`AppState`], and raise/clear the
 /// went-quiet / back-online notice (debounced to the 2nd consecutive failure).
@@ -89,12 +90,18 @@ pub(super) async fn refresh_health(
     // user-facing notice below does. Best-effort: the result feeds the notice
     // detail when we also notify.
     let restart_result = if attempt_restart {
-        let r = crate::commands::daemon_control::restart().await;
-        match &r {
-            Err(e) => tracing::warn!(error = %e, "daemon-health auto-restart attempt failed"),
-            Ok(()) => tracing::info!("daemon-health auto-restart attempted"),
+        // Wrap the restart attempt in a span so the health-path recovery is
+        // traceable end-to-end, matching the fast watchdog's span.
+        async {
+            let r = crate::commands::daemon_control::restart().await;
+            match &r {
+                Err(e) => tracing::warn!(error = %e, "daemon-health auto-restart attempt failed"),
+                Ok(()) => tracing::info!("daemon-health auto-restart attempted"),
+            }
+            Some(r)
         }
-        Some(r)
+        .instrument(tracing::info_span!("daemon_watchdog.restart"))
+        .await
     } else {
         None
     };
@@ -114,7 +121,7 @@ pub(super) async fn refresh_health(
             Some(Err(_)) => {
                 "Tried to restart it automatically and that failed too. Tap to check what happened."
             }
-            _ => "Tried restarting it automatically — give it a moment.",
+            _ => "Tried restarting it automatically - give it a moment.",
         };
         if let Err(e) = meridian::notices::raise_typed(
             pool,

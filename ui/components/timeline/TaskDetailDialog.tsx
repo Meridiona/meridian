@@ -110,6 +110,10 @@ export function TaskDetailDialog({
   // ticket's title/description stays read-only here (edit it in the tracker).
   const isPersonal = detail?.provider === LOCAL_PROVIDER
   const canEditText = isPersonal && editableTask
+  // Deletion is available for every personal task, even one on a past-day plan
+  // (editableTask=false): removing a mistakenly created task must not be gated
+  // on the historical text-edit permission. Editing stays gated by canEditText.
+  const canDeleteTask = isPersonal
 
   function startEdit() {
     setDraftTitle(detail?.title ?? '')
@@ -354,7 +358,7 @@ export function TaskDetailDialog({
               </button>
             </div>
           </div>
-        ) : (detail?.url || onAdd || onRemove || canEditText) && (
+        ) : (detail?.url || onAdd || onRemove || canEditText || canDeleteTask) && (
           <div className="px-7 py-5 border-t shrink-0 flex items-center gap-2.5" style={{ borderColor: 'var(--t-hair)' }}>
             {canEditText && (editing ? (
               <>
@@ -370,19 +374,19 @@ export function TaskDetailDialog({
                 </button>
               </>
             ) : (
-              <>
-                <button onClick={startEdit}
-                  className="mt-body-sm px-3.5 py-2 rounded-lg bg-ctrl"
-                  style={{ border: '1px solid var(--t-ctrl-border)', color: 'var(--t-muted)' }}>
-                  Edit
-                </button>
-                <button onClick={() => setConfirmingDelete(true)}
-                  className="mt-body-sm px-3.5 py-2 rounded-lg bg-ctrl"
-                  style={{ border: '1px solid var(--t-ctrl-border)', color: 'var(--color-state-pending)' }}>
-                  Delete
-                </button>
-              </>
+              <button onClick={startEdit}
+                className="mt-body-sm px-3.5 py-2 rounded-lg bg-ctrl"
+                style={{ border: '1px solid var(--t-ctrl-border)', color: 'var(--t-muted)' }}>
+                Edit
+              </button>
             ))}
+            {canDeleteTask && !editing && (
+              <button onClick={() => setConfirmingDelete(true)}
+                className="mt-body-sm px-3.5 py-2 rounded-lg bg-ctrl"
+                style={{ border: '1px solid var(--t-ctrl-border)', color: 'var(--color-state-pending)' }}>
+                Delete
+              </button>
+            )}
             {canEdit && (inToday ? (onRemove && (
               <button onClick={() => { onRemove(); onClose() }}
                 className="mt-body-sm px-3.5 py-2 rounded-lg bg-ctrl"

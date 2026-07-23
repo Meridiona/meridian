@@ -208,6 +208,21 @@ async fn table_exists(pool: &SqlitePool, name: &str) -> bool {
         .is_some()
 }
 
+/// Whether `table` has `column` — used to stay graceful on a DB that predates a
+/// migration (here, `pm_tasks.deleted_at` from 075). Same swallow-on-error shape
+/// as [`table_exists`]: a probe failure reads as "absent", so the caller falls
+/// back to the pre-migration query instead of erroring.
+async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> bool {
+    sqlx::query_scalar::<_, i64>("SELECT 1 FROM pragma_table_info(?) WHERE name=?")
+        .bind(table)
+        .bind(column)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+}
+
 // ── Loaders ───────────────────────────────────────────────────────────────────
 
 struct MetaRow {
@@ -388,7 +403,10 @@ pub async fn build_available(
 ) -> anyhow::Result<Vec<AvailableTask>> {
     let has_curation = table_exists(pool, "pm_task_curation").await;
     // `t.deleted_at IS NULL` (migration 075) — a task the user deleted from the
-    // composer must not be offered back as a suggestion.
+    // composer must not be offered back as a suggestion. Gated on the column
+    // existing so a DB not yet migrated to 075 still reads (graceful missing
+    // schema, like the curation join above).
+    let has_deleted_at = column_exists(pool, "pm_tasks", "deleted_at").await;
     let sql = format!(
         r#"SELECT t.task_key, t.title, t.provider, t.url,
                   COALESCE(t.status_raw,'') AS status_raw,
@@ -399,10 +417,15 @@ pub async fn build_available(
                   {} AS decision
            FROM pm_tasks t
            {}
-           WHERE t.deleted_at IS NULL"#,
+           {}"#,
         if has_curation { "c.decision" } else { "NULL" },
         if has_curation {
             "LEFT JOIN pm_task_curation c ON c.task_key = t.task_key"
+        } else {
+            ""
+        },
+        if has_deleted_at {
+            "WHERE t.deleted_at IS NULL"
         } else {
             ""
         },
@@ -735,6 +758,12 @@ async fn plan_join_rows(pool: &SqlitePool, date: &str) -> anyhow::Result<Vec<Pla
     .flatten()
     .is_some();
 
+    // 075 added pm_tasks.deleted_at; a DB that predates it lacks the column, so
+    // select a NULL literal instead of erroring on `t.deleted_at` (the join's
+    // consumers treat a NULL as "not deleted" — see the `deleted_at.is_none()`
+    // filter in load_plan).
+    let has_deleted_at = column_exists(pool, "pm_tasks", "deleted_at").await;
+
     let sql = format!(
         r#"SELECT p.task_key, p.position, p.origin,
                   {},
@@ -743,7 +772,7 @@ async fn plan_join_rows(pool: &SqlitePool, date: &str) -> anyhow::Result<Vec<Pla
                   COALESCE(t.status_raw,'') AS status_raw,
                   COALESCE(t.is_terminal,0) AS is_terminal,
                   t.due_date, t.description_text, t.epic_title, t.parent_key,
-                  t.priority, t.issue_type, t.story_points, t.deleted_at
+                  t.priority, t.issue_type, t.story_points, {}
            FROM daily_plan p
            LEFT JOIN pm_tasks t ON t.task_key = p.task_key
            WHERE p.plan_date = ?
@@ -752,6 +781,11 @@ async fn plan_join_rows(pool: &SqlitePool, date: &str) -> anyhow::Result<Vec<Pla
             "p.task_snapshot"
         } else {
             "NULL AS task_snapshot"
+        },
+        if has_deleted_at {
+            "t.deleted_at"
+        } else {
+            "NULL AS deleted_at"
         },
     );
     let rows: Vec<PlanJoinRow> = sqlx::query_as::<_, PlanJoinRow>(&sql)

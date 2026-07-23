@@ -103,7 +103,11 @@ pub(super) fn run_json(plan: &Plan) {
         }
     }
     if flags.remove_data {
-        reset_tcc_grants();
+        // Surface any TCC reset that didn't clearly succeed so automation sees
+        // the real outcome instead of assuming a clean reset.
+        for f in reset_tcc_grants() {
+            report.errors.push(format!("tccutil reset {f}"));
+        }
     }
     // `--purge` only: nuke anything left under ~/.meridian the itemized lists
     // above didn't name. Mirrors the human path's `--purge`-only gate — see the
