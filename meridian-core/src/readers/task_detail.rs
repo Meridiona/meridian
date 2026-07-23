@@ -36,6 +36,17 @@ pub struct TaskDetail {
     pub start_date: Option<String>,
     pub description: String,
     pub acceptance_criteria: Option<String>,
+    /// The worklog update Meridian auto-logged onto this task's own row the last
+    /// time its day-work matched here. Set for `provider = 'local'` tasks (a real
+    /// ticket's updates live as comments on the tracker, not on the row) - AND
+    /// carried onto a real ticket's row when a personal task ESCALATES onto it
+    /// (`escalate::graduate_local_task`), so the update stays visible after the
+    /// task graduates. `None` when nothing has been logged. This is what the task
+    /// dialog shows so the user can read the auto-posted update - and, while still
+    /// personal, decide whether to escalate it onto a real tracker.
+    pub local_worklog_text: Option<String>,
+    /// When [`Self::local_worklog_text`] was last written (RFC3339), or `None`.
+    pub local_worklog_posted_at: Option<String>,
 }
 
 #[derive(FromRow)]
@@ -55,6 +66,8 @@ struct TaskRow {
     start_date: Option<String>,
     description_text: Option<String>,
     acceptance_criteria: Option<String>,
+    local_worklog_text: Option<String>,
+    local_worklog_posted_at: Option<String>,
 }
 
 /// One blank-to-`None` trimmed string (mirrors the route's `(x)?.trim() || null`).
@@ -74,7 +87,8 @@ pub async fn get_task_detail(
         r#"SELECT task_key, title, provider, url,
                   status_raw, is_terminal, issue_type, epic_title, parent_key,
                   priority, story_points, due_date, start_date,
-                  description_text, acceptance_criteria
+                  description_text, acceptance_criteria,
+                  local_worklog_text, local_worklog_posted_at
            FROM pm_tasks WHERE task_key = ?"#,
     )
     .bind(key)
@@ -107,6 +121,8 @@ pub async fn get_task_detail(
             start_date: r.start_date,
             description: r.description_text.unwrap_or_default(),
             acceptance_criteria: trimmed(r.acceptance_criteria),
+            local_worklog_text: trimmed(r.local_worklog_text),
+            local_worklog_posted_at: r.local_worklog_posted_at,
             key: r.task_key,
         }
     }))

@@ -15,7 +15,7 @@
 //! - `tray/src-tauri/src/commands/uninstall.rs` — the only consumer of this
 //!   contract; keep [`JsonReport`]'s shape in sync with it.
 
-use super::{remove_path, uid_str, Item, Plan};
+use super::{remove_path, reset_tcc_grants, uid_str, Item, Plan};
 use serde::Serialize;
 
 /// The `--json` output shape — a full plan (dry-run) or a full result
@@ -101,6 +101,9 @@ pub(super) fn run_json(plan: &Plan) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => report.errors.push(format!("{}: {e}", f.display())),
         }
+    }
+    if flags.remove_data {
+        reset_tcc_grants();
     }
     // `--purge` only: nuke anything left under ~/.meridian the itemized lists
     // above didn't name. Mirrors the human path's `--purge`-only gate — see the

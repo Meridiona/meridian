@@ -20,6 +20,7 @@ import type { TaskSummary, TaskStatusOption } from '@/lib/api-types'
 import type { HygieneIssue } from '@/lib/hygiene'
 import { load, mutate, openExternal } from '@/lib/bridge'
 import { StatusPicker } from './StatusPicker'
+import { DatePicker } from './DatePicker'
 
 export type CleanupGroup = 'must' | 'nice' | 'review'
 
@@ -334,7 +335,7 @@ function Control({ control, value, onChange }: { control?: string; value: string
   const style: React.CSSProperties = { border: '1px solid var(--t-input-border)', background: 'var(--t-input)', color: 'var(--t-title)' }
   switch (control) {
     case 'date_picker':
-      return <input type="date" value={value} onChange={e => onChange(e.target.value)} className={base} style={style} />
+      return <DatePicker value={value} onChange={onChange} />
     case 'assign_self':
       return <span className="flex-1 mt-body-sm" style={{ color: 'var(--t-muted)' }}>Assign this ticket to you.</span>
     case 'pick_priority':

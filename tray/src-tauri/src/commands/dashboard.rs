@@ -250,8 +250,13 @@ pub struct BoardTicket {
 /// The matcher itself never sees this list — it only compares against the day's
 /// planned tasks ([`meridian_core::plan::load_plan_candidates`]). This is the
 /// human override for when the work wasn't on the plan, or the model bound it to
-/// the wrong task. `postable_only = true`: a personal task has no tracker to post
-/// a comment to, so it can't be a target.
+/// the wrong task.
+///
+/// `postable_only = false`: personal tasks (`provider = 'local'`) are valid picks,
+/// because a match onto one is written to its own row rather than posted (see
+/// `meridian::pm_worklog::generate::post_to_local_task`). The board's open-only
+/// scope is otherwise kept — Done tickets are NOT pulled in here; a focus task
+/// that gets marked Done is handled where the plan lives, not on the whole board.
 ///
 /// Deliberately uncapped. The old ">40 tickets, refuse" gate existed because a
 /// long list degrades a PROMPT; a searchable list a person reads has no such
@@ -264,7 +269,7 @@ pub async fn get_board_tickets(
     let Some(pool) = pool.inner() else {
         return Err("meridian.db is not open yet".to_string());
     };
-    let rows = meridian_core::board::fetch_open_board(pool, true)
+    let rows = meridian_core::board::fetch_open_board(pool, false)
         .await
         .map_err(|e| {
             tracing::warn!(error = %e, "get_board_tickets failed");
@@ -318,11 +323,10 @@ pub async fn retarget_day_task_worklog(
     let Some(provider) = provider else {
         return Err("that ticket is not on your board - try again after a sync".to_string());
     };
-    if provider == meridian_core::task_create::LOCAL_PROVIDER {
-        return Err(
-            "that's a personal task, so there's no tracker to post the update to".to_string(),
-        );
-    }
+    // A personal task ('local') is a valid manual pick: approve writes the update
+    // onto the task's own row rather than posting a comment (there is no tracker
+    // thread), via the daemon's post_to_local_task. So no refusal here - the
+    // provider carried on the target tells approve which path to take.
 
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     meridian_core::day_task_worklogs::retarget_draft(
@@ -424,6 +428,97 @@ pub async fn dismiss_worklog_target(
             tracing::warn!(error = %e, "dismiss_worklog_target failed");
             e.to_string()
         })
+}
+
+/// The body of a [`dismiss_day_task`] / [`restore_day_task`] call.
+#[derive(Debug, serde::Deserialize)]
+pub struct DayTaskCorrectionBody {
+    pub day: String,
+    pub task_id: String,
+}
+
+/// The body of a [`merge_day_task`] call.
+#[derive(Debug, serde::Deserialize)]
+pub struct MergeDayTaskBody {
+    pub day: String,
+    pub task_id: String,
+    pub into_task_id: String,
+}
+
+/// Dismiss an inferred day-task (timeline workstream): hide it and keep it hidden
+/// across the hourly re-fold. Returns the day's tasks as they now stand, so the
+/// timeline column re-renders without a second round trip.
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn dismiss_day_task(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    body: DayTaskCorrectionBody,
+) -> Result<meridian_core::day_tasks::DayTasksResponse, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    meridian_core::day_task_corrections::dismiss_day_task(pool, &body.day, &body.task_id, &now)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "dismiss_day_task failed");
+            e.to_string()
+        })?;
+    meridian_core::day_tasks::get_day_tasks(pool, &body.day)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Merge one inferred day-task into another (`task_id` folds into `into_task_id`).
+/// The merged task's time and summary move onto the target and it disappears; the
+/// correction persists so the fold never re-splits it. Returns the fresh task list.
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn merge_day_task(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    body: MergeDayTaskBody,
+) -> Result<meridian_core::day_tasks::DayTasksResponse, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    meridian_core::day_task_corrections::merge_day_task(
+        pool,
+        &body.day,
+        &body.task_id,
+        &body.into_task_id,
+        &now,
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!(error = %e, "merge_day_task failed");
+        e.to_string()
+    })?;
+    meridian_core::day_tasks::get_day_tasks(pool, &body.day)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Undo a day-task dismiss (un-hide it). Returns the fresh task list.
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn restore_day_task(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    body: DayTaskCorrectionBody,
+) -> Result<meridian_core::day_tasks::DayTasksResponse, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    meridian_core::day_task_corrections::restore_day_task(pool, &body.day, &body.task_id, &now)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "restore_day_task failed");
+            e.to_string()
+        })?;
+    meridian_core::day_tasks::get_day_tasks(pool, &body.day)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// The user closed the Plan modal. Restarts the plan-nudge hold-back clock:

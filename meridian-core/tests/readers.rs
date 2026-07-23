@@ -34,7 +34,7 @@ async fn make_pool() -> SqlitePool {
         CREATE TABLE pm_tasks (
             task_key TEXT, title TEXT, description_text TEXT, issue_type TEXT,
             status_raw TEXT, is_terminal INTEGER, provider TEXT, url TEXT,
-            parent_key TEXT, epic_title TEXT, due_date TEXT, start_date TEXT
+            parent_key TEXT, epic_title TEXT, due_date TEXT, start_date TEXT, deleted_at TEXT
         );
         "#,
     )
@@ -376,7 +376,8 @@ async fn make_plan_pool() -> SqlitePool {
         r#"CREATE TABLE pm_tasks (
             task_key TEXT, title TEXT, provider TEXT, url TEXT, status_raw TEXT,
             is_terminal INTEGER, due_date TEXT, updated_at TEXT, description_text TEXT,
-            epic_title TEXT, parent_key TEXT, priority TEXT, issue_type TEXT, story_points TEXT
+            epic_title TEXT, parent_key TEXT, priority TEXT, issue_type TEXT, story_points TEXT,
+            deleted_at TEXT
         );"#,
         r#"CREATE TABLE pm_task_curation (task_key TEXT, decision TEXT);"#,
         r#"CREATE TABLE app_sessions (
@@ -754,7 +755,7 @@ async fn make_task_create_pool() -> SqlitePool {
             is_terminal INTEGER NOT NULL DEFAULT 0, due_date TEXT, updated_at TEXT NOT NULL,
             description_text TEXT NOT NULL DEFAULT '', epic_title TEXT, parent_key TEXT,
             priority TEXT NOT NULL DEFAULT '', issue_type TEXT NOT NULL DEFAULT '',
-            story_points TEXT NOT NULL DEFAULT '', project_key TEXT NOT NULL DEFAULT ''
+            story_points TEXT NOT NULL DEFAULT '', project_key TEXT NOT NULL DEFAULT '', deleted_at TEXT
         );"#,
         r#"CREATE TABLE pm_task_curation (task_key TEXT, decision TEXT);"#,
         r#"CREATE TABLE app_sessions (
@@ -1196,6 +1197,57 @@ async fn a_planned_ticket_off_the_board_resolves_from_its_snapshot() {
     );
 }
 
+/// A Done focus task pruned from `pm_tasks` still resolves its provider from the
+/// plan snapshot — so the worklog matcher doesn't drop the very ticket that
+/// finishing it just closed. A live `pm_tasks` row still wins; an unknown key is
+/// still `None`.
+#[tokio::test]
+async fn provider_for_key_falls_back_to_the_plan_snapshot() {
+    let pool = make_board_pool().await;
+
+    // KAN-315: a Done focus task, gone from pm_tasks, only its plan snapshot left.
+    sqlx::query(
+        "INSERT INTO daily_plan (plan_date, task_key, position, origin, task_snapshot, created_at, updated_at) \
+         VALUES ('2026-07-21', 'KAN-315', 0, 'manual', ?, '2026-07-21T00:00:00Z', '2026-07-21T00:00:00Z')",
+    )
+    .bind(r#"{"title":"Design daily summary","provider":"jira"}"#)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // KAN-1: still on the board — the live row must win over any snapshot.
+    sqlx::query(
+        "INSERT INTO pm_tasks (task_key, title, provider, status_raw, is_terminal, updated_at) \
+         VALUES ('KAN-1', 'T', 'github', 'To Do', 0, '2026-07-21T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        meridian_core::board::provider_for_key(&pool, "KAN-315")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("jira"),
+        "a pruned focus task recovers its provider from the plan snapshot"
+    );
+    assert_eq!(
+        meridian_core::board::provider_for_key(&pool, "KAN-1")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("github"),
+        "a live pm_tasks row wins over any snapshot"
+    );
+    assert_eq!(
+        meridian_core::board::provider_for_key(&pool, "NOPE-1")
+            .await
+            .unwrap(),
+        None,
+        "a key on neither the board nor any plan is still unknown"
+    );
+}
+
 /// The candidate description is the FULL text, not the plan card's excerpt.
 ///
 /// `PlanItem.description` is truncated to ~130 chars for display. Feeding that to
@@ -1273,7 +1325,7 @@ async fn make_board_pool() -> sqlx::SqlitePool {
             is_terminal INTEGER NOT NULL DEFAULT 0, due_date TEXT, updated_at TEXT NOT NULL,
             description_text TEXT NOT NULL DEFAULT '', epic_title TEXT, parent_key TEXT,
             priority TEXT NOT NULL DEFAULT '', issue_type TEXT NOT NULL DEFAULT '',
-            story_points TEXT
+            story_points TEXT, deleted_at TEXT
         );"#,
         r#"CREATE TABLE pm_task_curation (task_key TEXT, decision TEXT);"#,
         // Migration 041 + 044. The matcher's candidate set reads this.
@@ -1324,9 +1376,12 @@ async fn a_whole_list_write_refuses_past_the_cap() {
             Vec::new(),
         )
         .await
-        .expect_err("11 tasks must be refused");
+        .expect_err("one past the cap must be refused");
         assert!(
-            err.to_string().contains("up to 10 tasks"),
+            err.to_string().contains(&format!(
+                "up to {} tasks",
+                meridian_core::plan::MAX_PLAN_TASKS
+            )),
             "{action}: the user must be told the limit, got: {err}"
         );
     }
@@ -1337,7 +1392,7 @@ async fn a_whole_list_write_refuses_past_the_cap() {
     assert_eq!(n, 0, "a refused write must not half-apply");
 }
 
-/// Exactly the cap is fine — the limit is 10 tasks, not 9.
+/// Exactly the cap is fine — the limit is MAX_PLAN_TASKS tasks, not one fewer.
 #[tokio::test]
 async fn a_whole_list_write_accepts_exactly_the_cap() {
     let pool = make_board_pool().await;
@@ -1383,7 +1438,7 @@ async fn the_cap_counts_distinct_keys() {
     let mut keys: Vec<String> = (1..=meridian_core::plan::MAX_PLAN_TASKS)
         .map(|i| format!("KAN-{i}"))
         .collect();
-    keys.push("KAN-1".to_string()); // 11 entries, 10 distinct
+    keys.push("KAN-1".to_string()); // one more entry than distinct keys
 
     let body = meridian_core::plan::PlanBody {
         action: "set".to_string(),
@@ -1643,7 +1698,7 @@ async fn make_worklog_pool() -> SqlitePool {
         CREATE TABLE pm_tasks (
             task_key TEXT, title TEXT, description_text TEXT, issue_type TEXT,
             status_raw TEXT, is_terminal INTEGER, provider TEXT, url TEXT,
-            parent_key TEXT, epic_title TEXT, due_date TEXT, start_date TEXT
+            parent_key TEXT, epic_title TEXT, due_date TEXT, start_date TEXT, deleted_at TEXT
         );
         "#,
     )

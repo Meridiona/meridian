@@ -50,17 +50,21 @@ impl OAuthTokens {
 /// `meridian_core::paths::home_dir()`, duplicated here rather than taken as a
 /// dependency: `meridian_core` pulls in sqlx/libsqlite3-sys for its DB layer,
 /// which this config-free, daemon-and-tray-shared crate deliberately has no
-/// reason to carry for one directory lookup.
-fn home_dir() -> PathBuf {
+/// reason to carry for one directory lookup. `None` when both fail, rather
+/// than falling back to the working directory — an OAuth token store must
+/// never land somewhere that depends on whatever `cwd` happened to launch
+/// the process.
+fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
         .map(PathBuf::from)
         .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn oauth_dir() -> PathBuf {
-    home_dir().join(".meridian").join("oauth")
+fn oauth_dir() -> Result<PathBuf> {
+    let home = home_dir()
+        .ok_or_else(|| anyhow::anyhow!("could not resolve the home directory (HOME is unset and no platform profile directory was found)"))?;
+    Ok(home.join(".meridian").join("oauth"))
 }
 
 /// Reject a provider name that isn't a plain identifier, so a token/lock path can
@@ -86,7 +90,7 @@ fn validate_provider(provider: &str) -> Result<()> {
 /// provider name that could escape the oauth dir (see [`validate_provider`]).
 pub fn path(provider: &str) -> Result<PathBuf> {
     validate_provider(provider)?;
-    Ok(oauth_dir().join(format!("{provider}.json")))
+    Ok(oauth_dir()?.join(format!("{provider}.json")))
 }
 
 /// Whether a token file exists for this provider. Used to decide if OAuth is the
@@ -111,7 +115,7 @@ pub fn save(tokens: &OAuthTokens) -> Result<()> {
     // Validate the provider up front (also gates the tmp path below, which
     // interpolates it too) before touching the filesystem.
     let final_path = path(&tokens.provider)?;
-    let dir = oauth_dir();
+    let dir = oauth_dir()?;
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("creating OAuth dir {}", dir.display()))?;
     let tmp_path = dir.join(format!(".{}.json.tmp", tokens.provider));
@@ -171,7 +175,7 @@ impl Drop for ProviderLock {
 /// provider so the lock path can't escape the oauth dir (see [`validate_provider`]).
 fn lock_path(provider: &str) -> Result<PathBuf> {
     validate_provider(provider)?;
-    Ok(oauth_dir().join(format!("{provider}.lock")))
+    Ok(oauth_dir()?.join(format!("{provider}.lock")))
 }
 
 /// Acquire the exclusive cross-process advisory lock for `provider`'s token store,
@@ -198,7 +202,7 @@ async fn lock_provider_with_timeout(
     use anyhow::bail;
 
     let path = lock_path(provider)?; // validates provider before any FS work
-    let dir = oauth_dir();
+    let dir = oauth_dir()?;
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("creating OAuth dir {}", dir.display()))?;
     let file = std::fs::OpenOptions::new()

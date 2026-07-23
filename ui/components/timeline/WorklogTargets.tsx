@@ -11,10 +11,11 @@
 
 'use client'
 
-import type { DayTaskWorklogDraft, WorklogTarget } from '@/lib/api-types'
+import type { DayTaskWorklogDraft, GeneratedWorklogUpdate, WorklogTarget } from '@/lib/api-types'
 import type { Tracker } from '@/lib/integrations'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { trackerName } from '@/lib/integrations'
+import { Bullets, Field } from './dayTaskKit'
 
 /** Where the update will land: every matched ticket, or the proposed new one.
  *
@@ -54,19 +55,57 @@ export function DraftTargets({ draft, busy, trackers, onOpenTask, onDismiss, onS
   // comment may already be live on the tracker and removing the row here would not
   // remove it there - it would only hide it.
   const editable = draft.state === 'drafted'
+  // Per-ticket bodies: when the model split the work (any target carries its own
+  // update), each row shows ITS body - they are different, and posting one shared
+  // block below would contradict that. When none does (a single match, a legacy
+  // draft, the fallback), the shared body stays below the list and rows stay compact.
+  const perTicket = draft.targets.some((t) => t.update != null)
   return (
     <div className="space-y-1.5">
       {draft.targets.length > 1 && (
         <p className="mt-label" style={{ color: 'var(--t-faint)' }}>
-          This update posts to all {draft.targets.length}
+          {perTicket
+            ? `${draft.targets.length} tickets, each with its own update`
+            : `This update posts to all ${draft.targets.length}`}
         </p>
       )}
       {draft.targets.map((t) => (
         <TargetRow key={t.task_key} target={t} busy={busy}
           canDismiss={editable && draft.targets.length > 0}
+          body={perTicket ? (t.update ?? draft.update) : null}
           onOpen={() => onOpenTask(t.task_key, t.task_title ?? undefined)}
           onDismiss={() => onDismiss(t.task_key)} />
       ))}
+    </div>
+  )
+}
+
+/** Whether the draft carries a distinct per-ticket update on any target. Exported
+ *  so the panel can decide whether to ALSO show the shared body block (it must not
+ *  when the bodies live in the rows). */
+export function hasPerTicketUpdates(draft: DayTaskWorklogDraft): boolean {
+  return draft.targets.some((t) => t.update != null)
+}
+
+/** One update rendered inline: summary, its labelled sections, and a status line.
+ *  The shared shape used both per-ticket (in a target row) and for the whole draft. */
+export function UpdateBody({ update }: { update: GeneratedWorklogUpdate }) {
+  const sections = update.sections.filter((s) => s.heading.trim() && s.points.some((p) => p.trim()))
+  return (
+    <div className="space-y-2 mt-1.5">
+      {update.summary && (
+        <p className="mt-body-sm" style={{ color: 'var(--t-title)', fontSize: 12.5, lineHeight: 1.55 }}>{update.summary}</p>
+      )}
+      {sections.map((sec, i) => (
+        <Field key={`${sec.heading}-${i}`} label={sec.heading}>
+          <Bullets items={sec.points.filter((p) => p.trim())} size={12} />
+        </Field>
+      ))}
+      {update.status && (
+        <Field label="Status">
+          <p className="mt-body-sm" style={{ color: 'var(--t-muted)', fontSize: 12, lineHeight: 1.5 }}>{update.status}</p>
+        </Field>
+      )}
     </div>
   )
 }
@@ -138,17 +177,21 @@ function ProposeProvider({ draft, trackers, busy, onSetProvider }: {
   )
 }
 
-/** One ticket the update lands on, with the reason it's here and a way out. */
-function TargetRow({ target, busy, canDismiss, onOpen, onDismiss }: {
+/** One ticket the update lands on, with the reason it's here and a way out.
+ *  `body`, when set, is THIS ticket's own update rendered inline (the multi-match
+ *  split) - null when the shared body is shown once below the whole list instead. */
+function TargetRow({ target, busy, canDismiss, body, onOpen, onDismiss }: {
   target: WorklogTarget; busy: boolean; canDismiss: boolean
+  body: GeneratedWorklogUpdate | null
   onOpen: () => void; onDismiss: () => void
 }) {
-  const { task_key, task_title, confidence, manual, posted, outcome_unknown, error } = target
+  const { task_key, task_title, provider, confidence, manual, posted, outcome_unknown, error } = target
+  const isPersonal = provider === 'local'
   const why = manual ? 'you picked this' : `${Math.round(confidence * 100)}% match`
   // Three states, and the middle one must not be dressed up as either neighbour:
   // we genuinely do not know whether this comment is live, and telling the user
   // "posted" or "not posted" would both be guesses they'd act on.
-  const state = posted ? 'posted' : outcome_unknown ? 'not confirmed' : why
+  const state = posted ? (isPersonal ? 'logged' : 'posted') : outcome_unknown ? 'not confirmed' : why
   return (
     <div className="flex items-stretch gap-1.5">
       <button onClick={onOpen}
@@ -156,12 +199,17 @@ function TargetRow({ target, busy, canDismiss, onOpen, onDismiss }: {
         style={{ background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)', cursor: 'pointer' }}>
         <p className="mt-body-sm" style={{ color: 'var(--color-state-proposal)', fontSize: 12, fontWeight: 700 }}>
           {posted ? <span aria-hidden>✓ </span> : null}
-          Comment on {task_key}
+          {isPersonal ? 'Logged to' : 'Comment on'} {task_key}
           <span style={{ opacity: 0.7, fontWeight: 400 }}> · {state}</span>
         </p>
         {task_title && (
           <p className="mt-body-sm mt-0.5 truncate" style={{ color: 'var(--color-state-proposal)', fontSize: 12, fontWeight: 500, opacity: 0.9 }}>
             {task_title}
+          </p>
+        )}
+        {isPersonal && (
+          <p className="mt-body-sm mt-0.5" style={{ color: 'var(--t-faint)', fontSize: 11, lineHeight: 1.4 }}>
+            Personal task - not logged to your PM provider. Open it to create a ticket and post, or match it to an existing one.
           </p>
         )}
         {outcome_unknown && (
@@ -175,6 +223,7 @@ function TargetRow({ target, busy, canDismiss, onOpen, onDismiss }: {
             {error}
           </p>
         )}
+        {body && <UpdateBody update={body} />}
       </button>
       {canDismiss && !posted && (
         <button onClick={onDismiss} disabled={busy}

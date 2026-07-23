@@ -54,16 +54,17 @@ pub mod capture;
 pub use db::{get_active_session, open_existing, ActiveSession};
 
 pub use capture::{
-    insert_capture_frame, insert_capture_ui_event, insert_pause_gap, CaptureFrameInsert,
-    CaptureUiEventInsert,
+    insert_capture_frame, insert_capture_secondary_screen, insert_capture_ui_event,
+    insert_pause_gap, CaptureFrameInsert, CaptureSecondaryScreenInsert, CaptureUiEventInsert,
 };
 
 pub use util::{date, hygiene, intervals, llm_capacity, paths};
 
 pub use readers::{
     active, board, capture_apps, coding_agents, current_task, day_evidence, day_summaries,
-    day_task_worklogs, day_tasks, hour_status, hour_text, integrations, llm_experiments, notices,
-    plan, proposed, task_create, task_detail, tasks, today, triage, week, worklogs,
+    day_task_corrections, day_task_worklogs, day_tasks, hour_status, hour_text, integrations,
+    llm_experiments, notices, plan, proposed, task_create, task_detail, tasks, today, triage, week,
+    worklogs,
 };
 
 pub use canonical_task::{CanonicalTask, PersonRef, Priority, Provider, StatusCategory, TaskKind};

@@ -329,6 +329,7 @@ export default function PlanView() {
           onClose={() => setOpenTask(null)}
           onAdd={() => commit([...today, openTask])}
           onRemove={() => commit(today.filter(t => t.key !== openTask.key))}
+          onDeleted={() => commit(today.filter(t => t.key !== openTask.key))}
         />
       )}
     </DragDropContext>

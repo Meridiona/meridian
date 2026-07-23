@@ -88,19 +88,21 @@ fn missing_launch_agents_dir_is_empty() {
 #[test]
 fn data_and_runtime_items_only_list_existing_entries_and_stay_disjoint() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path();
-    std::fs::write(dir.join(".env"), "x").unwrap();
-    std::fs::write(dir.join("meridian.db"), "x").unwrap();
-    std::fs::create_dir_all(dir.join("runtime")).unwrap();
+    let home = tmp.path();
+    let meridian = home.join(".meridian");
+    std::fs::create_dir_all(&meridian).unwrap();
+    std::fs::write(meridian.join(".env"), "x").unwrap();
+    std::fs::write(meridian.join("meridian.db"), "x").unwrap();
+    std::fs::create_dir_all(meridian.join("runtime")).unwrap();
     // "settings.json" and "mlx-server-venv" deliberately absent.
 
-    let data = data_items(dir);
-    let runtime = runtime_items(dir);
+    let data = data_items(home);
+    let runtime = runtime_items(&meridian);
 
-    assert!(data.contains(&dir.join(".env")));
-    assert!(data.contains(&dir.join("meridian.db")));
+    assert!(data.contains(&meridian.join(".env")));
+    assert!(data.contains(&meridian.join("meridian.db")));
     assert!(!data.iter().any(|p| p.ends_with("settings.json")));
-    assert!(runtime.contains(&dir.join("runtime")));
+    assert!(runtime.contains(&meridian.join("runtime")));
     assert!(!runtime.iter().any(|p| p.ends_with("mlx-server-venv")));
 
     for p in &data {
@@ -109,6 +111,25 @@ fn data_and_runtime_items_only_list_existing_entries_and_stay_disjoint() {
             "data and runtime item lists must be disjoint: {p:?}"
         );
     }
+}
+
+/// On macOS, `data_items` also picks up the tray's OS-managed WebKit/AppKit
+/// caches (keyed off `com.meridiona.tray`) when present, and ignores them when
+/// absent — mirrors the on-disk existence filter every other item list uses.
+#[cfg(target_os = "macos")]
+#[test]
+fn data_items_includes_app_caches_when_present() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+    let cache = home.join("Library/Caches/com.meridiona.tray");
+    std::fs::create_dir_all(&cache).unwrap();
+    // Saved Application State deliberately absent — must not appear.
+
+    let data = data_items(home);
+    assert!(data.contains(&cache));
+    assert!(!data
+        .iter()
+        .any(|p| p.ends_with("com.meridiona.tray.savedState")));
 }
 
 /// `model_items` only returns catalog entries that exist on disk, and never
