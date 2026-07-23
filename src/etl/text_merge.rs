@@ -25,14 +25,65 @@ pub fn build_session_text(frames: &[FrameText]) -> String {
     // The HashSet is freed at the end of this function — ~400KB peak for 1000-frame blocks.
     let chrome = build_chrome_set(frames);
 
-    let mut seen: HashSet<String> = HashSet::with_capacity(4096);
-    let mut out = String::with_capacity(8192);
-    let mut last_marker_secs: Option<i64> = None;
+    let mut builder = SessionTextBuilder::new();
+    builder.feed(frames, &chrome);
+    builder.finish()
+}
 
-    for frame in frames {
-        process_frame(frame, &mut seen, &mut out, &mut last_marker_secs, &chrome);
+/// Incremental version of [`build_session_text`]'s per-frame fold.
+///
+/// Lets a caller build up `session_text` across multiple pages of frames
+/// (e.g. read from the DB in bounded chunks rather than materialized as one
+/// `Vec<FrameText>`) without changing the resulting text at all — feeding all
+/// frames via repeated [`SessionTextBuilder::feed`] calls, in the same order
+/// they'd appear in a single slice, then calling [`SessionTextBuilder::finish`]
+/// once, produces output identical to `build_session_text(&all_frames)`. The
+/// `chrome` set must already reflect the whole frame range (see
+/// `crate::etl::text_filter::ChromeFreqAccumulator`) since chrome lines can
+/// only be identified with a global view. See `rebuild_session_text_paginated`
+/// in `crate::etl::block_ops` for the caller that uses this to avoid an
+/// unbounded-memory rebuild on long single-app sessions.
+pub struct SessionTextBuilder {
+    seen: HashSet<String>,
+    out: String,
+    last_marker_secs: Option<i64>,
+}
+
+impl SessionTextBuilder {
+    pub fn new() -> Self {
+        Self {
+            seen: HashSet::with_capacity(4096),
+            out: String::with_capacity(8192),
+            last_marker_secs: None,
+        }
     }
-    dedup_cursor_prefixes(out)
+
+    /// Folds one page of frames into the running output. `chrome` must be the
+    /// final, fully-accumulated chrome set for the whole frame range — not
+    /// just this page.
+    pub fn feed(&mut self, frames: &[FrameText], chrome: &HashSet<String>) {
+        for frame in frames {
+            process_frame(
+                frame,
+                &mut self.seen,
+                &mut self.out,
+                &mut self.last_marker_secs,
+                chrome,
+            );
+        }
+    }
+
+    /// Consumes the builder, applying the same final cleanup pass
+    /// (`dedup_cursor_prefixes`) that [`build_session_text`] applies.
+    pub fn finish(self) -> String {
+        dedup_cursor_prefixes(self.out)
+    }
+}
+
+impl Default for SessionTextBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Merge new frame content into an existing session_text string (incremental update).

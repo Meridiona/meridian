@@ -7,9 +7,12 @@ use tracing::{debug, info, warn};
 use crate::db::meridian::{
     close_active_session_with, get_active_session, upsert_active_session, write_session_traceparent,
 };
-use crate::db::screenpipe::{get_frame_full_texts, get_last_ui_event_for_app};
+use crate::db::screenpipe::{
+    fetch_frame_text_page, get_last_ui_event_for_app, FRAME_TEXT_PAGE_SIZE,
+};
 use crate::etl::extractor::extract_block_context;
-use crate::etl::text_merge::build_session_text;
+use crate::etl::text_filter::ChromeFreqAccumulator;
+use crate::etl::text_merge::SessionTextBuilder;
 
 use super::session_builder::{build_active_session, merge_into_active};
 
@@ -19,6 +22,58 @@ pub(super) fn timestamp_gap_secs(earlier: &str, later: &str) -> Option<i64> {
     let t0 = chrono::DateTime::parse_from_rfc3339(earlier).ok()?;
     let t1 = chrono::DateTime::parse_from_rfc3339(later).ok()?;
     Some((t1 - t0).num_seconds())
+}
+
+/// Rebuilds `session_text` for the frame range `min_frame_id..=max_frame_id` by
+/// reading frames from the DB in `FRAME_TEXT_PAGE_SIZE`-sized pages instead of
+/// materializing the whole range in one `Vec<FrameText>`.
+///
+/// Two passes over the paginated read are required: chrome-line detection
+/// (`ChromeFreqAccumulator`) needs a global view of line frequencies across the
+/// *entire* range before any single frame can be classified (see
+/// `crate::etl::text_filter::build_chrome_set`), so pass 1 accumulates
+/// frequencies page-by-page and pass 2 re-pages the same range to fold each
+/// frame into the session text using the now-final chrome set.
+///
+/// This is a memory-shape change only: for the same frame range, the returned
+/// string is functionally identical to
+/// `build_session_text(&get_frame_full_texts(pool, min_frame_id, max_frame_id).await?)` —
+/// no data is truncated or dropped, only held in bounded pages rather than all
+/// at once.
+pub(super) async fn rebuild_session_text_paginated(
+    pool: &SqlitePool,
+    min_frame_id: i64,
+    max_frame_id: i64,
+) -> Result<String> {
+    // Pass 1: accumulate chrome-line frequencies across every page.
+    let mut chrome_acc = ChromeFreqAccumulator::new();
+    let mut after_id = min_frame_id - 1;
+    loop {
+        let page = fetch_frame_text_page(pool, after_id, max_frame_id, FRAME_TEXT_PAGE_SIZE)
+            .await
+            .context("paginated frame-text read (chrome frequency pass)")?;
+        if page.is_empty() {
+            break;
+        }
+        after_id = page.last().map(|f| f.frame_id).unwrap_or(after_id);
+        chrome_acc.feed(&page);
+    }
+    let chrome = chrome_acc.finish();
+
+    // Pass 2: re-page the same range and fold each frame into the session text.
+    let mut builder = SessionTextBuilder::new();
+    let mut after_id = min_frame_id - 1;
+    loop {
+        let page = fetch_frame_text_page(pool, after_id, max_frame_id, FRAME_TEXT_PAGE_SIZE)
+            .await
+            .context("paginated frame-text read (session-text build pass)")?;
+        if page.is_empty() {
+            break;
+        }
+        after_id = page.last().map(|f| f.frame_id).unwrap_or(after_id);
+        builder.feed(&page, &chrome);
+    }
+    Ok(builder.finish())
 }
 
 /// Groups the positional fields shared by `close_block` / `upsert_open_block`
@@ -175,10 +230,16 @@ pub(super) async fn close_block(
             // sub-threshold batches (< CHROME_FREQ_THRESHOLD frames) permanently in the
             // stored text; a full rebuild sees the complete frame set so the chrome
             // pre-pass correctly identifies and removes them.
-            let all_frames = get_frame_full_texts(meridian, active.min_frame_id, b.max_frame_id)
-                .await
-                .context("re-fetch frames for session_text rebuild on close")?;
-            let rebuilt_text = build_session_text(&all_frames);
+            //
+            // Paginated rather than a single fetch_all: a session that stays in one app
+            // for hours (an IDE, one browser tab) never closes early, so by the time it
+            // finally does, `active.min_frame_id..b.max_frame_id` can span many thousands
+            // of frames — a single `get_frame_full_texts` there would spike RSS by the
+            // whole session's OCR text at once. See `rebuild_session_text_paginated`.
+            let rebuilt_text =
+                rebuild_session_text_paginated(meridian, active.min_frame_id, b.max_frame_id)
+                    .await
+                    .context("re-fetch frames for session_text rebuild on close")?;
             let merged = merge_into_active(active, &ctx, b.idle_frame_count, Some(rebuilt_text))?;
             let new_id = close_active_session_with(meridian, &merged, run_id).await?;
             info!(
