@@ -1,3 +1,31 @@
+## [1.78.0](https://github.com/Meridiona/meridian/compare/v1.77.0...v1.78.0) (2026-07-23)
+
+### 🚀 Features
+
+* **plan:** let a user delete a personal task they created ([d523a34](https://github.com/Meridiona/meridian/commit/d523a344bd53e2c1fc75e9e4c7f3c7d25dd7ad53))
+* **timeline:** dismiss and merge inferred day-tasks ([d19e17c](https://github.com/Meridiona/meridian/commit/d19e17ce2eb6c1f246ff20b1f3563ea24342496a))
+* **tray:** fast daemon watchdog — restart a down daemon within ~10s ([41cdfbc](https://github.com/Meridiona/meridian/commit/41cdfbc86147be846801c967ffaefbaf523d1328))
+
+### 🐛 Bug Fixes
+
+* **analytics:** identify PostHog events by email, dedup per device+email ([753c004](https://github.com/Meridiona/meridian/commit/753c0048963b5a73a351be3f3d1f2b900abe6b7d))
+* **plan:** raise daily plan task limit from 10 to 20 ([02814fc](https://github.com/Meridiona/meridian/commit/02814fc30cd2642e8b2ce4e08429cb2ff22524dc))
+* **review:** address CodeRabbit findings on the pre-main release ([#568](https://github.com/Meridiona/meridian/issues/568)) ([01ad083](https://github.com/Meridiona/meridian/commit/01ad0838b6accb96e73cff795e2c84fcfbb9432f))
+* **tasks:** refresh the Tasks board after a personal-task delete ([1c7b2fe](https://github.com/Meridiona/meridian/commit/1c7b2fe7b8d842aa146741a0940279da8bfb1f0c))
+* **tray:** surface a notice when a cold-start daemon restart fails ([ba217cf](https://github.com/Meridiona/meridian/commit/ba217cf2dc30c5ba2e3111c8d67140846d7122a5)), closes [#563](https://github.com/Meridiona/meridian/issues/563)
+* **uninstall:** clear tray app caches and TCC grants on full uninstall ([dc74bf3](https://github.com/Meridiona/meridian/commit/dc74bf393f090490df61e8ae986c37bac2eae5e3))
+* **windows:** auto-restart a daemon that's already down at tray startup ([4006ad4](https://github.com/Meridiona/meridian/commit/4006ad47cb94398002a5f26287033895a505df62))
+* **windows:** stop the running daemon before restaging its binary ([72e0941](https://github.com/Meridiona/meridian/commit/72e09415cd3923af94aa82eab9da50541a903dff))
+* **windows:** suppress the console-window flash on child process spawns ([2d73396](https://github.com/Meridiona/meridian/commit/2d733964573cb242d66c1dac4efc6aeb74567591))
+
+### ✅ Tests
+
+* **windows:** cover proc_ext::NoWindow with spawn tests ([5db7686](https://github.com/Meridiona/meridian/commit/5db76867a64747f90f3b130671b4c5996ed385bb))
+
+### 🔧 Chores
+
+* raise the forced-update floor to 1.77.0 ([4280e6d](https://github.com/Meridiona/meridian/commit/4280e6d4623c4406491ebd190c5c4b1423fc3612))
+
 ## [1.77.0](https://github.com/Meridiona/meridian/compare/v1.76.0...v1.77.0) (2026-07-22)
 
 ### 🚀 Features
