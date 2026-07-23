@@ -100,7 +100,9 @@ describe('planStore.ts is the single source of plan truth', () => {
   it('keys entries by day and hands useSyncExternalStore a STABLE empty snapshot', () => {
     // A fresh object per getSnapshot call re-renders forever.
     expect(store).toContain('useSyncExternalStore')
-    expect(store).toMatch(/^const store = new Map<string, PlanEntry>\(\)/m)
+    // LRU-capped (memory-leak-audit fix) rather than a bare Map — same
+    // get/set semantics, bounded growth over the webview's whole lifetime.
+    expect(store).toMatch(/^const store = new LruMap<string, PlanEntry>\(100\)/m)
     expect(store).toMatch(/^const EMPTY: PlanEntry = /m)
   })
 
