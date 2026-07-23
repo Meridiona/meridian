@@ -1,3 +1,136 @@
+## [1.77.0](https://github.com/Meridiona/meridian/compare/v1.76.0...v1.77.0) (2026-07-22)
+
+### 🚀 Features
+
+* **cleanup:** replace the native date input with an interactive calendar ([cdf0e2e](https://github.com/Meridiona/meridian/commit/cdf0e2ee5efd3d8201a1ea5a130074bef904e90f))
+* **summary:** give composing its own screen instead of one static line ([c3ec779](https://github.com/Meridiona/meridian/commit/c3ec77914c0c4a6fcc0eaf59a4c5fc25856cad96))
+* **summary:** make plan adherence deterministic and auto-compose at end of day ([ebdb8af](https://github.com/Meridiona/meridian/commit/ebdb8af29e519ba1ba3fefdce4b4f0a2be6baef8))
+* **summary:** rebuild the daily summary around planned vs actual ([c679adb](https://github.com/Meridiona/meridian/commit/c679adb0a3dadcf6c6e4387cdd216aee4a90e5a5))
+* **summary:** redesign the daily summary around a ring, cards, and a single checklist ([eeeaef1](https://github.com/Meridiona/meridian/commit/eeeaef10d4785602f12d044b71bcdb81960e2acf))
+* **worklog:** escalate personal tasks to a real ticket, per-ticket update bodies ([49f4a02](https://github.com/Meridiona/meridian/commit/49f4a02a3108eb14ba58c2171f920b75e32234c1))
+
+### 🐛 Bug Fixes
+
+* **capture:** address CodeRabbit findings on the a11y restart fix (PR [#553](https://github.com/Meridiona/meridian/issues/553)) ([27f3964](https://github.com/Meridiona/meridian/commit/27f3964c42af863b28bc040b967d01178b312f6c)), closes [#552](https://github.com/Meridiona/meridian/issues/552)
+* **capture:** serialize UI-event recorder restarts to stop an a11y observer double-free ([1919053](https://github.com/Meridiona/meridian/commit/1919053950dbcb5483acdf08ca4215d1f3a12697))
+* **cleanup:** stop the date picker popover clipping against the card ([070d189](https://github.com/Meridiona/meridian/commit/070d189f3d51ee95cad0acdd0b65ba703130f765))
+* **jira:** surface correct remedy for OAuth vs API-token sync failures ([57c4ba4](https://github.com/Meridiona/meridian/commit/57c4ba42ce9559aa1b3080e237ebab49d2c57ff7))
+* **plan:** keep daily-plan tasks alive through provider prune ([d6b2f8a](https://github.com/Meridiona/meridian/commit/d6b2f8a7424139955cec3e834e32c672d6cca2bb))
+* **summary:** badge unplanned work "went further" to read as accomplishment ([19ee96c](https://github.com/Meridiona/meridian/commit/19ee96cae7a7309ca6ba3ec9afe2126a737aa0bf))
+* **summary:** key the plan list by ticket so the rows reconcile with the ring ([66a4ffa](https://github.com/Meridiona/meridian/commit/66a4ffaf7a708e0d7811a9bad671c6eb1ee663ea))
+* **summary:** label unplanned work "bonus", not "extra" ([5b825ef](https://github.com/Meridiona/meridian/commit/5b825ef79eff875165fec5f0463d9258334684ea))
+* **summary:** tick the checkbox for a planned ticket that closed with no tracked work ([41c4d55](https://github.com/Meridiona/meridian/commit/41c4d55e26898016da87d1ecf69136119d22de77))
+* **worklog:** address PR [#532](https://github.com/Meridiona/meridian/issues/532) review - escalation idempotency, summary races, docs ([f99fe5b](https://github.com/Meridiona/meridian/commit/f99fe5b1b026864f5a960f08a70991ae67ca5003))
+
+### ♻️ Refactoring
+
+* **summary:** put the daily summary in a card with real structure ([76fe559](https://github.com/Meridiona/meridian/commit/76fe559b9093f24a8b122dd860c4d95e66971a49))
+
+### 🎨 Styles
+
+* **timeline:** drop green/yellow/red-ish hues from day-task cards ([9a75a52](https://github.com/Meridiona/meridian/commit/9a75a52758582144d1a002ce8de1707edbdfcbaf))
+
+### 🔧 Chores
+
+* **deps:** bump screenpipe-fork license pin to 3c99154 (a11y double-free fix) ([0ae7d89](https://github.com/Meridiona/meridian/commit/0ae7d89c85724c94292c882408a54c48922b078f)), closes [#552](https://github.com/Meridiona/meridian/issues/552) [#3](https://github.com/Meridiona/meridian/issues/3)
+* **merge:** merge pre-main into feat/daily-summary-rebuild ([598abfc](https://github.com/Meridiona/meridian/commit/598abfcc9d170d0d089b30204fdf9d1581f36cc5))
+* **ui:** temporarily hide the Board Cleanup view ([a8aad69](https://github.com/Meridiona/meridian/commit/a8aad69a1fe1591e934da002b4a0b35843d30618))
+
+## [1.76.0](https://github.com/Meridiona/meridian/compare/v1.75.1...v1.76.0) (2026-07-22)
+
+### 🚀 Features
+
+* **capture:** capture context from secondary monitors ([236b46e](https://github.com/Meridiona/meridian/commit/236b46eb1344b39141e9d43f79433c6828c556ff))
+* **integrations:** add View tasks and Sync now to connected tracker cards ([51a1df7](https://github.com/Meridiona/meridian/commit/51a1df7ccafd0020731fc0d8c07cf7642e7d2950))
+* **jira:** add multi-select project picker for Jira, mirroring GitHub ([e640dfa](https://github.com/Meridiona/meridian/commit/e640dfaed8dcd0949045f3366002ea627f1cdca8))
+
+### 🐛 Bug Fixes
+
+* address PR [#540](https://github.com/Meridiona/meridian/issues/540) review comments ([f054e65](https://github.com/Meridiona/meridian/commit/f054e65fcbb774634e5f1e270e1109484c82dbc5))
+* address PR [#542](https://github.com/Meridiona/meridian/issues/542) review comments ([dd88ab8](https://github.com/Meridiona/meridian/commit/dd88ab8f4bd5a46cabc15cbd199a78f5b35e5831))
+* **capture:** exclude the focused monitor by is_focused, not name matching ([fae04b6](https://github.com/Meridiona/meridian/commit/fae04b6c1fcd503d498bdc9a252f256f8d5f274f))
+* **health:** use Vec::contains to satisfy clippy on Windows ([770439e](https://github.com/Meridiona/meridian/commit/770439e13f89f06240868befd06e7553f3bc0436))
+* **oauth:** open browser via rundll32 on Windows ([736af8d](https://github.com/Meridiona/meridian/commit/736af8d8528b4f4bcedc8746056414adbcd69f36))
+* **ui:** guard ProviderTasks.fetchTasks against overlapping stale responses ([e5110ba](https://github.com/Meridiona/meridian/commit/e5110ba628ab44613fee45cb2dbd7265a10f8810)), closes [#542](https://github.com/Meridiona/meridian/issues/542)
+* **ui:** stop AccountAuthControl mounting a second ClerkProvider ([0fd5942](https://github.com/Meridiona/meridian/commit/0fd5942bace80f65807cb914aa2b5ed467a5a01e))
+* **windows:** make daemon recovery resilient beyond the HOME fix, and stop meridian_bin silently missing the staged exe ([0278532](https://github.com/Meridiona/meridian/commit/027853204019be773a3a95e0ebdde1309c947c8b))
+* **windows:** resolve HOME via meridian_core::paths, quote OAuth browser-launch URLs ([207f592](https://github.com/Meridiona/meridian/commit/207f592360f5cff4f0875a2f7661ca9472a5fdd3))
+
+### 🔧 Chores
+
+* add .gitattributes to force LF line endings ([9c80d68](https://github.com/Meridiona/meridian/commit/9c80d6899641877616db1a8a807b035d9f20282c))
+* raise the forced-update floor to 1.75.0 ([301e929](https://github.com/Meridiona/meridian/commit/301e92937bbcbbaafbac513d60411da7f74af89f))
+
+## [1.75.1](https://github.com/Meridiona/meridian/compare/v1.75.0...v1.75.1) (2026-07-22)
+
+### 🐛 Bug Fixes
+
+* address CodeRabbit review findings on PR [#539](https://github.com/Meridiona/meridian/issues/539) ([b5a10b7](https://github.com/Meridiona/meridian/commit/b5a10b725d49f344e9cb999e9a12e763703d310d))
+* **llm,tray:** resolve two more Windows-only daemon/CLI-detection bugs ([abb2ad7](https://github.com/Meridiona/meridian/commit/abb2ad73d5a328d0b51e801e1bc9128c43c6b05d))
+* **llm:** find and spawn provider CLIs correctly on Windows ([72bacc5](https://github.com/Meridiona/meridian/commit/72bacc5def04877d1fd80429994fb481e9c9a163))
+* **oauth:** open the system browser on Windows, not just macOS ([30eef72](https://github.com/Meridiona/meridian/commit/30eef72bca761f78231ce140a1b7ee2538c73d83))
+* **release:** wire set-version.sh back into semantic-release via exec ([5e7b3ea](https://github.com/Meridiona/meridian/commit/5e7b3ead6af6a6b8b5c8a75c57f7249d9071cd0f))
+* **tray:** read real Windows notification permission instead of the plugin's Granted stub ([ed1ad16](https://github.com/Meridiona/meridian/commit/ed1ad16ca52098e6168a2b4b3af852615ead828f))
+* **tray:** stop hardcoding Accessibility/Screen Recording as ungranted on Windows ([9a4d05e](https://github.com/Meridiona/meridian/commit/9a4d05ec5f41c1f18a1bcb7eca0c1a4d6ec48fbe))
+* **tray:** Windows popover/tooltip position, onboarding, setup wizard ([0777257](https://github.com/Meridiona/meridian/commit/0777257b2759ddf2a4cb829556c58fffe0ffee30))
+
+### 🤖 CI
+
+* make the staging release manual-only, not merge-triggered ([1f878a9](https://github.com/Meridiona/meridian/commit/1f878a9f1a8d3ba0d6c935b3721b31720cd33b65))
+* **release:** restore Windows to the release-build pipeline ([08b080b](https://github.com/Meridiona/meridian/commit/08b080be188fce8efdc9f11af8bf555977230a76))
+
+### 🎨 Styles
+
+* run cargo fmt (fixes CI fmt check failure) ([66f075e](https://github.com/Meridiona/meridian/commit/66f075e2f1358747d457c2d9b95108604a03a29e))
+* satisfy cargo fmt --check (CI failure on macOS Rust job) ([04ae827](https://github.com/Meridiona/meridian/commit/04ae827f9769454ea9062ffa32697eccf9cb2110))
+
+## [1.75.0](https://github.com/Meridiona/meridian/compare/v1.74.2...v1.75.0) (2026-07-21)
+
+### 🚀 Features
+
+* **auth:** make sign-in compulsory across dashboard and tray popover ([#520](https://github.com/Meridiona/meridian/issues/520)) ([76ff547](https://github.com/Meridiona/meridian/commit/76ff54726e7b85fde0e832cda48f0356920ba75b))
+* **ci:** migrate production onto the Silicon-only two-workflow pipeline ([#515](https://github.com/Meridiona/meridian/issues/515)) ([c1df554](https://github.com/Meridiona/meridian/commit/c1df5543b48808246e063816bae375cae641e945))
+* **plan:** add a Refresh button when a tracker is connected ([e898fab](https://github.com/Meridiona/meridian/commit/e898fab0a30a30af5fb80c5acd4a0abc23ea2866))
+* **tasks:** let the plan's task-detail dialog change status, incl. personal tasks ([4c8980c](https://github.com/Meridiona/meridian/commit/4c8980c38d83254cf9cb455c5c7c36a3d2e5fde2))
+* **ui:** guided device-flow checklist, project-picker continuity, fix latched discovery error ([36d2bab](https://github.com/Meridiona/meridian/commit/36d2babaf45f7e1a6c00af4dfeb86fb638cb3d06))
+* **ui:** streamline the GitHub connect flow (device copy state, PAT project picker) ([389f199](https://github.com/Meridiona/meridian/commit/389f199648a7dea7602504224a5417bb17c859aa))
+* **ui:** surface the empty daily-plan CTA at the top of the sidebar ([1092f9d](https://github.com/Meridiona/meridian/commit/1092f9d0c6c32f1466db6de9b0012337df4e797e))
+* **worklog:** choose which tracker a proposed ticket is created on ([f3ebc02](https://github.com/Meridiona/meridian/commit/f3ebc02c291ecee9d079b1054460eb956ed6b755))
+
+### 🐛 Bug Fixes
+
+* **capture:** bump screenpipe-fork to disable sck-rs on every macOS version ([d4e467b](https://github.com/Meridiona/meridian/commit/d4e467b63c8c898111cf1f48f1d6bc9c53c0ceb7)), closes [Meridiona/screenpipe-fork#3](https://github.com/Meridiona/screenpipe-fork/issues/3)
+* **ci:** a pre-main merge produces a downloadable macOS Silicon staging build ([#513](https://github.com/Meridiona/meridian/issues/513)) ([17672ac](https://github.com/Meridiona/meridian/commit/17672ac5c5578d5b65f2431eacdcebedf1ac6071))
+* **ci:** address CodeRabbit review on [#528](https://github.com/Meridiona/meridian/issues/528) ([32436f8](https://github.com/Meridiona/meridian/commit/32436f865465f0eb4f56893606fdc401adfb2488))
+* **ci:** auto-cut staging on every pre-main push, drop the fragile marker ([#512](https://github.com/Meridiona/meridian/issues/512)) ([52894cf](https://github.com/Meridiona/meridian/commit/52894cf17999e2e839433a0ce42d7c2f0923b112))
+* **ci:** bind the tag through env, stop persisting the checkout token ([#518](https://github.com/Meridiona/meridian/issues/518)) ([1c05647](https://github.com/Meridiona/meridian/commit/1c05647c14957b540b2433be9f9390c057920f40))
+* **ci:** make staging release manual-only, not commit-message triggered ([#511](https://github.com/Meridiona/meridian/issues/511)) ([6ae54ea](https://github.com/Meridiona/meridian/commit/6ae54ea2334bc8f6f91a6b6fb0ea5adcd92c3aef)), closes [#508](https://github.com/Meridiona/meridian/issues/508)
+* **ci:** unset notarization creds for staging instead of blanking them ([#516](https://github.com/Meridiona/meridian/issues/516)) ([f7bc754](https://github.com/Meridiona/meridian/commit/f7bc7545280d407b3ff5af3ae44b18bb1e72bd1a))
+* **tray:** match PostHog daily_usage to dashboard stats, make sends retry-safe ([#505](https://github.com/Meridiona/meridian/issues/505)) ([7cd3f72](https://github.com/Meridiona/meridian/commit/7cd3f720b79e85fb08dbac771baffb6fbfba2ba9))
+* **tray:** reconcile a stale daemon_quiet notice on tray restart ([ac8c073](https://github.com/Meridiona/meridian/commit/ac8c073dcbb3f38801a2ed0b825e23cc7917c3bd))
+* **ui:** move the empty-plan nudge into the Today's focus section ([e76272b](https://github.com/Meridiona/meridian/commit/e76272b5b3fab10b1f4d6f779abc1d4417f20dd7))
+* **ui:** remove the Tasks entry row from the timeline's right panel ([00edb4e](https://github.com/Meridiona/meridian/commit/00edb4e84753d4bd822a5a9aca5a90efc33dead2))
+* **ui:** stop day-task timeline drawing future hours and clipping card text ([5dae9ca](https://github.com/Meridiona/meridian/commit/5dae9cabfcd696aa83363cc68167d0675fe83a29))
+* **ui:** stop StatusBanner clicks from bubbling to the dialog overlay ([c914e25](https://github.com/Meridiona/meridian/commit/c914e25267897379c1739c359bcd18811214451f))
+* **ui:** use a plain hyphen, not an em-dash, in the GitHub PAT reload-warning ([a716076](https://github.com/Meridiona/meridian/commit/a71607640dfe9fe508efe7d3c09b37bbd58ca784))
+
+### ⚡ Performance
+
+* **ci:** warm the release cache on main and skip staging notarization ([#514](https://github.com/Meridiona/meridian/issues/514)) ([f9368c4](https://github.com/Meridiona/meridian/commit/f9368c4935550d4a2dfa9e798ed07d4534a75f2f))
+
+### 🤖 CI
+
+* bump the screenpipe MIT-pin guard to the sck-rs universal-disable rev ([ddcb621](https://github.com/Meridiona/meridian/commit/ddcb62128c029b7999bf20502f240c18ed5d6622)), closes [#2](https://github.com/Meridiona/meridian/issues/2)
+* merge main into pre-main to clear the ci.yml conflict for [#528](https://github.com/Meridiona/meridian/issues/528) ([480ce70](https://github.com/Meridiona/meridian/commit/480ce70fe87431d57bbffa08be45ecbd1689e0e4)), closes [#526](https://github.com/Meridiona/meridian/issues/526)
+* new prepare + tag-triggered release pipeline (staging only, for now) + faster CI ([#508](https://github.com/Meridiona/meridian/issues/508)) ([6b4aa96](https://github.com/Meridiona/meridian/commit/6b4aa96eb89d8723dd95b43b4663bba40ac8b952)), closes [semantic-release#1849](https://github.com/Meridiona/semantic-release/issues/1849) [alacritty#6467](https://github.com/Meridiona/alacritty/issues/6467)
+* stop re-running the suite on pre-main → main release PRs ([#521](https://github.com/Meridiona/meridian/issues/521)) ([afb5e63](https://github.com/Meridiona/meridian/commit/afb5e631e49c544828fc8f9422e436bdd4472280))
+* sync the release-pipeline fixes back from main ([90b10d4](https://github.com/Meridiona/meridian/commit/90b10d46f224a0d6774f43bbf3ca19009eabc279)), closes [#523](https://github.com/Meridiona/meridian/issues/523) [#525](https://github.com/Meridiona/meridian/issues/525)
+
+### ✅ Tests
+
+* **tray:** add an end-to-end DB check for the stale-notice restart fix ([1e1ad19](https://github.com/Meridiona/meridian/commit/1e1ad198e17265b2e149e9f949e4dbef2a51a196))
+* **ui:** cover the toolbar's multi-provider Connected pill ([e36e605](https://github.com/Meridiona/meridian/commit/e36e605efffd6ee54f282a6d6438abdd1eceb5ba))
+
 ## [1.74.2](https://github.com/Meridiona/meridian/compare/v1.74.1...v1.74.2) (2026-07-21)
 
 ### 🐛 Bug Fixes
