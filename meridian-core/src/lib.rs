@@ -50,6 +50,10 @@ pub mod plan_marker;
 /// tray writes `capture_frames`, the daemon's ETL reads it.
 pub mod capture;
 
+/// `.no_window()` for `Command` — suppresses the Windows console-window flash
+/// on a console-subsystem child spawn. No-op on every other OS.
+pub mod proc_ext;
+
 // ── Curated public API: flat module paths, stable across file moves ──────────
 pub use db::{get_active_session, open_existing, ActiveSession};
 
@@ -62,8 +66,9 @@ pub use util::{date, hygiene, intervals, llm_capacity, paths};
 
 pub use readers::{
     active, board, capture_apps, coding_agents, current_task, day_evidence, day_summaries,
-    day_task_worklogs, day_tasks, hour_status, hour_text, integrations, llm_experiments, notices,
-    plan, proposed, task_create, task_detail, tasks, today, triage, week, worklogs,
+    day_task_corrections, day_task_worklogs, day_tasks, hour_status, hour_text, integrations,
+    llm_experiments, notices, plan, proposed, task_create, task_detail, tasks, today, triage, week,
+    worklogs,
 };
 
 pub use canonical_task::{CanonicalTask, PersonRef, Priority, Provider, StatusCategory, TaskKind};

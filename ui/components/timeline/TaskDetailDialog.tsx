@@ -27,7 +27,7 @@ import { useTaskStatusChange, StatusBanner } from './useTaskStatusChange'
 import { WorklogTicketPicker } from './WorklogTicketPicker'
 
 export function TaskDetailDialog({
-  taskKey, fallbackTitle, onClose, inToday, canEdit = true, onAdd, onRemove, day, editableTask = true,
+  taskKey, fallbackTitle, onClose, inToday, canEdit = true, onAdd, onRemove, onDeleted, day, editableTask = true,
 }: {
   taskKey: string
   fallbackTitle?: string
@@ -38,6 +38,10 @@ export function TaskDetailDialog({
   canEdit?: boolean
   onAdd?: () => void
   onRemove?: () => void
+  // Fired after a personal task is deleted (see `canEditText`/delete below), right
+  // before the dialog closes itself — lets the caller drop it from whatever list
+  // it's currently showing without waiting on that list's own next refetch.
+  onDeleted?: () => void
   // The day this dialog was opened from — used to refresh that day's plan
   // store after a title/description edit lands, so a "Today's focus" card
   // showing this task updates without a manual poll.
@@ -57,6 +61,11 @@ export function TaskDetailDialog({
   const [draftDescription, setDraftDescription] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  // Deleting a personal task: a confirm step (it disappears from every list, not
+  // just today's), then the write.
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   // Escalation: promote this personal task onto a real tracker (create a new
   // ticket, or match an existing one) and post its auto-logged update there.
   const [escalating, setEscalating] = useState(false)
@@ -101,6 +110,10 @@ export function TaskDetailDialog({
   // ticket's title/description stays read-only here (edit it in the tracker).
   const isPersonal = detail?.provider === LOCAL_PROVIDER
   const canEditText = isPersonal && editableTask
+  // Deletion is available for every personal task, even one on a past-day plan
+  // (editableTask=false): removing a mistakenly created task must not be gated
+  // on the historical text-edit permission. Editing stays gated by canEditText.
+  const canDeleteTask = isPersonal
 
   function startEdit() {
     setDraftTitle(detail?.title ?? '')
@@ -120,6 +133,33 @@ export function TaskDetailDialog({
       })
       .catch(e => setSaveError(e instanceof Error ? e.message : 'Couldn’t save the task'))
       .finally(() => setSaving(false))
+  }
+
+  /** Delete this personal task: it stops appearing anywhere it's listed (today's
+   *  plan, the Tasks board, suggestions) — see `meridian_core::task_create`'s
+   *  `delete_local_task` for why this is a hide, not a hard DB delete.
+   *
+   *  This dialog is a shared modal layered on top of whatever surface opened it
+   *  (the Tasks board, the daily plan, a timeline card) — it never remounts that
+   *  surface, so its own already-fetched list would otherwise stay stale after a
+   *  successful delete. `onDeleted` covers the one caller that wires it
+   *  (PlanView); the `meridian:task-deleted` window event (same pattern as
+   *  NoticeBar's `meridian:open-tasks`) is the broadcast every OTHER list-owning
+   *  surface listens for instead of threading a callback through every opener. */
+  function deleteTask() {
+    if (deleting) return
+    setDeleting(true)
+    setDeleteError(null)
+    invoke('delete_plan_task', { taskKey })
+      .then(() => {
+        window.dispatchEvent(new CustomEvent('meridian:task-deleted', { detail: { taskKey } }))
+        onDeleted?.()
+        onClose()
+      })
+      .catch(e => {
+        setDeleteError(e instanceof Error ? e.message : 'Couldn’t delete the task')
+        setDeleting(false)
+      })
   }
 
   /** The task just GRADUATED into a real ticket - it isn't personal anymore.
@@ -296,7 +336,29 @@ export function TaskDetailDialog({
           )}
         </div>
 
-        {(detail?.url || onAdd || onRemove || canEditText) && (
+        {confirmingDelete ? (
+          <div className="px-7 py-5 border-t shrink-0" style={{ borderColor: 'var(--t-hair)' }}>
+            <p className="mt-body-sm mb-3" style={{ color: 'var(--t-muted)' }}>
+              Delete this task? It disappears from today&apos;s plan, the Tasks board,
+              and future suggestions. This can&apos;t be undone from here.
+            </p>
+            {deleteError && (
+              <p className="mt-body-sm mb-3" style={{ color: 'var(--color-state-pending)' }}>{deleteError}</p>
+            )}
+            <div className="flex items-center gap-2.5">
+              <button onClick={deleteTask} disabled={deleting}
+                className="mt-body-sm px-3.5 py-2 rounded-lg"
+                style={{ background: 'var(--color-state-pending)', color: '#fff', opacity: deleting ? 0.6 : 1 }}>
+                {deleting ? 'Deleting…' : 'Yes, delete'}
+              </button>
+              <button onClick={() => setConfirmingDelete(false)} disabled={deleting}
+                className="mt-body-sm px-3.5 py-2 rounded-lg bg-ctrl"
+                style={{ border: '1px solid var(--t-ctrl-border)', color: 'var(--t-muted)' }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (detail?.url || onAdd || onRemove || canEditText || canDeleteTask) && (
           <div className="px-7 py-5 border-t shrink-0 flex items-center gap-2.5" style={{ borderColor: 'var(--t-hair)' }}>
             {canEditText && (editing ? (
               <>
@@ -318,6 +380,13 @@ export function TaskDetailDialog({
                 Edit
               </button>
             ))}
+            {canDeleteTask && !editing && (
+              <button onClick={() => setConfirmingDelete(true)}
+                className="mt-body-sm px-3.5 py-2 rounded-lg bg-ctrl"
+                style={{ border: '1px solid var(--t-ctrl-border)', color: 'var(--color-state-pending)' }}>
+                Delete
+              </button>
+            )}
             {canEdit && (inToday ? (onRemove && (
               <button onClick={() => { onRemove(); onClose() }}
                 className="mt-body-sm px-3.5 py-2 rounded-lg bg-ctrl"

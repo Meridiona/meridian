@@ -168,6 +168,14 @@ export default function MeridianTimelineShell() {
     if (detail) { setSelectedHour(null); setSelectedCardKey(null) }
   }
 
+  // Bumped after a day-task is dismissed/merged so DayTaskColumn (which owns its
+  // own fetch) reloads; the corrected task also leaves the detail panel.
+  const [dayTaskRefresh, setDayTaskRefresh] = useState(0)
+  function onDayTaskCorrected() {
+    setSelectedDayTask(null)
+    setDayTaskRefresh(n => n + 1)
+  }
+
   // Closing the planner restarts the daemon's plan-nudge hold-back clock
   // (fire-and-forget; only meaningful on a day the auto-open fired — the
   // command's marker guard handles that), so the "Plan your day" reminder
@@ -220,6 +228,7 @@ export default function MeridianTimelineShell() {
         <div className="relative flex-1 min-w-0 min-h-0 flex flex-col">
           <DayTaskColumn day={day} isToday={isToday}
             selectedId={selectedDayTask?.id ?? null} onSelect={selectDayTask}
+            refreshToken={dayTaskRefresh}
             hourStatus={data.hourStatus} capturing={data.capturing} isSolo={isSolo} />
 
           {!isSolo && (
@@ -234,6 +243,7 @@ export default function MeridianTimelineShell() {
             selectedCardKey={selectedCardKey}
             dayTaskDetail={selectedDayTask}
             onCloseDayTask={() => setSelectedDayTask(null)}
+            onDayTaskCorrected={onDayTaskCorrected}
             onSelectHour={selectHour}
             onOpen={setActiveModal}
             onOpenTask={(key, title, editable) => setOpenTask({ key, title, editable: editable ?? true })}

@@ -109,7 +109,8 @@ fn candidate_names(bin: &str) -> Vec<String> {
 }
 
 fn cmd_output(bin: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new(bin).args(args).output().ok()?;
+    use meridian_core::proc_ext::NoWindow;
+    let out = Command::new(bin).args(args).no_window().output().ok()?;
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())

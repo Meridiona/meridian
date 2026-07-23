@@ -402,6 +402,13 @@ pub fn run() {
                 poll::run_poll_loop(app_handle, state_clone).await;
             });
 
+            // Fast daemon supervisor, separate from the poll loop's slower,
+            // notice-owning health tick: probes every 5 s and restarts a
+            // confirmed-down daemon within ~10 s. See `poll::run_daemon_watchdog`.
+            tauri::async_runtime::spawn(async move {
+                poll::run_daemon_watchdog().await;
+            });
+
             // Stage + register the bundled daemon on the self-contained .app DMG
             // path (also retires any leftover a11y-helper agent from an older
             // install — see backend_install's module docs). No-op under
@@ -474,6 +481,9 @@ pub fn run() {
             commands::get_active,
             commands::get_today,
             commands::get_day_tasks,
+            commands::dismiss_day_task,
+            commands::merge_day_task,
+            commands::restore_day_task,
             commands::get_week,
             commands::get_coding_agents,
             commands::get_recent_capture_apps,
@@ -519,6 +529,7 @@ pub fn run() {
             commands::create_plan_task,
             commands::edit_plan_task,
             commands::set_plan_task_done,
+            commands::delete_plan_task,
             commands::triage_decision,
             commands::triage_ignore,
             commands::apply_ticket_fix,

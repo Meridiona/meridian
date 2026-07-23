@@ -2,11 +2,11 @@
 //! Product analytics — PostHog Cloud event capture.
 //!
 //! # What this is
-//! A deliberately tiny, best-effort telemetry client: two anonymous signals —
-//! `app_installed` once per machine, and one `daily_usage` event per completed
-//! local calendar day (focus/coding hours, logged hours, and drafts count —
-//! the same four numbers as the dashboard's Today card). Nothing else: a
-//! single raw HTTP POST to PostHog's `/i/v0/e/`
+//! A deliberately tiny, best-effort telemetry client: two IDENTIFIED signals —
+//! `app_installed` once per (signed-in email, device) pair, and one
+//! `daily_usage` event per completed local calendar day (focus/coding hours,
+//! logged hours, and drafts count — the same four numbers as the dashboard's
+//! Today card). Nothing else: a single raw HTTP POST to PostHog's `/i/v0/e/`
 //! capture endpoint, no `posthog-js`, so session replay / autocapture /
 //! surveys / feature flags never activate — that's client-SDK behaviour this
 //! code never touches. `$geoip_disable` is set on every event since the
@@ -14,28 +14,54 @@
 //! default GeoIP enrichment would otherwise resolve each user's real
 //! location).
 //!
+//! **No anonymous events, ever.** The PostHog `distinct_id` for both events IS
+//! the signed-in account email ([`crate::commands::account::read_account_email`])
+//! — nothing is sent, for either event, until sign-in has happened. This is
+//! deliberate: an anonymous per-machine UUID identity was tried first and
+//! rejected, because it left permanently-orphaned UUID Persons in PostHog for
+//! any event captured before sign-in completed (a `$set` on a later event
+//! upgrades that Person's properties but never renames its `distinct_id`, so
+//! the UUID keeps showing in the events explorer forever). Waiting for the
+//! email and using it directly as `distinct_id` means every event lands on
+//! one identified Person from the start — no UUID Persons, no merge step.
+//!
+//! **Install dedup is per (device, email), not per device.** A device may see
+//! more than one signed-in email over its lifetime (sign-out, sign back in as
+//! someone else), and the same email may install on more than one device.
+//! `app_installed` should fire again in both of those cases, but never twice
+//! for the same (device, email) pair (e.g. sign-out then sign back in as the
+//! same person). So the per-device state file tracks a SET of emails this
+//! device has already reported `app_installed` for
+//! ([`AnalyticsState::install_events_sent`]), not a single boolean. A
+//! per-device `device_id` (a random UUID, unchanged from the old anonymous
+//! identity) still rides along as an event PROPERTY — never as `distinct_id`
+//! — so cross-device patterns for one email stay analyzable in PostHog
+//! without it ever becoming a Person of its own.
+//!
 //! Runs in every install shape — a source/dev checkout, a bare launch, and a
 //! packaged DMG alike — so a local `cargo run`/`tauri dev` session shows up
 //! too. Every event carries `channel` ([`crate::commands::version::build_channel`]:
 //! `dev`/`staging`/`prod`) so dev-run noise stays filterable in PostHog from
-//! real installs, rather than being excluded outright. The anonymous
-//! `distinct_id` plus day bookkeeping live in `~/.meridian/analytics_state.json`,
-//! separate from `settings.json` (never dashboard-editable, never displayed).
+//! real installs, rather than being excluded outright. The `device_id` plus
+//! day/email bookkeeping live in `~/.meridian/analytics_state.json`, separate
+//! from `settings.json` (never dashboard-editable, never displayed).
 //!
-//! Call volume is intentionally minimal: at most 1 event ever
-//! (`app_installed`) + at most 1 event per calendar day (`daily_usage`),
+//! Call volume is intentionally minimal: at most 1 `app_installed` per
+//! (device, email) pair ever + at most 1 `daily_usage` per calendar day,
 //! regardless of how many times the tray restarts or how often the poll loop
 //! ticks — nowhere near PostHog's free-tier event limits.
 //!
 //! **Not backfilled**: only the single most-recently-closed day is ever
 //! reported (see [`day_rollover_action`]). If the tray isn't running across a
-//! local-day boundary for several days, the intervening day(s) are skipped
-//! entirely — never sent late.
+//! local-day boundary for several days — including the entire time before the
+//! very first sign-in — the intervening day(s) are skipped entirely, never
+//! sent late. The first tick after sign-in only arms today's date; the
+//! earliest day it can ever report is the day AFTER that.
 //!
 //! **Nothing is lost on failure.** [`capture`] reports success/failure via
 //! its return value, and both call sites ([`maybe_send_daily_tick`],
 //! [`send_daily_usage`]) only flip their persisted "sent" bookkeeping
-//! (`install_event_sent` / `last_sent_day`) on a confirmed success. A DB read
+//! (`install_events_sent` / `last_sent_day_by_email`) on a confirmed success. A DB read
 //! failure, a network error, a timeout, or a non-2xx from PostHog all leave
 //! that bookkeeping untouched, so the *exact same* pending event (the same
 //! day, carrying that day's own `date` property — never today's) is retried
@@ -51,12 +77,15 @@
 //! # Related
 //! - [`crate::commands::version::build_channel`] — the `channel` property
 //!   every event carries (dev/staging/prod).
+//! - [`crate::commands::account::read_account_email`] — the identity gate:
+//!   nothing here sends anything until this returns `Some`.
 //! - `meridian_core::today::get_today` / `meridian_core::worklogs::get_worklogs`
 //!   — the same readers the dashboard uses, queried here for an already-closed
 //!   past day (never "today", which is still accumulating).
 
 use meridian_core::SqlitePool;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -115,20 +144,48 @@ fn posthog_api_key() -> String {
 /// into `settings.json` (which the dashboard reads/writes/displays).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AnalyticsState {
-    distinct_id: String,
-    install_event_sent: bool,
+    /// A random per-device id, generated once and never reused as a PostHog
+    /// `distinct_id` (see the module doc for why). Kept only as an event
+    /// PROPERTY so cross-device activity for one email is still analyzable.
+    /// `#[serde(alias)]` reads an older install's `distinct_id` field under
+    /// its old name, so an existing device keeps the same id across the
+    /// upgrade rather than silently minting a second one.
+    #[serde(alias = "distinct_id")]
+    device_id: String,
+    /// Emails this device has already sent `app_installed` for. A SET, not a
+    /// bool: the same device can see more than one signed-in email over its
+    /// lifetime (sign-out, sign back in as someone else), and each first
+    /// sighting of a given email on THIS device should fire once — see the
+    /// module doc's "Install dedup" section. `#[serde(default)]` so an older
+    /// install's file (no such field) just starts with an empty set rather
+    /// than failing to parse.
+    #[serde(default)]
+    install_events_sent: HashSet<String>,
     /// The last LOCAL calendar day ("YYYY-MM-DD") a `daily_usage` event was
-    /// sent for. `None` before the first day boundary has been observed.
-    last_sent_day: Option<String>,
+    /// sent for, keyed by the signed-in account email it was accrued under —
+    /// NOT a single device-wide cursor. Scoped per email for the same reason
+    /// `install_events_sent` is a set: one device can see more than one
+    /// signed-in email over its lifetime (sign-out, sign back in as someone
+    /// else). A shared cursor would let account A's still-pending day be sent
+    /// under account B's `distinct_id` after a switch, and could suppress
+    /// account B's own first eligible day as "already sent" — so each email
+    /// carries its own cursor. An email absent from the map has observed no
+    /// day boundary yet (which never happens before that email's first
+    /// sign-in — see [`maybe_send_daily_tick`]). `#[serde(default)]` so an
+    /// older install's file (no such field, or the old scalar `last_sent_day`)
+    /// just starts empty rather than failing to parse — the currently
+    /// signed-in email simply re-arms today with no send, never a double-send.
+    #[serde(default)]
+    last_sent_day_by_email: HashMap<String, String>,
 }
 
 fn analytics_state_path() -> Option<PathBuf> {
     meridian_core::paths::home_dir().map(|h| h.join(".meridian/analytics_state.json"))
 }
 
-/// Load the state file, creating a fresh one (new random `distinct_id`) if
+/// Load the state file, creating a fresh one (new random `device_id`) if
 /// absent or unparseable. Never errors — a corrupt/missing file just starts a
-/// new anonymous id, same as a genuine first run.
+/// new device id, same as a genuine first run.
 fn load_or_init_state(path: &std::path::Path) -> AnalyticsState {
     if let Ok(s) = std::fs::read_to_string(path) {
         if let Ok(state) = serde_json::from_str::<AnalyticsState>(&s) {
@@ -136,9 +193,9 @@ fn load_or_init_state(path: &std::path::Path) -> AnalyticsState {
         }
     }
     AnalyticsState {
-        distinct_id: uuid::Uuid::new_v4().to_string(),
-        install_event_sent: false,
-        last_sent_day: None,
+        device_id: uuid::Uuid::new_v4().to_string(),
+        install_events_sent: HashSet::new(),
+        last_sent_day_by_email: HashMap::new(),
     }
 }
 
@@ -211,12 +268,16 @@ async fn capture(
 /// Properties common to every event: app version + OS + build channel
 /// ([`crate::commands::version::build_channel`] — `dev`/`staging`/`prod`, so
 /// a local `cargo run`/`tauri dev` session stays distinguishable in PostHog
-/// from a real install rather than being excluded outright). When the setup
-/// wizard's Clerk sign-in step has captured an email
-/// (`crate::commands::account::read_account_email`), it rides along as a
-/// PostHog `$set` so the person profile is upgraded from anonymous to
-/// identified — same anonymous `distinct_id`, just no longer nameless.
-fn base_properties(app: &tauri::AppHandle) -> serde_json::Map<String, serde_json::Value> {
+/// from a real install rather than being excluded outright), plus the
+/// per-device `device_id` ([`AnalyticsState::device_id`]) as a plain property
+/// — never the PostHog `distinct_id`, which is always the signed-in email
+/// (see the module doc). Callers only ever reach this after confirming an
+/// email is present, so identity itself never needs to be threaded through
+/// here.
+fn base_properties(
+    app: &tauri::AppHandle,
+    device_id: &str,
+) -> serde_json::Map<String, serde_json::Value> {
     let mut m = serde_json::Map::new();
     m.insert(
         "app_version".to_string(),
@@ -230,26 +291,35 @@ fn base_properties(app: &tauri::AppHandle) -> serde_json::Map<String, serde_json
         "channel".to_string(),
         serde_json::Value::String(crate::commands::version::build_channel().to_string()),
     );
-    if let Some(email) = crate::commands::account::read_account_email() {
-        let mut set = serde_json::Map::new();
-        set.insert("email".to_string(), serde_json::Value::String(email));
-        m.insert("$set".to_string(), serde_json::Value::Object(set));
-    }
+    m.insert(
+        "device_id".to_string(),
+        serde_json::Value::String(device_id.to_string()),
+    );
     m
 }
 
 /// Called once per poll-loop health tick (~60 s — see [`crate::poll`]). A
 /// cheap file read on every call; the two possible HTTP calls are
-/// individually capped to once-ever (`app_installed`) and once-per-completed
-/// local day (`daily_usage`) — but only once each has actually *succeeded*.
-/// Whenever `capture()` fails (no key, timeout, non-2xx — see its doc), the
-/// corresponding bookkeeping field is left untouched, so the very next tick
-/// (and every tick after that, ~60 s apart) retries the exact same pending
-/// event — never a fabricated/skipped one — until it lands. That bookkeeping
-/// is persisted to `analytics_state.json`, so the retry survives a tray
-/// restart too: a `daily_usage` that failed to send stays pending even if
-/// the tray is closed and reopened the "next day morning", and is sent for
-/// its original (correct) day as soon as the app is next open and reachable.
+/// individually capped to once-per-(device, email) (`app_installed`) and
+/// once-per-completed local day (`daily_usage`) — but only once each has
+/// actually *succeeded*. Whenever `capture()` fails (no key, timeout, non-2xx
+/// — see its doc), the corresponding bookkeeping field is left untouched, so
+/// the very next tick (and every tick after that, ~60 s apart) retries the
+/// exact same pending event — never a fabricated/skipped one — until it
+/// lands. That bookkeeping is persisted to `analytics_state.json`, so the
+/// retry survives a tray restart too: a `daily_usage` that failed to send
+/// stays pending even if the tray is closed and reopened the "next day
+/// morning", and is sent for its original (correct) day as soon as the app
+/// is next open and reachable.
+///
+/// Both events are gated on [`crate::commands::account::read_account_email`]
+/// returning `Some` — nothing is ever sent anonymously (see the module doc).
+/// While no email is on file (sign-in never completed, or the user signed
+/// out), this is a no-op every tick: no HTTP call, and day-rollover
+/// bookkeeping (`last_sent_day_by_email`) stays un-armed for that email, so the day the user
+/// eventually signs in on is never reported — only the first FULL day after
+/// that is, matching the "never backfill" rule elsewhere in this module.
+///
 /// Runs in every install shape (see the module doc) — filter by the
 /// `channel` property in PostHog to separate dev runs from real installs.
 #[tracing::instrument(skip(app, pool))]
@@ -262,33 +332,47 @@ pub(crate) async fn maybe_send_daily_tick(app: &tauri::AppHandle, pool: &SqliteP
     }
     let _guard = InFlightGuard;
 
+    let Some(email) = crate::commands::account::read_account_email() else {
+        // Not signed in — no identity to attach events to, so nothing to do.
+        return;
+    };
+
     let Some(path) = analytics_state_path() else {
         return;
     };
     let mut state = load_or_init_state(&path);
     let mut dirty = false;
 
-    if !state.install_event_sent
-        && capture("app_installed", &state.distinct_id, base_properties(app)).await
+    if !state.install_events_sent.contains(&email)
+        && capture(
+            "app_installed",
+            &email,
+            base_properties(app, &state.device_id),
+        )
+        .await
     {
-        state.install_event_sent = true;
+        state.install_events_sent.insert(email.clone());
         dirty = true;
     }
 
     let today = meridian_core::date::today_string();
-    match day_rollover_action(state.last_sent_day.as_deref(), &today) {
+    // Read/advance THIS email's own cursor — never a shared one — so a
+    // still-pending day accrued under a previously signed-in account can never
+    // be attributed to whoever is signed in now (see [`AnalyticsState::last_sent_day_by_email`]).
+    let last_sent_day = state.last_sent_day_by_email.get(&email).cloned();
+    match day_rollover_action(last_sent_day.as_deref(), &today) {
         Some(None) => {
-            // First observation this install has made — nothing has closed
-            // yet, so there's nothing to report.
-            state.last_sent_day = Some(today);
+            // First observation since sign-in (or ever) for THIS email —
+            // nothing has closed yet, so there's nothing to report.
+            state.last_sent_day_by_email.insert(email.clone(), today);
             dirty = true;
         }
         Some(Some(day)) => {
             // Only advance past `day` when it actually sent — a transient DB
             // read hiccup must retry next tick, not silently report (and
             // permanently skip) a fabricated zero-usage day.
-            if send_daily_usage(app, pool, &state.distinct_id, &day).await {
-                state.last_sent_day = Some(today);
+            if send_daily_usage(app, pool, &email, &state.device_id, &day).await {
+                state.last_sent_day_by_email.insert(email.clone(), today);
                 dirty = true;
             }
         }
@@ -336,7 +420,8 @@ fn day_rollover_action(last_sent_day: Option<&str>, today: &str) -> Option<Optio
 async fn send_daily_usage(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
-    distinct_id: &str,
+    email: &str,
+    device_id: &str,
     day: &str,
 ) -> bool {
     let (_, day_end) = meridian_core::date::local_day_bounds(day);
@@ -390,7 +475,7 @@ async fn send_daily_usage(
         .count();
 
     let hours = |s: i64| (s.max(0) as f64 / 3600.0 * 100.0).round() / 100.0;
-    let mut props = base_properties(app);
+    let mut props = base_properties(app, device_id);
     props.insert(
         "date".to_string(),
         serde_json::Value::String(day.to_string()),
@@ -414,7 +499,7 @@ async fn send_daily_usage(
         drafts_count,
         "analytics: sending daily_usage"
     );
-    capture("daily_usage", distinct_id, props).await
+    capture("daily_usage", email, props).await
 }
 
 #[cfg(test)]
@@ -447,6 +532,84 @@ mod day_rollover_tests {
         assert_eq!(
             day_rollover_action(Some("2026-07-01"), "2026-07-09"),
             Some(Some("2026-07-01".to_string()))
+        );
+    }
+}
+
+#[cfg(test)]
+mod per_email_cursor_tests {
+    //! Regression coverage for the per-email daily-usage cursor
+    //! ([`AnalyticsState::last_sent_day_by_email`]). These mirror the exact
+    //! cursor read/advance that [`maybe_send_daily_tick`] performs for the
+    //! signed-in email, minus the live DB/HTTP send, so they assert the
+    //! scoping decision without a Tauri app or SQLite pool.
+    use super::{day_rollover_action, AnalyticsState};
+    use std::collections::{HashMap, HashSet};
+
+    fn state_with_cursors(cursors: &[(&str, &str)]) -> AnalyticsState {
+        AnalyticsState {
+            device_id: "test-device".to_string(),
+            install_events_sent: HashSet::new(),
+            last_sent_day_by_email: cursors
+                .iter()
+                .map(|(email, day)| (email.to_string(), day.to_string()))
+                .collect::<HashMap<_, _>>(),
+        }
+    }
+
+    /// The day (if any) that `maybe_send_daily_tick` would actually SEND a
+    /// `daily_usage` for, for `email` on `today` — reading only that email's
+    /// own cursor, exactly as the tick does. `None` = arm-only / no-op.
+    fn day_to_send_for(state: &AnalyticsState, email: &str, today: &str) -> Option<String> {
+        match day_rollover_action(
+            state.last_sent_day_by_email.get(email).map(|s| s.as_str()),
+            today,
+        ) {
+            Some(Some(day)) => Some(day),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn account_switch_does_not_misattribute_pending_day() {
+        // Account A armed its cursor at 2026-07-08 while signed in; a local-day
+        // boundary then passed (today is 2026-07-09) with A's 2026-07-08 usage
+        // still pending. A signs out and B signs in before the next tick fires.
+        let state = state_with_cursors(&[("a@example.com", "2026-07-08")]);
+
+        // B has no cursor of its own, so the tick arms B at today WITHOUT
+        // sending anything — A's pending 2026-07-08 day is never attributed to
+        // B. (The pre-fix shared cursor would have sent 2026-07-08 under B's
+        // email, since prev != today.)
+        assert_eq!(day_to_send_for(&state, "b@example.com", "2026-07-09"), None);
+
+        // And A's own cursor is untouched: when A signs back in, its pending
+        // 2026-07-08 day is still sent — under A's own email, where it belongs.
+        assert_eq!(
+            day_to_send_for(&state, "a@example.com", "2026-07-09"),
+            Some("2026-07-08".to_string())
+        );
+    }
+
+    #[test]
+    fn newly_signed_in_account_still_gets_its_first_full_day() {
+        // A device that has already reported days for account A. Account B
+        // signs in fresh — a shared cursor sitting at A's latest day could
+        // suppress B's first eligible day as "already sent".
+        let mut state = state_with_cursors(&[("a@example.com", "2026-07-09")]);
+
+        // First tick after B signs in: nothing has closed for B yet → arm
+        // only, no send.
+        assert_eq!(day_to_send_for(&state, "b@example.com", "2026-07-09"), None);
+        state
+            .last_sent_day_by_email
+            .insert("b@example.com".to_string(), "2026-07-09".to_string());
+
+        // Next local day: B's own first full day (2026-07-09) is now sent,
+        // independent of A's cursor.
+        assert_eq!(
+            day_to_send_for(&state, "b@example.com", "2026-07-10"),
+            Some("2026-07-09".to_string())
         );
     }
 }

@@ -12,7 +12,7 @@ import type { TimelineData } from './useTimelineData'
 import type { ActiveModal } from './MeridianTimelineShell'
 import type { SettingsSection } from './settings/types'
 
-export function RightPanel({ data, selectedHour, selectedCardKey, dayTaskDetail, onCloseDayTask, onSelectHour, onOpen, onOpenTask, onEditWorklog, onOpenSettings }: {
+export function RightPanel({ data, selectedHour, selectedCardKey, dayTaskDetail, onCloseDayTask, onDayTaskCorrected, onSelectHour, onOpen, onOpenTask, onEditWorklog, onOpenSettings }: {
   data: TimelineData
   selectedHour: number | null
   selectedCardKey: string | null
@@ -20,6 +20,9 @@ export function RightPanel({ data, selectedHour, selectedCardKey, dayTaskDetail,
   // the overview here (same swap the hour detail uses).
   dayTaskDetail: DayTaskDetail | null
   onCloseDayTask: () => void
+  // A day-task was dismissed or merged — the shell clears selection and reloads
+  // the timeline column.
+  onDayTaskCorrected: () => void
   onSelectHour: (hour: number | null) => void
   onOpen: (modal: ActiveModal) => void
   // `editable` (only ever passed by OverviewPanel's Today's-focus checklist) is
@@ -34,7 +37,8 @@ export function RightPanel({ data, selectedHour, selectedCardKey, dayTaskDetail,
   onOpenSettings: (section?: SettingsSection) => void
 }) {
   if (dayTaskDetail) {
-    return <DayTaskDetailPanel detail={dayTaskDetail} onClose={onCloseDayTask} onOpenSettings={onOpenSettings} onOpenTask={onOpenTask} />
+    return <DayTaskDetailPanel detail={dayTaskDetail} onClose={onCloseDayTask}
+      onCorrected={onDayTaskCorrected} onOpenSettings={onOpenSettings} onOpenTask={onOpenTask} />
   }
   if (selectedHour === null) {
     return <OverviewPanel data={data} onOpen={onOpen} onOpenTask={onOpenTask} onOpenSettings={onOpenSettings} />

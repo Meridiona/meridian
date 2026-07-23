@@ -29,6 +29,7 @@
 
 pub mod cli;
 pub mod create;
+pub mod delete;
 pub mod done;
 pub mod draft;
 pub mod edit;

@@ -19,10 +19,10 @@
 import { useEffect, useState } from 'react'
 import { fmtDur, PROVIDER_META, ProviderGlyph } from '@/components/atoms'
 import { GeneratingBar } from '@/components/GeneratingBar'
-import { load } from '@/lib/bridge'
+import { load, mutate } from '@/lib/bridge'
 import { connectedTrackers, trackerName as providerName } from '@/lib/integrations'
 import type { Tracker } from '@/lib/integrations'
-import type { DayTaskWorklogDraft, IntegrationsResponse } from '@/lib/api-types'
+import type { DayTask, DayTasksResponse, DayTaskWorklogDraft, IntegrationsResponse } from '@/lib/api-types'
 import { clockLabel, clockLabelFromIso, type LaidSegment } from './dayTaskLayout'
 import type { SettingsSection } from './settings/types'
 import { Bullets, Field, LinkChip } from './dayTaskKit'
@@ -54,9 +54,12 @@ export interface DayTaskDetail {
 
 /** The selected workstream's breakdown, rendered inside the right column, with a
  *  pinned worklog action bar so Generate/Approve is always reachable. */
-export function DayTaskDetailPanel({ detail, onClose, onOpenSettings, onOpenTask }: {
+export function DayTaskDetailPanel({ detail, onClose, onCorrected, onOpenSettings, onOpenTask }: {
   detail: DayTaskDetail
   onClose: () => void
+  // A dismiss/merge landed — the shell clears this selection and reloads the
+  // timeline column (the corrected task is gone from it).
+  onCorrected: () => void
   onOpenSettings: (section?: SettingsSection) => void
   onOpenTask: (key: string, title?: string) => void
 }) {
@@ -85,6 +88,8 @@ export function DayTaskDetailPanel({ detail, onClose, onOpenSettings, onOpenTask
       {/* Scrollable reading content. */}
       <div className="flex-1 min-h-0 overflow-y-auto nice-scroll p-6 space-y-6">
         <Header title={title} minutes={minutes} hue={hue} range={range} onClose={onClose} />
+
+        <TaskActions day={day} taskId={id} onCorrected={onCorrected} />
 
         {segments.length > 0 && (
           <div className="rounded-xl p-4 bg-card" style={{ border: '1px solid var(--t-card-border)' }}>
@@ -137,6 +142,129 @@ function Header({ title, minutes, hue, range, onClose }: {
         </div>
       </div>
     </div>
+  )
+}
+
+const errMsg = (e: unknown): string =>
+  e instanceof Error ? e.message : typeof e === 'string' ? e : 'Something went wrong'
+
+/** Task-level corrections to the AI's grouping: DISMISS this workstream (hide it,
+ *  and keep it hidden across the hourly re-fold) or MERGE it into another one on
+ *  the same day. Both persist as durable corrections server-side; here they just
+ *  fire the command and let the shell reload the column via `onCorrected`.
+ *
+ *  Deliberately low-emphasis (ghost text buttons under the header) — these are
+ *  occasional "the model got this wrong" fixes, not primary actions. Dismiss asks
+ *  to confirm (it removes a card); merge opens an inline picker of the day's other
+ *  tasks. On success the panel unmounts (selection clears), so busy is only reset
+ *  on error. */
+function TaskActions({ day, taskId, onCorrected }: {
+  day: string; taskId: string; onCorrected: () => void
+}) {
+  const [mode, setMode] = useState<'idle' | 'confirmDismiss' | 'merge'>('idle')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [siblings, setSiblings] = useState<DayTask[] | null>(null)
+
+  // Load the day's OTHER tasks when the merge picker opens (the reader already
+  // drops dismissed ones, so this is the live set you can merge into).
+  useEffect(() => {
+    if (mode !== 'merge') return
+    let alive = true
+    setSiblings(null)
+    load<DayTasksResponse>('/api/day-tasks', 'get_day_tasks', { day })
+      .then(r => { if (alive) setSiblings(r.tasks.filter(t => t.id !== taskId)) })
+      .catch(() => { if (alive) setSiblings([]) })
+    return () => { alive = false }
+  }, [mode, day, taskId])
+
+  async function run(promise: Promise<unknown>) {
+    setBusy(true); setError(null)
+    try { await promise; onCorrected() }
+    catch (e) { setError(errMsg(e)); setBusy(false) }
+  }
+  const dismiss = () =>
+    run(mutate<DayTasksResponse>('/api/day-tasks', 'dismiss_day_task', { day, task_id: taskId }))
+  const mergeInto = (intoId: string) =>
+    run(mutate<DayTasksResponse>('/api/day-tasks', 'merge_day_task',
+      { day, task_id: taskId, into_task_id: intoId }))
+
+  return (
+    <div>
+      {mode === 'idle' && (
+        <div className="flex items-center gap-2">
+          <GhostBtn onClick={() => setMode('merge')} disabled={busy}>⧉ Merge into another task</GhostBtn>
+          <GhostBtn onClick={() => setMode('confirmDismiss')} disabled={busy}>✕ Dismiss</GhostBtn>
+        </div>
+      )}
+
+      {mode === 'confirmDismiss' && (
+        <div className="rounded-lg px-3 py-2.5" style={{ background: 'var(--t-card)', border: '1px solid var(--t-card-border)' }}>
+          <p className="mt-body-sm" style={{ color: 'var(--t-muted)', fontSize: 12.5, lineHeight: 1.5 }}>
+            Hide this task from the timeline? It stays hidden even as Meridian keeps
+            folding the day. You can bring it back later.
+          </p>
+          <div className="flex items-center gap-2 mt-2.5">
+            <button onClick={dismiss} disabled={busy}
+              className="mt-body-sm rounded-lg px-3 py-1.5"
+              style={{ fontWeight: 700, color: '#fff', background: 'var(--color-state-pending)', opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer' }}>
+              {busy ? 'Dismissing…' : 'Dismiss task'}
+            </button>
+            <GhostBtn onClick={() => setMode('idle')} disabled={busy}>Cancel</GhostBtn>
+          </div>
+        </div>
+      )}
+
+      {mode === 'merge' && (
+        <div className="rounded-lg px-3 py-2.5" style={{ background: 'var(--t-card)', border: '1px solid var(--t-card-border)' }}>
+          <div className="flex items-center justify-between mb-1.5">
+            <p className="mt-label" style={{ color: 'var(--t-faint)' }}>Merge this task into…</p>
+            <GhostBtn onClick={() => setMode('idle')} disabled={busy}>Cancel</GhostBtn>
+          </div>
+          {siblings === null ? (
+            <p className="mt-body-sm" style={{ color: 'var(--t-faint)', fontSize: 12 }}>Loading…</p>
+          ) : siblings.length === 0 ? (
+            <p className="mt-body-sm" style={{ color: 'var(--t-faint)', fontSize: 12, lineHeight: 1.5 }}>
+              There are no other tasks on this day to merge into.
+            </p>
+          ) : (
+            <ul className="space-y-1 max-h-60 overflow-y-auto nice-scroll">
+              {siblings.map(t => (
+                <li key={t.id}>
+                  <button onClick={() => mergeInto(t.id)} disabled={busy}
+                    className="w-full text-left rounded-lg px-3 py-2 mt-card-hover"
+                    style={{ background: 'var(--t-box)', opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer' }}>
+                    <p className="mt-body-sm truncate" style={{ color: 'var(--t-title)', fontSize: 12.5, fontWeight: 600 }}>
+                      {t.title || 'Activity'}
+                    </p>
+                    {t.minutes > 0 && (
+                      <p className="mt-mono-sm mt-0.5" style={{ color: 'var(--t-faint)', fontSize: 10.5 }}>{fmtDur(t.minutes * 60)}</p>
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <p className="mt-body-sm mt-2" style={{ color: 'var(--color-state-pending)', fontSize: 11.5, lineHeight: 1.4 }}>{error}</p>
+      )}
+    </div>
+  )
+}
+
+/** A low-emphasis text button — the shared shape for the task-action controls. */
+function GhostBtn({ onClick, disabled, children }: {
+  onClick: () => void; disabled?: boolean; children: React.ReactNode
+}) {
+  return (
+    <button onClick={onClick} disabled={disabled}
+      className="mt-body-sm inline-flex items-center gap-1 rounded-lg px-2.5 py-1"
+      style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)', fontSize: 12, opacity: disabled ? 0.55 : 1, cursor: disabled ? 'default' : 'pointer' }}>
+      {children}
+    </button>
   )
 }
 

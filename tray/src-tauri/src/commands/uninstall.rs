@@ -24,6 +24,7 @@
 //! - [`crate::commands::system::open_permission_pane`] — the wizard's "revoke
 //!   permissions" step reuses this to deep-link System Settings.
 
+use meridian_core::proc_ext::NoWindow;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -174,6 +175,7 @@ async fn run_cli(bin: &str, args: &[&str]) -> Result<CliReport, String> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .no_window()
         .output();
 
     let output = match tokio::time::timeout(Duration::from_secs(30), child).await {

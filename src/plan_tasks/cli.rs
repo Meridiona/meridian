@@ -49,6 +49,10 @@ pub async fn try_handle() -> Result<bool> {
             run_done().await;
             Ok(true)
         }
+        "plan-task-delete" => {
+            run_delete().await;
+            Ok(true)
+        }
         _ => Ok(false),
     }
 }
@@ -193,5 +197,28 @@ async fn run_done() {
     match res {
         Ok(r) => finish(&r, obs_guard).await,
         Err(e) => die("plan-task-done", format!("{e:#}"), obs_guard).await,
+    }
+}
+
+/// `meridian plan-task-delete --key K` — hide a personal task everywhere it's
+/// listed (refuses anything not `provider = 'local'`). Prints `{task_key, deleted}`.
+async fn run_delete() {
+    let key = flag("--key").unwrap_or_default();
+    if key.trim().is_empty() {
+        eprintln!("plan-task-delete: --key is required");
+        std::process::exit(2);
+    }
+
+    let cfg = Config::from_env();
+    let obs_guard = observability::init("meridian-rust").ok();
+    let pool = match setup_db(&cfg.meridian_db_uri()).await {
+        Ok(p) => p,
+        Err(e) => die("plan-task-delete", format!("open db: {e:#}"), obs_guard).await,
+    };
+    let res = super::delete::delete(&pool, &key).await;
+    pool.close().await;
+    match res {
+        Ok(r) => finish(&r, obs_guard).await,
+        Err(e) => die("plan-task-delete", format!("{e:#}"), obs_guard).await,
     }
 }

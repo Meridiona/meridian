@@ -42,6 +42,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use meridian_core::proc_ext::NoWindow;
 use sqlx::SqlitePool;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -124,7 +125,8 @@ pub(crate) async fn run_capture(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .current_dir(cwd)
-        .kill_on_drop(true);
+        .kill_on_drop(true)
+        .no_window();
     for k in remove_env {
         cmd.env_remove(k);
     }

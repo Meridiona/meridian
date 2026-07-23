@@ -41,6 +41,11 @@
 
 use std::path::{Path, PathBuf};
 
+// Used only by the Windows service-registration spawns below (schtasks / taskkill
+// / tasklist / the daemon launch) to suppress their console-window flash; the
+// trait method is a no-op on other platforms and would be an unused import there.
+#[cfg(target_os = "windows")]
+use meridian_core::proc_ext::NoWindow;
 use tauri::Manager;
 
 /// SHA-256 of a file as a lowercase hex string — the bundled-daemon update marker.
@@ -196,6 +201,16 @@ async fn install(backend: &Path, home: &Path) -> Result<(), String> {
     }
 
     let daemon_bin = home.join(".meridian").join("bin").join(DAEMON_FILE);
+
+    // Windows keeps a running exe's pages mapped, so overwriting it fails with
+    // "the process cannot access the file" (os error 32) — and this isn't just
+    // a first-install concern: `ensure_backend_installed` re-stages on every
+    // version bump while the *previous* build's daemon is still alive from an
+    // earlier login. Stop it first so the copy below can succeed; if it can't
+    // be stopped, propagate the failure rather than staging over a locked file.
+    #[cfg(target_os = "windows")]
+    stop_running_daemon_before_stage(&daemon_bin).await?;
+
     stage_binary(&backend.join(DAEMON_FILE), &daemon_bin).await?;
 
     register_service(backend, home, &daemon_bin).await
@@ -291,7 +306,7 @@ async fn register_service(_backend: &Path, home: &Path, daemon_bin: &Path) -> Re
             );
             install_startup_folder_launcher(daemon_bin).await?;
             // Nothing else will start the daemon until next login — start it now.
-            if let Err(e) = tokio::process::Command::new(daemon_bin).spawn() {
+            if let Err(e) = tokio::process::Command::new(daemon_bin).no_window().spawn() {
                 tracing::warn!(
                     error = %e,
                     bin = %daemon_bin.display(),
@@ -303,6 +318,145 @@ async fn register_service(_backend: &Path, home: &Path, daemon_bin: &Path) -> Re
                 "backend_install: Startup-folder launcher installed"
             );
             Ok(())
+        }
+    }
+}
+
+/// Stop the running instance(s) of **the staged daemon** so [`stage_binary`]
+/// can overwrite `~/.meridian/bin/meridian.exe`. Targets only processes whose
+/// executable is exactly `daemon_bin` — never an unrelated `meridian.exe` (an
+/// interactive CLI run, say, or a different tool sharing that image name).
+///
+/// The daemon can be running via either path [`register_service`] may have
+/// taken, so two stop mechanisms are used:
+/// - `schtasks /End` stops it if the scheduled task is what launched it; it
+///   targets our task by name, so it never touches anything else.
+/// - `taskkill /F /PID` (per matched PID) also catches the Startup-folder
+///   launcher fallback, where the process was spawned directly by `wscript`
+///   and has no association with the scheduled task for `/End` to find. Killing
+///   by PID — not by `/IM` image name — is what keeps unrelated `meridian.exe`
+///   processes alive.
+///
+/// Killing a process doesn't release its file handle instantaneously, so this
+/// polls (mirroring the launchd bootout wait in [`register_agent`]) rather than
+/// proceeding immediately. If any matching process is *still* alive once the
+/// polling window closes, this returns `Err`: staging over a file the daemon
+/// still holds open would fail with os error 32, and the caller must surface
+/// that as an install failure rather than silently continuing.
+#[cfg(target_os = "windows")]
+async fn stop_running_daemon_before_stage(daemon_bin: &Path) -> Result<(), String> {
+    // Targets our task by name — safe regardless of what else is named meridian.exe.
+    let _ = tokio::process::Command::new("schtasks")
+        .args(["/End", "/TN", WINDOWS_TASK_NAME])
+        .no_window()
+        .output()
+        .await;
+
+    for pid in matching_daemon_pids(daemon_bin).await {
+        let out = tokio::process::Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .no_window()
+            .output()
+            .await;
+        match out {
+            Ok(o) if o.status.success() => {
+                tracing::info!(pid, path = %daemon_bin.display(), "backend_install: stopped staged daemon process");
+            }
+            Ok(o) => {
+                tracing::warn!(
+                    pid,
+                    path = %daemon_bin.display(),
+                    status = %o.status,
+                    stderr = %String::from_utf8_lossy(&o.stderr).trim(),
+                    "backend_install: taskkill did not stop staged daemon process"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(pid, path = %daemon_bin.display(), error = %e, "backend_install: taskkill spawn failed");
+            }
+        }
+    }
+
+    // Poll until the staged daemon's own processes are gone (the file handle
+    // lingers briefly after the kill), then require an empty set — a still-alive
+    // holder means the overwrite below would fail, so fail loudly here instead.
+    for attempt in 0..10 {
+        let remaining = matching_daemon_pids(daemon_bin).await;
+        if remaining.is_empty() {
+            return Ok(());
+        }
+        tracing::debug!(
+            attempt,
+            path = %daemon_bin.display(),
+            remaining = remaining.len(),
+            "backend_install: waiting for staged daemon to exit"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+
+    let remaining = matching_daemon_pids(daemon_bin).await;
+    if remaining.is_empty() {
+        return Ok(());
+    }
+    tracing::error!(
+        path = %daemon_bin.display(),
+        pids = ?remaining,
+        "backend_install: staged daemon still running after stop attempts"
+    );
+    Err(format!(
+        "staged daemon {} still running after stop attempts (pids: {remaining:?}) - cannot overwrite a locked binary",
+        daemon_bin.display()
+    ))
+}
+
+/// PIDs of running processes whose executable is exactly the staged daemon
+/// binary `daemon_bin` — never a process that merely shares the `meridian.exe`
+/// image name. Uses a `Get-CimInstance Win32_Process` query for PID + full
+/// `ExecutablePath`, which `tasklist` alone can't supply. Enumeration failure
+/// is logged and yields an empty set (best-effort): the caller's post-poll
+/// check still guards the actual overwrite.
+#[cfg(target_os = "windows")]
+async fn matching_daemon_pids(daemon_bin: &Path) -> Vec<u32> {
+    let script = format!(
+        "Get-CimInstance Win32_Process -Filter \"Name='{DAEMON_FILE}'\" | ForEach-Object {{ \"$($_.ProcessId)`t$($_.ExecutablePath)\" }}"
+    );
+    let out = tokio::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .no_window()
+        .output()
+        .await;
+    let stdout = match out {
+        Ok(o) => o.stdout,
+        Err(e) => {
+            tracing::warn!(error = %e, path = %daemon_bin.display(), "backend_install: could not enumerate daemon processes");
+            return Vec::new();
+        }
+    };
+    String::from_utf8_lossy(&stdout)
+        .lines()
+        .filter_map(|line| {
+            let (pid, path) = line.split_once('\t')?;
+            let pid: u32 = pid.trim().parse().ok()?;
+            let path = path.trim();
+            if path.is_empty() {
+                return None;
+            }
+            same_windows_path(Path::new(path), daemon_bin).then_some(pid)
+        })
+        .collect()
+}
+
+/// Whether two paths resolve to the same file on Windows, tolerant of case,
+/// separator, and verbatim-prefix differences. Prefers `canonicalize` (both
+/// paths point at one physical file), falling back to a case-insensitive string
+/// compare when the file can no longer be canonicalized.
+#[cfg(target_os = "windows")]
+fn same_windows_path(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => {
+            let norm = |p: &Path| p.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+            norm(a) == norm(b)
         }
     }
 }
@@ -331,6 +485,7 @@ async fn register_scheduled_task(daemon_bin: &Path) -> Result<(), String> {
             "/TR",
         ])
         .arg(format!("\"{}\"", daemon_bin.display()))
+        .no_window()
         .output()
         .await
         .map_err(|e| format!("run schtasks: {e}"))?;
@@ -346,6 +501,7 @@ async fn register_scheduled_task(daemon_bin: &Path) -> Result<(), String> {
     // at login regardless.
     let _ = tokio::process::Command::new("schtasks")
         .args(["/Run", "/TN", WINDOWS_TASK_NAME])
+        .no_window()
         .output()
         .await;
     Ok(())

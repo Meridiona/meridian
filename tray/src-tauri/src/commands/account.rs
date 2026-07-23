@@ -24,11 +24,12 @@
 //!   `tauri_plugin_clerk::ClerkPluginBuilder`.
 //! - [`save_account_email`]: `ui/app/setup/signin/SignInWidget.tsx` and
 //!   `AccountAuthControl.tsx` on successful sign-in.
-//! - [`read_account_email`]: `crate::analytics`, to upgrade the anonymous
-//!   PostHog `distinct_id` to an identified person once an email is known.
+//! - [`read_account_email`]: `crate::analytics`, the identity gate — no
+//!   PostHog event is sent at all until this returns `Some` (the email
+//!   becomes the event's `distinct_id` directly, never an anonymous id).
 //!
 //! # Related
-//! - `crate::analytics` — the PostHog capture this feeds (`$set` email).
+//! - `crate::analytics` — the PostHog capture this feeds (email = `distinct_id`).
 //! - `commands::setup` — `mark_setup_complete`/`is_first_run`, the same
 //!   `~/.meridian/*` marker-file pattern this module follows.
 
@@ -99,8 +100,8 @@ fn account_path() -> Option<PathBuf> {
 /// completes. Crash-safe write (temp + rename), mirroring
 /// `analytics.rs::save_state`. Idempotent — safe to call again (e.g. a
 /// relaunch that re-verifies the persisted Clerk session). The next
-/// scheduled `app_installed`/`daily_usage` capture picks up the email via
-/// `crate::analytics::base_properties`'s `$set`.
+/// scheduled poll tick picks up the email and starts sending
+/// `app_installed`/`daily_usage` identified by it (see `crate::analytics`).
 #[tauri::command]
 // skip `email` too: it's PII and must never land in a span field / log line.
 // `err` records the failure + marks the span status ERROR on the `Err` path.
