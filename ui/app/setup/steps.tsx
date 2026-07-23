@@ -242,11 +242,10 @@ export function Welcome({ onBegin, steps, ready, error, onRetry, downloadCount }
           border: '0.5px solid var(--t-card-border)',
         }}>
           <p style={{ fontSize: 12, lineHeight: 1.55, color: 'var(--t-muted)' }}>
-            Hey - you're the <span style={{ fontWeight: 600, color: 'var(--t-title)' }}>{ordinal(downloadCount)}</span> person
-            {' '}to give Meridian a shot. That still means a lot to me - every one of you is who I'm building this for: people
-            doing hard work who deserve to be seen for it. Welcome aboard.
+            You're the <span style={{ fontWeight: 600, color: 'var(--t-title)' }}>{ordinal(downloadCount)}</span> person
+            {' '}to let Meridian watch a day of their work. This only gets built by people like you actually using
+            it - so if a day you cared about used to slip past unrecorded, it won't anymore. Glad you're here.
           </p>
-          <p style={{ fontSize: 12, color: 'var(--t-faint)', marginTop: 6 }}>- Aditya</p>
         </div>
       )}
       {error ? (
