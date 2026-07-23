@@ -61,7 +61,7 @@
 //! **Nothing is lost on failure.** [`capture`] reports success/failure via
 //! its return value, and both call sites ([`maybe_send_daily_tick`],
 //! [`send_daily_usage`]) only flip their persisted "sent" bookkeeping
-//! (`install_events_sent` / `last_sent_day`) on a confirmed success. A DB read
+//! (`install_events_sent` / `last_sent_day_by_email`) on a confirmed success. A DB read
 //! failure, a network error, a timeout, or a non-2xx from PostHog all leave
 //! that bookkeeping untouched, so the *exact same* pending event (the same
 //! day, carrying that day's own `date` property — never today's) is retried
@@ -85,7 +85,7 @@
 
 use meridian_core::SqlitePool;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -162,9 +162,21 @@ struct AnalyticsState {
     #[serde(default)]
     install_events_sent: HashSet<String>,
     /// The last LOCAL calendar day ("YYYY-MM-DD") a `daily_usage` event was
-    /// sent for. `None` before the first day boundary has been observed
-    /// (which never happens before the first sign-in — see [`maybe_send_daily_tick`]).
-    last_sent_day: Option<String>,
+    /// sent for, keyed by the signed-in account email it was accrued under —
+    /// NOT a single device-wide cursor. Scoped per email for the same reason
+    /// `install_events_sent` is a set: one device can see more than one
+    /// signed-in email over its lifetime (sign-out, sign back in as someone
+    /// else). A shared cursor would let account A's still-pending day be sent
+    /// under account B's `distinct_id` after a switch, and could suppress
+    /// account B's own first eligible day as "already sent" — so each email
+    /// carries its own cursor. An email absent from the map has observed no
+    /// day boundary yet (which never happens before that email's first
+    /// sign-in — see [`maybe_send_daily_tick`]). `#[serde(default)]` so an
+    /// older install's file (no such field, or the old scalar `last_sent_day`)
+    /// just starts empty rather than failing to parse — the currently
+    /// signed-in email simply re-arms today with no send, never a double-send.
+    #[serde(default)]
+    last_sent_day_by_email: HashMap<String, String>,
 }
 
 fn analytics_state_path() -> Option<PathBuf> {
@@ -183,7 +195,7 @@ fn load_or_init_state(path: &std::path::Path) -> AnalyticsState {
     AnalyticsState {
         device_id: uuid::Uuid::new_v4().to_string(),
         install_events_sent: HashSet::new(),
-        last_sent_day: None,
+        last_sent_day_by_email: HashMap::new(),
     }
 }
 
@@ -304,7 +316,7 @@ fn base_properties(
 /// returning `Some` — nothing is ever sent anonymously (see the module doc).
 /// While no email is on file (sign-in never completed, or the user signed
 /// out), this is a no-op every tick: no HTTP call, and day-rollover
-/// bookkeeping (`last_sent_day`) stays un-armed, so the day the user
+/// bookkeeping (`last_sent_day_by_email`) stays un-armed for that email, so the day the user
 /// eventually signs in on is never reported — only the first FULL day after
 /// that is, matching the "never backfill" rule elsewhere in this module.
 ///
@@ -344,11 +356,15 @@ pub(crate) async fn maybe_send_daily_tick(app: &tauri::AppHandle, pool: &SqliteP
     }
 
     let today = meridian_core::date::today_string();
-    match day_rollover_action(state.last_sent_day.as_deref(), &today) {
+    // Read/advance THIS email's own cursor — never a shared one — so a
+    // still-pending day accrued under a previously signed-in account can never
+    // be attributed to whoever is signed in now (see [`AnalyticsState::last_sent_day_by_email`]).
+    let last_sent_day = state.last_sent_day_by_email.get(&email).cloned();
+    match day_rollover_action(last_sent_day.as_deref(), &today) {
         Some(None) => {
-            // First observation since sign-in (or ever) — nothing has closed
-            // yet, so there's nothing to report.
-            state.last_sent_day = Some(today);
+            // First observation since sign-in (or ever) for THIS email —
+            // nothing has closed yet, so there's nothing to report.
+            state.last_sent_day_by_email.insert(email.clone(), today);
             dirty = true;
         }
         Some(Some(day)) => {
@@ -356,7 +372,7 @@ pub(crate) async fn maybe_send_daily_tick(app: &tauri::AppHandle, pool: &SqliteP
             // read hiccup must retry next tick, not silently report (and
             // permanently skip) a fabricated zero-usage day.
             if send_daily_usage(app, pool, &email, &state.device_id, &day).await {
-                state.last_sent_day = Some(today);
+                state.last_sent_day_by_email.insert(email.clone(), today);
                 dirty = true;
             }
         }
@@ -516,6 +532,84 @@ mod day_rollover_tests {
         assert_eq!(
             day_rollover_action(Some("2026-07-01"), "2026-07-09"),
             Some(Some("2026-07-01".to_string()))
+        );
+    }
+}
+
+#[cfg(test)]
+mod per_email_cursor_tests {
+    //! Regression coverage for the per-email daily-usage cursor
+    //! ([`AnalyticsState::last_sent_day_by_email`]). These mirror the exact
+    //! cursor read/advance that [`maybe_send_daily_tick`] performs for the
+    //! signed-in email, minus the live DB/HTTP send, so they assert the
+    //! scoping decision without a Tauri app or SQLite pool.
+    use super::{day_rollover_action, AnalyticsState};
+    use std::collections::{HashMap, HashSet};
+
+    fn state_with_cursors(cursors: &[(&str, &str)]) -> AnalyticsState {
+        AnalyticsState {
+            device_id: "test-device".to_string(),
+            install_events_sent: HashSet::new(),
+            last_sent_day_by_email: cursors
+                .iter()
+                .map(|(email, day)| (email.to_string(), day.to_string()))
+                .collect::<HashMap<_, _>>(),
+        }
+    }
+
+    /// The day (if any) that `maybe_send_daily_tick` would actually SEND a
+    /// `daily_usage` for, for `email` on `today` — reading only that email's
+    /// own cursor, exactly as the tick does. `None` = arm-only / no-op.
+    fn day_to_send_for(state: &AnalyticsState, email: &str, today: &str) -> Option<String> {
+        match day_rollover_action(
+            state.last_sent_day_by_email.get(email).map(|s| s.as_str()),
+            today,
+        ) {
+            Some(Some(day)) => Some(day),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn account_switch_does_not_misattribute_pending_day() {
+        // Account A armed its cursor at 2026-07-08 while signed in; a local-day
+        // boundary then passed (today is 2026-07-09) with A's 2026-07-08 usage
+        // still pending. A signs out and B signs in before the next tick fires.
+        let state = state_with_cursors(&[("a@example.com", "2026-07-08")]);
+
+        // B has no cursor of its own, so the tick arms B at today WITHOUT
+        // sending anything — A's pending 2026-07-08 day is never attributed to
+        // B. (The pre-fix shared cursor would have sent 2026-07-08 under B's
+        // email, since prev != today.)
+        assert_eq!(day_to_send_for(&state, "b@example.com", "2026-07-09"), None);
+
+        // And A's own cursor is untouched: when A signs back in, its pending
+        // 2026-07-08 day is still sent — under A's own email, where it belongs.
+        assert_eq!(
+            day_to_send_for(&state, "a@example.com", "2026-07-09"),
+            Some("2026-07-08".to_string())
+        );
+    }
+
+    #[test]
+    fn newly_signed_in_account_still_gets_its_first_full_day() {
+        // A device that has already reported days for account A. Account B
+        // signs in fresh — a shared cursor sitting at A's latest day could
+        // suppress B's first eligible day as "already sent".
+        let mut state = state_with_cursors(&[("a@example.com", "2026-07-09")]);
+
+        // First tick after B signs in: nothing has closed for B yet → arm
+        // only, no send.
+        assert_eq!(day_to_send_for(&state, "b@example.com", "2026-07-09"), None);
+        state
+            .last_sent_day_by_email
+            .insert("b@example.com".to_string(), "2026-07-09".to_string());
+
+        // Next local day: B's own first full day (2026-07-09) is now sent,
+        // independent of A's cursor.
+        assert_eq!(
+            day_to_send_for(&state, "b@example.com", "2026-07-10"),
+            Some("2026-07-09".to_string())
         );
     }
 }

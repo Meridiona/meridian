@@ -182,13 +182,20 @@ pub async fn get_tasks(
     };
     // `deleted_at IS NULL` (migration 075) — a task the user deleted from the
     // composer must stop appearing here even though its row still exists (see
-    // meridian_core::task_create's module doc for why it's a soft hide).
+    // meridian_core::task_create's module doc for why it's a soft hide). Gated on
+    // the column existing so a DB not yet migrated to 075 still reads, matching
+    // the CDM columns above (ported readers must degrade gracefully on old schema).
+    let deleted_filter = if column_exists(pool, "pm_tasks", "deleted_at").await? {
+        "WHERE deleted_at IS NULL "
+    } else {
+        ""
+    };
     let task_rows: Vec<TaskRow> = sqlx::query_as::<_, TaskRow>(&format!(
         "SELECT task_key, title, description_text, COALESCE(issue_type,'') AS issue_type, \
                 status_raw, is_terminal, provider, url, parent_key, epic_title, due_date, start_date, \
                 {cdm_cols} \
          FROM pm_tasks \
-         WHERE deleted_at IS NULL \
+         {deleted_filter}\
          ORDER BY task_key DESC"
     ))
     .fetch_all(pool)

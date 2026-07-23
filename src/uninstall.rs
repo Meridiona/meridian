@@ -361,7 +361,9 @@ fn run_human(plan: &Plan) {
         remove_path_reporting(f);
     }
     if flags.remove_data {
-        reset_tcc_grants();
+        for f in reset_tcc_grants() {
+            eprintln!("⚠ could not reset TCC grant {f}");
+        }
     }
     for f in &plan.runtime {
         remove_path_reporting(f);
@@ -387,6 +389,11 @@ fn run_human(plan: &Plan) {
         "\nDone. If the Meridian menubar app is still running, quit it (or drag \
          Meridian.app to the Trash) - the MLX server is its child and exits with it."
     );
+    // These Accessibility / Screen Recording / Input Monitoring grants are a
+    // macOS TCC concept: there is nothing analogous to reset or explain on other
+    // platforms, and `reset_tcc_grants` is a no-op there, so the messaging is
+    // gated to macOS rather than falsely claiming a reset was attempted.
+    #[cfg(target_os = "macos")]
     if flags.remove_data {
         println!(
             "\nAlso attempted to reset the Accessibility / Screen Recording / Input \
@@ -410,17 +417,57 @@ fn run_human(plan: &Plan) {
 /// the same tool for the retired a11y-helper. Non-fatal: `tccutil` may be
 /// missing, sandboxed, or refuse without Full Disk Access, and none of that
 /// should abort the rest of the uninstall.
+///
+/// Returns a `service: reason` line for each reset that did NOT clearly succeed
+/// (tool failed to launch, or exited non-zero) so both uninstall paths can
+/// surface it — previously a denied or missing `tccutil` was indistinguishable
+/// from a clean reset. Every outcome is also logged with structured `service`,
+/// `status`/`error` fields.
 #[cfg(target_os = "macos")]
-fn reset_tcc_grants() {
+fn reset_tcc_grants() -> Vec<String> {
+    let mut failures = Vec::new();
     for service in ["Accessibility", "ScreenCapture", "ListenEvent"] {
-        let _ = std::process::Command::new("tccutil")
+        match std::process::Command::new("tccutil")
             .args(["reset", service, "com.meridiona.tray"])
-            .output();
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                tracing::info!(service, "uninstall: tcc grant reset");
+            }
+            Ok(out) => {
+                let status = out
+                    .status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "terminated by signal".to_string());
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let stderr = stderr.trim();
+                tracing::warn!(
+                    service,
+                    status = %status,
+                    stderr = %stderr,
+                    "uninstall: tccutil reset returned non-zero"
+                );
+                let reason = if stderr.is_empty() {
+                    format!("{service}: tccutil exited {status}")
+                } else {
+                    format!("{service}: tccutil exited {status} ({stderr})")
+                };
+                failures.push(reason);
+            }
+            Err(e) => {
+                tracing::warn!(service, error = %e, "uninstall: tccutil reset failed to launch");
+                failures.push(format!("{service}: {e}"));
+            }
+        }
     }
+    failures
 }
 
 #[cfg(not(target_os = "macos"))]
-fn reset_tcc_grants() {}
+fn reset_tcc_grants() -> Vec<String> {
+    Vec::new()
+}
 
 /// `~/.meridian` user-data items removed by `--remove-data`/`--purge`, plus (on
 /// macOS) the OS-managed app caches WebKit/AppKit create for the tray's bundle

@@ -32,6 +32,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
+use tracing::Instrument;
 
 const TICK: Duration = Duration::from_secs(30);
 
@@ -88,10 +89,17 @@ pub async fn run_daemon_watchdog() {
             continue;
         }
 
-        tracing::info!("daemon watchdog: endpoint down ~{down_after_s}s — restarting");
-        if let Err(e) = crate::commands::daemon_control::restart().await {
-            tracing::warn!(error = %e, "daemon watchdog: restart attempt failed");
+        // Wrap the discrete recovery operation in a span so the whole attempt is
+        // traceable end-to-end; `down_after_s` rides on the span as a structured
+        // field (queryable in JSON sinks) rather than baked into a message.
+        async {
+            tracing::info!("daemon watchdog: endpoint down, restarting");
+            if let Err(e) = crate::commands::daemon_control::restart().await {
+                tracing::warn!(error = %e, "daemon watchdog: restart attempt failed");
+            }
         }
+        .instrument(tracing::info_span!("daemon_watchdog.restart", down_after_s))
+        .await;
         cooldown_until = Some(Instant::now() + WATCHDOG_COOLDOWN);
         consecutive_down = 0;
     }
