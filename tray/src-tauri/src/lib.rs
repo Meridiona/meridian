@@ -402,6 +402,13 @@ pub fn run() {
                 poll::run_poll_loop(app_handle, state_clone).await;
             });
 
+            // Fast daemon supervisor, separate from the poll loop's slower,
+            // notice-owning health tick: probes every 5 s and restarts a
+            // confirmed-down daemon within ~10 s. See `poll::run_daemon_watchdog`.
+            tauri::async_runtime::spawn(async move {
+                poll::run_daemon_watchdog().await;
+            });
+
             // Stage + register the bundled daemon on the self-contained .app DMG
             // path (also retires any leftover a11y-helper agent from an older
             // install — see backend_install's module docs). No-op under
