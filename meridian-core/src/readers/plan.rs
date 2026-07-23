@@ -387,6 +387,8 @@ pub async fn build_available(
     recent_since_day: &str,
 ) -> anyhow::Result<Vec<AvailableTask>> {
     let has_curation = table_exists(pool, "pm_task_curation").await;
+    // `t.deleted_at IS NULL` (migration 075) — a task the user deleted from the
+    // composer must not be offered back as a suggestion.
     let sql = format!(
         r#"SELECT t.task_key, t.title, t.provider, t.url,
                   COALESCE(t.status_raw,'') AS status_raw,
@@ -396,7 +398,8 @@ pub async fn build_available(
                   t.priority, t.issue_type, t.story_points,
                   {} AS decision
            FROM pm_tasks t
-           {}"#,
+           {}
+           WHERE t.deleted_at IS NULL"#,
         if has_curation { "c.decision" } else { "NULL" },
         if has_curation {
             "LEFT JOIN pm_task_curation c ON c.task_key = t.task_key"
@@ -533,6 +536,12 @@ struct PlanJoinRow {
     priority: Option<String>,
     issue_type: Option<String>,
     story_points: Option<String>,
+    /// Set (migration 075) when the user deleted this personal task from the
+    /// composer. Unlike `on_board = false` (the ticket's `pm_tasks` row is simply
+    /// gone, e.g. pruned off a tracker's board — shown as completed via its
+    /// snapshot), a deleted task must vanish outright: filtered out in
+    /// [`load_plan`] / [`load_plan_candidates`] before [`resolve_row`] ever sees it.
+    deleted_at: Option<String>,
 }
 
 /// A ticket's board fields captured onto the `daily_plan` row at write time
@@ -666,6 +675,7 @@ pub async fn load_plan_candidates(
     Ok(plan_join_rows(pool, date)
         .await?
         .into_iter()
+        .filter(|r| r.deleted_at.is_none())
         .map(resolve_row)
         .collect())
 }
@@ -686,6 +696,9 @@ async fn load_plan(
     Ok(plan_join_rows(pool, date)
         .await?
         .into_iter()
+        // A deleted personal task must vanish outright, unlike a merely off-board
+        // one (`on_board = false`, still shown via its snapshot as completed).
+        .filter(|r| r.deleted_at.is_none())
         .map(resolve_row)
         .map(|c| PlanItem {
             due_days: crate::date::due_days_from(c.due_date.as_deref(), today),
@@ -730,7 +743,7 @@ async fn plan_join_rows(pool: &SqlitePool, date: &str) -> anyhow::Result<Vec<Pla
                   COALESCE(t.status_raw,'') AS status_raw,
                   COALESCE(t.is_terminal,0) AS is_terminal,
                   t.due_date, t.description_text, t.epic_title, t.parent_key,
-                  t.priority, t.issue_type, t.story_points
+                  t.priority, t.issue_type, t.story_points, t.deleted_at
            FROM daily_plan p
            LEFT JOIN pm_tasks t ON t.task_key = p.task_key
            WHERE p.plan_date = ?

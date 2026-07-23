@@ -37,10 +37,20 @@
 //! itself, or promoting it to a real ticket if a tracker is connected) instead of
 //! refusing it.
 //!
+//! # `deleted_at` (migration 075) — a SEPARATE filter, orthogonal to `provider`
+//! [`delete_local_task`] hides a personal task by setting `deleted_at` rather than
+//! removing the row (see its doc for why). Every site that LISTS tasks to a user
+//! must also exclude a hidden one: `tasks::get_tasks`, `plan::build_available`,
+//! and `plan::plan_join_rows` (which `plan::load_plan` and the worklog matcher's
+//! candidate set both resolve through) all filter `deleted_at IS NULL`. A lookup by
+//! exact key ([`provider_of`], [`task_exists`], `task_detail`) deliberately does
+//! NOT filter it — those aren't listings, and a stale direct reference should still
+//! resolve to a clear "this was deleted" rather than a confusing 404.
+//!
 //! # Who calls this
-//! `src/plan_tasks/{create,edit}.rs` (daemon) → the `meridian plan-task-create` /
-//! `plan-task-edit` CLIs → the tray's `create_plan_task` / `edit_plan_task` → the
-//! daily plan's task composer.
+//! `src/plan_tasks/{create,edit,delete}.rs` (daemon) → the `meridian plan-task-create` /
+//! `plan-task-edit` / `plan-task-delete` CLIs → the tray's `create_plan_task` /
+//! `edit_plan_task` / `delete_plan_task` → the daily plan's task composer.
 //!
 //! # Related
 //! - [`crate::plan`] — the daily plan these tasks are added to; its `apply_plan_action`
@@ -55,9 +65,9 @@ use tracing::Instrument;
 pub const LOCAL_PROVIDER: &str = "local";
 
 /// The `LOCAL-<n>` key prefix. `<n>` is `MAX(<n>) + 1` over existing personal tasks.
-/// Keys are never reused — nothing here deletes a task (see the note at the bottom of
-/// this module), so the max only ever grows. That matters: a reissued key would let a
-/// new task inherit the old one's `app_sessions` / `daily_plan` history.
+/// Keys are never reused — [`delete_local_task`] hides a row rather than removing
+/// it (see its doc), so the max only ever grows. That matters: a reissued key would
+/// let a new task inherit the old one's `app_sessions` / `daily_plan` history.
 const LOCAL_KEY_PREFIX: &str = "LOCAL-";
 
 /// One task row to create. `provider` is [`LOCAL_PROVIDER`] for a personal task, or a
@@ -145,8 +155,10 @@ async fn try_create_local(
         .await
         .context("opening the create transaction")?;
 
-    // Highest existing LOCAL-<n>, counting DELETED keys is impossible (they're gone),
-    // so this is "highest live + 1". Keys are not reused; see LOCAL_KEY_PREFIX.
+    // Highest existing LOCAL-<n>, INCLUDING hidden (`deleted_at` set) ones — a
+    // hidden row still counts toward "highest ever minted", which is what keeps a
+    // key from being reissued. Live-only would let a deleted task's number come
+    // back around.
     let max_n: i64 = sqlx::query_scalar(
         "SELECT COALESCE(MAX(CAST(SUBSTR(task_key, 7) AS INTEGER)), 0) \
          FROM pm_tasks WHERE provider = ? AND task_key LIKE 'LOCAL-%'",
@@ -175,6 +187,38 @@ async fn try_create_local(
 
     tx.commit().await.context("committing the new task")?;
     Ok(key)
+}
+
+/// "Delete" a personal task: hide it, don't remove the row. **Scoped
+/// `WHERE provider = 'local'` deliberately** — same rationale as
+/// [`update_task_text`]/[`set_local_terminal`], this must never be pointable at a
+/// tracker-synced row. Soft rather than a real `DELETE` because keys are minted as
+/// `MAX(<n>) + 1` over every row ever inserted (see [`LOCAL_KEY_PREFIX`]) — actually
+/// removing the row would free its number for reuse, letting a later task silently
+/// inherit this one's `app_sessions` / `daily_plan` history. `deleted_at` is the
+/// durable record instead; every reader that lists tasks (`tasks`,
+/// `plan::build_available`, `plan::plan_join_rows`) filters it out, so a hidden task
+/// simply stops appearing anywhere. Idempotent: hiding an already-hidden task is a
+/// no-op, not an error. Returns whether a row changed, so the caller can tell "not a
+/// personal task" (or already hidden) from "hidden".
+#[tracing::instrument(skip(pool))]
+pub async fn delete_local_task(pool: &SqlitePool, task_key: &str, now: &str) -> Result<bool> {
+    let res = sqlx::query(
+        "UPDATE pm_tasks SET deleted_at = ? \
+         WHERE task_key = ? AND provider = ? AND deleted_at IS NULL",
+    )
+    .bind(now)
+    .bind(task_key)
+    .bind(LOCAL_PROVIDER)
+    .execute(pool)
+    .instrument(tracing::debug_span!("task_create.write.delete"))
+    .await
+    .context("hiding the personal task")?;
+    let deleted = res.rows_affected() > 0;
+    if deleted {
+        tracing::info!(key = %task_key, "task_create: personal task deleted");
+    }
+    Ok(deleted)
 }
 
 /// The provider that owns `task_key`, or `None` if it isn't a known task. Callers
@@ -351,12 +395,8 @@ pub async fn set_local_status(
     Ok(res.rows_affected() > 0)
 }
 
-// NOTE: there is deliberately NO delete. A personal task is disposed of exactly the
-// way a board ticket is — mark it done ([`set_local_terminal`]), which drops it from
-// `build_available`. Removing a task from a day is the plan's `remove` action, which
-// touches `daily_plan` and leaves the task itself alone.
-//
-// This is not just YAGNI: because keys are minted as `MAX(<n>) + 1` over the live
-// rows, deleting the highest task would let the NEXT mint reissue its key, and the
-// new task would silently inherit the old one's `app_sessions` history. No delete
-// means no reuse, which is what makes the "never reused" guarantee above true.
+// A personal task can be disposed of three ways: mark it done ([`set_local_terminal`],
+// which drops it from `build_available` but keeps its history); remove it from just
+// one day (the plan's `remove` action, which only touches `daily_plan`); or delete it
+// outright ([`delete_local_task`]), for a task the user never wanted to have created —
+// which hides it everywhere without touching its row (see that fn's doc for why).

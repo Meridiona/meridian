@@ -34,7 +34,7 @@ async fn make_pool() -> SqlitePool {
         CREATE TABLE pm_tasks (
             task_key TEXT, title TEXT, description_text TEXT, issue_type TEXT,
             status_raw TEXT, is_terminal INTEGER, provider TEXT, url TEXT,
-            parent_key TEXT, epic_title TEXT, due_date TEXT, start_date TEXT
+            parent_key TEXT, epic_title TEXT, due_date TEXT, start_date TEXT, deleted_at TEXT
         );
         "#,
     )
@@ -376,7 +376,8 @@ async fn make_plan_pool() -> SqlitePool {
         r#"CREATE TABLE pm_tasks (
             task_key TEXT, title TEXT, provider TEXT, url TEXT, status_raw TEXT,
             is_terminal INTEGER, due_date TEXT, updated_at TEXT, description_text TEXT,
-            epic_title TEXT, parent_key TEXT, priority TEXT, issue_type TEXT, story_points TEXT
+            epic_title TEXT, parent_key TEXT, priority TEXT, issue_type TEXT, story_points TEXT,
+            deleted_at TEXT
         );"#,
         r#"CREATE TABLE pm_task_curation (task_key TEXT, decision TEXT);"#,
         r#"CREATE TABLE app_sessions (
@@ -754,7 +755,7 @@ async fn make_task_create_pool() -> SqlitePool {
             is_terminal INTEGER NOT NULL DEFAULT 0, due_date TEXT, updated_at TEXT NOT NULL,
             description_text TEXT NOT NULL DEFAULT '', epic_title TEXT, parent_key TEXT,
             priority TEXT NOT NULL DEFAULT '', issue_type TEXT NOT NULL DEFAULT '',
-            story_points TEXT NOT NULL DEFAULT '', project_key TEXT NOT NULL DEFAULT ''
+            story_points TEXT NOT NULL DEFAULT '', project_key TEXT NOT NULL DEFAULT '', deleted_at TEXT
         );"#,
         r#"CREATE TABLE pm_task_curation (task_key TEXT, decision TEXT);"#,
         r#"CREATE TABLE app_sessions (
@@ -1324,7 +1325,7 @@ async fn make_board_pool() -> sqlx::SqlitePool {
             is_terminal INTEGER NOT NULL DEFAULT 0, due_date TEXT, updated_at TEXT NOT NULL,
             description_text TEXT NOT NULL DEFAULT '', epic_title TEXT, parent_key TEXT,
             priority TEXT NOT NULL DEFAULT '', issue_type TEXT NOT NULL DEFAULT '',
-            story_points TEXT
+            story_points TEXT, deleted_at TEXT
         );"#,
         r#"CREATE TABLE pm_task_curation (task_key TEXT, decision TEXT);"#,
         // Migration 041 + 044. The matcher's candidate set reads this.
@@ -1697,7 +1698,7 @@ async fn make_worklog_pool() -> SqlitePool {
         CREATE TABLE pm_tasks (
             task_key TEXT, title TEXT, description_text TEXT, issue_type TEXT,
             status_raw TEXT, is_terminal INTEGER, provider TEXT, url TEXT,
-            parent_key TEXT, epic_title TEXT, due_date TEXT, start_date TEXT
+            parent_key TEXT, epic_title TEXT, due_date TEXT, start_date TEXT, deleted_at TEXT
         );
         "#,
     )
