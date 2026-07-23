@@ -16,6 +16,7 @@
 //! - [`crate::install::meridian_bin`] — the shared native-first binary resolver.
 //! - [`crate::commands::parents`] — the other read-side `meridian` CLI shell-out.
 
+use meridian_core::proc_ext::NoWindow;
 use serde::Serialize;
 use std::time::Duration;
 
@@ -54,6 +55,7 @@ pub async fn sync_tasks() -> Result<SyncResult, String> {
         // the board) after the UI reports a failure. The deleted /api/tasks/sync route
         // called child.kill() on its 30s timer — kill_on_drop preserves that contract.
         .kill_on_drop(true)
+        .no_window()
         .output();
 
     let output = match tokio::time::timeout(Duration::from_secs(30), child).await {

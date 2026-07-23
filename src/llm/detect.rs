@@ -34,6 +34,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+use meridian_core::proc_ext::NoWindow;
 use meridian_core::settings::RuntimeSettings;
 use meridian_core::LlmProvider;
 use serde::{Deserialize, Serialize};
@@ -308,7 +309,8 @@ pub async fn install_provider(provider: LlmProvider) -> InstallOutcome {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .kill_on_drop(true)
+        .no_window();
 
     let output = match command.spawn() {
         Ok(child) => match tokio::time::timeout(INSTALL_TIMEOUT, child.wait_with_output()).await {
@@ -384,6 +386,7 @@ async fn warn_if_version_unpinned(provider: LlmProvider, path: &std::path::Path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
+        .no_window()
         .output()
         .await;
     let Ok(out) = out else {
@@ -442,7 +445,8 @@ pub async fn cursor_sign_in() -> InstallOutcome {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .kill_on_drop(true)
+        .no_window();
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -672,7 +676,8 @@ async fn probe_login_shell(bin: &str) -> Option<PathBuf> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .kill_on_drop(true);
+        .kill_on_drop(true)
+        .no_window();
 
     let child = cmd.spawn().ok()?;
     let out = tokio::time::timeout(PROBE_TIMEOUT, child.wait_with_output())

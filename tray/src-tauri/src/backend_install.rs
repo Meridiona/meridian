@@ -41,6 +41,11 @@
 
 use std::path::{Path, PathBuf};
 
+// Used only by the Windows service-registration spawns below (schtasks / taskkill
+// / tasklist / the daemon launch) to suppress their console-window flash; the
+// trait method is a no-op on other platforms and would be an unused import there.
+#[cfg(target_os = "windows")]
+use meridian_core::proc_ext::NoWindow;
 use tauri::Manager;
 
 /// SHA-256 of a file as a lowercase hex string — the bundled-daemon update marker.
@@ -299,7 +304,7 @@ async fn register_service(_backend: &Path, home: &Path, daemon_bin: &Path) -> Re
             );
             install_startup_folder_launcher(daemon_bin).await?;
             // Nothing else will start the daemon until next login — start it now.
-            if let Err(e) = tokio::process::Command::new(daemon_bin).spawn() {
+            if let Err(e) = tokio::process::Command::new(daemon_bin).no_window().spawn() {
                 tracing::warn!(
                     error = %e,
                     bin = %daemon_bin.display(),
@@ -332,10 +337,12 @@ async fn register_service(_backend: &Path, home: &Path, daemon_bin: &Path) -> Re
 async fn stop_running_daemon_before_stage() {
     let _ = tokio::process::Command::new("schtasks")
         .args(["/End", "/TN", WINDOWS_TASK_NAME])
+        .no_window()
         .output()
         .await;
     let _ = tokio::process::Command::new("taskkill")
         .args(["/F", "/IM", DAEMON_FILE])
+        .no_window()
         .output()
         .await;
     for _ in 0..10 {
@@ -357,6 +364,7 @@ async fn daemon_process_running() -> bool {
             "CSV",
             "/NH",
         ])
+        .no_window()
         .output()
         .await;
     match out {
@@ -389,6 +397,7 @@ async fn register_scheduled_task(daemon_bin: &Path) -> Result<(), String> {
             "/TR",
         ])
         .arg(format!("\"{}\"", daemon_bin.display()))
+        .no_window()
         .output()
         .await
         .map_err(|e| format!("run schtasks: {e}"))?;
@@ -404,6 +413,7 @@ async fn register_scheduled_task(daemon_bin: &Path) -> Result<(), String> {
     // at login regardless.
     let _ = tokio::process::Command::new("schtasks")
         .args(["/Run", "/TN", WINDOWS_TASK_NAME])
+        .no_window()
         .output()
         .await;
     Ok(())

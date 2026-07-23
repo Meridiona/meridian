@@ -127,6 +127,11 @@ async fn launchctl(args: &[&str], what: &str) -> Result<(), String> {
 
 // ── Windows: named pipe + Task Scheduler ────────────────────────────────────
 
+// Suppresses the console-window flash on the schtasks / direct-daemon spawns
+// below; no-op on other platforms, so kept behind the same cfg as its callers.
+#[cfg(target_os = "windows")]
+use meridian_core::proc_ext::NoWindow;
+
 #[cfg(target_os = "windows")]
 pub async fn probe() -> Probe {
     use std::time::Duration;
@@ -194,6 +199,7 @@ fn spawn_staged_daemon() -> Result<(), String> {
         return Err(format!("no staged daemon at {}", daemon_bin.display()));
     }
     std::process::Command::new(&daemon_bin)
+        .no_window()
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("spawn {} failed: {e}", daemon_bin.display()))
@@ -230,6 +236,7 @@ pub async fn reload() -> Result<u32, String> {
 async fn schtasks(args: &[&str]) -> Result<(), String> {
     let out = tokio::process::Command::new("schtasks")
         .args(args)
+        .no_window()
         .output()
         .await
         .map_err(|e| format!("schtasks failed: {e}"))?;

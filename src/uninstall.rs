@@ -323,8 +323,10 @@ fn run_human(plan: &Plan) {
     // which is the normal case on a second uninstall.
     #[cfg(target_os = "windows")]
     {
+        use meridian_core::proc_ext::NoWindow;
         let out = std::process::Command::new("schtasks")
             .args(["/Delete", "/F", "/TN", "Meridian Daemon"])
+            .no_window()
             .output();
         match out {
             Ok(o) if o.status.success() => println!("✓ removed login task  Meridian Daemon"),
