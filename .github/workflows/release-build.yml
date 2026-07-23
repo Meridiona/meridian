@@ -266,6 +266,7 @@ jobs:
       MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
       MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
       MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+      MERIDIAN_COUNTER_API_KEY: ${{ secrets.COUNTER_API_KEY }}
       MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
       MERIDIAN_CHANNEL: ${{ needs.prepare.outputs.channel }}
       MERIDIAN_HF_ENDPOINT: https://hf.meridiona.com
@@ -579,6 +580,7 @@ jobs:
       MERIDIAN_JIRA_OAUTH_CLIENT_SECRET: ${{ secrets.JIRA_OAUTH_CLIENT_SECRET }}
       MERIDIAN_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
       MERIDIAN_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+      MERIDIAN_COUNTER_API_KEY: ${{ secrets.COUNTER_API_KEY }}
       MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
       MERIDIAN_CHANNEL: ${{ needs.prepare.outputs.channel }}
       MERIDIAN_HF_ENDPOINT: https://hf.meridiona.com

@@ -78,6 +78,14 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
             }
             if do_worklogs {
                 refresh_worklogs(pool, &state).await;
+                // Spawned off, not awaited inline: this can make one HTTP call
+                // per newly-posted worklog this tick, and a slow/hanging
+                // counter response (5s timeout each) must not delay the
+                // more user-visible steps below.
+                let counter_pool = pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::counter_ping::check_worklog_posts(&counter_pool).await;
+                });
             }
             if do_health {
                 permissions::check_permissions(&app, pool).await;

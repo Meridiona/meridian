@@ -13,6 +13,7 @@
 //! - [`sys`]         — shared uid / notify / dashboard-URL helpers.
 //! - [`format`]      — duration formatting for the popover.
 //! - [`analytics`]   — PostHog product-analytics capture (DMG installs only).
+//! - [`counter_ping`] — public "updates logged" live-counter ping (prod channel only).
 
 mod analytics;
 mod backend_install;
@@ -23,6 +24,7 @@ mod capture;
 // it must exist in non-capture builds too (nothing reads it there — harmless).
 mod capture_ignore;
 mod commands;
+mod counter_ping;
 mod deep_link;
 
 /// Lowercase product name as macOS reports it after [`set_process_display_name`].
