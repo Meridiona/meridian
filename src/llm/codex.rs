@@ -11,6 +11,19 @@
 //! The shared schema is rewritten to OpenAI's strict dialect on the way out — see
 //! [`crate::llm::schema::strictify`], without which no schema-bearing call reaches the
 //! model at all.
+//!
+//! # The whole prompt goes over stdin, not argv (Windows)
+//!
+//! It used to be `codex exec <req.system>` (positional argv) + `req.user` piped over stdin.
+//! `codex` resolves to `codex.cmd` on Windows - an npm-generated batch file, not a native exe -
+//! and Rust's std library REFUSES to spawn a `.bat`/`.cmd` target when an argument contains
+//! characters it cannot safely escape (the CVE-2024-24576 "BatBadBut" fix), notably embedded
+//! newlines. `req.system` is loaded from a Markdown rules file (`SUMMARY_RULES`), so it is
+//! always multi-line — meaning every real summarisation call failed to even spawn on Windows
+//! with `io::Error { kind: InvalidInput, "batch file arguments are invalid" }`, confirmed live
+//! with the exact production prompt. `codex exec` (no positional prompt at all) reads the whole
+//! prompt from stdin instead - documented, and confirmed live - and stdin has no such
+//! restriction on any platform, so this fixes Windows without changing behaviour anywhere else.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -63,6 +76,70 @@ fn codex_error(stderr: &str) -> String {
     sp::first_line(rest)
 }
 
+/// How long the cheap "are you even signed in" pre-check may take. Purely local (reads a
+/// cached credential file, no network round-trip) — measured ~0.2s on codex-cli 0.145.0 — so
+/// this is a generous ceiling, not a real budget.
+const LOGIN_STATUS_TIMEOUT_S: u64 = 8;
+
+/// Fast pre-flight: is Codex signed out? `None` means "proceed with the real call" — covers
+/// both "signed in" and "couldn't tell" (a pre-check that itself fails or times out must never
+/// block a call that might otherwise succeed; fail open).
+///
+/// # Why this exists
+///
+/// Without it, a signed-out Codex fails through the SLOW path: `codex exec` reaches the
+/// network, gets a 401, and retries — 5 WebSocket reconnects, a fallback to HTTPS, 5 more
+/// retries — before finally giving up at ~23s (measured live). That is LONGER than the Test
+/// Connection button's 20s budget (`PROBE_TIMEOUT_S` in `super::detect`), so the real "you're
+/// not signed in" never reaches the user — they see a bare, unactionable "timed out" instead,
+/// on every real hourly call too, not just the Test button. `codex login status` answers the
+/// same question in a fraction of a second because it only reads a local credential file.
+async fn signed_out(cfg: &LlmConfig) -> Option<String> {
+    let cap = run_capture(
+        "codex",
+        &["login".into(), "status".into()],
+        "",
+        &cfg.meridian_home,
+        LOGIN_STATUS_TIMEOUT_S,
+        &[],
+        &[],
+    )
+    .await
+    .ok()?;
+    classify_login_status(cap.success, &cap.stdout, &cap.stderr)
+}
+
+/// The pure classification `signed_out` applies to `codex login status`'s result — split out
+/// so it can be unit-tested without spawning a process or touching `resolve_cli`'s global
+/// success cache (a fake `codex` on `PATH` would otherwise memoise under the real key).
+///
+/// Only trusts the "not logged in" text when the command also FAILED (non-zero exit): the
+/// message is checked as a substring, so a coincidental match in a differently-shaped success
+/// message (or a future CLI version's phrasing) must not misfire and block a working call.
+/// Anything else — an unrelated failure, a version that phrases this differently — returns
+/// `None` and lets the real call proceed; a wrong "you're signed out" would be worse than one
+/// slow, honestly-reported real failure.
+fn classify_login_status(success: bool, stdout: &str, stderr: &str) -> Option<String> {
+    let blob = format!("{stdout}\n{stderr}").to_lowercase();
+    (!success && blob.contains("not logged in")).then(|| {
+        "Codex isn't signed in yet - run `codex login` in a terminal, then try again.".to_string()
+    })
+}
+
+/// The full prompt sent over stdin - see the module doc on why nothing goes over argv
+/// anymore. `req.system` (always multi-line - it's a Markdown rules file) is the
+/// instructions; `req.user`, when present, is the data to summarise, demarcated with
+/// `<stdin>` tags the same way `codex exec` itself used to wrap piped stdin when a
+/// positional prompt was ALSO given - so the model sees the identical effective text it did
+/// before this moved off argv, just assembled by us instead of by codex internally.
+fn codex_stdin(req: &PromptRequest) -> String {
+    if req.user.is_empty() {
+        req.system.to_string()
+    } else {
+        format!("{}\n\n<stdin>\n{}\n</stdin>\n", req.system, req.user)
+    }
+}
+
 pub struct CodexBackend {
     pub cfg: LlmConfig,
 }
@@ -76,6 +153,10 @@ impl LlmBackend for CodexBackend {
     async fn complete(&self, req: &PromptRequest) -> Result<LlmOutput, LlmError> {
         let t0 = std::time::Instant::now();
 
+        if let Some(msg) = signed_out(&self.cfg).await {
+            return Err(LlmError::Failed(msg));
+        }
+
         let td = std::env::temp_dir().join(format!(
             "meridian-llm-codex-{}-{}",
             std::process::id(),
@@ -86,9 +167,10 @@ impl LlmBackend for CodexBackend {
         let _guard = TempDirGuard(td.clone());
 
         let out_path = td.join("last_message.txt");
+        // No positional prompt argument - see the module doc. `req.system` goes over stdin
+        // instead, along with `req.user`.
         let mut args: Vec<String> = vec![
             "exec".into(),
-            req.system.to_string(),
             "-s".into(),
             "read-only".into(),
             "--skip-git-repo-check".into(),
@@ -116,10 +198,11 @@ impl LlmBackend for CodexBackend {
             args.push(self.cfg.model.clone());
         }
 
+        let stdin_text = codex_stdin(req);
         let cap = run_capture(
             "codex",
             &args,
-            &req.user, // codex exec reads the input from stdin
+            &stdin_text,
             &self.cfg.meridian_home,
             self.cfg.cli_timeout_s,
             &[("MERIDIAN_SUMMARISER", "1"), super::DO_NOT_TRACK],
@@ -207,5 +290,65 @@ mod tests {
             codex_error("banner\nERROR: stream disconnected\n"),
             "stream disconnected"
         );
+    }
+
+    /// The regression this exists for: a signed-out Codex used to fail through `codex exec`'s
+    /// slow retry-then-401 path (~23s, measured live) - longer than the Test Connection
+    /// button's 20s budget, so the user saw a bare "timed out" instead of "you're not signed
+    /// in". `codex login status` (real output, verbatim) answers the same question instantly.
+    #[test]
+    fn classify_login_status_recognises_the_real_not_logged_in_output() {
+        let msg = classify_login_status(false, "Not logged in\n", "");
+        assert!(msg.is_some());
+        assert!(msg.unwrap().contains("codex login"));
+    }
+
+    #[test]
+    fn classify_login_status_is_case_insensitive_and_checks_stderr_too() {
+        assert!(classify_login_status(false, "NOT LOGGED IN", "").is_some());
+        assert!(classify_login_status(false, "", "Not Logged In").is_some());
+    }
+
+    /// A SUCCESSFUL call must never be misread as signed-out, even if "not logged in" somehow
+    /// appears in its output (e.g. echoed back from a prompt) - trusting text over the exit
+    /// code here would risk blocking a call that actually works.
+    #[test]
+    fn classify_login_status_ignores_the_text_on_success() {
+        assert_eq!(classify_login_status(true, "not logged in", ""), None);
+    }
+
+    /// An unrelated failure (network hiccup, a future CLI's different phrasing, a crash) must
+    /// return `None` and let the real call proceed - misclassifying it as "signed out" would
+    /// block a call for the wrong reason and hide the actual error.
+    #[test]
+    fn classify_login_status_does_not_misclassify_an_unrelated_failure() {
+        assert_eq!(
+            classify_login_status(false, "", "connection reset by peer"),
+            None
+        );
+        assert_eq!(classify_login_status(false, "", ""), None);
+    }
+
+    /// The regression this exists for: `req.system` used to go over argv (`codex exec
+    /// <system>`), and `req.system` is loaded from a Markdown rules file - always multi-line.
+    /// `codex.cmd` is a batch file on Windows, and Rust refuses to spawn a `.bat`/`.cmd`
+    /// target with a newline in any argument (confirmed live: "batch file arguments are
+    /// invalid"), so every real summarisation call failed to even spawn. Pins that the
+    /// combined stdin text preserves the exact same content the model used to see, just
+    /// assembled by us instead of relying on codex's own `<stdin>`-wrapping of piped input.
+    #[test]
+    fn codex_stdin_wraps_user_data_the_way_codex_itself_used_to() {
+        let req = PromptRequest::new("RULES\nmulti-line", "the transcript", "test");
+        let text = codex_stdin(&req);
+        assert!(text.starts_with("RULES\nmulti-line"));
+        assert!(text.contains("<stdin>\nthe transcript\n</stdin>"));
+    }
+
+    /// No data to summarise (the connectivity probe: `req.user` is empty) must not leave a
+    /// pointless empty `<stdin></stdin>` wrapper in what the model sees.
+    #[test]
+    fn codex_stdin_is_just_the_system_prompt_when_there_is_no_user_data() {
+        let req = PromptRequest::new("Reply with exactly: OK.", "", "test");
+        assert_eq!(codex_stdin(&req), "Reply with exactly: OK.");
     }
 }

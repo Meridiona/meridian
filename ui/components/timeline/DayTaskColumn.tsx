@@ -24,7 +24,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { fmtDur, PROVIDER_META } from '@/components/atoms'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { load } from '@/lib/bridge'
-import type { DayTask, DayTasksResponse, HourStatus } from '@/lib/api-types'
+import type { DayTask, DayTasksResponse, HourStatus, TodayGap } from '@/lib/api-types'
 import { HourTakeover } from './HourBadges'
 import {
   layoutDayTasks,
@@ -33,6 +33,7 @@ import {
   hourClock,
   hourHasWork,
   buildTimelineScale,
+  minutesFromIso,
   type LaidOutTask,
 } from './dayTaskLayout'
 import type { DayTaskDetail } from './DayTaskDetailPanel'
@@ -73,7 +74,7 @@ const META_MIN_PX = 62
 const SUMMARY_MIN_PX = 104
 const SUMMARY_LINE_PX = 17 // approx line height of a preview line
 
-export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, refreshToken = 0, hourStatus = [], capturing = null, isSolo = false }: {
+export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, refreshToken = 0, hourStatus = [], capturing = null, isSolo = false, gaps = [] }: {
   day: string
   isToday: boolean
   // Selection is owned by the shell so the clicked task's detail can render in
@@ -98,6 +99,11 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, refre
   /** `false` = tracking is paused RIGHT NOW. `null` while unknown. */
   capturing?: boolean | null
   isSolo?: boolean
+  // The day's `gaps` rows (get_today), same source hourStatus/capturing come
+  // from. Only tracking_paused/schedule_paused kinds are drawn — see
+  // pausedBands below. Optional/defaulted for the same reason as hourStatus:
+  // the injected-tasks (LLM Lab) path has no real day to pull gaps from.
+  gaps?: TodayGap[]
 }) {
   const [resp, setResp] = useState<DayTasksResponse | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -191,6 +197,36 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, refre
     }
     return out
   }, [firstHour, tickCeiling, toPx, colHeight, laidBase, win])
+
+  // ── Paused-time markers ────────────────────────────────────────────────────
+  // A `tracking_paused`/`schedule_paused` gap is real elapsed time nothing was
+  // captured for — the timeline should say so plainly rather than leaving a
+  // silent, unexplained blank stretch that reads as "nothing happened" rather
+  // than "we weren't watching". Drawn as a single clean divider line (the same
+  // idiom as SegmentList's "break" rule), centred in the gap's own pixel span,
+  // labelled with how long it lasted. Positioned on the same toPx axis as
+  // everything else, so it always sits between the task bands it actually
+  // fell between.
+  const pausedBands = useMemo(() => {
+    const out: { id: number; top: number; durSec: number }[] = []
+    for (const g of gaps) {
+      if (g.kind !== 'tracking_paused' && g.kind !== 'schedule_paused') continue
+      const startMin = minutesFromIso(g.started_at)
+      let endMin = minutesFromIso(g.ended_at)
+      if (startMin == null || endMin == null) continue
+      // A pause crossing local midnight comes back with `ended_at` on the next
+      // day, so minutesFromIso() (which drops the date) yields endMin < startMin.
+      // `get_today` only returns gaps that STARTED today, so clamp the end to
+      // end-of-day for placement rather than dropping the band entirely — the
+      // real elapsed time is still shown from `g.dur`.
+      if (endMin < startMin) endMin = 1440
+      const lo = Math.max(startMin, win.lo)
+      const hi = Math.min(endMin, win.hi)
+      if (hi <= lo) continue
+      out.push({ id: g.id, top: toPx((lo + hi) / 2), durSec: g.dur })
+    }
+    return out
+  }, [gaps, win, toPx])
 
   const taskCount = laid.length
 
@@ -305,6 +341,26 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, refre
                 </div>
               )
             })}
+
+            {/* Paused-time dividers — one per tracking_paused/schedule_paused
+                gap, centred in its own span. Same row body as the hour
+                gridlines (starts past the gutter, not at it) so it reads as
+                a peer of those dividers rather than the task-card rail. */}
+            {pausedBands.map(({ id, top, durSec }) => (
+              <div key={`gap-${id}`} className="absolute flex items-center gap-2 pointer-events-none"
+                style={{ top, left: GUTTER + CARD_GUTTER_GAP, right: 6, height: 0 }}>
+                <span className="flex-1 border-t border-dashed"
+                  style={{ borderColor: 'color-mix(in srgb, var(--color-state-pending) 40%, transparent)' }} />
+                <span className="mt-mono-sm shrink-0 -translate-y-1/2" style={{
+                  fontSize: 9.5, fontWeight: 600, letterSpacing: 0.2,
+                  color: 'var(--color-state-pending)', opacity: 0.85,
+                }}>
+                  Paused · {fmtDur(durSec)}
+                </span>
+                <span className="flex-1 border-t border-dashed"
+                  style={{ borderColor: 'color-mix(in srgb, var(--color-state-pending) 40%, transparent)' }} />
+              </div>
+            ))}
 
             {/* Task workstreams — inset further than the rail itself (GUTTER)
                 so the cards read as their own column, not flush against the

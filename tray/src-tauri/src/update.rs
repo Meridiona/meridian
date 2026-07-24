@@ -31,9 +31,9 @@
 //!
 //! # Related
 //! - [`notify_update`] — routes every tray-menu toast through the outbox
-//!   (event_key `system.update`) instead of a direct bypass, so quiet-hours,
-//!   the master switch, and the `notify_system_update` toggle all apply —
-//!   previously these six call sites skipped that policy entirely.
+//!   (event_key `system.update`) instead of a direct bypass, so quiet-hours
+//!   and the master switch all apply — previously these six call sites
+//!   skipped that policy entirely.
 //! - `scripts/package-updater.sh` — the producer of the `Minimum-Version:` notes
 //!   line (reads the optional `tray/minimum-version` file at release time).
 //! - Plan: Obsidian `Decisions/Public distribution + auto-update for the DMG`.
@@ -51,8 +51,8 @@ use tauri_plugin_updater::UpdaterExt;
 /// one-shot event (a check outcome, a download starting), not an ongoing
 /// condition to raise/clear like [`meridian::notices`] models — so this goes
 /// straight to [`meridian::notifications::enqueue`], gated by `system.update`
-/// (master switch + quiet hours + the `notify_system_update` toggle) the same
-/// way every other outbox producer is. `dedup_suffix` only needs to be unique
+/// (master switch + quiet hours) the same way every other outbox producer
+/// is. `dedup_suffix` only needs to be unique
 /// per call (the current timestamp is fine — these are user-triggered or
 /// rare background events, never a tight loop that would spam distinct keys).
 async fn notify_update(app: &AppHandle, dedup_suffix: &str, title: &str, body: &str) {
@@ -188,6 +188,40 @@ fn is_packaged() -> bool {
     crate::sys::is_bundled()
 }
 
+/// Marks an `"unsupported"` [`UpdateStatus`] whose `error` field is a reason
+/// code (`"no-platform-asset"`), not an error to alarm the user with — see
+/// [`is_missing_platform_asset`].
+const NO_PLATFORM_ASSET: &str = "no-platform-asset";
+
+/// True for the `tauri-plugin-updater` errors that mean "this platform has no
+/// published update artifact in `latest.json`" rather than a real check
+/// failure. Concretely this is Windows ARM64 today: `scripts/package-updater-windows.sh`
+/// only ever writes the `windows-x86_64` / `windows-x86_64-nsis` keys (the
+/// `.github/workflows/release-build.yml` `windows` job builds on `windows-latest`,
+/// i.e. x86_64, only — there is no ARM64 Windows release job), so an ARM64
+/// install's updater lookup can never match anything the manifest carries.
+///
+/// Surfacing that as `state: "error"` toasts a scary, unactionable "Update
+/// check failed" on *every* check, forever, for every ARM64 Windows install —
+/// there is no retry that fixes it. Bucketing it with `"unsupported"` (the
+/// same state used for an unbundled dev run) makes both the tray toast and the
+/// dashboard banner go quiet instead, same as the DMG updater already does for
+/// npm-installed CLIs.
+///
+/// Deliberately narrow: only `TargetNotFound`/`TargetsNotFound` map here.
+/// Every other error (network, signature, 404 on `latest.json` itself) still
+/// reports `"error"` — CI's `verify-release-bundle.sh` / `compose-updater-manifest.py`
+/// already fail the release loudly if an *expected* platform key (darwin-aarch64,
+/// windows-x86_64, …) goes missing, so a real regression there won't get
+/// silently swallowed by this.
+fn is_missing_platform_asset(e: &tauri_plugin_updater::Error) -> bool {
+    matches!(
+        e,
+        tauri_plugin_updater::Error::TargetNotFound(_)
+            | tauri_plugin_updater::Error::TargetsNotFound(_)
+    )
+}
+
 /// Check the configured endpoint for a newer version. A pure status read — does
 /// NOT download — so it's safe on every popover open / sidebar mount.
 #[tracing::instrument(skip(app))]
@@ -221,6 +255,12 @@ pub async fn check_status(app: &AppHandle) -> UpdateStatus {
         Ok(None) => {
             tracing::info!("update: already up to date");
             UpdateStatus::simple("uptodate", current)
+        }
+        Err(e) if is_missing_platform_asset(&e) => {
+            tracing::info!(error = %e, "update: no published artifact for this platform — reporting unsupported");
+            let mut status = UpdateStatus::simple("unsupported", current);
+            status.error = Some(NO_PLATFORM_ASSET.to_string());
+            status
         }
         Err(e) => {
             tracing::warn!(error = %e, "update: check failed");
@@ -496,13 +536,18 @@ pub fn check_for_updates(app: &AppHandle) {
                 .await;
             }
             "unsupported" => {
-                notify_update(
-                    &app,
-                    "unsupported",
-                    "Updates via npm",
-                    "This build updates with `meridian update`.",
-                )
-                .await;
+                let (title, body) = if status.error.as_deref() == Some(NO_PLATFORM_ASSET) {
+                    (
+                        "Auto-update not available",
+                        "This build doesn't have a published update package yet.",
+                    )
+                } else {
+                    (
+                        "Updates via npm",
+                        "This build updates with `meridian update`.",
+                    )
+                };
+                notify_update(&app, "unsupported", title, body).await;
             }
             _ => {
                 let msg = status
@@ -613,6 +658,36 @@ mod tests {
         let (min, notes) = split_minimum_version("");
         assert_eq!(min, None);
         assert_eq!(notes, None);
+    }
+
+    #[test]
+    fn missing_platform_asset_matches_target_not_found_variants() {
+        // The Windows ARM64 case this exists for: `windows-x86_64`-only
+        // manifests never carry a `windows-aarch64*` key, so the updater
+        // fails with one of these two variants depending on whether it fell
+        // back to a second key before giving up.
+        assert!(is_missing_platform_asset(
+            &tauri_plugin_updater::Error::TargetNotFound("windows-aarch64".to_string())
+        ));
+        assert!(is_missing_platform_asset(
+            &tauri_plugin_updater::Error::TargetsNotFound(vec![
+                "windows-aarch64-nsis".to_string(),
+                "windows-aarch64".to_string(),
+            ])
+        ));
+    }
+
+    #[test]
+    fn other_updater_errors_are_not_treated_as_missing_platform_asset() {
+        // A real failure (unreachable manifest, no endpoints configured) must
+        // still surface as `state: "error"` — only the two lookup-miss
+        // variants above should get swallowed into "unsupported".
+        assert!(!is_missing_platform_asset(
+            &tauri_plugin_updater::Error::EmptyEndpoints
+        ));
+        assert!(!is_missing_platform_asset(
+            &tauri_plugin_updater::Error::ReleaseNotFound
+        ));
     }
 
     /// The comparison `check_status` performs: strictly-below is mandatory,

@@ -2,6 +2,13 @@
 //
 // Settings → Account. Migrated 1:1 from the old SettingsView's "Setup &
 // Onboarding" card — the only Account-ish control that existed before.
+//
+// Also hosts "Export Diagnostics" (moved from the now-hidden Advanced tab):
+// the ONLY GUI path a packaged install has to hand a developer a local
+// telemetry bundle (`meridian telemetry export` is the terminal fallback —
+// not realistic mid support-ticket). See CLAUDE.md's "Telemetry: local-only
+// capture, dev-only shipping" section — keep that doc's Settings path in
+// sync if this ever moves again.
 
 'use client'
 
@@ -10,6 +17,7 @@ import { invoke, load, mutate } from '@/lib/bridge'
 import type { AppInfo } from '@/lib/api-types'
 import { AccountAuthControl } from '@/app/setup/signin'
 import { SectionCard, SectionHeader, FieldRow, SettingsButton } from './fields'
+import { useExportDiagnostics } from './useExportDiagnostics'
 
 // Colored only for a non-prod build — a prod dashboard shouldn't draw the eye
 // to its own version line; dev/staging should be unmistakable.
@@ -21,6 +29,7 @@ const CHANNEL_COLOR: Record<AppInfo['channel'], string> = {
 
 export function AccountSection() {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
+  const { status: exportStatus, path: exportPath, errorMsg: exportError, exportBundle } = useExportDiagnostics()
 
   useEffect(() => {
     load<AppInfo>('/api/app-info', 'get_app_info').then(setAppInfo).catch(() => {})
@@ -68,6 +77,17 @@ export function AccountSection() {
             </span>
           )}
         </FieldRow>
+        <FieldRow label="Export Diagnostics" description="Captures your local logs and traces for troubleshooting. Nothing leaves your machine until you share this file. Saved to your Downloads folder and revealed in your file manager.">
+          <SettingsButton onClick={exportBundle} disabled={exportStatus === 'exporting'}>
+            {exportStatus === 'exporting' ? 'Exporting…' : 'Export Diagnostics'}
+          </SettingsButton>
+        </FieldRow>
+        {exportStatus === 'done' && exportPath && (
+          <span className="text-[12px]" style={{ color: 'var(--color-state-approved)' }}>Saved to {exportPath}</span>
+        )}
+        {exportStatus === 'error' && (
+          <span className="text-[12px]" style={{ color: 'var(--color-state-pending)' }}>{exportError ?? 'Export failed'}</span>
+        )}
       </SectionCard>
     </div>
   )

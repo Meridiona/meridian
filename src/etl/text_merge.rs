@@ -2,8 +2,11 @@
 
 use std::collections::HashSet;
 
-use super::text_filter::{build_chrome_set, is_landmark, is_quality_line};
-use crate::db::screenpipe::FrameText;
+use anyhow::{Context, Result};
+use sqlx::SqlitePool;
+
+use super::text_filter::{build_chrome_set, is_landmark, is_quality_line, ChromeFreqAccumulator};
+use crate::db::screenpipe::{fetch_frame_text_page, FrameText, FRAME_TEXT_PAGE_SIZE};
 
 /// Minimum elapsed seconds between consecutive [HH:MM:SS] markers.
 const MARKER_GAP_SECS: i64 = 30;
@@ -25,14 +28,119 @@ pub fn build_session_text(frames: &[FrameText]) -> String {
     // The HashSet is freed at the end of this function — ~400KB peak for 1000-frame blocks.
     let chrome = build_chrome_set(frames);
 
-    let mut seen: HashSet<String> = HashSet::with_capacity(4096);
-    let mut out = String::with_capacity(8192);
-    let mut last_marker_secs: Option<i64> = None;
+    let mut builder = SessionTextBuilder::new();
+    builder.feed(frames, &chrome);
+    builder.finish()
+}
 
-    for frame in frames {
-        process_frame(frame, &mut seen, &mut out, &mut last_marker_secs, &chrome);
+/// Rebuilds session_text for the frame range `min_frame_id..=max_frame_id` by
+/// reading frames from the DB in `FRAME_TEXT_PAGE_SIZE`-sized pages instead of
+/// materializing the whole range in one `Vec<FrameText>`.
+///
+/// Two passes over the paginated read are required: chrome-line detection
+/// (`ChromeFreqAccumulator`) needs a global view of line frequencies across the
+/// *entire* range before any single frame can be classified (see
+/// `crate::etl::text_filter::build_chrome_set`), so pass 1 accumulates
+/// frequencies page-by-page and pass 2 re-pages the same range to fold each
+/// frame into the session text using the now-final chrome set.
+///
+/// This is a memory-shape change only: for the same frame range, the returned
+/// string is functionally identical to
+/// `build_session_text(&get_frame_full_texts(pool, min_frame_id, max_frame_id).await?)` —
+/// no data is truncated or dropped, only held in bounded pages rather than all
+/// at once. Used both when closing a completed block (`crate::etl::block_ops`)
+/// and when extracting context for the block still being processed in the
+/// current ETL run (`crate::etl::extractor`).
+pub async fn rebuild_session_text_paginated(
+    pool: &SqlitePool,
+    min_frame_id: i64,
+    max_frame_id: i64,
+) -> Result<String> {
+    // Pass 1: accumulate chrome-line frequencies across every page.
+    let mut chrome_acc = ChromeFreqAccumulator::new();
+    let mut after_id = min_frame_id - 1;
+    loop {
+        let page = fetch_frame_text_page(pool, after_id, max_frame_id, FRAME_TEXT_PAGE_SIZE)
+            .await
+            .context("paginated frame-text read (chrome frequency pass)")?;
+        if page.is_empty() {
+            break;
+        }
+        after_id = page.last().map(|f| f.frame_id).unwrap_or(after_id);
+        chrome_acc.feed(&page);
     }
-    dedup_cursor_prefixes(out)
+    let chrome = chrome_acc.finish();
+
+    // Pass 2: re-page the same range and fold each frame into the session text.
+    let mut builder = SessionTextBuilder::new();
+    let mut after_id = min_frame_id - 1;
+    loop {
+        let page = fetch_frame_text_page(pool, after_id, max_frame_id, FRAME_TEXT_PAGE_SIZE)
+            .await
+            .context("paginated frame-text read (session-text build pass)")?;
+        if page.is_empty() {
+            break;
+        }
+        after_id = page.last().map(|f| f.frame_id).unwrap_or(after_id);
+        builder.feed(&page, &chrome);
+    }
+    Ok(builder.finish())
+}
+
+/// Incremental version of [`build_session_text`]'s per-frame fold.
+///
+/// Lets a caller build up `session_text` across multiple pages of frames
+/// (e.g. read from the DB in bounded chunks rather than materialized as one
+/// `Vec<FrameText>`) without changing the resulting text at all — feeding all
+/// frames via repeated [`SessionTextBuilder::feed`] calls, in the same order
+/// they'd appear in a single slice, then calling [`SessionTextBuilder::finish`]
+/// once, produces output identical to `build_session_text(&all_frames)`. The
+/// `chrome` set must already reflect the whole frame range (see
+/// `crate::etl::text_filter::ChromeFreqAccumulator`) since chrome lines can
+/// only be identified with a global view. See `rebuild_session_text_paginated`
+/// in `crate::etl::block_ops` for the caller that uses this to avoid an
+/// unbounded-memory rebuild on long single-app sessions.
+pub struct SessionTextBuilder {
+    seen: HashSet<String>,
+    out: String,
+    last_marker_secs: Option<i64>,
+}
+
+impl SessionTextBuilder {
+    pub fn new() -> Self {
+        Self {
+            seen: HashSet::with_capacity(4096),
+            out: String::with_capacity(8192),
+            last_marker_secs: None,
+        }
+    }
+
+    /// Folds one page of frames into the running output. `chrome` must be the
+    /// final, fully-accumulated chrome set for the whole frame range — not
+    /// just this page.
+    pub fn feed(&mut self, frames: &[FrameText], chrome: &HashSet<String>) {
+        for frame in frames {
+            process_frame(
+                frame,
+                &mut self.seen,
+                &mut self.out,
+                &mut self.last_marker_secs,
+                chrome,
+            );
+        }
+    }
+
+    /// Consumes the builder, applying the same final cleanup pass
+    /// (`dedup_cursor_prefixes`) that [`build_session_text`] applies.
+    pub fn finish(self) -> String {
+        dedup_cursor_prefixes(self.out)
+    }
+}
+
+impl Default for SessionTextBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Merge new frame content into an existing session_text string (incremental update).

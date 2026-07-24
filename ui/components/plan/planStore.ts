@@ -31,6 +31,7 @@
 import { useSyncExternalStore } from 'react'
 import { load, mutate } from '@/lib/bridge'
 import type { PlanResponse } from '@/lib/api-types'
+import { LruMap } from '@/lib/lru'
 
 /** Vestigial route label the bridge still takes (Tauri-only now). */
 const API = '/api/plan'
@@ -47,7 +48,11 @@ export interface PlanEntry {
 // identity changes on every call.
 const EMPTY: PlanEntry = { data: null, loaded: false }
 
-const store = new Map<string, PlanEntry>()
+// LRU-capped: this webview session never reloads, so an uncapped Map would
+// grow by one entry per distinct day ever viewed for the app's whole
+// lifetime. 100 days is far beyond realistic usage — this is a hygiene bound,
+// not a fix for an observed runaway.
+const store = new LruMap<string, PlanEntry>(100)
 const listeners = new Set<() => void>()
 
 const snapshot = (date: string): PlanEntry => store.get(date) ?? EMPTY

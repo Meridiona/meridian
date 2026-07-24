@@ -73,7 +73,7 @@ pub use readers::{
 
 pub use canonical_task::{CanonicalTask, PersonRef, Priority, Provider, StatusCategory, TaskKind};
 
-pub use llm_provider::{LlmProvider, CURSOR_CLI_VERSION, CURSOR_INSTALL_CMD};
+pub use llm_provider::{LlmProvider, CURSOR_CLI_VERSION, CURSOR_INSTALL_CMD, CURSOR_INSTALL_HINT};
 /// The custom-endpoint registry types. `CustomLlmProvider` carries the API key and is the
 /// STORAGE form — see its docs before serialising one anywhere.
 pub use settings::{CustomLlmProvider, SchemaRung};

@@ -95,7 +95,15 @@ pub async fn setup_db(uri: &str) -> anyhow::Result<SqlitePool> {
         // get an immediate SQLITE_BUSY (default timeout 0) whenever the tray
         // holds the WAL write lock, failing the ETL run. Wait instead — matches
         // the tray's open_existing (5s).
-        .busy_timeout(std::time::Duration::from_secs(5));
+        .busy_timeout(std::time::Duration::from_secs(5))
+        // Lets `crate::etl::capture_retention`'s periodic `incremental_vacuum`
+        // actually reclaim disk space freed by its capture_* table deletes.
+        // Only takes effect on a brand-new (table-less) database file — SQLite
+        // requires a full `VACUUM` to convert an already-populated database
+        // from the default `auto_vacuum = NONE`, which we deliberately never
+        // run automatically on a live daemon (see that module's doc comment).
+        // On an existing database this pragma is simply a documented no-op.
+        .pragma("auto_vacuum", "INCREMENTAL");
 
     let pool = SqlitePool::connect_with(opts)
         .await

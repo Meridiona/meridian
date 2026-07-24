@@ -33,26 +33,12 @@ export interface RuntimeSettings {
   llm_budget_pct: number
   // Jira updater
   jira_update_enabled: boolean
-  // Notifications — master switch + per-event-type toggles + quiet hours.
-  // Filtering happens once at the delivery layer (the notification API routes),
-  // never in the producers, so every event flows into the outbox and only the
-  // user's preferences decide whether it surfaces.
+  // Notifications — a master switch + quiet hours. Filtering happens once at
+  // the delivery layer (the notification API routes), never in the
+  // producers, so every event flows into the outbox and only these two
+  // preferences decide whether it surfaces. Deliberately no per-event-type
+  // toggles — kept simple for the user.
   notifications_enabled: boolean
-  notify_plan_nudge: boolean
-  // Daily planner auto-open — the tray opens the dashboard on the Plan modal
-  // once per local day. A window behaviour, not a toast, so NOT gated by
-  // notifications_enabled.
-  auto_open_plan: boolean
-  notify_worklog_ready: boolean
-  notify_system_fault: boolean
-  // Folded from direct tray-side toasts (pause/resume, daemon health,
-  // updates) into the outbox — each has its own toggle.
-  notify_system_pause: boolean
-  notify_system_health: boolean
-  notify_system_update: boolean
-  // Daily batched digests.
-  notify_summariser_digest: boolean
-  notify_board_hygiene: boolean
   quiet_hours_enabled: boolean
   quiet_hours_start: string // 'HH:MM' local time, inclusive
   quiet_hours_end: string   // 'HH:MM' local time, exclusive
@@ -61,6 +47,10 @@ export interface RuntimeSettings {
   work_hours_end: string    // 'HH:MM' local time, exclusive
   work_days: string         // comma-separated 1–7 (Mon=1 … Sun=7), e.g. '1,2,3,4,5'
   pause_on_streaming_video: boolean
+  // On by default — a second monitor is captured whether or not it's the
+  // screen the user is actively looking at. Mirrors
+  // RuntimeSettings.capture_secondary_monitors in meridian-core/src/settings.rs.
+  capture_secondary_monitors: boolean
   // Capture ignore lists — apps (exact app name) and websites (domain) Meridian
   // must never capture. Enforced at the capture frame boundary going forward;
   // history is left untouched. Mirrors RuntimeSettings.ignored_apps/ignored_urls
@@ -97,15 +87,6 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   llm_budget_pct: 0.5,
   jira_update_enabled: true,
   notifications_enabled: true,
-  notify_plan_nudge: true,
-  auto_open_plan: true,
-  notify_worklog_ready: true,
-  notify_system_fault: true,
-  notify_system_pause: true,
-  notify_system_health: true,
-  notify_system_update: true,
-  notify_summariser_digest: true,
-  notify_board_hygiene: true,
   quiet_hours_enabled: false,
   quiet_hours_start: '22:00',
   quiet_hours_end: '08:00',
@@ -115,6 +96,8 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   work_days: '1,2,3,4,5',
   // On by default — must match RuntimeSettings::default() in meridian-core/src/settings.rs.
   pause_on_streaming_video: true,
+  // On by default — must match RuntimeSettings::default() in meridian-core/src/settings.rs.
+  capture_secondary_monitors: true,
   // Nothing ignored by default.
   ignored_apps: [],
   ignored_urls: [],

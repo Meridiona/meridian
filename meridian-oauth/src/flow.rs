@@ -48,6 +48,68 @@ pub struct TokenResponse {
     pub scope: String,
 }
 
+/// Whether a token-endpoint failure is worth retrying, or means the grant is
+/// dead. This is the distinction the background refresh loop needs: a passing
+/// network blip must not be surfaced to the user as "re-authenticate".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenFailure {
+    /// The grant itself was rejected and won't recover on its own — an OAuth 4xx
+    /// (`invalid_grant`, a revoked/expired refresh token, a bad client). The
+    /// stored refresh token is dead; the user must re-authenticate.
+    Terminal,
+    /// A passing condition — a network error, request timeout, HTTP 429, or a
+    /// 5xx from the provider. The stored refresh token is still valid and a
+    /// later retry will succeed.
+    Transient,
+}
+
+/// A classified token-endpoint error. It is threaded into the `anyhow` chain
+/// (via `?`/`.context`) so the sync loop can tell "re-authenticate" from "try
+/// again later" without string-matching messages — see [`is_transient`].
+#[derive(Debug)]
+pub struct TokenError {
+    pub failure: TokenFailure,
+    detail: String,
+}
+
+impl TokenError {
+    fn transient(detail: impl Into<String>) -> Self {
+        Self {
+            failure: TokenFailure::Transient,
+            detail: detail.into(),
+        }
+    }
+    fn terminal(detail: impl Into<String>) -> Self {
+        Self {
+            failure: TokenFailure::Terminal,
+            detail: detail.into(),
+        }
+    }
+    fn is_transient(&self) -> bool {
+        matches!(self.failure, TokenFailure::Transient)
+    }
+}
+
+impl std::fmt::Display for TokenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for TokenError {}
+
+/// Whether an `anyhow` error from the OAuth flow was a *transient* token-endpoint
+/// failure (retryable — network/timeout/429/5xx) rather than a dead grant.
+/// Walks the whole error chain, so it still finds the [`TokenError`] under the
+/// `.context()` layers `refresh`/`ensure_fresh` add. Defaults to `false` when no
+/// `TokenError` is present, so an unclassified failure still surfaces the
+/// re-authenticate remedy rather than being silently swallowed.
+pub fn is_transient(err: &anyhow::Error) -> bool {
+    err.chain()
+        .find_map(|cause| cause.downcast_ref::<TokenError>())
+        .is_some_and(TokenError::is_transient)
+}
+
 /// How long to wait for the user to complete the browser consent before giving up.
 const CONSENT_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -101,7 +163,7 @@ pub async fn refresh(
         "refresh_token": refresh_token,
     });
     with_client_secret(&mut body, spec);
-    post_token(spec.token_url, &body)
+    post_token_retrying(spec.token_url, &body)
         .await
         .context("refreshing OAuth access token")
 }
@@ -153,7 +215,7 @@ async fn exchange_code(
         "code_verifier": verifier,
     });
     with_client_secret(&mut body, spec);
-    post_token(spec.token_url, &body)
+    post_token_retrying(spec.token_url, &body)
         .await
         .context("exchanging authorization code for tokens")
 }
@@ -168,23 +230,113 @@ fn with_client_secret(body: &mut serde_json::Value, spec: &ProviderSpec) {
     }
 }
 
-async fn post_token(token_url: &str, body: &serde_json::Value) -> Result<TokenResponse> {
+/// Total tries [`post_token_retrying`] gives the token endpoint before it gives
+/// up on a *transient* failure. Three attempts across ~1.6 s of backoff ride out
+/// the momentary network blips and provider 5xx/429s that otherwise surfaced a
+/// spurious "re-authenticate" sync error on the very next 30-min poll. A dead
+/// grant (4xx) still fails on the first try — retries are spent only on failures
+/// that can actually clear.
+const TOKEN_POST_ATTEMPTS: usize = 3;
+
+/// Bound an untrusted response body before it goes into a `TokenError` detail
+/// (which is then logged, verbatim, on every retry). A captive-portal or proxy
+/// interstitial can be an arbitrarily large HTML page; cap it so it can't bloat
+/// structured logs. Truncates on a char boundary so a multi-byte sequence is
+/// never split.
+fn truncate_body(text: &str) -> String {
+    const MAX: usize = 300;
+    if text.len() <= MAX {
+        return text.to_string();
+    }
+    let mut end = MAX;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{} (truncated, {} bytes total)", &text[..end], text.len())
+}
+
+/// [`post_token`] with bounded retry-with-backoff for transient failures. Only
+/// [`TokenFailure::Transient`] errors are retried; a terminal rejection returns
+/// immediately so a genuinely dead token isn't hidden behind seconds of backoff.
+#[tracing::instrument(skip(body), fields(token_url = %token_url))]
+async fn post_token_retrying(
+    token_url: &str,
+    body: &serde_json::Value,
+) -> Result<TokenResponse, TokenError> {
+    // One client for the whole retry loop: rebuilding it per attempt would throw
+    // away connection pooling/keep-alive, which is exactly what a retry wants.
+    // The 8 s timeout is per request (each `send`), not a total budget.
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(6))
-        .build()?;
-    let resp = client
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| TokenError::transient(format!("building HTTP client: {e}")))?;
+    let mut backoff = Duration::from_millis(400);
+    for attempt in 1..=TOKEN_POST_ATTEMPTS {
+        match post_token(&client, token_url, body).await {
+            Ok(resp) => return Ok(resp),
+            Err(e) if e.is_transient() && attempt < TOKEN_POST_ATTEMPTS => {
+                tracing::warn!(
+                    attempt,
+                    max = TOKEN_POST_ATTEMPTS,
+                    error = %e,
+                    "OAuth token endpoint transient failure - retrying after backoff"
+                );
+                tokio::time::sleep(backoff).await;
+                backoff *= 3; // 400ms → 1200ms
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    // The `attempt < TOKEN_POST_ATTEMPTS` guard means the final attempt always
+    // takes a return arm above.
+    unreachable!("post_token_retrying loop returns on the last attempt")
+}
+
+/// POST a grant to the token endpoint once and classify any failure as transient
+/// or terminal (see [`TokenError`]). Takes a shared `client` (built once by
+/// [`post_token_retrying`]) whose 8 s timeout applies per attempt.
+async fn post_token(
+    client: &reqwest::Client,
+    token_url: &str,
+    body: &serde_json::Value,
+) -> Result<TokenResponse, TokenError> {
+    let resp = match client
         .post(token_url)
         .header("Accept", "application/json")
         .json(body)
         .send()
         .await
-        .with_context(|| format!("POST {token_url}"))?;
+    {
+        Ok(r) => r,
+        // Connect refused, DNS failure, TLS error, or the 8 s timeout — the
+        // endpoint was unreachable, which says nothing about the token's validity.
+        Err(e) => return Err(TokenError::transient(format!("POST {token_url}: {e}"))),
+    };
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        bail!("token endpoint {token_url} → {status}: {text}");
+        let detail = format!(
+            "token endpoint {token_url} → {status}: {}",
+            truncate_body(&text)
+        );
+        // 429 (rate limited) and 5xx are the provider briefly faltering — retry.
+        // Every other non-2xx is a real rejection: a 4xx `invalid_grant` / bad
+        // client / revoked-or-rotated refresh token the user must act on.
+        return Err(if status.as_u16() == 429 || status.is_server_error() {
+            TokenError::transient(detail)
+        } else {
+            TokenError::terminal(detail)
+        });
     }
-    serde_json::from_str(&text).with_context(|| format!("parsing token response: {text}"))
+    // A 2xx whose body isn't valid JSON is almost always a proxy or captive-portal
+    // interstitial standing in for the real payload, not a malformed token grant —
+    // treat it as transient so a later retry (off the hostile network) can succeed.
+    serde_json::from_str(&text).map_err(|e| {
+        TokenError::transient(format!(
+            "parsing token response: {e}: {}",
+            truncate_body(&text)
+        ))
+    })
 }
 
 /// Accept exactly one inbound connection, parse the `GET /callback?...` request
@@ -436,6 +588,26 @@ fn decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `is_transient` must find the [`TokenError`] even under the `.context()`
+    /// layers `refresh`/`ensure_fresh` wrap it in — that chain walk is the whole
+    /// point (a top-level-only downcast would miss it and every refresh failure
+    /// would read as terminal again). Terminal errors, and errors carrying no
+    /// `TokenError` at all, must both report `false`.
+    #[test]
+    fn is_transient_classifies_through_context_layers() {
+        let transient = anyhow::Error::new(TokenError::transient("502 bad gateway"))
+            .context("refreshing OAuth access token");
+        assert!(is_transient(&transient));
+
+        let terminal = anyhow::Error::new(TokenError::terminal("invalid_grant"))
+            .context("refreshing OAuth access token");
+        assert!(!is_transient(&terminal));
+
+        // No TokenError in the chain → default to terminal (surface the remedy).
+        let unclassified = anyhow::anyhow!("disk error").context("loading token store");
+        assert!(!is_transient(&unclassified));
+    }
 
     fn spec() -> ProviderSpec {
         ProviderSpec {

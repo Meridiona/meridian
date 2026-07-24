@@ -27,6 +27,7 @@
 //! # Related
 //! - [`super`] — the engine-agnostic boundary ([`CaptureEngine`], [`CapturedFrame`]).
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -36,6 +37,7 @@ use screenpipe_a11y::tree::{
 use screenpipe_screen::capture_screenshot_by_window::{
     capture_all_visible_windows, CapturedWindow, WindowFilters,
 };
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use super::drm_detector::{self, StreamingGate};
@@ -52,6 +54,18 @@ const CAPTURE_INTERVAL: Duration = Duration::from_secs(2);
 /// window's freshness, and Vision OCR against every OTHER connected monitor
 /// on every 2s tick would be wasted work for content the user isn't looking at.
 const SECONDARY_SCREEN_EVERY_N_TICKS: u32 = 5;
+
+/// Backstop interval for the monitor-list refresh task when the display
+/// reconfiguration callback registered successfully — the callback fires
+/// immediately on an actual hotplug/resolution/mirror change, so this is
+/// just a safety net for whatever it might miss, not the primary signal.
+const MONITOR_REFRESH_BACKSTOP_WITH_CALLBACK: Duration = Duration::from_secs(60);
+
+/// Backstop interval when the callback failed to register (or isn't
+/// available on this platform, e.g. Windows) — falls back to a shorter
+/// poll-only cadence so hotplug detection doesn't silently regress to
+/// once-a-minute. Matches upstream's `monitor_watcher.rs` fallback.
+const MONITOR_REFRESH_BACKSTOP_NO_CALLBACK: Duration = Duration::from_secs(5);
 
 /// Outcome of the per-tick accessibility-tree walk — decides what (if anything)
 /// the OCR fallback does this tick.
@@ -81,12 +95,18 @@ pub struct ScreenpipeEngine {
     /// domain open on a non-focused screen still gets caught, via the fork's
     /// own title-based blocked-URL heuristic.
     pub ignored_urls: Vec<String>,
+    /// On by default (`RuntimeSettings::capture_secondary_monitors`) — a
+    /// second monitor is captured whether or not it's the screen the user is
+    /// actively looking at. Exposed as a Settings → Capture & Privacy toggle
+    /// for anyone who wants to turn it off.
+    pub capture_secondary_monitors: bool,
 }
 
 impl CaptureEngine for ScreenpipeEngine {
     async fn run(self, tx: FrameTx) -> anyhow::Result<()> {
         let pause_on_streaming = self.pause_on_streaming_video;
         let ignored_urls = self.ignored_urls;
+        let capture_secondary_monitors = self.capture_secondary_monitors;
         // Register with TCC + drive both prompts ourselves. Neither library
         // prompts on its own: screen-capture enumeration only PREFLIGHTS, and
         // the AX tree reads nothing until this process is a trusted AX client.
@@ -106,13 +126,42 @@ impl CaptureEngine for ScreenpipeEngine {
         // motivating case). Lives for the whole engine run, single-threaded.
         let mut streaming_gate = StreamingGate::new();
 
+        // Enumerated ONCE here, then held across ticks and only refreshed by
+        // `run_monitor_refresh_task` — see its doc comment. `SafeMonitor` is
+        // `Clone` and internally caches its native handle, so reusing the
+        // same instances tick after tick is what actually makes that
+        // per-monitor cache do anything; re-listing every tick (the original
+        // design) silently defeated it.
+        let shared_monitors: Arc<RwLock<Vec<screenpipe_screen::monitor::SafeMonitor>>> = Arc::new(
+            RwLock::new(screenpipe_screen::monitor::list_monitors().await),
+        );
+
+        // Event-driven refresh, decoupled from the capture cadence entirely
+        // (see `run_monitor_refresh_task`) — spawned once per `run()` call.
+        // `AbortOnDrop` matters here: the caller (`lib.rs`'s `start_capture`)
+        // cancels this whole `run()` future by racing it against a pause
+        // signal in a `tokio::select!` and dropping whichever loses — it
+        // never runs `run()` to a normal return on pause. A bare
+        // `tokio::spawn` with a discarded `JoinHandle` would keep running
+        // forever after every such drop, since a detached task's lifetime is
+        // independent of the future that spawned it — one leaked forever-loop
+        // calling `list_monitors()` (a real SCK/xcap enumeration) on its own
+        // cadence per pause/resume cycle. Binding the handle to a local guard
+        // ties its lifetime to `run()`'s, so it's aborted on every exit path:
+        // normal return (`tx.is_closed()`) and cancellation alike.
+        screenpipe_screen::monitor_watch::start_display_reconfig_watcher();
+        let _monitor_refresh_task = AbortOnDrop(tokio::spawn(run_monitor_refresh_task(
+            shared_monitors.clone(),
+        )));
+
         // Counts ticks so the secondary-monitor sweep runs on its own slower
-        // cadence (see SECONDARY_SCREEN_EVERY_N_TICKS) without a second timer.
+        // cadence without a second timer.
         let mut tick: u32 = 0;
 
         info!(
             interval_s = CAPTURE_INTERVAL.as_secs(),
             secondary_screen_interval_s = CAPTURE_INTERVAL.as_secs() * SECONDARY_SCREEN_EVERY_N_TICKS as u64,
+            capture_secondary_monitors,
             "capture: screenpipe engine started (a11y-tree + OCR fallback + secondary-monitor sweep)"
         );
         loop {
@@ -120,6 +169,9 @@ impl CaptureEngine for ScreenpipeEngine {
                 info!("capture: consumer gone — stopping engine");
                 return Ok(());
             }
+            // Cheap: a handful of `SafeMonitor`s, cloned once per tick so the
+            // read lock isn't held across the capture calls below.
+            let monitors = shared_monitors.read().await.clone();
             // The AX walk is synchronous (bounded by the walker's walk_timeout)
             // and MUST finish before any await: `&dyn TreeWalkerPlatform` is
             // `Send` but not `Sync`, so the reference cannot cross an await
@@ -148,6 +200,7 @@ impl CaptureEngine for ScreenpipeEngine {
                 pause_on_streaming,
                 &mut streaming_gate,
                 skip_ocr_for_streaming,
+                &monitors,
             )
             .await
             {
@@ -159,13 +212,18 @@ impl CaptureEngine for ScreenpipeEngine {
             };
 
             tick = tick.wrapping_add(1);
+
             // Only sweep when this tick actually resolved a primary window:
             // `false` means either a privacy Skip (never sweep — see
             // capture_secondary_screens docs) or nothing was captured at all
             // (streaming-blocked OCR, no focused window).
-            if tick.is_multiple_of(SECONDARY_SCREEN_EVERY_N_TICKS) && primary_captured {
+            if capture_secondary_monitors
+                && tick.is_multiple_of(SECONDARY_SCREEN_EVERY_N_TICKS)
+                && primary_captured
+            {
                 if let Err(e) =
-                    capture_secondary_screens(&tx, &ignored_urls, skip_ocr_for_streaming).await
+                    capture_secondary_screens(&tx, &monitors, &ignored_urls, skip_ocr_for_streaming)
+                        .await
                 {
                     warn!(error = %e, "capture: secondary-monitor sweep failed (will retry next cycle)");
                 }
@@ -173,6 +231,62 @@ impl CaptureEngine for ScreenpipeEngine {
 
             tokio::time::sleep(CAPTURE_INTERVAL).await;
         }
+    }
+}
+
+/// Aborts the wrapped task when dropped. Used to tie a detached
+/// `tokio::spawn`'s lifetime to a local variable's scope — see the doc
+/// comment at `run_monitor_refresh_task`'s spawn site for why that matters
+/// here (the spawning future can be cancelled by an external `select!`
+/// rather than ever reaching a normal `return`).
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Owns monitor-list refresh for the life of the engine, decoupled from the
+/// capture loop's own cadence — ported from upstream screenpipe's
+/// `vision_manager/monitor_watcher.rs` (same event + backstop `select!`
+/// shape), scoped down to just enumeration since this engine doesn't run
+/// upstream's per-monitor persistent recording tasks to start/stop.
+///
+/// Refreshes immediately when `screenpipe_screen::monitor_watch`'s
+/// `CGDisplayRegisterReconfigurationCallback` watcher fires (a real hotplug
+/// or resolution/mirror change), with a backstop timer as a safety net —
+/// 60s if the callback registered (rare wake, event-driven does the real
+/// work), 5s if it didn't (no macOS callback, e.g. Windows, or registration
+/// failed) so hotplug detection doesn't silently regress to once-a-minute.
+///
+/// On macOS also drains `stream_invalidation` before refreshing: the same
+/// reconfiguration that triggered this refresh may have left a cached
+/// persistent capture handle pointing at a stale/gone monitor.
+async fn run_monitor_refresh_task(
+    shared: Arc<RwLock<Vec<screenpipe_screen::monitor::SafeMonitor>>>,
+) {
+    loop {
+        let backstop = if screenpipe_screen::monitor_watch::display_reconfig_callback_registered() {
+            MONITOR_REFRESH_BACKSTOP_WITH_CALLBACK
+        } else {
+            MONITOR_REFRESH_BACKSTOP_NO_CALLBACK
+        };
+        tokio::select! {
+            _ = screenpipe_screen::monitor_watch::display_reconfig_notify().notified() => {
+                debug!("capture: display reconfiguration event — refreshing monitor list");
+            }
+            _ = tokio::time::sleep(backstop) => {}
+        }
+
+        #[cfg(target_os = "macos")]
+        if screenpipe_screen::stream_invalidation::take() {
+            debug!("capture: invalidating stale persistent capture streams after display reconfiguration");
+            screenpipe_screen::stream_invalidation::invalidate_streams();
+        }
+
+        let fresh = screenpipe_screen::monitor::list_monitors().await;
+        *shared.write().await = fresh;
     }
 }
 
@@ -370,6 +484,7 @@ async fn dispatch(
     pause_on_streaming: bool,
     streaming_gate: &mut StreamingGate,
     skip_ocr_for_streaming: bool,
+    monitors: &[screenpipe_screen::monitor::SafeMonitor],
 ) -> anyhow::Result<bool> {
     match outcome {
         A11yOutcome::Frame(frame) => {
@@ -386,7 +501,7 @@ async fn dispatch(
                 );
                 return Ok(false);
             }
-            capture_once_ocr(tx, pause_on_streaming, streaming_gate).await
+            capture_once_ocr(tx, pause_on_streaming, streaming_gate, monitors).await
         }
     }
 }
@@ -397,20 +512,23 @@ async fn dispatch(
 /// meridian's per-app ETL model.
 ///
 /// Returns whether it actually OCR'd and sent at least one window.
+///
+/// `monitors` is the engine's cached list (see `MONITOR_REFRESH_EVERY_N_TICKS`)
+/// — this no longer re-enumerates on every call.
 async fn capture_once_ocr(
     tx: &FrameTx,
     pause_on_streaming: bool,
     streaming_gate: &mut StreamingGate,
+    monitors: &[screenpipe_screen::monitor::SafeMonitor],
 ) -> anyhow::Result<bool> {
-    let monitors = screenpipe_screen::monitor::list_monitors().await;
-    let Some(monitor) = monitors.into_iter().next() else {
+    let Some(monitor) = monitors.first() else {
         anyhow::bail!("no monitors enumerated (Screen Recording not granted yet?)");
     };
 
     // No app/title/url filters; focused window(s) only (`capture_unfocused = false`)
     // — we capture what the user is actively on, not every background window.
     let filters = WindowFilters::new(&[], &[], &[]);
-    let windows = capture_all_visible_windows(&monitor, &filters, false)
+    let windows = capture_all_visible_windows(monitor, &filters, false)
         .await
         .map_err(|e| anyhow::anyhow!("capture_all_visible_windows: {e}"))?;
 
@@ -529,8 +647,12 @@ async fn send_frame(
 /// (`is_title_suggesting_blocked_url`, used for exactly this "unfocused
 /// browser window, no URL available" case) so a known-ignored domain open
 /// on a non-focused screen isn't captured just because it's out of focus.
+///
+/// `monitors` is the engine's cached list (see `MONITOR_REFRESH_EVERY_N_TICKS`)
+/// — this no longer re-enumerates on every sweep.
 async fn capture_secondary_screens(
     tx: &FrameTx,
+    monitors: &[screenpipe_screen::monitor::SafeMonitor],
     ignored_urls: &[String],
     skip_ocr_for_streaming: bool,
 ) -> anyhow::Result<()> {
@@ -541,11 +663,10 @@ async fn capture_secondary_screens(
         return Ok(());
     }
 
-    let monitors = screenpipe_screen::monitor::list_monitors().await;
     let filters = WindowFilters::new(&[], &[], ignored_urls);
     let now = Utc::now();
 
-    for monitor in &monitors {
+    for monitor in monitors {
         let windows = match capture_all_visible_windows(monitor, &filters, false).await {
             Ok(w) => w,
             Err(e) => {

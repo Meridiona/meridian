@@ -5,11 +5,11 @@ use anyhow::Result;
 use sqlx::SqlitePool;
 
 use crate::db::screenpipe::{
-    get_audio_snippets, get_frame_full_texts, get_secondary_screen_events, get_signals,
-    get_window_titles, AudioSnippet, SecondaryScreenEvent, SignalEvent, WindowTitleCount,
+    get_audio_snippets, get_secondary_screen_events, get_signals, get_window_titles, AudioSnippet,
+    SecondaryScreenEvent, SignalEvent, WindowTitleCount,
 };
 use crate::etl::session_builder::{is_coding_agent_terminal, is_vscode_like};
-use crate::etl::text_merge::build_session_text;
+use crate::etl::text_merge::rebuild_session_text_paginated;
 
 // ---------------------------------------------------------------------------
 // BlockContext
@@ -65,15 +65,15 @@ pub async fn extract_block_context(
     max_frame_id: i64,
     frame_count: i64,
 ) -> Result<BlockContext> {
-    let (window_titles_res, audio_res, signals_res, secondary_screens_res, frames_res) = tokio::join!(
+    let (window_titles_res, audio_res, signals_res, secondary_screens_res, session_text_res) = tokio::join!(
         get_window_titles(meridian, min_frame_id, max_frame_id, app_name),
         get_audio_snippets(meridian, started_at, ended_at),
         get_signals(meridian, started_at, ended_at),
         get_secondary_screen_events(meridian, started_at, ended_at),
-        get_frame_full_texts(meridian, min_frame_id, max_frame_id),
+        rebuild_session_text_paginated(meridian, min_frame_id, max_frame_id),
     );
 
-    let session_text = build_session_text(&frames_res?);
+    let session_text = session_text_res?;
     let audio_snippets = audio_res?;
     let signals = signals_res?;
     let secondary_screens = secondary_screens_res?;

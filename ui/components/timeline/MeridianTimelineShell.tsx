@@ -229,7 +229,8 @@ export default function MeridianTimelineShell() {
           <DayTaskColumn day={day} isToday={isToday}
             selectedId={selectedDayTask?.id ?? null} onSelect={selectDayTask}
             refreshToken={dayTaskRefresh}
-            hourStatus={data.hourStatus} capturing={data.capturing} isSolo={isSolo} />
+            hourStatus={data.hourStatus} capturing={data.capturing} isSolo={isSolo}
+            gaps={data.today?.gaps} />
 
           {!isSolo && (
             <FloatingDraftsPill count={pendingCount}
