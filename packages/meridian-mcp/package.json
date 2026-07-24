@@ -12,6 +12,7 @@
     "start": "node dist/index.js",
     "install-mcp": "node dist/install.js",
     "dev": "ts-node src/index.ts",
+    "test": "tsc && node --test \"dist/__tests__/*.test.js\"",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

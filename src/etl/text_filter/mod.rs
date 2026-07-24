@@ -462,36 +462,75 @@ pub fn is_quality_line(line: &str) -> bool {
 /// lines averaging 40 chars each → ~2 MB peak, freed when this function returns
 /// (the returned `HashSet` contains only the small chrome subset).
 pub fn build_chrome_set(frames: &[FrameText]) -> HashSet<String> {
-    // Count how many frames each trimmed line appears in (per-frame deduped).
-    let mut freq: HashMap<String, u32> = HashMap::new();
+    let mut acc = ChromeFreqAccumulator::new();
+    acc.feed(frames);
+    acc.finish()
+}
 
-    // Reuse one HashSet across all frames (allocated once, cleared per frame).
-    // Using u64 hashes avoids lifetime conflicts with &str frame borrows and
-    // removes the per-frame allocation overhead on large blocks.
-    let mut seen_hashes: HashSet<u64> = HashSet::with_capacity(256);
+/// Incremental version of the chrome pre-pass's line-frequency count.
+///
+/// [`build_chrome_set`] requires a single global view of line frequencies
+/// across every frame in a block before it can classify anything — a line
+/// only becomes "chrome" once it's been seen in `CHROME_FREQ_THRESHOLD` or
+/// more distinct frames. When a block's frames are read from the DB in pages
+/// (rather than materialized as one `Vec<FrameText>`), this accumulator lets
+/// the frequency count be built incrementally, one page at a time, via
+/// repeated [`ChromeFreqAccumulator::feed`] calls, then finalized once with
+/// [`ChromeFreqAccumulator::finish`] — producing the identical `HashSet` that
+/// `build_chrome_set(&all_frames)` would have, without ever holding all frames
+/// in memory at once. See `rebuild_session_text_paginated` in
+/// `crate::etl::block_ops`.
+pub struct ChromeFreqAccumulator {
+    freq: HashMap<String, u32>,
+    // Reused per `feed` call (cleared per frame) to avoid a per-frame allocation.
+    seen_hashes: HashSet<u64>,
+}
 
-    for frame in frames {
-        seen_hashes.clear();
-        for raw in frame.full_text.split('\n') {
-            let line = raw.trim();
-            if line.len() < 3 {
-                continue;
-            }
-            let mut h = DefaultHasher::new();
-            line.hash(&mut h);
-            let hash = h.finish();
-            if seen_hashes.insert(hash) {
-                *freq.entry(line.to_owned()).or_insert(0) += 1;
+impl ChromeFreqAccumulator {
+    pub fn new() -> Self {
+        Self {
+            freq: HashMap::new(),
+            seen_hashes: HashSet::with_capacity(256),
+        }
+    }
+
+    /// Folds one page of frames into the running frequency count.
+    pub fn feed(&mut self, frames: &[FrameText]) {
+        for frame in frames {
+            self.seen_hashes.clear();
+            for raw in frame.full_text.split('\n') {
+                let line = raw.trim();
+                if line.len() < 3 {
+                    continue;
+                }
+                let mut h = DefaultHasher::new();
+                line.hash(&mut h);
+                let hash = h.finish();
+                if self.seen_hashes.insert(hash) {
+                    *self.freq.entry(line.to_owned()).or_insert(0) += 1;
+                }
             }
         }
     }
 
-    // Keep lines at or above threshold that are not chrome-exempt (tighter than is_landmark:
-    // excludes `# `/`> ` prefixes, anchors SQL to line start).
-    freq.into_iter()
-        .filter(|(line, count)| *count >= CHROME_FREQ_THRESHOLD && !is_chrome_exempt(line))
-        .map(|(line, _)| line)
-        .collect()
+    /// Consumes the accumulator and applies the threshold filter, producing the
+    /// same chrome-line `HashSet` that [`build_chrome_set`] would for the same
+    /// full frame set.
+    pub fn finish(self) -> HashSet<String> {
+        // Keep lines at or above threshold that are not chrome-exempt (tighter than is_landmark:
+        // excludes `# `/`> ` prefixes, anchors SQL to line start).
+        self.freq
+            .into_iter()
+            .filter(|(line, count)| *count >= CHROME_FREQ_THRESHOLD && !is_chrome_exempt(line))
+            .map(|(line, _)| line)
+            .collect()
+    }
+}
+
+impl Default for ChromeFreqAccumulator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

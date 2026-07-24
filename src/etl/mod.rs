@@ -2,6 +2,7 @@
 // https://github.com/meridiona/meridian
 
 mod block_ops;
+pub mod capture_retention;
 pub mod extractor;
 pub mod runner;
 mod session_builder;

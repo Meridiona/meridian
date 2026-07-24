@@ -1047,6 +1047,9 @@ async fn main() -> Result<()> {
             let _ = meridian::notices::clear(&meridian, "etl.failed").await;
         }
         etl_notify.notify_one();
+        if let Err(e) = meridian::etl::capture_retention::prune_capture_tables(&meridian).await {
+            tracing::warn!(error = %e, "capture retention sweep failed");
+        }
         if let Err(e) = run_pm_sync(&meridian, &cfg).await {
             tracing::error!("intelligence run failed: {}", e);
         }
@@ -1185,6 +1188,14 @@ async fn main() -> Result<()> {
                 }
                 // Wake the background task linker to drain newly-created sessions.
                 etl_notify.notify_one();
+
+                // Capture-table retention — age + processed-based prune of
+                // capture_frames/capture_ui_events/capture_secondary_screens,
+                // which otherwise grow unbounded. Runs every tick; internally
+                // paces its own incremental_vacuum to a coarser cadence.
+                if let Err(e) = meridian::etl::capture_retention::prune_capture_tables(&meridian).await {
+                    tracing::warn!(error = %e, "capture retention sweep failed");
+                }
 
                 // Morning plan nudge — idempotent per day, gated to working hours.
                 if let Err(e) = meridian::daily_plan::maybe_nudge(&meridian).await {

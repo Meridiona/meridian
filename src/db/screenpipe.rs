@@ -329,6 +329,56 @@ pub async fn get_frame_full_texts(
         .collect())
 }
 
+/// Page size for [`fetch_frame_text_page`] — bounds how many frames' OCR/a11y
+/// text are held in memory at once when a block's `session_text` is rebuilt by
+/// paginating rather than by a single [`get_frame_full_texts`] call (see
+/// `rebuild_session_text_paginated` in `crate::etl::block_ops`). Chosen in the
+/// 500-1000 range suggested by the existing `BATCH_SIZE` ETL-batch convention.
+pub const FRAME_TEXT_PAGE_SIZE: i64 = 750;
+
+/// Returns up to `limit` frames with `id` in `(after_id, max_frame_id]` that
+/// have non-empty text, ordered oldest-first — a bounded page of
+/// [`get_frame_full_texts`]'s result set. Falls back to `accessibility_text`
+/// when `full_text` is NULL, same as `get_frame_full_texts`.
+///
+/// Callers paginate by looping: start with `after_id = min_frame_id - 1`, feed
+/// each returned page into an incremental accumulator, advance `after_id` to
+/// the last frame's `frame_id`, and stop once a call returns an empty `Vec`.
+/// Pagination is driven entirely by `id` (not by page-length heuristics), so
+/// it is correct regardless of how many rows in a given `id` range get
+/// filtered out by the non-empty-text predicate.
+pub async fn fetch_frame_text_page(
+    pool: &SqlitePool,
+    after_id: i64,
+    max_frame_id: i64,
+    limit: i64,
+) -> Result<Vec<FrameText>> {
+    let rows = sqlx::query_as::<_, (i64, String, String, String)>(
+        "SELECT id, timestamp, COALESCE(full_text, accessibility_text), COALESCE(text_source, 'ocr')
+         FROM capture_frames
+         WHERE id > ?1 AND id <= ?2
+           AND COALESCE(full_text, accessibility_text) IS NOT NULL
+           AND COALESCE(full_text, accessibility_text) != ''
+         ORDER BY id ASC
+         LIMIT ?3",
+    )
+    .bind(after_id)
+    .bind(max_frame_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(frame_id, timestamp, full_text, text_source)| FrameText {
+            frame_id,
+            timestamp,
+            full_text,
+            text_source,
+        })
+        .collect())
+}
+
 /// Returns clipboard and app_switch UI events within the given timestamp range.
 /// Clipboard events are deduplicated by value — same text copied multiple times is stored once.
 /// For clipboard events `value` is `text_content`; for app_switch it is `app_name`.

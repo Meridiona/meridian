@@ -9,10 +9,15 @@
 
 import { useEffect, useState } from 'react'
 import { invoke, assetUrl, isTauri } from '@/lib/bridge'
+import { LruMap } from '@/lib/lru'
 
 type CacheEntry = string | null | Promise<string | null>
 
-const cache = new Map<string, CacheEntry>()
+// LRU-capped: this webview session never reloads, so an uncapped Map would
+// grow by one entry per distinct app name ever seen for the app's whole
+// lifetime. 100 is far beyond realistic usage — a hygiene bound, not a fix
+// for an observed runaway.
+const cache = new LruMap<string, CacheEntry>(100)
 
 function resolve(appName: string): CacheEntry {
   const cached = cache.get(appName)
