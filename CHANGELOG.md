@@ -1,3 +1,35 @@
+## [1.79.0](https://github.com/Meridiona/meridian/compare/v1.78.0...v1.79.0) (2026-07-24)
+
+### 🚀 Features
+
+* **analytics:** ping public updates-counter on worklog post and personal-task write ([ff02984](https://github.com/Meridiona/meridian/commit/ff02984c5cc396cf96585a7c51f6f63c697ecb8e))
+* **capture:** cache the monitor list and gate secondary-monitor capture ([8448a98](https://github.com/Meridiona/meridian/commit/8448a98fc414b6c690bb72a74b912d08309d292c))
+* **capture:** event-driven monitor-list refresh, replacing fixed-tick polling ([e0a7b9d](https://github.com/Meridiona/meridian/commit/e0a7b9da68746ad495dfd1261855205bb2a12aec))
+* **timeline:** show a paused-time marker on the day-task column ([57f22c5](https://github.com/Meridiona/meridian/commit/57f22c58aa3e5678f2a1475246cd7137e4e07832))
+* **tray:** self-heal launch-at-login via tauri-plugin-autostart ([23625ca](https://github.com/Meridiona/meridian/commit/23625ca99ed19ea5323caa4f4ff5d9b4568be845)), closes [#576](https://github.com/Meridiona/meridian/issues/576) [#571](https://github.com/Meridiona/meridian/issues/571)
+
+### 🐛 Bug Fixes
+
+* **ci:** use the full commit SHA for the screenpipe-fork pin, satisfying the MIT-pin guard ([70e6f64](https://github.com/Meridiona/meridian/commit/70e6f64338694a45254296f14dbf3cca0299502e)), closes [#572](https://github.com/Meridiona/meridian/issues/572)
+* **coding-agent:** evict summariser retry-attempts entries on success ([7929f33](https://github.com/Meridiona/meridian/commit/7929f33c4aac7bf405a116e8071d6aabe6512446))
+* **etl:** add age + processed-based retention for capture_* tables ([fb0aced](https://github.com/Meridiona/meridian/commit/fb0acedf500519bcc4ebdf64678107c5971356d5))
+* **etl:** paginate frame-text reload on long single-app session close ([de33cff](https://github.com/Meridiona/meridian/commit/de33cff0d59dfb06a6649a5c74c5105ad6ee3d24))
+* **etl:** paginate session-text rebuild in extract_block_context ([d6069a2](https://github.com/Meridiona/meridian/commit/d6069a232ec755266eb6eb3a24c53ea7e46c403e))
+* **jira:** stop flapping OAuth sync error on transient refresh failures ([28200c7](https://github.com/Meridiona/meridian/commit/28200c7f0a3eb2a472b734f7591c4fe093303a12))
+* **mcp:** cache the sql.js Database instead of reopening it per tool call ([1fa5e6b](https://github.com/Meridiona/meridian/commit/1fa5e6bc1206d8ac4f51f8e7d24a902b28e484e5))
+* **notifications:** simplify to a master switch + quiet hours ([9c749f0](https://github.com/Meridiona/meridian/commit/9c749f0c7e796c1b6e336dc630063f6a14a0aaa7))
+* **review:** address CodeRabbit findings on the pre-main -> main PR ([#578](https://github.com/Meridiona/meridian/issues/578)) ([5d79f0b](https://github.com/Meridiona/meridian/commit/5d79f0b7525167f0dc61fbc7221ff57e32a07b58))
+* **review:** address CodeRabbit re-review on the Jira OAuth retry path ([#578](https://github.com/Meridiona/meridian/issues/578)) ([f1c6dff](https://github.com/Meridiona/meridian/commit/f1c6dff5acda0be1d4c2f11b243f0f37357c1233)), closes [#577](https://github.com/Meridiona/meridian/issues/577)
+* **tray:** bump screenpipe-fork pin — leak NSWorkspace guards, don't crash ([8f3734a](https://github.com/Meridiona/meridian/commit/8f3734a7d45e41a10e388068ccf6179c35bb371b))
+* **tray:** bump screenpipe-fork pin to pick up autorelease-pool fixes ([aa03132](https://github.com/Meridiona/meridian/commit/aa03132ccb31ab0ad55d7164410c4be80b6795db))
+* **tray:** treat missing update-manifest platform asset as unsupported ([d58545d](https://github.com/Meridiona/meridian/commit/d58545d336088bfcc943e772777330d3d108cdf8)), closes [#576](https://github.com/Meridiona/meridian/issues/576)
+* **ui:** cap module-level webview stores with a shared LRU helper ([53296b4](https://github.com/Meridiona/meridian/commit/53296b486d4d8550333f42d7f0616d400951b3a7))
+* **ui:** hide the Advanced settings tab ([5e3b910](https://github.com/Meridiona/meridian/commit/5e3b910a43a91b28776b136cfb181b37a61b065f))
+* **ui:** keep Export Diagnostics reachable after hiding Advanced ([c7e920f](https://github.com/Meridiona/meridian/commit/c7e920f5cc7ae08a0d3db89331ded008a746fde3))
+* **windows:** Cursor argv-drop and Codex slow-fail on sign-in ([4a83d98](https://github.com/Meridiona/meridian/commit/4a83d98f0f8d099a530cbdc9c91e4d44f268ec36))
+* **windows:** move CLI prompts off argv onto stdin, fix Claude's raw-error UX ([a2a31c1](https://github.com/Meridiona/meridian/commit/a2a31c19b949989d7da82e5fa114326868470ad4))
+* **windows:** repair CLI install/detect for Claude, Codex, and Cursor ([c304173](https://github.com/Meridiona/meridian/commit/c304173067a1f945ef45904ff14aa4f7867c2262))
+
 ## [1.78.0](https://github.com/Meridiona/meridian/compare/v1.77.0...v1.78.0) (2026-07-23)
 
 ### 🚀 Features
