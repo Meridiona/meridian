@@ -68,6 +68,18 @@ async fn auth_basic(base: &str, email: &str, token: &str) -> Check {
 async fn auth_oauth() -> Check {
     let tokens = match oauth_jira::ensure_fresh().await {
         Ok(t) => t,
+        // A transient refresh failure (network/timeout/429/5xx) is not a dead
+        // token — reporting it as critical "re-run oauth-login" is the same
+        // false alarm the sync path used to raise. Downgrade to a warn; only a
+        // terminal failure tells the user to re-authenticate.
+        Err(e) if meridian_oauth::is_transient(&e) => {
+            return Check::warn(
+                "auth",
+                "L2",
+                format!("OAuth token refresh unreachable ({e})"),
+            )
+            .with_remedy("transient — check network; the daemon retries automatically")
+        }
         Err(e) => {
             return Check::critical("auth", "L2", format!("OAuth token refresh failed ({e})"))
                 .with_remedy("re-run `meridian oauth-login jira`")

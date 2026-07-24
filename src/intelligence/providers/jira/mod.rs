@@ -460,6 +460,21 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
     let ctx = match crate::intelligence::oauth::jira::resolve(jira).await {
         Ok(ctx) => ctx,
         Err(e) => {
+            // A refresh that failed only because Atlassian was briefly
+            // unreachable (network blip, timeout, 429, 5xx) does NOT mean the
+            // token is dead — the stored refresh token is still valid and the
+            // next tick will almost certainly succeed. Raising a "Reconnect
+            // Jira / re-run oauth-login" sync error for that transient case is
+            // exactly what made this fault flap on and off at random. Keep the
+            // stale cache and stay quiet; the notice is reserved for a terminal
+            // auth failure the user actually has to act on.
+            if meridian_oauth::is_transient(&e) {
+                tracing::warn!(
+                    error = %e,
+                    "jira auth temporarily unavailable — keeping stale cache, will retry next sync"
+                );
+                return Ok(None);
+            }
             tracing::warn!(error = %e, "jira auth unavailable — keeping stale cache");
             let msg = format!("Jira auth failed — {e}");
             // Basic-auth (JIRA_API_TOKEN/JIRA_BASE_URL) and OAuth are mutually
