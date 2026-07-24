@@ -103,7 +103,10 @@ pub fn checks(_cfg: &Config) -> Vec<Check> {
                     "Cursor detected but cursor-agent not on PATH — Cursor summaries can't run (left pending)",
                 )
                 .with_remedy(
-                    "install: curl https://cursor.com/install -fsS | bash; then: cursor-agent login — or set CURSOR_AGENT_AUTO_INSTALL=1 in ~/.meridian/app/.env to let the daemon install it",
+                    format!(
+                        "install: {}; then: cursor-agent login — or set CURSOR_AGENT_AUTO_INSTALL=1 in ~/.meridian/app/.env to let the daemon install it",
+                        meridian_core::CURSOR_INSTALL_HINT,
+                    ),
                 ),
             );
         }
