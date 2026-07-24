@@ -21,7 +21,7 @@ import { IntelligenceSection } from './settings/IntelligenceSection'
 import { CaptureSection } from './settings/CaptureSection'
 import { NotificationsSection } from './settings/NotificationsSection'
 import { AppearanceSection } from './settings/AppearanceSection'
-import { AdvancedSection } from './settings/AdvancedSection'
+// import { AdvancedSection } from './settings/AdvancedSection'
 import { AccountSection } from './settings/AccountSection'
 import { useRuntimeSettings } from './settings/useRuntimeSettings'
 import { DEFAULT_SETTINGS_SECTION, type SettingsSection } from './settings/types'
@@ -33,7 +33,7 @@ export function SettingsModal({ onClose, initialSection }: {
   const [section, setSection] = useState<SettingsSection>(initialSection ?? DEFAULT_SETTINGS_SECTION)
   const [integrations, setIntegrations] = useState<IntegrationsResponse | null>(null)
   const [integrationsError, setIntegrationsError] = useState(false)
-  const { settings, setSettings, patch, save } = useRuntimeSettings()
+  const { settings, patch, save } = useRuntimeSettings()
 
   const fetchIntegrations = () => {
     load<IntegrationsResponse>('/api/integrations', 'get_integrations')
@@ -79,9 +79,9 @@ export function SettingsModal({ onClose, initialSection }: {
               {section === 'capture' && <CaptureSection settings={settings} patch={patch} save={save} />}
               {section === 'notifications' && <NotificationsSection settings={settings} patch={patch} save={save} />}
               {section === 'appearance' && <AppearanceSection />}
-              {section === 'advanced' && (
+              {/* {section === 'advanced' && (
                 <AdvancedSection settings={settings} setSettings={setSettings} patch={patch} save={save} />
-              )}
+              )} */}
               {section === 'account' && <AccountSection />}
             </>
           )}
