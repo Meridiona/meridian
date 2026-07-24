@@ -31,9 +31,9 @@
 //!
 //! # Related
 //! - [`notify_update`] — routes every tray-menu toast through the outbox
-//!   (event_key `system.update`) instead of a direct bypass, so quiet-hours,
-//!   the master switch, and the `notify_system_update` toggle all apply —
-//!   previously these six call sites skipped that policy entirely.
+//!   (event_key `system.update`) instead of a direct bypass, so quiet-hours
+//!   and the master switch all apply — previously these six call sites
+//!   skipped that policy entirely.
 //! - `scripts/package-updater.sh` — the producer of the `Minimum-Version:` notes
 //!   line (reads the optional `tray/minimum-version` file at release time).
 //! - Plan: Obsidian `Decisions/Public distribution + auto-update for the DMG`.
@@ -51,8 +51,8 @@ use tauri_plugin_updater::UpdaterExt;
 /// one-shot event (a check outcome, a download starting), not an ongoing
 /// condition to raise/clear like [`meridian::notices`] models — so this goes
 /// straight to [`meridian::notifications::enqueue`], gated by `system.update`
-/// (master switch + quiet hours + the `notify_system_update` toggle) the same
-/// way every other outbox producer is. `dedup_suffix` only needs to be unique
+/// (master switch + quiet hours) the same way every other outbox producer
+/// is. `dedup_suffix` only needs to be unique
 /// per call (the current timestamp is fine — these are user-triggered or
 /// rare background events, never a tight loop that would spam distinct keys).
 async fn notify_update(app: &AppHandle, dedup_suffix: &str, title: &str, body: &str) {

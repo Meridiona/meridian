@@ -13,7 +13,7 @@
 //!
 //! # Who calls this
 //! `export_diagnostics_bundle` is registered in `lib.rs`'s `invoke_handler!`;
-//! consumed by `ui/components/timeline/settings/AdvancedSection.tsx`'s
+//! consumed by `ui/components/timeline/settings/AccountSection.tsx`'s
 //! "Export Diagnostics" button via `mutate`/`load` in `@/lib/bridge`.
 //!
 //! # Related

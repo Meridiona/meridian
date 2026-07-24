@@ -55,7 +55,7 @@ use crate::notifications::{self, NewNotification};
 
 notifications::enqueue(pool, NewNotification::event(
     &format!("my.event:{scope}"),   // dedup: '<event_key>:<scope>'
-    "my.event",                     // event_key — preference lookup
+    "my.event",                     // event_key — dedup/category grouping, not a preference lookup
     "Title", "Body",
 )
 .link("/route")                     // optional dashboard deep link
@@ -64,9 +64,11 @@ notifications::enqueue(pool, NewNotification::event(
 ).await?;
 ```
 
-That's the whole producer. Delivery policy (master switch, per-type toggle,
-quiet hours) is enforced at drain time by `meridian-core`, never by producers —
-**always enqueue; the user's settings decide whether it surfaces.**
+That's the whole producer. Delivery policy (master switch, quiet hours) is
+enforced at drain time by `meridian-core`, never by producers — **always
+enqueue; the user's settings decide whether it surfaces.** There is no
+per-type toggle — every event is treated the same, gated only by those two
+knobs, kept deliberately simple for the user.
 
 ## Add an interactive notification (buttons / inline reply)
 
@@ -249,17 +251,15 @@ registered`, `outbox toast delivered`, `notification action event: {...}`,
 | *(reserved)* | `verify_switch` | Yes · No · Reply… | — (PR 2: task-switch verification) |
 | *(generic)* | `generic_link` | Open | — (stamp only) |
 
-`system.notif_permission` / `system.capture_permission` / `system.disk_low`
-are deliberately ungated by a per-type settings toggle (`type_enabled`
-defaults unknown keys to allowed) — a user shouldn't be able to silence the
-one alert explaining why everything else went quiet. Every other new event_key
-above has a `notify_<type>` toggle in `RuntimeSettings` /
-`NotificationsSection.tsx`.
+There is no per-type settings toggle for any `event_key` — `event_allowed`
+gates every event the same way, on the master switch alone (plus quiet hours
+for the native channel). `RuntimeSettings`/`NotificationsSection.tsx` expose
+exactly two notification controls: the master switch and quiet hours.
 
 Deferred (same rails, thin slices when needed): task-switch verify producer +
-rate cap + `notify_task_verify` toggle (PR 2), goal check-in / distraction
-producers, LLM-generated copy (routed through the chosen CLI provider, `src/llm/`), APNs/phone
-delivery, a `worklog.ready` producer (needs a decision: build a real scheduler
-for unattended draft generation, or repoint the event at something already
-autonomous), an onboarding-stuck reminder (needs a resumable
-wizard-progress timestamp — today's `~/.meridian/onboarded` flag is one-shot).
+rate cap (PR 2), goal check-in / distraction producers, LLM-generated copy
+(routed through the chosen CLI provider, `src/llm/`), APNs/phone delivery, a
+`worklog.ready` producer (needs a decision: build a real scheduler for
+unattended draft generation, or repoint the event at something already
+autonomous), an onboarding-stuck reminder (needs a resumable wizard-progress
+timestamp — today's `~/.meridian/onboarded` flag is one-shot).
