@@ -173,7 +173,16 @@ pub async fn detect_all() -> Vec<ProviderStatus> {
 /// and the user is watching a spinner.
 const PROBE_TIMEOUT_S: u64 = 20;
 
-const PROBE_SYSTEM: &str = "Reply with exactly: OK. No other text, no punctuation, nothing else.";
+/// Deliberately MULTI-LINE, not a single sentence. A single-line probe cannot catch a real,
+/// previously-shipped bug: on Windows, `claude`/`codex`/`cursor-agent` resolve to `.cmd`/
+/// `.bat` shims, and Rust's std library refuses to spawn one when an argument contains a
+/// newline (the CVE-2024-24576 "BatBadBut" fix) - which every real prompt does (Markdown
+/// rules files, multi-paragraph instructions). A one-line probe passed every Test Connection
+/// click while every real hourly summarisation call failed outright, so the bug went
+/// undetected until it showed up in production. This shape is the minimum needed to exercise
+/// the same spawn path a real call takes.
+const PROBE_SYSTEM: &str =
+    "You are being connectivity-tested by Meridian.\n\nReply with exactly: OK. No other text, no punctuation, nothing else.";
 
 /// What a real connectivity test found. Mirrors [`super::LlmError`]'s two failure shapes
 /// (rate-limited vs everything else) so the UI can tell "this works, just not right now"
@@ -916,6 +925,18 @@ mod tests {
                 .unwrap()
                 .contains_key(bin),
             "a miss was cached, so installing the CLI later would not be picked up"
+        );
+    }
+
+    /// The regression this exists for: a single-line probe passed Test Connection on every
+    /// provider while every REAL summarisation call (multi-line prompts) failed to even spawn
+    /// on Windows. See `PROBE_SYSTEM`'s doc — this must stay multi-line or the probe silently
+    /// stops exercising the spawn path that actually broke.
+    #[test]
+    fn probe_system_is_multiline_to_catch_the_windows_batch_spawn_bug() {
+        assert!(
+            PROBE_SYSTEM.contains('\n'),
+            "a single-line probe passes even when a real prompt would fail to spawn on Windows"
         );
     }
 
