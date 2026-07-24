@@ -16,6 +16,7 @@
 //! - [`counter_ping`] — public "updates logged" live-counter ping (prod channel only).
 
 mod analytics;
+mod autostart;
 mod backend_install;
 #[cfg(feature = "capture")]
 mod capture;
@@ -132,6 +133,18 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_notifications::init());
     } else {
         tracing::info!("unbundled run — notifications plugin not registered, toasts disabled");
+    }
+    // Launch-at-login (see `autostart.rs`). Bundled only, same rationale as
+    // notifications above: an unbundled `cargo run`/`tauri dev` binary lives
+    // under `target/`, and registering a login item pointing at that path
+    // would be both wrong (dev builds move/vanish) and surprising.
+    if sys::is_bundled() {
+        builder = builder.plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ));
+    } else {
+        tracing::info!("unbundled run — autostart plugin not registered, no login item");
     }
     builder
         .manage(app_state.clone())
@@ -410,6 +423,20 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 poll::run_daemon_watchdog().await;
             });
+
+            // Launch-at-login: self-heal (once ever, see autostart.rs) so the
+            // tray comes back on its own after a reboot/re-login instead of
+            // needing a manual relaunch. Bundled only — the plugin above is
+            // only registered there, so `app.autolaunch()` has no state
+            // otherwise. Spawned off the setup hook like the backend install
+            // below: it does file + `auto_launch` I/O that shouldn't block
+            // tray startup.
+            if sys::is_bundled() {
+                let autostart_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    autostart::ensure_enabled_once(&autostart_handle).await;
+                });
+            }
 
             // Stage + register the bundled daemon on the self-contained .app DMG
             // path (also retires any leftover a11y-helper agent from an older

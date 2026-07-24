@@ -66,6 +66,10 @@ tauri-plugin-store = "=2.4.3"
 # native-tls. This is the DMG path; npm installs still update via `meridian
 # update` in a Terminal (commands::run_update) — the two are independent.
 tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls"] }
+# Launch-at-login: registers a macOS LaunchAgent (matches the daemon's own
+# LaunchAgent approach, see backend_install.rs) or a Windows Run-key entry
+# pointing at the installed .app/exe. See `autostart.rs`.
+tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Minimum-supported-version comparison for mandatory updates (update.rs);
