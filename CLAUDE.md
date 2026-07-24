@@ -382,7 +382,7 @@ spooled files to OpenObserve, and it refuses to do so entirely for a
 Only a Dev/Bare checkout with `otlp_enabled` + `oo_email`/`oo_password`
 configured ships live, for an engineer debugging against their own
 OpenObserve instance. A shipped install's only path to a developer's
-OpenObserve is the tray Settings → Advanced → **Export Diagnostics** button
+OpenObserve is the tray Settings → Account → **Export Diagnostics** button
 (or `meridian telemetry export`), which bundles the spool + the launchd
 crash-safety-net logs into a `.tar.gz` the user hands to support, imported by
 hand with `meridian telemetry import <bundle> --endpoint <url> --auth
