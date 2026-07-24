@@ -171,6 +171,7 @@ pub async fn create_plan_task(body: CreatePlanTaskBody) -> Result<CreatedTask, S
         synced = created.synced,
         "plan-task-create served"
     );
+    tauri::async_runtime::spawn(crate::counter_ping::ping_task_update());
     Ok(created)
 }
 
@@ -195,6 +196,7 @@ pub async fn edit_plan_task(body: EditPlanTaskBody) -> Result<EditResult, String
 
     let res: EditResult = run_meridian_json(&args, WRITE_TIMEOUT, "plan-task-edit").await?;
     tracing::info!(status = %res.status, provider = %res.provider, "plan-task-edit served");
+    tauri::async_runtime::spawn(crate::counter_ping::ping_task_update());
     Ok(res)
 }
 
@@ -215,6 +217,7 @@ pub async fn set_plan_task_done(body: SetPlanTaskDoneBody) -> Result<EditResult,
 
     let res: EditResult = run_meridian_json(&args, WRITE_TIMEOUT, "plan-task-done").await?;
     tracing::info!(status = %res.status, provider = %res.provider, "plan-task-done served");
+    tauri::async_runtime::spawn(crate::counter_ping::ping_task_update());
     Ok(res)
 }
 

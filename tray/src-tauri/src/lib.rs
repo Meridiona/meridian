@@ -13,6 +13,7 @@
 //! - [`sys`]         — shared uid / notify / dashboard-URL helpers.
 //! - [`format`]      — duration formatting for the popover.
 //! - [`analytics`]   — PostHog product-analytics capture (DMG installs only).
+//! - [`counter_ping`] — public "updates logged" live-counter ping (prod channel only).
 
 mod analytics;
 mod backend_install;
@@ -23,6 +24,7 @@ mod capture;
 // it must exist in non-capture builds too (nothing reads it there — harmless).
 mod capture_ignore;
 mod commands;
+mod counter_ping;
 mod deep_link;
 
 /// Lowercase product name as macOS reports it after [`set_process_display_name`].
@@ -1082,6 +1084,8 @@ pub(crate) fn start_capture(
     // shared handle, so a Settings change never needs a capture restart.
     let settings = meridian_core::settings::load_runtime_settings();
     let pause_on_streaming_video = settings.pause_on_streaming_video;
+    // Off by default — see the field doc comment on RuntimeSettings.
+    let capture_secondary_monitors = settings.capture_secondary_monitors;
     // Handed to the engine's secondary-monitor sweep (multi-screen capture):
     // unlike the primary a11y/OCR path, those windows are never
     // system-focused, so the fork never resolves their `browser_url` for the
@@ -1203,6 +1207,7 @@ pub(crate) fn start_capture(
         let engine = ScreenpipeEngine {
             pause_on_streaming_video,
             ignored_urls,
+            capture_secondary_monitors,
         };
         tokio::select! {
             _ = &mut engine_cancel_rx => {
