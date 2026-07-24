@@ -4,9 +4,10 @@
 //!
 //! The Rust daemon (`src/notifications.rs`) ENQUEUES into the `notifications`
 //! table; this module is the single place the *delivery* decision lives:
-//! master switch + per-type toggle ([`event_allowed`]) and quiet hours
-//! ([`in_quiet_hours`]). Producers always enqueue; only the user's settings
-//! decide whether an event actually surfaces. The two delivery writes
+//! master switch ([`event_allowed`]) and quiet hours ([`in_quiet_hours`]) —
+//! deliberately the ONLY two knobs, no per-category toggles. Producers always
+//! enqueue; only the user's settings decide whether an event actually
+//! surfaces. The two delivery writes
 //! ([`mark_native_delivered`], [`dismiss_banner`]) ack a row so it isn't
 //! re-delivered / re-shown — idempotent, mirroring the same-named TS helpers.
 //!
@@ -112,30 +113,10 @@ pub struct PendingNotification {
     pub actions: Option<String>,
 }
 
-/// Per-type preference for an `event_key`. Unknown keys default to enabled (a new
-/// producer is visible until the user opts out), gated only by the master switch.
-fn type_enabled(event_key: &str, s: &RuntimeSettings) -> bool {
-    match event_key {
-        "plan.nudge" => s.notify_plan_nudge,
-        "worklog.ready" => s.notify_worklog_ready,
-        "system.fault" => s.notify_system_fault,
-        "system.pause" => s.notify_system_pause,
-        "system.health" => s.notify_system_health,
-        "system.update" => s.notify_system_update,
-        "summariser.dead_letter" => s.notify_summariser_digest,
-        "board.hygiene" => s.notify_board_hygiene,
-        // Safety-critical: notification/capture-permission revoked and low disk
-        // space stay ungated by a per-type toggle (unknown keys default
-        // enabled) — a user shouldn't be able to silence the one alert that
-        // explains why everything else went quiet.
-        _ => true,
-    }
-}
-
-/// Whether `event_key` may surface at all: master switch AND per-type toggle.
-/// Mirrors `eventAllowed` in ui/lib/notifications.ts.
-pub fn event_allowed(event_key: &str, s: &RuntimeSettings) -> bool {
-    s.notifications_enabled && type_enabled(event_key, s)
+/// Whether an event may surface at all: the master switch, full stop. Every
+/// event type is treated the same — there is no per-category toggle.
+pub fn event_allowed(s: &RuntimeSettings) -> bool {
+    s.notifications_enabled
 }
 
 /// Minutes since midnight for an 'HH:MM' string, or `None` if malformed.
@@ -194,7 +175,6 @@ pub fn in_quiet_hours(s: &RuntimeSettings) -> bool {
 #[derive(FromRow)]
 struct NotifRow {
     id: i64,
-    event_key: String,
     severity: String,
     title: String,
     body: String,
@@ -268,7 +248,7 @@ pub async fn pending_native(
         "NULL AS category, NULL AS actions"
     };
     let rows: Vec<NotifRow> = sqlx::query_as::<_, NotifRow>(&format!(
-        r#"SELECT id, event_key, severity, title, body, deep_link, channels, {action_cols}
+        r#"SELECT id, severity, title, body, deep_link, channels, {action_cols}
            FROM notifications
            WHERE delivered_native_at IS NULL
              AND (scheduled_for IS NULL OR scheduled_for <= ?)
@@ -289,7 +269,7 @@ pub async fn pending_native(
 
     let out: Vec<PendingNotification> = rows
         .into_iter()
-        .filter(|r| has_channel(&r.channels, "native") && event_allowed(&r.event_key, s))
+        .filter(|r| has_channel(&r.channels, "native") && event_allowed(s))
         .map(|r| PendingNotification {
             id: r.id,
             title: r.title,
@@ -358,7 +338,7 @@ pub async fn active_banners(
 
     let out: Vec<BannerNotification> = rows
         .into_iter()
-        .filter(|r| has_channel(&r.channels, "banner") && event_allowed(&r.event_key, s))
+        .filter(|r| has_channel(&r.channels, "banner") && event_allowed(s))
         .map(|r| BannerNotification {
             id: r.id,
             event_key: r.event_key,

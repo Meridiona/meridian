@@ -15,7 +15,7 @@ use sqlx::SqlitePool;
 /// Raise (or refresh) a named notice. Idempotent — upserts so repeated calls
 /// from the poll loop don't accumulate duplicate rows. The paired toast is
 /// always stamped `system.fault` — use [`raise_typed`] when the caller needs
-/// its own per-type settings toggle instead of sharing `notify_system_fault`.
+/// its own distinct `event_key` instead of sharing the `system.fault` bucket.
 pub async fn raise(
     pool: &SqlitePool,
     id: &str,
@@ -54,8 +54,8 @@ pub struct Notice<'a> {
     pub title: &'a str,
     pub detail: &'a str,
     pub remedy: Option<&'a str>,
-    /// The paired toast's event_key — its own `notify_<type>` settings toggle,
-    /// instead of the shared `system.fault` bucket [`raise`] uses.
+    /// The paired toast's event_key, distinct from the shared `system.fault`
+    /// bucket [`raise`] uses.
     pub event_key: &'a str,
     pub deep_link: Option<&'a str>,
 }

@@ -12,9 +12,8 @@
 //!    holds a timestamp — `meridian_core::plan_marker` — refreshed when the
 //!    user dismisses the planner, which the daemon reads to hold its plan
 //!    nudge back until an hour after the open/dismissal)
-//! 2. `auto_open_plan` disabled in settings
-//! 3. not onboarded (no `~/.meridian/onboarded` — don't open over the wizard)
-//! 4. today's plan already confirmed/skipped (`daily_plan_meta`) — the marker
+//! 2. not onboarded (no `~/.meridian/onboarded` — don't open over the wizard)
+//! 3. today's plan already confirmed/skipped (`daily_plan_meta`) — the marker
 //!    is written WITHOUT opening, so the day stays settled
 //!
 //! The marker is written BEFORE the window opens: under launchd `KeepAlive` a
@@ -58,17 +57,12 @@ pub(crate) async fn maybe_auto_open_plan(app: &tauri::AppHandle, pool: &meridian
         return;
     }
 
-    // 2. Feature toggle.
-    if !meridian_core::settings::load_runtime_settings().auto_open_plan {
-        return;
-    }
-
-    // 3. Don't open the planner over (or instead of) the first-run wizard.
+    // 2. Don't open the planner over (or instead of) the first-run wizard.
     if !meridian_dir.join("onboarded").exists() {
         return;
     }
 
-    // 4. Day already planned (confirmed or skipped, e.g. via the notification
+    // 3. Day already planned (confirmed or skipped, e.g. via the notification
     //    nudge) — settle the day without opening.
     if meridian_core::plan::plan_handled(pool, &today).await {
         write_marker(&marker, &now);

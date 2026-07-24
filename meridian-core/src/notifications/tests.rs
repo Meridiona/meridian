@@ -131,16 +131,11 @@ async fn active_banners_filters_channel_dismissed_expired_and_prefs() {
 }
 
 #[test]
-fn event_allowed_respects_master_and_type() {
+fn event_allowed_respects_only_the_master_switch() {
     let mut s = settings();
-    assert!(event_allowed("plan.nudge", &s));
-    assert!(event_allowed("unknown.event", &s)); // unknown → enabled
-    s.notify_plan_nudge = false;
-    assert!(!event_allowed("plan.nudge", &s));
-    s.notify_plan_nudge = true;
-    s.notifications_enabled = false; // master off → nothing
-    assert!(!event_allowed("plan.nudge", &s));
-    assert!(!event_allowed("unknown.event", &s));
+    assert!(event_allowed(&s));
+    s.notifications_enabled = false;
+    assert!(!event_allowed(&s), "master off → nothing surfaces");
 }
 
 #[test]

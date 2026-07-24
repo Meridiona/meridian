@@ -238,28 +238,12 @@ pub struct RuntimeSettings {
     pub otlp_endpoint: Option<String>,
     pub oo_email: Option<String>,
     pub oo_password: Option<String>,
-    // Notification preferences — the master switch + per-type toggles + quiet
-    // hours. Read by [`crate::notifications`] (the policy ported from
-    // ui/lib/notifications.ts) to decide whether an event may surface.
-    // `quiet_hours_*` are 'HH:MM' local time (start inclusive, end exclusive).
+    // Notification preferences — a master switch + quiet hours. Read by
+    // [`crate::notifications`] to decide whether an event may surface;
+    // every event type is gated ONLY by these two (no per-category toggles —
+    // kept deliberately simple for the user). `quiet_hours_*` are 'HH:MM'
+    // local time (start inclusive, end exclusive).
     pub notifications_enabled: bool,
-    pub notify_plan_nudge: bool,
-    // Daily planner auto-open — once per local day the tray opens the dashboard
-    // on the Plan modal (first launch or first poll tick of a new day). A window
-    // behaviour, not a toast, so it is NOT gated by `notifications_enabled`.
-    pub auto_open_plan: bool,
-    pub notify_worklog_ready: bool,
-    pub notify_system_fault: bool,
-    // Folded from direct tray-side toasts (pause/resume, daemon health,
-    // updates) into the outbox — each now has its own toggle instead of
-    // sharing `notify_system_fault` or being ungated entirely.
-    pub notify_system_pause: bool,
-    pub notify_system_health: bool,
-    pub notify_system_update: bool,
-    // Daily batched digests — see src/coding_agent_session_ingest and
-    // src/intelligence::triage_after_sync.
-    pub notify_summariser_digest: bool,
-    pub notify_board_hygiene: bool,
     pub quiet_hours_enabled: bool,
     pub quiet_hours_start: String,
     pub quiet_hours_end: String,
@@ -343,15 +327,6 @@ impl Default for RuntimeSettings {
             // Notifications on by default; quiet hours off (22:00–08:00 when
             // enabled). Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
             notifications_enabled: true,
-            notify_plan_nudge: true,
-            auto_open_plan: true,
-            notify_worklog_ready: true,
-            notify_system_fault: true,
-            notify_system_pause: true,
-            notify_system_health: true,
-            notify_system_update: true,
-            notify_summariser_digest: true,
-            notify_board_hygiene: true,
             quiet_hours_enabled: false,
             quiet_hours_start: "22:00".to_string(),
             quiet_hours_end: "08:00".to_string(),

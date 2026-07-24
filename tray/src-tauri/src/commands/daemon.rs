@@ -46,9 +46,9 @@ pub async fn restart_daemon() -> Result<(), String> {
 }
 
 /// Pause (stop) or resume (start) the daemon. On success, raises/clears a
-/// `tray.daemon_paused` notice — same `system.pause` event_key (and
-/// `notify_system_pause` toggle) as [`crate::commands::pause`]'s capture-pause
-/// notice, so quiet-hours/master-switch/per-type policy applies identically.
+/// `tray.daemon_paused` notice — same `system.pause` event_key as
+/// [`crate::commands::pause`]'s capture-pause notice, so quiet-hours/master-
+/// switch policy applies identically.
 ///
 /// Start/stop goes through [`super::daemon_control`] (launchd on macOS, the
 /// scheduled task on Windows) rather than `launchctl` directly.
