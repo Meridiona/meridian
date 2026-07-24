@@ -2267,7 +2267,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading 0.8.9",
+ "libloading 0.7.4",
 ]
 
 [[package]]
@@ -3964,7 +3964,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -8072,7 +8072,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "screenpipe-a11y"
 version = "0.1.0"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=b2e5b26#b2e5b268513aa2e6b17abdbf9cc72542232b413d"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=2b7e929#2b7e929f7168344faa0121c7a646e5758701d19a"
 dependencies = [
  "anyhow",
  "arboard",
@@ -8101,7 +8101,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-config"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=b2e5b26#b2e5b268513aa2e6b17abdbf9cc72542232b413d"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=2b7e929#2b7e929f7168344faa0121c7a646e5758701d19a"
 dependencies = [
  "dirs 6.0.0",
  "serde",
@@ -8113,7 +8113,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-connect"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=b2e5b26#b2e5b268513aa2e6b17abdbf9cc72542232b413d"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=2b7e929#2b7e929f7168344faa0121c7a646e5758701d19a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8152,7 +8152,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-core"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=b2e5b26#b2e5b268513aa2e6b17abdbf9cc72542232b413d"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=2b7e929#2b7e929f7168344faa0121c7a646e5758701d19a"
 dependencies = [
  "accessibility",
  "accessibility-sys",
@@ -8192,7 +8192,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-db"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=b2e5b26#b2e5b268513aa2e6b17abdbf9cc72542232b413d"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=2b7e929#2b7e929f7168344faa0121c7a646e5758701d19a"
 dependencies = [
  "anyhow",
  "chrono",
@@ -8218,7 +8218,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-events"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=b2e5b26#b2e5b268513aa2e6b17abdbf9cc72542232b413d"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=2b7e929#2b7e929f7168344faa0121c7a646e5758701d19a"
 dependencies = [
  "anyhow",
  "chrono",
@@ -8235,7 +8235,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-screen"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=b2e5b26#b2e5b268513aa2e6b17abdbf9cc72542232b413d"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=2b7e929#2b7e929f7168344faa0121c7a646e5758701d19a"
 dependencies = [
  "accessibility-sys",
  "anyhow",
@@ -8272,7 +8272,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-secrets"
 version = "0.1.0"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=b2e5b26#b2e5b268513aa2e6b17abdbf9cc72542232b413d"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=2b7e929#2b7e929f7168344faa0121c7a646e5758701d19a"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -8290,7 +8290,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-vault"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=b2e5b26#b2e5b268513aa2e6b17abdbf9cc72542232b413d"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=2b7e929#2b7e929f7168344faa0121c7a646e5758701d19a"
 dependencies = [
  "argon2",
  "chacha20poly1305",

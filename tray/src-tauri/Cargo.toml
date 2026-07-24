@@ -106,7 +106,7 @@ meridian = { path = "../.." }
 # screen capture + Apple Vision OCR. Optional → only pulled by the `capture`
 # feature (heavy: ScreenCaptureKit/cidre/sck-rs). Private repo: local builds use
 # the user's git credentials; CI needs a deploy token (future).
-screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "b2e5b26", optional = true }
+screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "2b7e929", optional = true }
 # Sibling crate in the same fork: the accessibility-tree walker (slice 3b).
 # `tree::create_tree_walker` walks the focused window's AX tree → structured
 # text — the PRIMARY signal for Electron/Chromium apps (VS Code, Slack), which
@@ -133,7 +133,13 @@ screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev 
 # WORKSPACE_OBSERVER_LOCK doc comment in macos.rs for the full rationale.
 # Root-causing the actual Foundation-side bug needs native tooling (lldb /
 # Malloc Stack Logging) this pin bump doesn't attempt.
-screenpipe-a11y = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "b2e5b26", optional = true }
+#
+# Bumped to 2b7e929 (screenpipe-screen only needs the bump, but both crates
+# are kept pinned to the same rev): adds `screenpipe_screen::monitor_watch`,
+# the CGDisplayRegisterReconfigurationCallback watcher extracted from
+# upstream screenpipe's `screenpipe-engine::sleep_monitor` (its "Thread 4") —
+# see `capture/screenpipe.rs`'s `run_monitor_refresh_task` for the caller.
+screenpipe-a11y = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "2b7e929", optional = true }
 # Console log subscriber for capture-enabled non-otel runs (otel installs its
 # own). Makes the `capture: …` logs visible during a `cargo run --features capture`.
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
