@@ -11,6 +11,19 @@
 //! The shared schema is rewritten to OpenAI's strict dialect on the way out — see
 //! [`crate::llm::schema::strictify`], without which no schema-bearing call reaches the
 //! model at all.
+//!
+//! # The whole prompt goes over stdin, not argv (Windows)
+//!
+//! It used to be `codex exec <req.system>` (positional argv) + `req.user` piped over stdin.
+//! `codex` resolves to `codex.cmd` on Windows - an npm-generated batch file, not a native exe -
+//! and Rust's std library REFUSES to spawn a `.bat`/`.cmd` target when an argument contains
+//! characters it cannot safely escape (the CVE-2024-24576 "BatBadBut" fix), notably embedded
+//! newlines. `req.system` is loaded from a Markdown rules file (`SUMMARY_RULES`), so it is
+//! always multi-line — meaning every real summarisation call failed to even spawn on Windows
+//! with `io::Error { kind: InvalidInput, "batch file arguments are invalid" }`, confirmed live
+//! with the exact production prompt. `codex exec` (no positional prompt at all) reads the whole
+//! prompt from stdin instead - documented, and confirmed live - and stdin has no such
+//! restriction on any platform, so this fixes Windows without changing behaviour anywhere else.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -113,6 +126,20 @@ fn classify_login_status(success: bool, stdout: &str, stderr: &str) -> Option<St
     })
 }
 
+/// The full prompt sent over stdin - see the module doc on why nothing goes over argv
+/// anymore. `req.system` (always multi-line - it's a Markdown rules file) is the
+/// instructions; `req.user`, when present, is the data to summarise, demarcated with
+/// `<stdin>` tags the same way `codex exec` itself used to wrap piped stdin when a
+/// positional prompt was ALSO given - so the model sees the identical effective text it did
+/// before this moved off argv, just assembled by us instead of by codex internally.
+fn codex_stdin(req: &PromptRequest) -> String {
+    if req.user.is_empty() {
+        req.system.to_string()
+    } else {
+        format!("{}\n\n<stdin>\n{}\n</stdin>\n", req.system, req.user)
+    }
+}
+
 pub struct CodexBackend {
     pub cfg: LlmConfig,
 }
@@ -140,9 +167,10 @@ impl LlmBackend for CodexBackend {
         let _guard = TempDirGuard(td.clone());
 
         let out_path = td.join("last_message.txt");
+        // No positional prompt argument - see the module doc. `req.system` goes over stdin
+        // instead, along with `req.user`.
         let mut args: Vec<String> = vec![
             "exec".into(),
-            req.system.to_string(),
             "-s".into(),
             "read-only".into(),
             "--skip-git-repo-check".into(),
@@ -170,10 +198,11 @@ impl LlmBackend for CodexBackend {
             args.push(self.cfg.model.clone());
         }
 
+        let stdin_text = codex_stdin(req);
         let cap = run_capture(
             "codex",
             &args,
-            &req.user, // codex exec reads the input from stdin
+            &stdin_text,
             &self.cfg.meridian_home,
             self.cfg.cli_timeout_s,
             &[("MERIDIAN_SUMMARISER", "1"), super::DO_NOT_TRACK],
@@ -298,5 +327,28 @@ mod tests {
             None
         );
         assert_eq!(classify_login_status(false, "", ""), None);
+    }
+
+    /// The regression this exists for: `req.system` used to go over argv (`codex exec
+    /// <system>`), and `req.system` is loaded from a Markdown rules file - always multi-line.
+    /// `codex.cmd` is a batch file on Windows, and Rust refuses to spawn a `.bat`/`.cmd`
+    /// target with a newline in any argument (confirmed live: "batch file arguments are
+    /// invalid"), so every real summarisation call failed to even spawn. Pins that the
+    /// combined stdin text preserves the exact same content the model used to see, just
+    /// assembled by us instead of relying on codex's own `<stdin>`-wrapping of piped input.
+    #[test]
+    fn codex_stdin_wraps_user_data_the_way_codex_itself_used_to() {
+        let req = PromptRequest::new("RULES\nmulti-line", "the transcript", "test");
+        let text = codex_stdin(&req);
+        assert!(text.starts_with("RULES\nmulti-line"));
+        assert!(text.contains("<stdin>\nthe transcript\n</stdin>"));
+    }
+
+    /// No data to summarise (the connectivity probe: `req.user` is empty) must not leave a
+    /// pointless empty `<stdin></stdin>` wrapper in what the model sees.
+    #[test]
+    fn codex_stdin_is_just_the_system_prompt_when_there_is_no_user_data() {
+        let req = PromptRequest::new("Reply with exactly: OK.", "", "test");
+        assert_eq!(codex_stdin(&req), "Reply with exactly: OK.");
     }
 }

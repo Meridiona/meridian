@@ -19,7 +19,7 @@ import { LLM_RECOMMENDED_BADGE, USAGE_FOOTPRINT_NOTE, type LlmProviderMeta } fro
 import type { InstallOutcome, ProviderStatus, ProviderTestResult } from '@/components/LlmProviderPicker'
 
 /** The connection state we render, derived from install + last-test + in-flight flags. */
-type Phase =
+export type Phase =
   | { kind: 'installing' }
   | { kind: 'signing' }
   | { kind: 'not_installed' }
@@ -30,7 +30,9 @@ type Phase =
   | { kind: 'ready_untested' }
   | { kind: 'unknown' }
 
-function phaseFor(
+/** Exported for `__tests__/llm-provider-connection-phase.test.ts` — pure decision logic, no
+ *  render harness needed (see that suite's header for why). */
+export function phaseFor(
   installing: boolean,
   signing: boolean,
   testing: boolean,
