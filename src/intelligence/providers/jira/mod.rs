@@ -471,12 +471,12 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
             if meridian_oauth::is_transient(&e) {
                 tracing::warn!(
                     error = %e,
-                    "jira auth temporarily unavailable — keeping stale cache, will retry next sync"
+                    "jira auth temporarily unavailable - keeping stale cache, will retry next sync"
                 );
                 return Ok(None);
             }
-            tracing::warn!(error = %e, "jira auth unavailable — keeping stale cache");
-            let msg = format!("Jira auth failed — {e}");
+            tracing::warn!(error = %e, "jira auth unavailable - keeping stale cache");
+            let msg = format!("Jira auth failed: {e}");
             // Basic-auth (JIRA_API_TOKEN/JIRA_BASE_URL) and OAuth are mutually
             // exclusive here — has_basic_auth() mirrors resolve()'s own choice —
             // so the remedy must match whichever path this failure came from,

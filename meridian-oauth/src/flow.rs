@@ -238,23 +238,48 @@ fn with_client_secret(body: &mut serde_json::Value, spec: &ProviderSpec) {
 /// that can actually clear.
 const TOKEN_POST_ATTEMPTS: usize = 3;
 
+/// Bound an untrusted response body before it goes into a `TokenError` detail
+/// (which is then logged, verbatim, on every retry). A captive-portal or proxy
+/// interstitial can be an arbitrarily large HTML page; cap it so it can't bloat
+/// structured logs. Truncates on a char boundary so a multi-byte sequence is
+/// never split.
+fn truncate_body(text: &str) -> String {
+    const MAX: usize = 300;
+    if text.len() <= MAX {
+        return text.to_string();
+    }
+    let mut end = MAX;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{} (truncated, {} bytes total)", &text[..end], text.len())
+}
+
 /// [`post_token`] with bounded retry-with-backoff for transient failures. Only
 /// [`TokenFailure::Transient`] errors are retried; a terminal rejection returns
 /// immediately so a genuinely dead token isn't hidden behind seconds of backoff.
+#[tracing::instrument(skip(body), fields(token_url = %token_url))]
 async fn post_token_retrying(
     token_url: &str,
     body: &serde_json::Value,
 ) -> Result<TokenResponse, TokenError> {
+    // One client for the whole retry loop: rebuilding it per attempt would throw
+    // away connection pooling/keep-alive, which is exactly what a retry wants.
+    // The 8 s timeout is per request (each `send`), not a total budget.
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| TokenError::transient(format!("building HTTP client: {e}")))?;
     let mut backoff = Duration::from_millis(400);
     for attempt in 1..=TOKEN_POST_ATTEMPTS {
-        match post_token(token_url, body).await {
+        match post_token(&client, token_url, body).await {
             Ok(resp) => return Ok(resp),
             Err(e) if e.is_transient() && attempt < TOKEN_POST_ATTEMPTS => {
                 tracing::warn!(
                     attempt,
                     max = TOKEN_POST_ATTEMPTS,
                     error = %e,
-                    "OAuth token endpoint transient failure — retrying after backoff"
+                    "OAuth token endpoint transient failure - retrying after backoff"
                 );
                 tokio::time::sleep(backoff).await;
                 backoff *= 3; // 400ms → 1200ms
@@ -268,16 +293,13 @@ async fn post_token_retrying(
 }
 
 /// POST a grant to the token endpoint once and classify any failure as transient
-/// or terminal (see [`TokenError`]). The 8 s timeout is per attempt; [`post_token_retrying`]
-/// wraps this with backoff.
+/// or terminal (see [`TokenError`]). Takes a shared `client` (built once by
+/// [`post_token_retrying`]) whose 8 s timeout applies per attempt.
 async fn post_token(
+    client: &reqwest::Client,
     token_url: &str,
     body: &serde_json::Value,
 ) -> Result<TokenResponse, TokenError> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .build()
-        .map_err(|e| TokenError::transient(format!("building HTTP client: {e}")))?;
     let resp = match client
         .post(token_url)
         .header("Accept", "application/json")
@@ -293,7 +315,10 @@ async fn post_token(
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        let detail = format!("token endpoint {token_url} → {status}: {text}");
+        let detail = format!(
+            "token endpoint {token_url} → {status}: {}",
+            truncate_body(&text)
+        );
         // 429 (rate limited) and 5xx are the provider briefly faltering — retry.
         // Every other non-2xx is a real rejection: a 4xx `invalid_grant` / bad
         // client / revoked-or-rotated refresh token the user must act on.
@@ -306,8 +331,12 @@ async fn post_token(
     // A 2xx whose body isn't valid JSON is almost always a proxy or captive-portal
     // interstitial standing in for the real payload, not a malformed token grant —
     // treat it as transient so a later retry (off the hostile network) can succeed.
-    serde_json::from_str(&text)
-        .map_err(|e| TokenError::transient(format!("parsing token response: {e}: {text}")))
+    serde_json::from_str(&text).map_err(|e| {
+        TokenError::transient(format!(
+            "parsing token response: {e}: {}",
+            truncate_body(&text)
+        ))
+    })
 }
 
 /// Accept exactly one inbound connection, parse the `GET /callback?...` request
