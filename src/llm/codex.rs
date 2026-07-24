@@ -63,6 +63,56 @@ fn codex_error(stderr: &str) -> String {
     sp::first_line(rest)
 }
 
+/// How long the cheap "are you even signed in" pre-check may take. Purely local (reads a
+/// cached credential file, no network round-trip) — measured ~0.2s on codex-cli 0.145.0 — so
+/// this is a generous ceiling, not a real budget.
+const LOGIN_STATUS_TIMEOUT_S: u64 = 8;
+
+/// Fast pre-flight: is Codex signed out? `None` means "proceed with the real call" — covers
+/// both "signed in" and "couldn't tell" (a pre-check that itself fails or times out must never
+/// block a call that might otherwise succeed; fail open).
+///
+/// # Why this exists
+///
+/// Without it, a signed-out Codex fails through the SLOW path: `codex exec` reaches the
+/// network, gets a 401, and retries — 5 WebSocket reconnects, a fallback to HTTPS, 5 more
+/// retries — before finally giving up at ~23s (measured live). That is LONGER than the Test
+/// Connection button's 20s budget (`PROBE_TIMEOUT_S` in `super::detect`), so the real "you're
+/// not signed in" never reaches the user — they see a bare, unactionable "timed out" instead,
+/// on every real hourly call too, not just the Test button. `codex login status` answers the
+/// same question in a fraction of a second because it only reads a local credential file.
+async fn signed_out(cfg: &LlmConfig) -> Option<String> {
+    let cap = run_capture(
+        "codex",
+        &["login".into(), "status".into()],
+        "",
+        &cfg.meridian_home,
+        LOGIN_STATUS_TIMEOUT_S,
+        &[],
+        &[],
+    )
+    .await
+    .ok()?;
+    classify_login_status(cap.success, &cap.stdout, &cap.stderr)
+}
+
+/// The pure classification `signed_out` applies to `codex login status`'s result — split out
+/// so it can be unit-tested without spawning a process or touching `resolve_cli`'s global
+/// success cache (a fake `codex` on `PATH` would otherwise memoise under the real key).
+///
+/// Only trusts the "not logged in" text when the command also FAILED (non-zero exit): the
+/// message is checked as a substring, so a coincidental match in a differently-shaped success
+/// message (or a future CLI version's phrasing) must not misfire and block a working call.
+/// Anything else — an unrelated failure, a version that phrases this differently — returns
+/// `None` and lets the real call proceed; a wrong "you're signed out" would be worse than one
+/// slow, honestly-reported real failure.
+fn classify_login_status(success: bool, stdout: &str, stderr: &str) -> Option<String> {
+    let blob = format!("{stdout}\n{stderr}").to_lowercase();
+    (!success && blob.contains("not logged in")).then(|| {
+        "Codex isn't signed in yet - run `codex login` in a terminal, then try again.".to_string()
+    })
+}
+
 pub struct CodexBackend {
     pub cfg: LlmConfig,
 }
@@ -75,6 +125,10 @@ impl LlmBackend for CodexBackend {
 
     async fn complete(&self, req: &PromptRequest) -> Result<LlmOutput, LlmError> {
         let t0 = std::time::Instant::now();
+
+        if let Some(msg) = signed_out(&self.cfg).await {
+            return Err(LlmError::Failed(msg));
+        }
 
         let td = std::env::temp_dir().join(format!(
             "meridian-llm-codex-{}-{}",
@@ -207,5 +261,42 @@ mod tests {
             codex_error("banner\nERROR: stream disconnected\n"),
             "stream disconnected"
         );
+    }
+
+    /// The regression this exists for: a signed-out Codex used to fail through `codex exec`'s
+    /// slow retry-then-401 path (~23s, measured live) - longer than the Test Connection
+    /// button's 20s budget, so the user saw a bare "timed out" instead of "you're not signed
+    /// in". `codex login status` (real output, verbatim) answers the same question instantly.
+    #[test]
+    fn classify_login_status_recognises_the_real_not_logged_in_output() {
+        let msg = classify_login_status(false, "Not logged in\n", "");
+        assert!(msg.is_some());
+        assert!(msg.unwrap().contains("codex login"));
+    }
+
+    #[test]
+    fn classify_login_status_is_case_insensitive_and_checks_stderr_too() {
+        assert!(classify_login_status(false, "NOT LOGGED IN", "").is_some());
+        assert!(classify_login_status(false, "", "Not Logged In").is_some());
+    }
+
+    /// A SUCCESSFUL call must never be misread as signed-out, even if "not logged in" somehow
+    /// appears in its output (e.g. echoed back from a prompt) - trusting text over the exit
+    /// code here would risk blocking a call that actually works.
+    #[test]
+    fn classify_login_status_ignores_the_text_on_success() {
+        assert_eq!(classify_login_status(true, "not logged in", ""), None);
+    }
+
+    /// An unrelated failure (network hiccup, a future CLI's different phrasing, a crash) must
+    /// return `None` and let the real call proceed - misclassifying it as "signed out" would
+    /// block a call for the wrong reason and hide the actual error.
+    #[test]
+    fn classify_login_status_does_not_misclassify_an_unrelated_failure() {
+        assert_eq!(
+            classify_login_status(false, "", "connection reset by peer"),
+            None
+        );
+        assert_eq!(classify_login_status(false, "", ""), None);
     }
 }
