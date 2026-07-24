@@ -17,7 +17,7 @@
 //!
 //! | Lever | Effect (measured on cursor-agent 2026.07.16) |
 //! |---|---|
-//! | `--allowed-tools ""` | no tools at all; -11,000 input tokens |
+//! | `--allowed-tools=` | no tools at all; -11,000 input tokens |
 //! | `--mode ask` | read-only, server-enforced; belt-and-braces with the empty allowlist |
 //! | `--workspace <empty>` | stops Cursor walking UP into the user's `~/CLAUDE.md` / `AGENTS.md` |
 //! | [`sandbox_home`] | stops the user's ~190 skills being injected; -6,500 further tokens |
@@ -251,9 +251,28 @@ fn is_under(path: &Path, ancestor: &Path) -> bool {
 
 /// The safety flags every Meridian `cursor-agent` call carries, in argv order.
 ///
-/// `no_tools` adds `--allowed-tools ""` (an EMPTY allowlist = no tools at all). That flag is
+/// `no_tools` adds `--allowed-tools=` (an EMPTY allowlist = no tools at all). That flag is
 /// UNDOCUMENTED - hidden from `--help`, marked "internal only" in the CLI bundle - so callers
 /// must be able to retry without it; see [`looks_unsupported_flag`].
+///
+/// # Why `--allowed-tools=`, not `--allowed-tools` + `""` as two argv elements
+///
+/// It used to be two elements, which is correct on macOS/Linux but silently BREAKS on Windows:
+/// `cursor-agent.cmd` (Cursor's own installer output, not npm's) forwards argv to node.exe via
+/// `cursor-agent.ps1`'s bare `$args` - and Windows PowerShell 5.1's array-to-native-argv
+/// flattening DROPS an empty-string element entirely (`$PSNativeCommandArgumentPassing` did not
+/// exist in 5.1). The result: `node.exe` sees `--allowed-tools` immediately followed by
+/// whatever the NEXT real argument was, so commander.js reports
+/// `error: option '--allowed-tools <tool>' argument missing` — a CLI-parsing failure, not an
+/// auth one. `CursorCallError`'s ladder doesn't recognise that message ([`looks_auth_failure`]/
+/// [`looks_unsupported_flag`] both miss it), so it propagates as an opaque `Failed`, and the
+/// tray's Cursor-specific UI (`ui/components/LlmProviderDetail.tsx`) shows EVERY unclassified
+/// failure as "not signed in yet" — so a real, signed-in user saw a permanent, un-clearable
+/// sign-in prompt. Reproduced live on Windows ARM64 both via a direct `cursor-agent.cmd`
+/// invocation and confirmed fixed by switching to a single `--allowed-tools=` token, which
+/// survives the flattening because it is never an empty array ELEMENT (the empty string lives
+/// after the `=` inside one non-empty token). Standard long-option syntax, so this is not
+/// platform-gated - it is correct (and unnecessary-but-harmless) on macOS/Linux too.
 ///
 /// Callers append their own `--output-format` and any prompt/model arguments.
 pub fn safety_args(model: &str, no_tools: bool) -> Vec<String> {
@@ -271,8 +290,7 @@ pub fn safety_args(model: &str, no_tools: bool) -> Vec<String> {
         neutral_workspace().to_string_lossy().into_owned(),
     ];
     if no_tools {
-        args.push("--allowed-tools".into());
-        args.push(String::new());
+        args.push("--allowed-tools=".into());
     }
     args
 }
@@ -508,7 +526,7 @@ mod tests {
         let (res, seen) = ladder(DEFAULT_MODEL, vec![]).await;
         assert!(res.is_ok());
         assert_eq!(seen.len(), 1, "no degradation without a detected cause");
-        assert!(seen[0].0.contains(&"--allowed-tools".to_string()));
+        assert!(seen[0].0.contains(&"--allowed-tools=".to_string()));
         assert!(seen[0].1.iter().any(|(k, _)| *k == "HOME"));
     }
 
@@ -606,6 +624,34 @@ mod tests {
         assert!(!a.contains("--allowed-tools"));
         assert!(a.contains("--mode ask"));
         assert!(a.contains("--workspace"));
+    }
+
+    /// The regression this exists for: on Windows, `cursor-agent.cmd` -> `cursor-agent.ps1`
+    /// forwards argv via PowerShell 5.1's bare `$args`, which silently DROPS a standalone
+    /// empty-string array element when flattening it onto node.exe's command line. Two argv
+    /// elements (`"--allowed-tools"`, `""`) used to reach `safety_args`' caller; the second
+    /// vanished in transit, so cursor-agent saw `--allowed-tools` with nothing after it and
+    /// exited `error: option '--allowed-tools <tool>' argument missing` - a CLI-parsing
+    /// failure that `CursorCallError`'s ladder does not recognise, so it surfaced to the user
+    /// as a permanent "not signed in yet" (the tray's Cursor-specific catch-all for any
+    /// unclassified failure). Reproduced live on Windows ARM64 and confirmed fixed by using a
+    /// single combined `--allowed-tools=` token instead - this pins that it stays that way.
+    #[test]
+    fn no_tools_never_emits_a_standalone_empty_argv_element() {
+        let args = safety_args("some-model", true);
+        assert!(
+            !args.iter().any(|a| a.is_empty()),
+            "an empty-string element is dropped by Windows PowerShell 5.1's $args \
+             flattening in cursor-agent's own Windows wrapper: {args:?}"
+        );
+        assert!(
+            args.iter().any(|a| a == "--allowed-tools="),
+            "expected a single combined '--allowed-tools=' token: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a == "--allowed-tools"),
+            "must not also emit the flag as a separate element: {args:?}"
+        );
     }
 
     #[test]

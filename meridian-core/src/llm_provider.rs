@@ -192,11 +192,14 @@ impl LlmProvider {
 ///
 /// This value is the build all of the flag behaviour was verified on. To move it: bump
 /// this constant, re-run the cursor smoke tests, and confirm `--allowed-tools`,
-/// `--workspace` and `--mode ask` still behave.
+/// `--workspace` and `--mode ask` still behave. Shared by both platform variants of
+/// [`CURSOR_INSTALL_CMD`] below - `downloads.cursor.com/lab/<version>/<os>/<arch>/...`
+/// keys the same version string across every OS, only the artifact differs.
 pub const CURSOR_CLI_VERSION: &str = "2026.07.16-899851b";
 
 /// Cursor's official installer, rewritten to install [`CURSOR_CLI_VERSION`].
 ///
+/// # Unix
 /// The `sed` rewrites every version string in their script (all 5 occurrences: the temp
 /// dir, the `downloads.cursor.com/lab/<v>/<os>/<arch>/agent-cli-package.tar.gz` URL, the
 /// final dir, and both symlinks) to the pinned build. Matching the version by PATTERN
@@ -206,11 +209,38 @@ pub const CURSOR_CLI_VERSION: &str = "2026.07.16-899851b";
 ///
 /// Reusing their script (rather than hand-rolling a download) keeps their OS/arch
 /// detection, symlink layout and PATH guidance. Fixed literal, no user input.
+///
+/// # Windows
+/// `https://cursor.com/install` is a **bash** script - `uname -s` only ever answers
+/// `Linux`/`Darwin`, so it exits "Unsupported operating system" under `sh`/`bash` on
+/// Windows even when one is on PATH (Git-Bash, WSL's `bash.exe` shim), and there is no
+/// `sed` either. Cursor publishes a SEPARATE PowerShell installer for Windows at
+/// `https://cursor.com/install?win32=true` (same `downloads.cursor.com/lab/<version>/...`
+/// backend, `windows/<arch>` instead of `<os>/<arch>`), pinned here the same way: fetch
+/// the script text, rewrite the version with a .NET regex `-replace` (PowerShell's `sed`
+/// equivalent - same pattern-not-literal reasoning as the Unix rewrite), then `iex`
+/// (`Invoke-Expression`) the rewritten text. The daemon's `llm::detect::installer_command`
+/// is what actually spawns this — it must run through `powershell.exe` directly, not
+/// `cmd.exe`, because `irm`/`iex` are PowerShell aliases with no `cmd` equivalent.
+#[cfg(not(windows))]
 pub const CURSOR_INSTALL_CMD: &str = concat!(
     "curl -fsSL https://cursor.com/install | ",
     "sed -E 's#[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}-[0-9a-f]{7}#",
     "2026.07.16-899851b",
     "#g' | bash"
+);
+
+/// See [`CURSOR_INSTALL_CMD`]'s Windows doc above. Plain PowerShell script text — no
+/// enclosing `powershell -Command "..."` wrapper here, because the daemon's
+/// `llm::detect::installer_command` supplies that (a single argv element handed straight
+/// to `powershell.exe`, so there is exactly one layer of shell-quoting to reason about,
+/// not `cmd.exe` re-parsing an already-quoted `-Command` payload).
+#[cfg(windows)]
+pub const CURSOR_INSTALL_CMD: &str = concat!(
+    "$s = (irm 'https://cursor.com/install?win32=true'); ",
+    "$s = $s -replace '[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}-[0-9a-f]{7}', '",
+    "2026.07.16-899851b",
+    "'; iex $s"
 );
 
 #[cfg(test)]
@@ -219,6 +249,7 @@ mod install_pin_tests {
 
     /// The pin must actually appear in the command, and the constant must stay the single
     /// source of truth (`concat!` can't interpolate, so the two are pinned together here).
+    #[cfg(not(windows))]
     #[test]
     fn cursor_install_command_is_pinned_to_the_supported_version() {
         assert!(CURSOR_INSTALL_CMD.contains(CURSOR_CLI_VERSION));
@@ -230,6 +261,71 @@ mod install_pin_tests {
             LlmProvider::Cursor.install_command(),
             Some(CURSOR_INSTALL_CMD)
         );
+    }
+
+    /// Windows analogue: same pin, same pattern-not-literal guarantee, but via
+    /// PowerShell's `-replace` and the win32-flagged installer endpoint rather than
+    /// `sed`/bash — see the module doc on why Cursor's Unix script can't run here.
+    #[cfg(windows)]
+    #[test]
+    fn cursor_install_command_is_pinned_to_the_supported_version() {
+        assert!(CURSOR_INSTALL_CMD.contains(CURSOR_CLI_VERSION));
+        assert!(CURSOR_INSTALL_CMD.contains("[0-9]{4}"));
+        assert!(CURSOR_INSTALL_CMD.contains("-replace"));
+        assert_eq!(
+            LlmProvider::Cursor.install_command(),
+            Some(CURSOR_INSTALL_CMD)
+        );
+    }
+
+    /// The Windows script must go through PowerShell's `irm`/`iex`, not bash's
+    /// `curl | sed | bash` — those aliases don't exist under `cmd.exe`, and stock
+    /// Windows has no `bash`/`sed` on PATH at all outside WSL/Git-Bash.
+    #[cfg(windows)]
+    #[test]
+    fn windows_install_command_uses_the_win32_powershell_installer() {
+        assert!(CURSOR_INSTALL_CMD.contains("cursor.com/install?win32=true"));
+        assert!(CURSOR_INSTALL_CMD.contains("irm "));
+        assert!(CURSOR_INSTALL_CMD.contains("iex "));
+        assert!(!CURSOR_INSTALL_CMD.contains("curl"));
+        assert!(!CURSOR_INSTALL_CMD.contains("bash"));
+    }
+}
+
+/// Where the "cursor-agent not found" hints in the daemon's `coding_agent_session_ingest`
+/// init flow and the coding-agent health checks point the user — the ONE command that
+/// actually works on this platform. Kept next to [`CURSOR_INSTALL_CMD`] so the two can't
+/// drift: a bare `curl | bash` hint shown on Windows would send the user to run a command
+/// that cannot possibly work there.
+#[cfg(not(windows))]
+pub const CURSOR_INSTALL_HINT: &str = "curl https://cursor.com/install -fsS | bash";
+
+#[cfg(windows)]
+pub const CURSOR_INSTALL_HINT: &str =
+    "irm 'https://cursor.com/install?win32=true' | iex  (run in PowerShell)";
+
+#[cfg(test)]
+mod install_hint_tests {
+    use super::*;
+
+    /// The hint must never point at a command that cannot run on this platform: no
+    /// `bash`/`curl` in the Windows hint, no PowerShell aliases in the Unix hint.
+    #[cfg(windows)]
+    #[test]
+    fn windows_hint_does_not_suggest_bash() {
+        assert!(CURSOR_INSTALL_HINT.contains("irm"));
+        assert!(CURSOR_INSTALL_HINT.contains("iex"));
+        assert!(!CURSOR_INSTALL_HINT.contains("curl"));
+        assert!(!CURSOR_INSTALL_HINT.contains("bash"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_hint_does_not_suggest_powershell() {
+        assert!(CURSOR_INSTALL_HINT.contains("curl"));
+        assert!(CURSOR_INSTALL_HINT.contains("bash"));
+        assert!(!CURSOR_INSTALL_HINT.contains("irm"));
+        assert!(!CURSOR_INSTALL_HINT.contains("iex"));
     }
 }
 

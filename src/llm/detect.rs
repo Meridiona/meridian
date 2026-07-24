@@ -49,16 +49,40 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(6);
 /// Where these CLIs actually land, for when the login shell is unavailable or too slow.
 ///
 /// Unix-only paths — Windows has no `probe_login_shell` to fall back FROM (see
-/// [`resolve_cli`]), so it never reaches this tier for the common case anyway. The one
-/// Windows location worth listing is npm's global bin, `%APPDATA%\npm`, for the rare case
-/// where a fresh shell's `PATH` hasn't picked it up yet even though `PATH` is otherwise
-/// trustworthy on this platform.
+/// [`resolve_cli`]), so it never reaches this tier for the common case anyway. The
+/// Windows locations worth listing are npm's global bin, `%APPDATA%\npm` (claude/codex/
+/// copilot), and cursor-agent's own installer root, `%LOCALAPPDATA%\cursor-agent` (Cursor
+/// does not go through npm on Windows — see [`meridian_core::CURSOR_INSTALL_CMD`]'s
+/// Windows doc) — for the rare case where a fresh shell's `PATH` hasn't picked either up
+/// yet even though `PATH` is otherwise trustworthy on this platform. This is not
+/// hypothetical for cursor-agent specifically: [`install_provider`] confirms the install
+/// by immediately re-probing in the SAME process, whose own `PATH` cannot yet see a user
+/// `PATH` write the installer just made (that only takes effect for new processes) —
+/// without this fallback, a successful Windows Cursor install would report itself as
+/// failed.
 fn candidate_dirs() -> Vec<PathBuf> {
     let home = meridian_core::paths::home_dir_or_cwd();
     #[cfg(windows)]
-    let platform: Vec<String> = std::env::var("APPDATA")
-        .map(|a| vec![PathBuf::from(a).join("npm").to_string_lossy().into_owned()])
-        .unwrap_or_default();
+    let platform: Vec<String> = {
+        let mut dirs = Vec::new();
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            dirs.push(
+                PathBuf::from(appdata)
+                    .join("npm")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+            dirs.push(
+                PathBuf::from(local_appdata)
+                    .join("cursor-agent")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        dirs
+    };
     #[cfg(not(windows))]
     let platform: Vec<String> = vec![
         "/opt/homebrew/bin".to_string(),
@@ -263,21 +287,28 @@ pub struct InstallOutcome {
     pub command: String,
 }
 
-/// Install `provider`'s CLI by running its official installer through the user's LOGIN shell,
+/// Install `provider`'s CLI by running its official installer through the platform's shell,
 /// then confirm the binary is now resolvable.
 ///
-/// # Why a login shell
+/// # Why a shell at all
 ///
-/// The tray is a Finder-launched `.app` with the stripped launchd `PATH`
+/// On macOS/Linux, the tray is a Finder-launched `.app` with the stripped launchd `PATH`
 /// (`/usr/bin:/bin:/usr/sbin:/sbin`), which has no `npm`, `node`, or Homebrew. `npm i -g …`
 /// would fail with "command not found" spawned directly. `$SHELL -l` sources the user's
 /// profile, so it sees the same `npm`/PATH they do in a terminal — the same reason
 /// [`resolve_cli`] probes through a login shell.
 ///
+/// Windows has no equivalent stripping (see [`resolve_cli`]'s doc), so [`installer_command`]
+/// doesn't need a login shell for that reason — but it still needs a REAL shell for Cursor's
+/// installer specifically: [`meridian_core::CURSOR_INSTALL_CMD`]'s Windows form uses `irm`/
+/// `iex`, PowerShell aliases with no `cmd.exe` equivalent, so [`installer_command`] spawns
+/// `powershell.exe` directly there (not nested inside `cmd /C`, which would need a second,
+/// fragile layer of quote-escaping for the embedded `-Command` payload).
+///
 /// # Safety
 ///
 /// The command comes from [`LlmProvider::install_command`], a fixed literal per provider with
-/// no user input, so passing it to `-c` cannot inject anything. This is the ONE place the
+/// no user input, so passing it to the shell cannot inject anything. This is the ONE place the
 /// daemon runs a vendor installer, and only ever on an explicit user click (the tray's
 /// `install_llm_provider` command) — never automatically.
 #[tracing::instrument(
@@ -298,14 +329,10 @@ pub async fn install_provider(provider: LlmProvider) -> InstallOutcome {
         };
     };
     let bin = provider.cli_name().unwrap_or("");
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
 
     tracing::info!(provider = provider.as_str(), %cmd, "llm: running provider installer");
-    let mut command = Command::new(&shell);
+    let mut command = installer_command(cmd);
     command
-        .arg("-l")
-        .arg("-c")
-        .arg(cmd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -362,6 +389,53 @@ pub async fn install_provider(provider: LlmProvider) -> InstallOutcome {
             "the installer finished but the CLI still isn't on your PATH - try running it in a terminal".into(),
         ),
     }
+}
+
+/// Build the (unspawned) command that runs `cmd` through the platform's shell.
+///
+/// `pub(crate)`: also reused by
+/// [`crate::coding_agent_session_ingest::cursor_agent_init::try_auto_install`], the daemon's
+/// own (opt-in) unattended installer — so both the tray's "Install" button and the daemon's
+/// background install go through the exact same platform dispatch instead of growing two
+/// copies that can drift (the daemon's used to hardcode `bash -c`, which never worked on
+/// Windows in the first place).
+///
+/// Unix: the user's login shell (`$SHELL -l -c`) — see the module docs on why a login shell
+/// specifically.
+///
+/// Windows: `powershell.exe` directly, NOT `cmd.exe`. `cmd /C` cannot run Cursor's Windows
+/// installer (`irm`/`iex` are PowerShell aliases, no `cmd` equivalent — see
+/// [`meridian_core::CURSOR_INSTALL_CMD`]'s Windows doc), and nesting `cmd /C "powershell
+/// ... -Command \"...\""` to work around that would need a second, mismatched layer of
+/// quote-escaping (`cmd.exe`'s quote handling and a C-runtime-style argv escape do not agree
+/// on what `\"` means) on top of the one Rust already does to hand `cmd` a single argv
+/// element — spawning `powershell.exe` directly keeps it to that one layer. Plain commands
+/// (`npm i -g …`) run identically well under `-Command` as they did under `cmd /C`.
+/// `-ExecutionPolicy Bypass` is defensive: inline `-Command` text isn't normally subject to
+/// the script-file execution policy, but a locked-down machine's policy could still be
+/// stricter than default, and there is no `.ps1` file here to sign. `; exit $LASTEXITCODE`
+/// guarantees the process's own exit code reflects the command's success/failure — relying on
+/// PowerShell's implicit propagation for the LAST statement in a `-Command` script is not
+/// documented behaviour and would silently report a failed `npm i -g …` as a successful
+/// install.
+#[cfg(windows)]
+pub(crate) fn installer_command(cmd: &str) -> Command {
+    let mut command = Command::new("powershell");
+    command
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-Command")
+        .arg(format!("{cmd}; exit $LASTEXITCODE"));
+    command
+}
+
+#[cfg(not(windows))]
+pub(crate) fn installer_command(cmd: &str) -> Command {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let mut command = Command::new(shell);
+    command.arg("-l").arg("-c").arg(cmd);
+    command
 }
 
 /// Confirm a pinned CLI actually installed at the pinned version, and warn loudly if not.
@@ -696,11 +770,27 @@ async fn probe_login_shell(bin: &str) -> Option<PathBuf> {
 
 /// Fallback: look where these things actually install. Used when the login shell is
 /// unavailable, slow, or exotic.
+///
+/// Resolves through [`path_candidate_names`] the same way [`probe_current_path`] does, NOT a
+/// bare `d.join(bin)`: on Windows an install dir can hold the same bare-shebang-plus-`.cmd`
+/// layout `probe_current_path`'s doc describes (npm writes all three), and this tier is
+/// reached precisely when the current process's `PATH` doesn't have the dir yet (a fresh
+/// install's `PATH` write not being visible to an already-running process) — the exact
+/// situation [`install_provider`] hits when it re-probes right after running an installer.
+/// Joining the bare name first would resolve to the extensionless POSIX script and fail to
+/// spawn with `os error 193`, reproducing the same bug `probe_current_path` was fixed for, one
+/// tier down.
 fn probe_candidates(bin: &str) -> Option<PathBuf> {
-    candidate_dirs()
-        .into_iter()
-        .map(|d| d.join(bin))
-        .find(|p| p.exists())
+    let names = path_candidate_names(bin);
+    for dir in candidate_dirs() {
+        for name in &names {
+            let p = dir.join(name);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 
 /// Check the CURRENT process's own `PATH` for `bin` — the cheap, no-subprocess probe that
@@ -903,6 +993,126 @@ mod tests {
             None => std::env::remove_var("PATH"),
         }
         let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            found.as_deref(),
+            Some(shimmed.as_path()),
+            "resolved {found:?}, expected the .CMD shim, not the bare shebang script"
+        );
+    }
+
+    /// The regression this exists for: `install_provider` used to build its command with
+    /// `Command::new(SHELL-or-"/bin/zsh")` unconditionally, which on Windows fails to even
+    /// spawn (`os error 3`, no such path) before the installer — even a plain `npm i -g …`
+    /// — gets any chance to run. `installer_command` must produce something that actually
+    /// starts and executes the given command on every platform.
+    #[tokio::test]
+    async fn installer_command_actually_runs_on_this_platform() {
+        let mut cmd = installer_command("echo hello-from-installer");
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = cmd.output().await.expect("installer_command must spawn");
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("hello-from-installer"),
+            "{output:?}"
+        );
+    }
+
+    /// A failing installer must be reported as failed. On Windows this is the whole reason
+    /// for the `; exit $LASTEXITCODE` suffix in `installer_command`: PowerShell's own exit
+    /// code for a `-Command` script is not guaranteed to mirror a native command's exit
+    /// code, so without it a failing `npm i -g …` could be reported to the user as a
+    /// successful install.
+    #[tokio::test]
+    async fn installer_command_propagates_a_failure_exit_code() {
+        let mut cmd = installer_command("exit 7");
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = cmd.output().await.expect("installer_command must spawn");
+        assert!(!output.status.success());
+        assert_eq!(output.status.code(), Some(7));
+    }
+
+    /// cursor-agent does not install via npm on Windows (see
+    /// `meridian_core::CURSOR_INSTALL_CMD`'s Windows doc) — its own installer root must be a
+    /// fallback candidate dir, or a Cursor install's post-install re-probe (same process,
+    /// stale `PATH`) reports a successful install as failed.
+    #[cfg(windows)]
+    #[test]
+    fn candidate_dirs_includes_the_cursor_agent_install_root() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::var_os("LOCALAPPDATA");
+        std::env::set_var("LOCALAPPDATA", r"C:\Users\meridian-test\AppData\Local");
+
+        let dirs = candidate_dirs();
+
+        match original {
+            Some(v) => std::env::set_var("LOCALAPPDATA", v),
+            None => std::env::remove_var("LOCALAPPDATA"),
+        }
+
+        assert!(
+            dirs.contains(&PathBuf::from(
+                r"C:\Users\meridian-test\AppData\Local\cursor-agent"
+            )),
+            "{dirs:?}"
+        );
+    }
+
+    /// The `LOCALAPPDATA`-less case must not panic or produce a bogus dir — an unset var is
+    /// simply "nothing to add here", same as `APPDATA`'s existing handling.
+    #[cfg(windows)]
+    #[test]
+    fn candidate_dirs_tolerates_a_missing_localappdata() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::var_os("LOCALAPPDATA");
+        std::env::remove_var("LOCALAPPDATA");
+
+        let dirs = candidate_dirs();
+
+        if let Some(v) = original {
+            std::env::set_var("LOCALAPPDATA", v);
+        }
+
+        assert!(
+            dirs.iter().all(|d| !d.ends_with("cursor-agent")),
+            "{dirs:?}"
+        );
+    }
+
+    /// The fallback-directory tier must resolve `PATHEXT` the same way the `PATH` tier does
+    /// (`probe_current_path`). A bare `d.join(bin)` would match an extensionless shebang
+    /// script before its `.CMD` shim in the same directory and fail to spawn (`os error
+    /// 193`) — exactly the bug `probe_current_path` was fixed for, one tier down, and this
+    /// tier is reached precisely when a just-installed CLI's directory isn't on the current
+    /// process's `PATH` yet (the post-install re-probe in `install_provider`).
+    #[cfg(windows)]
+    #[test]
+    fn probe_candidates_prefers_pathext_over_a_bare_extensionless_shim() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_home = std::env::var_os("HOME");
+        let temp_home = std::env::temp_dir().join(format!(
+            "meridian-detect-candidates-test-{}",
+            std::process::id()
+        ));
+        let bin_dir = temp_home.join(".local").join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let bare = bin_dir.join("meridian-fake-cli2");
+        let shimmed = bin_dir.join("meridian-fake-cli2.CMD");
+        std::fs::write(&bare, "#!/bin/sh\necho fake\n").unwrap();
+        std::fs::write(&shimmed, "@echo fake\r\n").unwrap();
+        std::env::set_var("HOME", &temp_home);
+
+        let found = probe_candidates("meridian-fake-cli2");
+
+        match original_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&temp_home);
 
         assert_eq!(
             found.as_deref(),
