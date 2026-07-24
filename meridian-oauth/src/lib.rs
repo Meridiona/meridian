@@ -31,6 +31,11 @@ pub mod pkce;
 pub mod store;
 pub mod trello;
 
+/// Classify whether an OAuth failure was a transient (retryable) token-endpoint
+/// blip rather than a dead grant — so the sync loop keeps quiet on a network
+/// hiccup instead of nagging the user to re-authenticate. See [`flow::TokenError`].
+pub use flow::is_transient;
+
 /// Serialises tests that mutate process-global env vars (`HOME`,
 /// `GITHUB_OAUTH_CLIENT_ID`, …). `cargo test` runs tests in parallel and POSIX
 /// `setenv` is process-wide (and not thread-safe), so without this two
