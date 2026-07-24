@@ -1111,7 +1111,7 @@ pub(crate) fn start_capture(
     // shared handle, so a Settings change never needs a capture restart.
     let settings = meridian_core::settings::load_runtime_settings();
     let pause_on_streaming_video = settings.pause_on_streaming_video;
-    // Off by default — see the field doc comment on RuntimeSettings.
+    // On by default — see the field doc comment on RuntimeSettings.
     let capture_secondary_monitors = settings.capture_secondary_monitors;
     // Handed to the engine's secondary-monitor sweep (multi-screen capture):
     // unlike the primary a11y/OCR path, those windows are never

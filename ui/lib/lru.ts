@@ -19,8 +19,11 @@ export class LruMap<K, V> {
   private readonly map = new Map<K, V>()
 
   constructor(private readonly capacity: number) {
-    if (capacity < 1) {
-      throw new Error('LruMap capacity must be >= 1')
+    // Reject NaN/Infinity/fractional too: `NaN < 1` and `Infinity < 1` are both
+    // false, so a bare `< 1` check would accept them and then `size > capacity`
+    // is never true — the bound would silently never evict.
+    if (!Number.isInteger(capacity) || capacity < 1) {
+      throw new Error('LruMap capacity must be an integer >= 1')
     }
   }
 
@@ -44,9 +47,12 @@ export class LruMap<K, V> {
     this.map.delete(key)
     this.map.set(key, value)
     if (this.map.size > this.capacity) {
-      const oldest = this.map.keys().next().value
-      if (oldest !== undefined) {
-        this.map.delete(oldest)
+      // Use the iterator's `done` flag, not `value !== undefined`: an explicit
+      // `undefined` key is a valid Map entry and would otherwise never evict
+      // (it's indistinguishable from the empty-iterator sentinel).
+      const oldest = this.map.keys().next()
+      if (!oldest.done) {
+        this.map.delete(oldest.value)
       }
     }
   }

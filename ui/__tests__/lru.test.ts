@@ -87,4 +87,25 @@ describe('LruMap', () => {
     expect(() => new LruMap<string, number>(0)).toThrow()
     expect(() => new LruMap<string, number>(-1)).toThrow()
   })
+
+  it('rejects NaN/Infinity/fractional capacity (they would disable eviction)', () => {
+    // `NaN < 1` and `Infinity < 1` are both false, so a bare `< 1` guard would
+    // accept them and then `size > capacity` never fires — no bound at all.
+    expect(() => new LruMap<string, number>(NaN)).toThrow()
+    expect(() => new LruMap<string, number>(Infinity)).toThrow()
+    expect(() => new LruMap<string, number>(2.5)).toThrow()
+  })
+
+  it('evicts an explicit undefined key like any other (no sentinel confusion)', () => {
+    // An `undefined` key is a valid Map entry; eviction must not skip it just
+    // because it equals the empty-iterator sentinel value.
+    const m = new LruMap<string | undefined, number>(2)
+    m.set(undefined, 1) // oldest
+    m.set('b', 2)
+    m.set('c', 3) // pushes past capacity — the undefined-keyed entry must go
+    expect(m.has(undefined)).toBe(false)
+    expect(m.get('b')).toBe(2)
+    expect(m.get('c')).toBe(3)
+    expect(m.size).toBe(2)
+  })
 })

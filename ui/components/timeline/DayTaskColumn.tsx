@@ -212,8 +212,14 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, refre
     for (const g of gaps) {
       if (g.kind !== 'tracking_paused' && g.kind !== 'schedule_paused') continue
       const startMin = minutesFromIso(g.started_at)
-      const endMin = minutesFromIso(g.ended_at)
+      let endMin = minutesFromIso(g.ended_at)
       if (startMin == null || endMin == null) continue
+      // A pause crossing local midnight comes back with `ended_at` on the next
+      // day, so minutesFromIso() (which drops the date) yields endMin < startMin.
+      // `get_today` only returns gaps that STARTED today, so clamp the end to
+      // end-of-day for placement rather than dropping the band entirely — the
+      // real elapsed time is still shown from `g.dur`.
+      if (endMin < startMin) endMin = 1440
       const lo = Math.max(startMin, win.lo)
       const hi = Math.min(endMin, win.hi)
       if (hi <= lo) continue

@@ -46,6 +46,7 @@ use meridian_core::SqlitePool;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// The live counter's public host — the meridiona.com marketing site.
@@ -152,11 +153,40 @@ fn save_state(path: &std::path::Path, state: &CounterPingState) {
     }
 }
 
+/// Single-flight guard for [`check_worklog_posts`]. Each poll tick *spawns* the
+/// check without awaiting it (a slow counter response must not stall the loop),
+/// so on a burst of newly-posted rows — each ping awaits up to 5s — one run can
+/// still be in flight when the next `do_worklogs` tick fires. Two overlapping
+/// runs would load the same on-disk dedup set, both see the same not-yet-pinged
+/// ids, and double-increment the public counter before either writes the set
+/// back. This flag makes the later run skip instead.
+static WORKLOG_CHECK_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Clears [`WORKLOG_CHECK_RUNNING`] on drop, so the flag is released even if the
+/// check returns early or panics.
+struct RunningGuard;
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        WORKLOG_CHECK_RUNNING.store(false, Ordering::Release);
+    }
+}
+
 /// Diff today's worklogs against the persisted pinged-id set and ping once
 /// per newly `posted` row. Called every poll tick, right after
 /// `poll::refresh::refresh_worklogs` reads the same list.
 #[tracing::instrument(skip(pool))]
 pub(crate) async fn check_worklog_posts(pool: &SqlitePool) {
+    // Skip if a prior tick's check is still running (see WORKLOG_CHECK_RUNNING),
+    // so overlapping runs can't double-count the same worklog ids.
+    if WORKLOG_CHECK_RUNNING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        tracing::debug!("counter_ping: worklog check already in flight — skipping this tick");
+        return;
+    }
+    let _running = RunningGuard;
+
     let Some(path) = counter_ping_state_path() else {
         return;
     };

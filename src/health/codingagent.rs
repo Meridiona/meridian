@@ -100,11 +100,11 @@ pub fn checks(_cfg: &Config) -> Vec<Check> {
                 Check::info(
                     "cursor-agent CLI",
                     "L2",
-                    "Cursor detected but cursor-agent not on PATH — Cursor summaries can't run (left pending)",
+                    "Cursor detected but cursor-agent not on PATH - Cursor summaries can't run (left pending)",
                 )
                 .with_remedy(
                     format!(
-                        "install: {}; then: cursor-agent login — or set CURSOR_AGENT_AUTO_INSTALL=1 in ~/.meridian/app/.env to let the daemon install it",
+                        "install: {}; then: cursor-agent login - or set CURSOR_AGENT_AUTO_INSTALL=1 in ~/.meridian/app/.env to let the daemon install it",
                         meridian_core::CURSOR_INSTALL_HINT,
                     ),
                 ),

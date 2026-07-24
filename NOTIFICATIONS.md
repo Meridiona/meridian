@@ -64,11 +64,13 @@ notifications::enqueue(pool, NewNotification::event(
 ).await?;
 ```
 
-That's the whole producer. Delivery policy (master switch, quiet hours) is
-enforced at drain time by `meridian-core`, never by producers — **always
-enqueue; the user's settings decide whether it surfaces.** There is no
-per-type toggle — every event is treated the same, gated only by those two
-knobs, kept deliberately simple for the user.
+That's the whole producer. Delivery policy is enforced at drain time by
+`meridian-core`, never by producers: the master switch gates every channel
+(native toast *and* in-app banner), while quiet hours additionally suppress
+only the native toasts — banners still appear. **Always enqueue; the user's
+settings decide whether it surfaces.** There is no per-type toggle — every
+event is treated the same, gated only by those two knobs, kept deliberately
+simple for the user.
 
 ## Add an interactive notification (buttons / inline reply)
 

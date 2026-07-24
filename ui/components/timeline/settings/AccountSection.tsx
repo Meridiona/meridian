@@ -77,7 +77,7 @@ export function AccountSection() {
             </span>
           )}
         </FieldRow>
-        <FieldRow label="Export Diagnostics" description="Captures your local logs and traces for troubleshooting — nothing leaves your machine until you share this file. Saved to your Downloads folder and revealed in Finder.">
+        <FieldRow label="Export Diagnostics" description="Captures your local logs and traces for troubleshooting. Nothing leaves your machine until you share this file. Saved to your Downloads folder and revealed in your file manager.">
           <SettingsButton onClick={exportBundle} disabled={exportStatus === 'exporting'}>
             {exportStatus === 'exporting' ? 'Exporting…' : 'Export Diagnostics'}
           </SettingsButton>

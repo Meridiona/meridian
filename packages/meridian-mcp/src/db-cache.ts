@@ -67,6 +67,11 @@ export async function openCachedDb(dbPath: string): Promise<SqlDatabase> {
   }
 
   const stat = fs.statSync(dbPath);
+  if (!stat.isFile()) {
+    // existsSync also accepts directories, FIFOs, and devices; readFileSync on
+    // any of those would fail obscurely (or block). Fail with a clear config error.
+    throw new Error(`Meridian DB path is not a regular file: ${dbPath}`);
+  }
   const cached = _dbCache.get(dbPath);
   if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
     return cached.db;
