@@ -109,13 +109,14 @@ export function useLlmProviderDetection() {
   }, [detect, testOne])
 
   /** Run an interactive browser sign-in for a provider whose CLI authenticates against the
-   *  user's own subscription - Cursor (`cursor_sign_in`) or Codex (`codex_sign_in`). Each tray
-   *  command drives that vendor's `… login` and opens the browser; neither takes a provider
-   *  argument, so the id picks the command here. */
+   *  user's own subscription - Cursor (`cursor_sign_in`), Codex (`codex_sign_in`), or Claude
+   *  (`claude_sign_in`). Each tray command drives that vendor's `… login` and opens the browser;
+   *  none takes a provider argument, so the id picks the command here. */
   const signIn = useCallback(async (id: string): Promise<InstallOutcome> => {
     setSigningIds((prev) => new Set(prev).add(id))
     try {
-      const command = id === 'codex' ? 'codex_sign_in' : 'cursor_sign_in'
+      const command =
+        id === 'codex' ? 'codex_sign_in' : id === 'claude' ? 'claude_sign_in' : 'cursor_sign_in'
       const outcome = await invoke<InstallOutcome>(command)
       if (outcome.ok) {
         // `cursor-agent login` exits 0 only AFTER the browser OAuth completes, so this is the

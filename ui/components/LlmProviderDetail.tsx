@@ -249,13 +249,15 @@ function ConnectionBody({ phase, name, providerId, installHint, installMsg, sign
   // Providers whose CLI authenticates against the user's OWN subscription via a browser OAuth
   // that Meridian can drive in-app (a "Sign in to …" button → the `*_sign_in` tray command).
   // `account`/`subscription` fill the copy; `cmd` is the terminal fallback. `null` for
-  // providers with no in-app sign-in (e.g. Claude/Copilot, or a cloud endpoint).
+  // providers with no in-app sign-in (e.g. Copilot, or a cloud endpoint).
   const signInProvider =
     providerId === 'cursor'
       ? { label: 'Sign in to Cursor', account: 'Cursor', subscription: 'Cursor subscription', cmd: 'cursor-agent login' }
       : providerId === 'codex'
         ? { label: 'Sign in to Codex', account: 'ChatGPT', subscription: 'ChatGPT subscription', cmd: 'codex login' }
-        : null
+        : providerId === 'claude'
+          ? { label: 'Sign in to Claude', account: 'Claude', subscription: 'Claude subscription', cmd: 'claude auth login' }
+          : null
 
   switch (phase.kind) {
     case 'installing':

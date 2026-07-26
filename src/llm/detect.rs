@@ -828,6 +828,116 @@ pub async fn codex_sign_in() -> InstallOutcome {
     }
 }
 
+/// Run the interactive `claude auth login` on the user's behalf — the "Sign in to Claude"
+/// button in the provider detail view.
+///
+/// `claude auth login` (default `--claudeai`) opens the user's browser to sign into their
+/// Anthropic account on their **Claude subscription** — no API key, nothing metered. A
+/// deliberate mirror of [`cursor_sign_in`]/[`codex_sign_in`]: the browser is enabled (this is
+/// an explicit click, not the daemon's unattended path), stdout is drained live so the
+/// verification URL is surfaced if the browser can't open, and the wait is bounded by
+/// [`INTERACTIVE_LOGIN_TIMEOUT`]. Once it completes, Claude Code persists the auth and every
+/// later run just adopts it — the same "sign in once" model as the other two.
+#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty))]
+pub async fn claude_sign_in() -> InstallOutcome {
+    let label = "claude auth login";
+    let Some(path) = resolve_cli("claude").await else {
+        return install_failed(
+            label,
+            "claude isn't installed yet - install it first".into(),
+        );
+    };
+
+    tracing::info!("llm: launching interactive claude auth login");
+    let mut cmd = Command::new(&path);
+    cmd.arg("auth")
+        .arg("login")
+        .arg("--claudeai")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .no_window();
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return install_failed(label, format!("couldn't start claude: {e}")),
+    };
+
+    // Drain stdout as it arrives - `claude auth login` prints its verification URL to STDOUT
+    // while it waits, which is exactly what the user needs if the browser doesn't open for them.
+    // Same reasoning as the matching drain in `cursor_sign_in`.
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    if let Some(out) = child.stdout.take() {
+        let seen = seen.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut lines = BufReader::new(out).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tracing::info!(line = %line, "claude auth login");
+                let mut buf = seen.lock().unwrap_or_else(|e| e.into_inner());
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+        });
+    }
+    let login_output = |seen: &std::sync::Mutex<String>| -> String {
+        let buf = seen.lock().unwrap_or_else(|e| e.into_inner());
+        tail(buf.trim(), 300)
+    };
+
+    let output = match tokio::time::timeout(INTERACTIVE_LOGIN_TIMEOUT, child.wait_with_output())
+        .await
+    {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return install_failed(label, format!("couldn't run claude auth login: {e}")),
+        Err(_) => {
+            let printed = login_output(&seen);
+            return install_failed(
+                label,
+                if printed.is_empty() {
+                    "the sign-in wasn't finished in time - click Sign in to Claude again".into()
+                } else {
+                    format!(
+                        "the sign-in wasn't finished in time. Finish it by hand with what \
+                             claude printed:\n{printed}"
+                    )
+                },
+            );
+        }
+    };
+
+    if output.status.success() {
+        let span = tracing::Span::current();
+        span.record("ok", true);
+        span.record("cli_path", tracing::field::display(path.display()));
+        tracing::info!("llm: claude auth login succeeded");
+        InstallOutcome {
+            ok: true,
+            message: "Signed in to Claude.".into(),
+            path: Some(path.display().to_string()),
+            command: label.to_string(),
+        }
+    } else {
+        // stderr first (that is where the reason goes), but fall back to what the CLI printed on
+        // stdout - on some failures the URL is the only useful thing said.
+        let reason = tail(String::from_utf8_lossy(&output.stderr).trim(), 400);
+        let reason = if reason.is_empty() {
+            login_output(&seen)
+        } else {
+            reason
+        };
+        install_failed(
+            label,
+            if reason.is_empty() {
+                "claude auth login failed".to_string()
+            } else {
+                reason
+            },
+        )
+    }
+}
+
 /// The last `n` characters of `s`, char-safe.
 ///
 /// The tail is the useful end of CLI output - npm, curl and cursor-agent all print the real
