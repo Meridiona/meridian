@@ -186,6 +186,13 @@ fn dev_env(repo: &std::path::Path) -> std::path::PathBuf {
 /// `~/.local/bin/meridian` is a `#!/usr/bin/env node` wrapper that dies when
 /// launchd's PATH lacks `node`, so it's only the fallback; bare `meridian`
 /// (relies on `$PATH`) is the last resort.
+///
+/// On Windows the staged binary is `meridian.exe` (`backend_install`'s
+/// `DAEMON_FILE`) — the candidate list below must match that exact name, or
+/// `Path::exists()` never matches and every CLI shell-out (`day-summary`,
+/// `worklog generate`, `triage`, `uninstall`, …) silently falls through to
+/// the bare-`meridian`/`$PATH` last resort, which is almost always empty on
+/// a per-user install.
 pub(crate) fn meridian_bin() -> String {
     // Checked in BOTH profiles, before anything else: an explicit, logged opt-in
     // beats every rule below. Ignored (with a warning) when it points at nothing,
@@ -207,15 +214,30 @@ pub(crate) fn meridian_bin() -> String {
         if let Some(home) = meridian_core::paths::home_dir() {
             // `~/.meridian/bin/meridian` is the DMG path (staged by `backend_install`) —
             // native, no runtime deps, so it works under launchd's minimal PATH; the
-            // `~/.local/bin` node wrapper is the last resort.
-            for rel in [".meridian/bin/meridian", ".local/bin/meridian"] {
+            // `~/.local/bin` node wrapper is the last resort. On Windows the staged
+            // file (and the only candidate that can ever exist there) is
+            // `meridian.exe` — `.local/bin` is a POSIX/npm-wrapper convention with
+            // no Windows equivalent, so it's skipped rather than probed for nothing.
+            #[cfg(target_os = "windows")]
+            let candidates: &[&str] = &[".meridian/bin/meridian.exe"];
+            #[cfg(not(target_os = "windows"))]
+            let candidates: &[&str] = &[".meridian/bin/meridian", ".local/bin/meridian"];
+
+            for rel in candidates {
                 let p = home.join(rel);
                 if p.exists() {
                     return p.to_string_lossy().into_owned();
                 }
             }
         }
-        "meridian".to_string()
+        #[cfg(target_os = "windows")]
+        {
+            "meridian.exe".to_string()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            "meridian".to_string()
+        }
     }
 }
 

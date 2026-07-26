@@ -99,6 +99,59 @@ pub async fn insert_capture_frame(pool: &SqlitePool, frame: &CaptureFrameInsert)
     }
 }
 
+/// One OCR'd sample from a monitor OTHER than the one holding the
+/// currently-focused window (multi-screen capture, context-only — see
+/// `tray/src-tauri/src/capture/screenpipe.rs`'s secondary-monitor sweep).
+/// Never defines a session boundary; folded into whichever session is open
+/// when the ETL closes/upserts a block (`src/etl/extractor.rs`).
+#[derive(Debug, Clone)]
+pub struct CaptureSecondaryScreenInsert {
+    /// Capture instant. Stored as RFC3339 UTC, microsecond precision.
+    pub timestamp: DateTime<Utc>,
+    /// Display name (`SafeMonitor::name()`, falling back to `stable_id()` when empty).
+    pub monitor_name: String,
+    /// Foreground app on that monitor's topmost window, if known.
+    pub app_name: Option<String>,
+    pub window_name: Option<String>,
+    /// OCR text of that window.
+    pub text: String,
+}
+
+/// Insert one secondary-monitor sample into `capture_secondary_screens`. Same
+/// graceful missing-table behaviour as [`insert_capture_frame`] (a schema lag
+/// never crashes the tray).
+pub async fn insert_capture_secondary_screen(
+    pool: &SqlitePool,
+    sample: &CaptureSecondaryScreenInsert,
+) -> Result<()> {
+    let ts = sample
+        .timestamp
+        .to_rfc3339_opts(SecondsFormat::Micros, true);
+    let res = sqlx::query(
+        "INSERT INTO capture_secondary_screens
+           (timestamp, monitor_name, app_name, window_name, text)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )
+    .bind(&ts)
+    .bind(&sample.monitor_name)
+    .bind(&sample.app_name)
+    .bind(&sample.window_name)
+    .bind(&sample.text)
+    .execute(pool)
+    .await;
+
+    match res {
+        Ok(_) => Ok(()),
+        Err(e) if is_missing_table(&e) => {
+            tracing::debug!(
+                "capture_secondary_screens absent (daemon not yet migrated to 068) — sample dropped"
+            );
+            Ok(())
+        }
+        Err(e) => Err(e).context("insert capture_secondary_screen"),
+    }
+}
+
 /// One input event to persist into `capture_ui_events`. Maps onto the
 /// read-subset of screenpipe's `ui_events`: `get_signals` (clipboard/app_switch)
 /// and `get_last_ui_event_for_app` (click/key/text timestamps). `text_content`

@@ -63,11 +63,16 @@ async fn try_install_and_login() -> anyhow::Result<()> {
         Err(_) => {
             // Running a remote install script must be an explicit user
             // decision, never an automatic daemon side effect (the installer
-            // is `curl https://cursor.com/install | bash` — unpinned remote
-            // code). Without the opt-in, Cursor summaries stay pending.
+            // is unpinned remote code). Without the opt-in, Cursor summaries
+            // stay pending. The hint is platform-specific — see
+            // meridian_core::CURSOR_INSTALL_HINT's doc: a bare `curl | bash`
+            // hint on Windows would point the user at a command that cannot
+            // possibly work there (no bash/curl, and cursor.com/install is a
+            // bash-only script even when one is on PATH via WSL/Git-Bash).
             anyhow::bail!(
-                "cursor-agent not in PATH; install it (`curl https://cursor.com/install -fsS | bash`) \
-                 or set CURSOR_AGENT_AUTO_INSTALL=1 to let the daemon install it"
+                "cursor-agent not in PATH; install it (`{}`) or set \
+                 CURSOR_AGENT_AUTO_INSTALL=1 to let the daemon install it",
+                meridian_core::CURSOR_INSTALL_HINT,
             )
         }
     };
@@ -83,20 +88,19 @@ async fn try_install_and_login() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Locate cursor-agent in PATH.
+/// Locate cursor-agent, the same way every other provider CLI is located.
+///
+/// NOT a bare `which`/`where` shell-out: `which` doesn't exist on Windows at all (the
+/// process fails to even spawn, `ErrorKind::NotFound`), so this used to hard-fail on
+/// every Windows machine regardless of whether cursor-agent was actually installed —
+/// every Cursor Agent session was left pending forever, install or no install.
+/// [`crate::llm::detect::resolve_cli`] is the shared, platform-correct probe (PATHEXT-
+/// aware on Windows, login-shell + candidate dirs on Unix, and memoised) that every other
+/// CLI lookup in this codebase already goes through.
 async fn find_cursor_agent() -> anyhow::Result<PathBuf> {
-    let output = run_with_timeout(
-        Command::new("which").arg("cursor-agent"),
-        STATUS_TIMEOUT,
-        "which cursor-agent",
-    )
-    .await?;
-    if output.status.success() {
-        let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Ok(PathBuf::from(path_str))
-    } else {
-        anyhow::bail!("cursor-agent not in PATH")
-    }
+    crate::llm::detect::resolve_cli("cursor-agent")
+        .await
+        .ok_or_else(|| anyhow::anyhow!("cursor-agent not in PATH"))
 }
 
 /// The auto-install opt-in: CURSOR_AGENT_AUTO_INSTALL=1|true|yes. Default OFF
@@ -112,9 +116,15 @@ fn auto_install_enabled() -> bool {
 /// `auto_install_enabled`). Runs once per daemon lifetime (cached by
 /// ensure_ready).
 ///
-/// Uses the PINNED installer ([`meridian_core::CURSOR_INSTALL_CMD`]) — the same command
-/// the tray's "Install" button runs — so an unattended daemon install can never pull a
-/// newer cursor-agent than the build this code was verified against.
+/// Uses the PINNED installer ([`meridian_core::CURSOR_INSTALL_CMD`]) through
+/// [`crate::llm::detect::installer_command`] — the SAME platform dispatch the tray's
+/// "Install" button runs (login shell on Unix, `powershell.exe` directly on Windows; see
+/// that function's doc for why `bash -c`, which this used to hardcode, never worked on
+/// Windows at all: no `bash` on a stock install, and even with WSL/Git-Bash's `bash.exe`
+/// on PATH, `CURSOR_INSTALL_CMD`'s Windows form is PowerShell script text (`irm`/`iex`),
+/// not something `bash` could run either) — so an unattended daemon install can never
+/// pull a newer cursor-agent than the build this code was verified against, on any
+/// platform.
 async fn try_auto_install() -> anyhow::Result<PathBuf> {
     let cmd = meridian_core::CURSOR_INSTALL_CMD;
     tracing::info!(
@@ -122,7 +132,7 @@ async fn try_auto_install() -> anyhow::Result<PathBuf> {
         "running pinned cursor-agent installer"
     );
     let output = run_with_timeout(
-        Command::new("bash").arg("-c").arg(cmd),
+        &mut crate::llm::detect::installer_command(cmd),
         INSTALL_TIMEOUT,
         "cursor-agent install",
     )
@@ -197,10 +207,103 @@ async fn run_with_timeout(
     timeout: Duration,
     label: &str,
 ) -> anyhow::Result<std::process::Output> {
-    cmd.stdin(std::process::Stdio::null()).kill_on_drop(true);
+    use meridian_core::proc_ext::NoWindow;
+    cmd.stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .no_window();
     match tokio::time::timeout(timeout, cmd.output()).await {
         Ok(Ok(output)) => Ok(output),
         Ok(Err(e)) => anyhow::bail!("{label}: {e}"),
         Err(_) => anyhow::bail!("{label} timed out after {}s", timeout.as_secs()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `CURSOR_AGENT_AUTO_INSTALL` is a process-global env var and cargo runs tests in
+    /// parallel threads — every test that mutates it must hold this lock, same pattern as
+    /// `meridian_core::paths`'s `env_lock`.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn with_auto_install<R>(value: Option<&str>, f: impl FnOnce() -> R) -> R {
+        let _guard = env_lock();
+        let prev = std::env::var_os("CURSOR_AGENT_AUTO_INSTALL");
+        match value {
+            Some(v) => std::env::set_var("CURSOR_AGENT_AUTO_INSTALL", v),
+            None => std::env::remove_var("CURSOR_AGENT_AUTO_INSTALL"),
+        }
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        match prev {
+            Some(v) => std::env::set_var("CURSOR_AGENT_AUTO_INSTALL", v),
+            None => std::env::remove_var("CURSOR_AGENT_AUTO_INSTALL"),
+        }
+        match out {
+            Ok(r) => r,
+            Err(p) => std::panic::resume_unwind(p),
+        }
+    }
+
+    /// Default OFF: an unset var must never opt a daemon into running remote installer
+    /// code unattended.
+    #[test]
+    fn auto_install_defaults_to_disabled() {
+        with_auto_install(None, || assert!(!auto_install_enabled()));
+    }
+
+    #[test]
+    fn auto_install_accepts_the_documented_truthy_values() {
+        for v in ["1", "true", "yes", "TRUE", "Yes", "  true  "] {
+            with_auto_install(Some(v), || {
+                assert!(auto_install_enabled(), "{v:?} should enable auto-install");
+            });
+        }
+    }
+
+    #[test]
+    fn auto_install_rejects_everything_else() {
+        // Common near-misses a user might reasonably type, none of which are the
+        // documented opt-in spelling — must fail closed, not open.
+        for v in ["0", "false", "no", "on", "", "  ", "yesplease", "TRUEE"] {
+            with_auto_install(Some(v), || {
+                assert!(
+                    !auto_install_enabled(),
+                    "{v:?} should not enable auto-install"
+                );
+            });
+        }
+    }
+
+    /// `"1 "` (trailing space) IS accepted — `auto_install_enabled` trims before matching
+    /// — documented separately from the rejection list above so that behaviour is asserted
+    /// rather than silently tolerated by the `|| v == "1 "` escape hatch there.
+    #[test]
+    fn auto_install_trims_surrounding_whitespace() {
+        with_auto_install(Some(" 1 "), || assert!(auto_install_enabled()));
+        with_auto_install(Some("\tyes\n"), || assert!(auto_install_enabled()));
+    }
+
+    /// The regression this exists for: `find_cursor_agent` used to shell out to `which`,
+    /// which does not exist as a binary on Windows at all — `Command::new("which")` fails
+    /// to even spawn there (`ErrorKind::NotFound`), so cursor-agent was reported absent on
+    /// every Windows machine regardless of whether it was actually installed. Routing
+    /// through `crate::llm::detect::resolve_cli` (PATHEXT-aware, candidate-dir fallback,
+    /// memoised) fixes that; this pins the observable contract without assuming whether
+    /// cursor-agent happens to be installed on the machine running the test.
+    #[tokio::test]
+    async fn find_cursor_agent_resolves_to_a_real_path_or_a_clear_not_found_error() {
+        match find_cursor_agent().await {
+            Ok(p) => assert!(
+                p.is_absolute() && p.exists(),
+                "resolved path must be spawnable directly: {p:?}"
+            ),
+            Err(e) => assert_eq!(e.to_string(), "cursor-agent not in PATH"),
+        }
     }
 }

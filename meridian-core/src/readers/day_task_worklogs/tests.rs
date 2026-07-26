@@ -31,7 +31,7 @@ async fn seeded() -> SqlitePool {
             provider TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 0, \
             manual INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0, \
             posted_comment_id TEXT, browse_url TEXT, posted_at TEXT, last_error TEXT, \
-            post_attempt_at TEXT, created_at TEXT NOT NULL, \
+            post_attempt_at TEXT, created_at TEXT NOT NULL, update_json TEXT, \
             PRIMARY KEY (day_local, task_id, task_key))",
     )
     .execute(&pool)
@@ -50,6 +50,21 @@ fn target(key: &str, confidence: f64) -> TargetInput {
         provider: "jira".into(),
         confidence,
         manual: false,
+        update: None,
+    }
+}
+
+/// A target carrying its own per-ticket update (the multi-match body split).
+fn target_with_update(key: &str, summary: &str) -> TargetInput {
+    TargetInput {
+        task_key: key.into(),
+        provider: "jira".into(),
+        confidence: 0.9,
+        manual: false,
+        update: Some(GeneratedWorklogUpdate {
+            summary: summary.into(),
+            ..Default::default()
+        }),
     }
 }
 
@@ -108,6 +123,97 @@ async fn a_draft_holds_every_ticket_the_model_matched() {
     assert_eq!(keys(&d), vec!["KAN-1", "KAN-2"]);
     assert!(d.propose.is_none());
     assert!(d.targets.iter().all(|t| !t.posted));
+}
+
+/// The multi-match body split: when one day-task advances two tickets, each target
+/// carries its OWN update, and both round-trip through the DB distinctly.
+#[tokio::test]
+async fn each_target_keeps_its_own_update() {
+    let pool = seeded().await;
+    let mut up = match_upsert();
+    up.targets = vec![
+        target_with_update("KAN-1", "Wired the auth refresh"),
+        target_with_update("KAN-2", "Fixed the settings save race"),
+    ];
+
+    let d = upsert_draft(&pool, "2026-07-16", "T1", up, "t0")
+        .await
+        .unwrap();
+
+    assert_eq!(keys(&d), vec!["KAN-1", "KAN-2"]);
+    assert_eq!(
+        d.targets[0].update.as_ref().unwrap().summary,
+        "Wired the auth refresh"
+    );
+    assert_eq!(
+        d.targets[1].update.as_ref().unwrap().summary,
+        "Fixed the settings save race"
+    );
+}
+
+/// A target with no per-ticket update reads back `None`, so the poster falls back
+/// to the draft-level update (the propose branch, a manual retarget, pre-070 rows).
+#[tokio::test]
+async fn a_target_without_its_own_update_falls_back() {
+    let pool = seeded().await;
+    upsert_draft(&pool, "2026-07-16", "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    let d = get_day_task_worklog(&pool, "2026-07-16", "T1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(d.targets[0].update.is_none());
+}
+
+/// The deterministic adherence signal: every ticket a day's drafted worklogs
+/// matched, grouped by ticket, from drafts alone (no approval needed).
+#[tokio::test]
+async fn matched_tickets_for_day_groups_drafts_by_ticket() {
+    let pool = seeded().await;
+
+    // T1's worklog advanced KAN-1 and KAN-2; T2's advanced KAN-1 as well.
+    let mut a = match_upsert();
+    a.targets = vec![target("KAN-1", 0.9), target("KAN-2", 0.8)];
+    upsert_draft(&pool, "2026-07-16", "T1", a, "t0")
+        .await
+        .unwrap();
+    let mut b = match_upsert();
+    b.targets = vec![target("KAN-1", 0.7)];
+    upsert_draft(&pool, "2026-07-16", "T2", b, "t0")
+        .await
+        .unwrap();
+    // A different day must not bleed in.
+    let mut c = match_upsert();
+    c.targets = vec![target("KAN-9", 0.9)];
+    upsert_draft(&pool, "2026-07-17", "T9", c, "t0")
+        .await
+        .unwrap();
+
+    let m = targets::matched_tickets_for_day(&pool, "2026-07-16")
+        .await
+        .unwrap();
+
+    assert_eq!(m.len(), 2, "two distinct tickets matched on the day");
+    let mut kan1 = m.get("KAN-1").cloned().unwrap();
+    kan1.sort();
+    assert_eq!(kan1, vec!["T1", "T2"], "both day-tasks that matched KAN-1");
+    assert_eq!(m.get("KAN-2").unwrap(), &vec!["T1"]);
+    assert!(!m.contains_key("KAN-9"), "another day's match stays out");
+}
+
+/// Drafted OR posted both count - the match is the row's existence, not its
+/// delivery. A `propose` draft (new ticket, no target) contributes nothing.
+#[tokio::test]
+async fn matched_tickets_ignores_propose_only_drafts() {
+    let pool = seeded().await;
+    upsert_draft(&pool, "2026-07-16", "T1", propose_upsert(), "t0")
+        .await
+        .unwrap();
+    let m = targets::matched_tickets_for_day(&pool, "2026-07-16")
+        .await
+        .unwrap();
+    assert!(m.is_empty(), "a propose branch has no matched ticket");
 }
 
 /// Model order is the order the panel lists them in, so the strongest match reads
@@ -275,6 +381,62 @@ async fn the_row_posts_only_once_every_ticket_has_landed() {
         .unwrap();
     assert_eq!(d.state, "posted");
     assert!(d.targets.iter().all(|t| t.posted));
+}
+
+/// "Still working on this" after a post: reopening flips a `posted` row back to
+/// `drafted` so a fresh regenerate can overwrite it, and the follow-up draft
+/// replaces the targets with unposted ones (the old comment stays on the tracker).
+#[tokio::test]
+async fn reopen_posted_lets_a_posted_row_be_regenerated() {
+    let pool = seeded().await;
+    upsert_draft(&pool, "2026-07-16", "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    mark_approved(&pool, "2026-07-16", "T1", "t1")
+        .await
+        .unwrap();
+    mark_posted(&pool, "2026-07-16", "T1", "KAN-12", "c1", None, "t2")
+        .await
+        .unwrap();
+    let d = get_day_task_worklog(&pool, "2026-07-16", "T1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(d.state, "posted");
+    assert!(d.targets[0].posted);
+
+    // A drafted regenerate BEFORE reopening is a no-op (the guard protects posted).
+    upsert_draft(&pool, "2026-07-16", "T1", match_upsert(), "t3")
+        .await
+        .unwrap();
+    let d = get_day_task_worklog(&pool, "2026-07-16", "T1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(d.state, "posted", "upsert must not overwrite a posted row");
+    assert!(d.targets[0].posted, "the live comment's record survives");
+
+    // Reopen, then the regenerate lands: state is drafted and the target is fresh.
+    assert!(reopen_posted(&pool, "2026-07-16", "T1", "t4")
+        .await
+        .unwrap());
+    upsert_draft(&pool, "2026-07-16", "T1", match_upsert(), "t5")
+        .await
+        .unwrap();
+    let d = get_day_task_worklog(&pool, "2026-07-16", "T1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(d.state, "drafted");
+    assert!(
+        !d.targets[0].posted,
+        "the follow-up draft's target is unposted - approve posts a new comment"
+    );
+
+    // Reopening a row that is no longer posted is a harmless no-op.
+    assert!(!reopen_posted(&pool, "2026-07-16", "T1", "t6")
+        .await
+        .unwrap());
 }
 
 // ── The post claim (migration 063) ────────────────────────────────────────────

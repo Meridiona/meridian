@@ -13,8 +13,10 @@
 //! - [`sys`]         — shared uid / notify / dashboard-URL helpers.
 //! - [`format`]      — duration formatting for the popover.
 //! - [`analytics`]   — PostHog product-analytics capture (DMG installs only).
+//! - [`counter_ping`] — public "updates logged" live-counter ping (prod channel only).
 
 mod analytics;
+mod autostart;
 mod backend_install;
 #[cfg(feature = "capture")]
 mod capture;
@@ -23,6 +25,7 @@ mod capture;
 // it must exist in non-capture builds too (nothing reads it there — harmless).
 mod capture_ignore;
 mod commands;
+mod counter_ping;
 mod crash;
 mod deep_link;
 
@@ -142,6 +145,18 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_notifications::init());
     } else {
         tracing::info!("unbundled run — notifications plugin not registered, toasts disabled");
+    }
+    // Launch-at-login (see `autostart.rs`). Bundled only, same rationale as
+    // notifications above: an unbundled `cargo run`/`tauri dev` binary lives
+    // under `target/`, and registering a login item pointing at that path
+    // would be both wrong (dev builds move/vanish) and surprising.
+    if sys::is_bundled() {
+        builder = builder.plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ));
+    } else {
+        tracing::info!("unbundled run — autostart plugin not registered, no login item");
     }
     builder
         .manage(app_state.clone())
@@ -414,6 +429,27 @@ pub fn run() {
                 poll::run_poll_loop(app_handle, state_clone).await;
             });
 
+            // Fast daemon supervisor, separate from the poll loop's slower,
+            // notice-owning health tick: probes every 5 s and restarts a
+            // confirmed-down daemon within ~10 s. See `poll::run_daemon_watchdog`.
+            tauri::async_runtime::spawn(async move {
+                poll::run_daemon_watchdog().await;
+            });
+
+            // Launch-at-login: self-heal (once ever, see autostart.rs) so the
+            // tray comes back on its own after a reboot/re-login instead of
+            // needing a manual relaunch. Bundled only — the plugin above is
+            // only registered there, so `app.autolaunch()` has no state
+            // otherwise. Spawned off the setup hook like the backend install
+            // below: it does file + `auto_launch` I/O that shouldn't block
+            // tray startup.
+            if sys::is_bundled() {
+                let autostart_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    autostart::ensure_enabled_once(&autostart_handle).await;
+                });
+            }
+
             // Stage + register the bundled daemon on the self-contained .app DMG
             // path (also retires any leftover a11y-helper agent from an older
             // install — see backend_install's module docs). No-op under
@@ -486,6 +522,9 @@ pub fn run() {
             commands::get_active,
             commands::get_today,
             commands::get_day_tasks,
+            commands::dismiss_day_task,
+            commands::merge_day_task,
+            commands::restore_day_task,
             commands::get_week,
             commands::get_coding_agents,
             commands::get_recent_capture_apps,
@@ -531,15 +570,19 @@ pub fn run() {
             commands::create_plan_task,
             commands::edit_plan_task,
             commands::set_plan_task_done,
+            commands::delete_plan_task,
             commands::triage_decision,
             commands::triage_ignore,
             commands::apply_ticket_fix,
             commands::set_task_status,
             commands::generate_day_task_worklog,
             commands::approve_day_task_worklog,
+            commands::escalate_personal_task_create,
+            commands::escalate_personal_task_match,
             // An LLM call, so it lives with the writes despite reading nothing back
             // but its own result.
             commands::generate_day_summary,
+            commands::generate_day_summary_now,
             commands::dismiss_notification,
             commands::record_notification_response,
             commands::delete_notice,
@@ -558,6 +601,7 @@ pub fn run() {
             commands::disconnect_integration,
             commands::discover_azure_devops,
             commands::discover_github_projects,
+            commands::discover_jira_projects,
             commands::save_integration_token,
             commands::start_oauth,
             commands::cancel_oauth,
@@ -1013,6 +1057,30 @@ fn set_process_display_name(name: &str) {
 /// spawning fresh ones, so pausing then resuming is idempotent. Does nothing
 /// when Screen Recording is not granted (logs and returns).
 ///
+/// **The new UI-event recorder generation waits for the previous one to
+/// fully tear down before registering its own observers.** That thread's
+/// `run_app_observer` (screenpipe-a11y) registers `NotificationGuard`s on
+/// the shared `NSWorkspace` notification center and unregisters them on
+/// stop; letting a new recorder register while the old one is still
+/// mid-teardown puts two threads on that one shared singleton at once,
+/// which has produced a double-free abort
+/// (`BUG_IN_CLIENT_OF_LIBMALLOC_POINTER_BEING_FREED_WAS_NOT_ALLOCATED` under
+/// `removeObserver:`/`_Block_release`) in production.
+///
+/// That wait happens on the **new recorder's own OS thread**, never on this
+/// function's caller: the old thread's teardown isn't actually bounded (a
+/// backpressured UI-event channel can leave it blocked in `blocking_send`
+/// well past its own 500ms poll), so joining it inline here could stall
+/// whichever thread called `start_capture` — including a tokio worker, when
+/// called from an async command handler.
+///
+/// The whole stop/spawn/store sequence runs under one `AppState` lock held
+/// for this entire function, so two overlapping `start_capture` calls (e.g.
+/// a schedule auto-resume racing a user-triggered resume) can't each spawn
+/// a generation and clobber each other's stored thread handle — which would
+/// leave the loser's generation unjoined by any future restart and reopen
+/// the same race.
+///
 /// # Who calls this
 /// Once from `lib.rs`'s `setup()` on launch, and again from
 /// `commands::pause_for_duration` on resume.
@@ -1055,19 +1123,31 @@ pub(crate) fn start_capture(
     // shared handle, so a Settings change never needs a capture restart.
     let settings = meridian_core::settings::load_runtime_settings();
     let pause_on_streaming_video = settings.pause_on_streaming_video;
-    let capture_ignore = {
-        let s = app_state.lock().unwrap();
-        *s.capture_ignore.lock().unwrap() =
-            capture_ignore::CaptureIgnore::new(&settings.ignored_apps, &settings.ignored_urls);
-        s.capture_ignore.clone()
-    };
+    // On by default — see the field doc comment on RuntimeSettings.
+    let capture_secondary_monitors = settings.capture_secondary_monitors;
+    // Handed to the engine's secondary-monitor sweep (multi-screen capture):
+    // unlike the primary a11y/OCR path, those windows are never
+    // system-focused, so the fork never resolves their `browser_url` for the
+    // usual downstream `should_drop_frame` check to catch — see
+    // `ScreenpipeEngine::ignored_urls`.
+    let ignored_urls = settings.ignored_urls.clone();
+    // Held from here through the end of the function — see the doc comment
+    // above for why the whole stop/spawn/store sequence must be one critical
+    // section rather than separate lock/unlock pairs. Nothing spawned below
+    // touches `app_state`, so there's no deadlock risk, only serialization
+    // of concurrent `start_capture` calls.
+    let mut s = app_state.lock().unwrap();
+    *s.capture_ignore.lock().unwrap() =
+        capture_ignore::CaptureIgnore::new(&settings.ignored_apps, &settings.ignored_urls);
+    let capture_ignore = s.capture_ignore.clone();
 
     // Drop any previous cancel senders — this signals the old tasks to exit.
-    {
-        let mut s = app_state.lock().unwrap();
-        drop(s.engine_cancel.take());
-        drop(s.ui_consumer_cancel.take());
-    }
+    // The old UI-event recorder thread's own teardown (screenpipe-a11y
+    // unregistering its NSWorkspace observers) is awaited below, inside the
+    // new recorder thread rather than here — see the doc comment.
+    drop(s.engine_cancel.take());
+    drop(s.ui_consumer_cancel.take());
+    let previous_ui_recorder_thread = s.ui_recorder_thread.take();
 
     // Cancellation channels: dropping the Sender exits the receiving task.
     // tauri::async_runtime::spawn works from any thread (incl. macOS main);
@@ -1075,46 +1155,86 @@ pub(crate) fn start_capture(
     let (engine_cancel_tx, mut engine_cancel_rx) = tokio::sync::oneshot::channel::<()>();
     let (ui_cancel_tx, mut ui_cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<capture::CapturedFrame>(64);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<capture::CaptureItem>(64);
 
     // Frame consumer: exits when engine task finishes (tx drops → rx returns None).
+    // Handles both item shapes the engine can send — the primary per-tick frame
+    // and secondary-monitor context samples (multi-screen capture) — through the
+    // same ignore-list gate, routed to their own tables.
     let consumer_pool = pool.clone();
     let frame_ignore = capture_ignore.clone();
     tauri::async_runtime::spawn(async move {
-        while let Some(frame) = rx.recv().await {
-            tracing::debug!(
-                ts = %frame.timestamp,
-                app = ?frame.app_name,
-                chars = frame.text.len(),
-                "capture: frame received"
-            );
-            // User ignore list (apps + website domains): drop the frame before it
-            // is ever persisted, so an ignored app/site leaves no trace on the
-            // timeline. Going forward only — history is untouched.
-            if frame_ignore
-                .lock()
-                .unwrap()
-                .should_drop_frame(frame.app_name.as_deref(), frame.browser_url.as_deref())
-            {
-                tracing::debug!(
-                    app = ?frame.app_name,
-                    "capture: frame ignored (user ignore list) — not persisted"
-                );
-                continue;
-            }
-            let Some(p) = consumer_pool.as_ref() else {
-                continue;
-            };
-            let row = meridian_core::CaptureFrameInsert {
-                timestamp: frame.timestamp,
-                app_name: frame.app_name,
-                window_name: frame.window_name,
-                browser_url: frame.browser_url,
-                text: frame.text,
-                text_source: frame.text_source.as_str().to_string(),
-            };
-            if let Err(e) = meridian_core::insert_capture_frame(p, &row).await {
-                tracing::warn!(error = %e, "capture: failed to persist frame");
+        while let Some(item) = rx.recv().await {
+            match item {
+                capture::CaptureItem::Frame(frame) => {
+                    tracing::debug!(
+                        ts = %frame.timestamp,
+                        app = ?frame.app_name,
+                        chars = frame.text.len(),
+                        "capture: frame received"
+                    );
+                    // User ignore list (apps + website domains): drop the frame before it
+                    // is ever persisted, so an ignored app/site leaves no trace on the
+                    // timeline. Going forward only — history is untouched.
+                    if frame_ignore
+                        .lock()
+                        .unwrap()
+                        .should_drop_frame(frame.app_name.as_deref(), frame.browser_url.as_deref())
+                    {
+                        tracing::debug!(
+                            app = ?frame.app_name,
+                            "capture: frame ignored (user ignore list) — not persisted"
+                        );
+                        continue;
+                    }
+                    let Some(p) = consumer_pool.as_ref() else {
+                        continue;
+                    };
+                    let row = meridian_core::CaptureFrameInsert {
+                        timestamp: frame.timestamp,
+                        app_name: frame.app_name,
+                        window_name: frame.window_name,
+                        browser_url: frame.browser_url,
+                        text: frame.text,
+                        text_source: frame.text_source.as_str().to_string(),
+                    };
+                    if let Err(e) = meridian_core::insert_capture_frame(p, &row).await {
+                        tracing::warn!(error = %e, "capture: failed to persist frame");
+                    }
+                }
+                capture::CaptureItem::Secondary(sample) => {
+                    tracing::debug!(
+                        ts = %sample.timestamp,
+                        monitor = %sample.monitor_name,
+                        app = ?sample.app_name,
+                        chars = sample.text.len(),
+                        "capture: secondary-screen sample received"
+                    );
+                    if frame_ignore
+                        .lock()
+                        .unwrap()
+                        .should_drop_frame(sample.app_name.as_deref(), None)
+                    {
+                        tracing::debug!(
+                            app = ?sample.app_name,
+                            "capture: secondary-screen sample ignored (user ignore list) — not persisted"
+                        );
+                        continue;
+                    }
+                    let Some(p) = consumer_pool.as_ref() else {
+                        continue;
+                    };
+                    let row = meridian_core::CaptureSecondaryScreenInsert {
+                        timestamp: sample.timestamp,
+                        monitor_name: sample.monitor_name,
+                        app_name: sample.app_name,
+                        window_name: sample.window_name,
+                        text: sample.text,
+                    };
+                    if let Err(e) = meridian_core::insert_capture_secondary_screen(p, &row).await {
+                        tracing::warn!(error = %e, "capture: failed to persist secondary-screen sample");
+                    }
+                }
             }
         }
     });
@@ -1125,6 +1245,8 @@ pub(crate) fn start_capture(
     tauri::async_runtime::spawn(async move {
         let engine = ScreenpipeEngine {
             pause_on_streaming_video,
+            ignored_urls,
+            capture_secondary_monitors,
         };
         tokio::select! {
             _ = &mut engine_cancel_rx => {
@@ -1163,12 +1285,33 @@ pub(crate) fn start_capture(
             }
         }
     });
-    std::thread::spawn(move || capture::ui_events::run_ui_event_recorder(ui_tx));
+    let ui_recorder_thread = std::thread::spawn(move || {
+        // Wait for the outgoing generation's screenpipe-a11y NSWorkspace
+        // observers to fully unregister before this generation registers its
+        // own — on this dedicated thread, never on start_capture's caller
+        // (see the fn's doc comment for why that distinction matters).
+        if let Some(previous) = previous_ui_recorder_thread {
+            if let Err(panic) = previous.join() {
+                let msg = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "non-string panic payload".to_string());
+                tracing::error!(
+                    panic = %msg,
+                    "capture: previous ui-event recorder thread panicked during restart"
+                );
+            }
+        }
+        capture::ui_events::run_ui_event_recorder(ui_tx);
+    });
 
-    // Store senders in state; dropping them (on pause) cancels the tasks.
-    let mut s = app_state.lock().unwrap();
+    // Store senders + thread handle in state; dropping the senders (on pause)
+    // cancels the tasks, and the next start_capture joins the handle before
+    // spawning a replacement.
     s.engine_cancel = Some(engine_cancel_tx);
     s.ui_consumer_cancel = Some(ui_cancel_tx);
+    s.ui_recorder_thread = Some(ui_recorder_thread);
     tracing::info!("capture: engine and ui recorder started");
 }
 

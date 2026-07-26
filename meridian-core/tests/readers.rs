@@ -34,7 +34,7 @@ async fn make_pool() -> SqlitePool {
         CREATE TABLE pm_tasks (
             task_key TEXT, title TEXT, description_text TEXT, issue_type TEXT,
             status_raw TEXT, is_terminal INTEGER, provider TEXT, url TEXT,
-            parent_key TEXT, epic_title TEXT, due_date TEXT, start_date TEXT
+            parent_key TEXT, epic_title TEXT, due_date TEXT, start_date TEXT, deleted_at TEXT
         );
         "#,
     )
@@ -376,7 +376,8 @@ async fn make_plan_pool() -> SqlitePool {
         r#"CREATE TABLE pm_tasks (
             task_key TEXT, title TEXT, provider TEXT, url TEXT, status_raw TEXT,
             is_terminal INTEGER, due_date TEXT, updated_at TEXT, description_text TEXT,
-            epic_title TEXT, parent_key TEXT, priority TEXT, issue_type TEXT, story_points TEXT
+            epic_title TEXT, parent_key TEXT, priority TEXT, issue_type TEXT, story_points TEXT,
+            deleted_at TEXT
         );"#,
         r#"CREATE TABLE pm_task_curation (task_key TEXT, decision TEXT);"#,
         r#"CREATE TABLE app_sessions (
@@ -754,7 +755,7 @@ async fn make_task_create_pool() -> SqlitePool {
             is_terminal INTEGER NOT NULL DEFAULT 0, due_date TEXT, updated_at TEXT NOT NULL,
             description_text TEXT NOT NULL DEFAULT '', epic_title TEXT, parent_key TEXT,
             priority TEXT NOT NULL DEFAULT '', issue_type TEXT NOT NULL DEFAULT '',
-            story_points TEXT NOT NULL DEFAULT '', project_key TEXT NOT NULL DEFAULT ''
+            story_points TEXT NOT NULL DEFAULT '', project_key TEXT NOT NULL DEFAULT '', deleted_at TEXT
         );"#,
         r#"CREATE TABLE pm_task_curation (task_key TEXT, decision TEXT);"#,
         r#"CREATE TABLE app_sessions (
@@ -885,6 +886,103 @@ async fn local_task_appears_on_the_board_and_is_not_done() {
         "a fresh personal task must not render as done"
     );
     assert_eq!(item.provider, "local");
+}
+
+#[tokio::test]
+async fn soft_deleting_a_personal_task_hides_it_everywhere_and_is_idempotent() {
+    // Deleting a personal task is a soft hide (`deleted_at`), migration 075: the
+    // row must stay (its key is never reissued), the second delete must be a
+    // no-op rather than an error, and the hidden task must vanish from both the
+    // available-plan reader (`build_available`) and the committed-plan reader
+    // (`build_plan_response`).
+    let pool = make_task_create_pool().await;
+
+    let today = chrono::Local::now().date_naive();
+    let date = today.format("%Y-%m-%d").to_string();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let recent_since = (chrono::Local::now()
+        - Duration::days(meridian_core::plan::RECENT_WORK_DAYS))
+    .format("%Y-%m-%d")
+    .to_string();
+
+    // Create a personal task and commit it to today's plan.
+    let key =
+        meridian_core::task_create::create_local_task(&pool, "Draft the memo", "d", "Task", "t0")
+            .await
+            .unwrap();
+    let available =
+        meridian_core::plan::build_available(&pool, &date, today, now_ms, &recent_since)
+            .await
+            .unwrap();
+    assert!(
+        available.iter().any(|a| a.key == key),
+        "sanity: the task is on the board before deletion"
+    );
+    let body = meridian_core::plan::PlanBody {
+        action: "confirm".into(),
+        date: Some(date.clone()),
+        task_key: None,
+        task_keys: Some(vec![key.clone()]),
+    };
+    meridian_core::plan::apply_plan_action(&pool, &body, &date, today, "t0", available.clone())
+        .await
+        .unwrap();
+    let before = meridian_core::plan::build_plan_response(&pool, &date, today, available.clone())
+        .await
+        .unwrap();
+    assert!(
+        before.plan.iter().any(|p| p.task_key == key),
+        "sanity: the task is in the committed plan before deletion"
+    );
+
+    // First delete hides the row; a second is idempotent (no-op, not an error).
+    assert!(
+        meridian_core::task_create::delete_local_task(&pool, &key, "t1")
+            .await
+            .unwrap(),
+        "first delete reports a row changed"
+    );
+    assert!(
+        !meridian_core::task_create::delete_local_task(&pool, &key, "t2")
+            .await
+            .unwrap(),
+        "re-deleting an already-hidden task is a no-op"
+    );
+    assert!(
+        meridian_core::task_create::task_exists(&pool, &key)
+            .await
+            .unwrap(),
+        "soft delete keeps the row so its key is never reissued"
+    );
+
+    // Excluded from the available-plan reader.
+    let available_after =
+        meridian_core::plan::build_available(&pool, &date, today, now_ms, &recent_since)
+            .await
+            .unwrap();
+    assert!(
+        !available_after.iter().any(|a| a.key == key),
+        "a hidden task must leave build_available"
+    );
+
+    // Excluded from the committed-plan reader, even though its daily_plan row remains.
+    let after =
+        meridian_core::plan::build_plan_response(&pool, &date, today, available_after.clone())
+            .await
+            .unwrap();
+    assert!(
+        !after.plan.iter().any(|p| p.task_key == key),
+        "a hidden task must leave the committed plan"
+    );
+
+    // Key allocation is preserved: the next personal task climbs past the hidden one.
+    let next = meridian_core::task_create::create_local_task(&pool, "Next", "d", "Task", "t3")
+        .await
+        .unwrap();
+    assert_eq!(
+        next, "LOCAL-2",
+        "a hidden task's key must never be reissued"
+    );
 }
 
 #[tokio::test]
@@ -1196,6 +1294,57 @@ async fn a_planned_ticket_off_the_board_resolves_from_its_snapshot() {
     );
 }
 
+/// A Done focus task pruned from `pm_tasks` still resolves its provider from the
+/// plan snapshot — so the worklog matcher doesn't drop the very ticket that
+/// finishing it just closed. A live `pm_tasks` row still wins; an unknown key is
+/// still `None`.
+#[tokio::test]
+async fn provider_for_key_falls_back_to_the_plan_snapshot() {
+    let pool = make_board_pool().await;
+
+    // KAN-315: a Done focus task, gone from pm_tasks, only its plan snapshot left.
+    sqlx::query(
+        "INSERT INTO daily_plan (plan_date, task_key, position, origin, task_snapshot, created_at, updated_at) \
+         VALUES ('2026-07-21', 'KAN-315', 0, 'manual', ?, '2026-07-21T00:00:00Z', '2026-07-21T00:00:00Z')",
+    )
+    .bind(r#"{"title":"Design daily summary","provider":"jira"}"#)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // KAN-1: still on the board — the live row must win over any snapshot.
+    sqlx::query(
+        "INSERT INTO pm_tasks (task_key, title, provider, status_raw, is_terminal, updated_at) \
+         VALUES ('KAN-1', 'T', 'github', 'To Do', 0, '2026-07-21T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        meridian_core::board::provider_for_key(&pool, "KAN-315")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("jira"),
+        "a pruned focus task recovers its provider from the plan snapshot"
+    );
+    assert_eq!(
+        meridian_core::board::provider_for_key(&pool, "KAN-1")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("github"),
+        "a live pm_tasks row wins over any snapshot"
+    );
+    assert_eq!(
+        meridian_core::board::provider_for_key(&pool, "NOPE-1")
+            .await
+            .unwrap(),
+        None,
+        "a key on neither the board nor any plan is still unknown"
+    );
+}
+
 /// The candidate description is the FULL text, not the plan card's excerpt.
 ///
 /// `PlanItem.description` is truncated to ~130 chars for display. Feeding that to
@@ -1273,7 +1422,7 @@ async fn make_board_pool() -> sqlx::SqlitePool {
             is_terminal INTEGER NOT NULL DEFAULT 0, due_date TEXT, updated_at TEXT NOT NULL,
             description_text TEXT NOT NULL DEFAULT '', epic_title TEXT, parent_key TEXT,
             priority TEXT NOT NULL DEFAULT '', issue_type TEXT NOT NULL DEFAULT '',
-            story_points TEXT
+            story_points TEXT, deleted_at TEXT
         );"#,
         r#"CREATE TABLE pm_task_curation (task_key TEXT, decision TEXT);"#,
         // Migration 041 + 044. The matcher's candidate set reads this.
@@ -1324,9 +1473,12 @@ async fn a_whole_list_write_refuses_past_the_cap() {
             Vec::new(),
         )
         .await
-        .expect_err("11 tasks must be refused");
+        .expect_err("one past the cap must be refused");
         assert!(
-            err.to_string().contains("up to 10 tasks"),
+            err.to_string().contains(&format!(
+                "up to {} tasks",
+                meridian_core::plan::MAX_PLAN_TASKS
+            )),
             "{action}: the user must be told the limit, got: {err}"
         );
     }
@@ -1337,7 +1489,7 @@ async fn a_whole_list_write_refuses_past_the_cap() {
     assert_eq!(n, 0, "a refused write must not half-apply");
 }
 
-/// Exactly the cap is fine — the limit is 10 tasks, not 9.
+/// Exactly the cap is fine — the limit is MAX_PLAN_TASKS tasks, not one fewer.
 #[tokio::test]
 async fn a_whole_list_write_accepts_exactly_the_cap() {
     let pool = make_board_pool().await;
@@ -1383,7 +1535,7 @@ async fn the_cap_counts_distinct_keys() {
     let mut keys: Vec<String> = (1..=meridian_core::plan::MAX_PLAN_TASKS)
         .map(|i| format!("KAN-{i}"))
         .collect();
-    keys.push("KAN-1".to_string()); // 11 entries, 10 distinct
+    keys.push("KAN-1".to_string()); // one more entry than distinct keys
 
     let body = meridian_core::plan::PlanBody {
         action: "set".to_string(),
@@ -1643,7 +1795,7 @@ async fn make_worklog_pool() -> SqlitePool {
         CREATE TABLE pm_tasks (
             task_key TEXT, title TEXT, description_text TEXT, issue_type TEXT,
             status_raw TEXT, is_terminal INTEGER, provider TEXT, url TEXT,
-            parent_key TEXT, epic_title TEXT, due_date TEXT, start_date TEXT
+            parent_key TEXT, epic_title TEXT, due_date TEXT, start_date TEXT, deleted_at TEXT
         );
         "#,
     )

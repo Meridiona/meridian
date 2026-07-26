@@ -27,6 +27,7 @@
 //! # Related
 //! - [`super`] — the engine-agnostic boundary ([`CaptureEngine`], [`CapturedFrame`]).
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -36,14 +37,35 @@ use screenpipe_a11y::tree::{
 use screenpipe_screen::capture_screenshot_by_window::{
     capture_all_visible_windows, CapturedWindow, WindowFilters,
 };
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use super::drm_detector::{self, StreamingGate};
-use super::{CaptureEngine, CapturedFrame, FrameTx, TextSource};
+use super::{
+    CaptureEngine, CaptureItem, CapturedFrame, FrameTx, SecondaryScreenSample, TextSource,
+};
 
 /// Seconds between capture passes. Conservative fixed cadence for v1;
 /// screenpipe's idle-adaptive frame rate is a later refinement.
 const CAPTURE_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How often (in ticks of `CAPTURE_INTERVAL`) the secondary-monitor sweep
+/// runs — 5 × 2s ≈ 10s. Background-monitor context doesn't need the primary
+/// window's freshness, and Vision OCR against every OTHER connected monitor
+/// on every 2s tick would be wasted work for content the user isn't looking at.
+const SECONDARY_SCREEN_EVERY_N_TICKS: u32 = 5;
+
+/// Backstop interval for the monitor-list refresh task when the display
+/// reconfiguration callback registered successfully — the callback fires
+/// immediately on an actual hotplug/resolution/mirror change, so this is
+/// just a safety net for whatever it might miss, not the primary signal.
+const MONITOR_REFRESH_BACKSTOP_WITH_CALLBACK: Duration = Duration::from_secs(60);
+
+/// Backstop interval when the callback failed to register (or isn't
+/// available on this platform, e.g. Windows) — falls back to a shorter
+/// poll-only cadence so hotplug detection doesn't silently regress to
+/// once-a-minute. Matches upstream's `monitor_watcher.rs` fallback.
+const MONITOR_REFRESH_BACKSTOP_NO_CALLBACK: Duration = Duration::from_secs(5);
 
 /// Outcome of the per-tick accessibility-tree walk — decides what (if anything)
 /// the OCR fallback does this tick.
@@ -63,11 +85,28 @@ enum A11yOutcome {
 pub struct ScreenpipeEngine {
     /// Whether to pause capture when streaming video is detected
     pub pause_on_streaming_video: bool,
+    /// User-configured ignored URL patterns (Settings → ignore list). The
+    /// primary a11y/OCR path doesn't need these threaded in explicitly — the
+    /// focused window's `browser_url` is always resolved by the fork, and
+    /// `lib.rs`'s consumer filters on it downstream. Secondary-monitor
+    /// windows are never focused, so the fork never resolves their
+    /// `browser_url` at all (see `capture_secondary_screens`) — passing
+    /// these into that sweep's `WindowFilters` is the only way an ignored
+    /// domain open on a non-focused screen still gets caught, via the fork's
+    /// own title-based blocked-URL heuristic.
+    pub ignored_urls: Vec<String>,
+    /// On by default (`RuntimeSettings::capture_secondary_monitors`) — a
+    /// second monitor is captured whether or not it's the screen the user is
+    /// actively looking at. Exposed as a Settings → Capture & Privacy toggle
+    /// for anyone who wants to turn it off.
+    pub capture_secondary_monitors: bool,
 }
 
 impl CaptureEngine for ScreenpipeEngine {
     async fn run(self, tx: FrameTx) -> anyhow::Result<()> {
         let pause_on_streaming = self.pause_on_streaming_video;
+        let ignored_urls = self.ignored_urls;
+        let capture_secondary_monitors = self.capture_secondary_monitors;
         // Register with TCC + drive both prompts ourselves. Neither library
         // prompts on its own: screen-capture enumeration only PREFLIGHTS, and
         // the AX tree reads nothing until this process is a trusted AX client.
@@ -87,15 +126,52 @@ impl CaptureEngine for ScreenpipeEngine {
         // motivating case). Lives for the whole engine run, single-threaded.
         let mut streaming_gate = StreamingGate::new();
 
+        // Enumerated ONCE here, then held across ticks and only refreshed by
+        // `run_monitor_refresh_task` — see its doc comment. `SafeMonitor` is
+        // `Clone` and internally caches its native handle, so reusing the
+        // same instances tick after tick is what actually makes that
+        // per-monitor cache do anything; re-listing every tick (the original
+        // design) silently defeated it.
+        let shared_monitors: Arc<RwLock<Vec<screenpipe_screen::monitor::SafeMonitor>>> = Arc::new(
+            RwLock::new(screenpipe_screen::monitor::list_monitors().await),
+        );
+
+        // Event-driven refresh, decoupled from the capture cadence entirely
+        // (see `run_monitor_refresh_task`) — spawned once per `run()` call.
+        // `AbortOnDrop` matters here: the caller (`lib.rs`'s `start_capture`)
+        // cancels this whole `run()` future by racing it against a pause
+        // signal in a `tokio::select!` and dropping whichever loses — it
+        // never runs `run()` to a normal return on pause. A bare
+        // `tokio::spawn` with a discarded `JoinHandle` would keep running
+        // forever after every such drop, since a detached task's lifetime is
+        // independent of the future that spawned it — one leaked forever-loop
+        // calling `list_monitors()` (a real SCK/xcap enumeration) on its own
+        // cadence per pause/resume cycle. Binding the handle to a local guard
+        // ties its lifetime to `run()`'s, so it's aborted on every exit path:
+        // normal return (`tx.is_closed()`) and cancellation alike.
+        screenpipe_screen::monitor_watch::start_display_reconfig_watcher();
+        let _monitor_refresh_task = AbortOnDrop(tokio::spawn(run_monitor_refresh_task(
+            shared_monitors.clone(),
+        )));
+
+        // Counts ticks so the secondary-monitor sweep runs on its own slower
+        // cadence without a second timer.
+        let mut tick: u32 = 0;
+
         info!(
             interval_s = CAPTURE_INTERVAL.as_secs(),
-            "capture: screenpipe engine started (a11y-tree + OCR fallback)"
+            secondary_screen_interval_s = CAPTURE_INTERVAL.as_secs() * SECONDARY_SCREEN_EVERY_N_TICKS as u64,
+            capture_secondary_monitors,
+            "capture: screenpipe engine started (a11y-tree + OCR fallback + secondary-monitor sweep)"
         );
         loop {
             if tx.is_closed() {
                 info!("capture: consumer gone — stopping engine");
                 return Ok(());
             }
+            // Cheap: a handful of `SafeMonitor`s, cloned once per tick so the
+            // read lock isn't held across the capture calls below.
+            let monitors = shared_monitors.read().await.clone();
             // The AX walk is synchronous (bounded by the walker's walk_timeout)
             // and MUST finish before any await: `&dyn TreeWalkerPlatform` is
             // `Send` but not `Sync`, so the reference cannot cross an await
@@ -118,19 +194,99 @@ impl CaptureEngine for ScreenpipeEngine {
                 && tokio::task::spawn_blocking(drm_detector::any_streaming_content_visible)
                     .await
                     .unwrap_or(false);
-            if let Err(e) = dispatch(
+            let primary_captured = match dispatch(
                 &tx,
                 outcome,
                 pause_on_streaming,
                 &mut streaming_gate,
                 skip_ocr_for_streaming,
+                &monitors,
             )
             .await
             {
-                warn!(error = %e, "capture: tick failed (will retry)");
+                Ok(captured) => captured,
+                Err(e) => {
+                    warn!(error = %e, "capture: tick failed (will retry)");
+                    false
+                }
+            };
+
+            tick = tick.wrapping_add(1);
+
+            // Only sweep when this tick actually resolved a primary window:
+            // `false` means either a privacy Skip (never sweep — see
+            // capture_secondary_screens docs) or nothing was captured at all
+            // (streaming-blocked OCR, no focused window).
+            if capture_secondary_monitors
+                && tick.is_multiple_of(SECONDARY_SCREEN_EVERY_N_TICKS)
+                && primary_captured
+            {
+                if let Err(e) =
+                    capture_secondary_screens(&tx, &monitors, &ignored_urls, skip_ocr_for_streaming)
+                        .await
+                {
+                    warn!(error = %e, "capture: secondary-monitor sweep failed (will retry next cycle)");
+                }
             }
+
             tokio::time::sleep(CAPTURE_INTERVAL).await;
         }
+    }
+}
+
+/// Aborts the wrapped task when dropped. Used to tie a detached
+/// `tokio::spawn`'s lifetime to a local variable's scope — see the doc
+/// comment at `run_monitor_refresh_task`'s spawn site for why that matters
+/// here (the spawning future can be cancelled by an external `select!`
+/// rather than ever reaching a normal `return`).
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Owns monitor-list refresh for the life of the engine, decoupled from the
+/// capture loop's own cadence — ported from upstream screenpipe's
+/// `vision_manager/monitor_watcher.rs` (same event + backstop `select!`
+/// shape), scoped down to just enumeration since this engine doesn't run
+/// upstream's per-monitor persistent recording tasks to start/stop.
+///
+/// Refreshes immediately when `screenpipe_screen::monitor_watch`'s
+/// `CGDisplayRegisterReconfigurationCallback` watcher fires (a real hotplug
+/// or resolution/mirror change), with a backstop timer as a safety net —
+/// 60s if the callback registered (rare wake, event-driven does the real
+/// work), 5s if it didn't (no macOS callback, e.g. Windows, or registration
+/// failed) so hotplug detection doesn't silently regress to once-a-minute.
+///
+/// On macOS also drains `stream_invalidation` before refreshing: the same
+/// reconfiguration that triggered this refresh may have left a cached
+/// persistent capture handle pointing at a stale/gone monitor.
+async fn run_monitor_refresh_task(
+    shared: Arc<RwLock<Vec<screenpipe_screen::monitor::SafeMonitor>>>,
+) {
+    loop {
+        let backstop = if screenpipe_screen::monitor_watch::display_reconfig_callback_registered() {
+            MONITOR_REFRESH_BACKSTOP_WITH_CALLBACK
+        } else {
+            MONITOR_REFRESH_BACKSTOP_NO_CALLBACK
+        };
+        tokio::select! {
+            _ = screenpipe_screen::monitor_watch::display_reconfig_notify().notified() => {
+                debug!("capture: display reconfiguration event — refreshing monitor list");
+            }
+            _ = tokio::time::sleep(backstop) => {}
+        }
+
+        #[cfg(target_os = "macos")]
+        if screenpipe_screen::stream_invalidation::take() {
+            debug!("capture: invalidating stale persistent capture streams after display reconfiguration");
+            screenpipe_screen::stream_invalidation::invalidate_streams();
+        }
+
+        let fresh = screenpipe_screen::monitor::list_monitors().await;
+        *shared.write().await = fresh;
     }
 }
 
@@ -304,6 +460,20 @@ fn a11y_content_is_thin(snap: &TreeSnapshot) -> bool {
 /// or run the OCR fallback. Best-effort — a failed OCR pass is logged and
 /// retried, never fatal (capture must not crash the tray).
 ///
+/// Returns whether a primary frame was actually captured+sent this tick —
+/// `false` when nothing was (a privacy `Skip`, or a fallback that captured no
+/// legible window) — so the secondary-monitor sweep knows whether to run at
+/// all this tick. It does NOT try to identify which window was captured:
+/// `capture_secondary_screens` excludes the focused window via
+/// `CapturedWindow::is_focused` instead, because the a11y walker's
+/// `app_name`/`window_name` (from the AX tree) and CGWindowList's (from the
+/// secondary sweep) describe the SAME window differently — e.g. a11y reports
+/// a focused terminal tab's title while CGWindowList reports the OS window
+/// title bar — so string-matching them to detect "same window" is unreliable
+/// (confirmed live: a11y saw app "Code"/window "Terminal - ⠂ …", CGWindowList
+/// saw app "Visual Studio Code"/window "⠐ … — meridian" for the identical
+/// window at the identical instant).
+///
 /// `skip_ocr_for_streaming`: when true, the OCR fallback is skipped entirely
 /// for this tick — never invoking ScreenCaptureKit — because streaming
 /// content is on screen somewhere and any SCK call would trigger macOS's
@@ -314,21 +484,24 @@ async fn dispatch(
     pause_on_streaming: bool,
     streaming_gate: &mut StreamingGate,
     skip_ocr_for_streaming: bool,
-) -> anyhow::Result<()> {
+    monitors: &[screenpipe_screen::monitor::SafeMonitor],
+) -> anyhow::Result<bool> {
     match outcome {
         A11yOutcome::Frame(frame) => {
             send_frame(tx, *frame, pause_on_streaming, streaming_gate).await;
-            Ok(())
+            Ok(true)
         }
-        A11yOutcome::Skip => Ok(()),
+        // Privacy decision — never sweep other monitors this tick either (see
+        // capture_secondary_screens' caller in `run`).
+        A11yOutcome::Skip => Ok(false),
         A11yOutcome::FallBackToOcr => {
             if skip_ocr_for_streaming {
                 debug!(
                     "capture: skipping OCR fallback this tick — streaming content on screen (avoiding DRM blank/flicker)"
                 );
-                return Ok(());
+                return Ok(false);
             }
-            capture_once_ocr(tx, pause_on_streaming, streaming_gate).await
+            capture_once_ocr(tx, pause_on_streaming, streaming_gate, monitors).await
         }
     }
 }
@@ -337,24 +510,30 @@ async fn dispatch(
 /// window(s)** of the primary monitor. Per-window (not monitor-level) so each
 /// frame carries the app/window/url the classifier keys on — matching
 /// meridian's per-app ETL model.
+///
+/// Returns whether it actually OCR'd and sent at least one window.
+///
+/// `monitors` is the engine's cached list (see `MONITOR_REFRESH_EVERY_N_TICKS`)
+/// — this no longer re-enumerates on every call.
 async fn capture_once_ocr(
     tx: &FrameTx,
     pause_on_streaming: bool,
     streaming_gate: &mut StreamingGate,
-) -> anyhow::Result<()> {
-    let monitors = screenpipe_screen::monitor::list_monitors().await;
-    let Some(monitor) = monitors.into_iter().next() else {
+    monitors: &[screenpipe_screen::monitor::SafeMonitor],
+) -> anyhow::Result<bool> {
+    let Some(monitor) = monitors.first() else {
         anyhow::bail!("no monitors enumerated (Screen Recording not granted yet?)");
     };
 
     // No app/title/url filters; focused window(s) only (`capture_unfocused = false`)
     // — we capture what the user is actively on, not every background window.
     let filters = WindowFilters::new(&[], &[], &[]);
-    let windows = capture_all_visible_windows(&monitor, &filters, false)
+    let windows = capture_all_visible_windows(monitor, &filters, false)
         .await
         .map_err(|e| anyhow::anyhow!("capture_all_visible_windows: {e}"))?;
 
     let now = Utc::now();
+    let mut captured = false;
     for win in windows {
         if is_self_app(&win.app_name.to_lowercase()) {
             continue;
@@ -366,6 +545,7 @@ async fn capture_once_ocr(
             continue; // nothing legible in this window — skip it
         }
         debug!(app = %win.app_name, chars = text.len(), "capture: window OCR'd");
+        captured = true;
         let frame = CapturedFrame {
             timestamp: now,
             app_name: Some(win.app_name),
@@ -378,7 +558,7 @@ async fn capture_once_ocr(
             break; // consumer backpressure / gone — end this tick
         }
     }
-    Ok(())
+    Ok(captured)
 }
 
 /// Non-blocking send: under backpressure drop the frame rather than stall the
@@ -425,13 +605,119 @@ async fn send_frame(
         }
     }
 
-    match tx.try_send(frame) {
+    match tx.try_send(CaptureItem::Frame(frame)) {
         Ok(()) => true,
         Err(e) => {
             debug!(error = %e, "capture: frame dropped (consumer backpressure / gone)");
             false
         }
     }
+}
+
+/// Sweeps every connected monitor, OCR's each one's topmost window, and
+/// sends the results as [`SecondaryScreenSample`]s — except the monitor
+/// currently holding the system-focused window, which the primary a11y/OCR
+/// path already covered this tick. Context, not activity — never sent as a
+/// [`CapturedFrame`], so it can never define a session boundary.
+///
+/// Reuses `capture_all_visible_windows(&monitor, &filters, false)` — the same
+/// call the primary OCR fallback makes — which already resolves to "the
+/// topmost window on THIS monitor" via per-monitor z-order (not global
+/// focus), so no bounds/bookkeeping is needed to figure out which monitor
+/// hosts which window. The focused window is excluded via
+/// `CapturedWindow::is_focused` (only one window system-wide can be `true`),
+/// **not** by matching its app/window name against the tick's primary
+/// capture — a11y's `app_name`/`window_name` (the AX tree) and
+/// CGWindowList's (this sweep) describe the same window differently enough
+/// that string-matching them missed real matches in practice (observed live:
+/// a11y "Code" / "Terminal - ⠂ …" vs. CGWindowList "Visual Studio Code" /
+/// "⠐ … — meridian" for the identical window at the identical instant),
+/// which would have silently double-captured the focused window as
+/// "secondary" content.
+///
+/// Best-effort like the primary OCR path: a failed pass is logged and
+/// retried next sweep, never fatal.
+///
+/// `ignored_urls` is threaded into `WindowFilters` (unlike the primary OCR
+/// fallback, which passes an empty list): secondary-monitor windows are
+/// never the system-focused window, so the fork never resolves their
+/// `browser_url` — `is_url_blocked` can't fire on it downstream the way it
+/// does for the focused window. Passing the real ignored-URL list here at
+/// least activates the fork's own title-based blocked-URL heuristic
+/// (`is_title_suggesting_blocked_url`, used for exactly this "unfocused
+/// browser window, no URL available" case) so a known-ignored domain open
+/// on a non-focused screen isn't captured just because it's out of focus.
+///
+/// `monitors` is the engine's cached list (see `MONITOR_REFRESH_EVERY_N_TICKS`)
+/// — this no longer re-enumerates on every sweep.
+async fn capture_secondary_screens(
+    tx: &FrameTx,
+    monitors: &[screenpipe_screen::monitor::SafeMonitor],
+    ignored_urls: &[String],
+    skip_ocr_for_streaming: bool,
+) -> anyhow::Result<()> {
+    if skip_ocr_for_streaming {
+        debug!(
+            "capture: skipping secondary-monitor sweep — streaming content on screen (avoiding DRM blank/flicker)"
+        );
+        return Ok(());
+    }
+
+    let filters = WindowFilters::new(&[], &[], ignored_urls);
+    let now = Utc::now();
+
+    for monitor in monitors {
+        let windows = match capture_all_visible_windows(monitor, &filters, false).await {
+            Ok(w) => w,
+            Err(e) => {
+                debug!(monitor = monitor.name(), error = %e, "capture: secondary-monitor capture failed — skipping this monitor this sweep");
+                continue;
+            }
+        };
+
+        for win in windows {
+            if is_self_app(&win.app_name.to_lowercase()) {
+                continue;
+            }
+            if win.is_focused {
+                debug!(
+                    monitor = monitor.name(),
+                    app = %win.app_name,
+                    "capture: secondary sweep skipping — this monitor holds the system-focused window (already captured as primary this tick)"
+                );
+                continue;
+            }
+            let Some(text) = perform_ocr(&win).await else {
+                continue;
+            };
+            if text.trim().is_empty() {
+                continue;
+            }
+            let monitor_name = if monitor.name().is_empty() {
+                monitor.stable_id()
+            } else {
+                monitor.name().to_string()
+            };
+            debug!(
+                monitor = %monitor_name,
+                app = %win.app_name,
+                chars = text.len(),
+                "capture: secondary-monitor window OCR'd"
+            );
+            let sample = SecondaryScreenSample {
+                timestamp: now,
+                monitor_name,
+                app_name: Some(win.app_name),
+                window_name: Some(win.window_name),
+                text,
+            };
+            if tx.try_send(CaptureItem::Secondary(sample)).is_err() {
+                debug!("capture: secondary-screen sample dropped (consumer backpressure / gone)");
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// OCR one window image, returning its text.

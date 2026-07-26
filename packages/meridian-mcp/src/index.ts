@@ -14,37 +14,21 @@ import {
   ReadResourceRequestSchema,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import initSqlJs from "sql.js";
 import * as os from "os";
 import * as path from "path";
-import * as fs from "fs";
 import { runInstaller } from "./install.js";
+import { openCachedDb, SqlDatabase } from "./db-cache.js";
 
-type SqlJsStatic = Awaited<ReturnType<typeof initSqlJs>>;
-type SqlDatabase = InstanceType<SqlJsStatic["Database"]>;
 type SqlVal = string | number | null | Uint8Array;
 
 function getDbPath(): string {
   return process.env.MERIDIAN_DB ?? path.join(os.homedir(), ".meridian", "meridian.db");
 }
 
-let _SQL: SqlJsStatic | null = null;
-
-async function getSqlEngine(): Promise<SqlJsStatic> {
-  if (!_SQL) {
-    _SQL = await initSqlJs();
-  }
-  return _SQL;
-}
-
+// Reuses a single long-lived sql.js Database per dbPath instead of reopening
+// (double-reading + double-allocating) it on every tool call — see db-cache.ts.
 async function openDb(): Promise<SqlDatabase> {
-  const dbPath = getDbPath();
-  if (!fs.existsSync(dbPath)) {
-    throw new Error(`Meridian DB not found at ${dbPath}. Is the Meridian daemon running?`);
-  }
-  const SQL = await getSqlEngine();
-  const fileBuffer = fs.readFileSync(dbPath);
-  return new SQL.Database(fileBuffer);
+  return openCachedDb(getDbPath());
 }
 
 function dbGet(db: SqlDatabase, sql: string, params: SqlVal[] = []): Record<string, unknown> | undefined {
@@ -1089,9 +1073,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       span.setAttribute("error", true);
       logger.error({ tool_name: name, err: msg }, "mcp tool failed");
       return { content: [{ type: "text", text: `Error: ${msg}` }] };
-    } finally {
-      db?.close();
     }
+    // No `finally { db?.close() }` here anymore: `db` is now a cached,
+    // long-lived instance owned by db-cache.ts, reused across tool calls —
+    // closing it per call would defeat the cache. db-cache.ts closes the
+    // stale instance itself when the underlying file changes.
   });
 });
 

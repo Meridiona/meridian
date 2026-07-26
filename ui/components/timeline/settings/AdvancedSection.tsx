@@ -1,13 +1,20 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// Settings → Advanced. Runtime-tuning knobs migrated 1:1 from the old
-// SettingsView: Observability (local capture + log level; export via
-// useExportDiagnostics — the shipped app never installs/runs a local
-// OpenObserve service), ETL Pipeline poll interval, Session Classification
-// thresholds, LLM local-model preference, and the Jira Updater toggle. These
-// don't fit Integrations/Capture/Notifications/Appearance — they're internal
-// daemon behavior, not user-facing product surfaces, so they're grouped here
-// rather than invented a home for each.
+// Settings → Advanced. Currently unreferenced — the nav entry + render
+// branch are commented out in SettingsSidebar.tsx / SettingsModal.tsx, kept
+// for easy re-enable. Runtime-tuning knobs migrated 1:1 from the old
+// SettingsView: Observability (local capture + log level), ETL Pipeline poll
+// interval, Session Classification thresholds, LLM local-model preference,
+// and the Jira Updater toggle. These don't fit
+// Integrations/Capture/Notifications/Appearance — they're internal daemon
+// behavior, not user-facing product surfaces, so they're grouped here rather
+// than invented a home for each.
+//
+// "Export Diagnostics" moved OUT of here to `AccountSection.tsx` (always
+// reachable) when this tab was hidden — a packaged install's only GUI path
+// to handing a developer a telemetry bundle can't live behind a hidden tab.
+// Don't re-add it here if this section is ever re-enabled; it would just
+// duplicate the Account one.
 
 'use client'
 
@@ -16,8 +23,7 @@ import { Select } from '@/components/ui/Select'
 import { Switch } from '@/components/ui/Switch'
 import { NumberStepper } from '@/components/ui/NumberStepper'
 import type { RuntimeSettings } from '@/lib/settings'
-import { SectionCard, SectionHeader, FieldRow, SaveButton, SettingsButton, type SaveStatus } from './fields'
-import { useExportDiagnostics } from './useExportDiagnostics'
+import { SectionCard, SectionHeader, FieldRow, SaveButton, type SaveStatus } from './fields'
 
 const LOG_LEVEL_OPTIONS = [
   { value: 'DEBUG',   label: 'DEBUG' },
@@ -37,8 +43,6 @@ export function AdvancedSection({ settings, setSettings, patch, save }: {
   const [llmStatus, setLlmStatus] = useState<SaveStatus>('idle')
   const [jiraStatus, setJiraStatus] = useState<SaveStatus>('idle')
   const [logLevelStatus, setLogLevelStatus] = useState<SaveStatus>('idle')
-  const [errorReportingStatus, setErrorReportingStatus] = useState<SaveStatus>('idle')
-  const { status: exportStatus, path: exportPath, errorMsg: exportError, exportBundle } = useExportDiagnostics()
 
   return (
     <div className="max-w-[640px] flex flex-col gap-5">
@@ -61,21 +65,6 @@ export function AdvancedSection({ settings, setSettings, patch, save }: {
           />
         </FieldRow>
         <SaveButton status={logLevelStatus} onClick={() => save({ log_level: settings.log_level }, setLogLevelStatus)} />
-        <FieldRow label="Export Diagnostics" description="Captures your local logs and traces for troubleshooting — nothing leaves your machine until you share this file. Saved to your Downloads folder and revealed in Finder.">
-          <SettingsButton onClick={exportBundle} disabled={exportStatus === 'exporting'}>
-            {exportStatus === 'exporting' ? 'Exporting…' : 'Export Diagnostics'}
-          </SettingsButton>
-        </FieldRow>
-        {exportStatus === 'done' && exportPath && (
-          <span className="text-[12px]" style={{ color: 'var(--color-state-approved)' }}>Saved to {exportPath}</span>
-        )}
-        {exportStatus === 'error' && (
-          <span className="text-[12px]" style={{ color: 'var(--color-state-pending)' }}>{exportError ?? 'Export failed'}</span>
-        )}
-        <FieldRow label="Error Reporting" description="Meridian sends error-level logs to the team to help fix crashes and bugs. File paths, URLs, emails, and captured content are removed on your device first - your screen activity, OCR text, and window titles are never sent. On by default; turn it off here any time.">
-          <Switch checked={settings.error_reporting_enabled} onCheckedChange={v => patch({ error_reporting_enabled: v })} />
-        </FieldRow>
-        <SaveButton status={errorReportingStatus} onClick={() => save({ error_reporting_enabled: settings.error_reporting_enabled }, setErrorReportingStatus)} />
       </SectionCard>
 
       <SectionCard>

@@ -29,6 +29,7 @@
 //! - [`crate::commands::triage`]'s `apply_ticket_fix` — the origin of the CWD
 //!   rationale (it predates this module and keeps its own bespoke variant).
 
+use meridian_core::proc_ext::NoWindow;
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -55,6 +56,7 @@ pub(crate) async fn run_meridian(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .no_window()
         .output();
 
     let output = match tokio::time::timeout(timeout, child).await {
@@ -105,6 +107,7 @@ pub(crate) fn spawn_meridian_detached(args: &[String], label: &'static str) -> R
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        .no_window()
         .spawn()
         .map_err(|e| {
             tracing::warn!(bin = %bin, error = %e, "{label} detached spawn failed");

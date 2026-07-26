@@ -19,8 +19,8 @@
 //!   this was split from.
 //! - [`crate::state::PauseSource`] — the pause-kind enum these commands set.
 //! - [`meridian::notices`] — the fault-bus the pause/resume notice routes through
-//!   (id `tray.paused`, event_key `system.pause`); quiet-hours/master-switch/the
-//!   `notify_system_pause` toggle are all enforced there, not by these commands.
+//!   (id `tray.paused`, event_key `system.pause`); quiet-hours/master-switch
+//!   policy is all enforced there, not by these commands.
 
 use crate::state::{AppState, PauseSource};
 use chrono::{DateTime, SecondsFormat, Utc};

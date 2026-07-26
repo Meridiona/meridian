@@ -6,7 +6,9 @@
 
 mod common;
 
+use meridian::db::screenpipe::get_frame_full_texts;
 use meridian::etl::run_etl;
+use meridian::etl::text_merge::build_session_text;
 
 // Helper: count "[HH:MM:SS]" marker lines in a session_text string.
 fn count_markers(text: &str) -> usize {
@@ -454,4 +456,125 @@ async fn test_session_text_marker_suppressed_for_small_gap() {
         marker_count, 1,
         "20s gap must suppress second marker; got {marker_count} in:\n{text}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Paginated rebuild — session spanning many frames across multiple pages
+// ---------------------------------------------------------------------------
+
+/// A single-app session that stays open across two ETL runs and spans more
+/// frames than one `FRAME_TEXT_PAGE_SIZE` page (750, see
+/// `crate::db::screenpipe`) must, once finally closed by an app switch,
+/// produce a `session_text` in `app_sessions` that is byte-for-byte identical
+/// to what a single non-paginated `get_frame_full_texts` + `build_session_text`
+/// call over the whole frame range would produce.
+///
+/// This guards `rebuild_session_text_paginated` (`src/etl/block_ops.rs`)
+/// against a regression that would silently drop or reorder content from
+/// later pages when a long-running block finally closes — the exact
+/// continuation-merge path (`existing.app_name == ctx.app_name` in
+/// `close_block`) that triggers the paginated re-fetch.
+#[tokio::test]
+async fn test_session_text_paginated_rebuild_matches_non_paginated_fetch() {
+    let md = common::make_meridian_db().await;
+
+    const FIRST_RUN_FRAMES: i64 = 500;
+    const TOTAL_CODE_FRAMES: i64 = 1600; // > 2x FRAME_TEXT_PAGE_SIZE (750) — forces 3 pages
+
+    // Timestamp for frame index i (0-based): base + i seconds. Keeps every
+    // inter-frame gap at 1s, well under the 300s gap threshold, so this never
+    // triggers gap-close logic — only the continuation-merge close path.
+    fn ts_for(i: i64) -> String {
+        let total_secs = i;
+        let hh = 10 + total_secs / 3600;
+        let mm = (total_secs % 3600) / 60;
+        let ss = total_secs % 60;
+        format!("2026-01-01T{hh:02}:{mm:02}:{ss:02}+00:00")
+    }
+
+    // Run 1: frames 1..=500 of app "Code", each with unique content. Ends with
+    // an open block — upsert_open_block writes active_session(min_frame_id=1).
+    let run1_frames: Vec<(String, String, String)> = (0..FIRST_RUN_FRAMES)
+        .map(|i| {
+            (
+                "Code".to_string(),
+                ts_for(i),
+                format!("unique code content line {i}"),
+            )
+        })
+        .collect();
+    let run1_frames_ref: Vec<(&str, &str, &str)> = run1_frames
+        .iter()
+        .map(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str()))
+        .collect();
+    common::insert_frames_with_text(&md, 1, &run1_frames_ref).await;
+
+    run_etl(&md).await.unwrap();
+
+    // Sanity check: active_session must now hold the still-open Code block.
+    let active_min: (i64,) = sqlx::query_as("SELECT min_frame_id FROM active_session WHERE id = 1")
+        .fetch_one(&md)
+        .await
+        .unwrap();
+    assert_eq!(active_min.0, 1, "active_session must start at frame 1");
+
+    // Run 2: frames 501..=1600 continuing app "Code" (unique content), then a
+    // final frame for "Slack" to force the app-switch close. This closes the
+    // whole 1..=1600 lifetime through the continuation-merge path in
+    // `close_block`, which re-fetches the full frame range.
+    let run2_frames: Vec<(String, String, String)> = (FIRST_RUN_FRAMES..TOTAL_CODE_FRAMES)
+        .map(|i| {
+            (
+                "Code".to_string(),
+                ts_for(i),
+                format!("unique code content line {i}"),
+            )
+        })
+        .chain(std::iter::once((
+            "Slack".to_string(),
+            ts_for(TOTAL_CODE_FRAMES),
+            "app switch forces close".to_string(),
+        )))
+        .collect();
+    let run2_frames_ref: Vec<(&str, &str, &str)> = run2_frames
+        .iter()
+        .map(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str()))
+        .collect();
+    common::insert_frames_with_text(&md, FIRST_RUN_FRAMES + 1, &run2_frames_ref).await;
+
+    run_etl(&md).await.unwrap();
+
+    let row: (Option<String>,) =
+        sqlx::query_as("SELECT session_text FROM app_sessions WHERE app_name = 'Code'")
+            .fetch_one(&md)
+            .await
+            .unwrap();
+    let actual_text = row.0.expect("closed session must have session_text");
+
+    // Reference: a single non-paginated fetch over the whole frame lifetime,
+    // fed straight into build_session_text — exactly what the pre-fix code did.
+    let all_frames = get_frame_full_texts(&md, 1, TOTAL_CODE_FRAMES)
+        .await
+        .expect("non-paginated reference fetch must succeed");
+    assert_eq!(
+        all_frames.len(),
+        TOTAL_CODE_FRAMES as usize,
+        "reference fetch must see every Code frame"
+    );
+    let expected_text = build_session_text(&all_frames);
+
+    assert_eq!(
+        actual_text, expected_text,
+        "paginated rebuild must be byte-for-byte identical to the non-paginated reference"
+    );
+
+    // Belt-and-suspenders completeness check: content from every page must
+    // survive (first page, middle page, last page — pages are 750 frames).
+    for i in [0i64, 749, 750, 1499, 1500, TOTAL_CODE_FRAMES - 1] {
+        let line = format!("unique code content line {i}");
+        assert!(
+            actual_text.contains(&line),
+            "missing content from frame {i} (page boundary check): {line:?}"
+        );
+    }
 }

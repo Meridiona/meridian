@@ -236,6 +236,7 @@ There are no JS/TS test suites yet. When adding them, place them under `ui/__tes
 | `MERIDIAN_EMBEDDER_DIR` | `~/.meridian/models/<repo-basename>/` | Override the on-disk directory the session-distiller embedding weights live in (`src/embedder/provision.rs`). |
 | `MERIDIAN_EMBEDDER_REPO` | `BAAI/bge-small-en-v1.5` | Override the HuggingFace repo the embedder weights are fetched from. |
 | `DISTILLER_SEM_DEDUP_THR` | `0.86` | Cosine threshold for the distiller's semantic dedup (`src/worklog_pipeline/distiller/`). |
+| `MERIDIAN_CAPTURE_RETENTION_DAYS` | `30` | Age floor for the capture_frames/capture_ui_events/capture_secondary_screens retention sweep (`src/etl/capture_retention.rs`) — only prunes rows both older than this AND already consumed by the ETL cursor. |
 
 Tilde expansion is handled by `Config::from_env()`. Never hardcode paths.
 
@@ -381,7 +382,7 @@ spooled files to OpenObserve, and it refuses to do so entirely for a
 Only a Dev/Bare checkout with `otlp_enabled` + `oo_email`/`oo_password`
 configured ships live, for an engineer debugging against their own
 OpenObserve instance. A shipped install's only path to a developer's
-OpenObserve is the tray Settings → Advanced → **Export Diagnostics** button
+OpenObserve is the tray Settings → Account → **Export Diagnostics** button
 (or `meridian telemetry export`), which bundles the spool + the launchd
 crash-safety-net logs into a `.tar.gz` the user hands to support, imported by
 hand with `meridian telemetry import <bundle> --endpoint <url> --auth

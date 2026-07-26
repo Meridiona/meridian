@@ -25,6 +25,7 @@
 //!   ([`meridian_core::triage::record_decision`] / [`meridian_core::triage::set_ignored`]).
 //! - [`crate::commands::dashboard`] — sibling DB-read commands.
 
+use meridian_core::proc_ext::NoWindow;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tauri::State;
@@ -251,6 +252,7 @@ pub async fn apply_ticket_fix(body: ApplyBody) -> Result<ApplyResponse, String> 
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .no_window()
         .output();
 
     let output = match tokio::time::timeout(Duration::from_secs(60), child).await {

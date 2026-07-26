@@ -13,8 +13,14 @@
 //! By default it removes only the **installed artifacts** (launchd agents, staged
 //! binaries, the install marker) and **keeps user data**. Three independent,
 //! additive flags widen the scope:
-//! - `--remove-data` — `~/.meridian`'s user data: db, credentials, settings,
-//!   logs, telemetry spool, icon cache, onboarded marker.
+//! - `--remove-data` — `~/.meridian`'s user data (db, credentials, settings,
+//!   logs, telemetry spool, icon cache, onboarded marker), plus (macOS only)
+//!   the OS-managed WebKit/AppKit caches for the tray's bundle id
+//!   (`com.meridiona.tray`'s `Application Support`/`Caches`/`WebKit`/
+//!   `Saved Application State`/`HTTPStorages`) and a best-effort `tccutil
+//!   reset` of the Accessibility/Screen Recording/Input Monitoring grants —
+//!   none of that lives under `~/.meridian` or the app bundle, so it would
+//!   otherwise survive every uninstall path, including this one, forever.
 //! - `--remove-runtime` — the downloaded Python + MLX runtime and any venvs.
 //! - `--remove-models` — Meridian's own MLX models from the shared HuggingFace
 //!   cache, allowlisted by exact directory name (never touches a model the user
@@ -181,7 +187,7 @@ impl Plan {
         .collect();
 
         let data = if flags.remove_data {
-            data_items(&meridian_dir)
+            data_items(&home)
         } else {
             Vec::new()
         };
@@ -317,8 +323,10 @@ fn run_human(plan: &Plan) {
     // which is the normal case on a second uninstall.
     #[cfg(target_os = "windows")]
     {
+        use meridian_core::proc_ext::NoWindow;
         let out = std::process::Command::new("schtasks")
             .args(["/Delete", "/F", "/TN", "Meridian Daemon"])
+            .no_window()
             .output();
         match out {
             Ok(o) if o.status.success() => println!("✓ removed login task  Meridian Daemon"),
@@ -352,6 +360,11 @@ fn run_human(plan: &Plan) {
     for f in &plan.data {
         remove_path_reporting(f);
     }
+    if flags.remove_data {
+        for f in reset_tcc_grants() {
+            eprintln!("⚠ could not reset TCC grant {f}");
+        }
+    }
     for f in &plan.runtime {
         remove_path_reporting(f);
     }
@@ -376,18 +389,97 @@ fn run_human(plan: &Plan) {
         "\nDone. If the Meridian menubar app is still running, quit it (or drag \
          Meridian.app to the Trash) - the MLX server is its child and exits with it."
     );
-    println!(
-        "\nNote: deleting or uninstalling does NOT revoke the Accessibility / \
-         Screen Recording / Input Monitoring grants in System Settings - macOS \
-         keeps that entry until you remove it there yourself."
-    );
+    // These Accessibility / Screen Recording / Input Monitoring grants are a
+    // macOS TCC concept: there is nothing analogous to reset or explain on other
+    // platforms, and `reset_tcc_grants` is a no-op there, so the messaging is
+    // gated to macOS rather than falsely claiming a reset was attempted.
+    #[cfg(target_os = "macos")]
+    if flags.remove_data {
+        println!(
+            "\nAlso attempted to reset the Accessibility / Screen Recording / Input \
+             Monitoring grants for Meridian in System Settings - macOS best-effort \
+             only, so double-check they're gone if it matters to you."
+        );
+    } else {
+        println!(
+            "\nNote: deleting or uninstalling does NOT revoke the Accessibility / \
+             Screen Recording / Input Monitoring grants in System Settings - macOS \
+             keeps that entry until you remove it there yourself (pass --remove-data \
+             or --purge to have this attempt it automatically)."
+        );
+    }
 }
 
-/// `~/.meridian` user-data items removed by `--remove-data`/`--purge`.
+/// Best-effort `tccutil reset` for every TCC service Meridian's tray
+/// (`com.meridiona.tray`) can be granted, so a full uninstall doesn't leave a
+/// grayed-out permission entry behind once the app is gone. Mirrors
+/// `tray/src-tauri/src/backend_install.rs::cleanup_legacy_a11y_helper`'s use of
+/// the same tool for the retired a11y-helper. Non-fatal: `tccutil` may be
+/// missing, sandboxed, or refuse without Full Disk Access, and none of that
+/// should abort the rest of the uninstall.
+///
+/// Returns a `service: reason` line for each reset that did NOT clearly succeed
+/// (tool failed to launch, or exited non-zero) so both uninstall paths can
+/// surface it — previously a denied or missing `tccutil` was indistinguishable
+/// from a clean reset. Every outcome is also logged with structured `service`,
+/// `status`/`error` fields.
+#[cfg(target_os = "macos")]
+fn reset_tcc_grants() -> Vec<String> {
+    let mut failures = Vec::new();
+    for service in ["Accessibility", "ScreenCapture", "ListenEvent"] {
+        match std::process::Command::new("tccutil")
+            .args(["reset", service, "com.meridiona.tray"])
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                tracing::info!(service, "uninstall: tcc grant reset");
+            }
+            Ok(out) => {
+                let status = out
+                    .status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "terminated by signal".to_string());
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let stderr = stderr.trim();
+                tracing::warn!(
+                    service,
+                    status = %status,
+                    stderr = %stderr,
+                    "uninstall: tccutil reset returned non-zero"
+                );
+                let reason = if stderr.is_empty() {
+                    format!("{service}: tccutil exited {status}")
+                } else {
+                    format!("{service}: tccutil exited {status} ({stderr})")
+                };
+                failures.push(reason);
+            }
+            Err(e) => {
+                tracing::warn!(service, error = %e, "uninstall: tccutil reset failed to launch");
+                failures.push(format!("{service}: {e}"));
+            }
+        }
+    }
+    failures
+}
+
+#[cfg(not(target_os = "macos"))]
+fn reset_tcc_grants() -> Vec<String> {
+    Vec::new()
+}
+
+/// `~/.meridian` user-data items removed by `--remove-data`/`--purge`, plus (on
+/// macOS) the OS-managed app caches WebKit/AppKit create for the tray's bundle
+/// id (`com.meridiona.tray`) — `Application Support`, `Caches`, `WebKit`,
+/// `Saved Application State`, `HTTPStorages`. Dragging the app to the Trash
+/// never removes these (they live outside the bundle and outside
+/// `~/.meridian`), so without this they'd survive every uninstall path forever.
 /// Deliberately excludes the runtime/venv directories (tracked separately by
 /// [`runtime_items`]) so the wizard's checkboxes stay independent of each other.
-fn data_items(meridian: &Path) -> Vec<PathBuf> {
-    [
+fn data_items(home: &Path) -> Vec<PathBuf> {
+    let meridian = home.join(".meridian");
+    let mut items: Vec<PathBuf> = [
         ".env",
         "meridian.db",
         "meridian.db-shm",
@@ -403,7 +495,46 @@ fn data_items(meridian: &Path) -> Vec<PathBuf> {
     .iter()
     .map(|r| meridian.join(r))
     .filter(|p| p.symlink_metadata().is_ok())
-    .collect()
+    .collect();
+    items.extend(app_cache_items(home));
+    items
+}
+
+/// The tray's OS-managed WebKit/AppKit caches, keyed off its bundle id
+/// (`com.meridiona.tray`) — macOS creates these the first time the app runs,
+/// independent of anything Meridian's own code writes. No-op on non-macOS.
+fn app_cache_items(home: &Path) -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        const BUNDLE_ID: &str = "com.meridiona.tray";
+        [
+            "Library/Application Support",
+            "Library/Caches",
+            "Library/WebKit",
+            "Library/Saved Application State",
+            "Library/HTTPStorages",
+        ]
+        .iter()
+        .map(|dir| home.join(dir).join(format!("{BUNDLE_ID}{}", suffix(dir))))
+        .filter(|p| p.symlink_metadata().is_ok())
+        .collect()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = home;
+        Vec::new()
+    }
+}
+
+/// `Saved Application State` suffixes the bundle id with `.savedState`; every
+/// other cache dir here is named exactly the bundle id.
+#[cfg(target_os = "macos")]
+fn suffix(dir: &str) -> &'static str {
+    if dir == "Library/Saved Application State" {
+        ".savedState"
+    } else {
+        ""
+    }
 }
 
 /// The downloaded Python + MLX runtime and venvs, removed by

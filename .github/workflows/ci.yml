@@ -273,7 +273,25 @@ jobs:
           # authored, no upstream merge:
           #   552e7f8b adityaharishch  Merge pull request #2 (825b038d, already audited above)
           #   064c44cc Akarsh Hegde    fix(screen): disable sck-rs unconditionally, not just on macOS 26+
-          expected="064c44ccd8c50716f21eec1663e1350e848ca5f5"
+          #
+          # 2026-07-22, 064c44cc -> 3c99154. Two commits, all Meridiona-
+          # authored, no upstream merge (ae39b5f is a no-op merge wrapper —
+          # its tree is identical to 064c44cc, already audited above):
+          #   ae39b5f  Akarsh Hegde    Merge pull request #3 (064c44cc, already audited above)
+          #   3c99154  adityaharishch  fix(a11y): serialize workspace-observer registration to stop a double-free
+          #
+          # 2026-07-24, 3c99154 -> 2b7e929f. Five commits, all Meridiona-
+          # (adityaharishch)-authored, no upstream merge, none touch anything
+          # past the MIT cutoff — the last of them (2b7e929f) only extracts
+          # code already present elsewhere in this same fork
+          # (screenpipe-engine's sleep_monitor.rs, itself MIT-based) into
+          # screenpipe-screen; it copies nothing new from upstream:
+          #   8382e368  adityaharishch  fix(screen): wrap per-frame window enumeration/capture in an autorelease pool
+          #   c29722d1  adityaharishch  fix(a11y): wrap focus-observer run-loop iterations in an autorelease pool
+          #   f13c631c  adityaharishch  fix(a11y): wrap per-click context-capture reads in an autorelease pool
+          #   b2e5b268  adityaharishch  fix(a11y): leak NSWorkspace observer guards instead of dropping them
+          #   2b7e929f  adityaharishch  feat(screen): expose a display-reconfiguration watcher from screenpipe-screen
+          expected="2b7e929f7168344faa0121c7a646e5758701d19a"
           f="tray/src-tauri/Cargo.toml"
           fail=0
           for crate in screenpipe-screen screenpipe-a11y; do

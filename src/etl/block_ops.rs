@@ -7,9 +7,9 @@ use tracing::{debug, info, warn};
 use crate::db::meridian::{
     close_active_session_with, get_active_session, upsert_active_session, write_session_traceparent,
 };
-use crate::db::screenpipe::{get_frame_full_texts, get_last_ui_event_for_app};
+use crate::db::screenpipe::get_last_ui_event_for_app;
 use crate::etl::extractor::extract_block_context;
-use crate::etl::text_merge::build_session_text;
+use crate::etl::text_merge::rebuild_session_text_paginated;
 
 use super::session_builder::{build_active_session, merge_into_active};
 
@@ -175,10 +175,16 @@ pub(super) async fn close_block(
             // sub-threshold batches (< CHROME_FREQ_THRESHOLD frames) permanently in the
             // stored text; a full rebuild sees the complete frame set so the chrome
             // pre-pass correctly identifies and removes them.
-            let all_frames = get_frame_full_texts(meridian, active.min_frame_id, b.max_frame_id)
-                .await
-                .context("re-fetch frames for session_text rebuild on close")?;
-            let rebuilt_text = build_session_text(&all_frames);
+            //
+            // Paginated rather than a single fetch_all: a session that stays in one app
+            // for hours (an IDE, one browser tab) never closes early, so by the time it
+            // finally does, `active.min_frame_id..b.max_frame_id` can span many thousands
+            // of frames — a single `get_frame_full_texts` there would spike RSS by the
+            // whole session's OCR text at once. See `rebuild_session_text_paginated`.
+            let rebuilt_text =
+                rebuild_session_text_paginated(meridian, active.min_frame_id, b.max_frame_id)
+                    .await
+                    .context("re-fetch frames for session_text rebuild on close")?;
             let merged = merge_into_active(active, &ctx, b.idle_frame_count, Some(rebuilt_text))?;
             let new_id = close_active_session_with(meridian, &merged, run_id).await?;
             info!(

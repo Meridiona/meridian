@@ -23,7 +23,7 @@ const NAV: { id: SettingsSection; label: string; glyph: string }[] = [
   { id: 'capture', label: 'Capture & Privacy', glyph: '◉' },
   { id: 'notifications', label: 'Notifications', glyph: '◔' },
   { id: 'appearance', label: 'Appearance', glyph: '◑' },
-  { id: 'advanced', label: 'Advanced', glyph: '▤' },
+  // { id: 'advanced', label: 'Advanced', glyph: '▤' },
   { id: 'account', label: 'Account', glyph: '◍' },
 ]
 

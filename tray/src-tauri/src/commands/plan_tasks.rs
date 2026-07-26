@@ -9,6 +9,8 @@
 //!   it to the day's plan.
 //! - [`edit_plan_task`] — rewrite a task's title/description, wherever it lives.
 //! - [`set_plan_task_done`] — tick/untick a task, wherever it lives.
+//! - [`delete_plan_task`] — hide a personal task everywhere it's listed. Refuses
+//!   anything synced to a tracker — that ticket isn't Meridian's to delete.
 //!
 //! # Why these SHELL OUT
 //! The chosen LLM provider (`settings.json`) and tracker auth (`~/.meridian/.env`)
@@ -109,6 +111,13 @@ pub struct EditResult {
     pub reason: Option<String>,
 }
 
+/// [`delete_plan_task`] response — mirrors `plan_tasks::delete::DeleteResult`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletePlanTaskResult {
+    pub task_key: String,
+    pub deleted: bool,
+}
+
 /// Draft a task from a rough note. Spawns `meridian plan-task-draft --note <n>`.
 ///
 /// Only errors when the CLI itself failed (spawn/timeout). A model failure comes back
@@ -162,6 +171,7 @@ pub async fn create_plan_task(body: CreatePlanTaskBody) -> Result<CreatedTask, S
         synced = created.synced,
         "plan-task-create served"
     );
+    tauri::async_runtime::spawn(crate::counter_ping::ping_task_update());
     Ok(created)
 }
 
@@ -186,6 +196,11 @@ pub async fn edit_plan_task(body: EditPlanTaskBody) -> Result<EditResult, String
 
     let res: EditResult = run_meridian_json(&args, WRITE_TIMEOUT, "plan-task-edit").await?;
     tracing::info!(status = %res.status, provider = %res.provider, "plan-task-edit served");
+    // Only count a real mutation: a `redirected` result wrote nothing (the
+    // tracker has no API for it, so we just hand back a browse URL).
+    if res.status == "applied" {
+        tauri::async_runtime::spawn(crate::counter_ping::ping_task_update());
+    }
     Ok(res)
 }
 
@@ -206,5 +221,30 @@ pub async fn set_plan_task_done(body: SetPlanTaskDoneBody) -> Result<EditResult,
 
     let res: EditResult = run_meridian_json(&args, WRITE_TIMEOUT, "plan-task-done").await?;
     tracing::info!(status = %res.status, provider = %res.provider, "plan-task-done served");
+    // Only count a real mutation: a `redirected` result wrote nothing (the
+    // tracker has no API for it, so we just hand back a browse URL).
+    if res.status == "applied" {
+        tauri::async_runtime::spawn(crate::counter_ping::ping_task_update());
+    }
+    Ok(res)
+}
+
+/// Hide a personal task everywhere it's listed. Spawns
+/// `meridian plan-task-delete --key K`.
+///
+/// The daemon-side CLI refuses anything not `provider = 'local'` — a tracker ticket
+/// isn't Meridian's to delete — so a mis-pointed call surfaces as a clear error
+/// rather than silently doing nothing.
+#[tauri::command]
+#[tracing::instrument(fields(task_key = %task_key))]
+pub async fn delete_plan_task(task_key: String) -> Result<DeletePlanTaskResult, String> {
+    if task_key.trim().is_empty() {
+        return Err("a task key is required".to_string());
+    }
+    let args: Vec<&str> = vec!["plan-task-delete", "--key", &task_key];
+
+    let res: DeletePlanTaskResult =
+        run_meridian_json(&args, WRITE_TIMEOUT, "plan-task-delete").await?;
+    tracing::info!(deleted = res.deleted, "plan-task-delete served");
     Ok(res)
 }

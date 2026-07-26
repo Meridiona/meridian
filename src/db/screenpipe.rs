@@ -52,6 +52,20 @@ pub struct SignalEvent {
     pub timestamp: String,
 }
 
+/// One deduplicated secondary-monitor OCR sample within a session's time
+/// window (multi-screen capture, context-only — see `capture_secondary_screens`
+/// migration 068). Never defines a session boundary; folded into
+/// `BlockContext::secondary_screens` and merged onto whichever app_sessions /
+/// active_session row is open.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecondaryScreenEvent {
+    pub monitor_name: String,
+    pub app_name: Option<String>,
+    pub window_name: Option<String>,
+    pub text: String,
+    pub timestamp: String,
+}
+
 /// One frame's text content fetched from screenpipe for session_text building.
 #[derive(Debug, Clone)]
 pub struct FrameText {
@@ -315,6 +329,56 @@ pub async fn get_frame_full_texts(
         .collect())
 }
 
+/// Page size for [`fetch_frame_text_page`] — bounds how many frames' OCR/a11y
+/// text are held in memory at once when a block's `session_text` is rebuilt by
+/// paginating rather than by a single [`get_frame_full_texts`] call (see
+/// `rebuild_session_text_paginated` in `crate::etl::block_ops`). Chosen in the
+/// 500-1000 range suggested by the existing `BATCH_SIZE` ETL-batch convention.
+pub const FRAME_TEXT_PAGE_SIZE: i64 = 750;
+
+/// Returns up to `limit` frames with `id` in `(after_id, max_frame_id]` that
+/// have non-empty text, ordered oldest-first — a bounded page of
+/// [`get_frame_full_texts`]'s result set. Falls back to `accessibility_text`
+/// when `full_text` is NULL, same as `get_frame_full_texts`.
+///
+/// Callers paginate by looping: start with `after_id = min_frame_id - 1`, feed
+/// each returned page into an incremental accumulator, advance `after_id` to
+/// the last frame's `frame_id`, and stop once a call returns an empty `Vec`.
+/// Pagination is driven entirely by `id` (not by page-length heuristics), so
+/// it is correct regardless of how many rows in a given `id` range get
+/// filtered out by the non-empty-text predicate.
+pub async fn fetch_frame_text_page(
+    pool: &SqlitePool,
+    after_id: i64,
+    max_frame_id: i64,
+    limit: i64,
+) -> Result<Vec<FrameText>> {
+    let rows = sqlx::query_as::<_, (i64, String, String, String)>(
+        "SELECT id, timestamp, COALESCE(full_text, accessibility_text), COALESCE(text_source, 'ocr')
+         FROM capture_frames
+         WHERE id > ?1 AND id <= ?2
+           AND COALESCE(full_text, accessibility_text) IS NOT NULL
+           AND COALESCE(full_text, accessibility_text) != ''
+         ORDER BY id ASC
+         LIMIT ?3",
+    )
+    .bind(after_id)
+    .bind(max_frame_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(frame_id, timestamp, full_text, text_source)| FrameText {
+            frame_id,
+            timestamp,
+            full_text,
+            text_source,
+        })
+        .collect())
+}
+
 /// Returns clipboard and app_switch UI events within the given timestamp range.
 /// Clipboard events are deduplicated by value — same text copied multiple times is stored once.
 /// For clipboard events `value` is `text_content`; for app_switch it is `app_name`.
@@ -355,4 +419,221 @@ pub async fn get_signals(
         .collect();
 
     Ok(result)
+}
+
+/// Returns secondary-monitor OCR samples within the given timestamp range.
+/// Deduplicated by (monitor, app, window, text) — the same topmost window
+/// unchanged across sweep ticks collapses to one entry, same spirit as
+/// `get_signals`'s clipboard/app_switch dedup.
+pub async fn get_secondary_screen_events(
+    pool: &SqlitePool,
+    start_ts: &str,
+    end_ts: &str,
+) -> Result<Vec<SecondaryScreenEvent>> {
+    let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>, String, String)>(
+        "SELECT monitor_name, app_name, window_name, text, MIN(timestamp) AS timestamp
+         FROM capture_secondary_screens
+         WHERE timestamp BETWEEN ? AND ?
+           AND text IS NOT NULL AND text != ''
+         GROUP BY monitor_name, app_name, window_name, text
+         ORDER BY timestamp",
+    )
+    .bind(start_ts)
+    .bind(end_ts)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(monitor_name, app_name, window_name, text, timestamp)| SecondaryScreenEvent {
+                monitor_name,
+                app_name,
+                window_name,
+                text,
+                timestamp,
+            },
+        )
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_secondary_screen_events;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn seeded_pool() -> sqlx::SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open in-memory db");
+        sqlx::migrate!("src/migrations")
+            .run(&pool)
+            .await
+            .expect("migrate");
+        pool
+    }
+
+    async fn insert(
+        pool: &sqlx::SqlitePool,
+        ts: &str,
+        monitor: &str,
+        app: &str,
+        window: &str,
+        text: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO capture_secondary_screens (timestamp, monitor_name, app_name, window_name, text)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind(ts)
+        .bind(monitor)
+        .bind(app)
+        .bind(window)
+        .bind(text)
+        .execute(pool)
+        .await
+        .expect("insert capture_secondary_screens row");
+    }
+
+    #[tokio::test]
+    async fn dedupes_identical_repeated_samples() {
+        let pool = seeded_pool().await;
+        // Same topmost window OCR'd across three sweep ticks — identical text each time.
+        insert(
+            &pool,
+            "2026-01-01T10:00:00.000000Z",
+            "DELL U2718Q",
+            "Slack",
+            "general",
+            "hello",
+        )
+        .await;
+        insert(
+            &pool,
+            "2026-01-01T10:00:10.000000Z",
+            "DELL U2718Q",
+            "Slack",
+            "general",
+            "hello",
+        )
+        .await;
+        insert(
+            &pool,
+            "2026-01-01T10:00:20.000000Z",
+            "DELL U2718Q",
+            "Slack",
+            "general",
+            "hello",
+        )
+        .await;
+
+        let events = get_secondary_screen_events(
+            &pool,
+            "2026-01-01T09:00:00.000000Z",
+            "2026-01-01T11:00:00.000000Z",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            events.len(),
+            1,
+            "identical repeated samples collapse to one"
+        );
+        assert_eq!(
+            events[0].timestamp, "2026-01-01T10:00:00.000000Z",
+            "earliest timestamp wins"
+        );
+    }
+
+    #[tokio::test]
+    async fn keeps_distinct_text_and_windows() {
+        let pool = seeded_pool().await;
+        insert(
+            &pool,
+            "2026-01-01T10:00:00.000000Z",
+            "DELL U2718Q",
+            "Slack",
+            "general",
+            "hello",
+        )
+        .await;
+        insert(
+            &pool,
+            "2026-01-01T10:00:10.000000Z",
+            "DELL U2718Q",
+            "Slack",
+            "general",
+            "goodbye",
+        )
+        .await;
+        insert(
+            &pool,
+            "2026-01-01T10:00:20.000000Z",
+            "LG 27UK850",
+            "Notion",
+            "Roadmap",
+            "hello",
+        )
+        .await;
+
+        let events = get_secondary_screen_events(
+            &pool,
+            "2026-01-01T09:00:00.000000Z",
+            "2026-01-01T11:00:00.000000Z",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            events.len(),
+            3,
+            "different text/window/monitor are distinct samples"
+        );
+    }
+
+    #[tokio::test]
+    async fn respects_timestamp_window() {
+        let pool = seeded_pool().await;
+        insert(
+            &pool,
+            "2026-01-01T09:00:00.000000Z",
+            "DELL U2718Q",
+            "Slack",
+            "general",
+            "before",
+        )
+        .await;
+        insert(
+            &pool,
+            "2026-01-01T10:00:00.000000Z",
+            "DELL U2718Q",
+            "Slack",
+            "general",
+            "inside",
+        )
+        .await;
+        insert(
+            &pool,
+            "2026-01-01T12:00:00.000000Z",
+            "DELL U2718Q",
+            "Slack",
+            "general",
+            "after",
+        )
+        .await;
+
+        let events = get_secondary_screen_events(
+            &pool,
+            "2026-01-01T09:30:00.000000Z",
+            "2026-01-01T11:00:00.000000Z",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].text, "inside");
+    }
 }

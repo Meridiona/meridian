@@ -17,6 +17,7 @@ use crate::state::{ActiveSession, AppState, HealthStatus, TodayBreakdown};
 use meridian_core::SqlitePool;
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
+use tracing::Instrument;
 
 /// Run the local health check, fold it into [`AppState`], and raise/clear the
 /// went-quiet / back-online notice (debounced to the 2nd consecutive failure).
@@ -45,7 +46,7 @@ pub(super) async fn refresh_health(
         HealthStatus::Unhealthy
     };
 
-    let (notify_down, notify_back, reconcile_stale) = {
+    let (attempt_restart, notify_down, notify_back, reconcile_stale) = {
         let Ok(mut s) = state.lock() else {
             tracing::warn!("refresh_health: state lock poisoned");
             return;
@@ -65,21 +66,70 @@ pub(super) async fn refresh_health(
         s.health = new_health;
 
         (
+            decision.attempt_restart,
             decision.notify_down,
             decision.notify_back,
             decision.reconcile_stale,
         )
     };
 
+    // A confirmed outage (2nd consecutive failed poll, not a transient blip) is
+    // worth one automatic recovery attempt — most causes (a crashed process, a
+    // machine where the scheduled task/launchd agent lost track of it) self-heal
+    // from a plain restart, and someone who isn't watching the tray shouldn't
+    // have to notice the banner and click "Restart daemon" for that.
+    //
+    // Crucially this is NOT gated on `daemon_was_healthy`: the daemon being
+    // already down when this tray process started (machine resumed from sleep,
+    // the login launcher never fired, an earlier crash) is exactly when it has
+    // no other path back up. On machines where the scheduled task couldn't be
+    // created (`schtasks` blocked by policy — the Startup-folder launcher only
+    // fires once at login) the tray is the only supervisor there is, so it must
+    // recover a cold-down daemon too, not just one it watched go down. The
+    // restart needs no DB pool, so it runs even when `pool` is None; only the
+    // user-facing notice below does. Best-effort: the result feeds the notice
+    // detail when we also notify.
+    let restart_result = if attempt_restart {
+        // Wrap the restart attempt in a span so the health-path recovery is
+        // traceable end-to-end, matching the fast watchdog's span.
+        async {
+            let r = crate::commands::daemon_control::restart().await;
+            match &r {
+                Err(e) => tracing::warn!(error = %e, "daemon-health auto-restart attempt failed"),
+                Ok(()) => tracing::info!("daemon-health auto-restart attempted"),
+            }
+            Some(r)
+        }
+        .instrument(tracing::info_span!("daemon_watchdog.restart"))
+        .await
+    } else {
+        None
+    };
+
     let Some(pool) = pool else { return };
     if notify_down {
+        // `notify_down` implies `attempt_restart` (both require the 2nd
+        // consecutive failure), so `restart_result` is always `Some` here.
+        // Assert it rather than only documenting it, so a future refactor that
+        // breaks the invariant trips a test instead of silently rendering the
+        // failed-restart case as the success message.
+        debug_assert!(
+            restart_result.is_some(),
+            "notify_down implies attempt_restart, so restart_result must be Some"
+        );
+        let detail = match &restart_result {
+            Some(Err(_)) => {
+                "Tried to restart it automatically and that failed too. Tap to check what happened."
+            }
+            _ => "Tried restarting it automatically - give it a moment.",
+        };
         if let Err(e) = meridian::notices::raise_typed(
             pool,
             meridian::notices::Notice {
                 id: "tray.daemon_quiet",
                 severity: "warning",
                 title: "Meridian went quiet.",
-                detail: "Tap to check what happened.",
+                detail,
                 remedy: None,
                 event_key: "system.health",
                 deep_link: Some("/logs"),
@@ -88,6 +138,35 @@ pub(super) async fn refresh_health(
         .await
         {
             tracing::warn!(error = %e, "daemon-health notice raise failed");
+        }
+    } else if attempt_restart && matches!(restart_result, Some(Err(_))) {
+        // Cold-start path: `daemon_was_healthy == false` suppressed `notify_down`
+        // above, AND the one automatic restart failed (e.g. `schtasks /Run`
+        // failed and `spawn_staged_daemon()` found no staged binary). Left alone
+        // this strands the user silently — `attempt_restart` fires only once per
+        // episode, so nothing else surfaces for this process lifetime. A failed
+        // recovery is news in its own right, independent of the went-quiet
+        // debounce the cold-start silence exists for, so raise the notice here
+        // regardless of `daemon_was_healthy`. Same `tray.daemon_quiet` id, so it
+        // dedupes with the warm-path notice and is cleared by the same
+        // `notify_back` / `reconcile_stale` paths once the daemon recovers. (The
+        // 5 s `run_daemon_watchdog` keeps retrying the restart in the meantime —
+        // this only fixes the *notification* gap, not the retry.)
+        if let Err(e) = meridian::notices::raise_typed(
+            pool,
+            meridian::notices::Notice {
+                id: "tray.daemon_quiet",
+                severity: "warning",
+                title: "Meridian went quiet.",
+                detail: "Couldn't restart it automatically. Tap to check what happened.",
+                remedy: None,
+                event_key: "system.health",
+                deep_link: Some("/logs"),
+            },
+        )
+        .await
+        {
+            tracing::warn!(error = %e, "daemon-health cold-start failure notice raise failed");
         }
     } else if notify_back {
         if let Err(e) =
@@ -128,9 +207,17 @@ async fn send_back_online_toast(pool: &SqlitePool) {
     }
 }
 
-/// The three notice actions a health tick can trigger. At most one is ever
-/// true — see [`decide_health_notice`].
+/// The actions a health tick can trigger. Among the three *notice* actions
+/// (`notify_down` / `notify_back` / `reconcile_stale`) at most one is ever true.
+/// `attempt_restart` is orthogonal — it is the recovery *action*, decoupled
+/// from the notification debounce so a cold-down daemon still gets restarted.
 struct HealthNoticeDecision {
+    /// Fire exactly one automatic daemon restart on a confirmed outage (the 2nd
+    /// consecutive failed poll). Deliberately NOT gated on `daemon_was_healthy`:
+    /// a daemon already down when this process started has no other path back
+    /// up (see `refresh_health`). Fires once per down-episode — the failure
+    /// counter only equals 2 on a single tick.
+    attempt_restart: bool,
     notify_down: bool,
     notify_back: bool,
     reconcile_stale: bool,
@@ -147,13 +234,19 @@ fn decide_health_notice(
     daemon_was_healthy: &mut bool,
     startup_health_reconciled: &mut bool,
 ) -> HealthNoticeDecision {
-    let notify_down = if !now_healthy {
+    // The 2nd consecutive failure is the "confirmed outage" edge — one miss is a
+    // transient blip. Both the recovery attempt and the down-notice key off it,
+    // but they diverge on `daemon_was_healthy`: recovery always fires (a
+    // never-yet-healthy daemon still needs bringing back), the notice stays
+    // silent on a cold start (a daemon that hasn't come up yet isn't news).
+    let second_failure = if !now_healthy {
         *consecutive_health_failures += 1;
-        // Notify only on the second consecutive failure — one miss is a transient blip.
-        *consecutive_health_failures == 2 && *daemon_was_healthy
+        *consecutive_health_failures == 2
     } else {
         false
     };
+    let attempt_restart = second_failure;
+    let notify_down = second_failure && *daemon_was_healthy;
     // Fire "back online" only when we had previously sent a "gone quiet" notification
     // (consecutive_health_failures reached 2), so a brief outage during startup is silent.
     let notify_back = now_healthy && *consecutive_health_failures >= 2;
@@ -175,6 +268,7 @@ fn decide_health_notice(
     }
 
     HealthNoticeDecision {
+        attempt_restart,
         notify_down,
         notify_back,
         reconcile_stale,
@@ -340,6 +434,7 @@ mod tests {
 
         let d = decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
 
+        assert!(!d.attempt_restart, "a healthy tick must not restart");
         assert!(!d.notify_down);
         assert!(!d.notify_back);
         assert!(
@@ -378,15 +473,89 @@ mod tests {
         let first_fail =
             decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
         assert!(!first_fail.notify_down); // only 1 consecutive failure so far
+        assert!(!first_fail.attempt_restart); // one blip is not yet an outage
 
         let second_fail =
             decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
         assert!(second_fail.notify_down); // 2nd consecutive failure
+        assert!(second_fail.attempt_restart); // …and the recovery attempt fires with it
 
         let recovered =
             decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
         assert!(recovered.notify_back);
         assert!(!recovered.reconcile_stale);
+        assert!(!recovered.attempt_restart);
+    }
+
+    /// The bug this change fixes: a tray process that starts (or is already
+    /// running) while the daemon is down and was never observed healthy this
+    /// session. `daemon_was_healthy` stays false, so no down-*notice* fires —
+    /// but the automatic *restart* must still fire on the 2nd consecutive
+    /// failure, because on a machine with no scheduled task the tray is the
+    /// daemon's only supervisor. Before the fix, `notify_down` gated both and
+    /// the daemon stayed dead until a manual "Restart daemon" click.
+    #[test]
+    fn cold_down_daemon_is_restarted_even_though_notice_stays_silent() {
+        let mut failures = 0u32;
+        let mut was_healthy = false; // never seen healthy this session
+        let mut reconciled = false;
+
+        let f1 = decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
+        assert!(
+            !f1.attempt_restart,
+            "one failure is a blip, not yet a restart"
+        );
+        assert!(!f1.notify_down);
+
+        let f2 = decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
+        assert!(
+            f2.attempt_restart,
+            "a cold-down daemon MUST be auto-restarted on the 2nd failure"
+        );
+        assert!(
+            !f2.notify_down,
+            "…while the went-quiet notice stays silent on a cold start"
+        );
+
+        // It fires exactly once per episode — no restart loop while it stays down.
+        let f3 = decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
+        assert!(
+            !f3.attempt_restart,
+            "must not re-fire every subsequent failed tick"
+        );
+    }
+
+    /// Review follow-up: when a cold-down daemon's one restart attempt FAILS,
+    /// `refresh_health` raises `tray.daemon_quiet` regardless of
+    /// `daemon_was_healthy` (a failed recovery is news). This pins the invariant
+    /// that lets that notice be cleared by the ordinary recovery path rather
+    /// than leaking: `notify_back` keys off `consecutive_health_failures >= 2`,
+    /// NOT `daemon_was_healthy`, so a cold-start episode that reached the restart
+    /// (failures == 2) still fires `notify_back` on recovery.
+    #[test]
+    fn cold_start_failure_notice_is_cleared_on_recovery() {
+        let mut failures = 0u32;
+        let mut was_healthy = false; // cold start — never healthy this session
+        let mut reconciled = false;
+
+        decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled); // 1
+        let f2 = decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled); // 2
+        assert!(f2.attempt_restart, "restart attempted at the 2nd failure");
+        assert!(
+            !f2.notify_down,
+            "cold start stays silent on the went-quiet notice"
+        );
+        // Daemon stays down (restart failed); the counter keeps climbing.
+        decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled); // 3
+
+        // Recovery: notify_back must fire so the cold-start-failure notice
+        // (raised with the same `tray.daemon_quiet` id) gets cleared.
+        let recovered =
+            decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+        assert!(
+            recovered.notify_back,
+            "recovery must clear the cold-start failure notice"
+        );
     }
 
     /// Preserves existing (pre-fix) behavior: a cold-start outage that never
@@ -406,6 +575,9 @@ mod tests {
             !f2.notify_down,
             "never-yet-healthy daemon must not notify down"
         );
+        // Silence is about the *notification*; recovery still happens (see
+        // `cold_down_daemon_is_restarted_even_though_notice_stays_silent`).
+        assert!(f2.attempt_restart);
 
         let recovered =
             decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);

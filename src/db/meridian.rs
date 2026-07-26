@@ -95,7 +95,15 @@ pub async fn setup_db(uri: &str) -> anyhow::Result<SqlitePool> {
         // get an immediate SQLITE_BUSY (default timeout 0) whenever the tray
         // holds the WAL write lock, failing the ETL run. Wait instead — matches
         // the tray's open_existing (5s).
-        .busy_timeout(std::time::Duration::from_secs(5));
+        .busy_timeout(std::time::Duration::from_secs(5))
+        // Lets `crate::etl::capture_retention`'s periodic `incremental_vacuum`
+        // actually reclaim disk space freed by its capture_* table deletes.
+        // Only takes effect on a brand-new (table-less) database file — SQLite
+        // requires a full `VACUUM` to convert an already-populated database
+        // from the default `auto_vacuum = NONE`, which we deliberately never
+        // run automatically on a live daemon (see that module's doc comment).
+        // On an existing database this pragma is simply a documented no-op.
+        .pragma("auto_vacuum", "INCREMENTAL");
 
     let pool = SqlitePool::connect_with(opts)
         .await
@@ -372,8 +380,8 @@ pub async fn upsert_active_session(
             id, app_name, started_at, last_seen_at,
             window_titles, audio_snippets, signals,
             min_frame_id, max_frame_id, frame_count, idle_frame_count,
-            category, confidence, session_text
-        ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            category, confidence, session_text, secondary_screens
+        ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
         ON CONFLICT (id) DO UPDATE SET
             app_name         = excluded.app_name,
             started_at       = excluded.started_at,
@@ -387,7 +395,8 @@ pub async fn upsert_active_session(
             idle_frame_count = excluded.idle_frame_count,
             category         = excluded.category,
             confidence       = excluded.confidence,
-            session_text     = excluded.session_text
+            session_text     = excluded.session_text,
+            secondary_screens = excluded.secondary_screens
         "#,
     )
     .bind(&session.app_name)
@@ -403,6 +412,7 @@ pub async fn upsert_active_session(
     .bind(&session.category)
     .bind(session.confidence)
     .bind(&session.session_text)
+    .bind(&session.secondary_screens)
     .execute(pool)
     .await
     .context("upsert_active_session: upsert failed")?;
@@ -445,8 +455,8 @@ pub async fn close_active_session_with(
             window_titles, audio_snippets, signals,
             min_frame_id, max_frame_id, frame_count,
             idle_frame_count, etl_run_id,
-            category, confidence, session_text
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            category, confidence, session_text, secondary_screens
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
         "#,
     )
     .bind(&active.app_name)
@@ -464,6 +474,7 @@ pub async fn close_active_session_with(
     .bind(&active.category)
     .bind(active.confidence)
     .bind(&active.session_text)
+    .bind(&active.secondary_screens)
     .execute(pool)
     .await
     .context("close_active_session_with: insert into app_sessions failed")?;

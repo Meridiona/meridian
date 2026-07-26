@@ -216,3 +216,62 @@ pub async fn approve_day_task_worklog(body: ApproveBody) -> Result<ApproveRespon
     );
     Ok(resp)
 }
+
+/// [`escalate_personal_task_create`] / [`escalate_personal_task_match`] response —
+/// mirrors the CLI's `EscalateResult` JSON: the real ticket the personal task now
+/// points at, its provider, a browse URL, and whether it was freshly created.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EscalateResponse {
+    pub linked_ticket: String,
+    pub provider: String,
+    pub browse_url: Option<String>,
+    pub created: bool,
+}
+
+/// Escalate a personal task by CREATING a real ticket from it (title/description
+/// from the task) and posting its auto-logged update there, then keep-and-link the
+/// personal task. Spawns `meridian worklog-escalate-create --task <key>`, 150 s
+/// timeout (create + post round trips).
+#[tauri::command]
+#[tracing::instrument]
+pub async fn escalate_personal_task_create(task_key: String) -> Result<EscalateResponse, String> {
+    if task_key.is_empty() {
+        return Err("task_key is required".to_string());
+    }
+    let resp: EscalateResponse = run_meridian_json(
+        &["worklog-escalate-create", "--task", &task_key],
+        Duration::from_secs(150),
+        "worklog-escalate-create",
+    )
+    .await?;
+    tracing::info!(%task_key, linked = %resp.linked_ticket, created = resp.created, "worklog-escalate-create served");
+    Ok(resp)
+}
+
+/// Escalate a personal task by posting its auto-logged update onto an EXISTING
+/// real ticket, then keep-and-link the personal task. Spawns
+/// `meridian worklog-escalate-match --task <key> --target <target>`, 150 s timeout.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn escalate_personal_task_match(
+    task_key: String,
+    target_key: String,
+) -> Result<EscalateResponse, String> {
+    if task_key.is_empty() || target_key.is_empty() {
+        return Err("task_key and target_key are required".to_string());
+    }
+    let resp: EscalateResponse = run_meridian_json(
+        &[
+            "worklog-escalate-match",
+            "--task",
+            &task_key,
+            "--target",
+            &target_key,
+        ],
+        Duration::from_secs(150),
+        "worklog-escalate-match",
+    )
+    .await?;
+    tracing::info!(%task_key, %target_key, linked = %resp.linked_ticket, "worklog-escalate-match served");
+    Ok(resp)
+}

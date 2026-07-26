@@ -10,7 +10,20 @@
 //! local to this module is the JSON envelope and its error classification.
 //!
 //! Unlike claude/codex there is **no schema mechanism**, so the JSON contract rides in the prompt
-//! and the answer is parsed tolerantly. The payload goes in argv (stdin is unprobed on this CLI).
+//! and the answer is parsed tolerantly. The payload goes over **stdin**, not argv.
+//!
+//! # Why stdin, not argv (Windows)
+//!
+//! It used to be argv (`-p <prompt>`). `cursor-agent` resolves to `cursor-agent.cmd` on
+//! Windows, a batch file rather than a native exe, and Rust's std library REFUSES to spawn a
+//! `.bat`/`.cmd` target when an argument contains characters it cannot safely escape (the
+//! CVE-2024-24576 "BatBadBut" fix), notably embedded newlines. [`build_prompt`] always
+//! produces a multi-line string (marker + system prompt + blank line + transcript), so EVERY
+//! real call failed to even spawn on Windows, with `io::Error { kind: InvalidInput, "batch
+//! file arguments are invalid" }`, confirmed live. `cursor-agent -p` (bare flag, no positional
+//! value) reads the full prompt from stdin instead, also confirmed live, and stdin has no such
+//! restriction on any platform (it is a byte stream, not a command-line argument), so this
+//! fixes Windows without changing behaviour anywhere else.
 //!
 //! # Related
 //! - [`crate::llm::cursor_cli`] - shared flags/env/sandbox (read this first)
@@ -53,7 +66,10 @@ impl CursorBackend {
         safety: Vec<String>,
         env: Vec<(&'static str, String)>,
     ) -> Result<String, LlmError> {
-        let mut args: Vec<String> = vec!["-p".into(), prompt.to_string()];
+        // `-p` is a bare flag here - no positional value. See the module doc: a positional
+        // value forces the prompt through argv, which Windows' batch-file spawn guard rejects
+        // outright whenever it contains a newline (every real prompt does).
+        let mut args: Vec<String> = vec!["-p".into()];
         args.extend(["--output-format".into(), "json".into()]);
         args.extend(safety);
 
@@ -62,7 +78,7 @@ impl CursorBackend {
         let cap = run_capture(
             "cursor-agent",
             &args,
-            "", // payload is in the prompt (argv), not stdin
+            prompt, // payload goes over stdin - see the module doc
             // The neutral workspace, NOT ~/.meridian: `--workspace` governs rule discovery
             // today, but the cwd is inside $HOME, so if Cursor ever also seeds discovery from
             // it the no-rule-injection guarantee would regress silently. Free to pin.

@@ -32,8 +32,78 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
+use tracing::Instrument;
 
 const TICK: Duration = Duration::from_secs(30);
+
+/// How often the daemon watchdog probes the IPC endpoint. Much tighter than the
+/// 60 s health cadence in [`run_poll_loop`] because recovery latency, unlike the
+/// popover's status readout, is felt directly — a dead daemon means no capture.
+const WATCHDOG_TICK: Duration = Duration::from_secs(5);
+/// Consecutive missed probes before the watchdog treats the daemon as down. Two
+/// (≈10 s) filters a single transient blip without waiting on the slow path.
+const WATCHDOG_STRIKES: u32 = 2;
+/// Quiet window after a restart attempt before the watchdog will fire again. The
+/// daemon needs a few seconds to come up and start serving its endpoint; without
+/// this the next probes would spawn a second (and third…) instance on top of one
+/// that is merely mid-startup. Comfortably longer than a cold start, so a
+/// genuinely crash-looping daemon still retries — just not in a tight loop. (The
+/// daemon's single-instance guard makes an overlapping spawn a harmless no-op
+/// regardless; this simply avoids the churn.)
+const WATCHDOG_COOLDOWN: Duration = Duration::from_secs(45);
+
+/// A fast, self-contained daemon supervisor: probe every [`WATCHDOG_TICK`], and
+/// once the daemon has missed [`WATCHDOG_STRIKES`] probes in a row (~10 s),
+/// restart it — then hold off for [`WATCHDOG_COOLDOWN`] before considering
+/// another attempt.
+///
+/// This is deliberately separate from [`run_poll_loop`]'s `refresh_health`,
+/// which owns the user-facing went-quiet/back-online *notices* on a slower,
+/// debounced cadence. Recovery is split out here so it can react in seconds
+/// without dragging the whole 30 s UI-refresh loop (and its DB reads) down to a
+/// 5 s beat. Both may call `restart()` in the same outage; the daemon's
+/// single-instance guard makes that safe, and the cooldown keeps this side from
+/// stacking attempts. Not gated on any "was healthy" flag — a daemon already
+/// down at startup is exactly the case that most needs bringing back.
+pub async fn run_daemon_watchdog() {
+    let down_after_s = WATCHDOG_STRIKES as u64 * WATCHDOG_TICK.as_secs();
+    let mut consecutive_down: u32 = 0;
+    let mut cooldown_until: Option<Instant> = None;
+
+    loop {
+        tokio::time::sleep(WATCHDOG_TICK).await;
+
+        if crate::commands::daemon_control::probe().await.running {
+            consecutive_down = 0;
+            cooldown_until = None;
+            continue;
+        }
+
+        consecutive_down += 1;
+        if consecutive_down < WATCHDOG_STRIKES {
+            continue;
+        }
+        // Confirmed down. Respect the post-restart quiet window so a daemon
+        // that's still starting up isn't restarted on top of itself.
+        if cooldown_until.is_some_and(|until| Instant::now() < until) {
+            continue;
+        }
+
+        // Wrap the discrete recovery operation in a span so the whole attempt is
+        // traceable end-to-end; `down_after_s` rides on the span as a structured
+        // field (queryable in JSON sinks) rather than baked into a message.
+        async {
+            tracing::info!("daemon watchdog: endpoint down, restarting");
+            if let Err(e) = crate::commands::daemon_control::restart().await {
+                tracing::warn!(error = %e, "daemon watchdog: restart attempt failed");
+            }
+        }
+        .instrument(tracing::info_span!("daemon_watchdog.restart", down_after_s))
+        .await;
+        cooldown_until = Some(Instant::now() + WATCHDOG_COOLDOWN);
+        consecutive_down = 0;
+    }
+}
 
 pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
     let mut tick: u32 = 0;
@@ -78,6 +148,14 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
             }
             if do_worklogs {
                 refresh_worklogs(pool, &state).await;
+                // Spawned off, not awaited inline: this can make one HTTP call
+                // per newly-posted worklog this tick, and a slow/hanging
+                // counter response (5s timeout each) must not delay the
+                // more user-visible steps below.
+                let counter_pool = pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::counter_ping::check_worklog_posts(&counter_pool).await;
+                });
             }
             if do_health {
                 permissions::check_permissions(&app, pool).await;

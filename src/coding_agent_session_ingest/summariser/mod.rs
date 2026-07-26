@@ -42,6 +42,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use meridian_core::proc_ext::NoWindow;
 use sqlx::SqlitePool;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -124,7 +125,8 @@ pub(crate) async fn run_capture(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .current_dir(cwd)
-        .kill_on_drop(true);
+        .kill_on_drop(true)
+        .no_window();
     for k in remove_env {
         cmd.env_remove(k);
     }
@@ -671,6 +673,11 @@ async fn drain(
         let outcome = summarise_one(pool, row, cfg, true).await;
         if outcome.written {
             summarised += 1;
+            // Row succeeded and moved past pending_summariser — drop its
+            // ledger entry via record_attempt so `attempts` only ever holds
+            // currently-pending rows that have failed at least once, not
+            // every row that ever failed once over the daemon's lifetime.
+            record_attempt(attempts, row.id, true);
         } else if outcome.rate_limited {
             // Apply per-source backoff so other sources can still drain.
             let until =
@@ -685,8 +692,8 @@ async fn drain(
             );
         } else {
             // Transient failure. Leave pending for retry; log so it isn't silent.
-            let tries = tries + 1;
-            attempts.insert(row.id, tries);
+            let tries = record_attempt(attempts, row.id, false)
+                .expect("record_attempt(.., written=false) always returns Some");
             if tries >= MAX_ROW_ATTEMPTS {
                 if let Err(e) = db::write_dead_letter(pool, row.id).await {
                     tracing::error!(row_id = row.id, error = %e, "failed to dead-letter row");
@@ -715,6 +722,29 @@ async fn drain(
     // Signal global backoff only when ALL rows were skipped due to source
     // backoffs — nothing useful can be done until at least one source recovers.
     skipped_backoff > 0 && skipped_backoff == rows.len() as u32 && summarised == 0
+}
+
+/// Updates the per-row failure ledger (`attempts`, see [`MAX_ROW_ATTEMPTS`])
+/// after one `summarise_one` outcome.
+///
+/// On success (`written = true`) the row's entry is removed entirely —
+/// `attempts` must only ever hold currently-pending rows that have failed at
+/// least once this daemon lifetime, not every row that has ever failed once,
+/// which would otherwise grow the map forever as rows are summarised and new
+/// ones come in. Returns `None` in that case.
+///
+/// On failure (`written = false`) the row's attempt count is incremented and
+/// the new count returned as `Some(tries)`, for the caller to compare against
+/// [`MAX_ROW_ATTEMPTS`].
+fn record_attempt(attempts: &mut HashMap<i64, u32>, row_id: i64, written: bool) -> Option<u32> {
+    if written {
+        attempts.remove(&row_id);
+        None
+    } else {
+        let tries = attempts.get(&row_id).copied().unwrap_or(0) + 1;
+        attempts.insert(row_id, tries);
+        Some(tries)
+    }
 }
 
 /// One-shot CLI: `meridian coding-agent-summarise [--dry-run] [--day D] [--limit N]`.
@@ -844,5 +874,59 @@ mod tests {
 
         let p2 = build_prompt("just work", None, 1000);
         assert!(!p2.contains("EARLIER IN THIS SESSION"));
+    }
+
+    #[test]
+    fn record_attempt_removes_entry_on_success() {
+        let mut attempts: HashMap<i64, u32> = HashMap::new();
+        attempts.insert(42, 2); // simulate two prior failures
+
+        let result = record_attempt(&mut attempts, 42, true);
+
+        assert_eq!(result, None);
+        assert!(
+            !attempts.contains_key(&42),
+            "a row that succeeds must have its ledger entry removed, not just left at its prior count"
+        );
+    }
+
+    #[test]
+    fn record_attempt_increments_on_failure() {
+        let mut attempts: HashMap<i64, u32> = HashMap::new();
+
+        assert_eq!(record_attempt(&mut attempts, 7, false), Some(1));
+        assert_eq!(record_attempt(&mut attempts, 7, false), Some(2));
+        assert_eq!(record_attempt(&mut attempts, 7, false), Some(3));
+        assert_eq!(attempts.get(&7), Some(&3));
+    }
+
+    #[test]
+    fn record_attempt_success_after_failures_leaves_no_trace() {
+        let mut attempts: HashMap<i64, u32> = HashMap::new();
+
+        record_attempt(&mut attempts, 99, false);
+        record_attempt(&mut attempts, 99, false);
+        record_attempt(&mut attempts, 99, true); // succeeds on the third try
+
+        assert!(
+            attempts.is_empty(),
+            "map must not retain any entry for a row once it has succeeded"
+        );
+    }
+
+    #[test]
+    fn record_attempt_only_touches_the_given_row() {
+        let mut attempts: HashMap<i64, u32> = HashMap::new();
+        record_attempt(&mut attempts, 1, false);
+        record_attempt(&mut attempts, 2, false);
+
+        record_attempt(&mut attempts, 1, true);
+
+        assert!(!attempts.contains_key(&1), "row 1 succeeded — removed");
+        assert_eq!(
+            attempts.get(&2),
+            Some(&1),
+            "row 2's independent failure count must be untouched"
+        );
     }
 }

@@ -148,6 +148,53 @@ async fn run(pool: &SqlitePool, config: &Config, day_local: &str) {
     }
     current_span.record("gate", "ran");
 
+    draft_qualifying_tasks(pool, config, day_local, &current_span).await;
+}
+
+/// The "Generate now" path — the same day-task draft sweep as [`maybe_auto_generate`],
+/// but WITHOUT the time-of-day gate, run because the user asked for it on the spot
+/// (the daily-summary screen's "Generate now" button) rather than because the clock
+/// reached their chosen time. Everything else is identical: drafts only, never
+/// approves/posts, and skips any task that already has a draft, so it is safe to run
+/// alongside or before the scheduled pass. The tracker gate stays — with none
+/// connected there is nothing to match against, so the sweep would only fail every
+/// call. Independent of `worklog_auto_generate_time`: a user who never set a time can
+/// still generate on demand.
+#[tracing::instrument(skip(pool, config))]
+pub async fn generate_now(pool: &SqlitePool, config: &Config, day_local: &str) {
+    let span = tracing::info_span!(
+        "worklog.generate_now.run",
+        day = day_local,
+        gate = Empty,
+        tasks_total = Empty,
+        tasks_qualifying = Empty,
+        tasks_already_drafted = Empty,
+        tasks_drafted = Empty,
+        tasks_failed = Empty,
+    );
+    async {
+        let current_span = tracing::Span::current();
+        if config.pm_providers.is_empty() {
+            current_span.record("gate", "no_tracker");
+            return;
+        }
+        current_span.record("gate", "ran");
+        draft_qualifying_tasks(pool, config, day_local, &current_span).await;
+    }
+    .instrument(span)
+    .await
+}
+
+/// Draft a worklog for every qualifying, not-yet-drafted day-task of `day_local`,
+/// recording per-run counts onto `span`. The shared body of [`maybe_auto_generate`]
+/// (gated on the clock) and [`generate_now`] (on demand); it assumes its caller has
+/// already decided a run is warranted and a tracker is connected.
+async fn draft_qualifying_tasks(
+    pool: &SqlitePool,
+    config: &Config,
+    day_local: &str,
+    span: &tracing::Span,
+) {
     let tasks = match meridian_core::day_tasks::get_day_tasks(pool, day_local).await {
         Ok(resp) => resp.tasks,
         Err(e) => {
@@ -158,7 +205,7 @@ async fn run(pool: &SqlitePool, config: &Config, day_local: &str) {
             return;
         }
     };
-    current_span.record("tasks_total", tasks.len());
+    span.record("tasks_total", tasks.len());
 
     let mut qualifying = 0u32;
     let mut already_drafted = 0u32;
@@ -193,8 +240,8 @@ async fn run(pool: &SqlitePool, config: &Config, day_local: &str) {
         }
 
         tracing::info!(
-            day = day_local, task_id = %task.id, minutes = task.minutes, chosen_time,
-            "worklog: auto-generate threshold crossed — drafting"
+            day = day_local, task_id = %task.id, minutes = task.minutes,
+            "worklog: threshold crossed — drafting"
         );
         match pm_worklog::generate(pool, config, day_local, &task.id).await {
             Ok(draft) => {
@@ -214,10 +261,10 @@ async fn run(pool: &SqlitePool, config: &Config, day_local: &str) {
         }
     }
 
-    current_span.record("tasks_qualifying", qualifying);
-    current_span.record("tasks_already_drafted", already_drafted);
-    current_span.record("tasks_drafted", drafted);
-    current_span.record("tasks_failed", failed);
+    span.record("tasks_qualifying", qualifying);
+    span.record("tasks_already_drafted", already_drafted);
+    span.record("tasks_drafted", drafted);
+    span.record("tasks_failed", failed);
     tracing::info!(
         day = day_local,
         qualifying,

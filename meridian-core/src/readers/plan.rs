@@ -43,11 +43,11 @@ const EXCERPT_LEN: usize = 130; // description excerpt length for card display
 /// The most tasks a day's plan may hold.
 ///
 /// A product limit, not a technical one. A plan is a statement of intent for one
-/// day, and a day that claims eleven tasks isn't a plan — it's a backlog, which
+/// day, and a day that claims dozens of tasks isn't a plan — it's a backlog, which
 /// makes the plan useless as the prior the worklog matcher now leans on
 /// ([`load_plan_candidates`]). Most focused days land on 1-3; the existing
 /// advisory nag in `PlanTodayColumn.tsx` fires at 5. This is the hard stop.
-pub const MAX_PLAN_TASKS: usize = 10;
+pub const MAX_PLAN_TASKS: usize = 20;
 
 // ── Types (field names match the TS interfaces byte-for-byte) ─────────────────
 
@@ -208,6 +208,21 @@ async fn table_exists(pool: &SqlitePool, name: &str) -> bool {
         .is_some()
 }
 
+/// Whether `table` has `column` — used to stay graceful on a DB that predates a
+/// migration (here, `pm_tasks.deleted_at` from 075). Same swallow-on-error shape
+/// as [`table_exists`]: a probe failure reads as "absent", so the caller falls
+/// back to the pre-migration query instead of erroring.
+async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> bool {
+    sqlx::query_scalar::<_, i64>("SELECT 1 FROM pragma_table_info(?) WHERE name=?")
+        .bind(table)
+        .bind(column)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+}
+
 // ── Loaders ───────────────────────────────────────────────────────────────────
 
 struct MetaRow {
@@ -252,6 +267,54 @@ pub async fn plan_handled(pool: &SqlitePool, date: &str) -> bool {
         .await
         .map(|m| m.confirmed_at.is_some() || m.skipped == 1)
         .unwrap_or(false)
+}
+
+/// A day's plan as the *review* side needs it: the committed rows and whether
+/// the dev actually stood behind them.
+///
+/// Distinct from [`PlanResponse`] on purpose. That one is the planner screen's
+/// payload and carries `suggestions` + `available`, which means scoring the whole
+/// board — real work that the daily summary has no use for. This is the read for
+/// anyone asking "what did they say they would do today?".
+#[derive(Debug, Clone, Serialize)]
+pub struct DayPlan {
+    /// The committed rows, in plan order. Empty when nothing was committed.
+    pub items: Vec<PlanItem>,
+    /// `daily_plan_meta.confirmed_at IS NOT NULL`. Note this is ALSO true after a
+    /// skip — see [`plan_handled`] — which is why `skipped` must be checked too.
+    pub confirmed: bool,
+    /// The ritual was dismissed rather than answered.
+    pub skipped: bool,
+}
+
+impl DayPlan {
+    /// The canonical "they planned this day" test, matching what the planner UI
+    /// (`PlanView.tsx`) and the focus checklist (`OverviewPanel.tsx`) both use:
+    /// confirmed, not skipped, and actually holding something. A confirmed but
+    /// empty plan is a day with no plan, not a day that planned nothing.
+    pub fn is_planned(&self) -> bool {
+        self.confirmed && !self.skipped && !self.items.is_empty()
+    }
+}
+
+/// Read one day's committed plan without scoring the board.
+///
+/// # Who calls this
+/// [`crate::day_evidence::collect`] — the daily summary's planned-vs-actual side.
+#[tracing::instrument(skip(pool))]
+pub async fn plan_for_day(
+    pool: &SqlitePool,
+    date: &str,
+    today: NaiveDate,
+) -> anyhow::Result<DayPlan> {
+    let meta = load_meta(pool, date).await?;
+    let items = load_plan(pool, date, today).await?;
+    tracing::debug!(rows = items.len(), "plan.read.day_plan");
+    Ok(DayPlan {
+        items,
+        confirmed: meta.confirmed_at.is_some(),
+        skipped: meta.skipped == 1,
+    })
 }
 
 /// task_keys committed on the most recent planned day strictly before `date`.
@@ -339,6 +402,11 @@ pub async fn build_available(
     recent_since_day: &str,
 ) -> anyhow::Result<Vec<AvailableTask>> {
     let has_curation = table_exists(pool, "pm_task_curation").await;
+    // `t.deleted_at IS NULL` (migration 075) — a task the user deleted from the
+    // composer must not be offered back as a suggestion. Gated on the column
+    // existing so a DB not yet migrated to 075 still reads (graceful missing
+    // schema, like the curation join above).
+    let has_deleted_at = column_exists(pool, "pm_tasks", "deleted_at").await;
     let sql = format!(
         r#"SELECT t.task_key, t.title, t.provider, t.url,
                   COALESCE(t.status_raw,'') AS status_raw,
@@ -348,10 +416,16 @@ pub async fn build_available(
                   t.priority, t.issue_type, t.story_points,
                   {} AS decision
            FROM pm_tasks t
+           {}
            {}"#,
         if has_curation { "c.decision" } else { "NULL" },
         if has_curation {
             "LEFT JOIN pm_task_curation c ON c.task_key = t.task_key"
+        } else {
+            ""
+        },
+        if has_deleted_at {
+            "WHERE t.deleted_at IS NULL"
         } else {
             ""
         },
@@ -485,6 +559,12 @@ struct PlanJoinRow {
     priority: Option<String>,
     issue_type: Option<String>,
     story_points: Option<String>,
+    /// Set (migration 075) when the user deleted this personal task from the
+    /// composer. Unlike `on_board = false` (the ticket's `pm_tasks` row is simply
+    /// gone, e.g. pruned off a tracker's board — shown as completed via its
+    /// snapshot), a deleted task must vanish outright: filtered out in
+    /// [`load_plan`] / [`load_plan_candidates`] before [`resolve_row`] ever sees it.
+    deleted_at: Option<String>,
 }
 
 /// A ticket's board fields captured onto the `daily_plan` row at write time
@@ -618,6 +698,7 @@ pub async fn load_plan_candidates(
     Ok(plan_join_rows(pool, date)
         .await?
         .into_iter()
+        .filter(|r| r.deleted_at.is_none())
         .map(resolve_row)
         .collect())
 }
@@ -638,6 +719,9 @@ async fn load_plan(
     Ok(plan_join_rows(pool, date)
         .await?
         .into_iter()
+        // A deleted personal task must vanish outright, unlike a merely off-board
+        // one (`on_board = false`, still shown via its snapshot as completed).
+        .filter(|r| r.deleted_at.is_none())
         .map(resolve_row)
         .map(|c| PlanItem {
             due_days: crate::date::due_days_from(c.due_date.as_deref(), today),
@@ -674,6 +758,12 @@ async fn plan_join_rows(pool: &SqlitePool, date: &str) -> anyhow::Result<Vec<Pla
     .flatten()
     .is_some();
 
+    // 075 added pm_tasks.deleted_at; a DB that predates it lacks the column, so
+    // select a NULL literal instead of erroring on `t.deleted_at` (the join's
+    // consumers treat a NULL as "not deleted" — see the `deleted_at.is_none()`
+    // filter in load_plan).
+    let has_deleted_at = column_exists(pool, "pm_tasks", "deleted_at").await;
+
     let sql = format!(
         r#"SELECT p.task_key, p.position, p.origin,
                   {},
@@ -682,7 +772,7 @@ async fn plan_join_rows(pool: &SqlitePool, date: &str) -> anyhow::Result<Vec<Pla
                   COALESCE(t.status_raw,'') AS status_raw,
                   COALESCE(t.is_terminal,0) AS is_terminal,
                   t.due_date, t.description_text, t.epic_title, t.parent_key,
-                  t.priority, t.issue_type, t.story_points
+                  t.priority, t.issue_type, t.story_points, {}
            FROM daily_plan p
            LEFT JOIN pm_tasks t ON t.task_key = p.task_key
            WHERE p.plan_date = ?
@@ -691,6 +781,11 @@ async fn plan_join_rows(pool: &SqlitePool, date: &str) -> anyhow::Result<Vec<Pla
             "p.task_snapshot"
         } else {
             "NULL AS task_snapshot"
+        },
+        if has_deleted_at {
+            "t.deleted_at"
+        } else {
+            "NULL AS deleted_at"
         },
     );
     let rows: Vec<PlanJoinRow> = sqlx::query_as::<_, PlanJoinRow>(&sql)

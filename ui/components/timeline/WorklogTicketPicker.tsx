@@ -5,7 +5,9 @@
 // The matcher only ever compares a day's work against that day's PLANNED tasks —
 // a far better prior than the whole board, but it means work on something you
 // didn't plan can only ever come back as a proposal. This is how you say "no,
-// file it against THAT one" over every open ticket you have.
+// file it against THAT one" over every open ticket you have — including your
+// personal tasks (filed onto their own row, since there's no tracker thread to
+// post to), which are badged so the list stays legible.
 //
 // Picking retargets, it does NOT regenerate: the written update describes the
 // work, and the work doesn't change based on where it gets filed. So this
@@ -38,11 +40,16 @@ function filterTickets(all: BoardTicket[], q: string): BoardTicket[] {
 /** A searchable list of every open ticket, for retargeting a draft by hand.
  *  `current` is the draft's existing target, shown as already-selected so the
  *  user can see what they're changing away from. */
-export function WorklogTicketPicker({ current, busy, onPick, onCancel }: {
+export function WorklogTicketPicker({ current, busy, onPick, onCancel, title, excludeLocal = false }: {
   current: string | null
   busy: boolean
   onPick: (taskKey: string) => void
   onCancel: () => void
+  // Header copy - defaults to the retarget wording; escalation overrides it.
+  title?: string
+  // Drop personal (provider 'local') tasks from the list. Escalating a personal
+  // task is onto a REAL tracker ticket, so its own kind must not appear.
+  excludeLocal?: boolean
 }) {
   const [all, setAll] = useState<BoardTicket[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -51,10 +58,10 @@ export function WorklogTicketPicker({ current, busy, onPick, onCancel }: {
   useEffect(() => {
     let alive = true
     load<BoardTicket[]>('/api/board-tickets', 'get_board_tickets')
-      .then(r => { if (alive) setAll(r) })
+      .then(r => { if (alive) setAll(excludeLocal ? r.filter(t => t.provider !== 'local') : r) })
       .catch(() => { if (alive) setError('Could not load your board - try again in a moment.') })
     return () => { alive = false }
-  }, [])
+  }, [excludeLocal])
 
   const shown = useMemo(() => filterTickets(all ?? [], q), [all, q])
 
@@ -62,7 +69,7 @@ export function WorklogTicketPicker({ current, busy, onPick, onCancel }: {
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
         <p className="mt-body-sm" style={{ color: 'var(--t-title)', fontSize: 12.5, fontWeight: 700 }}>
-          Pick the ticket this work belongs to
+          {title ?? 'Pick the ticket this work belongs to'}
         </p>
         <button onClick={onCancel}
           className="mt-body-sm rounded-lg px-2 py-1"
@@ -126,9 +133,14 @@ export function WorklogTicketPicker({ current, busy, onPick, onCancel }: {
                     {t.task_key}
                   </span>
                   <span className="mt-body-sm truncate" style={{ color: 'var(--t-title)', fontSize: 12.5 }}>{t.title}</span>
-                  {isCurrent && (
-                    <span className="mt-chip shrink-0 ml-auto" style={{ color: 'var(--color-state-proposal)', fontSize: 10.5 }}>Current</span>
-                  )}
+                  <span className="flex items-center gap-1.5 shrink-0 ml-auto">
+                    {t.provider === 'local' && (
+                      <span className="mt-chip" style={{ color: 'var(--t-muted)', fontSize: 10.5 }}>Personal</span>
+                    )}
+                    {isCurrent && (
+                      <span className="mt-chip" style={{ color: 'var(--color-state-proposal)', fontSize: 10.5 }}>Current</span>
+                    )}
+                  </span>
                 </div>
                 {t.epic_title && (
                   <p className="mt-body-sm mt-0.5 truncate" style={{ color: 'var(--t-faint)', fontSize: 11 }}>{t.epic_title}</p>

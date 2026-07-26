@@ -24,6 +24,7 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { load, invoke, mutate } from '@/lib/bridge'
 import type { DayTaskWorklogDraft, ApproveWorklogResponse } from '@/lib/api-types'
+import { LruMap } from '@/lib/lru'
 
 /** Where the flow is right now — drives which footer control the panel shows. */
 export type WorklogPhase = 'loading' | 'idle' | 'generating' | 'approving'
@@ -75,7 +76,13 @@ interface Entry {
 // changes every call).
 const EMPTY: Entry = { draft: null, phase: 'loading', error: null, loaded: false }
 
-const store = new Map<string, Entry>()
+// LRU-capped: this webview session never reloads, so an uncapped Map would
+// grow by one entry per distinct (day, taskId) pair ever opened for the
+// app's whole lifetime. 100 is far beyond realistic usage — a hygiene bound,
+// not a fix for an observed runaway. (An entry mid `generating`/`approving`
+// stays the most-recently-touched one via the `patch`→`store.set` on every
+// state change, so it's never the eviction candidate while active.)
+const store = new LruMap<string, Entry>(100)
 const listeners = new Set<() => void>()
 
 // A space is a safe separator here: `day` is YYYY-MM-DD and `taskId` is T1/T2…,

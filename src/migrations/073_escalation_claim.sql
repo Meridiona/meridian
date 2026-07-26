@@ -1,0 +1,23 @@
+-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+-- Idempotency guard for personal-task escalation (src/pm_worklog/escalate.rs).
+--
+-- Escalation makes a NON-idempotent tracker call (create a ticket, or post a
+-- comment) BEFORE the DB transaction that graduates the personal task off
+-- `provider = 'local'` commits. Without a guard, a crash/timeout between the
+-- tracker call and that commit leaves the task still `local`, and a retry (manual
+-- re-click, or the tray's run_meridian_json timeout firing while the daemon is
+-- still working) files a SECOND ticket / posts a SECOND comment for the same work.
+--
+-- These two columns close that window, mirroring the day-task worklog's
+-- begin_create/mark_created claim:
+--   escalation_attempt_at   an atomic claim timestamp - a second escalation of the
+--                           same task while one is in flight (a fresh claim) is
+--                           refused; a stale claim (a crashed attempt) can be
+--                           re-taken. Cleared on a failure so a retry is unblocked.
+--   escalation_ticket_key   the tracker mutation this task already performed - the
+--                           created ticket key (set right after create, before the
+--                           comment/graduate) or the matched target key (set right
+--                           after the comment, before graduate). A retry reuses it
+--                           to skip the create / the comment rather than redo it.
+ALTER TABLE pm_tasks ADD COLUMN escalation_attempt_at TEXT;
+ALTER TABLE pm_tasks ADD COLUMN escalation_ticket_key TEXT;

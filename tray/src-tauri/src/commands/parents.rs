@@ -22,6 +22,7 @@
 //! - [`crate::install::meridian_bin`] — the shared "native binary first" resolver
 //!   (mirrors the Node helper `ui/lib/meridian-bin.ts`'s `selectMeridianBinary`).
 
+use meridian_core::proc_ext::NoWindow;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -81,6 +82,7 @@ pub async fn get_ticket_parents(provider: String, key: String) -> ParentsRespons
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .no_window()
         .output();
 
     let output = match tokio::time::timeout(Duration::from_secs(30), child).await {

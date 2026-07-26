@@ -554,6 +554,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "auto-launch"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f012b8cc0c850f34117ec8252a44418f2e34a2cf501de89e29b241ae5f79471"
+dependencies = [
+ "dirs 4.0.0",
+ "thiserror 1.0.69",
+ "winreg 0.10.1",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1340,8 +1351,8 @@ dependencies = [
 
 [[package]]
 name = "cidre"
-version = "0.15.2"
-source = "git+https://github.com/yury/cidre.git#623ddffa25a68696014e54a5f84916baedd953b9"
+version = "0.16.1"
+source = "git+https://github.com/yury/cidre.git#b3db4fd67a073a0be08f4d67327e7cdce42cc726"
 dependencies = [
  "cc",
  "cidre-macros 0.6.0",
@@ -2262,6 +2273,15 @@ dependencies = [
 
 [[package]]
 name = "dirs"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca3aa72a6f96ea37bbc5aa912f6788242832f75369bdfdadcb0e38423f100059"
+dependencies = [
+ "dirs-sys 0.3.7",
+]
+
+[[package]]
+name = "dirs"
 version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "44c45a9d03d6676652bcb5e724c7e988de1acad23a711b5217ab9cbecbec2225"
@@ -2276,6 +2296,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
 dependencies = [
  "dirs-sys 0.5.0",
+]
+
+[[package]]
+name = "dirs-sys"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b1d1d91c932ef41c0f2663aa8b0ca0342d444d842c06914aa0a7e352d0bada6"
+dependencies = [
+ "libc",
+ "redox_users 0.4.6",
+ "winapi",
 ]
 
 [[package]]
@@ -2603,7 +2634,7 @@ dependencies = [
  "rustc_version",
  "toml 1.1.2+spec-1.1.0",
  "vswhom",
- "winreg",
+ "winreg 0.55.0",
 ]
 
 [[package]]
@@ -3996,6 +4027,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rustls 0.23.40",
+ "rustls-native-certs",
  "tokio",
  "tokio-rustls",
  "tower-service",
@@ -5127,7 +5159,7 @@ dependencies = [
 
 [[package]]
 name = "meridian"
-version = "1.74.0"
+version = "1.77.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5235,6 +5267,7 @@ dependencies = [
  "sqlx",
  "tauri",
  "tauri-build",
+ "tauri-plugin-autostart",
  "tauri-plugin-clerk",
  "tauri-plugin-http",
  "tauri-plugin-notifications",
@@ -5771,7 +5804,7 @@ version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
 dependencies = [
- "proc-macro-crate 3.5.0",
+ "proc-macro-crate 1.3.1",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -7705,6 +7738,7 @@ dependencies = [
  "pin-project-lite",
  "quinn",
  "rustls 0.23.40",
+ "rustls-native-certs",
  "rustls-pki-types",
  "serde",
  "serde_json",
@@ -8280,7 +8314,7 @@ name = "sck-rs"
 version = "0.1.0"
 source = "git+https://github.com/screenpipe/sck-rs?rev=b7f48a1236b2339350baa1375a805c7ce32f88df#b7f48a1236b2339350baa1375a805c7ce32f88df"
 dependencies = [
- "cidre 0.15.2",
+ "cidre 0.16.1",
  "image",
  "once_cell",
  "thiserror 1.0.69",
@@ -8303,7 +8337,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "screenpipe-a11y"
 version = "0.1.0"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=064c44ccd8c50716f21eec1663e1350e848ca5f5#064c44ccd8c50716f21eec1663e1350e848ca5f5"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=2b7e929f7168344faa0121c7a646e5758701d19a#2b7e929f7168344faa0121c7a646e5758701d19a"
 dependencies = [
  "anyhow",
  "arboard",
@@ -8332,7 +8366,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-config"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=064c44ccd8c50716f21eec1663e1350e848ca5f5#064c44ccd8c50716f21eec1663e1350e848ca5f5"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=2b7e929f7168344faa0121c7a646e5758701d19a#2b7e929f7168344faa0121c7a646e5758701d19a"
 dependencies = [
  "dirs 6.0.0",
  "serde",
@@ -8344,7 +8378,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-connect"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=064c44ccd8c50716f21eec1663e1350e848ca5f5#064c44ccd8c50716f21eec1663e1350e848ca5f5"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=2b7e929f7168344faa0121c7a646e5758701d19a#2b7e929f7168344faa0121c7a646e5758701d19a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8383,7 +8417,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-core"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=064c44ccd8c50716f21eec1663e1350e848ca5f5#064c44ccd8c50716f21eec1663e1350e848ca5f5"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=2b7e929f7168344faa0121c7a646e5758701d19a#2b7e929f7168344faa0121c7a646e5758701d19a"
 dependencies = [
  "accessibility",
  "accessibility-sys",
@@ -8423,7 +8457,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-db"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=064c44ccd8c50716f21eec1663e1350e848ca5f5#064c44ccd8c50716f21eec1663e1350e848ca5f5"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=2b7e929f7168344faa0121c7a646e5758701d19a#2b7e929f7168344faa0121c7a646e5758701d19a"
 dependencies = [
  "anyhow",
  "chrono",
@@ -8449,7 +8483,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-events"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=064c44ccd8c50716f21eec1663e1350e848ca5f5#064c44ccd8c50716f21eec1663e1350e848ca5f5"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=2b7e929f7168344faa0121c7a646e5758701d19a#2b7e929f7168344faa0121c7a646e5758701d19a"
 dependencies = [
  "anyhow",
  "chrono",
@@ -8466,7 +8500,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-screen"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=064c44ccd8c50716f21eec1663e1350e848ca5f5#064c44ccd8c50716f21eec1663e1350e848ca5f5"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=2b7e929f7168344faa0121c7a646e5758701d19a#2b7e929f7168344faa0121c7a646e5758701d19a"
 dependencies = [
  "accessibility-sys",
  "anyhow",
@@ -8503,7 +8537,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-secrets"
 version = "0.1.0"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=064c44ccd8c50716f21eec1663e1350e848ca5f5#064c44ccd8c50716f21eec1663e1350e848ca5f5"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=2b7e929f7168344faa0121c7a646e5758701d19a#2b7e929f7168344faa0121c7a646e5758701d19a"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -8521,7 +8555,7 @@ dependencies = [
 [[package]]
 name = "screenpipe-vault"
 version = "0.4.15"
-source = "git+https://github.com/Meridiona/screenpipe-fork?rev=064c44ccd8c50716f21eec1663e1350e848ca5f5#064c44ccd8c50716f21eec1663e1350e848ca5f5"
+source = "git+https://github.com/Meridiona/screenpipe-fork?rev=2b7e929f7168344faa0121c7a646e5758701d19a#2b7e929f7168344faa0121c7a646e5758701d19a"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -10040,6 +10074,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tauri-plugin-autostart"
+version = "2.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "459383cebc193cdd03d1ba4acc40f2c408a7abce419d64bdcd2d745bc2886f70"
+dependencies = [
+ "auto-launch",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "tauri-plugin-clerk"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10311,7 +10359,7 @@ dependencies = [
  "serde_with",
  "swift-rs",
  "thiserror 2.0.18",
- "toml 1.1.2+spec-1.1.0",
+ "toml 0.9.12+spec-1.1.0",
  "url",
  "urlpattern",
  "uuid",
@@ -12445,6 +12493,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0592e1c9d151f854e6fd382574c3a0855250e1d9b2f99d9281c6e6391af352f1"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "winreg"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80d0f4e272c85def139476380b12f9ac60926689dd2e01d4923222f40580869d"
+dependencies = [
+ "winapi",
 ]
 
 [[package]]

@@ -16,6 +16,7 @@ pub mod comment;
 pub mod config;
 pub mod create;
 pub mod db;
+pub mod escalate;
 pub mod generate;
 pub mod github;
 pub mod jira;
