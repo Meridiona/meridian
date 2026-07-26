@@ -295,9 +295,26 @@ fn try_build_otel_providers(
     let resource = Resource::new(vec![
         KeyValue::new("service.name", service_name.to_string()),
         KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
+        // Kept RAW here on purpose. This resource set feeds the local spool,
+        // which `meridian logs` renders at full fidelity — a developer reading
+        // their own machine's logs should see their own hostname. The
+        // pseudonymisation happens on the SHIP leg only
+        // (`telemetry_spool::redact::pseudonymize_host`), so nothing
+        // identifying reaches the central backend.
         KeyValue::new(
             "host.name",
             gethostname::gethostname().to_string_lossy().into_owned(),
+        ),
+        // Which release channel produced this build, so staging test traffic
+        // and real user errors are separable in the central backend — they
+        // share one endpoint and one Sentry project, and without this
+        // attribute there is no way to filter one out of the other. Baked at
+        // compile time from the release workflow's job-level `MERIDIAN_CHANNEL`
+        // (set for both the macOS and Windows build jobs); a source build has
+        // it unset and reports "dev".
+        KeyValue::new(
+            "deployment.environment",
+            option_env!("MERIDIAN_CHANNEL").unwrap_or("dev"),
         ),
     ]);
 

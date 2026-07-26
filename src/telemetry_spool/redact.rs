@@ -154,6 +154,15 @@ const FREE_TEXT_KEYS: &[&str] = &[
 const NOISE_SUBSTRINGS: &[&str] = &[
     // Fires every poll (~60s) when an approved worklog has no PM provider
     // configured — a benign configuration state, not a fault.
+    //
+    // SOURCE OF TRUTH: the `tracing::warn!` in `crate::worklog_pipeline`'s
+    // approved-worklog drain. This is a substring copy with no compile-time or
+    // test coupling to it, so REWORDING THAT LOG SILENTLY BREAKS THIS ENTRY —
+    // nothing fails, the noise simply resumes flooding the central backend.
+    // If you touch that message, grep this constant. The durable fix is to
+    // match on a stable marker/error code rather than prose; deferred because
+    // it means threading an identifier through the log call, and today there
+    // is exactly one entry here.
     "approved worklog waiting but its provider is not configured",
 ];
 
@@ -346,7 +355,10 @@ fn keep_attribute(kv: &mut KeyValue) -> bool {
         // Numeric / bool can't carry free text — always safe.
         Some(Value::IntValue(_)) | Some(Value::DoubleValue(_)) | Some(Value::BoolValue(_)) => true,
         Some(Value::StringValue(s)) => {
-            if is_free_text_key(&kv.key) {
+            if kv.key == HOST_NAME_KEY {
+                *s = pseudonymize_host(s);
+                true
+            } else if is_free_text_key(&kv.key) {
                 *s = clamp(scrub_text(s));
                 true
             } else if is_safe_string_key(&kv.key) {
@@ -359,6 +371,51 @@ fn keep_attribute(kv: &mut KeyValue) -> bool {
         // Bytes / array / kvlist can nest arbitrary content — drop.
         _ => false,
     }
+}
+
+/// The one allowlisted key whose raw value must never egress verbatim.
+/// `observability::init` sets it from `gethostname()`, and on macOS the Unix
+/// hostname is routinely auto-derived from the account holder's real name
+/// during setup (`Akarshs-MacBook-Pro.local`). Shipping that to a
+/// team-visible backend would contradict the consent copy's promise that
+/// identifying content is stripped on-device.
+const HOST_NAME_KEY: &str = "host.name";
+
+/// Domain-separation prefix so the digest can't be compared against a hash of
+/// the bare hostname computed elsewhere.
+const HOST_PSEUDONYM_SALT: &str = "meridian.host.pseudonym.v1:";
+
+/// Replace a hostname with a stable, non-reversible pseudonym.
+///
+/// Dropping `host.name` outright was the other option, and is what the review
+/// that prompted this suggested — but nothing else in the resource set
+/// identifies a machine (`service.instance.id` is on [`SAFE_STRING_KEYS`] but
+/// is never actually populated), so dropping it would make "one user hitting
+/// this 500 times" indistinguishable from "500 users hitting it once". That
+/// distinction is most of the value of a central error backend, so we keep the
+/// grouping and lose the string.
+///
+/// Truncated to 16 hex chars: ample against collisions at fleet scale, short
+/// enough to read in a dashboard. This is **pseudonymous, not anonymous** — a
+/// determined reader who already knows a candidate hostname can confirm it by
+/// hashing. That matches the PR's stated position (redacted, not anonymous);
+/// true anonymisation is a later phase.
+///
+/// `pub` because the tray's Sentry `before_send` applies the identical
+/// transform to `event.server_name`, which `sentry-contexts` auto-populates
+/// from the same hostname — so both egress paths pseudonymise to the SAME
+/// value and a crash can still be correlated with that machine's error logs.
+pub fn pseudonymize_host(hostname: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(HOST_PSEUDONYM_SALT.as_bytes());
+    hasher.update(hostname.as_bytes());
+    let digest = hasher.finalize();
+    digest[..8].iter().fold(String::new(), |mut acc, b| {
+        use std::fmt::Write;
+        let _ = write!(acc, "{b:02x}");
+        acc
+    })
 }
 
 fn is_safe_string_key(key: &str) -> bool {
@@ -425,19 +482,78 @@ pub fn scrub_text(s: &str) -> String {
                 Regex::new(r"(?i)([/\\](?:Users|home)[/\\])([^/\\]+)").expect("path regex"),
                 "${1}<user>",
             ),
-            // Long opaque tokens / hashes / base64 blobs (32+ chars) — API keys,
-            // bearer tokens, dumped binary content.
-            (
-                Regex::new(r"[A-Za-z0-9+/=_\-]{32,}").expect("blob regex"),
-                "<redacted>",
-            ),
         ]
     });
     let mut out = s.to_string();
     for (re, rep) in rules {
         out = re.replace_all(&out, *rep).into_owned();
     }
-    out
+    // Long opaque tokens / hashes / base64 blobs — applied per whitespace-
+    // delimited token so a filesystem path isn't mistaken for one. See
+    // [`scrub_blobs`].
+    scrub_blobs(&out)
+}
+
+/// Redact long opaque tokens (API keys, bearer tokens, hashes, base64 blobs),
+/// skipping tokens that are recognisably filesystem paths.
+///
+/// The blob character class has to include `/` — real base64 contains it, and
+/// `openssl rand -base64 32` output routinely does. But applied naively across
+/// a whole string that also swallows paths: a plain
+/// `"failed to open /Users/<user>/Documents/…/redact.rs"` collapses to
+/// `"failed to open /Users/<user><redacted>.rs"`, because the run between the
+/// separators exceeds 32 chars. That silently destroyed a large fraction of
+/// real error messages — a debuggability regression, since these are exactly
+/// the free-text fields you need when diagnosing from a shipped report.
+///
+/// Simply removing `/` from the class is NOT a safe fix, though it looks like
+/// one: a 44-char base64 secret with a single slash near the middle splits
+/// into two ~22-char runs, neither of which reaches the 32 threshold, so the
+/// whole secret ships in clear. That trades a debuggability bug for a leak in
+/// the module whose entire job is not leaking.
+///
+/// So the discrimination happens at the token level instead: keep the full
+/// character class (secrets stay caught whole), but skip tokens that look like
+/// paths. Residual, stated honestly: a base64 blob that happens to begin with
+/// `/`, or whose final `/`-segment contains a `.`, is treated as a path and
+/// survives. That is accepted because this rule is defence-in-depth — the real
+/// boundary is the error-only filter plus the key allowlist, which drop
+/// content-bearing records and attributes wholesale before free text is ever
+/// reached.
+fn scrub_blobs(s: &str) -> String {
+    static BLOB: OnceLock<Regex> = OnceLock::new();
+    let blob = BLOB.get_or_init(|| Regex::new(r"[A-Za-z0-9+/=_\-]{32,}").expect("blob regex"));
+
+    // `split_inclusive` keeps the whitespace attached, so reassembly is exact.
+    s.split_inclusive(char::is_whitespace)
+        .map(|tok| {
+            if looks_like_path(tok) {
+                tok.to_string()
+            } else {
+                blob.replace_all(tok, "<redacted>").into_owned()
+            }
+        })
+        .collect()
+}
+
+/// Whether a whitespace-delimited token is recognisably a filesystem path, and
+/// so exempt from blob redaction. Deliberately narrow: an absolute/relative/
+/// home-anchored prefix, a Windows drive letter, or a dotted final segment
+/// (i.e. a file extension).
+fn looks_like_path(tok: &str) -> bool {
+    let t = tok.trim_matches(|c: char| c.is_whitespace() || ".,;:)(\"'".contains(c));
+    if t.starts_with('/') || t.starts_with("./") || t.starts_with("../") || t.starts_with("~/") {
+        return true;
+    }
+    // `C:\…` / `C:/…`
+    let mut ch = t.chars();
+    if let (Some(a), Some(b), Some(c)) = (ch.next(), ch.next(), ch.next()) {
+        if a.is_ascii_alphabetic() && b == ':' && (c == '\\' || c == '/') {
+            return true;
+        }
+    }
+    // A relative path whose last segment carries an extension.
+    t.contains('/') && t.rsplit('/').next().is_some_and(|last| last.contains('.'))
 }
 
 /// Light scrub for allowlisted NON-free-text strings (e.g. `code.filepath`):
@@ -789,5 +905,76 @@ mod tests {
         assert!(out.ends_with("…[truncated]"));
         // 2000 kept chars + the truncation marker, nothing more.
         assert_eq!(out.chars().count(), 2000 + "…[truncated]".chars().count());
+    }
+
+    /// The blob rule must not eat filesystem paths. Before [`scrub_blobs`] was
+    /// applied per token, the run between separators exceeded the 32-char
+    /// threshold and a routine "failed to open <path>" collapsed into
+    /// `/Users/<user><redacted>.rs`, destroying the most useful part of a
+    /// shipped error report.
+    #[test]
+    fn free_text_keeps_embedded_paths() {
+        for msg in [
+            "failed to open /Users/akarsh/Documents/Meridiona/meridian/src/telemetry_spool/redact.rs",
+            "parse error in crates/meridian-core/src/telemetry_spool/redact_helpers.rs",
+            "spool dir /var/log/meridian/telemetry/pending unreadable",
+        ] {
+            let out = scrub_text(msg);
+            assert!(
+                !out.contains("<redacted>"),
+                "path was mangled by the blob rule: {out}"
+            );
+            // The home-dir username is still replaced — that scrub is separate
+            // and must keep working.
+            assert!(!out.contains("akarsh"), "home-dir username survived: {out}");
+        }
+    }
+
+    /// The counterpart: secrets must still die whole. Removing `/` from the
+    /// blob character class would pass the path test above while letting a
+    /// 44-char base64 secret with a mid-token slash through in clear, because
+    /// neither resulting run reaches 32 chars.
+    #[test]
+    fn free_text_still_redacts_every_secret_shape() {
+        let cases = [
+            // base64 with a slash near the middle — the naive-fix leak case.
+            "auth failed: aB3xY9kLmNp2QrS7t/UvW1zA4bC6dE8fG0hIjK5lMnO=",
+            // base64 with several slashes, no run reaching 32.
+            "auth failed: aB3/xY9kLmNp2QrS/7tUvW1zA4bC/dE8fG0hI/jK5lMnO=",
+            // Bare API-key style token. Deliberately NOT shaped like a real
+            // provider's key (no `sk_live_`/`ghp_`/… prefix) — GitHub push
+            // protection scans fixtures too, and a realistic-looking one gets
+            // the whole push rejected as a leaked credential.
+            "token EXAMPLEKEYNOTAREALSECRETabcdefghijklmnop0123456789",
+            // hex digest.
+            "sha 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+        ];
+        for msg in cases {
+            let out = scrub_text(msg);
+            assert!(out.contains("<redacted>"), "secret not redacted: {out}");
+            assert!(
+                !out.contains("jK5lMnO") && !out.contains("abcdefghijklmnop"),
+                "secret fragment survived: {out}"
+            );
+        }
+    }
+
+    /// The hostname is the one allowlisted value that must never egress
+    /// verbatim — on macOS it is routinely the account holder's real name.
+    #[test]
+    fn host_name_is_pseudonymised_not_shipped_raw() {
+        let mut kv = str_attr("host.name", "Akarshs-MacBook-Pro.local");
+        assert!(keep_attribute(&mut kv), "host.name should be kept");
+        let out = match kv.value.unwrap().value.unwrap() {
+            Value::StringValue(s) => s,
+            other => panic!("expected string, got {other:?}"),
+        };
+        assert!(!out.contains("Akarsh"), "raw hostname survived: {out}");
+        assert!(!out.contains("MacBook"), "raw hostname survived: {out}");
+        assert_eq!(out.len(), 16, "expected a 16-hex-char pseudonym, got {out}");
+        // Stable across calls — grouping by machine has to survive restarts.
+        assert_eq!(out, pseudonymize_host("Akarshs-MacBook-Pro.local"));
+        // ...and distinct per machine, or grouping would be meaningless.
+        assert_ne!(out, pseudonymize_host("someone-elses-imac.local"));
     }
 }

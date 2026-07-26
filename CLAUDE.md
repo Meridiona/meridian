@@ -133,8 +133,10 @@ meridian/
 > build` → `generate_context!` bundles `ui/out`); the standalone-Node-server release machinery (the
 > `com.meridiona.ui` plist, `ui-start.sh`, the `ui.tar.gz` packing, the pinned Node runtime + better-sqlite3
 > ABI dance) was retired, and `backend_install.rs` boots out any leftover `com.meridiona.ui` agent on
-> update. Dev-only `--features otel` on the tray exports spans to OpenObserve
-> (`service.name = meridian-tray`) — release builds omit it. Rationale + full scope: Obsidian
+> update. The tray calls `meridian::observability::init("meridian-tray")`
+> **unconditionally** in every build — the old dev-only `otel` feature was
+> removed, because the tray is the process the user actually clicks and it was
+> otherwise dark in release. Rationale + full scope: Obsidian
 > `Decisions/Dashboard frontend - keep Next in Tauri.md`, `~/.claude/plans/meridian-next-fold.md`.
 
 ### Per-OS Tauri config — `tauri.windows.conf.json` (read before editing `bundle.resources`)
@@ -229,7 +231,7 @@ There are no JS/TS test suites yet. When adding them, place them under `ui/__tes
 | `POLL_INTERVAL_SECS` | `60` | ETL poll cadence in seconds |
 | `RUST_LOG` | `meridian=info` | Tracing filter |
 | `SQLX_OFFLINE` | `true` (via `.cargo/config.toml`) | Prevents sqlx from hitting the DB at compile time |
-| `MERIDIAN_OTLP_ENDPOINT` | (unset → default `http://localhost:5080/api/default/v1/traces`) | OpenObserve OTLP/HTTP traces endpoint override — only consulted for shipping (dev/bare installs; a Canonical/packaged install never ships, see "Telemetry: local-only capture, dev-only shipping" below) |
+| `MERIDIAN_OTLP_ENDPOINT` | (unset → default `http://localhost:5080/api/default/v1/traces`) | OpenObserve OTLP/HTTP traces endpoint override — consulted only on the DEV/bare shipping path (a packaged install ships to the release-baked central gateway instead; see the Observability section below) |
 | `MERIDIAN_OO_AUTH` | DEPRECATED — ignored everywhere | OO credentials live in `settings.json` (`oo_email`/`oo_password`) |
 | `MERIDIAN_TELEMETRY_DISABLED` | (unset → capture always on) | Hard kill switch for OTel span/log capture to the local spool — the sole log/trace sink; disabling it leaves only launchd's raw stdout/stderr crash-safety-net files. |
 | `MERIDIAN_LAUNCHD_LOG_MAX_MB` | `10` | Size cap for each launchd-redirected raw log file (`daemon.log`, etc.); capped via copytruncate on the telemetry shipper's tick (`src/telemetry_spool/shipper.rs`). |
@@ -347,7 +349,7 @@ The fold replaces every `ui/app/api/*` route with a Rust command the frontend ca
 - Include the file header comment on line 1
 - The integration test helper `make_meridian_db()` runs all migrations; new migrations are covered automatically by `cargo test`
 
-### Observability (logs & traces — local-only capture, dev-only shipping to OpenObserve)
+### Observability (logs & traces — local-only capture; dev ships full-fidelity to its own OO, packaged ships redacted error-only to central)
 
 Any new or changed code path that does real work (daemon stages, the distiller/embedder, the worklog pipeline, coding-agent ingest) **must emit structured logs and traces** — not just `println!` to a terminal. Add proper logs and traces as you write the code, not as an afterthought.
 
@@ -374,20 +376,37 @@ into it deliberately) and is size-capped (`MERIDIAN_LAUNCHD_LOG_MAX_MB`,
 copytruncate, `telemetry_spool::shipper`) and folded into diagnostics export
 bundles alongside the spool.
 
-**Shipping to OpenObserve is dev-only.** The Rust daemon's
-`telemetry_spool::shipper` background task is the ONLY thing that ever ships
-spooled files to OpenObserve, and it refuses to do so entirely for a
-**Canonical** (packaged/shipped DMG) install, regardless of settings — see
-`src/observability.rs`'s `is_canonical_install()`/`resolve_otlp_target()`.
-Only a Dev/Bare checkout with `otlp_enabled` + `oo_email`/`oo_password`
-configured ships live, for an engineer debugging against their own
-OpenObserve instance. A shipped install's only path to a developer's
-OpenObserve is the tray Settings → Account → **Export Diagnostics** button
-(or `meridian telemetry export`), which bundles the spool + the launchd
-crash-safety-net logs into a `.tar.gz` the user hands to support, imported by
-hand with `meridian telemetry import <bundle> --endpoint <url> --auth
-<base64>`. Retention (default 7 days, `MERIDIAN_TELEMETRY_RETENTION_DAYS`)
-applies to both `pending/` and `sent/`, regardless of shipping status.
+**Shipping has TWO modes, split by install type**
+(`src/observability/otlp_target.rs::resolve_otlp_target`). The daemon's
+`telemetry_spool::shipper` background task is still the ONLY thing that ever
+ships spooled files anywhere:
+
+- **Dev / Bare checkout** → the engineer's OWN local OpenObserve, gated on
+  `otlp_enabled` + `oo_email`/`oo_password`, `Basic` auth, **full fidelity**
+  (no redaction). Unchanged.
+- **Canonical (packaged DMG)** → Meridian's **central** OpenObserve via the
+  ingest gateway (`ops/central-observability/`), gated on the
+  `error_reporting_enabled` setting (**opt-out, default true**), `Bearer` auth
+  with a release-baked write-only token, and **redacted + error-only**
+  (`telemetry_spool::redact`). The endpoint and token are release-injected
+  `option_env!` constants, so a source build is inert and can never ship to
+  prod by accident.
+
+Redaction applies to the **ship leg only** — it produces a separate stripped
+copy to POST, so local capture and `meridian logs` stay full-fidelity. Two
+things it guarantees that are easy to regress: only WARN+ logs / ERROR-status
+spans egress at all, and `host.name` is replaced by a stable **pseudonym**
+(`redact::pseudonymize_host`) rather than shipping the raw hostname, which on
+macOS is routinely the account holder's real name. The tray's Sentry
+`before_send` applies the identical pseudonym to `event.server_name`.
+
+**Export Diagnostics remains the manual path**, unchanged and independent of
+consent: tray Settings → Account → **Export Diagnostics** (or `meridian
+telemetry export`) bundles the spool + the launchd crash-safety-net logs into
+a `.tar.gz` the user hands to support, imported by hand with `meridian
+telemetry import <bundle> --endpoint <url> --auth <base64>`. Retention
+(default 7 days, `MERIDIAN_TELEMETRY_RETENTION_DAYS`) applies to both
+`pending/` and `sent/`, regardless of shipping status.
 
 - **Rust**: `tracing::info!/warn!/error!/debug!` with **structured fields** — never format data values into the message string (already enforced).
 - **Wrap discrete operations in spans** (`tracing::info_span!` / `debug_span!`) and put the meaningful inputs, outputs, and metrics as **span attributes**, not buried in log lines. For an LLM/model call, capture the EXACT input as sent and output as received (post-cap/post-template — reflect any truncation that actually happened), plus real token counts/latency. See `src/llm/resolver.rs`'s `llm.call` span tree (request → infer → response) and `src/worklog_pipeline/distiller`'s `distil.run` span for the reference shape.

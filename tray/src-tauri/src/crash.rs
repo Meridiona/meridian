@@ -93,8 +93,19 @@ pub fn init_client() -> Option<ClientInitGuard> {
 /// home-dir usernames, URLs, emails, and long tokens are stripped from the event
 /// message and each exception value. (Stack-frame paths are build-time CI paths,
 /// not user paths, so they carry no user PII.)
+///
+/// `server_name` needs separate handling because nothing above touches it:
+/// the `sentry` crate's `contexts` feature (enabled in Cargo.toml) pulls in
+/// `sentry-contexts`, whose integration auto-populates `server_name` from
+/// `hostname::get()` when the app hasn't set one — and `send_default_pii:
+/// false` does NOT suppress it, being a separate integration. On macOS that
+/// hostname is routinely derived from the account holder's real name
+/// (`Akarshs-MacBook-Pro.local`), so it would ship a likely-identifying string
+/// with every crash. It gets the same pseudonym as the OTLP path's `host.name`
+/// (`redact::pseudonymize_host`), so a crash here and an error log there
+/// resolve to the SAME machine identifier and can still be correlated.
 fn scrub_event(mut event: Event<'static>) -> Option<Event<'static>> {
-    use meridian::telemetry_spool::redact::scrub_text;
+    use meridian::telemetry_spool::redact::{pseudonymize_host, scrub_text};
     if let Some(m) = event.message.take() {
         event.message = Some(scrub_text(&m));
     }
@@ -103,5 +114,9 @@ fn scrub_event(mut event: Event<'static>) -> Option<Event<'static>> {
             exc.value = Some(scrub_text(&v));
         }
     }
+    event.server_name = event
+        .server_name
+        .take()
+        .map(|h| pseudonymize_host(&h).into());
     Some(event)
 }
