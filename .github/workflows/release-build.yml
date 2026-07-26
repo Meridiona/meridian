@@ -389,6 +389,13 @@ jobs:
           # companion write token is a SECRET (MERIDIAN_CENTRAL_TELEMETRY_TOKEN);
           # both must be present for a build to ship.
           MERIDIAN_CENTRAL_OTLP_ENDPOINT: ${{ vars.MERIDIAN_CENTRAL_OTLP_ENDPOINT }}
+          # The write-only ingest token the gateway's OTel Collector validates
+          # (`bearertokenauth/ingest` in ops/central-observability/). A SECRET,
+          # unlike the endpoint: it is the one credential a shipped install
+          # carries, so it must not appear in logs or the Actions UI. Rotate by
+          # changing INGEST_TOKEN on the gateway + this secret, then cutting a
+          # release — old tokens stop being accepted immediately.
+          MERIDIAN_CENTRAL_TELEMETRY_TOKEN: ${{ secrets.MERIDIAN_CENTRAL_TELEMETRY_TOKEN }}
           # Baked into the TRAY at compile time via option_env! (tray/src-tauri/
           # src/crash.rs) for native-crash reporting to Sentry. A Sentry DSN is
           # embeddable in clients (it only permits SENDING events, not reading),
@@ -685,6 +692,9 @@ jobs:
           # + src/observability/otlp_target.rs). Repo variable, not a secret;
           # unset → central error shipping stays inert.
           MERIDIAN_CENTRAL_OTLP_ENDPOINT: ${{ vars.MERIDIAN_CENTRAL_OTLP_ENDPOINT }}
+          # Write-only ingest token the gateway validates. Secret, not a
+          # variable — see the macOS build step for the rotation note.
+          MERIDIAN_CENTRAL_TELEMETRY_TOKEN: ${{ secrets.MERIDIAN_CENTRAL_TELEMETRY_TOKEN }}
           # Baked into the tray .exe via option_env! (tray crash.rs) for Sentry
           # native-crash reporting. Client-embeddable DSN → repo variable; unset
           # → the tray never initialises Sentry.
