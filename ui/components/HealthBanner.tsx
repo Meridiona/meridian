@@ -8,11 +8,24 @@ interface HealthStatus {
   a11y_helper_trusted?: boolean
   database_ready?: boolean
   error?: string
+  /** Whether the in-use LLM provider is usable. `false` → the provider is missing or failing,
+   *  so summaries are paused/degraded. `llm_provider_name`/`_detail` fill the banner copy. */
+  llm_provider_ok?: boolean
+  /** `true` → the provider is usable but rate-limited: a softer "catching up" notice, not the
+   *  "unavailable" alarm (it clears on its own). Only meaningful when `llm_provider_ok !== false`. */
+  llm_provider_rate_limited?: boolean
+  llm_provider_name?: string
+  llm_provider_detail?: string
 }
 
 export default function HealthBanner() {
   const [health, setHealth] = useState<HealthStatus | null>(null)
-  const [dismissed, setDismissed] = useState(false)
+  // Dismissal is keyed to the SIGNATURE of the banner that was dismissed, not a global boolean,
+  // so dismissing one problem can't suppress a different (or worse) one that arises later - e.g.
+  // dismissing the a11y notice must not hide a subsequent "your provider is unavailable, summaries
+  // paused" banner. When the active problem's signature changes, the old dismissal no longer
+  // matches and the banner reappears.
+  const [dismissedSig, setDismissedSig] = useState<string | null>(null)
 
   useEffect(() => {
     // health-update (Tauri event) in the app, /api/health/stream SSE in a browser.
@@ -22,13 +35,34 @@ export default function HealthBanner() {
     })
   }, [])
 
-  // Show banner if database is not ready (critical), or a11y-helper is not trusted, and not dismissed
-  const showDatabaseError = health && health.database_ready === false
-  const showA11yWarning = health && health.a11y_helper_trusted === false && health.database_ready !== false
+  // One banner at a time, in priority order: database not ready (critical) > in-use LLM provider
+  // unavailable (summaries paused) > provider rate-limited (summaries catching up, soft notice) >
+  // a11y-helper not trusted (capture degraded).
+  const showDatabaseError = !!health && health.database_ready === false
+  const showProviderError = !!health && health.llm_provider_ok === false && !showDatabaseError
+  const showProviderRateLimit =
+    !!health && health.llm_provider_rate_limited === true && health.llm_provider_ok !== false && !showDatabaseError
+  const showA11yWarning =
+    !!health && health.a11y_helper_trusted === false && !showDatabaseError && !showProviderError && !showProviderRateLimit
+  // A signature that identifies the active (highest-priority) banner AND its content, so a
+  // dismissal is scoped to exactly that alert. `null` when there's nothing to show.
+  const pName = health?.llm_provider_name ?? ''
+  const pDetail = health?.llm_provider_detail ?? ''
+  const activeSig = showDatabaseError
+    ? `db:${health?.error ?? 'schema'}`
+    : showProviderError
+      ? `provider-unavailable:${pName}:${pDetail}`
+      : showProviderRateLimit
+        ? `provider-ratelimit:${pName}:${pDetail}`
+        : showA11yWarning
+          ? 'a11y'
+          : null
 
-  if (!health || (health.a11y_helper_trusted !== false && health.database_ready !== false) || dismissed) {
+  if (!health || !activeSig || activeSig === dismissedSig) {
     return null
   }
+
+  const dismiss = () => setDismissedSig(activeSig)
 
   if (showDatabaseError) {
     const isNotFound = health.error?.toLowerCase().includes('not found') ?? false
@@ -56,7 +90,67 @@ export default function HealthBanner() {
           </div>
         </div>
         <button
-          onClick={() => setDismissed(true)}
+          onClick={dismiss}
+          className="px-3 py-1 text-xs rounded hover:opacity-70 transition-opacity"
+          style={{ color: 'var(--ink-3)', border: '1px solid var(--rule)' }}
+        >
+          Dismiss
+        </button>
+      </div>
+    )
+  }
+
+  if (showProviderError) {
+    const providerName = health.llm_provider_name ?? 'Your AI provider'
+    return (
+      <div
+        className="w-full px-6 py-3.5 flex items-center justify-between border-b"
+        style={{ borderBottomColor: 'var(--rule)', backgroundColor: 'rgba(253, 224, 71, 0.08)' }}
+      >
+        <div className="flex items-center gap-3 flex-1">
+          <span className="text-lg">🤖</span>
+          <div className="flex-1">
+            <p className="text-sm" style={{ color: 'var(--ink-2)' }}>
+              <strong>{providerName} isn&apos;t available</strong>
+            </p>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--ink-3)' }}>
+              {health.llm_provider_detail ? `${health.llm_provider_detail}. ` : ''}
+              Hourly summaries are paused — open Settings → Intelligence to reinstall, sign in, or pick another provider.
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={dismiss}
+          className="px-3 py-1 text-xs rounded hover:opacity-70 transition-opacity"
+          style={{ color: 'var(--ink-3)', border: '1px solid var(--rule)' }}
+        >
+          Dismiss
+        </button>
+      </div>
+    )
+  }
+
+  if (showProviderRateLimit) {
+    const providerName = health.llm_provider_name ?? 'Your AI provider'
+    return (
+      <div
+        className="w-full px-6 py-3.5 flex items-center justify-between border-b"
+        style={{ borderBottomColor: 'var(--rule)', backgroundColor: 'rgba(59, 130, 246, 0.08)' }}
+      >
+        <div className="flex items-center gap-3 flex-1">
+          <span className="text-lg">⏳</span>
+          <div className="flex-1">
+            <p className="text-sm" style={{ color: 'var(--ink-2)' }}>
+              <strong>{providerName} is rate-limited</strong>
+            </p>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--ink-3)' }}>
+              {health.llm_provider_detail ? `${health.llm_provider_detail}. ` : ''}
+              You&apos;re signed in and nothing is lost — summaries will catch up on their own once the limit resets.
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={dismiss}
           className="px-3 py-1 text-xs rounded hover:opacity-70 transition-opacity"
           style={{ color: 'var(--ink-3)', border: '1px solid var(--rule)' }}
         >
@@ -86,7 +180,7 @@ export default function HealthBanner() {
         </div>
       </div>
       <button
-        onClick={() => setDismissed(true)}
+        onClick={dismiss}
         className="px-3 py-1 text-xs rounded hover:opacity-70 transition-opacity"
         style={{ color: 'var(--ink-3)', border: '1px solid var(--rule)' }}
       >

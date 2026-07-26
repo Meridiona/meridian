@@ -166,6 +166,161 @@ pub async fn detect_all() -> Vec<ProviderStatus> {
     futures::future::join_all(futures).await
 }
 
+// ── In-use provider health (dashboard banner) ────────────────────────────────────────
+
+/// Whether the user's CURRENTLY-CHOSEN provider looks usable, for the dashboard's
+/// "provider unavailable" banner. Deliberately CHEAP: an install probe (memoised by
+/// [`resolve_cli`]) plus the on-disk last-test result — never a fresh metered call, so it's
+/// safe to compute on every health poll.
+#[derive(Debug, Clone)]
+pub struct InUseProviderHealth {
+    /// `true` when the chosen provider looks usable: a CLI provider is installed and its last
+    /// connectivity test (if any) didn't fail; a cloud endpoint's last test didn't fail. `false`
+    /// means the dashboard should warn — summaries are paused or degraded until it's fixed.
+    pub ok: bool,
+    /// `true` when the provider is usable (`ok` stays `true`) but its last test was RATE-LIMITED —
+    /// signed in and working, just throttled. Drives a distinct, softer "catching up" notice
+    /// rather than the "unavailable" alarm, because it clears on its own. Mutually exclusive with
+    /// `!ok` (a missing/failed provider is never also "rate-limited").
+    pub rate_limited: bool,
+    /// Human name for the banner copy, e.g. "Codex".
+    pub name: String,
+    /// The reason to show: the failure/"not installed" text when `!ok`, or the rate-limit message
+    /// when `rate_limited`. `None` when the provider is simply fine.
+    pub detail: Option<String>,
+}
+
+/// A human display name for the banner — mirrors the chooser tiles in `ui/lib/llm-providers.ts`.
+fn provider_display_name(p: LlmProvider) -> &'static str {
+    match p {
+        LlmProvider::Claude => "Claude Code",
+        LlmProvider::Codex => "Codex",
+        LlmProvider::Cursor => "Cursor",
+        LlmProvider::Copilot => "Copilot",
+        LlmProvider::Custom => "your AI provider",
+    }
+}
+
+/// How long an [`in_use_provider_health`] result is reused before recomputing. The recurring
+/// health poll (every 60 s) AND every on-demand `get_health` would otherwise re-run the install
+/// probe each tick — and for an UNINSTALLED provider (the exact state the "provider unavailable"
+/// banner exists to surface) that probe can't hit `resolve_cli`'s hit-only cache, so it falls
+/// through to a login-shell spawn on a packaged app every time. A few-minute TTL bounds that to
+/// one probe per window while still clearing/raising the banner promptly relative to the hourly
+/// summary cadence it guards.
+const IN_USE_HEALTH_TTL: Duration = Duration::from_secs(300);
+
+/// Cache of the last computed provider health: `(provider wire id, computed_at, result)`. Keyed
+/// by the provider id so switching the selected provider invalidates it immediately rather than
+/// serving the previous provider's verdict for up to a TTL.
+#[allow(clippy::type_complexity)]
+static IN_USE_HEALTH_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<Option<(String, Instant, InUseProviderHealth)>>,
+> = std::sync::OnceLock::new();
+
+/// Whether the user's CURRENTLY-CHOSEN provider looks usable — [`InUseProviderHealth`] for the
+/// provider named in `settings.llm_provider`, served from a short-TTL cache
+/// ([`IN_USE_HEALTH_TTL`]) so the recurring health poll doesn't re-run the (possibly
+/// login-shell-spawning) install probe on every tick. See [`classify_provider_health`] for the
+/// unavailable → rate-limited → fine decision.
+pub async fn in_use_provider_health(settings: &RuntimeSettings) -> InUseProviderHealth {
+    // Serve a fresh-enough cached result for the SAME provider.
+    {
+        let guard = IN_USE_HEALTH_CACHE
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some((provider, at, health)) = guard.as_ref() {
+            if provider == &settings.llm_provider && at.elapsed() < IN_USE_HEALTH_TTL {
+                return health.clone();
+            }
+        }
+    }
+
+    let health = compute_in_use_provider_health(settings).await;
+
+    let mut guard = IN_USE_HEALTH_CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    *guard = Some((
+        settings.llm_provider.clone(),
+        Instant::now(),
+        health.clone(),
+    ));
+    health
+}
+
+/// The uncached computation behind [`in_use_provider_health`]: resolve install state (one
+/// [`resolve_cli`] probe for a CLI provider; a cloud `Custom` endpoint has no binary) plus the
+/// last on-disk test result, then hand both to [`classify_provider_health`].
+async fn compute_in_use_provider_health(settings: &RuntimeSettings) -> InUseProviderHealth {
+    let Some(provider) = LlmProvider::from_wire(&settings.llm_provider) else {
+        // An unrecognised provider string (a downgrade, a hand-edited settings file): don't
+        // alarm on something we can't reason about.
+        return InUseProviderHealth {
+            ok: true,
+            rate_limited: false,
+            name: settings.llm_provider.clone(),
+            detail: None,
+        };
+    };
+    let name = provider_display_name(provider).to_string();
+    let last_outcome = load_test_cache()
+        .get(provider.as_str())
+        .map(|r| r.outcome.clone());
+    // A cloud endpoint (`Custom`, `cli_name() == None`) has no binary to probe, so it's treated
+    // as "installed" here — only its last test can tell us anything.
+    let installed = match provider.cli_name() {
+        Some(bin) => resolve_cli(bin).await.is_some(),
+        None => true,
+    };
+    classify_provider_health(name, installed, last_outcome.as_ref())
+}
+
+/// The pure unavailable → rate-limited → fine decision, split out so the ladder can be unit-tested
+/// without a filesystem probe.
+///
+/// - not installed → **unavailable** (`ok: false`).
+/// - installed + last test `Failed` → **unavailable** (signed out, spawn error, …).
+/// - installed + last test `RateLimited` → **rate-limited** (`ok: true, rate_limited: true`): it
+///   clears on its own, so a softer flag rather than the alarm — alarming would cry wolf.
+/// - installed + `Ok`/no test on record → **fine** (don't alarm before we've had a reason to).
+fn classify_provider_health(
+    name: String,
+    installed: bool,
+    last_outcome: Option<&ProviderTestOutcome>,
+) -> InUseProviderHealth {
+    if !installed {
+        return InUseProviderHealth {
+            ok: false,
+            rate_limited: false,
+            detail: Some(format!("{name} isn't installed")),
+            name,
+        };
+    }
+    match last_outcome {
+        Some(ProviderTestOutcome::Failed { message }) => InUseProviderHealth {
+            ok: false,
+            rate_limited: false,
+            name,
+            detail: Some(message.clone()),
+        },
+        Some(ProviderTestOutcome::RateLimited { message }) => InUseProviderHealth {
+            ok: true,
+            rate_limited: true,
+            name,
+            detail: Some(message.clone()),
+        },
+        _ => InUseProviderHealth {
+            ok: true,
+            rate_limited: false,
+            name,
+            detail: None,
+        },
+    }
+}
+
 // ── Real connectivity test ───────────────────────────────────────────────────────────
 
 /// A test call is capped far tighter than a real hourly summary (which can legitimately
@@ -499,9 +654,9 @@ async fn warn_if_version_unpinned(provider: LlmProvider, path: &std::path::Path)
     }
 }
 
-/// How long the interactive Cursor sign-in may take - a human finishing an OAuth flow in their
-/// browser, so generous, but not unbounded.
-const CURSOR_LOGIN_TIMEOUT: Duration = Duration::from_secs(180);
+/// How long an interactive provider sign-in (Cursor or Codex) may take - a human finishing an
+/// OAuth flow in their browser, so generous, but not unbounded.
+const INTERACTIVE_LOGIN_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Run the interactive `cursor-agent login` on the user's behalf — the "Sign in to Cursor"
 /// button in the provider detail view.
@@ -560,26 +715,27 @@ pub async fn cursor_sign_in() -> InstallOutcome {
         tail(buf.trim(), 300)
     };
 
-    let output = match tokio::time::timeout(CURSOR_LOGIN_TIMEOUT, child.wait_with_output()).await {
-        Ok(Ok(out)) => out,
-        Ok(Err(e)) => {
-            return install_failed(label, format!("couldn't run cursor-agent login: {e}"))
-        }
-        Err(_) => {
-            let printed = login_output(&seen);
-            return install_failed(
-                label,
-                if printed.is_empty() {
-                    "the sign-in wasn't finished in time - click Sign in to Cursor again".into()
-                } else {
-                    format!(
-                        "the sign-in wasn't finished in time. Finish it by hand with what \
+    let output =
+        match tokio::time::timeout(INTERACTIVE_LOGIN_TIMEOUT, child.wait_with_output()).await {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => {
+                return install_failed(label, format!("couldn't run cursor-agent login: {e}"))
+            }
+            Err(_) => {
+                let printed = login_output(&seen);
+                return install_failed(
+                    label,
+                    if printed.is_empty() {
+                        "the sign-in wasn't finished in time - click Sign in to Cursor again".into()
+                    } else {
+                        format!(
+                            "the sign-in wasn't finished in time. Finish it by hand with what \
                          cursor-agent printed:\n{printed}"
-                    )
-                },
-            );
-        }
-    };
+                        )
+                    },
+                );
+            }
+        };
 
     if output.status.success() {
         let span = tracing::Span::current();
@@ -605,6 +761,221 @@ pub async fn cursor_sign_in() -> InstallOutcome {
             label,
             if reason.is_empty() {
                 "cursor-agent login failed".to_string()
+            } else {
+                reason
+            },
+        )
+    }
+}
+
+/// Run the interactive `codex login` on the user's behalf — the "Sign in to Codex" button in
+/// the provider detail view.
+///
+/// `codex login` (no subcommand) opens the user's browser to sign into their ChatGPT account
+/// and runs a localhost callback server to receive the OAuth redirect; on success it writes
+/// `~/.codex/auth.json` and exits 0, so the summariser then runs on their **ChatGPT
+/// subscription** — no API key, nothing metered. A deliberate mirror of [`cursor_sign_in`]:
+/// the browser is enabled (this is an explicit click, not the daemon's unattended path),
+/// stdout is drained live so the verification URL is surfaced if the browser can't open, and
+/// the wait is bounded by [`INTERACTIVE_LOGIN_TIMEOUT`]. Once it completes, codex persists the
+/// auth and every later run just adopts it — the same "sign in once" model as Cursor.
+#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty))]
+pub async fn codex_sign_in() -> InstallOutcome {
+    let label = "codex login";
+    let Some(path) = resolve_cli("codex").await else {
+        return install_failed(label, "codex isn't installed yet - install it first".into());
+    };
+
+    tracing::info!("llm: launching interactive codex login");
+    let mut cmd = Command::new(&path);
+    cmd.arg("login")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .no_window();
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return install_failed(label, format!("couldn't start codex: {e}")),
+    };
+
+    // Drain stdout as it arrives - `codex login` prints its verification URL to STDOUT while it
+    // waits, which is exactly what the user needs if the browser doesn't open for them. Same
+    // reasoning as the matching drain in `cursor_sign_in`.
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    if let Some(out) = child.stdout.take() {
+        let seen = seen.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut lines = BufReader::new(out).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tracing::info!(line = %line, "codex login");
+                let mut buf = seen.lock().unwrap_or_else(|e| e.into_inner());
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+        });
+    }
+    let login_output = |seen: &std::sync::Mutex<String>| -> String {
+        let buf = seen.lock().unwrap_or_else(|e| e.into_inner());
+        tail(buf.trim(), 300)
+    };
+
+    let output =
+        match tokio::time::timeout(INTERACTIVE_LOGIN_TIMEOUT, child.wait_with_output()).await {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => return install_failed(label, format!("couldn't run codex login: {e}")),
+            Err(_) => {
+                let printed = login_output(&seen);
+                return install_failed(
+                    label,
+                    if printed.is_empty() {
+                        "the sign-in wasn't finished in time - click Sign in to Codex again".into()
+                    } else {
+                        format!(
+                            "the sign-in wasn't finished in time. Finish it by hand with what \
+                             codex printed:\n{printed}"
+                        )
+                    },
+                );
+            }
+        };
+
+    if output.status.success() {
+        let span = tracing::Span::current();
+        span.record("ok", true);
+        span.record("cli_path", tracing::field::display(path.display()));
+        tracing::info!("llm: codex login succeeded");
+        InstallOutcome {
+            ok: true,
+            message: "Signed in to Codex.".into(),
+            path: Some(path.display().to_string()),
+            command: label.to_string(),
+        }
+    } else {
+        // stderr first (that is where the reason goes), but fall back to what the CLI printed on
+        // stdout - on some failures the URL is the only useful thing said.
+        let reason = tail(String::from_utf8_lossy(&output.stderr).trim(), 400);
+        let reason = if reason.is_empty() {
+            login_output(&seen)
+        } else {
+            reason
+        };
+        install_failed(
+            label,
+            if reason.is_empty() {
+                "codex login failed".to_string()
+            } else {
+                reason
+            },
+        )
+    }
+}
+
+/// Run the interactive `claude auth login` on the user's behalf — the "Sign in to Claude"
+/// button in the provider detail view.
+///
+/// `claude auth login` (default `--claudeai`) opens the user's browser to sign into their
+/// Anthropic account on their **Claude subscription** — no API key, nothing metered. A
+/// deliberate mirror of [`cursor_sign_in`]/[`codex_sign_in`]: the browser is enabled (this is
+/// an explicit click, not the daemon's unattended path), stdout is drained live so the
+/// verification URL is surfaced if the browser can't open, and the wait is bounded by
+/// [`INTERACTIVE_LOGIN_TIMEOUT`]. Once it completes, Claude Code persists the auth and every
+/// later run just adopts it — the same "sign in once" model as the other two.
+#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty))]
+pub async fn claude_sign_in() -> InstallOutcome {
+    let label = "claude auth login";
+    let Some(path) = resolve_cli("claude").await else {
+        return install_failed(
+            label,
+            "claude isn't installed yet - install it first".into(),
+        );
+    };
+
+    tracing::info!("llm: launching interactive claude auth login");
+    let mut cmd = Command::new(&path);
+    cmd.arg("auth")
+        .arg("login")
+        .arg("--claudeai")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .no_window();
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return install_failed(label, format!("couldn't start claude: {e}")),
+    };
+
+    // Drain stdout as it arrives - `claude auth login` prints its verification URL to STDOUT
+    // while it waits, which is exactly what the user needs if the browser doesn't open for them.
+    // Same reasoning as the matching drain in `cursor_sign_in`.
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    if let Some(out) = child.stdout.take() {
+        let seen = seen.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut lines = BufReader::new(out).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tracing::info!(line = %line, "claude auth login");
+                let mut buf = seen.lock().unwrap_or_else(|e| e.into_inner());
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+        });
+    }
+    let login_output = |seen: &std::sync::Mutex<String>| -> String {
+        let buf = seen.lock().unwrap_or_else(|e| e.into_inner());
+        tail(buf.trim(), 300)
+    };
+
+    let output = match tokio::time::timeout(INTERACTIVE_LOGIN_TIMEOUT, child.wait_with_output())
+        .await
+    {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return install_failed(label, format!("couldn't run claude auth login: {e}")),
+        Err(_) => {
+            let printed = login_output(&seen);
+            return install_failed(
+                label,
+                if printed.is_empty() {
+                    "the sign-in wasn't finished in time - click Sign in to Claude again".into()
+                } else {
+                    format!(
+                        "the sign-in wasn't finished in time. Finish it by hand with what \
+                             claude printed:\n{printed}"
+                    )
+                },
+            );
+        }
+    };
+
+    if output.status.success() {
+        let span = tracing::Span::current();
+        span.record("ok", true);
+        span.record("cli_path", tracing::field::display(path.display()));
+        tracing::info!("llm: claude auth login succeeded");
+        InstallOutcome {
+            ok: true,
+            message: "Signed in to Claude.".into(),
+            path: Some(path.display().to_string()),
+            command: label.to_string(),
+        }
+    } else {
+        // stderr first (that is where the reason goes), but fall back to what the CLI printed on
+        // stdout - on some failures the URL is the only useful thing said.
+        let reason = tail(String::from_utf8_lossy(&output.stderr).trim(), 400);
+        let reason = if reason.is_empty() {
+            login_output(&seen)
+        } else {
+            reason
+        };
+        install_failed(
+            label,
+            if reason.is_empty() {
+                "claude auth login failed".to_string()
             } else {
                 reason
             },
@@ -684,6 +1055,13 @@ pub fn persist_test_result(result: &ProviderTestResult) {
 /// `claude` while the tray is running would otherwise be told it is missing until they
 /// restart the app. The cost of not caching misses is one login-shell probe per call on a
 /// genuinely absent CLI, bounded by [`PROBE_TIMEOUT`].
+///
+/// A cache HIT is still re-validated with a cheap [`Path::exists`] check in [`resolve_cli`]
+/// before being trusted: a CLI uninstalled (or moved) while this process is running would
+/// otherwise be reported "installed" forever, and the next real invocation would fail with
+/// a raw, unfriendly OS/shell error instead of "not installed" — that was the exact symptom
+/// hit uninstalling `codex`/`cursor-agent` out from under a running tray. `exists()` is a
+/// single stat syscall, not a shell spawn, so this costs nothing on the hot path.
 static RESOLVED_BINS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, PathBuf>>> =
     std::sync::OnceLock::new();
 
@@ -711,14 +1089,28 @@ static RESOLVED_BINS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, PathB
 /// the slow shell spawn on macOS whenever the current process's `PATH` is already good (e.g.
 /// the daemon's launchd-configured one, per the `resolve_cli` doc above).
 pub async fn resolve_cli(bin: &str) -> Option<PathBuf> {
-    if let Some(hit) = RESOLVED_BINS
+    // Read the cache under a SCOPED lock and drop the guard on this `let` before the block
+    // below. Holding it across an `if let` body would keep the guard alive through the body
+    // (temporary lifetime), and the re-lock to evict a stale entry would then deadlock on this
+    // same thread — a `std::sync::Mutex` is not re-entrant.
+    let cached = RESOLVED_BINS
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(bin)
-        .cloned()
-    {
-        return Some(hit);
+        .cloned();
+    if let Some(hit) = cached {
+        if hit.exists() {
+            return Some(hit);
+        }
+        // Stale: the CLI was removed (or moved) since we last resolved it. Drop the
+        // entry and fall through to a fresh probe rather than trusting it forever.
+        tracing::debug!(bin, path = %hit.display(), "cached CLI path no longer exists - re-probing");
+        RESOLVED_BINS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(bin);
     }
 
     let found = match probe_current_path(bin) {
@@ -928,6 +1320,42 @@ mod tests {
         );
     }
 
+    /// The regression this exists for: uninstalling `codex`/`cursor-agent` out from under a
+    /// running tray left `RESOLVED_BINS` pointing at a path that no longer existed, and the
+    /// stale hit was trusted forever - reporting "installed" (then failing with a raw OS
+    /// error on the next real invocation) instead of "not installed". A cache hit must be
+    /// re-validated with `exists()` and dropped if it no longer holds.
+    #[tokio::test]
+    async fn resolve_cli_drops_a_stale_cache_entry_whose_path_no_longer_exists() {
+        let bin = "meridian-uninstalled-while-running-xyz";
+        let stale = std::env::temp_dir().join("meridian-definitely-does-not-exist-anymore");
+        assert!(
+            !stale.exists(),
+            "canary path must not exist: {}",
+            stale.display()
+        );
+
+        RESOLVED_BINS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .insert(bin.to_string(), stale.clone());
+
+        assert_eq!(
+            resolve_cli(bin).await,
+            None,
+            "a stale cached path was trusted instead of being re-probed"
+        );
+        assert!(
+            !RESOLVED_BINS
+                .get_or_init(Default::default)
+                .lock()
+                .unwrap()
+                .contains_key(bin),
+            "the stale entry was not evicted from the cache"
+        );
+    }
+
     /// The regression this exists for: a single-line probe passed Test Connection on every
     /// provider while every REAL summarisation call (multi-line prompts) failed to even spawn
     /// on Windows. See `PROBE_SYSTEM`'s doc — this must stay multi-line or the probe silently
@@ -966,6 +1394,41 @@ mod tests {
         // copy ("Meridian uses your existing login") is a lie and must change with it.
         for s in detect_all().await {
             assert_eq!(s.authenticated, None, "{}", s.id);
+        }
+    }
+
+    /// The dashboard banner's whole meaning rides on this ladder, so pin every rung: not
+    /// installed and an outright `Failed` are UNAVAILABLE (the alarm); a rate limit stays
+    /// available with the softer flag (it self-recovers - alarming would cry wolf); an `Ok` or
+    /// no-test-yet is fine. Pure, so no probe/filesystem needed.
+    #[test]
+    fn classify_provider_health_ranks_unavailable_over_rate_limited_over_fine() {
+        // not installed → unavailable, regardless of any prior test result.
+        let h = classify_provider_health("Codex".into(), false, None);
+        assert!(!h.ok && !h.rate_limited);
+        assert_eq!(h.detail.as_deref(), Some("Codex isn't installed"));
+
+        // installed but last test FAILED → unavailable, surfacing that reason.
+        let failed = ProviderTestOutcome::Failed {
+            message: "not signed in".into(),
+        };
+        let h = classify_provider_health("Codex".into(), true, Some(&failed));
+        assert!(!h.ok && !h.rate_limited);
+        assert_eq!(h.detail.as_deref(), Some("not signed in"));
+
+        // installed + RATE-LIMITED → still available (ok), softer flag set, message surfaced.
+        let rl = ProviderTestOutcome::RateLimited {
+            message: "usage limit".into(),
+        };
+        let h = classify_provider_health("Codex".into(), true, Some(&rl));
+        assert!(h.ok && h.rate_limited);
+        assert_eq!(h.detail.as_deref(), Some("usage limit"));
+
+        // installed + Ok, and installed + no test on record → fine, no banner, no detail.
+        let ok = ProviderTestOutcome::Ok;
+        for last in [Some(&ok), None] {
+            let h = classify_provider_health("Codex".into(), true, last);
+            assert!(h.ok && !h.rate_limited && h.detail.is_none());
         }
     }
 

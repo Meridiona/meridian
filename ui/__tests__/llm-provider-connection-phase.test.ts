@@ -114,14 +114,21 @@ it("the picker's test handler invokes the real Tauri command against the live CL
   expect(picker).toMatch(/invoke<ProviderTestResult>\('test_llm_provider'/)
 })
 
-// ── Cursor gets bespoke "not signed in" copy for an unclassified failure; every other ──────
-// ── provider shows the raw message. Both must still originate from the SAME real Test call.
+// ── Subscription providers (Cursor, Codex, Claude) get bespoke "not signed in" copy with an ──
+// ── in-app sign-in button for an unclassified failure; every other provider shows the raw ────
+// ── message. Both must still originate from the SAME real Test call (a `failed` phase). ──────
 
-it('the Cursor-specific "not signed in" copy only replaces the DISPLAY, not the trigger — it is still gated on phase.kind === "failed"', () => {
-  const cursorBranch = detail.slice(detail.indexOf("case 'failed':"))
-  expect(cursorBranch).toMatch(/if \(isCursor\)/)
-  expect(cursorBranch).toMatch(/not signed in yet/)
-  expect(cursorBranch).toMatch(/Sign in to Cursor/)
+it('the subscription-provider "not signed in" copy only replaces the DISPLAY, not the trigger — it is still gated on phase.kind === "failed"', () => {
+  const failedBranch = detail.slice(detail.indexOf("case 'failed':"))
+  // The in-app sign-in UI is gated on the failed phase via the signInProvider descriptor,
+  // showing the "not signed in" copy and that provider's own sign-in button label.
+  expect(failedBranch).toMatch(/if \(signInProvider\)/)
+  expect(failedBranch).toMatch(/not signed in yet/)
+  expect(failedBranch).toMatch(/\{signInProvider\.label\}/)
+  // Cursor, Codex, and Claude are each covered by the descriptor (each with its own label).
+  expect(detail).toMatch(/Sign in to Cursor/)
+  expect(detail).toMatch(/Sign in to Codex/)
+  expect(detail).toMatch(/Sign in to Claude/)
 })
 
 it('every other provider surfaces the real failure message verbatim, not a generic substitute', () => {
