@@ -166,6 +166,105 @@ pub async fn detect_all() -> Vec<ProviderStatus> {
     futures::future::join_all(futures).await
 }
 
+// ── In-use provider health (dashboard banner) ────────────────────────────────────────
+
+/// Whether the user's CURRENTLY-CHOSEN provider looks usable, for the dashboard's
+/// "provider unavailable" banner. Deliberately CHEAP: an install probe (memoised by
+/// [`resolve_cli`]) plus the on-disk last-test result — never a fresh metered call, so it's
+/// safe to compute on every health poll.
+#[derive(Debug, Clone)]
+pub struct InUseProviderHealth {
+    /// `true` when the chosen provider looks usable: a CLI provider is installed and its last
+    /// connectivity test (if any) didn't fail; a cloud endpoint's last test didn't fail. `false`
+    /// means the dashboard should warn — summaries are paused or degraded until it's fixed.
+    pub ok: bool,
+    /// Human name for the banner copy, e.g. "Codex".
+    pub name: String,
+    /// Why it's unavailable, when `ok` is false — "not installed", or the last test's own error.
+    pub detail: Option<String>,
+}
+
+/// A human display name for the banner — mirrors the chooser tiles in `ui/lib/llm-providers.ts`.
+fn provider_display_name(p: LlmProvider) -> &'static str {
+    match p {
+        LlmProvider::Claude => "Claude Code",
+        LlmProvider::Codex => "Codex",
+        LlmProvider::Cursor => "Cursor",
+        LlmProvider::Copilot => "Copilot",
+        LlmProvider::Custom => "your AI provider",
+    }
+}
+
+/// Compute [`InUseProviderHealth`] for the provider named in `settings.llm_provider`.
+///
+/// A "rate-limited" last result is deliberately treated as available: it's a temporary state
+/// that clears on its own (the summariser waits it out), not a "your provider is broken" one —
+/// firing the banner on it would cry wolf. Only an outright `Failed` result, or a missing CLI,
+/// counts as unavailable. A provider with no test on record yet is assumed fine (don't alarm
+/// before we've ever had a reason to).
+pub async fn in_use_provider_health(settings: &RuntimeSettings) -> InUseProviderHealth {
+    let Some(provider) = LlmProvider::from_wire(&settings.llm_provider) else {
+        // An unrecognised provider string (a downgrade, a hand-edited settings file): don't
+        // alarm on something we can't reason about.
+        return InUseProviderHealth {
+            ok: true,
+            name: settings.llm_provider.clone(),
+            detail: None,
+        };
+    };
+    let name = provider_display_name(provider).to_string();
+
+    // The last real connectivity test on record for this provider, if any.
+    let last_outcome = load_test_cache()
+        .get(provider.as_str())
+        .map(|r| r.outcome.clone());
+    let last_failure = match &last_outcome {
+        Some(ProviderTestOutcome::Failed { message }) => Some(message.clone()),
+        _ => None,
+    };
+
+    match provider.cli_name() {
+        // A CLI-backed provider must be installed AND not have failed its last test.
+        Some(bin) => {
+            if resolve_cli(bin).await.is_none() {
+                InUseProviderHealth {
+                    ok: false,
+                    name: name.clone(),
+                    detail: Some(format!("{name} isn't installed")),
+                }
+            } else if let Some(reason) = last_failure {
+                InUseProviderHealth {
+                    ok: false,
+                    name,
+                    detail: Some(reason),
+                }
+            } else {
+                InUseProviderHealth {
+                    ok: true,
+                    name,
+                    detail: None,
+                }
+            }
+        }
+        // A cloud endpoint (`Custom`) has no CLI to probe — only its last test tells us anything.
+        None => {
+            if let Some(reason) = last_failure {
+                InUseProviderHealth {
+                    ok: false,
+                    name,
+                    detail: Some(reason),
+                }
+            } else {
+                InUseProviderHealth {
+                    ok: true,
+                    name,
+                    detail: None,
+                }
+            }
+        }
+    }
+}
+
 // ── Real connectivity test ───────────────────────────────────────────────────────────
 
 /// A test call is capped far tighter than a real hourly summary (which can legitimately

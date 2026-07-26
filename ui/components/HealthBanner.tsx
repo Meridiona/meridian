@@ -8,6 +8,11 @@ interface HealthStatus {
   a11y_helper_trusted?: boolean
   database_ready?: boolean
   error?: string
+  /** Whether the in-use LLM provider is usable. `false` → the provider is missing or failing,
+   *  so summaries are paused/degraded. `llm_provider_name`/`_detail` fill the banner copy. */
+  llm_provider_ok?: boolean
+  llm_provider_name?: string
+  llm_provider_detail?: string
 }
 
 export default function HealthBanner() {
@@ -22,11 +27,15 @@ export default function HealthBanner() {
     })
   }, [])
 
-  // Show banner if database is not ready (critical), or a11y-helper is not trusted, and not dismissed
-  const showDatabaseError = health && health.database_ready === false
-  const showA11yWarning = health && health.a11y_helper_trusted === false && health.database_ready !== false
+  // One banner at a time, in priority order: database not ready (critical) > in-use LLM
+  // provider unavailable (summaries paused) > a11y-helper not trusted (capture degraded).
+  const showDatabaseError = !!health && health.database_ready === false
+  const showProviderError = !!health && health.llm_provider_ok === false && !showDatabaseError
+  const showA11yWarning =
+    !!health && health.a11y_helper_trusted === false && !showDatabaseError && !showProviderError
+  const anyProblem = showDatabaseError || showProviderError || showA11yWarning
 
-  if (!health || (health.a11y_helper_trusted !== false && health.database_ready !== false) || dismissed) {
+  if (!health || !anyProblem || dismissed) {
     return null
   }
 
@@ -52,6 +61,36 @@ export default function HealthBanner() {
             </p>
             <p className="text-xs mt-0.5" style={{ color: 'var(--ink-3)' }}>
               {health.error ?? defaultDetail}
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={() => setDismissed(true)}
+          className="px-3 py-1 text-xs rounded hover:opacity-70 transition-opacity"
+          style={{ color: 'var(--ink-3)', border: '1px solid var(--rule)' }}
+        >
+          Dismiss
+        </button>
+      </div>
+    )
+  }
+
+  if (showProviderError) {
+    const providerName = health.llm_provider_name ?? 'Your AI provider'
+    return (
+      <div
+        className="w-full px-6 py-3.5 flex items-center justify-between border-b"
+        style={{ borderBottomColor: 'var(--rule)', backgroundColor: 'rgba(253, 224, 71, 0.08)' }}
+      >
+        <div className="flex items-center gap-3 flex-1">
+          <span className="text-lg">🤖</span>
+          <div className="flex-1">
+            <p className="text-sm" style={{ color: 'var(--ink-2)' }}>
+              <strong>{providerName} isn&apos;t available</strong>
+            </p>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--ink-3)' }}>
+              {health.llm_provider_detail ? `${health.llm_provider_detail}. ` : ''}
+              Hourly summaries are paused — open Settings → Intelligence to reinstall, sign in, or pick another provider.
             </p>
           </div>
         </div>
