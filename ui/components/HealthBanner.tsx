@@ -20,7 +20,12 @@ interface HealthStatus {
 
 export default function HealthBanner() {
   const [health, setHealth] = useState<HealthStatus | null>(null)
-  const [dismissed, setDismissed] = useState(false)
+  // Dismissal is keyed to the SIGNATURE of the banner that was dismissed, not a global boolean,
+  // so dismissing one problem can't suppress a different (or worse) one that arises later - e.g.
+  // dismissing the a11y notice must not hide a subsequent "your provider is unavailable, summaries
+  // paused" banner. When the active problem's signature changes, the old dismissal no longer
+  // matches and the banner reappears.
+  const [dismissedSig, setDismissedSig] = useState<string | null>(null)
 
   useEffect(() => {
     // health-update (Tauri event) in the app, /api/health/stream SSE in a browser.
@@ -39,11 +44,25 @@ export default function HealthBanner() {
     !!health && health.llm_provider_rate_limited === true && health.llm_provider_ok !== false && !showDatabaseError
   const showA11yWarning =
     !!health && health.a11y_helper_trusted === false && !showDatabaseError && !showProviderError && !showProviderRateLimit
-  const anyProblem = showDatabaseError || showProviderError || showProviderRateLimit || showA11yWarning
+  // A signature that identifies the active (highest-priority) banner AND its content, so a
+  // dismissal is scoped to exactly that alert. `null` when there's nothing to show.
+  const pName = health?.llm_provider_name ?? ''
+  const pDetail = health?.llm_provider_detail ?? ''
+  const activeSig = showDatabaseError
+    ? `db:${health?.error ?? 'schema'}`
+    : showProviderError
+      ? `provider-unavailable:${pName}:${pDetail}`
+      : showProviderRateLimit
+        ? `provider-ratelimit:${pName}:${pDetail}`
+        : showA11yWarning
+          ? 'a11y'
+          : null
 
-  if (!health || !anyProblem || dismissed) {
+  if (!health || !activeSig || activeSig === dismissedSig) {
     return null
   }
+
+  const dismiss = () => setDismissedSig(activeSig)
 
   if (showDatabaseError) {
     const isNotFound = health.error?.toLowerCase().includes('not found') ?? false
@@ -71,7 +90,7 @@ export default function HealthBanner() {
           </div>
         </div>
         <button
-          onClick={() => setDismissed(true)}
+          onClick={dismiss}
           className="px-3 py-1 text-xs rounded hover:opacity-70 transition-opacity"
           style={{ color: 'var(--ink-3)', border: '1px solid var(--rule)' }}
         >
@@ -101,7 +120,7 @@ export default function HealthBanner() {
           </div>
         </div>
         <button
-          onClick={() => setDismissed(true)}
+          onClick={dismiss}
           className="px-3 py-1 text-xs rounded hover:opacity-70 transition-opacity"
           style={{ color: 'var(--ink-3)', border: '1px solid var(--rule)' }}
         >
@@ -131,7 +150,7 @@ export default function HealthBanner() {
           </div>
         </div>
         <button
-          onClick={() => setDismissed(true)}
+          onClick={dismiss}
           className="px-3 py-1 text-xs rounded hover:opacity-70 transition-opacity"
           style={{ color: 'var(--ink-3)', border: '1px solid var(--rule)' }}
         >
@@ -161,7 +180,7 @@ export default function HealthBanner() {
         </div>
       </div>
       <button
-        onClick={() => setDismissed(true)}
+        onClick={dismiss}
         className="px-3 py-1 text-xs rounded hover:opacity-70 transition-opacity"
         style={{ color: 'var(--ink-3)', border: '1px solid var(--rule)' }}
       >

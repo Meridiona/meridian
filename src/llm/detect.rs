@@ -201,17 +201,60 @@ fn provider_display_name(p: LlmProvider) -> &'static str {
     }
 }
 
-/// Compute [`InUseProviderHealth`] for the provider named in `settings.llm_provider`.
-///
-/// Three outcomes, in priority order:
-/// - **unavailable** (`ok: false`) — the CLI is missing, or the last test outright `Failed`
-///   (signed out, spawn error). Summaries are paused; the dashboard alarms.
-/// - **rate-limited** (`ok: true, rate_limited: true`) — signed in and working, just throttled.
-///   A softer "catching up" notice, NOT the alarm: it clears on its own (the summariser waits it
-///   out), so treating it as "broken" would cry wolf.
-/// - **fine** (`ok: true`) — installed with an OK/absent last test. A provider with no test on
-///   record yet is assumed fine (don't alarm before we've ever had a reason to).
+/// How long an [`in_use_provider_health`] result is reused before recomputing. The recurring
+/// health poll (every 60 s) AND every on-demand `get_health` would otherwise re-run the install
+/// probe each tick — and for an UNINSTALLED provider (the exact state the "provider unavailable"
+/// banner exists to surface) that probe can't hit `resolve_cli`'s hit-only cache, so it falls
+/// through to a login-shell spawn on a packaged app every time. A few-minute TTL bounds that to
+/// one probe per window while still clearing/raising the banner promptly relative to the hourly
+/// summary cadence it guards.
+const IN_USE_HEALTH_TTL: Duration = Duration::from_secs(300);
+
+/// Cache of the last computed provider health: `(provider wire id, computed_at, result)`. Keyed
+/// by the provider id so switching the selected provider invalidates it immediately rather than
+/// serving the previous provider's verdict for up to a TTL.
+#[allow(clippy::type_complexity)]
+static IN_USE_HEALTH_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<Option<(String, Instant, InUseProviderHealth)>>,
+> = std::sync::OnceLock::new();
+
+/// Whether the user's CURRENTLY-CHOSEN provider looks usable — [`InUseProviderHealth`] for the
+/// provider named in `settings.llm_provider`, served from a short-TTL cache
+/// ([`IN_USE_HEALTH_TTL`]) so the recurring health poll doesn't re-run the (possibly
+/// login-shell-spawning) install probe on every tick. See [`classify_provider_health`] for the
+/// unavailable → rate-limited → fine decision.
 pub async fn in_use_provider_health(settings: &RuntimeSettings) -> InUseProviderHealth {
+    // Serve a fresh-enough cached result for the SAME provider.
+    {
+        let guard = IN_USE_HEALTH_CACHE
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some((provider, at, health)) = guard.as_ref() {
+            if provider == &settings.llm_provider && at.elapsed() < IN_USE_HEALTH_TTL {
+                return health.clone();
+            }
+        }
+    }
+
+    let health = compute_in_use_provider_health(settings).await;
+
+    let mut guard = IN_USE_HEALTH_CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    *guard = Some((
+        settings.llm_provider.clone(),
+        Instant::now(),
+        health.clone(),
+    ));
+    health
+}
+
+/// The uncached computation behind [`in_use_provider_health`]: resolve install state (one
+/// [`resolve_cli`] probe for a CLI provider; a cloud `Custom` endpoint has no binary) plus the
+/// last on-disk test result, then hand both to [`classify_provider_health`].
+async fn compute_in_use_provider_health(settings: &RuntimeSettings) -> InUseProviderHealth {
     let Some(provider) = LlmProvider::from_wire(&settings.llm_provider) else {
         // An unrecognised provider string (a downgrade, a hand-edited settings file): don't
         // alarm on something we can't reason about.
@@ -223,56 +266,58 @@ pub async fn in_use_provider_health(settings: &RuntimeSettings) -> InUseProvider
         };
     };
     let name = provider_display_name(provider).to_string();
-
-    // The last real connectivity test on record for this provider, if any - split into the two
-    // states that matter: an outright failure (unavailable) vs a rate limit (works, throttled).
     let last_outcome = load_test_cache()
         .get(provider.as_str())
         .map(|r| r.outcome.clone());
-    let failed_reason = match &last_outcome {
-        Some(ProviderTestOutcome::Failed { message }) => Some(message.clone()),
-        _ => None,
+    // A cloud endpoint (`Custom`, `cli_name() == None`) has no binary to probe, so it's treated
+    // as "installed" here — only its last test can tell us anything.
+    let installed = match provider.cli_name() {
+        Some(bin) => resolve_cli(bin).await.is_some(),
+        None => true,
     };
-    let rate_limited_reason = match &last_outcome {
-        Some(ProviderTestOutcome::RateLimited { message }) => Some(message.clone()),
-        _ => None,
-    };
+    classify_provider_health(name, installed, last_outcome.as_ref())
+}
 
-    // A CLI-backed provider must be installed; a cloud endpoint (`Custom`, `cli_name() == None`)
-    // has no binary to probe, so it skips the install gate. After that both share the same
-    // failed → rate-limited → fine ladder.
-    if let Some(bin) = provider.cli_name() {
-        if resolve_cli(bin).await.is_none() {
-            return InUseProviderHealth {
-                ok: false,
-                rate_limited: false,
-                name: name.clone(),
-                detail: Some(format!("{name} isn't installed")),
-            };
-        }
+/// The pure unavailable → rate-limited → fine decision, split out so the ladder can be unit-tested
+/// without a filesystem probe.
+///
+/// - not installed → **unavailable** (`ok: false`).
+/// - installed + last test `Failed` → **unavailable** (signed out, spawn error, …).
+/// - installed + last test `RateLimited` → **rate-limited** (`ok: true, rate_limited: true`): it
+///   clears on its own, so a softer flag rather than the alarm — alarming would cry wolf.
+/// - installed + `Ok`/no test on record → **fine** (don't alarm before we've had a reason to).
+fn classify_provider_health(
+    name: String,
+    installed: bool,
+    last_outcome: Option<&ProviderTestOutcome>,
+) -> InUseProviderHealth {
+    if !installed {
+        return InUseProviderHealth {
+            ok: false,
+            rate_limited: false,
+            detail: Some(format!("{name} isn't installed")),
+            name,
+        };
     }
-
-    if let Some(reason) = failed_reason {
-        InUseProviderHealth {
+    match last_outcome {
+        Some(ProviderTestOutcome::Failed { message }) => InUseProviderHealth {
             ok: false,
             rate_limited: false,
             name,
-            detail: Some(reason),
-        }
-    } else if let Some(reason) = rate_limited_reason {
-        InUseProviderHealth {
+            detail: Some(message.clone()),
+        },
+        Some(ProviderTestOutcome::RateLimited { message }) => InUseProviderHealth {
             ok: true,
             rate_limited: true,
             name,
-            detail: Some(reason),
-        }
-    } else {
-        InUseProviderHealth {
+            detail: Some(message.clone()),
+        },
+        _ => InUseProviderHealth {
             ok: true,
             rate_limited: false,
             name,
             detail: None,
-        }
+        },
     }
 }
 
@@ -1349,6 +1394,41 @@ mod tests {
         // copy ("Meridian uses your existing login") is a lie and must change with it.
         for s in detect_all().await {
             assert_eq!(s.authenticated, None, "{}", s.id);
+        }
+    }
+
+    /// The dashboard banner's whole meaning rides on this ladder, so pin every rung: not
+    /// installed and an outright `Failed` are UNAVAILABLE (the alarm); a rate limit stays
+    /// available with the softer flag (it self-recovers - alarming would cry wolf); an `Ok` or
+    /// no-test-yet is fine. Pure, so no probe/filesystem needed.
+    #[test]
+    fn classify_provider_health_ranks_unavailable_over_rate_limited_over_fine() {
+        // not installed → unavailable, regardless of any prior test result.
+        let h = classify_provider_health("Codex".into(), false, None);
+        assert!(!h.ok && !h.rate_limited);
+        assert_eq!(h.detail.as_deref(), Some("Codex isn't installed"));
+
+        // installed but last test FAILED → unavailable, surfacing that reason.
+        let failed = ProviderTestOutcome::Failed {
+            message: "not signed in".into(),
+        };
+        let h = classify_provider_health("Codex".into(), true, Some(&failed));
+        assert!(!h.ok && !h.rate_limited);
+        assert_eq!(h.detail.as_deref(), Some("not signed in"));
+
+        // installed + RATE-LIMITED → still available (ok), softer flag set, message surfaced.
+        let rl = ProviderTestOutcome::RateLimited {
+            message: "usage limit".into(),
+        };
+        let h = classify_provider_health("Codex".into(), true, Some(&rl));
+        assert!(h.ok && h.rate_limited);
+        assert_eq!(h.detail.as_deref(), Some("usage limit"));
+
+        // installed + Ok, and installed + no test on record → fine, no banner, no detail.
+        let ok = ProviderTestOutcome::Ok;
+        for last in [Some(&ok), None] {
+            let h = classify_provider_health("Codex".into(), true, last);
+            assert!(h.ok && !h.rate_limited && h.detail.is_none());
         }
     }
 

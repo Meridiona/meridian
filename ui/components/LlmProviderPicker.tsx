@@ -113,10 +113,21 @@ export function useLlmProviderDetection() {
    *  (`claude_sign_in`). Each tray command drives that vendor's `… login` and opens the browser;
    *  none takes a provider argument, so the id picks the command here. */
   const signIn = useCallback(async (id: string): Promise<InstallOutcome> => {
+    // Explicit per-provider mapping - do NOT fall back to a default command. A missing entry
+    // means a provider was given an in-app sign-in button (its `signInProvider` descriptor in
+    // LlmProviderDetail) without a matching tray command here; fail loudly rather than silently
+    // running the wrong vendor's login (e.g. Cursor's) for it.
+    const SIGN_IN_COMMANDS: Record<string, string> = {
+      cursor: 'cursor_sign_in',
+      codex: 'codex_sign_in',
+      claude: 'claude_sign_in',
+    }
+    const command = SIGN_IN_COMMANDS[id]
+    if (!command) {
+      return { ok: false, message: `No in-app sign-in is wired up for "${id}".`, path: null, command: '' }
+    }
     setSigningIds((prev) => new Set(prev).add(id))
     try {
-      const command =
-        id === 'codex' ? 'codex_sign_in' : id === 'claude' ? 'claude_sign_in' : 'cursor_sign_in'
       const outcome = await invoke<InstallOutcome>(command)
       if (outcome.ok) {
         // `cursor-agent login` exits 0 only AFTER the browser OAuth completes, so this is the
