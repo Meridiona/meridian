@@ -684,6 +684,13 @@ pub fn persist_test_result(result: &ProviderTestResult) {
 /// `claude` while the tray is running would otherwise be told it is missing until they
 /// restart the app. The cost of not caching misses is one login-shell probe per call on a
 /// genuinely absent CLI, bounded by [`PROBE_TIMEOUT`].
+///
+/// A cache HIT is still re-validated with a cheap [`Path::exists`] check in [`resolve_cli`]
+/// before being trusted: a CLI uninstalled (or moved) while this process is running would
+/// otherwise be reported "installed" forever, and the next real invocation would fail with
+/// a raw, unfriendly OS/shell error instead of "not installed" — that was the exact symptom
+/// hit uninstalling `codex`/`cursor-agent` out from under a running tray. `exists()` is a
+/// single stat syscall, not a shell spawn, so this costs nothing on the hot path.
 static RESOLVED_BINS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, PathBuf>>> =
     std::sync::OnceLock::new();
 
@@ -718,7 +725,17 @@ pub async fn resolve_cli(bin: &str) -> Option<PathBuf> {
         .get(bin)
         .cloned()
     {
-        return Some(hit);
+        if hit.exists() {
+            return Some(hit);
+        }
+        // Stale: the CLI was removed (or moved) since we last resolved it. Drop the
+        // entry and fall through to a fresh probe rather than trusting it forever.
+        tracing::debug!(bin, path = %hit.display(), "cached CLI path no longer exists - re-probing");
+        RESOLVED_BINS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(bin);
     }
 
     let found = match probe_current_path(bin) {
@@ -925,6 +942,42 @@ mod tests {
                 .unwrap()
                 .contains_key(bin),
             "a miss was cached, so installing the CLI later would not be picked up"
+        );
+    }
+
+    /// The regression this exists for: uninstalling `codex`/`cursor-agent` out from under a
+    /// running tray left `RESOLVED_BINS` pointing at a path that no longer existed, and the
+    /// stale hit was trusted forever - reporting "installed" (then failing with a raw OS
+    /// error on the next real invocation) instead of "not installed". A cache hit must be
+    /// re-validated with `exists()` and dropped if it no longer holds.
+    #[tokio::test]
+    async fn resolve_cli_drops_a_stale_cache_entry_whose_path_no_longer_exists() {
+        let bin = "meridian-uninstalled-while-running-xyz";
+        let stale = std::env::temp_dir().join("meridian-definitely-does-not-exist-anymore");
+        assert!(
+            !stale.exists(),
+            "canary path must not exist: {}",
+            stale.display()
+        );
+
+        RESOLVED_BINS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .insert(bin.to_string(), stale.clone());
+
+        assert_eq!(
+            resolve_cli(bin).await,
+            None,
+            "a stale cached path was trusted instead of being re-probed"
+        );
+        assert!(
+            !RESOLVED_BINS
+                .get_or_init(Default::default)
+                .lock()
+                .unwrap()
+                .contains_key(bin),
+            "the stale entry was not evicted from the cache"
         );
     }
 
