@@ -37,10 +37,15 @@ pub struct HealthResponse {
     /// are paused/degraded until it's fixed. See [`meridian::llm::detect::in_use_provider_health`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_provider_ok: Option<bool>,
+    /// `Some(true)` when the in-use provider is usable but RATE-LIMITED — drives a softer
+    /// "catching up" notice instead of the "unavailable" alarm (it clears on its own).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_provider_rate_limited: Option<bool>,
     /// Human name of the in-use provider for the banner copy (e.g. "Codex").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_provider_name: Option<String>,
-    /// Why the in-use provider is unavailable, when `llm_provider_ok` is `Some(false)`.
+    /// The banner reason — the failure/"not installed" text when unavailable, or the rate-limit
+    /// message when rate-limited.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_provider_detail: Option<String>,
 }
@@ -85,6 +90,7 @@ pub async fn check_health() -> HealthResponse {
         a11y_helper_trusted: trusted,
         daemon_running: daemon,
         llm_provider_ok: Some(provider.ok),
+        llm_provider_rate_limited: Some(provider.rate_limited),
         llm_provider_name: Some(provider.name),
         llm_provider_detail: provider.detail,
     }
@@ -200,6 +206,7 @@ pub async fn get_health() -> Result<HealthResponse, String> {
         a11y = ?result.a11y_helper_trusted,
         llm_provider = ?result.llm_provider_name,
         llm_provider_ok = ?result.llm_provider_ok,
+        llm_provider_rate_limited = ?result.llm_provider_rate_limited,
         llm_provider_detail = ?result.llm_provider_detail,
         "health checked"
     );

@@ -11,6 +11,9 @@ interface HealthStatus {
   /** Whether the in-use LLM provider is usable. `false` → the provider is missing or failing,
    *  so summaries are paused/degraded. `llm_provider_name`/`_detail` fill the banner copy. */
   llm_provider_ok?: boolean
+  /** `true` → the provider is usable but rate-limited: a softer "catching up" notice, not the
+   *  "unavailable" alarm (it clears on its own). Only meaningful when `llm_provider_ok !== false`. */
+  llm_provider_rate_limited?: boolean
   llm_provider_name?: string
   llm_provider_detail?: string
 }
@@ -27,13 +30,16 @@ export default function HealthBanner() {
     })
   }, [])
 
-  // One banner at a time, in priority order: database not ready (critical) > in-use LLM
-  // provider unavailable (summaries paused) > a11y-helper not trusted (capture degraded).
+  // One banner at a time, in priority order: database not ready (critical) > in-use LLM provider
+  // unavailable (summaries paused) > provider rate-limited (summaries catching up, soft notice) >
+  // a11y-helper not trusted (capture degraded).
   const showDatabaseError = !!health && health.database_ready === false
   const showProviderError = !!health && health.llm_provider_ok === false && !showDatabaseError
+  const showProviderRateLimit =
+    !!health && health.llm_provider_rate_limited === true && health.llm_provider_ok !== false && !showDatabaseError
   const showA11yWarning =
-    !!health && health.a11y_helper_trusted === false && !showDatabaseError && !showProviderError
-  const anyProblem = showDatabaseError || showProviderError || showA11yWarning
+    !!health && health.a11y_helper_trusted === false && !showDatabaseError && !showProviderError && !showProviderRateLimit
+  const anyProblem = showDatabaseError || showProviderError || showProviderRateLimit || showA11yWarning
 
   if (!health || !anyProblem || dismissed) {
     return null
@@ -91,6 +97,36 @@ export default function HealthBanner() {
             <p className="text-xs mt-0.5" style={{ color: 'var(--ink-3)' }}>
               {health.llm_provider_detail ? `${health.llm_provider_detail}. ` : ''}
               Hourly summaries are paused — open Settings → Intelligence to reinstall, sign in, or pick another provider.
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={() => setDismissed(true)}
+          className="px-3 py-1 text-xs rounded hover:opacity-70 transition-opacity"
+          style={{ color: 'var(--ink-3)', border: '1px solid var(--rule)' }}
+        >
+          Dismiss
+        </button>
+      </div>
+    )
+  }
+
+  if (showProviderRateLimit) {
+    const providerName = health.llm_provider_name ?? 'Your AI provider'
+    return (
+      <div
+        className="w-full px-6 py-3.5 flex items-center justify-between border-b"
+        style={{ borderBottomColor: 'var(--rule)', backgroundColor: 'rgba(59, 130, 246, 0.08)' }}
+      >
+        <div className="flex items-center gap-3 flex-1">
+          <span className="text-lg">⏳</span>
+          <div className="flex-1">
+            <p className="text-sm" style={{ color: 'var(--ink-2)' }}>
+              <strong>{providerName} is rate-limited</strong>
+            </p>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--ink-3)' }}>
+              {health.llm_provider_detail ? `${health.llm_provider_detail}. ` : ''}
+              You&apos;re signed in and nothing is lost — summaries will catch up on their own once the limit resets.
             </p>
           </div>
         </div>

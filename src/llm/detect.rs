@@ -178,9 +178,15 @@ pub struct InUseProviderHealth {
     /// connectivity test (if any) didn't fail; a cloud endpoint's last test didn't fail. `false`
     /// means the dashboard should warn — summaries are paused or degraded until it's fixed.
     pub ok: bool,
+    /// `true` when the provider is usable (`ok` stays `true`) but its last test was RATE-LIMITED —
+    /// signed in and working, just throttled. Drives a distinct, softer "catching up" notice
+    /// rather than the "unavailable" alarm, because it clears on its own. Mutually exclusive with
+    /// `!ok` (a missing/failed provider is never also "rate-limited").
+    pub rate_limited: bool,
     /// Human name for the banner copy, e.g. "Codex".
     pub name: String,
-    /// Why it's unavailable, when `ok` is false — "not installed", or the last test's own error.
+    /// The reason to show: the failure/"not installed" text when `!ok`, or the rate-limit message
+    /// when `rate_limited`. `None` when the provider is simply fine.
     pub detail: Option<String>,
 }
 
@@ -197,70 +203,75 @@ fn provider_display_name(p: LlmProvider) -> &'static str {
 
 /// Compute [`InUseProviderHealth`] for the provider named in `settings.llm_provider`.
 ///
-/// A "rate-limited" last result is deliberately treated as available: it's a temporary state
-/// that clears on its own (the summariser waits it out), not a "your provider is broken" one —
-/// firing the banner on it would cry wolf. Only an outright `Failed` result, or a missing CLI,
-/// counts as unavailable. A provider with no test on record yet is assumed fine (don't alarm
-/// before we've ever had a reason to).
+/// Three outcomes, in priority order:
+/// - **unavailable** (`ok: false`) — the CLI is missing, or the last test outright `Failed`
+///   (signed out, spawn error). Summaries are paused; the dashboard alarms.
+/// - **rate-limited** (`ok: true, rate_limited: true`) — signed in and working, just throttled.
+///   A softer "catching up" notice, NOT the alarm: it clears on its own (the summariser waits it
+///   out), so treating it as "broken" would cry wolf.
+/// - **fine** (`ok: true`) — installed with an OK/absent last test. A provider with no test on
+///   record yet is assumed fine (don't alarm before we've ever had a reason to).
 pub async fn in_use_provider_health(settings: &RuntimeSettings) -> InUseProviderHealth {
     let Some(provider) = LlmProvider::from_wire(&settings.llm_provider) else {
         // An unrecognised provider string (a downgrade, a hand-edited settings file): don't
         // alarm on something we can't reason about.
         return InUseProviderHealth {
             ok: true,
+            rate_limited: false,
             name: settings.llm_provider.clone(),
             detail: None,
         };
     };
     let name = provider_display_name(provider).to_string();
 
-    // The last real connectivity test on record for this provider, if any.
+    // The last real connectivity test on record for this provider, if any - split into the two
+    // states that matter: an outright failure (unavailable) vs a rate limit (works, throttled).
     let last_outcome = load_test_cache()
         .get(provider.as_str())
         .map(|r| r.outcome.clone());
-    let last_failure = match &last_outcome {
+    let failed_reason = match &last_outcome {
         Some(ProviderTestOutcome::Failed { message }) => Some(message.clone()),
         _ => None,
     };
+    let rate_limited_reason = match &last_outcome {
+        Some(ProviderTestOutcome::RateLimited { message }) => Some(message.clone()),
+        _ => None,
+    };
 
-    match provider.cli_name() {
-        // A CLI-backed provider must be installed AND not have failed its last test.
-        Some(bin) => {
-            if resolve_cli(bin).await.is_none() {
-                InUseProviderHealth {
-                    ok: false,
-                    name: name.clone(),
-                    detail: Some(format!("{name} isn't installed")),
-                }
-            } else if let Some(reason) = last_failure {
-                InUseProviderHealth {
-                    ok: false,
-                    name,
-                    detail: Some(reason),
-                }
-            } else {
-                InUseProviderHealth {
-                    ok: true,
-                    name,
-                    detail: None,
-                }
-            }
+    // A CLI-backed provider must be installed; a cloud endpoint (`Custom`, `cli_name() == None`)
+    // has no binary to probe, so it skips the install gate. After that both share the same
+    // failed → rate-limited → fine ladder.
+    if let Some(bin) = provider.cli_name() {
+        if resolve_cli(bin).await.is_none() {
+            return InUseProviderHealth {
+                ok: false,
+                rate_limited: false,
+                name: name.clone(),
+                detail: Some(format!("{name} isn't installed")),
+            };
         }
-        // A cloud endpoint (`Custom`) has no CLI to probe — only its last test tells us anything.
-        None => {
-            if let Some(reason) = last_failure {
-                InUseProviderHealth {
-                    ok: false,
-                    name,
-                    detail: Some(reason),
-                }
-            } else {
-                InUseProviderHealth {
-                    ok: true,
-                    name,
-                    detail: None,
-                }
-            }
+    }
+
+    if let Some(reason) = failed_reason {
+        InUseProviderHealth {
+            ok: false,
+            rate_limited: false,
+            name,
+            detail: Some(reason),
+        }
+    } else if let Some(reason) = rate_limited_reason {
+        InUseProviderHealth {
+            ok: true,
+            rate_limited: true,
+            name,
+            detail: Some(reason),
+        }
+    } else {
+        InUseProviderHealth {
+            ok: true,
+            rate_limited: false,
+            name,
+            detail: None,
         }
     }
 }
