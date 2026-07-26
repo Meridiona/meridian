@@ -282,6 +282,18 @@ pub async fn cursor_sign_in() -> Result<meridian::llm::detect::InstallOutcome, S
     Ok(outcome)
 }
 
+/// Run the interactive `codex login` - the Codex detail view's "Sign in to Codex" button.
+/// Opens the user's browser to sign into their ChatGPT account, so the summariser runs on their
+/// ChatGPT SUBSCRIPTION (no API key, nothing metered). Only ever on an explicit click; the
+/// daemon's own unattended path never opens a browser. Mirrors [`cursor_sign_in`].
+#[tauri::command]
+#[tracing::instrument]
+pub async fn codex_sign_in() -> Result<meridian::llm::detect::InstallOutcome, String> {
+    let outcome = meridian::llm::detect::codex_sign_in().await;
+    tracing::info!(ok = outcome.ok, "llm: codex sign-in complete");
+    Ok(outcome)
+}
+
 /// Test every currently-installed provider at once - the Intelligence panel's Rescan
 /// action. Each result is persisted as it lands (see
 /// [`meridian::llm::detect::test_all_installed`]), so a slow or hanging CLI can't hold the

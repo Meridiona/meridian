@@ -499,9 +499,9 @@ async fn warn_if_version_unpinned(provider: LlmProvider, path: &std::path::Path)
     }
 }
 
-/// How long the interactive Cursor sign-in may take - a human finishing an OAuth flow in their
-/// browser, so generous, but not unbounded.
-const CURSOR_LOGIN_TIMEOUT: Duration = Duration::from_secs(180);
+/// How long an interactive provider sign-in (Cursor or Codex) may take - a human finishing an
+/// OAuth flow in their browser, so generous, but not unbounded.
+const INTERACTIVE_LOGIN_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Run the interactive `cursor-agent login` on the user's behalf — the "Sign in to Cursor"
 /// button in the provider detail view.
@@ -560,26 +560,27 @@ pub async fn cursor_sign_in() -> InstallOutcome {
         tail(buf.trim(), 300)
     };
 
-    let output = match tokio::time::timeout(CURSOR_LOGIN_TIMEOUT, child.wait_with_output()).await {
-        Ok(Ok(out)) => out,
-        Ok(Err(e)) => {
-            return install_failed(label, format!("couldn't run cursor-agent login: {e}"))
-        }
-        Err(_) => {
-            let printed = login_output(&seen);
-            return install_failed(
-                label,
-                if printed.is_empty() {
-                    "the sign-in wasn't finished in time - click Sign in to Cursor again".into()
-                } else {
-                    format!(
-                        "the sign-in wasn't finished in time. Finish it by hand with what \
+    let output =
+        match tokio::time::timeout(INTERACTIVE_LOGIN_TIMEOUT, child.wait_with_output()).await {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => {
+                return install_failed(label, format!("couldn't run cursor-agent login: {e}"))
+            }
+            Err(_) => {
+                let printed = login_output(&seen);
+                return install_failed(
+                    label,
+                    if printed.is_empty() {
+                        "the sign-in wasn't finished in time - click Sign in to Cursor again".into()
+                    } else {
+                        format!(
+                            "the sign-in wasn't finished in time. Finish it by hand with what \
                          cursor-agent printed:\n{printed}"
-                    )
-                },
-            );
-        }
-    };
+                        )
+                    },
+                );
+            }
+        };
 
     if output.status.success() {
         let span = tracing::Span::current();
@@ -605,6 +606,111 @@ pub async fn cursor_sign_in() -> InstallOutcome {
             label,
             if reason.is_empty() {
                 "cursor-agent login failed".to_string()
+            } else {
+                reason
+            },
+        )
+    }
+}
+
+/// Run the interactive `codex login` on the user's behalf — the "Sign in to Codex" button in
+/// the provider detail view.
+///
+/// `codex login` (no subcommand) opens the user's browser to sign into their ChatGPT account
+/// and runs a localhost callback server to receive the OAuth redirect; on success it writes
+/// `~/.codex/auth.json` and exits 0, so the summariser then runs on their **ChatGPT
+/// subscription** — no API key, nothing metered. A deliberate mirror of [`cursor_sign_in`]:
+/// the browser is enabled (this is an explicit click, not the daemon's unattended path),
+/// stdout is drained live so the verification URL is surfaced if the browser can't open, and
+/// the wait is bounded by [`INTERACTIVE_LOGIN_TIMEOUT`]. Once it completes, codex persists the
+/// auth and every later run just adopts it — the same "sign in once" model as Cursor.
+#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty))]
+pub async fn codex_sign_in() -> InstallOutcome {
+    let label = "codex login";
+    let Some(path) = resolve_cli("codex").await else {
+        return install_failed(label, "codex isn't installed yet - install it first".into());
+    };
+
+    tracing::info!("llm: launching interactive codex login");
+    let mut cmd = Command::new(&path);
+    cmd.arg("login")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .no_window();
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return install_failed(label, format!("couldn't start codex: {e}")),
+    };
+
+    // Drain stdout as it arrives - `codex login` prints its verification URL to STDOUT while it
+    // waits, which is exactly what the user needs if the browser doesn't open for them. Same
+    // reasoning as the matching drain in `cursor_sign_in`.
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    if let Some(out) = child.stdout.take() {
+        let seen = seen.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut lines = BufReader::new(out).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tracing::info!(line = %line, "codex login");
+                let mut buf = seen.lock().unwrap_or_else(|e| e.into_inner());
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+        });
+    }
+    let login_output = |seen: &std::sync::Mutex<String>| -> String {
+        let buf = seen.lock().unwrap_or_else(|e| e.into_inner());
+        tail(buf.trim(), 300)
+    };
+
+    let output =
+        match tokio::time::timeout(INTERACTIVE_LOGIN_TIMEOUT, child.wait_with_output()).await {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => return install_failed(label, format!("couldn't run codex login: {e}")),
+            Err(_) => {
+                let printed = login_output(&seen);
+                return install_failed(
+                    label,
+                    if printed.is_empty() {
+                        "the sign-in wasn't finished in time - click Sign in to Codex again".into()
+                    } else {
+                        format!(
+                            "the sign-in wasn't finished in time. Finish it by hand with what \
+                             codex printed:\n{printed}"
+                        )
+                    },
+                );
+            }
+        };
+
+    if output.status.success() {
+        let span = tracing::Span::current();
+        span.record("ok", true);
+        span.record("cli_path", tracing::field::display(path.display()));
+        tracing::info!("llm: codex login succeeded");
+        InstallOutcome {
+            ok: true,
+            message: "Signed in to Codex.".into(),
+            path: Some(path.display().to_string()),
+            command: label.to_string(),
+        }
+    } else {
+        // stderr first (that is where the reason goes), but fall back to what the CLI printed on
+        // stdout - on some failures the URL is the only useful thing said.
+        let reason = tail(String::from_utf8_lossy(&output.stderr).trim(), 400);
+        let reason = if reason.is_empty() {
+            login_output(&seen)
+        } else {
+            reason
+        };
+        install_failed(
+            label,
+            if reason.is_empty() {
+                "codex login failed".to_string()
             } else {
                 reason
             },
