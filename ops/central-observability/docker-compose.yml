@@ -12,7 +12,9 @@
 #    they present a rotatable write-only Bearer token the collector validates.)
 #
 # Deploy:
-#   1. cp .env.example .env   # then edit: OO creds, INGEST_TOKEN, domains
+#   1. cp .env.example .env   # then edit: OO creds, INGEST_TOKEN, domains,
+#                             # and the UI basic-auth hash (mind the `$`
+#                             # escaping warning in .env.example)
 #   2. Point GATEWAY_DOMAIN / OO_UI_DOMAIN DNS A-records at this VM's public IP.
 #   3. docker compose up -d
 #   4. Bake into the release DMG (see observability/otlp_target.rs):
@@ -62,6 +64,11 @@ services:
     environment:
       GATEWAY_DOMAIN: ${GATEWAY_DOMAIN}
       OO_UI_DOMAIN: ${OO_UI_DOMAIN}
+      # Basic auth in front of the OO UI only (see the Caddyfile). The hash
+      # MUST be `$`-escaped in .env or compose truncates it — .env.example
+      # explains why and how.
+      OO_UI_USER: ${OO_UI_USER}
+      OO_UI_PASSWORD_HASH: ${OO_UI_PASSWORD_HASH}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
