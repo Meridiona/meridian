@@ -257,6 +257,9 @@ export function Completion({ wiz }: { wiz: Wiz }) {
           </div>
         ))}
       </div>
+      <p style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--t-faint)', maxWidth: 360, marginTop: 16, textAlign: 'center' }}>
+        Meridian sends error reports to help fix bugs (change in Settings).
+      </p>
     </div>
   )
 }

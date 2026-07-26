@@ -164,10 +164,14 @@ async fn cmd_import(
         ));
     };
 
-    let auth = if let Some(a) = auth_override {
-        a.to_string()
+    let auth_header = if let Some(a) = auth_override {
+        // `--auth` documents a base64 Basic credential — keep it working as
+        // before by wrapping it in the Basic scheme.
+        format!("Basic {a}")
     } else if let Some(t) = resolve_otlp_target() {
-        t.auth
+        // Whatever scheme the resolved target uses (Basic on a dev checkout,
+        // Bearer if run from a packaged install with consent).
+        t.auth.header_value()
     } else {
         return Err(anyhow::anyhow!(
             "no OO credentials configured — pass --auth <base64>"
@@ -207,7 +211,7 @@ async fn cmd_import(
 
         let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
 
-        match ship_one(&client, &endpoint, &auth, bytes).await {
+        match ship_one(&client, &endpoint, &auth_header, bytes).await {
             Ok(()) => ok += 1,
             Err(e) => {
                 eprintln!("  FAIL {name}: {e}");

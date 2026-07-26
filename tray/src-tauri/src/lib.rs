@@ -26,6 +26,7 @@ mod capture;
 mod capture_ignore;
 mod commands;
 mod counter_ping;
+mod crash;
 mod deep_link;
 
 /// Lowercase product name as macOS reports it after [`set_process_display_name`].
@@ -56,36 +57,40 @@ use tauri::{
 };
 
 pub fn run() {
-    // Dev-only (`--features otel`): export tray spans to OpenObserve via the
-    // daemon's OTLP setup, tagged service.name = meridian-tray. Held for the
-    // process lifetime. Compiled out entirely when the feature is off — release
-    // builds stay lean. `meridian` itself is always a dependency now (the
-    // "Export Diagnostics" command needs `telemetry_spool::build_export_bundle`
-    // unconditionally); this feature only gates installing a SECOND tracing
-    // subscriber for the tray's own spans.
+    // Native-crash capture (Phase 2B). MUST be first: `tauri-plugin-sentry`'s
+    // minidump reporter relaunches this exe in a special reporter mode that has
+    // to short-circuit before any app work. `crash::init_client()` returns None
+    // — and Sentry stays entirely off — unless the user has error reporting
+    // enabled AND a DSN was baked into this release build (see crash.rs). The
+    // client guard is held for the process lifetime; the minidump reporter and
+    // the plugin (below) only wire up when the client actually initialised.
+    let sentry_client = crash::init_client();
+    #[cfg(not(target_os = "ios"))]
+    // Closure (not the bare fn) so `&ClientInitGuard` deref-coerces to the
+    // `&Client` the reporter wants.
+    let _sentry_minidump = sentry_client
+        .as_ref()
+        .map(|c| tauri_plugin_sentry::minidump::init(c));
+
+    // Tray telemetry. Emit the tray's own spans + logs (service.name =
+    // meridian-tray) into the shared OTLP spool — the same one the daemon writes
+    // and its shipper drains. In a PACKAGED install this is how tray errors
+    // reach the central backend (redacted, error-only, on the shipper's
+    // consent-gated central path): the tray is otherwise DARK in release, and it
+    // is the one process the user actually clicks. `meridian` is always a
+    // dependency (Export Diagnostics), so this only calls the existing init — it
+    // pulls in no new deps. In a debug build the daemon's init also installs a
+    // stdout mirror, so `cargo run` stays console-observable without a separate
+    // subscriber; capture-to-spool honours the MERIDIAN_TELEMETRY_DISABLED kill
+    // switch inside init().
     //
     // Must run INSIDE Tauri's Tokio runtime: the OTLP batch exporter spawns a
     // background task and panics ("no reactor running") if called before one
     // exists. `block_on` enters the global runtime so the spawn succeeds; the
-    // exporter task then lives on that runtime for the process lifetime.
-    #[cfg(feature = "otel")]
-    let _otel_guard =
+    // guard is held for the process lifetime so the exporter keeps flushing.
+    let _obs_guard =
         tauri::async_runtime::block_on(async { meridian::observability::init("meridian-tray") })
             .ok();
-
-    // Capture builds without otel have no subscriber, so the `capture: …` logs
-    // would be invisible. Install a console fmt subscriber (RUST_LOG-filtered,
-    // default info) so a `cargo run --features capture` runtime check is
-    // observable. Skipped under otel (which installs its own subscriber).
-    #[cfg(all(feature = "capture", not(feature = "otel")))]
-    {
-        use tracing_subscriber::{fmt, EnvFilter};
-        let _ = fmt()
-            .with_env_filter(
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-            )
-            .try_init();
-    }
 
     let app_state = Arc::new(Mutex::new(AppState::default()));
 
@@ -96,6 +101,13 @@ pub fn run() {
         // Registered unconditionally; the check is a no-op in a source/dev run
         // (the running binary isn't a packaged `.app` for the updater to swap).
         .plugin(tauri_plugin_updater::Builder::new().build());
+    // Sentry webview + backend integration (Phase 2B) — only when the crash
+    // client initialised (consent + baked DSN). This injects @sentry/browser
+    // into the webview and routes its events through the Rust client so JS and
+    // native crashes share one project + device context.
+    if let Some(client) = &sentry_client {
+        builder = builder.plugin(tauri_plugin_sentry::init(client));
+    }
     // Clerk email sign-in on the setup wizard (see commands::account and
     // ui/app/setup/signin.tsx). `ClerkPluginBuilder::build()` HARD-FAILS
     // `.setup()` (killing the whole tray, not just sign-in) when the

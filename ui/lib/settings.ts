@@ -14,6 +14,11 @@ export interface RuntimeSettings {
   otlp_endpoint: string
   oo_email: string
   oo_password: string
+  // Whether a PACKAGED install auto-ships redacted, error-only telemetry to
+  // Meridian's central OpenObserve. Mirrors RuntimeSettings.error_reporting_enabled
+  // in meridian-core/src/settings.rs. On by default (opt-OUT). Gates only the
+  // packaged/Canonical shipping path; a dev checkout ships via otlp_enabled.
+  error_reporting_enabled: boolean
   // ETL
   poll_interval_secs: number
   agent_auto_floor: number
@@ -78,6 +83,9 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   otlp_endpoint: '',
   oo_email: '',
   oo_password: '',
+  // Central error reporting is opt-OUT: on by default, turned off in Settings.
+  // Must match RuntimeSettings::default() in meridian-core/src/settings.rs.
+  error_reporting_enabled: true,
   poll_interval_secs: 60,
   agent_auto_floor: 0.65,
   agent_queue_floor: 0.40,

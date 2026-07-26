@@ -1,0 +1,37 @@
+# Caddy — TLS termination + reverse proxy for the central stack. Caddy
+# auto-provisions and renews Let's Encrypt certificates for these domains, so
+# installs get an HTTPS endpoint with no manual cert wrangling.
+#
+# The domains come from the environment (docker-compose passes GATEWAY_DOMAIN /
+# OO_UI_DOMAIN). DNS A-records for both must point at this VM before first boot,
+# or the ACME challenge fails.
+
+# Public ingest endpoint installs ship to. The OTLP paths (/v1/logs,
+# /v1/traces) are served by the collector's OTLP HTTP receiver on :4318.
+#
+# Deliberately NOT behind basic auth: installs authenticate with the Bearer
+# ingest token, which the collector validates (bearertokenauth/ingest). A
+# basic-auth challenge here would reject every install.
+{$GATEWAY_DOMAIN} {
+	reverse_proxy otel-collector:4318
+}
+
+# OpenObserve web UI, on its own subdomain. This is where the team reads the
+# error logs/dashboards.
+#
+# Two credential layers on purpose: Caddy basic auth first, then OpenObserve's
+# own login (the ZO_ROOT creds). This subdomain is world-reachable and fronts
+# customers' error telemetry, so the OO login alone is a single point of
+# failure — a stolen/leaked root password would be enough. The outer layer is
+# independently rotatable (edit .env, `docker compose up -d`) without touching
+# OpenObserve or any shipped install.
+#
+# OO_UI_PASSWORD_HASH is a bcrypt hash, NOT a plaintext password. Generate it
+# with `docker run --rm caddy:2 caddy hash-password --plaintext '<password>'`
+# — and read the escaping warning in .env.example before pasting it there.
+{$OO_UI_DOMAIN} {
+	basic_auth {
+		{$OO_UI_USER} {$OO_UI_PASSWORD_HASH}
+	}
+	reverse_proxy openobserve:5080
+}
