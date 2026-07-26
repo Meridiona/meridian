@@ -934,13 +934,17 @@ static RESOLVED_BINS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, PathB
 /// the slow shell spawn on macOS whenever the current process's `PATH` is already good (e.g.
 /// the daemon's launchd-configured one, per the `resolve_cli` doc above).
 pub async fn resolve_cli(bin: &str) -> Option<PathBuf> {
-    if let Some(hit) = RESOLVED_BINS
+    // Read the cache under a SCOPED lock and drop the guard on this `let` before the block
+    // below. Holding it across an `if let` body would keep the guard alive through the body
+    // (temporary lifetime), and the re-lock to evict a stale entry would then deadlock on this
+    // same thread — a `std::sync::Mutex` is not re-entrant.
+    let cached = RESOLVED_BINS
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(bin)
-        .cloned()
-    {
+        .cloned();
+    if let Some(hit) = cached {
         if hit.exists() {
             return Some(hit);
         }
