@@ -179,6 +179,13 @@ async fn install(backend: &Path, home: &Path) -> Result<(), String> {
             .await
             .map_err(|e| format!("mkdir {}: {e}", p.display()))?;
     }
+
+    // A staging attempt killed between `stage_binary`'s copy and its rename
+    // (tray crash, force-quit, OOM) leaves an orphaned
+    // `<DAEMON_FILE>.staging-<pid>` temp file behind — nothing else ever
+    // scans for these, so sweep them here before staging runs again.
+    cleanup_stale_staging_files(&home.join(".meridian/bin")).await;
+
     // Purge leftovers from a pre-cutover **bundle** install before staging the
     // in-process backend. macOS-only by construction: Windows has no install
     // history to migrate from, so there is nothing to boot out and no legacy
@@ -721,6 +728,51 @@ async fn stage_binary(src: &Path, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Remove any `<DAEMON_FILE>.staging-<pid>` leftovers in `bin_dir` from a
+/// staging attempt that [`stage_binary`] never finished (killed between its
+/// copy and its rename) — see that function's doc comment for why the temp
+/// file exists. Best-effort and non-fatal: a listing or removal failure is
+/// only logged, since a lingering temp file is harmless clutter, not a
+/// correctness problem, and must never block `install()`.
+async fn cleanup_stale_staging_files(bin_dir: &Path) {
+    let prefix = format!("{DAEMON_FILE}.staging-");
+    let mut entries = match tokio::fs::read_dir(bin_dir).await {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::debug!(
+                dir = %bin_dir.display(), error = %e,
+                "backend_install: could not list bin dir for stale staging sweep"
+            );
+            return;
+        }
+    };
+    loop {
+        let entry = match entries.next_entry().await {
+            Ok(Some(e)) => e,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::debug!(error = %e, "backend_install: stale staging sweep readdir error");
+                return;
+            }
+        };
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !name.starts_with(&prefix) {
+            continue;
+        }
+        let path = entry.path();
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => {
+                tracing::info!(path = %path.display(), "backend_install: removed stale staging temp file")
+            }
+            Err(e) => {
+                tracing::debug!(path = %path.display(), error = %e, "backend_install: could not remove stale staging temp file")
+            }
+        }
+    }
+}
+
 /// `chmod u+rwx,go+rx` (0755) on a freshly staged binary.
 #[cfg(unix)]
 async fn set_executable(path: &Path) -> Result<(), String> {
@@ -933,9 +985,8 @@ mod tests {
     #[tokio::test]
     async fn stage_binary_does_not_disturb_a_reader_of_the_old_file() {
         let dir = std::env::temp_dir().join(format!(
-            "meridian-stage-binary-{}-{}",
-            std::process::id(),
-            "norace"
+            "meridian-stage-binary-reader-{}",
+            std::process::id()
         ));
         let _ = tokio::fs::remove_dir_all(&dir).await;
         tokio::fs::create_dir_all(&dir).await.unwrap();
@@ -965,6 +1016,50 @@ mod tests {
             tokio::fs::read(&dest).await.unwrap(),
             b"new binary bytes, much longer than the old one",
             "a fresh read of the path after staging must see the new content"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    /// `cleanup_stale_staging_files` must remove only leftover
+    /// `<DAEMON_FILE>.staging-<pid>` temp files — the orphan a killed
+    /// `stage_binary` can leave behind — and must never touch the real staged
+    /// binary or anything else sharing the directory.
+    #[tokio::test]
+    async fn cleanup_stale_staging_files_removes_only_staging_leftovers() {
+        let dir = std::env::temp_dir().join(format!(
+            "meridian-stage-binary-sweep-{}",
+            std::process::id()
+        ));
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+
+        let stale = dir.join(format!("{DAEMON_FILE}.staging-12345"));
+        let daemon = dir.join(DAEMON_FILE);
+        let unrelated = dir.join("some-other-file");
+        tokio::fs::write(&stale, b"orphaned temp copy")
+            .await
+            .unwrap();
+        tokio::fs::write(&daemon, b"the real staged binary")
+            .await
+            .unwrap();
+        tokio::fs::write(&unrelated, b"not ours").await.unwrap();
+
+        cleanup_stale_staging_files(&dir).await;
+
+        assert!(
+            tokio::fs::metadata(&stale).await.is_err(),
+            "stale staging temp file should have been removed"
+        );
+        assert_eq!(
+            tokio::fs::read(&daemon).await.unwrap(),
+            b"the real staged binary",
+            "the real staged binary must be untouched"
+        );
+        assert_eq!(
+            tokio::fs::read(&unrelated).await.unwrap(),
+            b"not ours",
+            "unrelated files must be untouched"
         );
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
