@@ -1020,20 +1020,19 @@ mod tests {
         );
     }
 
-    /// `os.type` / `host.arch` / `app.install_mode` are on `SAFE_STRING_KEYS`,
-    /// but being allowlisted is not the same as surviving intact — allowlisted
-    /// strings still pass through `scrub_paths`. Pins that these three reach
-    /// the backend as written, since the whole point of populating them is
-    /// being able to filter errors by platform.
+    /// `os.type` / `host.arch` are on `SAFE_STRING_KEYS`, but being allowlisted
+    /// is not the same as surviving intact — allowlisted strings still pass
+    /// through `scrub_paths`. Pins that both reach the backend as written,
+    /// since the whole point of populating them is being able to filter errors
+    /// by platform.
     #[test]
     fn machine_shape_attributes_survive_verbatim() {
         for (key, value) in [
             ("os.type", "macos"),
             ("os.type", "windows"),
+            ("os.type", "linux"),
             ("host.arch", "aarch64"),
             ("host.arch", "x86_64"),
-            ("app.install_mode", "packaged"),
-            ("app.install_mode", "source"),
         ] {
             let mut kv = str_attr(key, value);
             assert!(keep_attribute(&mut kv), "{key} was dropped");

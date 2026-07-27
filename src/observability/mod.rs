@@ -331,18 +331,17 @@ fn try_build_otel_providers(
         // the code says and what the dashboards filter on.
         KeyValue::new("os.type", std::env::consts::OS),
         KeyValue::new("host.arch", std::env::consts::ARCH),
-        // Separates errors from a real packaged install from a developer's
-        // `cargo run`, which otherwise differ only by `deployment.environment`
-        // — and that reports "dev" for BOTH a source build and any build whose
-        // channel env was unset, so it can't carry this distinction alone.
-        KeyValue::new(
-            "app.install_mode",
-            if install_mode::is_canonical_install() {
-                "packaged"
-            } else {
-                "source"
-            },
-        ),
+        // NOT setting `app.install_mode` here, deliberately — it is on
+        // `redact::SAFE_STRING_KEYS` and looks tempting. The only available
+        // signal is `is_canonical_install()`, which compares `current_exe()`
+        // against `~/.meridian/bin/meridian`. That is a DAEMON-shaped test, and
+        // this function also runs in the tray (`lib.rs` calls
+        // `observability::init("meridian-tray")` unconditionally), whose exe
+        // lives in the `.app` bundle — so every tray row on a fully packaged
+        // install would be labelled "source". A wrong platform attribute is
+        // worse than an absent one; it gets trusted in a dashboard filter.
+        // `deployment.environment` already separates source builds ("dev") from
+        // released ones, which is the distinction that was actually wanted.
     ]);
 
     // Build spool clients — one per signal so filenames encode the correct prefix.
