@@ -212,16 +212,25 @@ pub fn run() {
             // meridian_core::db_crypto::encrypt_in_place's doc comments for
             // why that's the safe failure mode (never touches the original
             // file until a full encrypted export succeeds).
+            //
+            // Canonical installs ONLY. A debug build's `detect_install_mode()`
+            // can never return `Canonical` (see its own doc comment) — this is
+            // deliberate: `~/.meridian/meridian.db` is the one thing dev and
+            // installed builds share (see `meridian_db_path`'s doc comment),
+            // so a dev/`cargo-watch` run must never encrypt that shared
+            // database out from under a real installed app, or vice versa.
             let db_path = install::meridian_db_path();
-            let db_key_hex = match install::canonical_env_path() {
-                Some(env_path) => match db_key::resolve_or_create_key(&env_path) {
-                    Ok(key) => Some(key),
-                    Err(e) => {
-                        eprintln!("tray: failed to resolve DB encryption key, continuing unencrypted: {e}");
-                        None
+            let db_key_hex = match install::detect_install_mode() {
+                install::InstallMode::Canonical(env_path) => {
+                    match db_key::resolve_or_create_key(&env_path) {
+                        Ok(key) => Some(key),
+                        Err(e) => {
+                            eprintln!("tray: failed to resolve DB encryption key, continuing unencrypted: {e}");
+                            None
+                        }
                     }
-                },
-                None => None,
+                }
+                install::InstallMode::Dev(_) | install::InstallMode::Bare => None,
             };
             let db_key_hex = match &db_key_hex {
                 Some(key) => {
