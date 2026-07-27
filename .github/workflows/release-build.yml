@@ -630,17 +630,18 @@ jobs:
 
       # `libsqlite3-sys`'s `bundled-sqlcipher-vendored-openssl` feature (see
       # meridian-core/src/db_crypto.rs) compiles OpenSSL FROM SOURCE via
-      # `openssl-src`, which needs Perl and NASM on PATH — the
-      # `windows-latest` runner image is not contractually guaranteed to keep
-      # bundling either (or the versions this needs), so both are pinned
-      # explicitly rather than relying on whatever the image happens to ship.
-      # Same actions OpenSSL's own upstream CI uses for this exact
-      # combination on Windows.
-      - name: Install Perl (for vendored OpenSSL's Configure script)
-        uses: shogo82148/actions-setup-perl@v1
-        with:
-          perl-version: "5.38"
-
+      # `openssl-src`, which needs Perl and NASM on PATH.
+      #
+      # Perl: `windows-latest` already ships Strawberry Perl on PATH
+      # (`C:\Strawberry\perl\bin`) — do NOT install a second Perl via
+      # `shogo82148/actions-setup-perl` or similar. That action's minimal Perl
+      # build is missing CPAN modules OpenSSL's Configure script needs
+      # (Locale::Maketext::Simple, Text::Template) and, being earlier on
+      # PATH, shadows the runner's already-working Strawberry Perl — this
+      # broke the build outright when tried (see the compile-only smoke
+      # workflow this was validated against). NASM is genuinely NOT bundled,
+      # so it still needs explicit setup — same action OpenSSL's own upstream
+      # CI uses on Windows.
       - name: Install NASM (for vendored OpenSSL's assembly routines)
         uses: ilammy/setup-nasm@v1
 

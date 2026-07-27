@@ -37,11 +37,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Perl (for vendored OpenSSL's Configure script)
-        uses: shogo82148/actions-setup-perl@v1
-        with:
-          perl-version: "5.38"
-
+      # NOTE: deliberately NOT installing Perl via shogo82148/actions-setup-perl
+      # here — windows-latest already has Strawberry Perl at C:\Strawberry\perl\bin
+      # on PATH by default, and that action's minimal Perl build is MISSING CPAN
+      # modules OpenSSL's Configure script needs (Locale::Maketext::Simple,
+      # Text::Template) — installing it actively broke the build by shadowing
+      # the runner's already-working Perl with a broken one. Confirmed by an
+      # actual failed run of this exact workflow before this fix.
       - name: Install NASM (for vendored OpenSSL's assembly routines)
         uses: ilammy/setup-nasm@v1
 
