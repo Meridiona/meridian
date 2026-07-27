@@ -29,11 +29,26 @@ const CHANNEL_COLOR: Record<AppInfo['channel'], string> = {
 
 export function AccountSection() {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
+  const [copied, setCopied] = useState(false)
   const { status: exportStatus, path: exportPath, errorMsg: exportError, exportBundle } = useExportDiagnostics()
 
   useEffect(() => {
     load<AppInfo>('/api/app-info', 'get_app_info').then(setAppInfo).catch(() => {})
   }, [])
+
+  // A 16-hex string is error-prone to retype into a support email, and a
+  // mistyped one silently matches no rows. Copy is the primary interaction.
+  const copySupportId = async () => {
+    if (!appInfo) return
+    try {
+      await navigator.clipboard.writeText(appInfo.supportId)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard blocked - the ID is rendered next to the button, so the
+      // user can still select it by hand. Nothing to report.
+    }
+  }
 
   return (
     <div className="max-w-[640px] flex flex-col gap-5">
@@ -75,6 +90,18 @@ export function AccountSection() {
             <span className="mt-body-sm font-mono font-semibold" style={{ color: CHANNEL_COLOR[appInfo.channel] }}>
               v{appInfo.version}{appInfo.channel !== 'prod' && ` · ${appInfo.channel}`}
             </span>
+          )}
+        </FieldRow>
+        <FieldRow label="Support ID" description="Identifies this device in error reports, without naming you or it. Quote it when you contact support so we can find the errors from this machine. It is not tied to your account and changes if you rename the device.">
+          {appInfo && (
+            <div className="flex items-center gap-2">
+              <span className="mt-body-sm font-mono" style={{ color: 'var(--t-muted)' }}>
+                {appInfo.supportId}
+              </span>
+              <SettingsButton onClick={copySupportId}>
+                {copied ? 'Copied' : 'Copy'}
+              </SettingsButton>
+            </div>
           )}
         </FieldRow>
         <FieldRow label="Export Diagnostics" description="Captures your local logs and traces for troubleshooting. Nothing leaves your machine until you share this file. Saved to your Downloads folder and revealed in your file manager.">

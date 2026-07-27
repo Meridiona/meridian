@@ -400,13 +400,34 @@ spans egress at all, and `host.name` is replaced by a stable **pseudonym**
 macOS is routinely the account holder's real name. The tray's Sentry
 `before_send` applies the identical pseudonym to `event.server_name`.
 
+That pseudonym is the ONLY identifier on an error row — nothing associates it
+with an account, and the hash is one-way. So it is surfaced to the user as
+**Support ID** (Settings → Account, and `bundle-info.txt` inside an export
+bundle), which is what makes a support ticket traceable to its error rows at
+all. Both the displayed value and the shipped one come from
+`redact::local_host_pseudonym` **on purpose** — computing either side
+separately would let them drift, and the user would quote an ID matching
+nothing, silently (`displayed_pseudonym_matches_shipped` pins this).
+
+**Which resource attributes actually ship** is a separate question from the
+allowlist, and the two are easy to confuse: `redact::SAFE_STRING_KEYS` lists
+many keys that nothing populates (`service.instance.id`, `os.version`,
+`app.version`, …). `observability::init`'s `Resource::new` sets exactly:
+`service.name`, `service.version`, `host.name`, `deployment.environment`,
+`os.type`, `host.arch`, `app.install_mode` — and `Resource::new` runs NO
+detectors, so the SDK contributes nothing either. **Allowlisted ≠ present:
+before relying on an attribute in a query or dashboard, check it is set here.**
+
 **Export Diagnostics remains the manual path**, unchanged and independent of
 consent: tray Settings → Account → **Export Diagnostics** (or `meridian
 telemetry export`) bundles the spool + the launchd crash-safety-net logs into
 a `.tar.gz` the user hands to support, imported by hand with `meridian
-telemetry import <bundle> --endpoint <url> --auth <base64>`. Retention
-(default 7 days, `MERIDIAN_TELEMETRY_RETENTION_DAYS`) applies to both
-`pending/` and `sent/`, regardless of shipping status.
+telemetry import <bundle> --endpoint <url> --auth <base64>`. The bundle also
+carries a synthesized `bundle-info.txt` (Support ID, version, channel, os,
+arch) so a hand-delivered archive can be joined to that machine's already-
+ingested rows; it deliberately contains nothing the automatic ship leg wouldn't
+already send. Retention (default 7 days, `MERIDIAN_TELEMETRY_RETENTION_DAYS`)
+applies to both `pending/` and `sent/`, regardless of shipping status.
 
 - **Rust**: `tracing::info!/warn!/error!/debug!` with **structured fields** — never format data values into the message string (already enforced).
 - **Wrap discrete operations in spans** (`tracing::info_span!` / `debug_span!`) and put the meaningful inputs, outputs, and metrics as **span attributes**, not buried in log lines. For an LLM/model call, capture the EXACT input as sent and output as received (post-cap/post-template — reflect any truncation that actually happened), plus real token counts/latency. See `src/llm/resolver.rs`'s `llm.call` span tree (request → infer → response) and `src/worklog_pipeline/distiller`'s `distil.run` span for the reference shape.
