@@ -12,7 +12,7 @@ name: TEMP — Windows SQLCipher build smoke test
 
 on:
   push:
-    branches: [feat/local-db-encryption]
+    branches: [ci/windows-sqlcipher-perl-nasm]
   workflow_dispatch:
 
 permissions:
