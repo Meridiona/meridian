@@ -411,7 +411,13 @@ fn strip_env_keys(path: &std::path::Path, keys: &[&str]) -> std::io::Result<()> 
 /// dir) if missing. Mirrors the deleted route's `upsertEnv` (replace-then-append)
 /// so the daemon reads exactly the same shape. Always writes with a trailing
 /// newline so subsequent appends don't concatenate on the same line.
-fn upsert_env(path: &std::path::Path, updates: &BTreeMap<String, String>) -> std::io::Result<()> {
+///
+/// `pub(crate)`: also used by [`crate::db_key`] to mirror the SQLCipher
+/// encryption key into the same `.env` the daemon reads `MERIDIAN_DB` from.
+pub(crate) fn upsert_env(
+    path: &std::path::Path,
+    updates: &BTreeMap<String, String>,
+) -> std::io::Result<()> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     let mut remaining = updates.clone();
     let mut lines: Vec<String> = existing

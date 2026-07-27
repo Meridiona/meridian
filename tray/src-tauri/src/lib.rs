@@ -27,6 +27,7 @@ mod capture_ignore;
 mod commands;
 mod counter_ping;
 mod crash;
+mod db_key;
 mod deep_link;
 
 /// Lowercase product name as macOS reports it after [`set_process_display_name`].
@@ -203,14 +204,89 @@ pub fn run() {
                 });
             }
 
+            // Resolve the local SQLCipher encryption key BEFORE opening the
+            // pool. Two separate concerns, deliberately gated differently:
+            //
+            // 1. USING an existing key (any install mode, including Dev): if
+            //    `MERIDIAN_DB_KEY` is already sitting in the resolved `.env`,
+            //    always read and apply it. `meridian.db` is the one file dev
+            //    and installed builds share (`meridian_db_path`'s doc
+            //    comment) — if it's ALREADY encrypted (e.g. this same machine
+            //    also runs a Canonical install against it), a dev build must
+            //    still be able to read it, not silently open unencrypted and
+            //    fail on the first real query.
+            // 2. GENERATING a new key + migrating an existing plaintext file
+            //    (release builds ONLY, via `cfg!(debug_assertions)` — NOT
+            //    gated on `detect_install_mode() == Canonical`, deliberately:
+            //    that enum only resolves to `Canonical` once `~/.meridian/.env`
+            //    already exists, which is NOT yet true on a brand-new
+            //    install's very first launch (see `canonical_env_path`'s doc
+            //    comment on why the WRITE target must not require the file
+            //    to pre-exist) — gating generation on the enum instead of the
+            //    compile-time check would mean a new user's first-ever launch
+            //    never gets encrypted at all. `cfg!(debug_assertions)` mirrors
+            //    `detect_install_mode`'s own compile-time Canonical/Dev split,
+            //    so a debug build provably can't reach this branch either
+            //    way. Both degrade to `None`/unencrypted on any failure
+            //    rather than blocking tray startup — see db_key.rs and
+            //    meridian_core::db_crypto::encrypt_in_place's doc comments
+            //    for why that's the safe failure mode.
+            let db_path = install::meridian_db_path();
+            let install_mode = install::detect_install_mode();
+            let existing_key = install_mode
+                .env_path()
+                .and_then(|p| install::env_key_from_path(p, "MERIDIAN_DB_KEY"));
+
+            let db_key_hex = if existing_key.is_some() {
+                existing_key
+            } else if !cfg!(debug_assertions) {
+                match install::canonical_env_path() {
+                    Some(env_path) => match db_key::resolve_or_create_key(&env_path) {
+                        Ok(key) => Some(key),
+                        Err(e) => {
+                            eprintln!("tray: failed to resolve DB encryption key, continuing unencrypted: {e}");
+                            None
+                        }
+                    },
+                    None => None,
+                }
+            } else {
+                None
+            };
+
+            let db_key_hex = if !cfg!(debug_assertions) {
+                match &db_key_hex {
+                    Some(key) => {
+                        let migrate = meridian_core::db_crypto::encrypt_in_place(
+                            std::path::Path::new(&db_path),
+                            key,
+                        );
+                        match tauri::async_runtime::block_on(migrate) {
+                            Ok(()) => Some(key.clone()),
+                            Err(e) => {
+                                eprintln!(
+                                    "tray: failed to migrate meridian.db to encrypted storage, continuing unencrypted this run: {e}"
+                                );
+                                None
+                            }
+                        }
+                    }
+                    None => None,
+                }
+            } else {
+                db_key_hex
+            };
+
             // Open meridian.db ONCE at startup and share it with commands via
             // managed state (no migrations — the daemon owns the schema). `None`
             // if the DB can't be opened yet, so reads error gracefully instead
             // of crashing the tray.
-            let db_path = install::meridian_db_path();
-            let db_pool = tauri::async_runtime::block_on(meridian_core::open_existing(&db_path))
-                .map_err(|e| eprintln!("tray: meridian.db not opened ({db_path}): {e}"))
-                .ok();
+            let db_pool = tauri::async_runtime::block_on(meridian_core::open_existing(
+                &db_path,
+                db_key_hex.as_deref(),
+            ))
+            .map_err(|e| eprintln!("tray: meridian.db not opened ({db_path}): {e}"))
+            .ok();
             // Capture (slice 4a) writes to the SAME read-write pool the commands
             // use — clone the handle before it's moved into managed state.
             #[cfg(feature = "capture")]

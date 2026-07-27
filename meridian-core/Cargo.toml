@@ -9,7 +9,14 @@ description = "Lean shared data layer (DB types + read queries) for the Meridian
 # (no screenpipe, MLX, trackers, OTel), so the Tauri app can depend on this
 # without pulling the whole daemon tree.
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls"] }
-libsqlite3-sys = { version = "0.26", features = ["bundled"] }
+# "bundled-sqlcipher-vendored-openssl" instead of plain "bundled": builds SQLCipher
+# (not stock SQLite) with a vendored OpenSSL, so meridian.db can be opened with an
+# encryption key (see db_crypto.rs). This is a DIRECT dep here and at the workspace
+# root specifically so Cargo's feature unification carries this feature into the
+# ONE resolved libsqlite3-sys build every workspace member (daemon, tray) links —
+# sqlite-vec and sqlite files with no key set still open exactly as before
+# (SQLCipher is a strict superset: a plain file opens fine when no key is set).
+libsqlite3-sys = { version = "0.26", features = ["bundled-sqlcipher-vendored-openssl"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0.86"
@@ -36,3 +43,6 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # Integration tests build an in-memory schema + seed rows to exercise the
 # readers (sqlx is a regular dep, but integration tests need it in scope too).
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls"] }
+# db_crypto.rs tests exercise real on-disk migration/export, so they need real
+# temp files (not just `sqlite::memory:`).
+tempfile = "3"

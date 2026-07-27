@@ -4,8 +4,7 @@
 use anyhow::Context;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqliteConnectOptions, FromRow, SqlitePool};
-use std::str::FromStr;
+use sqlx::{FromRow, SqlitePool};
 
 // ActiveSession + the read helpers now live in meridian-core (shared with the
 // Tauri dashboard, single source of truth). Re-exported so existing daemon code
@@ -83,31 +82,41 @@ pub struct EtlCursor {
 
 /// Opens (or creates) `meridian.db` at `uri`, runs embedded migrations, and
 /// returns a connection pool.  `uri` must be a `sqlite://…` URI.
+///
+/// Reads the SQLCipher encryption key straight from the process env
+/// (`MERIDIAN_DB_KEY`) rather than taking it as a parameter — this function
+/// has ~20 call sites across `main.rs`/`plan_tasks/cli.rs`, all of which run
+/// after `main()`'s unconditional `dotenvy::dotenv_override()` (see
+/// `src/main.rs`), which already populates this env var exactly the same way
+/// it populates `MERIDIAN_DB` itself. Threading a new parameter through every
+/// call site would be pure churn for no added safety. `None` (key absent)
+/// opens the database unencrypted, unchanged from before this feature existed
+/// — this is the normal case for dev/source/Bare installs; only a Canonical
+/// (packaged) install's tray provisions a key (see
+/// `tray/src-tauri/src/db_key.rs`).
 pub async fn setup_db(uri: &str) -> anyhow::Result<SqlitePool> {
-    let opts = SqliteConnectOptions::from_str(uri)
-        .with_context(|| format!("invalid SQLite URI: {uri}"))?
-        .create_if_missing(true)
-        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
-        // Since the Bucket-2 cutover the tray writes capture_frames/
-        // capture_ui_events into THIS db concurrently with the daemon's ETL
-        // writes (app_sessions, cursor). Without a busy_timeout the daemon would
-        // get an immediate SQLITE_BUSY (default timeout 0) whenever the tray
-        // holds the WAL write lock, failing the ETL run. Wait instead — matches
-        // the tray's open_existing (5s).
-        .busy_timeout(std::time::Duration::from_secs(5))
-        // Lets `crate::etl::capture_retention`'s periodic `incremental_vacuum`
-        // actually reclaim disk space freed by its capture_* table deletes.
-        // Only takes effect on a brand-new (table-less) database file — SQLite
-        // requires a full `VACUUM` to convert an already-populated database
-        // from the default `auto_vacuum = NONE`, which we deliberately never
-        // run automatically on a live daemon (see that module's doc comment).
-        // On an existing database this pragma is simply a documented no-op.
-        .pragma("auto_vacuum", "INCREMENTAL");
-
-    let pool = SqlitePool::connect_with(opts)
-        .await
-        .with_context(|| format!("failed to open SQLite at {uri}"))?;
+    let key = std::env::var("MERIDIAN_DB_KEY").ok();
+    // Lets `crate::etl::capture_retention`'s periodic `incremental_vacuum`
+    // actually reclaim disk space freed by its capture_* table deletes. Only
+    // takes effect on a brand-new (table-less) database file — SQLite requires
+    // a full `VACUUM` to convert an already-populated database from the
+    // default `auto_vacuum = NONE`, which we deliberately never run
+    // automatically on a live daemon (see that module's doc comment). On an
+    // existing database this pragma is simply a documented no-op.
+    //
+    // Since the Bucket-2 cutover the tray also writes capture_frames/
+    // capture_ui_events into THIS db concurrently with the daemon's ETL writes
+    // (app_sessions, cursor) — the shared `busy_timeout=5000` inside
+    // `open_pool_with_key` (matching the tray's `open_existing`) is what keeps
+    // that from surfacing as an immediate SQLITE_BUSY.
+    let pool = meridian_core::db_crypto::open_pool_with_key(
+        uri,
+        key.as_deref(),
+        true,
+        &[("auto_vacuum", "INCREMENTAL")],
+    )
+    .await
+    .with_context(|| format!("failed to open SQLite at {uri}"))?;
 
     let migrator = sqlx::migrate!("src/migrations");
     reconcile_migration_checksums(&pool, &migrator).await?;

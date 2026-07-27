@@ -82,6 +82,17 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 futures-util = "0.3"
 # SHA-256 verification of the downloaded runtime tarball against the manifest.
 sha2 = "0.10"
+# OS-native secret storage (macOS Keychain / Windows Credential Manager) for the
+# local meridian.db SQLCipher encryption key — see db_key.rs. Pinned to the "3"
+# series deliberately: it ships the simple Entry::new/get_password/set_password
+# API used here directly; the "4" series requires manually registering a
+# storage backend first, which this app has no need to customize.
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+# Generates the random 256-bit db_key.rs encryption key (CSPRNG via OsRng).
+# `hex` encodes/decodes it for storage — both already in the workspace lockfile
+# via the daemon's root Cargo.toml, so this adds no new crate to the tree.
+rand = "0.8"
+hex = "0.4"
 chrono = { version = "0.4", features = ["clock"] }
 # Anonymous per-install id for product analytics (analytics.rs) — already in
 # the workspace lockfile transitively, so this adds no new crate to the tree.

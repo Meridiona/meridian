@@ -26,6 +26,8 @@ pub mod adapters;
 pub mod canonical_task;
 
 mod db;
+/// SQLCipher key application + plaintext↔encrypted `meridian.db` migration.
+pub mod db_crypto;
 /// The user's centralised AI-provider choice (which LLM runs their pipeline).
 pub mod llm_provider;
 mod readers;
