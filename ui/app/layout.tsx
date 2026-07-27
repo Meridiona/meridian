@@ -29,7 +29,7 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: 'Meridian',
-  description: 'A private daily timeline of your work, plus auto-drafted worklogs for your tasks - ready to review and post to Jira, Linear, or GitHub.',
+  description: 'A private daily timeline of your work, plus auto-drafted worklogs for your tasks - ready to review and post to Jira or GitHub.',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
