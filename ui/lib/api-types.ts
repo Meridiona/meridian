@@ -654,6 +654,11 @@ export interface UninstallResult {
 export interface AppInfo {
   version: string
   channel: 'dev' | 'staging' | 'prod'
+  // This machine's pseudonym, identical to the `host.name` value its error
+  // telemetry carries in the central backend. Surfaced in Settings → Account so
+  // a user can quote it to support; the hash is one-way, so without the user
+  // supplying it their error rows cannot be located.
+  supportId: string
 }
 
 // ── LLM Lab (`get_llm_experiments` / `get_llm_experiment` / `run_llm_experiment`)

@@ -26,6 +26,7 @@ use anyhow::{Context, Result};
 
 pub mod cli;
 pub(crate) mod launchd_log_cap;
+pub(crate) mod machine_id;
 pub mod redact;
 pub mod render;
 pub(crate) mod retention;
@@ -103,9 +104,62 @@ pub fn build_export_bundle(
             .with_context(|| format!("add {} to archive", file_path.display()))?;
     }
 
+    append_bundle_info(&mut tar).context("add bundle-info.txt to archive")?;
+
     tar.finish().context("finish tar archive")?;
 
     Ok((out_path, file_count))
+}
+
+/// Write a synthesized `bundle-info.txt` into the archive: which machine,
+/// build, and platform produced it.
+///
+/// Without this, a support bundle is a pile of opaque `.otlp` files and the
+/// recipient has to guess. The `machine` line is the same pseudonym that
+/// appears as `host.name` in the central backend
+/// ([`redact::local_host_pseudonym`]), which is the point: it joins a
+/// hand-delivered bundle to that machine's already-ingested error rows.
+///
+/// Deliberately carries NOTHING that isn't already allowed to leave the
+/// machine over the automatic ship leg - no raw hostname, no account email, no
+/// paths. A user handing over a bundle should not be disclosing more than the
+/// consent copy describes.
+///
+/// Not counted in the returned `file_count`, which reports telemetry files
+/// collected - a synthetic header would make that number mean two things.
+fn append_bundle_info<W: std::io::Write>(tar: &mut tar::Builder<W>) -> Result<()> {
+    let body = format!(
+        "machine: {}\n\
+         version: {}\n\
+         channel: {}\n\
+         os: {}\n\
+         arch: {}\n\
+         generated_unix_micros: {}\n",
+        redact::local_host_pseudonym(),
+        env!("CARGO_PKG_VERSION"),
+        option_env!("MERIDIAN_CHANNEL").unwrap_or("dev"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64,
+    );
+
+    let mut header = tar::Header::new_gnu();
+    header.set_size(body.len() as u64);
+    header.set_mode(0o644);
+    header.set_mtime(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    );
+    header.set_cksum();
+
+    tar.append_data(&mut header, "bundle-info.txt", body.as_bytes())
+        .context("append bundle-info.txt")?;
+    Ok(())
 }
 
 /// Strip a `/v1/traces` or `/v1/logs` suffix to recover the OO base URL.
@@ -234,6 +288,50 @@ mod tests {
         // 1 otlp file + daemon.log (a known launchd log name) — the unrelated
         // .txt file must NOT be swept in.
         assert_eq!(count, 2);
+    }
+
+    /// The bundle must carry the machine pseudonym (so support can join it to
+    /// already-ingested error rows) and must NOT carry the raw hostname —
+    /// handing over a bundle should disclose no more than the automatic ship
+    /// leg already does.
+    #[test]
+    fn build_export_bundle_includes_uncounted_bundle_info() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        std::env::set_var("MERIDIAN_TELEMETRY_DIR", dir.path());
+
+        writer::write_pending(dir.path(), "traces", b"a").unwrap();
+
+        let out = dir.path().join("bundle.tar.gz");
+        let (_, count) = build_export_bundle(Some(&out), None, false).unwrap();
+
+        std::env::remove_var("MERIDIAN_TELEMETRY_DIR");
+
+        // The synthetic header is not counted as a telemetry file.
+        assert_eq!(count, 1);
+
+        let gz = flate2::read::GzDecoder::new(std::fs::File::open(&out).unwrap());
+        let mut archive = tar::Archive::new(gz);
+        let mut info = None;
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            if entry.path().unwrap().to_string_lossy() == "bundle-info.txt" {
+                let mut s = String::new();
+                std::io::Read::read_to_string(&mut entry, &mut s).unwrap();
+                info = Some(s);
+            }
+        }
+
+        let info = info.expect("bundle-info.txt missing from archive");
+        assert!(
+            info.contains(&redact::local_host_pseudonym()),
+            "pseudonym missing, support cannot join this bundle: {info}"
+        );
+        let raw_host = gethostname::gethostname().to_string_lossy().into_owned();
+        assert!(
+            !info.contains(&raw_host),
+            "raw hostname leaked into the bundle: {info}"
+        );
     }
 
     #[test]

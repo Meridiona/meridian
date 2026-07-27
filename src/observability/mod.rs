@@ -297,10 +297,15 @@ fn try_build_otel_providers(
         KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
         // Kept RAW here on purpose. This resource set feeds the local spool,
         // which `meridian logs` renders at full fidelity — a developer reading
-        // their own machine's logs should see their own hostname. The
-        // pseudonymisation happens on the SHIP leg only
-        // (`telemetry_spool::redact::pseudonymize_host`), so nothing
-        // identifying reaches the central backend.
+        // their own machine's logs should see their own hostname.
+        //
+        // The ship leg does not hash this value, it REPLACES it with
+        // `telemetry_spool::redact::local_host_pseudonym()` — a hash of a
+        // stable hardware id, not of whatever the hostname happened to be at
+        // capture time. On macOS the kernel hostname is network-derived
+        // (see `telemetry_spool::machine_id`), so hashing it would give the
+        // same machine a new identity on every network change. Nothing
+        // identifying reaches the central backend either way.
         KeyValue::new(
             "host.name",
             gethostname::gethostname().to_string_lossy().into_owned(),
@@ -316,6 +321,32 @@ fn try_build_otel_providers(
             "deployment.environment",
             option_env!("MERIDIAN_CHANNEL").unwrap_or("dev"),
         ),
+        // Platform shape. Without these, a Windows error and a macOS error are
+        // indistinguishable in the central backend — every attribute above is
+        // OS-agnostic, and the SDK adds nothing of its own (`Resource::new`
+        // runs no detectors, unlike `Resource::default`). All three are already
+        // on `redact::SAFE_STRING_KEYS`, so populating them needs no change to
+        // the redaction boundary: they are enum-like build facts that
+        // structurally cannot carry user content.
+        //
+        // Deliberately the RAW Rust constants ("macos"/"windows", "aarch64"/
+        // "x86_64") rather than the OTel semconv spellings ("darwin", "arm64").
+        // Nothing downstream parses these as semconv enums, and a translation
+        // layer is one more place to introduce a silent mismatch between what
+        // the code says and what the dashboards filter on.
+        KeyValue::new("os.type", std::env::consts::OS),
+        KeyValue::new("host.arch", std::env::consts::ARCH),
+        // NOT setting `app.install_mode` here, deliberately — it is on
+        // `redact::SAFE_STRING_KEYS` and looks tempting. The only available
+        // signal is `is_canonical_install()`, which compares `current_exe()`
+        // against `~/.meridian/bin/meridian`. That is a DAEMON-shaped test, and
+        // this function also runs in the tray (`lib.rs` calls
+        // `observability::init("meridian-tray")` unconditionally), whose exe
+        // lives in the `.app` bundle — so every tray row on a fully packaged
+        // install would be labelled "source". A wrong platform attribute is
+        // worse than an absent one; it gets trusted in a dashboard filter.
+        // `deployment.environment` already separates source builds ("dev") from
+        // released ones, which is the distinction that was actually wanted.
     ]);
 
     // Build spool clients — one per signal so filenames encode the correct prefix.

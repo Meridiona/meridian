@@ -397,17 +397,51 @@ Redaction applies to the **ship leg only** — it produces a separate stripped
 copy to POST, so local capture and `meridian logs` stay full-fidelity. Two
 things it guarantees that are easy to regress: only WARN+ logs / ERROR-status
 spans egress at all, and `host.name` is replaced by a stable **pseudonym**
-(`redact::pseudonymize_host`) rather than shipping the raw hostname, which on
+(`redact::local_host_pseudonym`) rather than shipping the raw hostname, which on
 macOS is routinely the account holder's real name. The tray's Sentry
 `before_send` applies the identical pseudonym to `event.server_name`.
+
+**The pseudonym is seeded from a hardware id, NOT the hostname** — and the ship
+leg *replaces* `host.name` rather than hashing whatever was captured. This is
+not a stylistic choice: on macOS `HostName` is unset by default, so the kernel
+hostname is derived from the network (measured on a dev Mac, `hostname` was
+byte-identical to the router's reverse-DNS record for the current IP, itself
+derived from a per-network randomised Wi-Fi MAC). Seeding from it gave the same
+machine a new identity on every network change, silently breaking the grouping
+the value exists for. See `telemetry_spool::machine_id` before touching any of
+this; `pseudonym_is_independent_of_the_captured_hostname` pins it.
+
+That pseudonym is the ONLY identifier on an error row — nothing associates it
+with an account, and the hash is one-way. So it is surfaced to the user as
+**Support ID** (Settings → Account, and `bundle-info.txt` inside an export
+bundle), which is what makes a support ticket traceable to its error rows at
+all. Both the displayed value and the shipped one come from
+`redact::local_host_pseudonym` **on purpose** — computing either side
+separately would let them drift, and the user would quote an ID matching
+nothing, silently (`displayed_pseudonym_matches_shipped` pins this).
+
+**Which resource attributes actually ship** is a separate question from the
+allowlist, and the two are easy to confuse: `redact::SAFE_STRING_KEYS` lists
+many keys that nothing populates (`service.instance.id`, `os.version`,
+`app.version`, `app.install_mode`, …). `observability::init`'s `Resource::new`
+sets exactly: `service.name`, `service.version`, `host.name`,
+`deployment.environment`, `os.type`, `host.arch` — and `Resource::new` runs NO
+detectors, so the SDK contributes nothing either. **Allowlisted ≠ present:
+before relying on an attribute in a query or dashboard, check it is set here.**
+Note `observability::init` runs in BOTH the daemon and the tray, so any
+attribute added there must be correct for both — `app.install_mode` is
+deliberately left unset for exactly this reason (see the comment there).
 
 **Export Diagnostics remains the manual path**, unchanged and independent of
 consent: tray Settings → Account → **Export Diagnostics** (or `meridian
 telemetry export`) bundles the spool + the launchd crash-safety-net logs into
 a `.tar.gz` the user hands to support, imported by hand with `meridian
-telemetry import <bundle> --endpoint <url> --auth <base64>`. Retention
-(default 7 days, `MERIDIAN_TELEMETRY_RETENTION_DAYS`) applies to both
-`pending/` and `sent/`, regardless of shipping status.
+telemetry import <bundle> --endpoint <url> --auth <base64>`. The bundle also
+carries a synthesized `bundle-info.txt` (Support ID, version, channel, os,
+arch) so a hand-delivered archive can be joined to that machine's already-
+ingested rows; it deliberately contains nothing the automatic ship leg wouldn't
+already send. Retention (default 7 days, `MERIDIAN_TELEMETRY_RETENTION_DAYS`)
+applies to both `pending/` and `sent/`, regardless of shipping status.
 
 - **Rust**: `tracing::info!/warn!/error!/debug!` with **structured fields** — never format data values into the message string (already enforced).
 - **Wrap discrete operations in spans** (`tracing::info_span!` / `debug_span!`) and put the meaningful inputs, outputs, and metrics as **span attributes**, not buried in log lines. For an LLM/model call, capture the EXACT input as sent and output as received (post-cap/post-template — reflect any truncation that actually happened), plus real token counts/latency. See `src/llm/resolver.rs`'s `llm.call` span tree (request → infer → response) and `src/worklog_pipeline/distiller`'s `distil.run` span for the reference shape.

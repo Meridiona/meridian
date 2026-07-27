@@ -65,6 +65,8 @@ use opentelemetry_proto::tonic::{
 use prost::Message;
 use regex::Regex;
 
+use super::machine_id;
+
 /// OTLP `SeverityNumber` for `WARN`; the error-only log threshold is "this or
 /// higher" (WARN=13, ERROR=17, FATAL=21). Matches the ranges in
 /// [`crate::telemetry_spool::render`].
@@ -356,7 +358,19 @@ fn keep_attribute(kv: &mut KeyValue) -> bool {
         Some(Value::IntValue(_)) | Some(Value::DoubleValue(_)) | Some(Value::BoolValue(_)) => true,
         Some(Value::StringValue(s)) => {
             if kv.key == HOST_NAME_KEY {
-                *s = pseudonymize_host(s);
+                // REPLACED, not hashed-in-place. Hashing the captured value
+                // would inherit its instability: a spool file written on one
+                // network and shipped after joining another would carry a
+                // different pseudonym for the same machine. Deriving it here
+                // from the stable seed makes every record from this machine
+                // agree, whenever it happens to be captured or drained.
+                //
+                // Safe because spool files are always written locally, so the
+                // captured `host.name` always describes THIS machine. The one
+                // path that ships another machine's payload — `telemetry
+                // import` — bypasses redaction entirely by design, so it
+                // cannot be mislabelled by this.
+                *s = local_host_pseudonym();
                 true
             } else if is_free_text_key(&kv.key) {
                 *s = clamp(scrub_text(s));
@@ -401,21 +415,60 @@ const HOST_PSEUDONYM_SALT: &str = "meridian.host.pseudonym.v1:";
 /// hashing. That matches the PR's stated position (redacted, not anonymous);
 /// true anonymisation is a later phase.
 ///
-/// `pub` because the tray's Sentry `before_send` applies the identical
-/// transform to `event.server_name`, which `sentry-contexts` auto-populates
-/// from the same hostname — so both egress paths pseudonymise to the SAME
-/// value and a crash can still be correlated with that machine's error logs.
-pub fn pseudonymize_host(hostname: &str) -> String {
+/// `pub` for tests and for [`local_host_pseudonym`], which is what callers
+/// should actually use — hashing a caller-supplied hostname is exactly the
+/// mistake this module had (see that function's doc).
+pub fn pseudonymize_host(seed: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(HOST_PSEUDONYM_SALT.as_bytes());
-    hasher.update(hostname.as_bytes());
+    hasher.update(seed.as_bytes());
     let digest = hasher.finalize();
     digest[..8].iter().fold(String::new(), |mut acc, b| {
         use std::fmt::Write;
         let _ = write!(acc, "{b:02x}");
         acc
     })
+}
+
+/// This machine's pseudonym - the exact value that appears as `host.name` in
+/// the central backend for telemetry originating here.
+///
+/// # Why this exists rather than each caller hashing its own hostname
+/// The pseudonym is what a user quotes to support so their error rows can be
+/// found. That only works if the value we SHOW is byte-identical to the value
+/// we SHIP. Those are computed in different crates (the tray renders it in
+/// Settings; the daemon's ship leg writes it via [`keep_attribute`]), so any
+/// divergence in how the hostname is obtained - `to_string_lossy` vs `to_str`,
+/// a trimmed `.local` suffix, case folding - would produce an ID that matches
+/// nothing, and the failure is silent. Funnelling both through this one
+/// function makes that drift impossible; `displayed_pseudonym_matches_shipped`
+/// pins it.
+///
+/// # Why the seed is NOT the hostname
+/// It was, and that was a bug. On macOS `HostName` is unset by default, so the
+/// kernel hostname is derived from the network — measurably so: on a dev Mac
+/// `hostname` returned `Unknown_a2:97:03:78:a9:6a`, byte-identical to the
+/// router's reverse-DNS record for the current IP, itself derived from a
+/// **private Wi-Fi address** that macOS rotates per network. Joining a
+/// different network therefore produced a different pseudonym for the same
+/// machine, silently breaking both the grouping this value exists for and any
+/// Support ID a user had already quoted.
+///
+/// The seed is now [`machine_id::stable_machine_id`] (the hardware UUID on
+/// macOS), falling back to the hostname only where no better identifier is
+/// available — on Windows that fallback is itself stable, since `gethostname()`
+/// there returns the computer name.
+///
+/// Note this makes the pseudonymisation *stronger*, not merely more stable: it
+/// is a one-way hash of a low-entropy input, and hostnames are enumerable
+/// (`Akarshs-MacBook-Pro.local` can simply be hashed and compared) where a
+/// 128-bit hardware UUID is not.
+pub fn local_host_pseudonym() -> String {
+    match machine_id::stable_machine_id() {
+        Some(id) => pseudonymize_host(id),
+        None => pseudonymize_host(&gethostname::gethostname().to_string_lossy()),
+    }
 }
 
 fn is_safe_string_key(key: &str) -> bool {
@@ -972,9 +1025,87 @@ mod tests {
         assert!(!out.contains("Akarsh"), "raw hostname survived: {out}");
         assert!(!out.contains("MacBook"), "raw hostname survived: {out}");
         assert_eq!(out.len(), 16, "expected a 16-hex-char pseudonym, got {out}");
-        // Stable across calls — grouping by machine has to survive restarts.
-        assert_eq!(out, pseudonymize_host("Akarshs-MacBook-Pro.local"));
-        // ...and distinct per machine, or grouping would be meaningless.
-        assert_ne!(out, pseudonymize_host("someone-elses-imac.local"));
+        // This machine's pseudonym, NOT a hash of the captured hostname — the
+        // captured value is deliberately ignored (see `keep_attribute`).
+        assert_eq!(out, local_host_pseudonym());
+    }
+
+    /// The whole point of seeding from a stable hardware id: two spool records
+    /// captured under different hostnames — the same Mac on two Wi-Fi networks,
+    /// which is what actually happens, since the kernel hostname there is
+    /// derived from the router's reverse DNS — must still ship as ONE machine.
+    /// Hashing the captured value (the previous behaviour) failed this.
+    #[test]
+    fn pseudonym_is_independent_of_the_captured_hostname() {
+        let shipped = |raw: &str| {
+            let mut kv = str_attr("host.name", raw);
+            assert!(keep_attribute(&mut kv));
+            match kv.value.unwrap().value.unwrap() {
+                Value::StringValue(s) => s,
+                other => panic!("expected string, got {other:?}"),
+            }
+        };
+        assert_eq!(
+            shipped("Unknown_a2:97:03:78:a9:6a"),
+            shipped("Mac-Studio-2.local"),
+            "same machine split into two identities across a network change"
+        );
+    }
+
+    /// Distinct machines must still be distinguishable, or the grouping the
+    /// pseudonym exists for is worthless. Guards the obvious failure mode of
+    /// the fix above: replacing the value with a constant would pass the
+    /// independence test and destroy the feature.
+    #[test]
+    fn distinct_seeds_still_yield_distinct_pseudonyms() {
+        assert_ne!(
+            pseudonymize_host("2D5462F0-45C1-5987-94E9-5CBAD14E4362"),
+            pseudonymize_host("9A114C11-0000-5FFF-8888-1111CCCC2222"),
+        );
+    }
+
+    /// The support workflow's load-bearing invariant: the pseudonym the tray
+    /// shows a user in Settings must equal the one the ship leg writes for
+    /// `host.name`, or the ID they quote matches no rows in the backend and
+    /// nothing fails loudly. Guards against the two crates drifting in how the
+    /// hostname is read.
+    #[test]
+    fn displayed_pseudonym_matches_shipped() {
+        let raw = gethostname::gethostname().to_string_lossy().into_owned();
+        let mut kv = str_attr("host.name", &raw);
+        assert!(keep_attribute(&mut kv));
+        let shipped = match kv.value.unwrap().value.unwrap() {
+            Value::StringValue(s) => s,
+            other => panic!("expected string, got {other:?}"),
+        };
+        assert_eq!(
+            local_host_pseudonym(),
+            shipped,
+            "Settings would show a pseudonym that matches nothing in the backend"
+        );
+    }
+
+    /// `os.type` / `host.arch` are on `SAFE_STRING_KEYS`, but being allowlisted
+    /// is not the same as surviving intact — allowlisted strings still pass
+    /// through `scrub_paths`. Pins that both reach the backend as written,
+    /// since the whole point of populating them is being able to filter errors
+    /// by platform.
+    #[test]
+    fn machine_shape_attributes_survive_verbatim() {
+        for (key, value) in [
+            ("os.type", "macos"),
+            ("os.type", "windows"),
+            ("os.type", "linux"),
+            ("host.arch", "aarch64"),
+            ("host.arch", "x86_64"),
+        ] {
+            let mut kv = str_attr(key, value);
+            assert!(keep_attribute(&mut kv), "{key} was dropped");
+            let out = match kv.value.unwrap().value.unwrap() {
+                Value::StringValue(s) => s,
+                other => panic!("expected string, got {other:?}"),
+            };
+            assert_eq!(out, value, "{key} was altered in transit");
+        }
     }
 }
