@@ -375,12 +375,13 @@ neither fails loudly, and neither is visible from the call site.
    by string **prefix**, so the `meridian` directive covers `meridian_core::*`,
    `meridian_tray_lib::*` and `meridian_oauth::*` for free — but nothing else.
    Any crate whose target does not start with `meridian` is discarded entirely
-   unless named in `build_default_filter`. That is why `CAPTURE_DIRECTIVES`
-   exists (`screenpipe_screen`/`screenpipe_a11y` — the OCR + accessibility
-   stack, ~48 error sites that were invisible). **Adding a dependency that does
-   real work means adding its target there**, and auditing its `warn!`/`error!`
-   bodies first: third-party crates were written to print to a terminal and may
-   interpolate content that must never egress.
+   unless named in `observability::filter`. That is why `CAPTURE_TARGETS` exists
+   (`screenpipe_screen`/`screenpipe_a11y` — the OCR + accessibility stack, ~48
+   error sites that were invisible). **Adding a dependency that does real work
+   means adding its bare crate name to that list** — every log level then picks
+   it up automatically — and auditing its `warn!`/`error!` bodies first:
+   third-party crates were written to print to a terminal and may interpolate
+   content that must never egress.
 2. **The attribute allowlist is keyed on the names you actually type.**
    `tracing::warn!(error = %e, …)` emits the attribute key `error`, not the
    semconv `error.message`. Anything not on `redact::SAFE_STRING_KEYS` is
