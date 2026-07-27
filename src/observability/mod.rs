@@ -316,6 +316,33 @@ fn try_build_otel_providers(
             "deployment.environment",
             option_env!("MERIDIAN_CHANNEL").unwrap_or("dev"),
         ),
+        // Platform shape. Without these, a Windows error and a macOS error are
+        // indistinguishable in the central backend — every attribute above is
+        // OS-agnostic, and the SDK adds nothing of its own (`Resource::new`
+        // runs no detectors, unlike `Resource::default`). All three are already
+        // on `redact::SAFE_STRING_KEYS`, so populating them needs no change to
+        // the redaction boundary: they are enum-like build facts that
+        // structurally cannot carry user content.
+        //
+        // Deliberately the RAW Rust constants ("macos"/"windows", "aarch64"/
+        // "x86_64") rather than the OTel semconv spellings ("darwin", "arm64").
+        // Nothing downstream parses these as semconv enums, and a translation
+        // layer is one more place to introduce a silent mismatch between what
+        // the code says and what the dashboards filter on.
+        KeyValue::new("os.type", std::env::consts::OS),
+        KeyValue::new("host.arch", std::env::consts::ARCH),
+        // Separates errors from a real packaged install from a developer's
+        // `cargo run`, which otherwise differ only by `deployment.environment`
+        // — and that reports "dev" for BOTH a source build and any build whose
+        // channel env was unset, so it can't carry this distinction alone.
+        KeyValue::new(
+            "app.install_mode",
+            if install_mode::is_canonical_install() {
+                "packaged"
+            } else {
+                "source"
+            },
+        ),
     ]);
 
     // Build spool clients — one per signal so filenames encode the correct prefix.

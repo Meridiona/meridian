@@ -418,6 +418,27 @@ pub fn pseudonymize_host(hostname: &str) -> String {
     })
 }
 
+/// This machine's pseudonym - the exact value that appears as `host.name` in
+/// the central backend for telemetry originating here.
+///
+/// # Why this exists rather than each caller hashing its own hostname
+/// The pseudonym is what a user quotes to support so their error rows can be
+/// found. That only works if the value we SHOW is byte-identical to the value
+/// we SHIP. Those are computed in different crates (the tray renders it in
+/// Settings; the daemon's ship leg writes it via [`keep_attribute`]), so any
+/// divergence in how the hostname is obtained - `to_string_lossy` vs `to_str`,
+/// a trimmed `.local` suffix, case folding - would produce an ID that matches
+/// nothing, and the failure is silent. Funnelling both through this one
+/// function makes that drift impossible; `displayed_pseudonym_matches_shipped`
+/// pins it.
+///
+/// Must therefore read the hostname the same way `observability::init` does
+/// (`gethostname().to_string_lossy()`), since that is the raw value the ship
+/// leg later hashes.
+pub fn local_host_pseudonym() -> String {
+    pseudonymize_host(&gethostname::gethostname().to_string_lossy())
+}
+
 fn is_safe_string_key(key: &str) -> bool {
     SAFE_STRING_KEYS.contains(&key)
 }
@@ -976,5 +997,51 @@ mod tests {
         assert_eq!(out, pseudonymize_host("Akarshs-MacBook-Pro.local"));
         // ...and distinct per machine, or grouping would be meaningless.
         assert_ne!(out, pseudonymize_host("someone-elses-imac.local"));
+    }
+
+    /// The support workflow's load-bearing invariant: the pseudonym the tray
+    /// shows a user in Settings must equal the one the ship leg writes for
+    /// `host.name`, or the ID they quote matches no rows in the backend and
+    /// nothing fails loudly. Guards against the two crates drifting in how the
+    /// hostname is read.
+    #[test]
+    fn displayed_pseudonym_matches_shipped() {
+        let raw = gethostname::gethostname().to_string_lossy().into_owned();
+        let mut kv = str_attr("host.name", &raw);
+        assert!(keep_attribute(&mut kv));
+        let shipped = match kv.value.unwrap().value.unwrap() {
+            Value::StringValue(s) => s,
+            other => panic!("expected string, got {other:?}"),
+        };
+        assert_eq!(
+            local_host_pseudonym(),
+            shipped,
+            "Settings would show a pseudonym that matches nothing in the backend"
+        );
+    }
+
+    /// `os.type` / `host.arch` / `app.install_mode` are on `SAFE_STRING_KEYS`,
+    /// but being allowlisted is not the same as surviving intact — allowlisted
+    /// strings still pass through `scrub_paths`. Pins that these three reach
+    /// the backend as written, since the whole point of populating them is
+    /// being able to filter errors by platform.
+    #[test]
+    fn machine_shape_attributes_survive_verbatim() {
+        for (key, value) in [
+            ("os.type", "macos"),
+            ("os.type", "windows"),
+            ("host.arch", "aarch64"),
+            ("host.arch", "x86_64"),
+            ("app.install_mode", "packaged"),
+            ("app.install_mode", "source"),
+        ] {
+            let mut kv = str_attr(key, value);
+            assert!(keep_attribute(&mut kv), "{key} was dropped");
+            let out = match kv.value.unwrap().value.unwrap() {
+                Value::StringValue(s) => s,
+                other => panic!("expected string, got {other:?}"),
+            };
+            assert_eq!(out, value, "{key} was altered in transit");
+        }
     }
 }

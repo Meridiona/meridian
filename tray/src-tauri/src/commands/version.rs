@@ -259,25 +259,41 @@ pub(crate) fn build_channel() -> &'static str {
     option_env!("MERIDIAN_CHANNEL").unwrap_or("prod")
 }
 
-/// `{ version, channel }` for the small badge in the dashboard and popover.
+/// `{ version, channel, supportId }` for the small badge in the dashboard and
+/// popover, plus the Account panel's support identifier.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppInfo {
     pub version: String,
     pub channel: String,
+    /// This machine's pseudonym — the exact value error telemetry from here
+    /// carries as `host.name` in the central backend. Shown in Settings so a
+    /// user can quote it when they contact support; without it their error
+    /// rows are unfindable, since pseudonymisation is one-way by design.
+    pub support_id: String,
 }
 
 /// The binary's baked `tauri.conf.json` version (what the DMG updater compares
 /// against — set in lockstep across the repo by `scripts/set-version.sh`) plus
 /// [`build_channel`]. Synchronous and never touches the network, unlike
 /// [`get_version`] above.
+///
+/// `support_id` comes from [`meridian::telemetry_spool::redact::local_host_pseudonym`]
+/// — the SAME function the daemon's ship leg uses, so the displayed value and
+/// the shipped one cannot drift (see that function's doc for why sharing it
+/// matters).
 #[tauri::command]
 #[tracing::instrument(skip(app))]
 pub fn get_app_info(app: tauri::AppHandle) -> AppInfo {
     let version = app.package_info().version.to_string();
     let channel = build_channel().to_string();
-    tracing::info!(%version, %channel, "app info served");
-    AppInfo { version, channel }
+    let support_id = meridian::telemetry_spool::redact::local_host_pseudonym();
+    tracing::info!(%version, %channel, %support_id, "app info served");
+    AppInfo {
+        version,
+        channel,
+        support_id,
+    }
 }
 
 /// DMG auto-update check for the in-app banners (sidebar + popover). Wraps
