@@ -628,6 +628,22 @@ jobs:
           ref: ${{ needs.prepare.outputs.tag }}
           persist-credentials: false
 
+      # `libsqlite3-sys`'s `bundled-sqlcipher-vendored-openssl` feature (see
+      # meridian-core/src/db_crypto.rs) compiles OpenSSL FROM SOURCE via
+      # `openssl-src`, which needs Perl and NASM on PATH — the
+      # `windows-latest` runner image is not contractually guaranteed to keep
+      # bundling either (or the versions this needs), so both are pinned
+      # explicitly rather than relying on whatever the image happens to ship.
+      # Same actions OpenSSL's own upstream CI uses for this exact
+      # combination on Windows.
+      - name: Install Perl (for vendored OpenSSL's Configure script)
+        uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: "5.38"
+
+      - name: Install NASM (for vendored OpenSSL's assembly routines)
+        uses: ilammy/setup-nasm@v1
+
       - name: Install Rust 1.93.1
         uses: dtolnay/rust-toolchain@master
         with:
