@@ -412,11 +412,14 @@ nothing, silently (`displayed_pseudonym_matches_shipped` pins this).
 **Which resource attributes actually ship** is a separate question from the
 allowlist, and the two are easy to confuse: `redact::SAFE_STRING_KEYS` lists
 many keys that nothing populates (`service.instance.id`, `os.version`,
-`app.version`, …). `observability::init`'s `Resource::new` sets exactly:
-`service.name`, `service.version`, `host.name`, `deployment.environment`,
-`os.type`, `host.arch`, `app.install_mode` — and `Resource::new` runs NO
+`app.version`, `app.install_mode`, …). `observability::init`'s `Resource::new`
+sets exactly: `service.name`, `service.version`, `host.name`,
+`deployment.environment`, `os.type`, `host.arch` — and `Resource::new` runs NO
 detectors, so the SDK contributes nothing either. **Allowlisted ≠ present:
 before relying on an attribute in a query or dashboard, check it is set here.**
+Note `observability::init` runs in BOTH the daemon and the tray, so any
+attribute added there must be correct for both — `app.install_mode` is
+deliberately left unset for exactly this reason (see the comment there).
 
 **Export Diagnostics remains the manual path**, unchanged and independent of
 consent: tray Settings → Account → **Export Diagnostics** (or `meridian
