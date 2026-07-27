@@ -115,10 +115,30 @@ const SAFE_STRING_KEYS: &[&str] = &[
     "exception.stacktrace",
     "otel.status_code",
     "otel.status_description",
+    // The bare `error` key, NOT a semconv name — but the one this codebase
+    // actually emits. `tracing::warn!(error = %e, …)` is the convention CLAUDE.md
+    // mandates and 203 of ~419 warn/error sites use it, so while `error.message`
+    // sat on this list, the real error text was dropped from every single
+    // shipped record: the backend received a static message ("summarise attempt
+    // failed") with the cause ("claude timed out after 60s") stripped. Also on
+    // `FREE_TEXT_KEYS` below — an `anyhow` chain splices arbitrary `Display`
+    // output, so it needs the full scrub, not just a path scrub.
+    "error",
+    // Which provider/engine a failure came from. Enum-like values from a fixed
+    // internal set (`claude`, `codex`, `anthropic`, `gemini`, …) — they name
+    // OUR components, never the user's data, and without them an LLM or
+    // summariser failure can't be attributed to a backend at all.
+    "provider",
+    "engine",
     // ── code location (paths scrubbed) ───────────────────────────────────────
     "code.function",
     "code.namespace",
     "code.filepath",
+    // `tracing-opentelemetry` emits this alongside `code.filepath`; it was the
+    // only one of the four missing, so shipped records carried the full path
+    // but not the bare filename. Strictly less sensitive than `code.filepath`,
+    // which is already here.
+    "code.filename",
     "code.lineno",
     "thread.name",
     "target",
@@ -140,6 +160,10 @@ const SAFE_STRING_KEYS: &[&str] = &[
 /// them that a path-only scrub would miss. `status.message` (a span field, not
 /// an attribute) is scrubbed the same way in [`scrub_span_status`].
 const FREE_TEXT_KEYS: &[&str] = &[
+    // See the note on `SAFE_STRING_KEYS`: `error` is the key this codebase
+    // actually emits, and its value is a formatted `anyhow` chain — the single
+    // most likely attribute to carry an interpolated path, URL, or token.
+    "error",
     "error.message",
     "exception.message",
     "exception.stacktrace",
@@ -1062,6 +1086,60 @@ mod tests {
             pseudonymize_host("2D5462F0-45C1-5987-94E9-5CBAD14E4362"),
             pseudonymize_host("9A114C11-0000-5FFF-8888-1111CCCC2222"),
         );
+    }
+
+    /// Modelled on a record decoded from the live staging spool, which shipped
+    /// with its cause stripped:
+    ///
+    /// ```text
+    /// engine = claude | attempt = 2 | error = "claude timed out after 60s"
+    /// ```
+    ///
+    /// `error` is the key the whole codebase emits (CLAUDE.md's convention),
+    /// while only `error.message` was allowlisted — so the diagnostic payload
+    /// was dropped from every shipped record and the backend saw a bare static
+    /// string. Pins that the cause now survives, still scrubbed, and that
+    /// widening stopped where it should: user-data keys stay dropped.
+    #[test]
+    fn error_cause_and_provider_survive_but_user_data_does_not() {
+        let mut kv = str_attr("error", "claude timed out after 60s");
+        assert!(keep_attribute(&mut kv), "error cause was dropped");
+        match kv.value.unwrap().value.unwrap() {
+            Value::StringValue(s) => assert_eq!(s, "claude timed out after 60s"),
+            other => panic!("expected string, got {other:?}"),
+        }
+
+        for (key, value) in [("provider", "anthropic"), ("engine", "claude")] {
+            let mut kv = str_attr(key, value);
+            assert!(keep_attribute(&mut kv), "{key} was dropped");
+        }
+
+        // `error` is FREE TEXT — an anyhow chain routinely splices a path,
+        // URL, or token, so it must get the full scrub, not just a path scrub.
+        let mut kv = str_attr(
+            "error",
+            "post to https://hooks.example.com/T123 failed for akarsh@meridiona.com",
+        );
+        assert!(keep_attribute(&mut kv));
+        let out = match kv.value.unwrap().value.unwrap() {
+            Value::StringValue(s) => s,
+            other => panic!("expected string, got {other:?}"),
+        };
+        assert!(out.contains("<url>") && out.contains("<email>"), "{out}");
+
+        // The boundary did NOT widen to the user's own data. These keys are
+        // emitted at real warn sites and must still be dropped.
+        for key in [
+            "task",
+            "task_key",
+            "file",
+            "path",
+            "app_name",
+            "window_title",
+        ] {
+            let mut kv = str_attr(key, "MER-192");
+            assert!(!keep_attribute(&mut kv), "{key} leaked into the ship leg");
+        }
     }
 
     /// The support workflow's load-bearing invariant: the pseudonym the tray

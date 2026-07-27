@@ -72,25 +72,18 @@ use opentelemetry_sdk::{
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::OnceLock;
 use tracing_subscriber::{layer::SubscriberExt, reload, util::SubscriberInitExt, EnvFilter};
 
+mod filter;
 mod install_mode;
 mod otlp_target;
+pub use filter::reload_log_level;
+use filter::{build_default_filter, FILTER_HANDLE};
 use install_mode::capture_disabled;
 use otlp_target::DEFAULT_OTLP_ENDPOINT;
 pub use otlp_target::{
     is_otlp_configured, resolve_otlp_endpoint, resolve_otlp_target, AuthCredential, OtlpTarget,
 };
-
-/// Type alias for the hot-reload handle. The `S = Registry` parameter reflects
-/// that the reload layer is installed directly on `tracing_subscriber::Registry`
-/// (it is the first layer added, before any OTel or fmt layers).
-type FilterHandle = reload::Handle<EnvFilter, tracing_subscriber::Registry>;
-
-/// Global handle for hot-reloading the `EnvFilter` without restarting the daemon.
-/// Set once during `init()`; accessed from the poll loop via `reload_log_level()`.
-static FILTER_HANDLE: OnceLock<FilterHandle> = OnceLock::new();
 
 /// RAII guard returned from [`init`]. Holds (when OTel is enabled) the logger
 /// provider for graceful shutdown.
@@ -392,43 +385,6 @@ fn try_build_otel_providers(
         .build();
 
     Ok(Some((tracer, tracer_provider, logger_provider)))
-}
-
-/// Map the settings.json `log_level` value (DEBUG/INFO/WARNING/ERROR) to a
-/// tracing `EnvFilter` string. Used at startup and on hot-reload, when
-/// `RUST_LOG` is not set.
-fn build_default_filter(log_level: &str) -> String {
-    match log_level.to_uppercase().as_str() {
-        "DEBUG" => "meridian=debug,sqlx=warn".to_string(),
-        "WARNING" | "WARN" => "meridian=warn,sqlx=warn".to_string(),
-        "ERROR" => "meridian=error,sqlx=error".to_string(),
-        // INFO or anything else: keep the previous fixed default with module-level overrides.
-        // `embedder=debug` surfaces the model-load/batch spans (embedder/mod.rs) at the
-        // production default — the same treatment etl/intelligence already get — since
-        // the embedder is on the critical path for every hour's distillation and its
-        // timing is exactly what a `DISTILLER_EMBED_TIMEOUT_SECS` investigation needs.
-        _ => "meridian=info,meridian::etl=debug,meridian::intelligence=debug,meridian::embedder=debug,sqlx=warn".to_string(),
-    }
-}
-
-/// Hot-reload the log level filter without restarting the daemon.
-///
-/// Called from the poll loop whenever `settings.log_level` changes. Returns
-/// `true` if the filter was updated, `false` if RUST_LOG is set (we don't
-/// fight explicit env-var overrides) or the handle isn't initialised yet.
-pub fn reload_log_level(level: &str) -> bool {
-    // Respect explicit RUST_LOG override — don't fight the user's env var.
-    if std::env::var("RUST_LOG").is_ok() {
-        return false;
-    }
-    let Some(handle) = FILTER_HANDLE.get() else {
-        return false;
-    };
-    let filter_str = build_default_filter(level);
-    match filter_str.parse::<EnvFilter>() {
-        Ok(new_filter) => handle.modify(|f| *f = new_filter).is_ok(),
-        Err(_) => false,
-    }
 }
 
 /// `~/.meridian/logs/` — where launchd redirects each service's raw
