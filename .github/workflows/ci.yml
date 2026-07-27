@@ -291,7 +291,14 @@ jobs:
           #   f13c631c  adityaharishch  fix(a11y): wrap per-click context-capture reads in an autorelease pool
           #   b2e5b268  adityaharishch  fix(a11y): leak NSWorkspace observer guards instead of dropping them
           #   2b7e929f  adityaharishch  feat(screen): expose a display-reconfiguration watcher from screenpipe-screen
-          expected="2b7e929f7168344faa0121c7a646e5758701d19a"
+          #
+          # 2026-07-27, 2b7e929f -> 61332b8a. Three commits, all Meridiona-
+          # (adityaharishch)-authored, no upstream merge:
+          #   2ac29227  adityaharishch  Merge pull request #4 (autorelease-pool leak fixes, ours)
+          #   0c693a1c  adityaharishch  Merge pull request #5 (reconciles with 2b7e929f, already
+          #                             audited above; brings in no new tree content beyond PR #4)
+          #   61332b8a  adityaharishch  fix(screen): redact PII in OCR output before it reaches the frame consumer
+          expected="61332b8a15f09a08876455ad45713eb3b1bfa2df"
           f="tray/src-tauri/Cargo.toml"
           fail=0
           for crate in screenpipe-screen screenpipe-a11y; do
