@@ -107,13 +107,16 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
   // plan_date), so viewing a past date shows THAT day's committed focus and
   // correctly ignores edits to today's plan — and a day with nothing fetched
   // reads EMPTY, so a day switch never flashes the previous day's items.
+  // Fetched for every user, including solo/no-tracker — the empty-TODAY nudge
+  // below is meant to show for them too (PlanView's composer supports a
+  // personal, tracker-free task), and gating the fetch on `isSolo` left it
+  // permanently null for them, so the nudge never rendered.
   const { data: plan } = usePlan(day)
   useEffect(() => {
-    if (isSolo) return
     refreshPlan(day)
     const id = setInterval(() => refreshPlan(day), 30_000)
     return () => clearInterval(id)
-  }, [isSolo, day])
+  }, [day])
   const focusItems = useMemo(() => (plan?.confirmed ? plan.plan : []), [plan])
 
   // Toggle a focus item's done state. This goes through `set_plan_task_done`,
