@@ -658,7 +658,11 @@ jobs:
       # explicit setup — same action OpenSSL's own upstream CI uses on
       # Windows.
       - name: Install NASM (for vendored OpenSSL's assembly routines)
-        uses: ilammy/setup-nasm@v1
+        # Pinned to the commit behind v1.5.2, not the mutable `v1` tag: this job
+        # holds the signing key and the release secrets, so a third-party action
+        # that can be re-pointed is a supply-chain path straight into a signed
+        # build. Bump deliberately, re-reading the diff.
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
 
       - name: Install Rust 1.93.1
         uses: dtolnay/rust-toolchain@master

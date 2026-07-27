@@ -120,5 +120,22 @@ fn scrub_event(mut event: Event<'static>) -> Option<Event<'static>> {
     // pseudonym and silently decorrelate a crash from that machine's error
     // logs. Also covers the case where `sentry-contexts` left it unset.
     event.server_name = Some(local_host_pseudonym().into());
+
+    // Free-text carriers that `send_default_pii: false` does NOT suppress.
+    // Nothing populates these today, so CLEARING costs nothing — and clearing
+    // beats scrubbing here because the failure mode is additive: the day
+    // someone adds a breadcrumb or an `extra` with a window title or a file
+    // path, it would otherwise egress having never passed a scrubber. This way
+    // the default for anything new is "does not ship", matching the OTLP
+    // allowlist's fail-closed stance.
+    event.breadcrumbs = Default::default();
+    event.extra.clear();
+    for exc in event.exception.values.iter_mut() {
+        if let Some(st) = exc.stacktrace.as_mut() {
+            for frame in st.frames.iter_mut() {
+                frame.vars.clear();
+            }
+        }
+    }
     Some(event)
 }

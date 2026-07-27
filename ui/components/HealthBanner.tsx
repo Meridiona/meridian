@@ -115,7 +115,7 @@ export default function HealthBanner() {
             </p>
             <p className="text-xs mt-0.5" style={{ color: 'var(--ink-3)' }}>
               {health.llm_provider_detail ? `${health.llm_provider_detail}. ` : ''}
-              Hourly summaries are paused — open Settings → Intelligence to reinstall, sign in, or pick another provider.
+              Hourly summaries are paused. Open Settings → Intelligence to reinstall, sign in, or pick another provider.
             </p>
           </div>
         </div>
@@ -145,7 +145,7 @@ export default function HealthBanner() {
             </p>
             <p className="text-xs mt-0.5" style={{ color: 'var(--ink-3)' }}>
               {health.llm_provider_detail ? `${health.llm_provider_detail}. ` : ''}
-              You&apos;re signed in and nothing is lost — summaries will catch up on their own once the limit resets.
+              You&apos;re signed in and nothing is lost - summaries will catch up on their own once the limit resets.
             </p>
           </div>
         </div>

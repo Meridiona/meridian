@@ -13,6 +13,14 @@
 # ingest token, which the collector validates (bearertokenauth/ingest). A
 # basic-auth challenge here would reject every install.
 {$GATEWAY_DOMAIN} {
+	# Cap request bodies before they reach the collector. This host is
+	# world-reachable and the Bearer check happens downstream, so every body -
+	# including an unauthenticated one - is proxied first. 4MB is far above a
+	# real OTLP batch (the shipper spools per-export files, KBs to low MBs) and
+	# well below what makes an unauthenticated flood cheap.
+	request_body {
+		max_size 4MB
+	}
 	reverse_proxy otel-collector:4318
 }
 
