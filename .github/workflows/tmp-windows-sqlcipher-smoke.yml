@@ -39,42 +39,26 @@ jobs:
 
       # NOTE: deliberately NOT installing Perl via shogo82148/actions-setup-perl
       # here — windows-latest already has a full Strawberry Perl at
-      # C:\Strawberry\perl\bin. That action's minimal Perl build is MISSING CPAN
-      # modules OpenSSL's Configure script needs (Locale::Maketext::Simple,
-      # Text::Template) and shadowed the good one — confirmed by an actual
-      # failed run of this workflow.
+      # C:\Strawberry\perl\bin, confirmed (via a diagnostic step) to have every
+      # CPAN module OpenSSL's Configure script needs. That action's minimal
+      # Perl build does NOT (missing Locale::Maketext::Simple, Text::Template)
+      # and shadowed the good one — confirmed by an actual failed run.
       #
-      # Strawberry Perl still isn't picked up automatically, though: this job's
-      # `shell: bash` runs under Git Bash, whose OWN bundled minimal MSYS perl
-      # at /usr/bin resolves ahead of Strawberry Perl in that shell's PATH —
-      # same missing-module failure, just from a different perl. Confirmed
-      # by a second actual failed run (error pointed at
-      # /usr/share/perl5/core_perl/..., not Strawberry's path). Fix: prepend
-      # Strawberry's bin dir via GITHUB_PATH so it wins for every later step
-      # in this job, including the one that invokes perl indirectly via cargo.
-      - name: Prioritize Strawberry Perl over Git Bash's bundled minimal perl
-        # GITHUB_PATH is consumed by the runner at the OS level for later
-        # steps' processes — it needs a native Windows path here, NOT the
-        # Git-Bash/MSYS form (/c/Strawberry/perl/bin), even though this step
-        # itself runs under bash. The POSIX-style form silently does nothing
-        # on Windows (confirmed: a third failed run, unchanged, after adding
-        # it in that form).
-        run: echo 'C:\Strawberry\perl\bin' >> "$GITHUB_PATH"
-
-      - name: DIAGNOSTIC - which perl and does it have the CPAN modules OpenSSL needs
-        run: |
-          echo "--- bash's view of PATH ---"
-          echo "$PATH"
-          echo "--- which perl (bash) ---"
-          which -a perl || true
-          echo "--- perl -V (whichever one bash finds first) ---"
-          perl -V || true
-          echo "--- does that perl have Locale::Maketext::Simple? ---"
-          perl -MLocale::Maketext::Simple -e "print qq(YES - module found\n)" || echo "NO - module missing from this perl"
-          echo "--- explicit Strawberry perl.exe, bypassing PATH search entirely ---"
-          "/c/Strawberry/perl/bin/perl.exe" -V || echo "Strawberry perl.exe not found or failed to run at that path"
-          "/c/Strawberry/perl/bin/perl.exe" -MLocale::Maketext::Simple -e "print qq(YES - module found in Strawberry perl\n)" || echo "NO - module missing from Strawberry perl too"
-
+      # Strawberry Perl still doesn't win by default, though: this job's
+      # `shell: bash` runs under Git Bash, which UNCONDITIONALLY prepends its
+      # own MSYS bin dirs (/usr/bin, /mingw64/bin) at shell startup —
+      # confirmed via a diagnostic step that `echo $PATH` inside a bash step
+      # shows /usr/bin ahead of Strawberry's path REGARDLESS of any
+      # GITHUB_PATH entry added in an earlier step (tried and confirmed
+      # ineffective, twice, with both POSIX- and Windows-style path forms).
+      # Git Bash's own /usr/bin/perl (msys-perl, cygwin-based) is what was
+      # actually failing every time.
+      #
+      # Fix: run ONLY the actual build step under `pwsh` instead of the job's
+      # bash default — outside Git Bash entirely, Strawberry Perl resolves
+      # correctly with no competing MSYS perl in the way. `cargo build` /
+      # `tauri build` (invoked via `npm run`) are plain CLI invocations with
+      # no bash-specific syntax, so this is safe.
       - name: Install NASM (for vendored OpenSSL's assembly routines)
         uses: ilammy/setup-nasm@v1
 
@@ -111,6 +95,11 @@ jobs:
 
       - name: Build the daemon + tray (compile-only smoke test)
         working-directory: tray
+        # Deliberately NOT the job's bash default here — see the NOTE above
+        # the NASM step for why: Git Bash forces its own MSYS perl (missing
+        # CPAN modules OpenSSL's Configure needs) ahead of Strawberry Perl on
+        # PATH, no matter what. pwsh has no such override.
+        shell: pwsh
         env:
           CHANNEL: staging
         run: npm run build:windows:staging
