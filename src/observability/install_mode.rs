@@ -44,11 +44,28 @@ pub(super) fn is_canonical_install() -> bool {
         return false;
     };
     match std::env::current_exe() {
-        Ok(exe) => exe == meridian_dir.join("bin").join("meridian"),
+        Ok(exe) => exe == meridian_dir.join("bin").join(staged_daemon_file_name()),
         // `current_exe()` failing is rare (permissions, exotic sandboxing) —
         // fall back to the machine-wide marker file rather than guessing.
         Err(_) => meridian_dir.join(".env").exists(),
     }
+}
+
+/// File name the tray stages the daemon under in `~/.meridian/bin/`.
+///
+/// **Must** track `backend_install::DAEMON_FILE` in the tray crate, which is
+/// `meridian.exe` on Windows and `meridian` elsewhere. This was hardcoded to
+/// `"meridian"`, so on Windows the comparison above could never match a real
+/// packaged install: `current_exe()` ends in `.exe`, so `is_canonical_install()`
+/// returned false, `resolve_otlp_target()` fell through to the DEV branch, and
+/// that branch requires `otlp_enabled` + local OpenObserve credentials which a
+/// packaged install never has. Net effect: central error reporting was silently
+/// inert on every Windows install, with no warning on either side.
+///
+/// Derived from `EXE_SUFFIX` rather than a `cfg`-selected constant so it cannot
+/// drift again if another platform is added.
+fn staged_daemon_file_name() -> String {
+    format!("meridian{}", std::env::consts::EXE_SUFFIX)
 }
 
 /// Hard kill switch for OTel capture (spans/logs to the local spool), read from
@@ -56,4 +73,29 @@ pub(super) fn is_canonical_install() -> bool {
 pub(super) fn capture_disabled() -> bool {
     std::env::var("MERIDIAN_TELEMETRY_DISABLED")
         .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The daemon and the tray agree on the staged file name only by
+    /// convention — they are separate crates with no shared constant, and a
+    /// mismatch disables central error reporting on that platform silently
+    /// (nothing errors; the shipper simply resolves no target). Pins the name
+    /// to the platform's executable suffix on whichever OS the suite runs.
+    #[test]
+    fn staged_daemon_file_name_carries_the_platform_exe_suffix() {
+        let name = staged_daemon_file_name();
+        assert!(name.starts_with("meridian"), "unexpected stem: {name}");
+        assert!(
+            name.ends_with(std::env::consts::EXE_SUFFIX),
+            "{name} lacks this platform's executable suffix"
+        );
+        if cfg!(target_os = "windows") {
+            assert_eq!(name, "meridian.exe");
+        } else {
+            assert_eq!(name, "meridian");
+        }
+    }
 }
