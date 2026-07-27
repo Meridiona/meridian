@@ -647,9 +647,12 @@ jobs:
       # pointed at /usr/share/perl5/core_perl/..., not Strawberry's path).
       # Fix: prepend Strawberry's bin dir via GITHUB_PATH so it wins for every
       # later step in this job, including the one that invokes perl
-      # indirectly via cargo's openssl-sys build script.
+      # indirectly via cargo's openssl-sys build script. GITHUB_PATH needs a
+      # native Windows path here, NOT the Git-Bash/MSYS form
+      # (/c/Strawberry/perl/bin) — that form silently does nothing on
+      # Windows, confirmed by a third failed build, unchanged, after trying it.
       - name: Prioritize Strawberry Perl over Git Bash's bundled minimal perl
-        run: echo "/c/Strawberry/perl/bin" >> "$GITHUB_PATH"
+        run: echo 'C:\Strawberry\perl\bin' >> "$GITHUB_PATH"
 
       # NASM is genuinely not bundled by default, so it still needs explicit
       # setup — same action OpenSSL's own upstream CI uses on Windows.

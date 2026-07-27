@@ -53,7 +53,13 @@ jobs:
       # Strawberry's bin dir via GITHUB_PATH so it wins for every later step
       # in this job, including the one that invokes perl indirectly via cargo.
       - name: Prioritize Strawberry Perl over Git Bash's bundled minimal perl
-        run: echo "/c/Strawberry/perl/bin" >> "$GITHUB_PATH"
+        # GITHUB_PATH is consumed by the runner at the OS level for later
+        # steps' processes — it needs a native Windows path here, NOT the
+        # Git-Bash/MSYS form (/c/Strawberry/perl/bin), even though this step
+        # itself runs under bash. The POSIX-style form silently does nothing
+        # on Windows (confirmed: a third failed run, unchanged, after adding
+        # it in that form).
+        run: echo 'C:\Strawberry\perl\bin' >> "$GITHUB_PATH"
 
       - name: Install NASM (for vendored OpenSSL's assembly routines)
         uses: ilammy/setup-nasm@v1
