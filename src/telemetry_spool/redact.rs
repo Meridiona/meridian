@@ -1108,4 +1108,32 @@ mod tests {
             assert_eq!(out, value, "{key} was altered in transit");
         }
     }
+
+    /// Every other free-text case here is Unix-shaped, but Windows installs
+    /// ship through the identical scrubber. Two things differ there: the
+    /// username sits under `C:\Users\<name>`, and `\` is absent from the blob
+    /// character class (so backslash-separated paths can't reach the 32-char
+    /// blob threshold the way `/`-separated ones do).
+    #[test]
+    fn windows_paths_are_scrubbed_but_not_mangled() {
+        let msg = r"failed to open C:\Users\akarsh\AppData\Roaming\Meridian\settings.json";
+        let out = scrub_text(msg);
+        assert!(!out.contains("akarsh"), "Windows username leaked: {out}");
+        assert!(out.contains(r"C:\Users\<user>"), "structure lost: {out}");
+        assert!(
+            out.contains("settings.json"),
+            "path mangled by blob rule: {out}"
+        );
+
+        // The light scrub used for allowlisted identifier keys (e.g.
+        // `code.filepath`) must behave the same way.
+        assert!(!scrub_paths(msg).contains("akarsh"));
+
+        // A secret still dies whole even when a Windows path shares the line.
+        let with_secret =
+            r"C:\Users\akarsh\app.log token EXAMPLEKEYNOTAREALSECRETabcdefghijklmnop0123456789";
+        let out = scrub_text(with_secret);
+        assert!(out.contains("<redacted>"), "secret survived: {out}");
+        assert!(!out.contains("akarsh"), "username leaked: {out}");
+    }
 }
