@@ -13,7 +13,9 @@
 async fn today_smoke() {
     let home = std::env::var("HOME").unwrap();
     let db = format!("{home}/.meridian/meridian.db");
-    let pool = meridian_core::open_existing(&db).await.expect("open db");
+    let pool = meridian_core::open_existing(&db, None)
+        .await
+        .expect("open db");
 
     let date = meridian_core::date::today_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -62,7 +64,9 @@ async fn today_smoke() {
 async fn today_perf() {
     let home = std::env::var("HOME").unwrap();
     let db = format!("{home}/.meridian/meridian.db");
-    let pool = meridian_core::open_existing(&db).await.expect("open db");
+    let pool = meridian_core::open_existing(&db, None)
+        .await
+        .expect("open db");
     let date = meridian_core::date::today_string();
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -93,7 +97,9 @@ async fn today_perf() {
 async fn week_smoke() {
     let home = std::env::var("HOME").unwrap();
     let db = format!("{home}/.meridian/meridian.db");
-    let pool = meridian_core::open_existing(&db).await.expect("open db");
+    let pool = meridian_core::open_existing(&db, None)
+        .await
+        .expect("open db");
     let now = chrono::Utc::now().to_rfc3339();
     let r = meridian_core::week::get_week(&pool, &now)
         .await

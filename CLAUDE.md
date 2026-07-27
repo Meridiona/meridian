@@ -228,6 +228,7 @@ There are no JS/TS test suites yet. When adding them, place them under `ui/__tes
 | Variable | Default | Purpose |
 |---|---|---|
 | `MERIDIAN_DB` | `~/.meridian/meridian.db` | Path to meridian's output SQLite file |
+| `MERIDIAN_DB_KEY` | (unset → unencrypted) | 64-hex-char SQLCipher raw key for `meridian.db`. Generated once by the tray (`tray/src-tauri/src/db_key.rs`, stored in the OS keychain) and mirrored into `.env` for the daemon to read — never set this by hand except for local testing (see `meridian-core/src/db_crypto.rs`). |
 | `POLL_INTERVAL_SECS` | `60` | ETL poll cadence in seconds |
 | `RUST_LOG` | `meridian=info` | Tracing filter |
 | `SQLX_OFFLINE` | `true` (via `.cargo/config.toml`) | Prevents sqlx from hitting the DB at compile time |
@@ -338,7 +339,7 @@ The fold replaces every `ui/app/api/*` route with a Rust command the frontend ca
 
 ### TypeScript / Next.js
 
-- Use `better-sqlite3` (synchronous) in the MCP server — it runs in a single-threaded Node process
+- The MCP server uses `sql.js` (pure WASM, no native compile step) — deliberately chosen over `better-sqlite3` after native-module ABI mismatches across Node versions/platforms caused real distribution pain (see `packages/meridian-mcp/src/db-cache.ts`'s header comment). Do not swap it back.
 - UI API routes live in `ui/app/api/`; keep them thin — query, transform, return JSON
 - No `any` types unless unavoidable and justified with a comment
 - **Spawning the `meridian` binary from a UI route: ALWAYS use `selectMeridianBinary(meridianCandidates())` from `@/lib/meridian-bin`.** Never spawn a bare `'meridian'` (relies on `$PATH`), and never hand-roll a candidate list. The dashboard runs under **launchd**, whose PATH lacks Homebrew's `node`, so the `#!/usr/bin/env node` wrapper at `~/.local/bin/meridian` dies with `env: node: No such file or directory`. The helper probes the **native binary first** (`~/.meridian/app/bin/meridian`, no runtime deps → works under launchd), so it behaves identically in dev and installed. This bug is invisible in `dev-start` (dev installs a bash wrapper, not a node one) — it only surfaces on bundle/npm installs. `__tests__/meridian-bin.test.ts` guards the ordering. The one sanctioned exception is launching `meridian` in a user Terminal (`open -a Terminal …`, e.g. `api/update`), where an interactive login shell *does* have node/PATH.

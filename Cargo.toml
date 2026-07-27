@@ -64,7 +64,11 @@ mimalloc = "0.1"
 
 # DB — exact versions matching screenpipe
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls", "chrono", "migrate", "json"] }
-libsqlite3-sys = { version = "0.26", features = ["bundled"] }
+# "bundled-sqlcipher-vendored-openssl", not plain "bundled": see meridian-core's
+# Cargo.toml comment on the same line — this direct dep is what carries the
+# feature into the single resolved libsqlite3-sys build (Cargo feature
+# unification) that every workspace member links, including the tray.
+libsqlite3-sys = { version = "0.26", features = ["bundled-sqlcipher-vendored-openssl"] }
 sqlite-vec = "0.1.3"
 
 # Shared lean data layer (DB row types + read queries) — also depended on by the

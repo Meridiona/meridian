@@ -6,9 +6,7 @@
 
 use crate::config::Config;
 use crate::health::Check;
-use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::SqlitePool;
-use std::str::FromStr;
 
 /// No ETL run in this long ⇒ the poll loop is probably stalled.
 const STALE_RUN_SECS: f64 = 1800.0;
@@ -17,11 +15,16 @@ const QUEUE_WARN: i64 = 50;
 
 /// Open meridian.db read-only for inspection. Returns None if it cannot be
 /// opened (missing / not yet created / corrupt) — the caller surfaces that.
+///
+/// Reads `MERIDIAN_DB_KEY` from the process env directly (same as
+/// `crate::db::meridian::setup_db`) rather than threading it through `Config` —
+/// see that function's doc comment for why this is safe (dotenvy always loads
+/// it before any code path that could reach here).
 pub async fn open_meridian_ro(cfg: &Config) -> Option<SqlitePool> {
-    let opts = SqliteConnectOptions::from_str(&cfg.meridian_db_uri())
-        .ok()?
-        .read_only(true);
-    SqlitePool::connect_with(opts).await.ok()
+    let key = std::env::var("MERIDIAN_DB_KEY").ok();
+    meridian_core::db_crypto::open_pool_with_key_readonly(&cfg.meridian_db_uri(), key.as_deref())
+        .await
+        .ok()
 }
 
 pub async fn checks(_cfg: &Config, pool: Option<&SqlitePool>) -> Vec<Check> {
