@@ -628,6 +628,38 @@ jobs:
           ref: ${{ needs.prepare.outputs.tag }}
           persist-credentials: false
 
+      # `libsqlite3-sys`'s `bundled-sqlcipher-vendored-openssl` feature (see
+      # meridian-core/src/db_crypto.rs) compiles OpenSSL FROM SOURCE via
+      # `openssl-src`, which needs Perl and NASM on PATH.
+      #
+      # Perl: `windows-latest` already ships a full Strawberry Perl at
+      # `C:\Strawberry\perl\bin`, confirmed (via a diagnostic run) to carry
+      # every CPAN module OpenSSL's Configure script needs — do NOT install a
+      # second Perl via `shogo82148/actions-setup-perl` or similar; that
+      # action's minimal build is MISSING those modules
+      # (Locale::Maketext::Simple, Text::Template) and shadowed the runner's
+      # already-working Strawberry Perl, confirmed by an actual failed build.
+      #
+      # Strawberry Perl still doesn't win by default: this job's steps run
+      # under Git Bash (`defaults.run.shell` above), which UNCONDITIONALLY
+      # prepends its own MSYS bin dirs (/usr/bin, /mingw64/bin) at shell
+      # startup, REGARDLESS of any GITHUB_PATH entry (tried and confirmed
+      # ineffective, twice, with both POSIX- and Windows-style path forms —
+      # a bash `echo $PATH` inside a later step still showed /usr/bin ahead
+      # of Strawberry's path either way). Git Bash's own /usr/bin/perl
+      # (msys-perl, cygwin-based) is what was actually failing every time.
+      #
+      # Fix: run ONLY the actual build step below under `pwsh` instead of
+      # this job's bash default — outside Git Bash entirely, Strawberry Perl
+      # resolves correctly with no competing MSYS perl in the way. The
+      # commands in that step (`cargo build` / `tauri build` via `npm run`)
+      # are plain CLI invocations with no bash-specific syntax, so this is
+      # safe. NASM is genuinely not bundled by default, so it still needs
+      # explicit setup — same action OpenSSL's own upstream CI uses on
+      # Windows.
+      - name: Install NASM (for vendored OpenSSL's assembly routines)
+        uses: ilammy/setup-nasm@v1
+
       - name: Install Rust 1.93.1
         uses: dtolnay/rust-toolchain@master
         with:
@@ -683,6 +715,14 @@ jobs:
         # config is explicitly NULLED OUT by tauri.windows.conf.json, replaced
         # with `target/release/meridian.exe`, which `cargo build --bin meridian`
         # already produces at exactly that path with no cross-target copy step.
+        #
+        # `shell: pwsh` here, NOT this job's bash default — see the NOTE above
+        # the NASM step for why: Git Bash forces its own MSYS perl (missing
+        # CPAN modules OpenSSL's Configure needs) ahead of Strawberry Perl on
+        # PATH, no matter what. `npm run` inherits this step's environment
+        # regardless of what shell it internally uses to run the script, so
+        # this is enough to fix it.
+        shell: pwsh
         env:
           # Bound through env rather than interpolated into `run:`, same
           # reason as VERSION/CHANNEL/TAG elsewhere in this file — `${{ }}`
@@ -700,11 +740,11 @@ jobs:
           # → the tray never initialises Sentry.
           MERIDIAN_SENTRY_DSN: ${{ vars.MERIDIAN_SENTRY_DSN }}
         run: |
-          if [ "${CHANNEL}" = "staging" ]; then
+          if ($env:CHANNEL -eq "staging") {
             npm run build:windows:staging
-          else
+          } else {
             npm run build:windows
-          fi
+          }
 
       - name: Package the updater artifacts
         env:
