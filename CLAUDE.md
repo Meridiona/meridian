@@ -367,6 +367,30 @@ supported way to read logs locally, replacing the old JSONL-tailing UI and the
 old bash `meridian logs` (which used to tail launchd-redirected stdout/stderr
 text).
 
+**Two couplings that silently delete error coverage.** Both have bitten once;
+neither fails loudly, and neither is visible from the call site.
+
+1. **The `EnvFilter` decides what is captured at all — before the spool, before
+   severity, before redaction.** `EnvFilter` matches directives against targets
+   by string **prefix**, so the `meridian` directive covers `meridian_core::*`,
+   `meridian_tray_lib::*` and `meridian_oauth::*` for free — but nothing else.
+   Any crate whose target does not start with `meridian` is discarded entirely
+   unless named in `build_default_filter`. That is why `CAPTURE_DIRECTIVES`
+   exists (`screenpipe_screen`/`screenpipe_a11y` — the OCR + accessibility
+   stack, ~48 error sites that were invisible). **Adding a dependency that does
+   real work means adding its target there**, and auditing its `warn!`/`error!`
+   bodies first: third-party crates were written to print to a terminal and may
+   interpolate content that must never egress.
+2. **The attribute allowlist is keyed on the names you actually type.**
+   `tracing::warn!(error = %e, …)` emits the attribute key `error`, not the
+   semconv `error.message`. Anything not on `redact::SAFE_STRING_KEYS` is
+   dropped from the ship leg, so a well-instrumented error can arrive as a bare
+   static string with its cause stripped. When adding a field to a WARN/ERROR
+   site that you would need in order to debug it remotely, check it is on that
+   list — and if it names the user's data (ticket key, file path, app name,
+   window title, hour/day) it must stay off, so put the diagnostic value in the
+   message or an allowlisted key instead.
+
 The only thing this pipeline structurally can't capture is a hard crash
 (panic before `init` runs, segfault, OOM kill) — for that, launchd's own
 stdout/stderr redirect (`~/.meridian/logs/<service>.log` /

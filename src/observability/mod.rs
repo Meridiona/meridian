@@ -389,21 +389,57 @@ fn try_build_otel_providers(
     Ok(Some((tracer, tracer_provider, logger_provider)))
 }
 
+/// Capture-stack directives, appended to every filter built below.
+///
+/// # Why these need naming explicitly
+/// `EnvFilter` matches a directive against a target by string prefix, so the
+/// `meridian` directive happens to cover `meridian_core::*`,
+/// `meridian_tray_lib::*` and `meridian_oauth::*` too — every first-party
+/// target starts with those bytes. The in-process capture crates do NOT
+/// (`screenpipe_screen::*`, `screenpipe_a11y::*`), so every one of their ~48
+/// `warn!`/`error!` sites was discarded **at the subscriber**, before the
+/// spool, before the severity filter, before redaction. OCR and accessibility
+/// failures — screen-capture bail-outs, Apple Vision handler creation,
+/// `AXObserver`/`CGEventTap` registration, monitor enumeration — were
+/// structurally invisible: not shipped, not in `meridian logs`, not in an
+/// export bundle. Since capture is the daemon's only data source, a silent
+/// failure there looks downstream like "the user did nothing today".
+///
+/// # Why `warn` and not `debug`
+/// These are third-party crates written for a CLI that printed to a terminal;
+/// their INFO/DEBUG volume is unaudited and runs at frame cadence. `warn`
+/// takes the failures without the chatter.
+///
+/// # Privacy
+/// Audited every `warn!`/`error!` site in both crates before enabling: all are
+/// infrastructure failures (monitor ids, image dimensions, word counts, error
+/// `Display`s). None interpolates a window title, app name, URL, or OCR text.
+/// Re-audit if the fork's revision is bumped — this is exactly the class of
+/// change that could start shipping captured content.
+const CAPTURE_DIRECTIVES: &str = "screenpipe_screen=warn,screenpipe_a11y=warn";
+
 /// Map the settings.json `log_level` value (DEBUG/INFO/WARNING/ERROR) to a
 /// tracing `EnvFilter` string. Used at startup and on hot-reload, when
 /// `RUST_LOG` is not set.
+///
+/// Note `RUST_LOG` REPLACES this wholesale rather than extending it, so an
+/// engineer who sets it also opts out of [`CAPTURE_DIRECTIVES`] and must
+/// re-add them by hand to see capture failures.
 fn build_default_filter(log_level: &str) -> String {
-    match log_level.to_uppercase().as_str() {
-        "DEBUG" => "meridian=debug,sqlx=warn".to_string(),
-        "WARNING" | "WARN" => "meridian=warn,sqlx=warn".to_string(),
-        "ERROR" => "meridian=error,sqlx=error".to_string(),
+    let base = match log_level.to_uppercase().as_str() {
+        "DEBUG" => "meridian=debug,sqlx=warn",
+        "WARNING" | "WARN" => "meridian=warn,sqlx=warn",
+        // At ERROR the user has asked for errors only; honour that for the
+        // capture stack too rather than forcing its warnings through.
+        "ERROR" => return "meridian=error,sqlx=error,screenpipe_screen=error,screenpipe_a11y=error".to_string(),
         // INFO or anything else: keep the previous fixed default with module-level overrides.
         // `embedder=debug` surfaces the model-load/batch spans (embedder/mod.rs) at the
         // production default — the same treatment etl/intelligence already get — since
         // the embedder is on the critical path for every hour's distillation and its
         // timing is exactly what a `DISTILLER_EMBED_TIMEOUT_SECS` investigation needs.
-        _ => "meridian=info,meridian::etl=debug,meridian::intelligence=debug,meridian::embedder=debug,sqlx=warn".to_string(),
-    }
+        _ => "meridian=info,meridian::etl=debug,meridian::intelligence=debug,meridian::embedder=debug,sqlx=warn",
+    };
+    format!("{base},{CAPTURE_DIRECTIVES}")
 }
 
 /// Hot-reload the log level filter without restarting the daemon.
@@ -488,4 +524,99 @@ pub fn span_context_from_traceparent(
     let cx = TraceContextPropagator::new().extract(&StringExtractor(traceparent));
     let sc = cx.span().span_context().clone();
     sc.is_valid().then_some(sc)
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::Layer;
+
+    /// Records the target of every event the filter lets through.
+    struct Recorder(Arc<Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> Layer<S> for Recorder {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(event.metadata().target().to_string());
+        }
+    }
+
+    /// Run `f` under `filter` and return the targets that survived.
+    fn targets_passing(filter: &str, f: impl FnOnce()) -> Vec<String> {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry()
+            .with(EnvFilter::new(filter))
+            .with(Recorder(Arc::clone(&seen)));
+        tracing::subscriber::with_default(subscriber, f);
+        let out = seen.lock().unwrap().clone();
+        out
+    }
+
+    fn emit_all() {
+        tracing::warn!(target: "screenpipe_screen::core", "ocr failed");
+        tracing::warn!(target: "screenpipe_a11y::observer", "axobserver failed");
+        tracing::info!(target: "meridian::etl::runner", "etl ok");
+        tracing::info!(target: "meridian_core::readers::tasks", "read ok");
+        tracing::info!(target: "meridian_tray_lib::commands::health", "health ok");
+        tracing::warn!(target: "reqwest::connect", "noisy third party");
+    }
+
+    /// The bug this guards: `EnvFilter` matches directives against targets by
+    /// string PREFIX, so `meridian` silently covers `meridian_core` and
+    /// `meridian_tray_lib` — but nothing covered `screenpipe_*`, so every OCR
+    /// and accessibility failure was dropped at the subscriber. Asserts the
+    /// negative on the old filter and the positive on the new one, since the
+    /// whole finding rests on that asymmetry.
+    #[test]
+    fn capture_targets_pass_only_with_the_capture_directives() {
+        let old = "meridian=info,sqlx=warn";
+        let passed = targets_passing(old, emit_all);
+        assert!(
+            !passed.iter().any(|t| t.starts_with("screenpipe")),
+            "regression check is meaningless if the old filter already passed capture: {passed:?}"
+        );
+        // ...while first-party targets DID pass on prefix alone.
+        assert!(passed.iter().any(|t| t.starts_with("meridian_core")));
+        assert!(passed.iter().any(|t| t.starts_with("meridian_tray_lib")));
+
+        let passed = targets_passing(&build_default_filter("INFO"), emit_all);
+        assert!(
+            passed.iter().any(|t| t == "screenpipe_screen::core"),
+            "OCR failures still dropped at the subscriber: {passed:?}"
+        );
+        assert!(
+            passed.iter().any(|t| t == "screenpipe_a11y::observer"),
+            "accessibility failures still dropped at the subscriber: {passed:?}"
+        );
+        // Unrelated third-party crates must stay out — this widens the filter
+        // deliberately and narrowly, not globally.
+        assert!(
+            !passed.iter().any(|t| t.starts_with("reqwest")),
+            "filter widened beyond the capture stack: {passed:?}"
+        );
+    }
+
+    /// Capture failures must survive every log level a user can select, or the
+    /// coverage depends on a setting nobody associates with capture.
+    #[test]
+    fn capture_directives_present_at_every_log_level() {
+        for level in ["DEBUG", "INFO", "WARNING", "ERROR", "nonsense"] {
+            let f = build_default_filter(level);
+            assert!(
+                f.contains("screenpipe_screen") && f.contains("screenpipe_a11y"),
+                "{level} filter drops the capture stack: {f}"
+            );
+            let passed = targets_passing(&f, || {
+                tracing::error!(target: "screenpipe_screen::core", "hard failure");
+            });
+            assert_eq!(passed.len(), 1, "{level} dropped a capture ERROR: {f}");
+        }
+    }
 }
