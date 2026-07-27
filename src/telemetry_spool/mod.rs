@@ -26,6 +26,7 @@ use anyhow::{Context, Result};
 
 pub mod cli;
 pub(crate) mod launchd_log_cap;
+pub(crate) mod machine_id;
 pub mod redact;
 pub mod render;
 pub(crate) mod retention;

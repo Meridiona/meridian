@@ -396,9 +396,19 @@ Redaction applies to the **ship leg only** — it produces a separate stripped
 copy to POST, so local capture and `meridian logs` stay full-fidelity. Two
 things it guarantees that are easy to regress: only WARN+ logs / ERROR-status
 spans egress at all, and `host.name` is replaced by a stable **pseudonym**
-(`redact::pseudonymize_host`) rather than shipping the raw hostname, which on
+(`redact::local_host_pseudonym`) rather than shipping the raw hostname, which on
 macOS is routinely the account holder's real name. The tray's Sentry
 `before_send` applies the identical pseudonym to `event.server_name`.
+
+**The pseudonym is seeded from a hardware id, NOT the hostname** — and the ship
+leg *replaces* `host.name` rather than hashing whatever was captured. This is
+not a stylistic choice: on macOS `HostName` is unset by default, so the kernel
+hostname is derived from the network (measured on a dev Mac, `hostname` was
+byte-identical to the router's reverse-DNS record for the current IP, itself
+derived from a per-network randomised Wi-Fi MAC). Seeding from it gave the same
+machine a new identity on every network change, silently breaking the grouping
+the value exists for. See `telemetry_spool::machine_id` before touching any of
+this; `pseudonym_is_independent_of_the_captured_hostname` pins it.
 
 That pseudonym is the ONLY identifier on an error row — nothing associates it
 with an account, and the hash is one-way. So it is surfaced to the user as

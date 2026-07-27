@@ -297,10 +297,15 @@ fn try_build_otel_providers(
         KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
         // Kept RAW here on purpose. This resource set feeds the local spool,
         // which `meridian logs` renders at full fidelity — a developer reading
-        // their own machine's logs should see their own hostname. The
-        // pseudonymisation happens on the SHIP leg only
-        // (`telemetry_spool::redact::pseudonymize_host`), so nothing
-        // identifying reaches the central backend.
+        // their own machine's logs should see their own hostname.
+        //
+        // The ship leg does not hash this value, it REPLACES it with
+        // `telemetry_spool::redact::local_host_pseudonym()` — a hash of a
+        // stable hardware id, not of whatever the hostname happened to be at
+        // capture time. On macOS the kernel hostname is network-derived
+        // (see `telemetry_spool::machine_id`), so hashing it would give the
+        // same machine a new identity on every network change. Nothing
+        // identifying reaches the central backend either way.
         KeyValue::new(
             "host.name",
             gethostname::gethostname().to_string_lossy().into_owned(),

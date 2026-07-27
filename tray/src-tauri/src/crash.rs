@@ -105,7 +105,7 @@ pub fn init_client() -> Option<ClientInitGuard> {
 /// (`redact::pseudonymize_host`), so a crash here and an error log there
 /// resolve to the SAME machine identifier and can still be correlated.
 fn scrub_event(mut event: Event<'static>) -> Option<Event<'static>> {
-    use meridian::telemetry_spool::redact::{pseudonymize_host, scrub_text};
+    use meridian::telemetry_spool::redact::{local_host_pseudonym, scrub_text};
     if let Some(m) = event.message.take() {
         event.message = Some(scrub_text(&m));
     }
@@ -114,9 +114,11 @@ fn scrub_event(mut event: Event<'static>) -> Option<Event<'static>> {
             exc.value = Some(scrub_text(&v));
         }
     }
-    event.server_name = event
-        .server_name
-        .take()
-        .map(|h| pseudonymize_host(&h).into());
+    // Set unconditionally rather than mapping over the existing value: the OTLP
+    // side now derives this from a stable hardware id rather than hashing
+    // whatever hostname was present, so mapping here would produce a DIFFERENT
+    // pseudonym and silently decorrelate a crash from that machine's error
+    // logs. Also covers the case where `sentry-contexts` left it unset.
+    event.server_name = Some(local_host_pseudonym().into());
     Some(event)
 }
