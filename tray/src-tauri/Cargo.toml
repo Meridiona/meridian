@@ -132,7 +132,7 @@ tauri-plugin-sentry = "0.5"
 # screen capture + Apple Vision OCR. Optional → only pulled by the `capture`
 # feature (heavy: ScreenCaptureKit/cidre/sck-rs). Private repo: local builds use
 # the user's git credentials; CI needs a deploy token (future).
-screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "2b7e929f7168344faa0121c7a646e5758701d19a", optional = true }
+screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "61332b8a15f09a08876455ad45713eb3b1bfa2df", optional = true }
 # Sibling crate in the same fork: the accessibility-tree walker (slice 3b).
 # `tree::create_tree_walker` walks the focused window's AX tree → structured
 # text — the PRIMARY signal for Electron/Chromium apps (VS Code, Slack), which
@@ -165,7 +165,15 @@ screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev 
 # the CGDisplayRegisterReconfigurationCallback watcher extracted from
 # upstream screenpipe's `screenpipe-engine::sleep_monitor` (its "Thread 4") —
 # see `capture/screenpipe.rs`'s `run_monitor_refresh_task` for the caller.
-screenpipe-a11y = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "2b7e929f7168344faa0121c7a646e5758701d19a", optional = true }
+#
+# Bumped to 61332b8 (screenpipe-screen only): the OCR path (Tesseract/
+# AppleNative/WindowsNative/Custom/cloud) previously had no PII/password
+# redaction at all, unlike screenpipe-a11y's own apply_pii_removal. This
+# wires screenpipe_core::remove_pii/remove_pii_from_text_json into
+# process_window_ocr's single dispatch point so every OCR engine's output
+# is redacted before it reaches the OCR cache or the frame consumer. See
+# Meridiona/screenpipe-fork#6.
+screenpipe-a11y = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "61332b8a15f09a08876455ad45713eb3b1bfa2df", optional = true }
 
 # Raw Objective-C messaging to set NSWindow collectionBehavior directly: tao's
 # `set_visible_on_all_workspaces` only adds CanJoinAllSpaces, never the
