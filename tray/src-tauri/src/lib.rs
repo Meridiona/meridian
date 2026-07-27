@@ -216,49 +216,65 @@ pub fn run() {
             //    still be able to read it, not silently open unencrypted and
             //    fail on the first real query.
             // 2. GENERATING a new key + migrating an existing plaintext file
-            //    (Canonical installs ONLY): a debug build's
-            //    `detect_install_mode()` can never return `Canonical` (see
-            //    its own doc comment), so a dev/`cargo-watch` run can never
-            //    be the one to newly encrypt that shared database. Both
-            //    degrade to `None`/unencrypted on any failure rather than
-            //    blocking tray startup — see db_key.rs and
+            //    (release builds ONLY, via `cfg!(debug_assertions)` — NOT
+            //    gated on `detect_install_mode() == Canonical`, deliberately:
+            //    that enum only resolves to `Canonical` once `~/.meridian/.env`
+            //    already exists, which is NOT yet true on a brand-new
+            //    install's very first launch (see `canonical_env_path`'s doc
+            //    comment on why the WRITE target must not require the file
+            //    to pre-exist) — gating generation on the enum instead of the
+            //    compile-time check would mean a new user's first-ever launch
+            //    never gets encrypted at all. `cfg!(debug_assertions)` mirrors
+            //    `detect_install_mode`'s own compile-time Canonical/Dev split,
+            //    so a debug build provably can't reach this branch either
+            //    way. Both degrade to `None`/unencrypted on any failure
+            //    rather than blocking tray startup — see db_key.rs and
             //    meridian_core::db_crypto::encrypt_in_place's doc comments
             //    for why that's the safe failure mode.
             let db_path = install::meridian_db_path();
             let install_mode = install::detect_install_mode();
-            let db_key_hex = match install_mode.env_path() {
-                Some(env_path) => install::env_key_from_path(env_path, "MERIDIAN_DB_KEY"),
-                None => None,
-            };
-            let db_key_hex = match (&install_mode, db_key_hex) {
-                (install::InstallMode::Canonical(env_path), None) => {
-                    match db_key::resolve_or_create_key(env_path) {
+            let existing_key = install_mode
+                .env_path()
+                .and_then(|p| install::env_key_from_path(p, "MERIDIAN_DB_KEY"));
+
+            let db_key_hex = if existing_key.is_some() {
+                existing_key
+            } else if !cfg!(debug_assertions) {
+                match install::canonical_env_path() {
+                    Some(env_path) => match db_key::resolve_or_create_key(&env_path) {
                         Ok(key) => Some(key),
                         Err(e) => {
                             eprintln!("tray: failed to resolve DB encryption key, continuing unencrypted: {e}");
                             None
                         }
-                    }
+                    },
+                    None => None,
                 }
-                (_, existing) => existing,
+            } else {
+                None
             };
-            let db_key_hex = match (&install_mode, &db_key_hex) {
-                (install::InstallMode::Canonical(_), Some(key)) => {
-                    let migrate = meridian_core::db_crypto::encrypt_in_place(
-                        std::path::Path::new(&db_path),
-                        key,
-                    );
-                    match tauri::async_runtime::block_on(migrate) {
-                        Ok(()) => Some(key.clone()),
-                        Err(e) => {
-                            eprintln!(
-                                "tray: failed to migrate meridian.db to encrypted storage, continuing unencrypted this run: {e}"
-                            );
-                            None
+
+            let db_key_hex = if !cfg!(debug_assertions) {
+                match &db_key_hex {
+                    Some(key) => {
+                        let migrate = meridian_core::db_crypto::encrypt_in_place(
+                            std::path::Path::new(&db_path),
+                            key,
+                        );
+                        match tauri::async_runtime::block_on(migrate) {
+                            Ok(()) => Some(key.clone()),
+                            Err(e) => {
+                                eprintln!(
+                                    "tray: failed to migrate meridian.db to encrypted storage, continuing unencrypted this run: {e}"
+                                );
+                                None
+                            }
                         }
                     }
+                    None => None,
                 }
-                (_, existing) => existing.clone(),
+            } else {
+                db_key_hex
             };
 
             // Open meridian.db ONCE at startup and share it with commands via
