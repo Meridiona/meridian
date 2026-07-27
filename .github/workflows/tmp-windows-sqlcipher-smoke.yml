@@ -38,12 +38,23 @@ jobs:
           persist-credentials: false
 
       # NOTE: deliberately NOT installing Perl via shogo82148/actions-setup-perl
-      # here — windows-latest already has Strawberry Perl at C:\Strawberry\perl\bin
-      # on PATH by default, and that action's minimal Perl build is MISSING CPAN
+      # here — windows-latest already has a full Strawberry Perl at
+      # C:\Strawberry\perl\bin. That action's minimal Perl build is MISSING CPAN
       # modules OpenSSL's Configure script needs (Locale::Maketext::Simple,
-      # Text::Template) — installing it actively broke the build by shadowing
-      # the runner's already-working Perl with a broken one. Confirmed by an
-      # actual failed run of this exact workflow before this fix.
+      # Text::Template) and shadowed the good one — confirmed by an actual
+      # failed run of this workflow.
+      #
+      # Strawberry Perl still isn't picked up automatically, though: this job's
+      # `shell: bash` runs under Git Bash, whose OWN bundled minimal MSYS perl
+      # at /usr/bin resolves ahead of Strawberry Perl in that shell's PATH —
+      # same missing-module failure, just from a different perl. Confirmed
+      # by a second actual failed run (error pointed at
+      # /usr/share/perl5/core_perl/..., not Strawberry's path). Fix: prepend
+      # Strawberry's bin dir via GITHUB_PATH so it wins for every later step
+      # in this job, including the one that invokes perl indirectly via cargo.
+      - name: Prioritize Strawberry Perl over Git Bash's bundled minimal perl
+        run: echo "/c/Strawberry/perl/bin" >> "$GITHUB_PATH"
+
       - name: Install NASM (for vendored OpenSSL's assembly routines)
         uses: ilammy/setup-nasm@v1
 

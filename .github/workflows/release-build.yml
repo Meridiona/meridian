@@ -632,16 +632,27 @@ jobs:
       # meridian-core/src/db_crypto.rs) compiles OpenSSL FROM SOURCE via
       # `openssl-src`, which needs Perl and NASM on PATH.
       #
-      # Perl: `windows-latest` already ships Strawberry Perl on PATH
-      # (`C:\Strawberry\perl\bin`) — do NOT install a second Perl via
+      # Perl: `windows-latest` already ships a full Strawberry Perl at
+      # `C:\Strawberry\perl\bin` — do NOT install a second Perl via
       # `shogo82148/actions-setup-perl` or similar. That action's minimal Perl
       # build is missing CPAN modules OpenSSL's Configure script needs
-      # (Locale::Maketext::Simple, Text::Template) and, being earlier on
-      # PATH, shadows the runner's already-working Strawberry Perl — this
-      # broke the build outright when tried (see the compile-only smoke
-      # workflow this was validated against). NASM is genuinely NOT bundled,
-      # so it still needs explicit setup — same action OpenSSL's own upstream
-      # CI uses on Windows.
+      # (Locale::Maketext::Simple, Text::Template) and shadowed the runner's
+      # already-working Strawberry Perl — confirmed by an actual failed build.
+      #
+      # Strawberry Perl still isn't found automatically, though: this job's
+      # steps run under Git Bash (see `defaults.run.shell` above), whose OWN
+      # bundled minimal MSYS perl at /usr/bin resolves ahead of Strawberry
+      # Perl in THAT shell's PATH — same missing-module failure, from a
+      # different perl. Also confirmed by an actual failed build (error
+      # pointed at /usr/share/perl5/core_perl/..., not Strawberry's path).
+      # Fix: prepend Strawberry's bin dir via GITHUB_PATH so it wins for every
+      # later step in this job, including the one that invokes perl
+      # indirectly via cargo's openssl-sys build script.
+      - name: Prioritize Strawberry Perl over Git Bash's bundled minimal perl
+        run: echo "/c/Strawberry/perl/bin" >> "$GITHUB_PATH"
+
+      # NASM is genuinely not bundled by default, so it still needs explicit
+      # setup — same action OpenSSL's own upstream CI uses on Windows.
       - name: Install NASM (for vendored OpenSSL's assembly routines)
         uses: ilammy/setup-nasm@v1
 
