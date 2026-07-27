@@ -672,6 +672,23 @@ async fn migrate_legacy_bundle_env(home: &Path) {
 
 /// Copy `src` → `dest` only when the bytes differ, then `chmod 0755`.
 /// Skipping an identical copy keeps the code hash (and any TCC grant) stable.
+///
+/// Stages via a temp file in `dest`'s own directory + atomic rename, **not**
+/// an in-place overwrite — `dest` (`~/.meridian/bin/meridian`) is often still
+/// the executable image of a previous version of the daemon, still running
+/// (`ensure_backend_installed` re-stages on every app update, before the
+/// caller's `register_service` stops/relaunches it via launchd). An in-place
+/// `tokio::fs::copy` truncates and rewrites that same inode; on macOS the
+/// hardened-runtime code-signing monitor validates executable pages against
+/// the on-disk signature as they're demand-paged in, so the live process gets
+/// SIGKILL'd (`EXC_BAD_ACCESS`, `CODESIGNING`/"Invalid Page") the next time it
+/// faults in a page that no longer matches — which can happen anywhere from
+/// immediately to hours later, well after this function returns. `rename(2)`
+/// instead swaps the directory entry without touching the old inode's
+/// content, so an already-running process keeps executing its original,
+/// still-valid pages undisturbed; only a fresh exec of `dest` picks up the
+/// new binary. The temp file must be on the same filesystem as `dest` for the
+/// rename to be atomic — using `dest`'s own directory guarantees that.
 async fn stage_binary(src: &Path, dest: &Path) -> Result<(), String> {
     let same = match (tokio::fs::read(src).await, tokio::fs::read(dest).await) {
         (Ok(a), Ok(b)) => a == b,
@@ -682,10 +699,24 @@ async fn stage_binary(src: &Path, dest: &Path) -> Result<(), String> {
         tracing::debug!(dest = %dest.display(), "backend_install: binary unchanged");
         return Ok(());
     }
-    tokio::fs::copy(src, dest)
-        .await
-        .map_err(|e| format!("copy {} → {}: {e}", src.display(), dest.display()))?;
-    set_executable(dest).await?;
+
+    let tmp = dest.with_file_name(format!("{DAEMON_FILE}.staging-{}", std::process::id()));
+    if let Err(e) = tokio::fs::copy(src, &tmp).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(format!("copy {} → {}: {e}", src.display(), tmp.display()));
+    }
+    if let Err(e) = set_executable(&tmp).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e);
+    }
+    if let Err(e) = tokio::fs::rename(&tmp, dest).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(format!(
+            "rename {} → {}: {e}",
+            tmp.display(),
+            dest.display()
+        ));
+    }
     tracing::info!(dest = %dest.display(), "backend_install: staged binary");
     Ok(())
 }
@@ -889,6 +920,54 @@ mod tests {
         );
 
         let _ = tokio::fs::remove_dir_all(&home).await;
+    }
+
+    /// `stage_binary` must never truncate `dest` in place — a reader that
+    /// opened `dest` before staging began (standing in for a still-running
+    /// daemon with `dest` mapped as its executable image) must still see the
+    /// complete, unmodified OLD content afterward, not a mix of old/new bytes
+    /// or a truncated file. This is the property the codesigning SIGKILL loop
+    /// (see the doc comment on `stage_binary`) depends on: a live process is
+    /// only ever affected by future execs of the (now-renamed) path, never by
+    /// its own already-open file/mapping.
+    #[tokio::test]
+    async fn stage_binary_does_not_disturb_a_reader_of_the_old_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "meridian-stage-binary-{}-{}",
+            std::process::id(),
+            "norace"
+        ));
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+
+        let src = dir.join("src-daemon");
+        let dest = dir.join(DAEMON_FILE);
+        tokio::fs::write(&src, b"new binary bytes, much longer than the old one")
+            .await
+            .unwrap();
+        tokio::fs::write(&dest, b"old binary bytes").await.unwrap();
+
+        // Hold `dest`'s original inode open across the stage, mirroring a
+        // running process's already-mapped executable.
+        let mut reader = std::fs::File::open(&dest).unwrap();
+
+        stage_binary(&src, &dest).await.unwrap();
+
+        use std::io::Read;
+        let mut held = Vec::new();
+        reader.read_to_end(&mut held).unwrap();
+        assert_eq!(
+            held, b"old binary bytes",
+            "a handle opened before staging must still see the intact old content"
+        );
+
+        assert_eq!(
+            tokio::fs::read(&dest).await.unwrap(),
+            b"new binary bytes, much longer than the old one",
+            "a fresh read of the path after staging must see the new content"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
     #[test]
