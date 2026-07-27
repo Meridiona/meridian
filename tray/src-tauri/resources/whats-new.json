@@ -1,6 +1,121 @@
 {
   "releases": [
     {
+      "version": "1.80.0",
+      "date": "2026-07-27",
+      "highlights": [
+        "Meridian can now send error reports to the team automatically, so crashes and failures get fixed without you having to report them. It is on by default and you can turn it off any time in Settings - Capture.",
+        "Everything identifying is stripped on your device before a report is sent - file paths, web addresses, email addresses, and your computer's name. Your screen activity, OCR text, and window titles are never included.",
+        "A new Support ID in Settings - Account. Quote it when you contact us and we can find the errors from your device, without it being linked to your account."
+      ],
+      "fixes": [
+        "Error reports now work on Windows. They were silently never being sent.",
+        "Problems in screen capture and accessibility - the parts that read what is on screen - are now reported, so a device that quietly stops capturing can be spotted instead of just looking like an idle day.",
+        "Error reports now carry the actual reason something failed, instead of only naming the step that failed."
+      ]
+    },
+    {
+      "version": "1.79.0",
+      "date": "2026-07-24",
+      "highlights": [
+        "Claude, Codex, and Cursor now sign in and run on Windows the same way they do on a Mac.",
+        "Meridian restores its own launch-at-login setting if it ever gets cleared, so tracking does not quietly stop after a restart.",
+        "Notification settings are now a single switch plus quiet hours, instead of a list of per-type toggles."
+      ],
+      "fixes": [
+        "Fixed sign-in for Claude, Codex, and Cursor on Windows, including prompts that were being dropped.",
+        "A brief network problem no longer leaves Jira showing a stuck sync error.",
+        "Export Diagnostics is reachable again, now under Settings - Account."
+      ]
+    },
+    {
+      "version": "1.78.0",
+      "date": "2026-07-23",
+      "highlights": [
+        "Meridian notices within about ten seconds if its background service stops, and restarts it for you.",
+        "You can delete personal tasks you created, and dismiss or merge the tasks Meridian infers from your day.",
+        "The daily plan now holds up to 20 tasks, up from 10."
+      ],
+      "fixes": [
+        "Fixed the background service failing to restart on Windows, and a console window that flashed on screen.",
+        "The Tasks board refreshes immediately after you delete a personal task.",
+        "Uninstalling now also clears cached app data and permission grants."
+      ]
+    },
+    {
+      "version": "1.77.0",
+      "date": "2026-07-22",
+      "highlights": [
+        "A rebuilt daily summary, organised around what you planned versus what you actually did, with a progress ring and a single checklist.",
+        "Composing the summary has its own screen now, and it composes itself at the end of the day.",
+        "Worklogs can turn a personal task into a real ticket, and write a tailored update for each ticket you moved forward.",
+        "The date picker is now a proper interactive calendar."
+      ],
+      "fixes": [
+        "Fixed a crash in accessibility capture when the recorder restarted."
+      ]
+    },
+    {
+      "version": "1.76.0",
+      "date": "2026-07-22",
+      "highlights": [
+        "Meridian captures context from secondary monitors, not only the screen you are focused on.",
+        "Connected tracker cards have View tasks and Sync now buttons.",
+        "Jira gets a multi-select project picker, matching the one GitHub already had."
+      ],
+      "fixes": [
+        "Fixed connecting an account not opening a browser on Windows.",
+        "Fixed the task list briefly showing stale results while loading."
+      ]
+    },
+    {
+      "version": "1.75.1",
+      "date": "2026-07-22",
+      "highlights": [],
+      "fixes": [
+        "Fixed Meridian finding and launching your AI provider CLIs on Windows.",
+        "Fixed the popover position, tooltips, onboarding, and setup wizard on Windows.",
+        "Meridian now reads your real Windows notification and permission settings instead of assuming they are off."
+      ]
+    },
+    {
+      "version": "1.75.0",
+      "date": "2026-07-21",
+      "highlights": [
+        "Signing in is now required across the dashboard and the tray popover.",
+        "The plan's task detail can change a task's status, including for personal tasks.",
+        "You can choose which tracker a proposed ticket gets created on.",
+        "A Refresh button on the daily plan once a tracker is connected."
+      ],
+      "fixes": [
+        "Streamlined the GitHub connect flow, including the device-code step and picking projects."
+      ]
+    },
+    {
+      "version": "1.74.0",
+      "date": "2026-07-20",
+      "highlights": [
+        "Worklogs can draft themselves once a day, at a time you choose."
+      ],
+      "fixes": [
+        "Fixed the GitHub project picker not saving after connecting an account.",
+        "Fixed Dock and menu-bar icon rendering."
+      ]
+    },
+    {
+      "version": "1.73.0",
+      "date": "2026-07-20",
+      "highlights": [
+        "Windows support. The full app - background service, tray, notifications, and installer - now runs on Windows.",
+        "Choosing a model is now a picker with a curated list, instead of typing the model name yourself."
+      ],
+      "fixes": [
+        "Fixed screen capture on macOS 26.",
+        "Hardened worklog and activity processing so a failure surfaces instead of passing silently.",
+        "Bounded the memory and time the on-device text model can use."
+      ]
+    },
+    {
       "version": "1.72.0",
       "date": "2026-07-18",
       "highlights": [
@@ -83,14 +198,19 @@
   ],
   "roadmap": [
     {
-      "title": "Choose your own AI provider",
+      "title": "Encrypt your local data at rest",
       "status": "in-progress",
-      "description": "Pick your own Claude, Codex, Cursor, or Copilot CLI subscription (or stay fully on-device) to power worklog generation, switchable anytime from Settings."
+      "description": "Meridian's local database, which holds everything it has captured, encrypted on disk so it stays unreadable to anything else on your machine."
     },
     {
-      "title": "See and install updates from the dashboard",
-      "status": "in-progress",
-      "description": "An update card in the dashboard sidebar, so you don't have to open the tray popover to check for or install a new version."
+      "title": "More trackers - Linear, Trello, and Azure DevOps",
+      "status": "planned",
+      "description": "Meridian already speaks to all three. They are listed as coming soon while we finish testing each one end to end, so the trackers you can connect today are ones we know work."
+    },
+    {
+      "title": "Report crashes in the background service",
+      "status": "planned",
+      "description": "Error reporting currently covers the app itself. Extending it to the background service means a hard crash there gets reported too, rather than only being visible in local logs."
     }
   ]
 }
