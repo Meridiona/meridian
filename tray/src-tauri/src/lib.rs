@@ -204,25 +204,35 @@ pub fn run() {
                 });
             }
 
-            // Resolve (or first-run generate) the local SQLCipher encryption
-            // key BEFORE opening the pool, and transparently migrate an
-            // existing plaintext meridian.db to encrypted-at-rest. Both steps
-            // degrade to `None`/unencrypted on any failure rather than
-            // blocking tray startup — see db_key.rs and
-            // meridian_core::db_crypto::encrypt_in_place's doc comments for
-            // why that's the safe failure mode (never touches the original
-            // file until a full encrypted export succeeds).
+            // Resolve the local SQLCipher encryption key BEFORE opening the
+            // pool. Two separate concerns, deliberately gated differently:
             //
-            // Canonical installs ONLY. A debug build's `detect_install_mode()`
-            // can never return `Canonical` (see its own doc comment) — this is
-            // deliberate: `~/.meridian/meridian.db` is the one thing dev and
-            // installed builds share (see `meridian_db_path`'s doc comment),
-            // so a dev/`cargo-watch` run must never encrypt that shared
-            // database out from under a real installed app, or vice versa.
+            // 1. USING an existing key (any install mode, including Dev): if
+            //    `MERIDIAN_DB_KEY` is already sitting in the resolved `.env`,
+            //    always read and apply it. `meridian.db` is the one file dev
+            //    and installed builds share (`meridian_db_path`'s doc
+            //    comment) — if it's ALREADY encrypted (e.g. this same machine
+            //    also runs a Canonical install against it), a dev build must
+            //    still be able to read it, not silently open unencrypted and
+            //    fail on the first real query.
+            // 2. GENERATING a new key + migrating an existing plaintext file
+            //    (Canonical installs ONLY): a debug build's
+            //    `detect_install_mode()` can never return `Canonical` (see
+            //    its own doc comment), so a dev/`cargo-watch` run can never
+            //    be the one to newly encrypt that shared database. Both
+            //    degrade to `None`/unencrypted on any failure rather than
+            //    blocking tray startup — see db_key.rs and
+            //    meridian_core::db_crypto::encrypt_in_place's doc comments
+            //    for why that's the safe failure mode.
             let db_path = install::meridian_db_path();
-            let db_key_hex = match install::detect_install_mode() {
-                install::InstallMode::Canonical(env_path) => {
-                    match db_key::resolve_or_create_key(&env_path) {
+            let install_mode = install::detect_install_mode();
+            let db_key_hex = match install_mode.env_path() {
+                Some(env_path) => install::env_key_from_path(env_path, "MERIDIAN_DB_KEY"),
+                None => None,
+            };
+            let db_key_hex = match (&install_mode, db_key_hex) {
+                (install::InstallMode::Canonical(env_path), None) => {
+                    match db_key::resolve_or_create_key(env_path) {
                         Ok(key) => Some(key),
                         Err(e) => {
                             eprintln!("tray: failed to resolve DB encryption key, continuing unencrypted: {e}");
@@ -230,10 +240,10 @@ pub fn run() {
                         }
                     }
                 }
-                install::InstallMode::Dev(_) | install::InstallMode::Bare => None,
+                (_, existing) => existing,
             };
-            let db_key_hex = match &db_key_hex {
-                Some(key) => {
+            let db_key_hex = match (&install_mode, &db_key_hex) {
+                (install::InstallMode::Canonical(_), Some(key)) => {
                     let migrate = meridian_core::db_crypto::encrypt_in_place(
                         std::path::Path::new(&db_path),
                         key,
@@ -248,7 +258,7 @@ pub fn run() {
                         }
                     }
                 }
-                None => None,
+                (_, existing) => existing.clone(),
             };
 
             // Open meridian.db ONCE at startup and share it with commands via
