@@ -288,7 +288,12 @@ pub fn get_app_info(app: tauri::AppHandle) -> AppInfo {
     let version = app.package_info().version.to_string();
     let channel = build_channel().to_string();
     let support_id = meridian::telemetry_spool::redact::local_host_pseudonym();
-    tracing::info!(%version, %channel, %support_id, "app info served");
+    // `support_id` is deliberately NOT a field here. It is a machine
+    // identifier, and it is already available where it is actually needed - the
+    // command's return value, Settings → Account, and `bundle-info.txt` in an
+    // export bundle - so logging it adds no diagnostic value and only widens
+    // where an identifier is written.
+    tracing::info!(%version, %channel, "app info served");
     AppInfo {
         version,
         channel,

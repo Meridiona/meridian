@@ -182,10 +182,16 @@ export function availableTrackers(): Tracker[] {
   return TRACKERS.filter((t) => !t.comingSoon)
 }
 
-/** Prose list of the trackers on offer - "Jira and GitHub", "Jira, GitHub and
- *  Linear". Derived from `TRACKERS` rather than written out at each call site:
- *  three separate places used to hardcode all five names, so flagging one
- *  `comingSoon` would have left the UI promising it anyway. */
+/** Prose list of the trackers on offer - today "Jira and GitHub", and
+ *  "Jira, GitHub and Linear" were a third un-flagged. Derived from `TRACKERS`
+ *  rather than written out at each call site: three separate places used to
+ *  hardcode all five names, so flagging one `comingSoon` would have left the UI
+ *  promising it anyway.
+ *
+ *  Returns `''` when every tracker is flagged. Callers must handle that rather
+ *  than interpolating blindly, or the copy reads "Works with , with more
+ *  coming soon" - see `availableTrackers().length` guards at the two call
+ *  sites. */
 export function availableTrackerNames(): string {
   const names = availableTrackers().map((t) => t.name)
   if (names.length <= 1) return names[0] ?? ''

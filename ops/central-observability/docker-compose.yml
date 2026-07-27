@@ -22,14 +22,23 @@
 #        MERIDIAN_CENTRAL_TELEMETRY_TOKEN = <INGEST_TOKEN>
 #   Rotate the token any time by changing INGEST_TOKEN + `docker compose up -d`;
 #   no app rebuild is needed to change collector redaction/filtering either.
+#
+# Every mandatory variable below uses `${VAR:?message}`, which ABORTS the deploy
+# when it is unset. Plain `${VAR}` only warns and substitutes an empty string,
+# which fails in the worst possible way here: an empty INGEST_TOKEN brings the
+# stack up accepting unauthenticated ingest on a world-reachable endpoint, and
+# an empty OO_UI_PASSWORD_HASH renders the UI basic-auth layer inert - both
+# looking like a healthy deploy. `OO_RETENTION_DAYS` deliberately keeps its
+# `:-90` default instead, since a .env written before that key existed must
+# still deploy.
 
 services:
   openobserve:
-    image: ${OO_IMAGE}
+    image: ${OO_IMAGE:?set OO_IMAGE in .env}
     restart: unless-stopped
     environment:
-      ZO_ROOT_USER_EMAIL: ${OO_ROOT_USER_EMAIL}
-      ZO_ROOT_USER_PASSWORD: ${OO_ROOT_USER_PASSWORD}
+      ZO_ROOT_USER_EMAIL: ${OO_ROOT_USER_EMAIL:?set OO_ROOT_USER_EMAIL in .env}
+      ZO_ROOT_USER_PASSWORD: ${OO_ROOT_USER_PASSWORD:?set OO_ROOT_USER_PASSWORD in .env}
       ZO_DATA_DIR: /data
       ZO_HTTP_PORT: "5080"
       # This instance's OWN product-analytics phone-home to OpenObserve, off.
@@ -49,35 +58,35 @@ services:
     # OpenObserve, over the private compose network. Nothing binds it to the host.
 
   otel-collector:
-    image: ${COLLECTOR_IMAGE}
+    image: ${COLLECTOR_IMAGE:?set COLLECTOR_IMAGE in .env}
     restart: unless-stopped
     command: ["--config=/etc/otelcol/config.yaml"]
     environment:
       # Validated against every install's `Authorization: Bearer <token>`.
-      INGEST_TOKEN: ${INGEST_TOKEN}
+      INGEST_TOKEN: ${INGEST_TOKEN:?set INGEST_TOKEN in .env - an empty one accepts anonymous ingest}
       # Server-side only — the collector authenticates to OpenObserve with these.
-      OO_ROOT_USER_EMAIL: ${OO_ROOT_USER_EMAIL}
-      OO_ROOT_USER_PASSWORD: ${OO_ROOT_USER_PASSWORD}
-      OO_ORG: ${OO_ORG}
+      OO_ROOT_USER_EMAIL: ${OO_ROOT_USER_EMAIL:?set OO_ROOT_USER_EMAIL in .env}
+      OO_ROOT_USER_PASSWORD: ${OO_ROOT_USER_PASSWORD:?set OO_ROOT_USER_PASSWORD in .env}
+      OO_ORG: ${OO_ORG:?set OO_ORG in .env}
     volumes:
       - ./otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
     depends_on:
       - openobserve
 
   caddy:
-    image: ${CADDY_IMAGE}
+    image: ${CADDY_IMAGE:?set CADDY_IMAGE in .env}
     restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
     environment:
-      GATEWAY_DOMAIN: ${GATEWAY_DOMAIN}
-      OO_UI_DOMAIN: ${OO_UI_DOMAIN}
+      GATEWAY_DOMAIN: ${GATEWAY_DOMAIN:?set GATEWAY_DOMAIN in .env}
+      OO_UI_DOMAIN: ${OO_UI_DOMAIN:?set OO_UI_DOMAIN in .env}
       # Basic auth in front of the OO UI only (see the Caddyfile). The hash
       # MUST be `$`-escaped in .env or compose truncates it — .env.example
       # explains why and how.
-      OO_UI_USER: ${OO_UI_USER}
-      OO_UI_PASSWORD_HASH: ${OO_UI_PASSWORD_HASH}
+      OO_UI_USER: ${OO_UI_USER:?set OO_UI_USER in .env}
+      OO_UI_PASSWORD_HASH: ${OO_UI_PASSWORD_HASH:?set OO_UI_PASSWORD_HASH in .env - an empty hash disables UI auth}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

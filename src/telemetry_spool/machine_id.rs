@@ -57,7 +57,25 @@ const IOREG: &str = "/usr/sbin/ioreg";
 /// one spawn per process, not one per call.
 pub(crate) fn stable_machine_id() -> Option<&'static str> {
     static CACHED: OnceLock<Option<String>> = OnceLock::new();
-    CACHED.get_or_init(read_platform_id).as_deref()
+    CACHED
+        .get_or_init(|| {
+            let id = read_platform_id();
+            // Logged once (inside the OnceLock init), not per call. On macOS a
+            // miss means every pseudonym silently degrades to the unstable
+            // hostname seed - precisely the regression this module exists to
+            // prevent - and nothing else would report it. Elsewhere the
+            // hostname IS the intended seed, so a miss is not a fault.
+            #[cfg(target_os = "macos")]
+            if id.is_none() {
+                tracing::warn!(
+                    probe = "ioreg IOPlatformUUID",
+                    "no stable hardware id; falling back to the hostname, so this machine's \
+                     pseudonym and Support ID may change when it changes network"
+                );
+            }
+            id
+        })
+        .as_deref()
 }
 
 /// macOS: parse `IOPlatformUUID` out of the `IOPlatformExpertDevice` node.

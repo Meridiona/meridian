@@ -116,6 +116,13 @@ fn is_http(endpoint: &str) -> bool {
     endpoint.starts_with("http://") || endpoint.starts_with("https://")
 }
 
+/// Whether the CENTRAL endpoint may be shipped to. TLS-only, unlike
+/// [`is_http`], which the dev/loopback path uses — see
+/// [`resolve_central_target`] for why the two differ.
+fn central_endpoint_allowed(endpoint: &str) -> bool {
+    endpoint.starts_with("https://")
+}
+
 /// Cheap liveness check used by the health probe — does NOT assemble
 /// credentials. Returns `true` when the DEV/local OTLP export would be
 /// attempted (toggle on + credentials present + not a packaged install).
@@ -193,10 +200,18 @@ fn resolve_central_target(
     }
 
     let endpoint = central_endpoint()?;
-    if !is_http(&endpoint) {
+    // TLS-only, deliberately stricter than the dev path's `is_http`. This
+    // request carries a write-scoped Bearer token for a shared, world-reachable
+    // gateway plus redacted error payloads, over the public internet. A
+    // `MERIDIAN_CENTRAL_OTLP_ENDPOINT` runtime override (or a mis-baked release
+    // constant) pointing at `http://` would put both on the wire in cleartext,
+    // and nothing downstream would notice — the gateway would happily accept
+    // them. The dev path keeps plain `http` because it targets loopback.
+    if !central_endpoint_allowed(&endpoint) {
         tracing::warn!(
             endpoint = %endpoint,
-            "central OTLP endpoint has no http/https scheme — error shipping disabled"
+            "central OTLP endpoint is not https — error shipping disabled rather than \
+             sending the write token in cleartext"
         );
         return None;
     }
@@ -273,4 +288,47 @@ fn resolve_dev_target(settings: &meridian_core::settings::RuntimeSettings) -> Op
         auth,
         redact: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The central leg carries a write-scoped Bearer token to a shared,
+    /// world-reachable gateway over the public internet. `http://` there would
+    /// put the token on the wire in cleartext and nothing downstream would
+    /// object, so the check is stricter than the dev path's [`is_http`].
+    #[test]
+    fn central_endpoint_requires_tls() {
+        for ok in [
+            "https://telemetry.meridiona.com/v1/traces",
+            "https://localhost:4318/v1/traces",
+        ] {
+            assert!(central_endpoint_allowed(ok), "should be allowed: {ok}");
+        }
+        for bad in [
+            // The realistic mistakes: a mis-baked release constant, a runtime
+            // override typed without the `s`, and loopback (fine for dev, not
+            // for the central token).
+            "http://telemetry.meridiona.com/v1/traces",
+            "http://localhost:5080/api/default/v1/traces",
+            "telemetry.meridiona.com/v1/traces",
+            "",
+            // Scheme matching is case-sensitive by design: a URL this odd is a
+            // config error, and failing closed is the safe direction.
+            "HTTPS://telemetry.meridiona.com/v1/traces",
+        ] {
+            assert!(!central_endpoint_allowed(bad), "should be refused: {bad:?}");
+        }
+    }
+
+    /// The dev path must keep accepting plain `http` — it targets a loopback
+    /// OpenObserve, and tightening it here would silently break every
+    /// engineer's local shipping.
+    #[test]
+    fn dev_path_still_accepts_plain_http() {
+        assert!(is_http("http://localhost:5080/api/default/v1/traces"));
+        assert!(is_http("https://oo.example.com/v1/traces"));
+        assert!(!is_http("localhost:5080"));
+    }
 }

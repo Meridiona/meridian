@@ -200,7 +200,7 @@
     {
       "title": "Encrypt your local data at rest",
       "status": "in-progress",
-      "description": "Meridian's local database, which holds everything it has captured, encrypted on disk so it stays unreadable to anything else on your machine."
+      "description": "Meridian's local database, which holds everything it has captured, is encrypted on disk so it stays unreadable to anything else on your machine."
     },
     {
       "title": "More trackers - Linear, Trello, and Azure DevOps",
