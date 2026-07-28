@@ -72,6 +72,7 @@ pub async fn open_pool_with_key(
     create_if_missing: bool,
     extra_pragmas: &'static [(&'static str, &'static str)],
 ) -> anyhow::Result<SqlitePool> {
+    let key_hex = key_unless_plaintext(uri, key_hex);
     if let Some(k) = key_hex {
         validate_key_hex(k)?;
     }
@@ -119,6 +120,7 @@ pub async fn open_pool_with_key_readonly(
     uri: &str,
     key_hex: Option<&str>,
 ) -> anyhow::Result<SqlitePool> {
+    let key_hex = key_unless_plaintext(uri, key_hex);
     if let Some(k) = key_hex {
         validate_key_hex(k)?;
     }
@@ -156,6 +158,63 @@ pub fn is_plaintext_sqlite(path: &Path) -> bool {
     };
     let mut magic = [0u8; 16];
     matches!(f.read_exact(&mut magic), Ok(())) && &magic == SQLITE_MAGIC
+}
+
+/// Best-effort extraction of the on-disk file path from a SQLite connection
+/// string, for the plaintext check in [`key_unless_plaintext`]. Accepts both a
+/// bare filesystem path (as [`encrypt_in_place`] passes) and a `sqlite://…` /
+/// `file:…` URI (as the daemon's `setup_db` and the tray's `open_existing`
+/// pass — `format!("sqlite://{path}")`), and strips any `?mode=ro&…` query.
+/// Returns `None` for `:memory:` (nothing on disk to inspect).
+fn sqlite_uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
+    let without_scheme = uri
+        .strip_prefix("sqlite://")
+        .or_else(|| uri.strip_prefix("sqlite:"))
+        .or_else(|| uri.strip_prefix("file://"))
+        .or_else(|| uri.strip_prefix("file:"))
+        .unwrap_or(uri);
+    let path = without_scheme
+        .split_once('?')
+        .map(|(p, _)| p)
+        .unwrap_or(without_scheme);
+    if path.is_empty() || path == ":memory:" {
+        return None;
+    }
+    Some(std::path::PathBuf::from(path))
+}
+
+/// Drop the encryption key when `uri` points at an existing **plaintext** SQLite
+/// file; otherwise return `key_hex` unchanged.
+///
+/// Applying a SQLCipher `PRAGMA key` to a file that is actually plaintext makes
+/// SQLCipher stall on the first page-touching pragma until the pool's 10s
+/// acquire timeout fires — surfacing to callers as `worklog-generate: open db:
+/// … pool timed out while waiting for an open connection`. That desync arises
+/// when an [`encrypt_in_place`] migration wrote the encrypted copy but could
+/// not complete its final swap (on Windows `std::fs::rename` fails while the
+/// daemon still holds `meridian.db` open), leaving the on-disk file plaintext
+/// while `MERIDIAN_DB_KEY` stays set in `.env`. Every DB opener the daemon and
+/// the CLI subprocesses use routes through [`open_pool_with_key`], so guarding
+/// here self-heals an already-stuck machine: a key never applies to a plaintext
+/// file, so drop it, open unencrypted, and warn so the stuck migration stays
+/// visible. [`is_plaintext_sqlite`] is `false` for a missing file (fresh
+/// install → keep the key and create encrypted) and for an encrypted file
+/// (ciphertext header → keep the key), so this fires only on the genuine
+/// plaintext-with-key desync.
+fn key_unless_plaintext<'a>(uri: &str, key_hex: Option<&'a str>) -> Option<&'a str> {
+    let key = key_hex?;
+    match sqlite_uri_to_path(uri) {
+        Some(path) if is_plaintext_sqlite(&path) => {
+            tracing::warn!(
+                db = %path.display(),
+                "meridian.db is plaintext but an encryption key is configured — opening \
+                 unencrypted and ignoring the key (a prior encrypt-in-place migration did \
+                 not complete; see meridian_core::db_crypto)"
+            );
+            None
+        }
+        _ => Some(key),
+    }
 }
 
 /// Files an interrupted [`encrypt_in_place`] would have left beside `path`:
@@ -276,8 +335,21 @@ pub async fn encrypt_in_place(path: &Path, key_hex: &str) -> anyhow::Result<()> 
         "db.plaintext-backup-{}",
         chrono::Utc::now().format("%Y%m%d%H%M%S")
     ));
-    std::fs::rename(path, &backup_path)
-        .context("encrypt_in_place: failed to move plaintext original aside")?;
+    if let Err(e) = std::fs::rename(path, &backup_path) {
+        // On Windows `rename` fails with "os error 32" while another process
+        // (the running daemon) still holds `meridian.db` open — the migration
+        // can't complete its swap this run. Remove the multi-GB encrypted
+        // export we just wrote so it doesn't accumulate as an orphan every
+        // startup (a real disk-exhaustion risk on a large DB), leaving the
+        // plaintext original untouched: this degrades to "still plaintext,
+        // retry next launch", and `key_unless_plaintext` keeps the daemon and
+        // CLIs working against the plaintext file in the meantime.
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e).context(
+            "encrypt_in_place: failed to move plaintext original aside \
+             (is meridian.db still open by the daemon?)",
+        );
+    }
     for suffix in ["-wal", "-shm"] {
         let sidecar = std::path::PathBuf::from(format!("{}{}", path.display(), suffix));
         let _ = std::fs::remove_file(sidecar); // checkpointed to empty; safe to drop
@@ -370,6 +442,87 @@ mod tests {
 
     const TEST_KEY: &str = "3a15689f73412c29d7ed3b902a01e33dbd5f767dc37b792e19ac9e2366bf2cd2";
     const OTHER_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    #[test]
+    fn sqlite_uri_to_path_extracts_file_path() {
+        use std::path::PathBuf;
+        // The daemon/tray form: `format!("sqlite://{path}")`.
+        assert_eq!(
+            sqlite_uri_to_path("sqlite://C:/Users/x/.meridian/meridian.db"),
+            Some(PathBuf::from("C:/Users/x/.meridian/meridian.db"))
+        );
+        // A POSIX absolute path keeps its leading slash.
+        assert_eq!(
+            sqlite_uri_to_path("sqlite:///home/u/.meridian/meridian.db"),
+            Some(PathBuf::from("/home/u/.meridian/meridian.db"))
+        );
+        // A bare path (as encrypt_in_place / the tests pass).
+        assert_eq!(
+            sqlite_uri_to_path("/tmp/plain.db"),
+            Some(PathBuf::from("/tmp/plain.db"))
+        );
+        // Query params are stripped.
+        assert_eq!(
+            sqlite_uri_to_path("sqlite://C:/db.sqlite?mode=ro"),
+            Some(PathBuf::from("C:/db.sqlite"))
+        );
+        // In-memory has nothing on disk to inspect.
+        assert_eq!(sqlite_uri_to_path("sqlite::memory:"), None);
+        assert_eq!(sqlite_uri_to_path(":memory:"), None);
+    }
+
+    /// The desync a half-finished `encrypt_in_place` leaves — an on-disk
+    /// plaintext file while `MERIDIAN_DB_KEY` is still configured — must NOT
+    /// stall (pre-fix: SQLCipher hangs on the first pragma until the 10s
+    /// acquire timeout → "pool timed out"). The guard drops the key, opens
+    /// plaintext, and reads the data back well under that timeout.
+    #[tokio::test]
+    async fn open_pool_ignores_key_on_plaintext_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("meridian.db");
+
+        // Seed a plaintext DB with data (no key).
+        let pool = open_pool_with_key(&db_path.display().to_string(), None, true, &[])
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t (x INTEGER)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO t (x) VALUES (99)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        assert!(is_plaintext_sqlite(&db_path));
+
+        // Reopen the SAME plaintext file WITH a key configured. Must not stall.
+        let opened = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            open_pool_with_key(&db_path.display().to_string(), Some(TEST_KEY), false, &[]),
+        )
+        .await
+        .expect("opening a plaintext file with a key set must not stall")
+        .expect("plaintext open should succeed with the key dropped");
+        let row = sqlx::query("SELECT x FROM t")
+            .fetch_one(&opened)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<i64, _>(0), 99);
+        opened.close().await;
+
+        // The read-only opener must apply the same guard.
+        let ro = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            open_pool_with_key_readonly(&db_path.display().to_string(), Some(TEST_KEY)),
+        )
+        .await
+        .expect("read-only opening a plaintext file with a key set must not stall")
+        .expect("plaintext read-only open should succeed with the key dropped");
+        let row = sqlx::query("SELECT x FROM t").fetch_one(&ro).await.unwrap();
+        assert_eq!(row.get::<i64, _>(0), 99);
+        ro.close().await;
+    }
 
     #[test]
     fn validate_key_hex_rejects_bad_input() {
