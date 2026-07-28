@@ -1,6 +1,6 @@
-name: Cache warm (macOS release)
+name: Cache warm (release)
 
-# SEEDS THE RELEASE COMPILE CACHE ON `main`. SHIPS NOTHING.
+# SEEDS THE RELEASE COMPILE CACHES ON `main` FOR BOTH PLATFORMS. SHIPS NOTHING.
 #
 # ── WHY THIS EXISTS ──────────────────────────────────────────────────────────
 #
@@ -17,26 +17,44 @@ name: Cache warm (macOS release)
 # saved its 1.45GB cache under its own tag ref and the next tag started from
 # nothing. Measured on run 29812896206: `Compile daemon + tray` took
 # 1495s — ~25 of the 24-minute build. Notarization, by contrast, was 79s. The
-# cold compile IS the build time; everything else is rounding error.
+# cold compile IS the build time; everything else is rounding error. The
+# Windows job had it worse: every `windows-release-*` cache entry that ever
+# existed was tag-scoped too, so every tag-triggered Windows build compiled
+# OpenSSL-from-source + SQLCipher + the daemon/tray from a stone-cold cache —
+# every single time, not just once.
 #
 # The fix is to make a release-shaped cache exist on the DEFAULT branch, which
 # every tag build can read. Nothing else on main produces one: release-build
 # runs on tags (saves to tag scope) and ci.yml compiles a different profile
-# under a different shared-key. Hence this job — its ONLY output is a warm
-# cache under `refs/heads/main`.
+# under a different shared-key. Hence this workflow — its ONLY output is a
+# warm cache, per platform, under `refs/heads/main`.
 #
-# ── WHY IT COMPILES THE SAME WAY release-build DOES ──────────────────────────
+# ── WHY EACH JOB COMPILES THE SAME WAY release-build DOES ────────────────────
 #
 # rust-cache keys on the shared-key + runner + toolchain + lockfile, and the
 # cache is only useful if the target/ it saves matches the fingerprints a
-# release build will look for. So this mirrors release-build.yml's macOS job
-# exactly: same runner, same pinned toolchain, same target triple, the same two
-# cargo invocations, the same shared-key. Change that job's compile step and
-# you must change this one, or the cache silently stops matching and every
-# release quietly goes cold again — the failure is invisible, it just gets slow.
+# release build will look for. So each job here mirrors release-build.yml's
+# matching job exactly: same runner, same pinned toolchain, same target
+# triple, the same cargo invocations, the same shared-key. Change that job's
+# compile step and you must change this one, or the cache silently stops
+# matching and every release quietly goes cold again — the failure is
+# invisible, it just gets slow.
 #
-# It deliberately does NOT sign, notarize, bundle or publish. It is a compile
-# and a cache write.
+# Neither job signs, notarizes, bundles or publishes. Each is a compile and a
+# cache write.
+#
+# ── KNOWN GAP: NOT EVERY BAKED SECRET INVALIDATES THIS CACHE ─────────────────
+#
+# Neither job here sets release-build.yml's secret-bearing env vars (Clerk key,
+# Sentry DSN, PostHog key, GitHub/Jira OAuth ids, central OTLP endpoint/token,
+# channel), so a tag build restoring this cache compiles those constants in for
+# real for the first time. Cargo only recompiles a crate on an env var change
+# if that crate's OWN build.rs declares `cargo:rerun-if-env-changed=VAR` — most
+# of the vars above have no such declaration anywhere in the workspace, so a
+# rotated secret can silently stay baked at its old (here: absent) value across
+# a cache restore. Pre-existing (predates this file), not introduced by either
+# job below — tracked in
+# https://github.com/Meridiona/meridian/issues/601.
 
 on:
   # Every push to main re-seeds the cache with whatever production is at, so a
@@ -67,7 +85,7 @@ env:
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
-  warm:
+  warm-macos:
     name: Warm the aarch64 release cache
     runs-on: macos-26
     timeout-minutes: 60
@@ -99,8 +117,12 @@ jobs:
           shared-key: macos-release-aarch64-apple-darwin
           cache-directories: |
             ~/.cargo/registry/src
-          # Unconditional: this job only ever runs on main (push/schedule) or by
-          # hand, and writing the main-scoped cache is its entire purpose.
+          # Unconditional: this job's push/schedule triggers only ever fire on
+          # `main`, and writing that cache is its entire purpose. A manual
+          # `workflow_dispatch` CAN target any branch, but GitHub scopes a
+          # cache save to the triggering ref, so a dispatch from elsewhere
+          # just writes a side entry under that ref — it can't clobber the
+          # `main`-scoped cache release-build.yml restores from.
           save-if: true
 
       - uses: actions/setup-node@v4
@@ -153,4 +175,100 @@ jobs:
             echo ""
             echo "Tag-triggered release builds restore from the default branch, so"
             echo "staging and production tags both start warm."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  warm-windows:
+    name: Warm the Windows x86_64 release cache
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        # Same reasoning as release-build.yml's Windows job: every step here
+        # except the compile step itself is a POSIX script the runner's Git
+        # Bash handles fine, so it doesn't need a second PowerShell-flavoured
+        # copy maintained in parallel.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      # See release-build.yml's Windows job for the full story: vendored
+      # OpenSSL (via `bundled-sqlcipher-vendored-openssl`) compiles from
+      # source and needs NASM on PATH. windows-latest's bundled Strawberry
+      # Perl already covers the Perl half — do not install a second one.
+      - name: Install NASM (for vendored OpenSSL's assembly routines)
+        # Pinned to the commit behind v1.5.2, not the mutable `v1` tag: this
+        # job authenticates as GH_TOKEN and can write to the shared cache, so
+        # a repointed mutable tag is a supply-chain path worth closing here.
+        # NOTE: release-build.yml's own Windows job still uses the mutable
+        # `v1` tag as of this writing — this job is intentionally the more
+        # conservative of the two on this one line, not a byte-for-byte match.
+        # NASM's action choice doesn't affect cache-key parity either way.
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          # No explicit target: windows-latest's host triple
+          # (x86_64-pc-windows-msvc) is exactly what we ship.
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # MUST match release-build.yml's Windows job byte for byte — same
+          # reasoning as the macOS job above.
+          add-job-id-key: false
+          shared-key: windows-release-x86_64-pc-windows-msvc
+          # Unconditional: this job's push/schedule triggers only ever fire on
+          # `main`, and writing that cache is its entire purpose. A manual
+          # `workflow_dispatch` CAN target any branch, but GitHub scopes a
+          # cache save to the triggering ref, so a dispatch from elsewhere
+          # just writes a side entry under that ref — it can't clobber the
+          # `main`-scoped cache release-build.yml restores from.
+          save-if: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            ui/package-lock.json
+            tray/package-lock.json
+
+      - name: Install UI + tray deps
+        # `tauri build` runs the UI build as its beforeBuildCommand, so the
+        # node deps are a prerequisite of compiling at all.
+        run: |
+          (cd ui && npm ci --no-audit --no-fund)
+          (cd tray && npm ci --no-audit --no-fund)
+
+      - name: Compile daemon + tray (x86_64-pc-windows-msvc)
+        working-directory: tray
+        # `shell: pwsh`, NOT this job's bash default — see release-build.yml's
+        # Windows job for why: Git Bash unconditionally forces its own MSYS
+        # perl ahead of Strawberry Perl on PATH regardless of PATH ordering,
+        # and MSYS perl is missing CPAN modules OpenSSL's Configure script
+        # needs. `--no-bundle` skips NSIS packaging/signing entirely — this
+        # job compiles, it doesn't ship, so none of the signing secrets are
+        # needed here.
+        shell: pwsh
+        run: |
+          cargo build --locked --release --bin meridian --manifest-path ../Cargo.toml
+          npx tauri build --no-bundle
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Cache warm (Windows)"
+            echo "Seeded \`windows-release-x86_64-pc-windows-msvc\` under \`refs/heads/main\`."
           } >> "$GITHUB_STEP_SUMMARY"
