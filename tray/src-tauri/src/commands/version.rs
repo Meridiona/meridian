@@ -274,6 +274,17 @@ pub struct AppInfo {
     /// contact support; without it their error rows are unfindable, since
     /// pseudonymisation is one-way by design.
     pub support_id: String,
+    /// Whether `support_id` above is CURRENTLY the ALPHA per-user pseudonym
+    /// rather than the per-machine one — i.e. whether it's accurate to tell
+    /// the user it identifies their account right now. Backs the Settings →
+    /// Account copy (`AccountSection.tsx`), which switches wording based on
+    /// this instead of asserting it unconditionally: `false` while signed out
+    /// (still the per-machine id) and `false` again, automatically, once
+    /// `redact::ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX` passes — see
+    /// `redact::support_id_is_account_scoped`'s doc for why deriving this from
+    /// the same decision the pseudonym itself uses is what keeps the copy from
+    /// drifting out of sync with reality.
+    pub support_id_is_account_scoped: bool,
 }
 
 /// The binary's baked `tauri.conf.json` version (what the DMG updater compares
@@ -291,6 +302,8 @@ pub fn get_app_info(app: tauri::AppHandle) -> AppInfo {
     let version = app.package_info().version.to_string();
     let channel = build_channel().to_string();
     let support_id = meridian::telemetry_spool::redact::local_host_pseudonym();
+    let support_id_is_account_scoped =
+        meridian::telemetry_spool::redact::support_id_is_account_scoped();
     // `support_id` is deliberately NOT a field here. It is a machine
     // identifier, and it is already available where it is actually needed - the
     // command's return value, Settings → Account, and `bundle-info.txt` in an
@@ -301,6 +314,7 @@ pub fn get_app_info(app: tauri::AppHandle) -> AppInfo {
         version,
         channel,
         support_id,
+        support_id_is_account_scoped,
     }
 }
 

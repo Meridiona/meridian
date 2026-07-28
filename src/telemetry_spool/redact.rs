@@ -593,6 +593,22 @@ fn pseudonym_body() -> String {
     }
 }
 
+/// Whether the Support ID [`local_host_pseudonym`] returns RIGHT NOW is the
+/// ALPHA per-user one rather than the per-machine one — i.e. whether it's
+/// currently fair to tell the user it identifies their account.
+///
+/// This exists so the Settings → Account copy can describe reality instead of
+/// a hardcoded, date-blind claim: calling [`choose_pseudonym_source`] with the
+/// exact same inputs [`pseudonym_body`] uses means the displayed explanation
+/// and the actual pseudonym can never disagree — signed out, it's `false` the
+/// same way `pseudonym_body` already falls back to the machine id; past
+/// [`ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`], it's `false` for every install with
+/// no code change needed, the same automatic revert the pseudonym itself gets.
+pub fn support_id_is_account_scoped() -> bool {
+    let account_pseudonym = crate::config::load_runtime_settings().account_pseudonym;
+    choose_pseudonym_source(now_unix_or_expired(), account_pseudonym.as_deref()).is_some()
+}
+
 /// The ALPHA per-user rule, isolated as a pure function of `now_unix` so it's
 /// testable without touching `settings.json` or the real system clock: the
 /// account pseudonym applies only before
@@ -1394,6 +1410,50 @@ mod tests {
         assert_eq!(choose_pseudonym_source(before_expiry, None), None);
         assert_eq!(choose_pseudonym_source(before_expiry, Some("")), None);
         assert_eq!(choose_pseudonym_source(before_expiry, Some("   ")), None);
+    }
+
+    /// `MERIDIAN_SETTINGS_PATH` is process-global and cargo runs tests in
+    /// parallel threads — mirrors `meridian_core::settings`'s own `ENV_LOCK`.
+    static SUPPORT_ID_SETTINGS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// [`support_id_is_account_scoped`] exists so the Settings → Account copy
+    /// can never claim something the pseudonym itself isn't doing. Pinned
+    /// against [`choose_pseudonym_source`] directly (the same oracle
+    /// `pseudonym_body` uses) rather than a hardcoded expected bool, so this
+    /// test stays meaningful — and keeps passing — on either side of
+    /// [`ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`], instead of quietly asserting
+    /// "true" and breaking the day the alpha window ends.
+    #[test]
+    fn support_id_is_account_scoped_matches_choose_pseudonym_source() {
+        let _guard = SUPPORT_ID_SETTINGS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "meridian-redact-support-id-scoped-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::env::set_var("MERIDIAN_SETTINGS_PATH", &path);
+
+        for hash in [None, Some("deadbeefcafebabe")] {
+            match hash {
+                None => std::fs::write(&path, "{}").unwrap(),
+                Some(h) => {
+                    std::fs::write(&path, format!(r#"{{"account_pseudonym":"{h}"}}"#)).unwrap()
+                }
+            }
+            let expected = choose_pseudonym_source(now_unix_or_expired(), hash).is_some();
+            assert_eq!(
+                support_id_is_account_scoped(),
+                expected,
+                "disagreed for account_pseudonym = {hash:?}"
+            );
+        }
+
+        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Every other free-text case here is Unix-shaped, but Windows installs
