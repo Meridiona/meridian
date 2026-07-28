@@ -461,14 +461,31 @@ mod tests {
             sqlite_uri_to_path("/tmp/plain.db"),
             Some(PathBuf::from("/tmp/plain.db"))
         );
-        // Query params are stripped.
+        // Query params are stripped (single and multi-param).
         assert_eq!(
             sqlite_uri_to_path("sqlite://C:/db.sqlite?mode=ro"),
             Some(PathBuf::from("C:/db.sqlite"))
         );
-        // In-memory has nothing on disk to inspect.
+        assert_eq!(
+            sqlite_uri_to_path("sqlite:///home/u/x.db?mode=ro&cache=shared"),
+            Some(PathBuf::from("/home/u/x.db"))
+        );
+        // The `file:` scheme (with and without the double slash).
+        assert_eq!(
+            sqlite_uri_to_path("file:///home/u/x.db"),
+            Some(PathBuf::from("/home/u/x.db"))
+        );
+        assert_eq!(
+            sqlite_uri_to_path("file:relative.db"),
+            Some(PathBuf::from("relative.db"))
+        );
+        // In-memory (any spelling) has nothing on disk to inspect.
         assert_eq!(sqlite_uri_to_path("sqlite::memory:"), None);
         assert_eq!(sqlite_uri_to_path(":memory:"), None);
+        assert_eq!(sqlite_uri_to_path("sqlite://:memory:"), None);
+        // An empty target yields nothing to check.
+        assert_eq!(sqlite_uri_to_path(""), None);
+        assert_eq!(sqlite_uri_to_path("sqlite://"), None);
     }
 
     /// The desync a half-finished `encrypt_in_place` leaves — an on-disk
@@ -522,6 +539,93 @@ mod tests {
         let row = sqlx::query("SELECT x FROM t").fetch_one(&ro).await.unwrap();
         assert_eq!(row.get::<i64, _>(0), 99);
         ro.close().await;
+    }
+
+    /// The inverse invariant that keeps the guard honest: an actually
+    /// ENCRYPTED file with a key set must still open encrypted and read its
+    /// data. If the guard ever dropped the key here, every encrypted DB would
+    /// fail to decrypt — so this pins that it only fires on plaintext files.
+    #[tokio::test]
+    async fn open_pool_keeps_key_on_encrypted_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("meridian.db");
+
+        // Create an encrypted db with data.
+        let pool = open_pool_with_key(&db_path.display().to_string(), Some(TEST_KEY), true, &[])
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t (x INTEGER)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO t (x) VALUES (7)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        assert!(!is_plaintext_sqlite(&db_path), "file should be ciphertext");
+
+        // Reopen WITH the key — the guard must keep it (file is not plaintext).
+        let opened = open_pool_with_key(&db_path.display().to_string(), Some(TEST_KEY), false, &[])
+            .await
+            .expect("encrypted open with the correct key should succeed");
+        let row = sqlx::query("SELECT x FROM t")
+            .fetch_one(&opened)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<i64, _>(0), 7);
+        opened.close().await;
+
+        // Read-only likewise keeps the key.
+        let ro = open_pool_with_key_readonly(&db_path.display().to_string(), Some(TEST_KEY))
+            .await
+            .expect("encrypted read-only open with the correct key should succeed");
+        let row = sqlx::query("SELECT x FROM t").fetch_one(&ro).await.unwrap();
+        assert_eq!(row.get::<i64, _>(0), 7);
+        ro.close().await;
+    }
+
+    /// A fresh install (file does not exist yet) with a key + create_if_missing
+    /// must still create an ENCRYPTED file. The guard keys off an *existing*
+    /// plaintext file, so a missing path must not drop the key and leave a new
+    /// db created in the clear — otherwise new users would silently never get
+    /// encryption at rest.
+    #[tokio::test]
+    async fn open_pool_creates_encrypted_on_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("fresh.db");
+        assert!(!db_path.exists());
+
+        let pool = open_pool_with_key(&db_path.display().to_string(), Some(TEST_KEY), true, &[])
+            .await
+            .expect("fresh encrypted create should succeed");
+        sqlx::query("CREATE TABLE t (x INTEGER)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO t (x) VALUES (1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        // The new file must be ciphertext, not created in the clear.
+        assert!(
+            !is_plaintext_sqlite(&db_path),
+            "a fresh db opened with a key must be encrypted"
+        );
+
+        // ...and it round-trips with the correct key.
+        let reopened =
+            open_pool_with_key(&db_path.display().to_string(), Some(TEST_KEY), false, &[])
+                .await
+                .expect("reopen with the correct key should succeed");
+        let row = sqlx::query("SELECT x FROM t")
+            .fetch_one(&reopened)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<i64, _>(0), 1);
+        reopened.close().await;
     }
 
     #[test]
