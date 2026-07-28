@@ -20,6 +20,7 @@ use sqlx::SqlitePool;
 use std::collections::HashMap;
 
 use crate::config::AzureDevOpsConfig;
+use crate::intelligence::providers::http::SyncFault;
 
 mod db;
 mod fetch;
@@ -190,17 +191,30 @@ pub async fn refresh_if_stale(
 /// Unconditionally refresh the Azure DevOps task cache.
 #[tracing::instrument(skip(pool, cfg), fields(provider = "azure_devops"))]
 pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result<Vec<String>> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .context("building HTTP client")?;
+    // The shared client: same timeouts as every other provider, plus a connect
+    // deadline this one never had (it set a total timeout only, so a hung
+    // connect still consumed the full 30 s).
+    let client = super::http::client();
 
     // 1. WIQL: all work items assigned to me.
     let all_ids = match run_wiql(&client, cfg).await {
         Ok(ids) => ids,
         Err(e) => {
-            let msg = e.to_string();
-            stamp_error(pool, &msg).await?;
+            // `e.to_string()` printed only the outermost context, dropping the
+            // cause - the same truncation the other providers had.
+            match super::http::classify(&e) {
+                SyncFault::Retry { detail } => {
+                    tracing::warn!(
+                        error = %detail,
+                        "azure devops unreachable - keeping stale cache, will retry next sync"
+                    );
+                    let _ = super::note_transient_sync_failure(pool, "azure_devops", &detail).await;
+                }
+                SyncFault::Report { detail } => {
+                    tracing::warn!(error = %detail, "azure devops WIQL failed");
+                    stamp_error(pool, &detail).await?;
+                }
+            }
             return Err(e);
         }
     };

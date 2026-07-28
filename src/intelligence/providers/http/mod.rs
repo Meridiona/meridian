@@ -41,10 +41,18 @@
 //! `pm_sync_state.last_synced_at` already records exactly that.
 //!
 //! # Who calls this
+//! All five PM connectors, at both their client construction and their sync
+//! failure paths:
 //! - [`crate::intelligence::providers::github`] — `refresh_if_stale` (viewer
 //!   fetch + all-projects-failed) and `fetch::{fetch_viewer_login, fetch_project_items}`.
-//! - [`crate::intelligence::providers::jira`] — `refresh_if_stale` (fetch
-//!   failure) and `fetch::search`.
+//! - [`crate::intelligence::providers::jira`] — `refresh_if_stale` (auth
+//!   resolve + fetch failure) and `fetch::search`.
+//! - [`crate::intelligence::providers::linear`] — `refresh_if_stale` and its
+//!   GraphQL fetch.
+//! - [`crate::intelligence::providers::trello`] — `refresh_if_stale` and its
+//!   cards fetch.
+//! - [`crate::intelligence::providers::azure_devops`] — `force_refresh` (WIQL
+//!   failure) and `fetch::{run_wiql, fetch_batch}`.
 //!
 //! # Related
 //! - [`crate::intelligence::providers::stamp_sync_error`] — what we call only

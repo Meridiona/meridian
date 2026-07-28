@@ -40,14 +40,28 @@ pub async fn stamp_sync_error_with_remedy(
     .await?;
 
     let (title, remedy): (&str, Option<&str>) = match provider {
+        // The DEFAULT, used by every Jira path that does not know which auth
+        // method is in play (notably the fetch failure). It has to be the answer
+        // that is right for both, which is Settings - the `.env` wording is kept
+        // only as an explicit override on the resolve path, where
+        // `has_basic_auth()` has actually established the user configured it
+        // that way.
         "jira" => (
             "Jira sync failing",
-            Some("Set JIRA_API_TOKEN and JIRA_BASE_URL in .env"),
+            Some("Reconnect Jira in Settings - Integrations"),
         ),
-        "linear" => ("Linear sync failing", Some("Set LINEAR_API_KEY in .env")),
+        // Every remedy below names a place in the app rather than a file or a
+        // CLI command. All five trackers are connected through Settings ->
+        // Integrations, so a user who has only ever clicked Connect has no
+        // `.env` to edit and no terminal to run `meridian oauth-login` in.
+        // `every_remedy_is_followable_from_the_app` pins this.
+        "linear" => (
+            "Linear sync failing",
+            Some("Reconnect Linear in Settings - Integrations"),
+        ),
         "trello" => (
             "Trello sync failing",
-            Some("Run: meridian oauth-login trello"),
+            Some("Reconnect Trello in Settings - Integrations"),
         ),
         // NOT "Set GITHUB_TOKEN in .env": GitHub connects via the in-app browser
         // device flow, which writes `GITHUB_TOKEN` to `.env` itself (see
@@ -60,7 +74,7 @@ pub async fn stamp_sync_error_with_remedy(
         ),
         "azure_devops" => (
             "Azure DevOps sync failing",
-            Some("Set AZURE_DEVOPS_PAT in .env"),
+            Some("Reconnect Azure DevOps in Settings - Integrations"),
         ),
         _ => ("PM sync failing", None),
     };
@@ -388,6 +402,67 @@ mod tests {
         );
     }
 
+    /// The coupling that makes escalation reachable at all: recording an error
+    /// must NEVER write a fresh `last_synced_at`.
+    ///
+    /// Every provider gates its whole fetch on that column being recent, and
+    /// [`note_transient_sync_failure`] keys its escalation clock on the SAME
+    /// column. So stamping `now` here would do two invisible things at once:
+    /// suppress the next tick's retry, and reset the escalation clock on every
+    /// failure so the threshold is never reached. The provider would go silent
+    /// permanently, which is the exact regression this whole change exists to
+    /// prevent. `azure_devops` had precisely this bug in its own `stamp_error`.
+    #[tokio::test]
+    async fn recording_an_error_never_looks_like_a_successful_sync() {
+        let pool = make_db().await;
+
+        // First-ever failure: the inserted row must carry the epoch sentinel,
+        // not "now".
+        stamp_sync_error(&pool, "jira", "boom").await.unwrap();
+        let (last,): (String,) =
+            sqlx::query_as("SELECT last_synced_at FROM pm_sync_state WHERE provider = 'jira'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(
+            last.starts_with("1970"),
+            "an error must not be recorded as a sync: {last}"
+        );
+
+        // And on a row that already holds a real (old) success, recording a
+        // failure must leave the clock alone rather than pushing it forward.
+        set_last_sync(&pool, "github", "-10 hours").await;
+        stamp_sync_error(&pool, "github", "boom").await.unwrap();
+        assert!(
+            note_transient_sync_failure(&pool, "github", "unreachable")
+                .await
+                .unwrap(),
+            "recording an error must not reset the escalation clock"
+        );
+    }
+
+    /// Every provider that has a `stamp_error`-shaped path must share the one
+    /// above. Enumerated rather than spot-checked because the failure is silent:
+    /// a provider writing its own row with `last_synced_at = now` looks fine in
+    /// review and simply stops retrying and escalating forever.
+    #[tokio::test]
+    async fn no_provider_records_an_error_as_a_fresh_sync() {
+        for provider in ["jira", "github", "linear", "trello", "azure_devops"] {
+            let pool = make_db().await;
+            stamp_sync_error(&pool, provider, "boom").await.unwrap();
+            let (last,): (String,) =
+                sqlx::query_as("SELECT last_synced_at FROM pm_sync_state WHERE provider = ?")
+                    .bind(provider)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert!(
+                last.starts_with("1970"),
+                "{provider} recorded a failure as a sync at {last}"
+            );
+        }
+    }
+
     /// The GitHub remedy must not name an unfollowable action: GitHub connects
     /// via the in-app browser device flow, so a user who clicked Connect has
     /// never seen a `GITHUB_TOKEN` to set.
@@ -408,5 +483,33 @@ mod tests {
             !remedy.contains(".env"),
             "a browser-connected user cannot edit .env: {remedy}"
         );
+    }
+
+    /// Generalises the test above to every tracker. All five are connected
+    /// through Settings -> Integrations, so a default remedy naming a file or a
+    /// terminal command is unfollowable for the people who actually see it.
+    ///
+    /// Scoped to the DEFAULT registry: `stamp_sync_error_with_remedy` overrides
+    /// still exist for genuinely env-configured installs (Jira basic auth), and
+    /// those are correct precisely because that user did edit `.env`.
+    #[tokio::test]
+    async fn every_default_remedy_names_a_place_in_the_app() {
+        for provider in ["jira", "github", "linear", "trello", "azure_devops"] {
+            let pool = make_db().await;
+            stamp_sync_error(&pool, provider, "boom").await.unwrap();
+
+            let (_, _, remedy) = notice(&pool, &format!("pm.{provider}"))
+                .await
+                .unwrap_or_else(|| panic!("{provider} raised no notice"));
+            let remedy = remedy.unwrap_or_else(|| panic!("{provider} has no remedy"));
+            assert!(
+                remedy.contains("Settings"),
+                "{provider} remedy does not name a place in the app: {remedy}"
+            );
+            assert!(
+                !remedy.contains(".env") && !remedy.contains("meridian "),
+                "{provider} remedy asks for a file edit or a CLI command: {remedy}"
+            );
+        }
     }
 }
