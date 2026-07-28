@@ -264,6 +264,16 @@ pub fn run() {
                 None
             };
 
+            // Whether encryption was intended this launch (a key was resolved).
+            // Re-checked against the on-disk file after the pool opens, to raise
+            // a user-visible notice if the DB is nonetheless still plaintext
+            // (the encrypt-in-place migration didn't complete) — otherwise the
+            // db_crypto plaintext guard keeps operating unencrypted with only a
+            // log line nobody sees. Runtime-gated below (not `#[cfg]`) so it is
+            // always compiled/linted, matching the migration block's own
+            // `!cfg!(debug_assertions)` style.
+            let db_encryption_intended = db_key_hex.is_some();
+
             let db_key_hex = if !cfg!(debug_assertions) {
                 match &db_key_hex {
                     Some(key) => {
@@ -302,7 +312,54 @@ pub fn run() {
             // use — clone the handle before it's moved into managed state.
             #[cfg(feature = "capture")]
             let capture_pool = db_pool.clone();
+            // The encryption-state notice below needs a pool handle before
+            // db_pool is moved into managed state.
+            let encryption_notice_pool = db_pool.clone();
             app.manage(db_pool);
+
+            // Encryption was intended (a key was resolved) but the on-disk DB is
+            // still plaintext ⇒ encrypt_in_place didn't complete (on Windows the
+            // daemon holds the file open, so its final rename fails every
+            // launch). The db_crypto guard keeps the app working by opening
+            // plaintext — a silent security downgrade otherwise — so surface it
+            // to the user, and clear the notice once the DB is actually
+            // encrypted. Skipped in debug builds, where the migration never runs
+            // and a plaintext dev DB is expected. Best-effort: a notice-write
+            // failure must not block startup.
+            if !cfg!(debug_assertions) {
+                if let Some(pool) = encryption_notice_pool.as_ref() {
+                    let still_plaintext = meridian_core::db_crypto::is_plaintext_sqlite(
+                        std::path::Path::new(&db_path),
+                    );
+                    let result = tauri::async_runtime::block_on(async {
+                        if db_encryption_intended && still_plaintext {
+                            meridian::notices::raise_typed(
+                                pool,
+                                meridian::notices::Notice {
+                                    id: "tray.db_encryption_incomplete",
+                                    severity: "warning",
+                                    title: "Your data isn't encrypted at rest yet.",
+                                    detail: "Meridian couldn't finish encrypting its local database because another Meridian process was holding it open. Your data is safe but stored unencrypted for now — fully quit Meridian and reopen it to let encryption finish.",
+                                    remedy: None,
+                                    event_key: "system.health",
+                                    deep_link: Some("/logs"),
+                                },
+                            )
+                            .await
+                        } else {
+                            meridian::notices::clear_typed(
+                                pool,
+                                "tray.db_encryption_incomplete",
+                                "system.health",
+                            )
+                            .await
+                        }
+                    });
+                    if let Err(e) = result {
+                        tracing::warn!(error = %e, "db-encryption-state notice update failed");
+                    }
+                }
+            }
 
             // Single source of truth for the tray menu lives in `tray.rs`, so the
             // poll loop's health-driven rebuild can't drift out of sync. Initial

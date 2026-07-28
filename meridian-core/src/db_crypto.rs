@@ -250,6 +250,68 @@ fn interrupted_migration_leftovers(path: &Path) -> Vec<std::path::PathBuf> {
     found
 }
 
+/// Swap the freshly-written encrypted export at `tmp_path` into `path`, moving
+/// the plaintext original to `backup_path` first. Extracted from
+/// [`encrypt_in_place`] so the two-rename failure handling is unit-testable
+/// without a real Windows share violation (see the module tests).
+///
+/// Preserves [`encrypt_in_place`]'s "a failed migration never loses data"
+/// invariant across BOTH renames — each of which can fail on the same class of
+/// Windows lock (a lingering handle / AV scan) that motivated this whole fix:
+/// - First rename (`path` → `backup_path`) fails: the encrypted export is
+///   useless without the swap, so drop it and leave the plaintext original
+///   exactly where it is ("still plaintext, retry next launch").
+/// - Second rename (`tmp_path` → `path`) fails: `path` has ALREADY been moved to
+///   `backup_path`, so returning here would strand the user's data under a
+///   backup name while the caller (seeing no `meridian.db`) creates a fresh
+///   empty one. Roll back by renaming `backup_path` → `path` first, so the state
+///   degrades to "still plaintext, data intact" rather than "no database". Only
+///   if that rollback ALSO fails do we surface a hard error naming the file to
+///   restore by hand — strictly the last resort.
+fn finalize_encryption_swap(
+    path: &Path,
+    tmp_path: &Path,
+    backup_path: &Path,
+) -> anyhow::Result<()> {
+    if let Err(e) = std::fs::rename(path, backup_path) {
+        // On Windows `rename` fails with "os error 32" while another process
+        // (the running daemon) still holds `meridian.db` open. Remove the
+        // multi-GB encrypted export so it doesn't accumulate as an orphan every
+        // startup (a real disk-exhaustion risk on a large DB); `key_unless_plaintext`
+        // keeps the daemon and CLIs working against the plaintext file meanwhile.
+        let _ = std::fs::remove_file(tmp_path);
+        return Err(e).context(
+            "encrypt_in_place: failed to move plaintext original aside \
+             (is meridian.db still open by the daemon?)",
+        );
+    }
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = std::path::PathBuf::from(format!("{}{}", path.display(), suffix));
+        let _ = std::fs::remove_file(sidecar); // checkpointed to empty; safe to drop
+    }
+    if let Err(e) = std::fs::rename(tmp_path, path) {
+        // `path` was already moved to `backup_path` above; put it back so we
+        // never leave the user with no database at all.
+        match std::fs::rename(backup_path, path) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(tmp_path);
+                Err(e).context(
+                    "encrypt_in_place: failed to move encrypted export into place; \
+                     restored the plaintext original (will retry next launch)",
+                )
+            }
+            Err(restore_err) => Err(e).context(format!(
+                "encrypt_in_place: failed to move encrypted export into place AND failed \
+                 to restore the plaintext original ({restore_err:#}) — the previous data \
+                 is intact at {}; restore it by hand",
+                backup_path.display(),
+            )),
+        }
+    } else {
+        Ok(())
+    }
+}
+
 /// Migrate an existing plaintext `meridian.db` to SQLCipher encryption at rest,
 /// in place. No-op if `path` doesn't exist yet (fresh install — the caller
 /// creates it encrypted from scratch) or is already encrypted.
@@ -335,27 +397,7 @@ pub async fn encrypt_in_place(path: &Path, key_hex: &str) -> anyhow::Result<()> 
         "db.plaintext-backup-{}",
         chrono::Utc::now().format("%Y%m%d%H%M%S")
     ));
-    if let Err(e) = std::fs::rename(path, &backup_path) {
-        // On Windows `rename` fails with "os error 32" while another process
-        // (the running daemon) still holds `meridian.db` open — the migration
-        // can't complete its swap this run. Remove the multi-GB encrypted
-        // export we just wrote so it doesn't accumulate as an orphan every
-        // startup (a real disk-exhaustion risk on a large DB), leaving the
-        // plaintext original untouched: this degrades to "still plaintext,
-        // retry next launch", and `key_unless_plaintext` keeps the daemon and
-        // CLIs working against the plaintext file in the meantime.
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e).context(
-            "encrypt_in_place: failed to move plaintext original aside \
-             (is meridian.db still open by the daemon?)",
-        );
-    }
-    for suffix in ["-wal", "-shm"] {
-        let sidecar = std::path::PathBuf::from(format!("{}{}", path.display(), suffix));
-        let _ = std::fs::remove_file(sidecar); // checkpointed to empty; safe to drop
-    }
-    std::fs::rename(&tmp_path, path)
-        .context("encrypt_in_place: failed to move encrypted export into place")?;
+    finalize_encryption_swap(path, &tmp_path, &backup_path)?;
 
     tracing::info!(
         db = %path.display(),
@@ -626,6 +668,94 @@ mod tests {
             .unwrap();
         assert_eq!(row.get::<i64, _>(0), 1);
         reopened.close().await;
+    }
+
+    /// First rename (`path` → `backup`) fails: the encrypted export must be
+    /// cleaned up and the plaintext original left exactly as it was. Forced
+    /// portably by making `backup` an existing non-empty directory, which
+    /// `rename` refuses to overwrite with a file.
+    #[test]
+    fn finalize_swap_cleans_up_when_first_rename_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meridian.db");
+        let tmp = dir.path().join("meridian.db.encrypting-tmp");
+        let backup = dir.path().join("backup-dir");
+        std::fs::create_dir(&backup).unwrap();
+        std::fs::write(backup.join("occupant"), b"x").unwrap(); // non-empty → rename fails
+
+        std::fs::write(&path, b"ORIGINAL-PLAINTEXT").unwrap();
+        std::fs::write(&tmp, b"ENCRYPTED-EXPORT").unwrap();
+
+        let err = finalize_encryption_swap(&path, &tmp, &backup).unwrap_err();
+        assert!(!tmp.exists(), "stale encrypted export must be removed");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"ORIGINAL-PLAINTEXT",
+            "plaintext original must be left intact"
+        );
+        assert!(
+            format!("{err:#}").contains("move plaintext original aside"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    /// Second rename (`tmp` → `path`) fails AFTER the first already moved
+    /// `path` → `backup`: the original must be rolled back into place so we
+    /// never leave "no database" for the caller to replace with an empty one.
+    /// Forced portably by pointing `tmp` at a file that does not exist.
+    #[test]
+    fn finalize_swap_rolls_back_when_second_rename_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meridian.db");
+        let backup = dir.path().join("meridian.db.plaintext-backup-x");
+        let tmp = dir.path().join("does-not-exist.tmp"); // rename(tmp, path) → ENOENT
+
+        std::fs::write(&path, b"ORIGINAL-PLAINTEXT").unwrap();
+
+        let err = finalize_encryption_swap(&path, &tmp, &backup).unwrap_err();
+        assert!(
+            path.exists(),
+            "the plaintext original must be restored, not stranded under the backup name"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"ORIGINAL-PLAINTEXT",
+            "restored data must match the original"
+        );
+        assert!(
+            !backup.exists(),
+            "backup should have been renamed back to path"
+        );
+        assert!(
+            format!("{err:#}").contains("restored the plaintext original"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    /// The happy path: both renames succeed — plaintext original preserved under
+    /// the backup name, encrypted export now at `path`.
+    #[test]
+    fn finalize_swap_succeeds_and_preserves_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meridian.db");
+        let tmp = dir.path().join("meridian.db.encrypting-tmp");
+        let backup = dir.path().join("meridian.db.plaintext-backup-x");
+
+        std::fs::write(&path, b"PLAINTEXT").unwrap();
+        std::fs::write(&tmp, b"CIPHERTEXT").unwrap();
+
+        finalize_encryption_swap(&path, &tmp, &backup).unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"CIPHERTEXT",
+            "encrypted export moved into place"
+        );
+        assert_eq!(
+            std::fs::read(&backup).unwrap(),
+            b"PLAINTEXT",
+            "plaintext backup preserved"
+        );
+        assert!(!tmp.exists(), "tmp consumed by the rename");
     }
 
     #[test]
