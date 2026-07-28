@@ -511,3 +511,63 @@ export function llmProvider(id: LlmProviderId): LlmProviderMeta {
     ?? LLM_PROVIDERS.find(p => p.id === DEFAULT_LLM_PROVIDER)
     ?? LLM_PROVIDERS[0]
 }
+
+/**
+ * In-app sign-in descriptor for the providers whose CLI authenticates against
+ * the user's OWN subscription via a browser OAuth that Meridian can drive.
+ *
+ * Single source of truth for BOTH halves of that flow, which previously lived in
+ * two files and could desync silently:
+ *   - `LlmProviderDetail.tsx` renders `label`/`account`/`subscription`/`cmd`.
+ *   - `LlmProviderPicker.tsx` invokes `trayCommand`.
+ *
+ * The hazard was that the tray command name appeared once as a literal here and
+ * once in the picker's own map, so adding a provider to only one place gave it a
+ * "Sign in" button wired to nothing - or, worse, left an entry pointing at
+ * another vendor's login. Keeping them in one record makes that impossible:
+ * a provider either has an entry (button + command) or it does not.
+ *
+ * Absent id = no in-app sign-in (Copilot, custom cloud endpoints), which is a
+ * valid state, not an omission.
+ */
+export interface LlmSignIn {
+  /** Button label. */
+  label: string
+  /** Account brand named in the copy, e.g. "ChatGPT" for Codex. */
+  account: string
+  /** Subscription named in the copy. */
+  subscription: string
+  /** Terminal fallback shown when the in-app flow cannot be used. */
+  cmd: string
+  /** `#[tauri::command]` the picker invokes (see `tray/src-tauri/src/commands/setup.rs`). */
+  trayCommand: string
+}
+
+export const LLM_SIGN_IN: Record<string, LlmSignIn> = {
+  cursor: {
+    label: 'Sign in to Cursor',
+    account: 'Cursor',
+    subscription: 'Cursor subscription',
+    cmd: 'cursor-agent login',
+    trayCommand: 'cursor_sign_in',
+  },
+  codex: {
+    label: 'Sign in to Codex',
+    account: 'ChatGPT',
+    subscription: 'ChatGPT subscription',
+    cmd: 'codex login',
+    trayCommand: 'codex_sign_in',
+  },
+  claude: {
+    label: 'Sign in to Claude',
+    account: 'Claude',
+    subscription: 'Claude subscription',
+    cmd: 'claude auth login',
+    trayCommand: 'claude_sign_in',
+  },
+}
+
+/** The sign-in descriptor for `id`, or `null` when it has no in-app flow. */
+export function llmSignIn(id: string): LlmSignIn | null {
+  return LLM_SIGN_IN[id] ?? null
+}

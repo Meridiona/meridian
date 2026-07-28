@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   CHOOSER_PROVIDER_IDS, LLM_RECOMMENDED_BADGE, LLM_RECOMMENDED_NOTE,
-  llmProvider, type LlmProviderId,
+  llmProvider, llmSignIn, type LlmProviderId,
 } from '@/lib/llm-providers'
 import { invoke } from '@/lib/bridge'
 import type {
@@ -108,12 +108,22 @@ export function useLlmProviderDetection() {
     }
   }, [detect, testOne])
 
-  /** Run the interactive Cursor sign-in (browser OAuth on the user's own subscription).
-   *  Cursor-only - the tray command takes no provider. */
+  /** Run an interactive browser sign-in for a provider whose CLI authenticates against the
+   *  user's own subscription - Cursor (`cursor_sign_in`), Codex (`codex_sign_in`), or Claude
+   *  (`claude_sign_in`). Each tray command drives that vendor's `… login` and opens the browser;
+   *  none takes a provider argument, so the id picks the command here. */
   const signIn = useCallback(async (id: string): Promise<InstallOutcome> => {
+    // Resolved from `LLM_SIGN_IN`, the same record that gives LlmProviderDetail its button
+    // copy - so a provider either has both a button and a command, or neither. Still no
+    // default fallback: an unknown id must fail loudly rather than silently running some
+    // other vendor's login (e.g. Cursor's) for it.
+    const command = llmSignIn(id)?.trayCommand
+    if (!command) {
+      return { ok: false, message: `No in-app sign-in is wired up for "${id}".`, path: null, command: '' }
+    }
     setSigningIds((prev) => new Set(prev).add(id))
     try {
-      const outcome = await invoke<InstallOutcome>('cursor_sign_in')
+      const outcome = await invoke<InstallOutcome>(command)
       if (outcome.ok) {
         // `cursor-agent login` exits 0 only AFTER the browser OAuth completes, so this is the
         // exact moment the user finished signing in. Flip the panel to "connected" NOW rather

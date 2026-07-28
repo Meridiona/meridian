@@ -20,13 +20,18 @@
 //      install), skip delivery — leave files in pending/ for retention/cap to
 //      manage.
 //   5. List pending/ oldest-first by filename timestamp.
-//   6. POST each .otlp to the appropriate OO endpoint (traces / logs).
-//   7. On 2xx → move to sent/.  On any failure → stop this tick, leave rest.
+//   6. On the packaged central path (target.redact), run the on-device
+//      allowlist + error-only filter (redact.rs) on each payload first —
+//      full-fidelity local capture, redacted egress. Dev checkouts ship raw.
+//   7. POST each .otlp to the appropriate OO endpoint (traces / logs), with the
+//      scheme-aware Authorization header (Basic on dev, Bearer on central).
+//   8. On 2xx → move to sent/.  On any failure → stop this tick, leave rest.
 //
 // The shipper is the ONLY writer to sent/ and the only one that deletes files.
 // The spool writer (writer.rs) only adds to pending/.
 
 use std::{
+    path::Path,
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
@@ -39,6 +44,7 @@ use crate::{
     telemetry_spool::{
         derive_base_url,
         launchd_log_cap::cap_launchd_logs,
+        redact::{redact_and_filter, Redacted},
         retention::{
             enforce_pending_cap, list_pending_oldest_first, prune_by_age, sweep_tmp_orphans,
         },
@@ -164,6 +170,11 @@ async fn run_tick() -> Result<()> {
     std::fs::create_dir_all(&sent)
         .with_context(|| format!("create sent dir {}", sent.display()))?;
 
+    // The Authorization header value (scheme + credential), assembled once for
+    // the whole tick — `Basic <b64>` on a dev checkout, `Bearer <token>` on the
+    // packaged central path.
+    let auth_header = target.auth.header_value();
+
     for file_path in files {
         let filename = match file_path.file_name().and_then(|n| n.to_str()) {
             Some(n) => n.to_string(),
@@ -188,28 +199,50 @@ async fn run_tick() -> Result<()> {
             }
         };
 
-        match ship_one(&client, &endpoint, &target.auth, bytes).await {
-            Ok(()) => {
-                // Delivered. Move to sent/ for the export bundle + retention. If
-                // the rename fails (EXDEV across mounts, a permissions blip) we
-                // DELETE the pending file instead of leaving it: it was already
-                // accepted by OO, so re-POSTing it next tick would duplicate the
-                // spans. Losing the sent/ archive copy of one file is the lesser
-                // evil vs. duplicate delivery.
-                let dest = sent.join(&filename);
-                if let Err(e) = std::fs::rename(&file_path, &dest) {
-                    tracing::warn!(
-                        file = %file_path.display(),
-                        dest = %dest.display(),
-                        error = %e,
-                        "shipped but could not archive to sent/ — deleting to avoid re-ship"
+        // Central (packaged-consented) path only: redact + error-only filter
+        // before anything leaves the machine. The on-disk file is untouched —
+        // this produces a separate stripped copy to POST, so `meridian logs`
+        // stays full-fidelity. The dev path (`target.redact == false`) ships the
+        // raw bytes to the engineer's own OO.
+        let bytes = if target.redact {
+            match redact_and_filter(signal, &bytes) {
+                Redacted::Payload { bytes, stats } => {
+                    tracing::debug!(
+                        file = %filename,
+                        signal,
+                        records_in = stats.records_in,
+                        records_out = stats.records_out,
+                        attrs_dropped = stats.attrs_dropped,
+                        "redacted telemetry before shipping"
                     );
-                    let _ = std::fs::remove_file(&file_path);
-                } else {
-                    // TRACE: one per shipped file (~1/s while draining) — per-file
-                    // success is spool-debugging detail, not wanted at `meridian=debug`.
-                    tracing::trace!(file = %filename, signal, "telemetry file shipped");
+                    bytes
                 }
+                Redacted::Empty => {
+                    // No error records survived the filter — nothing to ship.
+                    // Archive to sent/ so retention manages it, no network call.
+                    tracing::trace!(file = %filename, signal, "no error records after redaction — archiving without ship");
+                    archive_to_sent(&file_path, &sent, &filename);
+                    continue;
+                }
+                Redacted::Undecodable => {
+                    // The payload never passed through the allowlist, so it could
+                    // leak — it must NEVER be shipped raw. Quarantine it.
+                    tracing::warn!(file = %filename, signal, "telemetry payload undecodable — quarantining (never shipped un-redacted)");
+                    quarantine_file(&file_path, &quarantine, &filename);
+                    continue;
+                }
+            }
+        } else {
+            bytes
+        };
+
+        match ship_one(&client, &endpoint, &auth_header, bytes).await {
+            Ok(()) => {
+                // Delivered — archive to sent/ for the export bundle + retention.
+                archive_to_sent(&file_path, &sent, &filename);
+                // TRACE: one per shipped file (~1/s while draining) — per-file
+                // success is spool-debugging detail, not wanted at `meridian=debug`.
+                tracing::trace!(file = %filename, signal, "telemetry file shipped");
             }
             Err(ShipError::Terminal(msg)) => {
                 // Permanently rejected (malformed/truncated/too-large payload).
@@ -221,12 +254,7 @@ async fn run_tick() -> Result<()> {
                     error = %msg,
                     "telemetry payload permanently rejected — quarantining, continuing"
                 );
-                if let Err(e) = std::fs::create_dir_all(&quarantine)
-                    .and_then(|_| std::fs::rename(&file_path, quarantine.join(&filename)))
-                {
-                    tracing::warn!(file = %filename, error = %e, "failed to quarantine — deleting");
-                    let _ = std::fs::remove_file(&file_path);
-                }
+                quarantine_file(&file_path, &quarantine, &filename);
             }
             Err(ShipError::Retryable(msg)) => {
                 tracing::warn!(
@@ -242,6 +270,36 @@ async fn run_tick() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Archive a delivered (or empty-after-redaction) spool file to `sent/`. If the
+/// rename fails (EXDEV across mounts, a permissions blip) DELETE it instead of
+/// leaving it in pending/: the payload was already accepted by OO (or had
+/// nothing to send), so re-POSTing it next tick would duplicate spans. Losing
+/// one sent/ archive copy is the lesser evil vs. duplicate delivery.
+fn archive_to_sent(file_path: &Path, sent: &Path, filename: &str) {
+    let dest = sent.join(filename);
+    if let Err(e) = std::fs::rename(file_path, &dest) {
+        tracing::warn!(
+            file = %file_path.display(),
+            dest = %dest.display(),
+            error = %e,
+            "could not archive to sent/ — deleting to avoid re-ship"
+        );
+        let _ = std::fs::remove_file(file_path);
+    }
+}
+
+/// Move a permanently-rejected or undecodable spool file to `quarantine/` so it
+/// stops head-of-line-blocking newer files in the oldest-first queue. Deletes it
+/// if even the quarantine move fails.
+fn quarantine_file(file_path: &Path, quarantine: &Path, filename: &str) {
+    if let Err(e) = std::fs::create_dir_all(quarantine)
+        .and_then(|_| std::fs::rename(file_path, quarantine.join(filename)))
+    {
+        tracing::warn!(file = %filename, error = %e, "failed to quarantine — deleting");
+        let _ = std::fs::remove_file(file_path);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

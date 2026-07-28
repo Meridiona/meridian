@@ -133,8 +133,10 @@ meridian/
 > build` → `generate_context!` bundles `ui/out`); the standalone-Node-server release machinery (the
 > `com.meridiona.ui` plist, `ui-start.sh`, the `ui.tar.gz` packing, the pinned Node runtime + better-sqlite3
 > ABI dance) was retired, and `backend_install.rs` boots out any leftover `com.meridiona.ui` agent on
-> update. Dev-only `--features otel` on the tray exports spans to OpenObserve
-> (`service.name = meridian-tray`) — release builds omit it. Rationale + full scope: Obsidian
+> update. The tray calls `meridian::observability::init("meridian-tray")`
+> **unconditionally** in every build — the old dev-only `otel` feature was
+> removed, because the tray is the process the user actually clicks and it was
+> otherwise dark in release. Rationale + full scope: Obsidian
 > `Decisions/Dashboard frontend - keep Next in Tauri.md`, `~/.claude/plans/meridian-next-fold.md`.
 
 ### Per-OS Tauri config — `tauri.windows.conf.json` (read before editing `bundle.resources`)
@@ -226,10 +228,11 @@ There are no JS/TS test suites yet. When adding them, place them under `ui/__tes
 | Variable | Default | Purpose |
 |---|---|---|
 | `MERIDIAN_DB` | `~/.meridian/meridian.db` | Path to meridian's output SQLite file |
+| `MERIDIAN_DB_KEY` | (unset → unencrypted) | 64-hex-char SQLCipher raw key for `meridian.db`. Generated once by the tray (`tray/src-tauri/src/db_key.rs`, stored in the OS keychain) and mirrored into `.env` for the daemon to read — never set this by hand except for local testing (see `meridian-core/src/db_crypto.rs`). |
 | `POLL_INTERVAL_SECS` | `60` | ETL poll cadence in seconds |
 | `RUST_LOG` | `meridian=info` | Tracing filter |
 | `SQLX_OFFLINE` | `true` (via `.cargo/config.toml`) | Prevents sqlx from hitting the DB at compile time |
-| `MERIDIAN_OTLP_ENDPOINT` | (unset → default `http://localhost:5080/api/default/v1/traces`) | OpenObserve OTLP/HTTP traces endpoint override — only consulted for shipping (dev/bare installs; a Canonical/packaged install never ships, see "Telemetry: local-only capture, dev-only shipping" below) |
+| `MERIDIAN_OTLP_ENDPOINT` | (unset → default `http://localhost:5080/api/default/v1/traces`) | OpenObserve OTLP/HTTP traces endpoint override — consulted only on the DEV/bare shipping path (a packaged install ships to the release-baked central gateway instead; see the Observability section below) |
 | `MERIDIAN_OO_AUTH` | DEPRECATED — ignored everywhere | OO credentials live in `settings.json` (`oo_email`/`oo_password`) |
 | `MERIDIAN_TELEMETRY_DISABLED` | (unset → capture always on) | Hard kill switch for OTel span/log capture to the local spool — the sole log/trace sink; disabling it leaves only launchd's raw stdout/stderr crash-safety-net files. |
 | `MERIDIAN_LAUNCHD_LOG_MAX_MB` | `10` | Size cap for each launchd-redirected raw log file (`daemon.log`, etc.); capped via copytruncate on the telemetry shipper's tick (`src/telemetry_spool/shipper.rs`). |
@@ -336,7 +339,7 @@ The fold replaces every `ui/app/api/*` route with a Rust command the frontend ca
 
 ### TypeScript / Next.js
 
-- Use `better-sqlite3` (synchronous) in the MCP server — it runs in a single-threaded Node process
+- The MCP server uses `sql.js` (pure WASM, no native compile step) — deliberately chosen over `better-sqlite3` after native-module ABI mismatches across Node versions/platforms caused real distribution pain (see `packages/meridian-mcp/src/db-cache.ts`'s header comment). Do not swap it back.
 - UI API routes live in `ui/app/api/`; keep them thin — query, transform, return JSON
 - No `any` types unless unavoidable and justified with a comment
 - **Spawning the `meridian` binary from a UI route: ALWAYS use `selectMeridianBinary(meridianCandidates())` from `@/lib/meridian-bin`.** Never spawn a bare `'meridian'` (relies on `$PATH`), and never hand-roll a candidate list. The dashboard runs under **launchd**, whose PATH lacks Homebrew's `node`, so the `#!/usr/bin/env node` wrapper at `~/.local/bin/meridian` dies with `env: node: No such file or directory`. The helper probes the **native binary first** (`~/.meridian/app/bin/meridian`, no runtime deps → works under launchd), so it behaves identically in dev and installed. This bug is invisible in `dev-start` (dev installs a bash wrapper, not a node one) — it only surfaces on bundle/npm installs. `__tests__/meridian-bin.test.ts` guards the ordering. The one sanctioned exception is launching `meridian` in a user Terminal (`open -a Terminal …`, e.g. `api/update`), where an interactive login shell *does* have node/PATH.
@@ -347,7 +350,7 @@ The fold replaces every `ui/app/api/*` route with a Rust command the frontend ca
 - Include the file header comment on line 1
 - The integration test helper `make_meridian_db()` runs all migrations; new migrations are covered automatically by `cargo test`
 
-### Observability (logs & traces — local-only capture, dev-only shipping to OpenObserve)
+### Observability (logs & traces — local-only capture; dev ships full-fidelity to its own OO, packaged ships redacted error-only to central)
 
 Any new or changed code path that does real work (daemon stages, the distiller/embedder, the worklog pipeline, coding-agent ingest) **must emit structured logs and traces** — not just `println!` to a terminal. Add proper logs and traces as you write the code, not as an afterthought.
 
@@ -365,6 +368,31 @@ supported way to read logs locally, replacing the old JSONL-tailing UI and the
 old bash `meridian logs` (which used to tail launchd-redirected stdout/stderr
 text).
 
+**Two couplings that silently delete error coverage.** Both have bitten once;
+neither fails loudly, and neither is visible from the call site.
+
+1. **The `EnvFilter` decides what is captured at all — before the spool, before
+   severity, before redaction.** `EnvFilter` matches directives against targets
+   by string **prefix**, so the `meridian` directive covers `meridian_core::*`,
+   `meridian_tray_lib::*` and `meridian_oauth::*` for free — but nothing else.
+   Any crate whose target does not start with `meridian` is discarded entirely
+   unless named in `observability::filter`. That is why `CAPTURE_TARGETS` exists
+   (`screenpipe_screen`/`screenpipe_a11y` — the OCR + accessibility stack, ~48
+   error sites that were invisible). **Adding a dependency that does real work
+   means adding its bare crate name to that list** — every log level then picks
+   it up automatically — and auditing its `warn!`/`error!` bodies first:
+   third-party crates were written to print to a terminal and may interpolate
+   content that must never egress.
+2. **The attribute allowlist is keyed on the names you actually type.**
+   `tracing::warn!(error = %e, …)` emits the attribute key `error`, not the
+   semconv `error.message`. Anything not on `redact::SAFE_STRING_KEYS` is
+   dropped from the ship leg, so a well-instrumented error can arrive as a bare
+   static string with its cause stripped. When adding a field to a WARN/ERROR
+   site that you would need in order to debug it remotely, check it is on that
+   list — and if it names the user's data (ticket key, file path, app name,
+   window title, hour/day) it must stay off, so put the diagnostic value in the
+   message or an allowlisted key instead.
+
 The only thing this pipeline structurally can't capture is a hard crash
 (panic before `init` runs, segfault, OOM kill) — for that, launchd's own
 stdout/stderr redirect (`~/.meridian/logs/<service>.log` /
@@ -374,19 +402,70 @@ into it deliberately) and is size-capped (`MERIDIAN_LAUNCHD_LOG_MAX_MB`,
 copytruncate, `telemetry_spool::shipper`) and folded into diagnostics export
 bundles alongside the spool.
 
-**Shipping to OpenObserve is dev-only.** The Rust daemon's
-`telemetry_spool::shipper` background task is the ONLY thing that ever ships
-spooled files to OpenObserve, and it refuses to do so entirely for a
-**Canonical** (packaged/shipped DMG) install, regardless of settings — see
-`src/observability.rs`'s `is_canonical_install()`/`resolve_otlp_target()`.
-Only a Dev/Bare checkout with `otlp_enabled` + `oo_email`/`oo_password`
-configured ships live, for an engineer debugging against their own
-OpenObserve instance. A shipped install's only path to a developer's
-OpenObserve is the tray Settings → Account → **Export Diagnostics** button
-(or `meridian telemetry export`), which bundles the spool + the launchd
-crash-safety-net logs into a `.tar.gz` the user hands to support, imported by
-hand with `meridian telemetry import <bundle> --endpoint <url> --auth
-<base64>`. Retention (default 7 days, `MERIDIAN_TELEMETRY_RETENTION_DAYS`)
+**Shipping has TWO modes, split by install type**
+(`src/observability/otlp_target.rs::resolve_otlp_target`). The daemon's
+`telemetry_spool::shipper` background task is still the ONLY thing that ever
+ships spooled files anywhere:
+
+- **Dev / Bare checkout** → the engineer's OWN local OpenObserve, gated on
+  `otlp_enabled` + `oo_email`/`oo_password`, `Basic` auth, **full fidelity**
+  (no redaction). Unchanged.
+- **Canonical (packaged DMG)** → Meridian's **central** OpenObserve via the
+  ingest gateway (`ops/central-observability/`), gated on the
+  `error_reporting_enabled` setting (**opt-out, default true**), `Bearer` auth
+  with a release-baked write-only token, and **redacted + error-only**
+  (`telemetry_spool::redact`). The endpoint and token are release-injected
+  `option_env!` constants, so a source build is inert and can never ship to
+  prod by accident.
+
+Redaction applies to the **ship leg only** — it produces a separate stripped
+copy to POST, so local capture and `meridian logs` stay full-fidelity. Two
+things it guarantees that are easy to regress: only WARN+ logs / ERROR-status
+spans egress at all, and `host.name` is replaced by a stable **pseudonym**
+(`redact::local_host_pseudonym`) rather than shipping the raw hostname, which on
+macOS is routinely the account holder's real name. The tray's Sentry
+`before_send` applies the identical pseudonym to `event.server_name`.
+
+**The pseudonym is seeded from a hardware id, NOT the hostname** — and the ship
+leg *replaces* `host.name` rather than hashing whatever was captured. This is
+not a stylistic choice: on macOS `HostName` is unset by default, so the kernel
+hostname is derived from the network (measured on a dev Mac, `hostname` was
+byte-identical to the router's reverse-DNS record for the current IP, itself
+derived from a per-network randomised Wi-Fi MAC). Seeding from it gave the same
+machine a new identity on every network change, silently breaking the grouping
+the value exists for. See `telemetry_spool::machine_id` before touching any of
+this; `pseudonym_is_independent_of_the_captured_hostname` pins it.
+
+That pseudonym is the ONLY identifier on an error row — nothing associates it
+with an account, and the hash is one-way. So it is surfaced to the user as
+**Support ID** (Settings → Account, and `bundle-info.txt` inside an export
+bundle), which is what makes a support ticket traceable to its error rows at
+all. Both the displayed value and the shipped one come from
+`redact::local_host_pseudonym` **on purpose** — computing either side
+separately would let them drift, and the user would quote an ID matching
+nothing, silently (`displayed_pseudonym_matches_shipped` pins this).
+
+**Which resource attributes actually ship** is a separate question from the
+allowlist, and the two are easy to confuse: `redact::SAFE_STRING_KEYS` lists
+many keys that nothing populates (`service.instance.id`, `os.version`,
+`app.version`, `app.install_mode`, …). `observability::init`'s `Resource::new`
+sets exactly: `service.name`, `service.version`, `host.name`,
+`deployment.environment`, `os.type`, `host.arch` — and `Resource::new` runs NO
+detectors, so the SDK contributes nothing either. **Allowlisted ≠ present:
+before relying on an attribute in a query or dashboard, check it is set here.**
+Note `observability::init` runs in BOTH the daemon and the tray, so any
+attribute added there must be correct for both — `app.install_mode` is
+deliberately left unset for exactly this reason (see the comment there).
+
+**Export Diagnostics remains the manual path**, unchanged and independent of
+consent: tray Settings → Account → **Export Diagnostics** (or `meridian
+telemetry export`) bundles the spool + the launchd crash-safety-net logs into
+a `.tar.gz` the user hands to support, imported by hand with `meridian
+telemetry import <bundle> --endpoint <url> --auth <base64>`. The bundle also
+carries a synthesized `bundle-info.txt` (Support ID, version, channel, os,
+arch) so a hand-delivered archive can be joined to that machine's already-
+ingested rows; it deliberately contains nothing the automatic ship leg wouldn't
+already send. Retention (default 7 days, `MERIDIAN_TELEMETRY_RETENTION_DAYS`)
 applies to both `pending/` and `sent/`, regardless of shipping status.
 
 - **Rust**: `tracing::info!/warn!/error!/debug!` with **structured fields** — never format data values into the message string (already enforced).

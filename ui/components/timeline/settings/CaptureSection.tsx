@@ -4,6 +4,14 @@
 // auto-pause/resume window, migrated 1:1 from the old SettingsView's "Work
 // Hours" card (manual pause/resume itself lives in the Toolbar's Capturing
 // pill, unchanged — this section is only the SCHEDULE).
+//
+// Also hosts the "Error reporting" consent switch (`error_reporting_enabled`),
+// the off-switch for the redacted, error-only telemetry a packaged install
+// ships to Meridian's central OpenObserve. It was drafted into
+// `AdvancedSection.tsx`, but that tab is hidden — an opt-OUT default with an
+// unreachable off-switch is not consent, so it lives here, next to the other
+// "what leaves my machine" controls. The setup wizard's completion note
+// ("change in Settings", `ui/app/setup/steps.tsx`) points at this switch.
 
 'use client'
 
@@ -22,6 +30,7 @@ export function CaptureSection({ settings, patch, save }: {
   const [status, setStatus] = useState<SaveStatus>('idle')
   const [streamingStatus, setStreamingStatus] = useState<SaveStatus>('idle')
   const [secondaryMonitorsStatus, setSecondaryMonitorsStatus] = useState<SaveStatus>('idle')
+  const [errorReportingStatus, setErrorReportingStatus] = useState<SaveStatus>('idle')
 
   return (
     <div className="max-w-[640px] flex flex-col gap-5">
@@ -93,6 +102,19 @@ export function CaptureSection({ settings, patch, save }: {
       </SectionCard>
 
       <CaptureIgnoreCards settings={settings} patch={patch} save={save} />
+
+      <SectionCard>
+        <SectionHeader>Error reporting</SectionHeader>
+        <FieldRow label="Send error reports" description="Meridian sends error-level logs to the team to help fix crashes and bugs. File paths, URLs, emails, and captured content are stripped on your device first - your screen activity, OCR text, and window titles are never sent. On by default; turn it off here any time.">
+          <Switch checked={settings.error_reporting_enabled} onCheckedChange={v => patch({ error_reporting_enabled: v })} />
+        </FieldRow>
+        <SaveButton
+          status={errorReportingStatus}
+          onClick={() => save({
+            error_reporting_enabled: settings.error_reporting_enabled,
+          }, setErrorReportingStatus)}
+        />
+      </SectionCard>
     </div>
   )
 }

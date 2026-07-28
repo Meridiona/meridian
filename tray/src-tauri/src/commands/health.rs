@@ -32,6 +32,22 @@ pub struct HealthResponse {
     pub a11y_helper_trusted: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Whether the user's CURRENTLY-CHOSEN LLM provider looks usable (installed + last test not
+    /// failed). `Some(false)` drives the dashboard's "provider unavailable" banner — summaries
+    /// are paused/degraded until it's fixed. See [`meridian::llm::detect::in_use_provider_health`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_provider_ok: Option<bool>,
+    /// `Some(true)` when the in-use provider is usable but RATE-LIMITED — drives a softer
+    /// "catching up" notice instead of the "unavailable" alarm (it clears on its own).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_provider_rate_limited: Option<bool>,
+    /// Human name of the in-use provider for the banner copy (e.g. "Codex").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_provider_name: Option<String>,
+    /// The banner reason — the failure/"not installed" text when unavailable, or the rate-limit
+    /// message when rate-limited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_provider_detail: Option<String>,
 }
 
 /// Run all three health checks in parallel and return the combined result.
@@ -63,11 +79,20 @@ pub async fn check_health() -> HealthResponse {
 
     let error = if !db.0 { db.1 } else { None };
 
+    // The in-use LLM provider's availability - a cheap install probe + cached last-test read,
+    // no metered call (see `in_use_provider_health`), so it's fine on the 60 s health cadence.
+    let settings = meridian_core::settings::load_runtime_settings();
+    let provider = meridian::llm::detect::in_use_provider_health(&settings).await;
+
     HealthResponse {
         database_ready: Some(db.0),
         error,
         a11y_helper_trusted: trusted,
         daemon_running: daemon,
+        llm_provider_ok: Some(provider.ok),
+        llm_provider_rate_limited: Some(provider.rate_limited),
+        llm_provider_name: Some(provider.name),
+        llm_provider_detail: provider.detail,
     }
 }
 
@@ -179,6 +204,10 @@ pub async fn get_health() -> Result<HealthResponse, String> {
         db = ?result.database_ready,
         daemon = ?result.daemon_running,
         a11y = ?result.a11y_helper_trusted,
+        llm_provider = ?result.llm_provider_name,
+        llm_provider_ok = ?result.llm_provider_ok,
+        llm_provider_rate_limited = ?result.llm_provider_rate_limited,
+        llm_provider_detail = ?result.llm_provider_detail,
         "health checked"
     );
     Ok(result)

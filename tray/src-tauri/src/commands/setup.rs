@@ -278,7 +278,49 @@ pub async fn install_llm_provider(
 #[tracing::instrument]
 pub async fn cursor_sign_in() -> Result<meridian::llm::detect::InstallOutcome, String> {
     let outcome = meridian::llm::detect::cursor_sign_in().await;
-    tracing::info!(ok = outcome.ok, "llm: cursor sign-in complete");
+    // WARN on failure so a "sign-in doesn't work" report is greppable by
+    // level, without having to know to filter on the `ok` field.
+    if outcome.ok {
+        tracing::info!("llm: cursor sign-in complete");
+    } else {
+        tracing::warn!(detail = %outcome.message, "llm: cursor sign-in failed");
+    }
+    Ok(outcome)
+}
+
+/// Run the interactive `codex login` - the Codex detail view's "Sign in to Codex" button.
+/// Opens the user's browser to sign into their ChatGPT account, so the summariser runs on their
+/// ChatGPT SUBSCRIPTION (no API key, nothing metered). Only ever on an explicit click; the
+/// daemon's own unattended path never opens a browser. Mirrors [`cursor_sign_in`].
+#[tauri::command]
+#[tracing::instrument]
+pub async fn codex_sign_in() -> Result<meridian::llm::detect::InstallOutcome, String> {
+    let outcome = meridian::llm::detect::codex_sign_in().await;
+    // WARN on failure so a "sign-in doesn't work" report is greppable by
+    // level, without having to know to filter on the `ok` field.
+    if outcome.ok {
+        tracing::info!("llm: codex sign-in complete");
+    } else {
+        tracing::warn!(detail = %outcome.message, "llm: codex sign-in failed");
+    }
+    Ok(outcome)
+}
+
+/// Run the interactive `claude auth login` - the Claude detail view's "Sign in to Claude"
+/// button. Opens the user's browser to sign into their Anthropic account, so the summariser runs
+/// on their Claude SUBSCRIPTION (no API key, nothing metered). Only ever on an explicit click;
+/// the daemon's own unattended path never opens a browser. Mirrors [`cursor_sign_in`].
+#[tauri::command]
+#[tracing::instrument]
+pub async fn claude_sign_in() -> Result<meridian::llm::detect::InstallOutcome, String> {
+    let outcome = meridian::llm::detect::claude_sign_in().await;
+    // WARN on failure so a "sign-in doesn't work" report is greppable by
+    // level, without having to know to filter on the `ok` field.
+    if outcome.ok {
+        tracing::info!("llm: claude sign-in complete");
+    } else {
+        tracing::warn!(detail = %outcome.message, "llm: claude sign-in failed");
+    }
     Ok(outcome)
 }
 

@@ -26,6 +26,8 @@ mod capture;
 mod capture_ignore;
 mod commands;
 mod counter_ping;
+mod crash;
+mod db_key;
 mod deep_link;
 
 /// Lowercase product name as macOS reports it after [`set_process_display_name`].
@@ -56,36 +58,40 @@ use tauri::{
 };
 
 pub fn run() {
-    // Dev-only (`--features otel`): export tray spans to OpenObserve via the
-    // daemon's OTLP setup, tagged service.name = meridian-tray. Held for the
-    // process lifetime. Compiled out entirely when the feature is off — release
-    // builds stay lean. `meridian` itself is always a dependency now (the
-    // "Export Diagnostics" command needs `telemetry_spool::build_export_bundle`
-    // unconditionally); this feature only gates installing a SECOND tracing
-    // subscriber for the tray's own spans.
+    // Native-crash capture (Phase 2B). MUST be first: `tauri-plugin-sentry`'s
+    // minidump reporter relaunches this exe in a special reporter mode that has
+    // to short-circuit before any app work. `crash::init_client()` returns None
+    // — and Sentry stays entirely off — unless the user has error reporting
+    // enabled AND a DSN was baked into this release build (see crash.rs). The
+    // client guard is held for the process lifetime; the minidump reporter and
+    // the plugin (below) only wire up when the client actually initialised.
+    let sentry_client = crash::init_client();
+    #[cfg(not(target_os = "ios"))]
+    // Closure (not the bare fn) so `&ClientInitGuard` deref-coerces to the
+    // `&Client` the reporter wants.
+    let _sentry_minidump = sentry_client
+        .as_ref()
+        .map(|c| tauri_plugin_sentry::minidump::init(c));
+
+    // Tray telemetry. Emit the tray's own spans + logs (service.name =
+    // meridian-tray) into the shared OTLP spool — the same one the daemon writes
+    // and its shipper drains. In a PACKAGED install this is how tray errors
+    // reach the central backend (redacted, error-only, on the shipper's
+    // consent-gated central path): the tray is otherwise DARK in release, and it
+    // is the one process the user actually clicks. `meridian` is always a
+    // dependency (Export Diagnostics), so this only calls the existing init — it
+    // pulls in no new deps. In a debug build the daemon's init also installs a
+    // stdout mirror, so `cargo run` stays console-observable without a separate
+    // subscriber; capture-to-spool honours the MERIDIAN_TELEMETRY_DISABLED kill
+    // switch inside init().
     //
     // Must run INSIDE Tauri's Tokio runtime: the OTLP batch exporter spawns a
     // background task and panics ("no reactor running") if called before one
     // exists. `block_on` enters the global runtime so the spawn succeeds; the
-    // exporter task then lives on that runtime for the process lifetime.
-    #[cfg(feature = "otel")]
-    let _otel_guard =
+    // guard is held for the process lifetime so the exporter keeps flushing.
+    let _obs_guard =
         tauri::async_runtime::block_on(async { meridian::observability::init("meridian-tray") })
             .ok();
-
-    // Capture builds without otel have no subscriber, so the `capture: …` logs
-    // would be invisible. Install a console fmt subscriber (RUST_LOG-filtered,
-    // default info) so a `cargo run --features capture` runtime check is
-    // observable. Skipped under otel (which installs its own subscriber).
-    #[cfg(all(feature = "capture", not(feature = "otel")))]
-    {
-        use tracing_subscriber::{fmt, EnvFilter};
-        let _ = fmt()
-            .with_env_filter(
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-            )
-            .try_init();
-    }
 
     let app_state = Arc::new(Mutex::new(AppState::default()));
 
@@ -96,6 +102,13 @@ pub fn run() {
         // Registered unconditionally; the check is a no-op in a source/dev run
         // (the running binary isn't a packaged `.app` for the updater to swap).
         .plugin(tauri_plugin_updater::Builder::new().build());
+    // Sentry webview + backend integration (Phase 2B) — only when the crash
+    // client initialised (consent + baked DSN). This injects @sentry/browser
+    // into the webview and routes its events through the Rust client so JS and
+    // native crashes share one project + device context.
+    if let Some(client) = &sentry_client {
+        builder = builder.plugin(tauri_plugin_sentry::init(client));
+    }
     // Clerk email sign-in on the setup wizard (see commands::account and
     // ui/app/setup/signin.tsx). `ClerkPluginBuilder::build()` HARD-FAILS
     // `.setup()` (killing the whole tray, not just sign-in) when the
@@ -191,14 +204,100 @@ pub fn run() {
                 });
             }
 
+            // Resolve the local SQLCipher encryption key BEFORE opening the
+            // pool. Two separate concerns, deliberately gated differently:
+            //
+            // 1. USING an existing key (any install mode, including Dev): if
+            //    `MERIDIAN_DB_KEY` is already sitting in the resolved `.env`,
+            //    always read and apply it. `meridian.db` is the one file dev
+            //    and installed builds share (`meridian_db_path`'s doc
+            //    comment) — if it's ALREADY encrypted (e.g. this same machine
+            //    also runs a Canonical install against it), a dev build must
+            //    still be able to read it, not silently open unencrypted and
+            //    fail on the first real query.
+            // 2. GENERATING a new key + migrating an existing plaintext file
+            //    (release builds ONLY, via `cfg!(debug_assertions)` — NOT
+            //    gated on `detect_install_mode() == Canonical`, deliberately:
+            //    that enum only resolves to `Canonical` once `~/.meridian/.env`
+            //    already exists, which is NOT yet true on a brand-new
+            //    install's very first launch (see `canonical_env_path`'s doc
+            //    comment on why the WRITE target must not require the file
+            //    to pre-exist) — gating generation on the enum instead of the
+            //    compile-time check would mean a new user's first-ever launch
+            //    never gets encrypted at all. `cfg!(debug_assertions)` mirrors
+            //    `detect_install_mode`'s own compile-time Canonical/Dev split,
+            //    so a debug build provably can't reach this branch either
+            //    way. Both degrade to `None`/unencrypted on any failure
+            //    rather than blocking tray startup — see db_key.rs and
+            //    meridian_core::db_crypto::encrypt_in_place's doc comments
+            //    for why that's the safe failure mode.
+            let db_path = install::meridian_db_path();
+            let install_mode = install::detect_install_mode();
+            let existing_key = install_mode
+                .env_path()
+                .and_then(|p| install::env_key_from_path(p, "MERIDIAN_DB_KEY"));
+
+            let db_key_hex = if existing_key.is_some() {
+                existing_key
+            } else if !cfg!(debug_assertions) {
+                match install::canonical_env_path() {
+                    Some(env_path) => match db_key::resolve_or_create_key(&env_path) {
+                        Ok(key) => Some(key),
+                        Err(e) => {
+                            // `tracing`, not `eprintln!`: observability is
+                            // already initialised above, and on a packaged
+                            // install stderr goes only to the launchd log -
+                            // never `meridian logs`, the diagnostics bundle,
+                            // or central error reporting. A silent fallback to
+                            // an UNENCRYPTED database is exactly the event
+                            // those channels exist to surface.
+                            tracing::error!(
+                                error = %e,
+                                "failed to resolve DB encryption key - continuing unencrypted"
+                            );
+                            None
+                        }
+                    },
+                    None => None,
+                }
+            } else {
+                None
+            };
+
+            let db_key_hex = if !cfg!(debug_assertions) {
+                match &db_key_hex {
+                    Some(key) => {
+                        let migrate = meridian_core::db_crypto::encrypt_in_place(
+                            std::path::Path::new(&db_path),
+                            key,
+                        );
+                        match tauri::async_runtime::block_on(migrate) {
+                            Ok(()) => Some(key.clone()),
+                            Err(e) => {
+                                tracing::error!(
+                                    error = %e,
+                                    "failed to migrate meridian.db to encrypted storage - continuing unencrypted this run"
+                                );
+                                None
+                            }
+                        }
+                    }
+                    None => None,
+                }
+            } else {
+                db_key_hex
+            };
+
             // Open meridian.db ONCE at startup and share it with commands via
             // managed state (no migrations — the daemon owns the schema). `None`
             // if the DB can't be opened yet, so reads error gracefully instead
             // of crashing the tray.
-            let db_path = install::meridian_db_path();
-            let db_pool = tauri::async_runtime::block_on(meridian_core::open_existing(&db_path))
-                .map_err(|e| eprintln!("tray: meridian.db not opened ({db_path}): {e}"))
-                .ok();
+            let db_pool = tauri::async_runtime::block_on(meridian_core::open_existing(
+                &db_path,
+                db_key_hex.as_deref(),
+            ))
+            .map_err(|e| tracing::error!(error = %e, db_path = %db_path, "meridian.db not opened"))
+            .ok();
             // Capture (slice 4a) writes to the SAME read-write pool the commands
             // use — clone the handle before it's moved into managed state.
             #[cfg(feature = "capture")]
@@ -617,6 +716,8 @@ pub fn run() {
             commands::test_all_llm_providers,
             commands::install_llm_provider,
             commands::cursor_sign_in,
+            commands::codex_sign_in,
+            commands::claude_sign_in,
             // Custom cloud endpoints (add/probe/remove). `add` + `probe` spend real metered
             // requests measuring the endpoint — only ever on explicit user action.
             commands::add_custom_llm_provider,

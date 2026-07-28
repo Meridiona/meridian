@@ -1,0 +1,81 @@
+# OTel Collector (contrib) config — the central ingest gateway.
+#
+# Role: authenticate incoming installs by a rotatable write-only Bearer token,
+# buffer/batch, and forward to OpenObserve using the OO root creds that live
+# ONLY here (never on an install). Requires the *contrib* image — the
+# bearertokenauth + basicauth extensions aren't in the core distribution.
+#
+# Redaction note: the privacy boundary is ON-DEVICE (src/telemetry_spool/redact.rs,
+# the chosen "allowlist" model — installs only ever send already-redacted,
+# error-only payloads). This gateway is intentionally thin. If you later want a
+# server-side defence-in-depth net, add a `redaction` or `transform` processor
+# to the pipelines below (see the commented stub) — that's the whole point of
+# having a gateway: you can change it here and redeploy, no new DMG.
+
+extensions:
+  # Server-side: validate `Authorization: Bearer <INGEST_TOKEN>` on every OTLP
+  # request. Rotate by changing INGEST_TOKEN in .env and redeploying.
+  bearertokenauth/ingest:
+    scheme: "Bearer"
+    token: "${env:INGEST_TOKEN}"
+
+  # Client-side: how the collector authenticates to OpenObserve's OTLP ingest
+  # (HTTP Basic base64(email:password) — same scheme the local dev shipper uses).
+  basicauth/oo:
+    client_auth:
+      username: "${env:OO_ROOT_USER_EMAIL}"
+      password: "${env:OO_ROOT_USER_PASSWORD}"
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        # Reject anything without a valid ingest token before it hits a pipeline.
+        auth:
+          authenticator: bearertokenauth/ingest
+
+processors:
+  # Guardrail: refuse work rather than OOM the VM under a burst. Keep first.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+  # Coalesce into efficient export batches.
+  batch:
+    send_batch_size: 512
+    timeout: 5s
+  # ── Optional server-side defence-in-depth (off by default; on-device is the
+  #    chosen boundary). Uncomment + add to the pipelines to also strip here:
+  # redaction/server:
+  #   allow_all_keys: false
+  #   allowed_keys: [service.name, service.version, error.type, otel.status_code]
+  #   blocked_values: ['(?i)bearer\s+[a-z0-9._-]+']
+
+exporters:
+  otlphttp/oo:
+    # OpenObserve OTLP ingest lives under /api/<org>/v1/{logs,traces}.
+    logs_endpoint: "http://openobserve:5080/api/${env:OO_ORG}/v1/logs"
+    traces_endpoint: "http://openobserve:5080/api/${env:OO_ORG}/v1/traces"
+    auth:
+      authenticator: basicauth/oo
+    # Survive OpenObserve restarts without dropping the batch in flight.
+    retry_on_failure:
+      enabled: true
+    sending_queue:
+      enabled: true
+
+service:
+  extensions: [bearertokenauth/ingest, basicauth/oo]
+  pipelines:
+    # v1 error signal rides on LOGS (WARN+), correlated by trace_id — see the
+    # project note "error signal is logs not traces". Traces pipeline is kept for
+    # completeness / future ERROR-status spans, but ships near-empty today.
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/oo]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/oo]

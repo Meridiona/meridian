@@ -238,6 +238,20 @@ pub struct RuntimeSettings {
     pub otlp_endpoint: Option<String>,
     pub oo_email: Option<String>,
     pub oo_password: Option<String>,
+    // Whether a PACKAGED install auto-ships redacted, error-only telemetry to
+    // Meridian's central OpenObserve (via the ingest gateway). This is the sole
+    // gate for central shipping — see
+    // `observability::otlp_target::resolve_otlp_target`, which on a Canonical
+    // install ships only when this is `true`. Deliberately SEPARATE from
+    // `otlp_enabled` (that toggles a *dev* checkout shipping full-fidelity
+    // telemetry to its OWN local OO). Default `true`: error reporting is
+    // opt-OUT (on by default, matching screenpipe/Dayflow) — the user turns it
+    // off from Settings, and the hard `MERIDIAN_TELEMETRY_DISABLED` kill switch
+    // still stops all capture. Everything shipped is redacted + error-only
+    // (`telemetry_spool::redact`); local capture + `meridian logs` are
+    // unaffected either way. Existing settings.json files without this key load
+    // as `true` via the struct-level `#[serde(default)]`.
+    pub error_reporting_enabled: bool,
     // Notification preferences — a master switch + quiet hours. Read by
     // [`crate::notifications`] to decide whether an event may surface;
     // every event type is gated ONLY by these two (no per-category toggles —
@@ -324,6 +338,9 @@ impl Default for RuntimeSettings {
             otlp_endpoint: None,
             oo_email: None,
             oo_password: None,
+            // Error reporting is opt-OUT: on by default (packaged installs only;
+            // redacted + error-only). Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
+            error_reporting_enabled: true,
             // Notifications on by default; quiet hours off (22:00–08:00 when
             // enabled). Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
             notifications_enabled: true,

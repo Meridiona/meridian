@@ -17,8 +17,9 @@
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqliteConnectOptions, FromRow, SqlitePool};
-use std::str::FromStr;
+use sqlx::{FromRow, SqlitePool};
+
+use crate::db_crypto::open_pool_with_key;
 
 /// The single in-progress activity block (the `active_session` row, id = 1).
 /// JSON columns are stored as raw text (`String`), so this needs no chrono/json
@@ -56,19 +57,20 @@ pub struct ActiveSession {
 /// same file every poll/ETL, and SQLite's write lock is database-wide, so without
 /// it a concurrent plan-write would fail with "database is locked". Harmless for
 /// the readers sharing the pool — WAL readers don't take the write lock.
-#[tracing::instrument(skip_all, fields(uri = %uri))]
-pub async fn open_existing(uri: &str) -> anyhow::Result<SqlitePool> {
-    let opts = SqliteConnectOptions::from_str(uri)
-        .with_context(|| format!("invalid SQLite URI: {uri}"))?
-        .create_if_missing(false)
-        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
-        .busy_timeout(std::time::Duration::from_secs(5));
-
-    let pool = SqlitePool::connect_with(opts)
-        .await
-        .with_context(|| format!("failed to open existing SQLite at {uri}"))?;
-    tracing::info!(uri, "opened meridian.db (WAL, 5s busy_timeout)");
+///
+/// `key`: the SQLCipher encryption key (64 hex chars), or `None` to open an
+/// unencrypted database exactly as before. The tray resolves this once at
+/// startup (`tray/src-tauri/src/db_key.rs`) and passes it through here — see
+/// [`crate::db_crypto`] for why the key is applied via a raw `after_connect`
+/// hook rather than sqlx's `SqliteConnectOptions` pragma builder methods.
+#[tracing::instrument(skip_all, fields(uri = %uri, encrypted = key.is_some()))]
+pub async fn open_existing(uri: &str, key: Option<&str>) -> anyhow::Result<SqlitePool> {
+    let pool = open_pool_with_key(uri, key, false, &[]).await?;
+    tracing::info!(
+        uri,
+        encrypted = key.is_some(),
+        "opened meridian.db (WAL, 5s busy_timeout)"
+    );
     Ok(pool)
 }
 

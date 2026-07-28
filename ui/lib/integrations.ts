@@ -57,6 +57,18 @@ export interface Tracker {
   token?: TokenMethod
   /** Azure DevOps uses the bespoke PAT→org→project discovery flow. */
   azure?: boolean
+  /** Listed but not yet offered: the row shows "Coming soon" and cannot be
+   *  expanded to start a NEW connection.
+   *
+   *  This is a product decision about what we support, NOT a gap in the code —
+   *  every one of these has a working connect flow here and a full provider
+   *  implementation in the daemon (`src/pm_worklog/`, `src/intelligence/providers/`).
+   *  Clearing this flag is all that's needed to offer one.
+   *
+   *  An ALREADY-connected tracker keeps its normal row (manage, re-authorize,
+   *  disconnect) — hiding the controls for something a user has already wired up
+   *  would strand them with a connection they cannot remove. */
+  comingSoon?: boolean
 }
 
 export const TRACKERS: Tracker[] = [
@@ -84,6 +96,7 @@ export const TRACKERS: Tracker[] = [
   },
   {
     id: 'linear',
+    comingSoon: true,
     name: 'Linear',
     glyph: 'Li',
     color: '#5E6AD2',
@@ -124,6 +137,7 @@ export const TRACKERS: Tracker[] = [
   },
   {
     id: 'trello',
+    comingSoon: true,
     name: 'Trello',
     glyph: 'Tr',
     color: '#0052CC',
@@ -135,6 +149,7 @@ export const TRACKERS: Tracker[] = [
   },
   {
     id: 'azure_devops',
+    comingSoon: true,
     name: 'Azure DevOps',
     glyph: 'Az',
     color: '#0078D4',
@@ -160,6 +175,27 @@ export function connectedTrackers(integrations: IntegrationsResponse | null): Tr
   if (!integrations) return []
   const int = integrations as unknown as Record<string, boolean>
   return TRACKERS.filter(t => int[t.id])
+}
+
+/** The trackers actually on offer, i.e. not flagged `comingSoon`. */
+export function availableTrackers(): Tracker[] {
+  return TRACKERS.filter((t) => !t.comingSoon)
+}
+
+/** Prose list of the trackers on offer - today "Jira and GitHub", and
+ *  "Jira, GitHub and Linear" were a third un-flagged. Derived from `TRACKERS`
+ *  rather than written out at each call site: three separate places used to
+ *  hardcode all five names, so flagging one `comingSoon` would have left the UI
+ *  promising it anyway.
+ *
+ *  Returns `''` when every tracker is flagged. Callers must handle that rather
+ *  than interpolating blindly, or the copy reads "Works with , with more
+ *  coming soon" - see `availableTrackers().length` guards at the two call
+ *  sites. */
+export function availableTrackerNames(): string {
+  const names = availableTrackers().map((t) => t.name)
+  if (names.length <= 1) return names[0] ?? ''
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
 }
 
 /** A provider id's display name (`'azure_devops'` → `'Azure DevOps'`).

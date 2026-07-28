@@ -11,7 +11,7 @@ import { Btn, Check, DISPLAY, Kicker, PermIcon, Row } from './atoms'
 import { PERMISSIONS } from './data'
 import type { NotifState } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
-import { TRACKERS } from '@/lib/integrations'
+import { TRACKERS, availableTrackers, availableTrackerNames } from '@/lib/integrations'
 import { llmProvider, LLM_INTRO_BODY, LLM_INTRO_TITLE, type LlmProviderId } from '@/lib/llm-providers'
 import ConnectTrackers from '@/components/IntegrationConnect'
 import LlmProviderPicker, { type InstallOutcome, type ProviderStatus } from '@/components/LlmProviderPicker'
@@ -188,7 +188,9 @@ export function Welcome({ onBegin, steps, ready, error, onRetry }: {
   const points = [
     { t: 'On-device', d: 'Your screen is read and understood locally on your device, never uploaded.' },
     { t: 'Automatic', d: 'Builds an accurate timeline of the tickets you worked on, then drafts the updates for you.' },
-    { t: 'Connected', d: 'Works with Jira, Linear, GitHub, Trello, and Azure DevOps.' },
+    { t: 'Connected', d: availableTrackers().length
+        ? `Works with ${availableTrackerNames()}, with more trackers coming soon.`
+        : 'Tracker integrations are coming soon.' },
   ]
   return (
     <div className="flex flex-col items-center justify-center" style={{ height: '100%', textAlign: 'center', padding: '36px 44px' }}>
@@ -257,6 +259,9 @@ export function Completion({ wiz }: { wiz: Wiz }) {
           </div>
         ))}
       </div>
+      <p style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--t-faint)', maxWidth: 360, marginTop: 16, textAlign: 'center' }}>
+        Meridian sends error reports to help fix bugs (change in Settings).
+      </p>
     </div>
   )
 }

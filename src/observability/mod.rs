@@ -72,23 +72,18 @@ use opentelemetry_sdk::{
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::OnceLock;
 use tracing_subscriber::{layer::SubscriberExt, reload, util::SubscriberInitExt, EnvFilter};
 
+mod filter;
 mod install_mode;
 mod otlp_target;
+pub use filter::reload_log_level;
+use filter::{build_default_filter, FILTER_HANDLE};
 use install_mode::capture_disabled;
 use otlp_target::DEFAULT_OTLP_ENDPOINT;
-pub use otlp_target::{is_otlp_configured, resolve_otlp_endpoint, resolve_otlp_target, OtlpTarget};
-
-/// Type alias for the hot-reload handle. The `S = Registry` parameter reflects
-/// that the reload layer is installed directly on `tracing_subscriber::Registry`
-/// (it is the first layer added, before any OTel or fmt layers).
-type FilterHandle = reload::Handle<EnvFilter, tracing_subscriber::Registry>;
-
-/// Global handle for hot-reloading the `EnvFilter` without restarting the daemon.
-/// Set once during `init()`; accessed from the poll loop via `reload_log_level()`.
-static FILTER_HANDLE: OnceLock<FilterHandle> = OnceLock::new();
+pub use otlp_target::{
+    is_otlp_configured, resolve_otlp_endpoint, resolve_otlp_target, AuthCredential, OtlpTarget,
+};
 
 /// RAII guard returned from [`init`]. Holds (when OTel is enabled) the logger
 /// provider for graceful shutdown.
@@ -293,10 +288,58 @@ fn try_build_otel_providers(
     let resource = Resource::new(vec![
         KeyValue::new("service.name", service_name.to_string()),
         KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
+        // Kept RAW here on purpose. This resource set feeds the local spool,
+        // which `meridian logs` renders at full fidelity — a developer reading
+        // their own machine's logs should see their own hostname.
+        //
+        // The ship leg does not hash this value, it REPLACES it with
+        // `telemetry_spool::redact::local_host_pseudonym()` — a hash of a
+        // stable hardware id, not of whatever the hostname happened to be at
+        // capture time. On macOS the kernel hostname is network-derived
+        // (see `telemetry_spool::machine_id`), so hashing it would give the
+        // same machine a new identity on every network change. Nothing
+        // identifying reaches the central backend either way.
         KeyValue::new(
             "host.name",
             gethostname::gethostname().to_string_lossy().into_owned(),
         ),
+        // Which release channel produced this build, so staging test traffic
+        // and real user errors are separable in the central backend — they
+        // share one endpoint and one Sentry project, and without this
+        // attribute there is no way to filter one out of the other. Baked at
+        // compile time from the release workflow's job-level `MERIDIAN_CHANNEL`
+        // (set for both the macOS and Windows build jobs); a source build has
+        // it unset and reports "dev".
+        KeyValue::new(
+            "deployment.environment",
+            option_env!("MERIDIAN_CHANNEL").unwrap_or("dev"),
+        ),
+        // Platform shape. Without these, a Windows error and a macOS error are
+        // indistinguishable in the central backend — every attribute above is
+        // OS-agnostic, and the SDK adds nothing of its own (`Resource::new`
+        // runs no detectors, unlike `Resource::default`). All three are already
+        // on `redact::SAFE_STRING_KEYS`, so populating them needs no change to
+        // the redaction boundary: they are enum-like build facts that
+        // structurally cannot carry user content.
+        //
+        // Deliberately the RAW Rust constants ("macos"/"windows", "aarch64"/
+        // "x86_64") rather than the OTel semconv spellings ("darwin", "arm64").
+        // Nothing downstream parses these as semconv enums, and a translation
+        // layer is one more place to introduce a silent mismatch between what
+        // the code says and what the dashboards filter on.
+        KeyValue::new("os.type", std::env::consts::OS),
+        KeyValue::new("host.arch", std::env::consts::ARCH),
+        // NOT setting `app.install_mode` here, deliberately — it is on
+        // `redact::SAFE_STRING_KEYS` and looks tempting. The only available
+        // signal is `is_canonical_install()`, which compares `current_exe()`
+        // against `~/.meridian/bin/meridian`. That is a DAEMON-shaped test, and
+        // this function also runs in the tray (`lib.rs` calls
+        // `observability::init("meridian-tray")` unconditionally), whose exe
+        // lives in the `.app` bundle — so every tray row on a fully packaged
+        // install would be labelled "source". A wrong platform attribute is
+        // worse than an absent one; it gets trusted in a dashboard filter.
+        // `deployment.environment` already separates source builds ("dev") from
+        // released ones, which is the distinction that was actually wanted.
     ]);
 
     // Build spool clients — one per signal so filenames encode the correct prefix.
@@ -342,43 +385,6 @@ fn try_build_otel_providers(
         .build();
 
     Ok(Some((tracer, tracer_provider, logger_provider)))
-}
-
-/// Map the settings.json `log_level` value (DEBUG/INFO/WARNING/ERROR) to a
-/// tracing `EnvFilter` string. Used at startup and on hot-reload, when
-/// `RUST_LOG` is not set.
-fn build_default_filter(log_level: &str) -> String {
-    match log_level.to_uppercase().as_str() {
-        "DEBUG" => "meridian=debug,sqlx=warn".to_string(),
-        "WARNING" | "WARN" => "meridian=warn,sqlx=warn".to_string(),
-        "ERROR" => "meridian=error,sqlx=error".to_string(),
-        // INFO or anything else: keep the previous fixed default with module-level overrides.
-        // `embedder=debug` surfaces the model-load/batch spans (embedder/mod.rs) at the
-        // production default — the same treatment etl/intelligence already get — since
-        // the embedder is on the critical path for every hour's distillation and its
-        // timing is exactly what a `DISTILLER_EMBED_TIMEOUT_SECS` investigation needs.
-        _ => "meridian=info,meridian::etl=debug,meridian::intelligence=debug,meridian::embedder=debug,sqlx=warn".to_string(),
-    }
-}
-
-/// Hot-reload the log level filter without restarting the daemon.
-///
-/// Called from the poll loop whenever `settings.log_level` changes. Returns
-/// `true` if the filter was updated, `false` if RUST_LOG is set (we don't
-/// fight explicit env-var overrides) or the handle isn't initialised yet.
-pub fn reload_log_level(level: &str) -> bool {
-    // Respect explicit RUST_LOG override — don't fight the user's env var.
-    if std::env::var("RUST_LOG").is_ok() {
-        return false;
-    }
-    let Some(handle) = FILTER_HANDLE.get() else {
-        return false;
-    };
-    let filter_str = build_default_filter(level);
-    match filter_str.parse::<EnvFilter>() {
-        Ok(new_filter) => handle.modify(|f| *f = new_filter).is_ok(),
-        Err(_) => false,
-    }
 }
 
 /// `~/.meridian/logs/` — where launchd redirects each service's raw

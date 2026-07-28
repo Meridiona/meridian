@@ -95,9 +95,24 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing v*-staging* tag to (re)build and publish"
+        description: "Existing v*-staging* tag to (re)build and publish (or to compile against, if cache_warm_only)"
         required: true
         type: string
+      cache_warm_only:
+        # For seeding the `main`-scoped rust-cache entries the macos/windows
+        # jobs' `save-if` conditions require (see their rust-cache steps) —
+        # a tag push can only ever restore a cache saved on that SAME tag or
+        # on `main`, never a sibling tag, so a `main`-scoped entry has to
+        # exist before any tag build can warm-start. Dispatching this
+        # workflow with branch context = `main` and this input set to true
+        # compiles + saves the cache exactly like a real release build would,
+        # but skips creating/publishing anything — no draft release, no
+        # signing, no notarization, no asset upload. Safe to run against an
+        # already-published tag for exactly that reason.
+        description: "Compile + warm the release rust-cache only. Skips creating/publishing a release entirely. Run with branch context = main."
+        required: false
+        type: boolean
+        default: false
 
 # Serialise releases. Two in flight would fight over the rolling updater tag,
 # the shared caches, and Apple's notarization throughput. Never cancel in
@@ -198,6 +213,7 @@ jobs:
           echo "✓ Cargo.toml version ${manifest} matches the tag"
 
       - name: Create (or reuse) the draft release
+        if: ${{ !inputs.cache_warm_only }}
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.ctx.outputs.tag }}
@@ -325,11 +341,23 @@ jobs:
           # on every run; caching the source directory removes the cause.
           cache-directories: |
             ~/.cargo/registry/src
-          # Save from the branches that actually cut releases. A run restores
-          # from its own ref or the DEFAULT branch only — it cannot read a
-          # sibling branch — so main must write its own copy or production
-          # releases can never warm from staging's.
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/pre-main' || startsWith(github.ref, 'refs/tags/v') }}
+          # Only ever save from `main`. A run restores from its own ref OR the
+          # default branch — nothing else — so a save on a tag ref is only
+          # ever restorable by a byte-identical re-run of that SAME tag, which
+          # in practice never happens (every release is a brand-new tag).
+          # `startsWith(refs/tags/v)` used to be in this condition on the
+          # theory that "main must write its own copy or releases can never
+          # warm from staging's" — but staging never had one to warm FROM in
+          # the first place, and every tag build was quietly writing a
+          # ~1.5 GB entry nothing could ever read back, which is what pushed
+          # the repo's cache quota (10 GiB, evicted globally by LRU once
+          # crossed) to the point of evicting entries other jobs actually
+          # need. `refs/heads/pre-main` was dead for the same underlying
+          # reason from a different angle: this workflow only ever triggers
+          # on a `v*` tag push or `workflow_dispatch` (see the `on:` block),
+          # never on a push to `pre-main` itself, so that branch of the
+          # condition could never evaluate true.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: actions/setup-node@v4
         with:
@@ -380,6 +408,28 @@ jobs:
 
       - name: Compile daemon + tray (${{ matrix.target }})
         working-directory: tray
+        env:
+          # Baked into the daemon binary at compile time via option_env!
+          # (src/observability/otlp_target.rs) so consented packaged installs
+          # know where to ship redacted error telemetry. Sourced from a repo
+          # VARIABLE (it is a public URL, not a secret). Unset → empty → central
+          # error shipping stays inert, exactly like a plain source build. The
+          # companion write token is a SECRET (MERIDIAN_CENTRAL_TELEMETRY_TOKEN);
+          # both must be present for a build to ship.
+          MERIDIAN_CENTRAL_OTLP_ENDPOINT: ${{ vars.MERIDIAN_CENTRAL_OTLP_ENDPOINT }}
+          # The write-only ingest token the gateway's OTel Collector validates
+          # (`bearertokenauth/ingest` in ops/central-observability/). A SECRET,
+          # unlike the endpoint: it is the one credential a shipped install
+          # carries, so it must not appear in logs or the Actions UI. Rotate by
+          # changing INGEST_TOKEN on the gateway + this secret, then cutting a
+          # release — old tokens stop being accepted immediately.
+          MERIDIAN_CENTRAL_TELEMETRY_TOKEN: ${{ secrets.MERIDIAN_CENTRAL_TELEMETRY_TOKEN }}
+          # Baked into the TRAY at compile time via option_env! (tray/src-tauri/
+          # src/crash.rs) for native-crash reporting to Sentry. A Sentry DSN is
+          # embeddable in clients (it only permits SENDING events, not reading),
+          # so a repo variable, not a secret. Unset → the tray never initialises
+          # Sentry, exactly like a source build.
+          MERIDIAN_SENTRY_DSN: ${{ vars.MERIDIAN_SENTRY_DSN }}
         # TWO cargo invocations: the daemon binary, then the tray app.
         #
         # The old shape tried to do both in one invocation by passing
@@ -408,9 +458,11 @@ jobs:
         # Replaces the stub with the binary the same invocation just produced.
         # `tauri bundle` reads bundle.resources contents at THIS point, so the
         # real file only has to exist now, not at compile time.
+        if: ${{ !inputs.cache_warm_only }}
         run: cp "target/${{ matrix.target }}/release/meridian" target/release/meridian
 
       - name: Import Developer ID certificate + notarization key
+        if: ${{ !inputs.cache_warm_only }}
         uses: ./.github/actions/import-apple-cert
         with:
           apple-certificate: ${{ secrets.APPLE_CERTIFICATE }}
@@ -421,10 +473,12 @@ jobs:
         # Must precede bundling: the daemon is copied into the .app as a
         # resource, and re-signing the enclosing bundle does not sign nested
         # Mach-Os.
+        if: ${{ !inputs.cache_warm_only }}
         run: bash scripts/sign-daemon.sh
 
       - name: Bundle, sign and notarize the app
         working-directory: tray
+        if: ${{ !inputs.cache_warm_only }}
         env:
           CHANNEL: ${{ needs.prepare.outputs.channel }}
         # `tauri bundle` runs ZERO cargo invocations — it packages what is
@@ -478,7 +532,7 @@ jobs:
         # STABLE ONLY — staging is delivered by the updater, which never sets the
         # quarantine flag, so no notarization ticket is ever consulted. See the
         # APPLE_API_* note in this job's `env:` for the full reasoning.
-        if: needs.prepare.outputs.channel == 'stable'
+        if: ${{ !inputs.cache_warm_only && needs.prepare.outputs.channel == 'stable' }}
         # A notarization ticket is keyed to the cdhash of what was submitted, so
         # the stapled .app inside does not cover the container. Without this the
         # DMG a user downloads trips "can't check it for malicious software".
@@ -490,6 +544,7 @@ jobs:
         run: bash scripts/notarize-dmg.sh "$VERSION"
 
       - name: Package the updater artifacts
+        if: ${{ !inputs.cache_warm_only }}
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: bash scripts/package-updater.sh "$VERSION"
@@ -504,12 +559,14 @@ jobs:
         # design) while every SIGNING check still runs — a staging build with a
         # broken signature must still fail loudly, because the updater's
         # relaunch depends on it.
+        if: ${{ !inputs.cache_warm_only }}
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           MERIDIAN_CHANNEL: ${{ needs.prepare.outputs.channel }}
         run: bash scripts/verify-release-bundle.sh "$VERSION"
 
       - name: Upload this architecture's assets into the draft
+        if: ${{ !inputs.cache_warm_only }}
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
@@ -606,6 +663,42 @@ jobs:
           ref: ${{ needs.prepare.outputs.tag }}
           persist-credentials: false
 
+      # `libsqlite3-sys`'s `bundled-sqlcipher-vendored-openssl` feature (see
+      # meridian-core/src/db_crypto.rs) compiles OpenSSL FROM SOURCE via
+      # `openssl-src`, which needs Perl and NASM on PATH.
+      #
+      # Perl: `windows-latest` already ships a full Strawberry Perl at
+      # `C:\Strawberry\perl\bin`, confirmed (via a diagnostic run) to carry
+      # every CPAN module OpenSSL's Configure script needs — do NOT install a
+      # second Perl via `shogo82148/actions-setup-perl` or similar; that
+      # action's minimal build is MISSING those modules
+      # (Locale::Maketext::Simple, Text::Template) and shadowed the runner's
+      # already-working Strawberry Perl, confirmed by an actual failed build.
+      #
+      # Strawberry Perl still doesn't win by default: this job's steps run
+      # under Git Bash (`defaults.run.shell` above), which UNCONDITIONALLY
+      # prepends its own MSYS bin dirs (/usr/bin, /mingw64/bin) at shell
+      # startup, REGARDLESS of any GITHUB_PATH entry (tried and confirmed
+      # ineffective, twice, with both POSIX- and Windows-style path forms —
+      # a bash `echo $PATH` inside a later step still showed /usr/bin ahead
+      # of Strawberry's path either way). Git Bash's own /usr/bin/perl
+      # (msys-perl, cygwin-based) is what was actually failing every time.
+      #
+      # Fix: run ONLY the actual build step below under `pwsh` instead of
+      # this job's bash default — outside Git Bash entirely, Strawberry Perl
+      # resolves correctly with no competing MSYS perl in the way. The
+      # commands in that step (`cargo build` / `tauri build` via `npm run`)
+      # are plain CLI invocations with no bash-specific syntax, so this is
+      # safe. NASM is genuinely not bundled by default, so it still needs
+      # explicit setup — same action OpenSSL's own upstream CI uses on
+      # Windows.
+      - name: Install NASM (for vendored OpenSSL's assembly routines)
+        # Pinned to the commit behind v1.5.2, not the mutable `v1` tag: this job
+        # holds the signing key and the release secrets, so a third-party action
+        # that can be re-pointed is a supply-chain path straight into a signed
+        # build. Bump deliberately, re-reading the diff.
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
       - name: Install Rust 1.93.1
         uses: dtolnay/rust-toolchain@master
         with:
@@ -621,7 +714,20 @@ jobs:
           # cache shared across every workflow that compiles this target.
           add-job-id-key: false
           shared-key: windows-release-x86_64-pc-windows-msvc
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/pre-main' || startsWith(github.ref, 'refs/tags/v') }}
+          # Only ever save from `main` — see the macOS job's rust-cache step
+          # for the full reasoning. This one in particular had NEVER once
+          # saved to `main` (confirmed via the cache API: every
+          # windows-release-* entry that ever existed was tag-scoped), so
+          # every tag-triggered Windows release build restored nothing and
+          # compiled OpenSSL-from-source + SQLCipher + the daemon/tray from a
+          # stone-cold cache — every single time, not just once. Restoring
+          # `main`'s cache instead of a dead tag copy is what actually makes
+          # this job fast; dropping the tag-ref save alone would only make it
+          # cold forever instead of cold most of the time, so this job's
+          # `main`-scoped cache needs to exist before this change helps —
+          # currently seeded via a one-off `workflow_dispatch` run with branch
+          # context set to `main`.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: actions/setup-node@v4
         with:
@@ -661,24 +767,45 @@ jobs:
         # config is explicitly NULLED OUT by tauri.windows.conf.json, replaced
         # with `target/release/meridian.exe`, which `cargo build --bin meridian`
         # already produces at exactly that path with no cross-target copy step.
+        #
+        # `shell: pwsh` here, NOT this job's bash default — see the NOTE above
+        # the NASM step for why: Git Bash forces its own MSYS perl (missing
+        # CPAN modules OpenSSL's Configure needs) ahead of Strawberry Perl on
+        # PATH, no matter what. `npm run` inherits this step's environment
+        # regardless of what shell it internally uses to run the script, so
+        # this is enough to fix it.
+        shell: pwsh
         env:
           # Bound through env rather than interpolated into `run:`, same
           # reason as VERSION/CHANNEL/TAG elsewhere in this file — `${{ }}`
           # inside `run:` is the template-injection shape.
           CHANNEL: ${{ needs.prepare.outputs.channel }}
+          # Baked into the daemon .exe via option_env! (see the macOS build step
+          # + src/observability/otlp_target.rs). Repo variable, not a secret;
+          # unset → central error shipping stays inert.
+          MERIDIAN_CENTRAL_OTLP_ENDPOINT: ${{ vars.MERIDIAN_CENTRAL_OTLP_ENDPOINT }}
+          # Write-only ingest token the gateway validates. Secret, not a
+          # variable — see the macOS build step for the rotation note.
+          MERIDIAN_CENTRAL_TELEMETRY_TOKEN: ${{ secrets.MERIDIAN_CENTRAL_TELEMETRY_TOKEN }}
+          # Baked into the tray .exe via option_env! (tray crash.rs) for Sentry
+          # native-crash reporting. Client-embeddable DSN → repo variable; unset
+          # → the tray never initialises Sentry.
+          MERIDIAN_SENTRY_DSN: ${{ vars.MERIDIAN_SENTRY_DSN }}
         run: |
-          if [ "${CHANNEL}" = "staging" ]; then
+          if ($env:CHANNEL -eq "staging") {
             npm run build:windows:staging
-          else
+          } else {
             npm run build:windows
-          fi
+          }
 
       - name: Package the updater artifacts
+        if: ${{ !inputs.cache_warm_only }}
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: bash scripts/package-updater-windows.sh "$VERSION"
 
       - name: Upload this platform's assets into the draft
+        if: ${{ !inputs.cache_warm_only }}
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
@@ -711,6 +838,11 @@ jobs:
   publish:
     name: Compose manifest + publish
     needs: [prepare, macos, windows]
+    # Skipped entirely on a cache_warm_only dispatch — there is no draft
+    # release (prepare skipped creating one) and nothing was uploaded (macos/
+    # windows skipped their upload steps), so composing/publishing a manifest
+    # here would have nothing valid to compose from.
+    if: ${{ !inputs.cache_warm_only }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

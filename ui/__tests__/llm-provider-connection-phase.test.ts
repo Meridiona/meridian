@@ -114,14 +114,39 @@ it("the picker's test handler invokes the real Tauri command against the live CL
   expect(picker).toMatch(/invoke<ProviderTestResult>\('test_llm_provider'/)
 })
 
-// ── Cursor gets bespoke "not signed in" copy for an unclassified failure; every other ──────
-// ── provider shows the raw message. Both must still originate from the SAME real Test call.
+// ── Subscription providers (Cursor, Codex, Claude) get bespoke "not signed in" copy with an ──
+// ── in-app sign-in button for an unclassified failure; every other provider shows the raw ────
+// ── message. Both must still originate from the SAME real Test call (a `failed` phase). ──────
 
-it('the Cursor-specific "not signed in" copy only replaces the DISPLAY, not the trigger — it is still gated on phase.kind === "failed"', () => {
-  const cursorBranch = detail.slice(detail.indexOf("case 'failed':"))
-  expect(cursorBranch).toMatch(/if \(isCursor\)/)
-  expect(cursorBranch).toMatch(/not signed in yet/)
-  expect(cursorBranch).toMatch(/Sign in to Cursor/)
+it('the subscription-provider "not signed in" copy only replaces the DISPLAY, not the trigger — it is still gated on phase.kind === "failed"', () => {
+  const failedBranch = detail.slice(detail.indexOf("case 'failed':"))
+  // The in-app sign-in UI is gated on the failed phase via the signInProvider descriptor,
+  // showing the "not signed in" copy and that provider's own sign-in button label.
+  expect(failedBranch).toMatch(/if \(signInProvider\)/)
+  expect(failedBranch).toMatch(/not signed in yet/)
+  expect(failedBranch).toMatch(/\{signInProvider\.label\}/)
+  // Cursor, Codex, and Claude are each covered by the descriptor (each with its own label).
+  // The labels live in the shared registry, not inline here - see the desync test below.
+  const registry = src('lib/llm-providers.ts')
+  expect(registry).toMatch(/Sign in to Cursor/)
+  expect(registry).toMatch(/Sign in to Codex/)
+  expect(registry).toMatch(/Sign in to Claude/)
+})
+
+// The button copy and the tray command it fires used to live in two files - a provider added
+// to one and not the other got a sign-in button wired to nothing, or (worse) to another
+// vendor's login. One record now carries both, so they cannot desync.
+it('every in-app sign-in provider carries BOTH its copy and its tray command in one record', () => {
+  const registry = src('lib/llm-providers.ts')
+  for (const [id, cmd] of [['cursor', 'cursor_sign_in'], ['codex', 'codex_sign_in'], ['claude', 'claude_sign_in']]) {
+    const entry = registry.slice(registry.indexOf(`  ${id}: {`))
+    const block = entry.slice(0, entry.indexOf('},'))
+    expect(block).toMatch(/label:/)
+    expect(block).toMatch(new RegExp(`trayCommand: '${cmd}'`))
+  }
+  // ...and the picker must not have grown a second, competing map.
+  expect(picker).not.toMatch(/SIGN_IN_COMMANDS/)
+  expect(picker).toMatch(/llmSignIn\(id\)\?\.trayCommand/)
 })
 
 it('every other provider surfaces the real failure message verbatim, not a generic substitute', () => {

@@ -15,7 +15,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { openExternal } from '@/lib/bridge'
 import { ProviderLogo } from '@/components/LlmProviderLogos'
-import { LLM_RECOMMENDED_BADGE, USAGE_FOOTPRINT_NOTE, type LlmProviderMeta } from '@/lib/llm-providers'
+import { LLM_RECOMMENDED_BADGE, USAGE_FOOTPRINT_NOTE, llmSignIn, type LlmProviderMeta } from '@/lib/llm-providers'
 import type { InstallOutcome, ProviderStatus, ProviderTestResult } from '@/components/LlmProviderPicker'
 
 /** The connection state we render, derived from install + last-test + in-flight flags. */
@@ -80,7 +80,10 @@ export interface LlmProviderDetailProps {
   onBack: () => void
   /** Run the vendor installer; resolves with what happened so we can show the message. */
   onInstall: () => Promise<InstallOutcome>
-  /** Run the interactive Cursor sign-in (browser OAuth on their subscription). Cursor-only. */
+  /** Run the interactive browser sign-in for this provider - OAuth against the user's own
+   *  subscription. Applies to every id in `LLM_SIGN_IN` (`@/lib/llm-providers`), currently
+   *  Cursor, Codex and Claude; deliberately not enumerated here, since that list is what
+   *  drifted. No-op for providers without an in-app sign-in. */
   onSignIn: () => Promise<InstallOutcome>
   onTest: () => void
   /** Commit this provider as the default. Rejects if the write failed (Settings save). */
@@ -245,7 +248,12 @@ function ConnectionBody({ phase, name, providerId, installHint, installMsg, sign
   onInstall: () => void; onSignIn: () => void; onTest: () => void
 }) {
   const mono = { fontSize: 11, lineHeight: 1.5, color: 'var(--t-key-text)', background: 'var(--t-key-bg)', borderRadius: 6, padding: '6px 9px' } as const
-  const isCursor = providerId === 'cursor'
+  // Providers whose CLI authenticates against the user's OWN subscription via a browser OAuth
+  // that Meridian can drive in-app. Resolved from the shared registry in
+  // `@/lib/llm-providers` so the copy here and the tray command the picker invokes cannot
+  // desync - they used to be two hard-coded lists. `null` for providers with no in-app
+  // sign-in (e.g. Copilot, or a cloud endpoint).
+  const signInProvider = llmSignIn(providerId)
 
   switch (phase.kind) {
     case 'installing':
@@ -263,7 +271,7 @@ function ConnectionBody({ phase, name, providerId, installHint, installMsg, sign
         <div className="flex items-start" style={{ gap: 9 }}>
           <Spinner />
           <p style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--t-title)' }}>
-            Opening your browser… finish signing in to Cursor, then this updates on its own.
+            Opening your browser… finish signing in to {signInProvider?.account ?? name}, then this updates on its own.
           </p>
         </div>
       )
@@ -341,17 +349,17 @@ function ConnectionBody({ phase, name, providerId, installHint, installMsg, sign
       )
 
     case 'failed':
-      // Cursor's "failure" is almost always just "not signed in yet" - a one-time OAuth on the
-      // user's own Cursor subscription (no API key). Offer it as a one-click browser sign-in,
-      // with the terminal command as a fallback.
-      if (isCursor) {
+      // For providers that sign into the user's own subscription (Cursor, Codex), a "failure"
+      // is almost always just "not signed in yet" - a one-time browser OAuth (no API key).
+      // Offer it as a one-click in-app sign-in, with the terminal command as a fallback.
+      if (signInProvider) {
         return (
           <div className="flex flex-col" style={{ gap: 10 }}>
             <div className="flex items-start" style={{ gap: 9 }}>
               <Dot color="var(--color-state-pending)" />
               <p style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--t-title)' }}>
-                {name} is installed but not signed in yet. Sign in with your Cursor account and it
-                runs on your Cursor subscription - no API key.
+                {name} is installed but not signed in yet. Sign in with your {signInProvider.account} account
+                and it runs on your {signInProvider.subscription} - no API key.
               </p>
             </div>
             <button onClick={onSignIn} className="self-start"
@@ -359,11 +367,11 @@ function ConnectionBody({ phase, name, providerId, installHint, installMsg, sign
                 fontSize: 12.5, fontWeight: 600, padding: '8px 15px', borderRadius: 9, border: 'none',
                 background: 'var(--btn-primary-bg)', color: '#fff', cursor: 'pointer',
               }}>
-              Sign in to Cursor
+              {signInProvider.label}
             </button>
             <p style={{ fontSize: 10.5, lineHeight: 1.5, color: 'var(--t-faint)' }}>
               Opens your browser to finish the sign-in. Prefer the terminal? Run{' '}
-              <code style={{ fontFamily: 'var(--font-mono, ui-monospace)' }}>cursor-agent login</code>, then Test again.
+              <code style={{ fontFamily: 'var(--font-mono, ui-monospace)' }}>{signInProvider.cmd}</code>, then Test again.
             </p>
             {signInMsg && (
               <p style={{ fontSize: 11.5, lineHeight: 1.5, color: 'var(--status-error-dot)' }}>

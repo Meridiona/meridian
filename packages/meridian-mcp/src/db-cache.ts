@@ -24,6 +24,124 @@
 
 import initSqlJs from "sql.js";
 import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import * as crypto from "crypto";
+import { execFile } from "child_process";
+import { promisify } from "util";
+
+const execFileAsync = promisify(execFile);
+
+// meridian.db may be SQLCipher-encrypted at rest (see meridian-core's
+// db_crypto.rs). sql.js is pure WASM SQLite with no SQLCipher support, so it
+// cannot open an encrypted file directly — instead this module shells out to
+// `meridian db-export-plaintext`, which decrypts to a plaintext snapshot this
+// package then loads exactly as before. Detected via the plain SQLite file
+// magic header: an encrypted file has no recognizable header at all.
+const SQLITE_MAGIC = Uint8Array.from(Buffer.from("SQLite format 3\0", "latin1"));
+
+function isPlaintextSqlite(filePath: string): boolean {
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const header = new Uint8Array(16);
+    const bytesRead = fs.readSync(fd, header, 0, 16, 0);
+    return (
+      bytesRead === 16 && header.every((byte, i) => byte === SQLITE_MAGIC[i])
+    );
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** Candidate paths for the `meridian` CLI, native binary first (no Node/PATH
+ * dependency — matches how the tray stages it, see backend_install.rs), bare
+ * `meridian` last as a PATH-reliant fallback for source/dev setups. */
+function meridianCandidates(): string[] {
+  const home = os.homedir();
+  return [path.join(home, ".meridian", "bin", "meridian"), "meridian"];
+}
+
+function selectMeridianBinary(candidates: string[]): string {
+  for (const candidate of candidates) {
+    if (path.isAbsolute(candidate) && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return candidates[candidates.length - 1];
+}
+
+/**
+ * Resolves `MERIDIAN_DB_KEY` the same way `getDbPath()` resolves `MERIDIAN_DB`:
+ * an explicit env var first (settable in the MCP client's server config,
+ * exactly like `MERIDIAN_DB`), falling back to reading it out of the tray's
+ * canonical `.env` (`~/.meridian/.env`) — this package never loads `.env`
+ * files wholesale, it only ever reads the one key it needs, same as the
+ * tray's own `env_key_from_path` (`install.rs`).
+ */
+function getDbKey(): string | undefined {
+  if (process.env.MERIDIAN_DB_KEY) return process.env.MERIDIAN_DB_KEY;
+  const envPath = path.join(os.homedir(), ".meridian", ".env");
+  try {
+    const contents = fs.readFileSync(envPath, "utf8");
+    for (const line of contents.split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("MERIDIAN_DB_KEY=")) {
+        return trimmed.slice("MERIDIAN_DB_KEY=".length).trim();
+      }
+    }
+  } catch {
+    // No canonical .env (dev/source install, or not yet provisioned) — the DB
+    // is simply unencrypted in that case; isPlaintextSqlite() below is what
+    // actually decides whether an export is needed at all.
+  }
+  return undefined;
+}
+
+/**
+ * If `dbPath` is SQLCipher-encrypted, exports a plaintext snapshot (via the
+ * `meridian` CLI) to a stable per-path temp file and returns that path;
+ * otherwise returns `dbPath` unchanged. Throws with a clear message if the
+ * export fails or no key can be resolved.
+ */
+async function resolveReadablePath(dbPath: string): Promise<string> {
+  if (isPlaintextSqlite(dbPath)) {
+    return dbPath;
+  }
+  const key = getDbKey();
+  if (!key) {
+    throw new Error(
+      `Meridian DB at ${dbPath} is encrypted, but no MERIDIAN_DB_KEY could be resolved ` +
+        `(checked the MERIDIAN_DB_KEY env var and ~/.meridian/.env). Set MERIDIAN_DB_KEY ` +
+        `in this MCP server's environment, matching the key the Meridian tray generated.`,
+    );
+  }
+  // Hash the WHOLE path. The previous `Buffer.from(dbPath).toString("hex")
+  // .slice(0, 16)` was the hex of only the first EIGHT bytes, so any two DB
+  // paths sharing an 8-byte prefix mapped to the same snapshot file - and
+  // "/Users/a" is exactly eight bytes, which makes `/Users/alice/...` and
+  // `/Users/alison/...` collide. Since the caches key on `dbPath` rather than
+  // on this derived path, two paths can be resolved concurrently, and a
+  // collision lets one database's export overwrite the other between its
+  // export and its read - serving one user's data for a request against
+  // another's.
+  const snapshotPath = path.join(
+    os.tmpdir(),
+    `meridian-mcp-plaintext-${crypto.createHash("sha256").update(dbPath).digest("hex").slice(0, 32)}.db`,
+  );
+  const bin = selectMeridianBinary(meridianCandidates());
+  try {
+    await execFileAsync(bin, ["db-export-plaintext", "--out", snapshotPath], {
+      env: { ...process.env, MERIDIAN_DB: dbPath, MERIDIAN_DB_KEY: key },
+    });
+  } catch (err) {
+    throw new Error(
+      `Meridian DB at ${dbPath} is encrypted and could not be exported for reading via '${bin} db-export-plaintext': ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+  return snapshotPath;
+}
 
 export type SqlJsStatic = Awaited<ReturnType<typeof initSqlJs>>;
 export type SqlDatabase = InstanceType<SqlJsStatic["Database"]>;
@@ -85,7 +203,8 @@ export async function openCachedDb(dbPath: string): Promise<SqlDatabase> {
   const loadPromise = (async () => {
     try {
       const SQL = await getSqlEngine();
-      const fileBuffer = fs.readFileSync(dbPath);
+      const readablePath = await resolveReadablePath(dbPath);
+      const fileBuffer = fs.readFileSync(readablePath);
       const db = new SQL.Database(fileBuffer);
 
       const prev = _dbCache.get(dbPath);

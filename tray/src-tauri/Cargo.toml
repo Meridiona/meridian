@@ -82,6 +82,17 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 futures-util = "0.3"
 # SHA-256 verification of the downloaded runtime tarball against the manifest.
 sha2 = "0.10"
+# OS-native secret storage (macOS Keychain / Windows Credential Manager) for the
+# local meridian.db SQLCipher encryption key — see db_key.rs. Pinned to the "3"
+# series deliberately: it ships the simple Entry::new/get_password/set_password
+# API used here directly; the "4" series requires manually registering a
+# storage backend first, which this app has no need to customize.
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+# Generates the random 256-bit db_key.rs encryption key (CSPRNG via OsRng).
+# `hex` encodes/decodes it for storage — both already in the workspace lockfile
+# via the daemon's root Cargo.toml, so this adds no new crate to the tree.
+rand = "0.8"
+hex = "0.4"
 chrono = { version = "0.4", features = ["clock"] }
 # Anonymous per-install id for product analytics (analytics.rs) — already in
 # the workspace lockfile transitively, so this adds no new crate to the tree.
@@ -98,19 +109,30 @@ meridian-core = { path = "../../meridian-core" }
 meridian-oauth = { path = "../../meridian-oauth" }
 # Instrumentation facade for tray commands (no-op without a subscriber).
 tracing = "0.1"
-# Always available (not feature-gated): the shipped tray's "Export
-# Diagnostics" Settings action (`commands::diagnostics`) calls
-# `meridian::telemetry_spool::build_export_bundle` directly, so every build —
-# including a lean release build — needs it. The `otel` feature (below)
-# separately controls whether the tray ALSO installs `observability::init`'s
-# live tracing subscriber for itself (dev convenience only); that's the only
-# part that stays off by default.
+# Always available (not feature-gated), used by every build for two things: the
+# shipped tray's "Export Diagnostics" Settings action (`commands::diagnostics`)
+# calls `meridian::telemetry_spool::build_export_bundle`, and `run()` calls
+# `meridian::observability::init("meridian-tray")` UNCONDITIONALLY so the tray's
+# own spans/logs land in the shared spool (→ the daemon's shipper → central,
+# redacted + error-only) in release too, not just under a dev feature. The OTel
+# machinery is already linked via this dep, so the init call adds no new deps.
 meridian = { path = "../.." }
+# Native-crash capture (Phase 2B): minidumps + fingerprint grouping + release
+# health for the tray — the crash class the OTLP spool structurally can't see
+# (segfault, panic before the logger inits, OOM). `tauri-plugin-sentry` re-exports
+# sentry-rust-minidump, so that is NOT listed separately. Deliberately WITHOUT the
+# `tracing` feature: logged errors already egress via the OTLP pipeline (Phase
+# 2A), so Sentry stays scoped to crashes/panics and nothing is double-reported.
+# rustls transport to match the tray's existing TLS stack (no native-tls/openssl).
+# Inert without a baked DSN + user consent (see `crash.rs`) — a source build
+# never talks to Sentry.
+sentry = { version = "0.42", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls"] }
+tauri-plugin-sentry = "0.5"
 # Forked screenpipe @ last-MIT 892199f74 (Meridiona/screenpipe-fork). In-process
 # screen capture + Apple Vision OCR. Optional → only pulled by the `capture`
 # feature (heavy: ScreenCaptureKit/cidre/sck-rs). Private repo: local builds use
 # the user's git credentials; CI needs a deploy token (future).
-screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "2b7e929f7168344faa0121c7a646e5758701d19a", optional = true }
+screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "61332b8a15f09a08876455ad45713eb3b1bfa2df", optional = true }
 # Sibling crate in the same fork: the accessibility-tree walker (slice 3b).
 # `tree::create_tree_walker` walks the focused window's AX tree → structured
 # text — the PRIMARY signal for Electron/Chromium apps (VS Code, Slack), which
@@ -143,10 +165,15 @@ screenpipe-screen = { git = "https://github.com/Meridiona/screenpipe-fork", rev 
 # the CGDisplayRegisterReconfigurationCallback watcher extracted from
 # upstream screenpipe's `screenpipe-engine::sleep_monitor` (its "Thread 4") —
 # see `capture/screenpipe.rs`'s `run_monitor_refresh_task` for the caller.
-screenpipe-a11y = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "2b7e929f7168344faa0121c7a646e5758701d19a", optional = true }
-# Console log subscriber for capture-enabled non-otel runs (otel installs its
-# own). Makes the `capture: …` logs visible during a `cargo run --features capture`.
-tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+#
+# Bumped to 61332b8 (screenpipe-screen only): the OCR path (Tesseract/
+# AppleNative/WindowsNative/Custom/cloud) previously had no PII/password
+# redaction at all, unlike screenpipe-a11y's own apply_pii_removal. This
+# wires screenpipe_core::remove_pii/remove_pii_from_text_json into
+# process_window_ocr's single dispatch point so every OCR engine's output
+# is redacted before it reaches the OCR cache or the frame consumer. See
+# Meridiona/screenpipe-fork#6.
+screenpipe-a11y = { git = "https://github.com/Meridiona/screenpipe-fork", rev = "61332b8a15f09a08876455ad45713eb3b1bfa2df", optional = true }
 
 # Raw Objective-C messaging to set NSWindow collectionBehavior directly: tao's
 # `set_visible_on_all_workspaces` only adds CanJoinAllSpaces, never the
@@ -211,18 +238,11 @@ windows = { version = "0.61", features = ["UI_Notifications"] }
 # clippy`/`test` at the workspace root select the `meridian` package only — so
 # the macOS-only cidre/screenpipe-screen stack is not pulled into CI.)
 default = ["capture"]
-# Dev-only: installs `meridian::observability::init`'s live tracing subscriber
-# INSIDE the tray process itself (so tray-side spans/logs get the same
-# always-capture-to-spool treatment as the daemon). `meridian` itself is a
-# required dependency regardless (see above) — this feature is purely about
-# whether the tray ALSO calls `init()` for its own process.
-otel = []
 # Pulls the heavy forked screenpipe-screen stack (ScreenCaptureKit/cidre).
 capture = [
     "dep:screenpipe-screen",
     "dep:screenpipe-a11y",
     "dep:cidre",
-    "dep:tracing-subscriber",
 ]
 
 # Fixture trees for the install-path resolvers (dev_bin / dev_cwd), so the

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use meridian::config::Config;
 use meridian::db::meridian::{cleanup_incomplete_runs, setup_db};
 use meridian::etl::run_etl;
@@ -264,6 +264,44 @@ async fn main() -> Result<()> {
                 pool.close().await;
             }
             Err(e) => eprintln!("worklog-post-approved: open db: {e}"),
+        }
+        return Ok(());
+    }
+
+    // `meridian db-export-plaintext --out <path>` — write a plaintext snapshot
+    // of meridian.db to `<path>`. The ONLY consumer today is
+    // `packages/meridian-mcp`'s `sql.js` reader (a pure-WASM SQLite build with
+    // no SQLCipher support), which shells out to this instead of reading an
+    // encrypted meridian.db directly. If the db is not encrypted (no
+    // MERIDIAN_DB_KEY set, e.g. dev/source installs), this is a plain file
+    // copy — no SQLCipher involvement at all.
+    if std::env::args().nth(1).as_deref() == Some("db-export-plaintext") {
+        let out_path = std::env::args()
+            .skip(2)
+            .collect::<Vec<_>>()
+            .windows(2)
+            .find(|w| w[0] == "--out")
+            .map(|w| w[1].clone());
+        let Some(out_path) = out_path else {
+            eprintln!("db-export-plaintext: usage: meridian db-export-plaintext --out <path>");
+            std::process::exit(1);
+        };
+        let cfg = Config::from_env();
+        let db_path = std::path::Path::new(&cfg.meridian_db);
+        let out_path = std::path::Path::new(&out_path);
+        let key = std::env::var("MERIDIAN_DB_KEY").ok();
+        let result = match key {
+            Some(k) => meridian_core::db_crypto::export_plaintext(db_path, &k, out_path).await,
+            None => std::fs::copy(db_path, out_path)
+                .map(|_| ())
+                .context("db-export-plaintext: plain file copy failed"),
+        };
+        match result {
+            Ok(()) => println!("exported plaintext snapshot to {}", out_path.display()),
+            Err(e) => {
+                eprintln!("db-export-plaintext: {e:#}");
+                std::process::exit(1);
+            }
         }
         return Ok(());
     }

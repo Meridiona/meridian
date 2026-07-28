@@ -66,19 +66,27 @@ export default function ConnectTrackers({
           const connected = !!integrations?.[t.id]
           const syncError = integrations?.sync_errors?.[t.id]
           const isOpen = open === t.id
+          // Gate NEW connections only. An already-connected tracker keeps its
+          // full row so a user can still manage or disconnect it - see the
+          // `comingSoon` doc in `@/lib/integrations`.
+          const locked = !!t.comingSoon && !connected
           return (
             <div key={t.id} style={{ borderTop: i > 0 ? '1px solid var(--t-hair)' : undefined }}>
               <button
-                onClick={() => setOpen(isOpen ? null : t.id)}
+                onClick={() => { if (!locked) setOpen(isOpen ? null : t.id) }}
+                disabled={locked}
+                aria-disabled={locked}
                 className="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors"
-                style={{ background: isOpen ? 'var(--t-box)' : 'var(--t-card)', cursor: 'pointer' }}
+                style={{ background: isOpen ? 'var(--t-box)' : 'var(--t-card)', cursor: locked ? 'default' : 'pointer', opacity: locked ? 0.55 : 1 }}
               >
                 <ProviderGlyph provider={t.id} size={22} />
                 <span className="flex flex-col min-w-0">
                   <span className="text-[13px]" style={{ color: 'var(--t-title)' }}>{t.name}</span>
                   {compact && !connected && <span className="text-[11px] truncate" style={{ color: 'var(--t-faint-2)' }}>{t.blurb}</span>}
                 </span>
-                {connected ? (
+                {locked ? (
+                  <span className="ml-auto text-[11px]" style={{ color: 'var(--t-faint-2)' }}>Coming soon</span>
+                ) : connected ? (
                   <span className="ml-auto inline-flex items-center gap-1.5 text-[11px]" style={{ color: syncError ? 'var(--status-warning-dot)' : 'var(--t-muted)' }}>
                     <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: syncError ? 'var(--status-warning-dot)' : 'var(--color-state-approved)' }} />
                     {syncError ? 'Sync error' : 'Connected'}

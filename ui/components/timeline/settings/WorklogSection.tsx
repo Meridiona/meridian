@@ -18,7 +18,7 @@ import { Switch } from '@/components/ui/Switch'
 import { TextInput } from '@/components/ui/TextInput'
 import type { RuntimeSettings } from '@/lib/settings'
 import type { IntegrationsResponse } from '@/lib/api-types'
-import { TRACKERS } from '@/lib/integrations'
+import { TRACKERS, availableTrackers, availableTrackerNames } from '@/lib/integrations'
 import { SectionCard, SectionHeader, FieldRow, SaveButton, type SaveStatus } from './fields'
 
 const PRESETS = [
@@ -63,7 +63,9 @@ export function WorklogSection({ settings, patch, save, integrations }: {
         <SectionCard>
           <SectionHeader>Auto-generate</SectionHeader>
           <p className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>
-            Connect a tracker first - Jira, Linear, GitHub, Trello, or Azure DevOps.
+            {availableTrackers().length
+              ? `Connect a tracker first - ${availableTrackerNames()}.`
+              : 'Tracker connections are coming soon.'}
           </p>
         </SectionCard>
       ) : (

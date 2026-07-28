@@ -1,0 +1,100 @@
+# Central error-observability stack — self-hosted OpenObserve + OTel Collector
+# gateway + Caddy (auto-TLS). Deploy on a Linux VM the team controls.
+#
+# This is the CENTRAL, team-visible instance that consented packaged installs
+# ship redacted error telemetry to. It is separate from the per-developer local
+# OpenObserve (scripts/install-openobserve-daemon.sh, localhost:5080) — that one
+# is unchanged and only receives a dev's own full-fidelity telemetry.
+#
+# Topology:
+#   installs ──HTTPS(Bearer)──▶ caddy:443 ──▶ otel-collector:4318 ──▶ openobserve:5080
+#   (OpenObserve root creds live ONLY in the collector; installs never see them —
+#    they present a rotatable write-only Bearer token the collector validates.)
+#
+# Deploy:
+#   1. cp .env.example .env   # then edit: OO creds, INGEST_TOKEN, domains,
+#                             # and the UI basic-auth hash (mind the `$`
+#                             # escaping warning in .env.example)
+#   2. Point GATEWAY_DOMAIN / OO_UI_DOMAIN DNS A-records at this VM's public IP.
+#   3. docker compose up -d
+#   4. Bake into the release DMG (see observability/otlp_target.rs):
+#        MERIDIAN_CENTRAL_OTLP_ENDPOINT = https://<GATEWAY_DOMAIN>/v1/traces
+#        MERIDIAN_CENTRAL_TELEMETRY_TOKEN = <INGEST_TOKEN>
+#   Rotate the token any time by changing INGEST_TOKEN + `docker compose up -d`;
+#   no app rebuild is needed to change collector redaction/filtering either.
+#
+# Every mandatory variable below uses `${VAR:?message}`, which ABORTS the deploy
+# when it is unset. Plain `${VAR}` only warns and substitutes an empty string,
+# which fails in the worst possible way here: an empty INGEST_TOKEN brings the
+# stack up accepting unauthenticated ingest on a world-reachable endpoint, and
+# an empty OO_UI_PASSWORD_HASH renders the UI basic-auth layer inert - both
+# looking like a healthy deploy. `OO_RETENTION_DAYS` deliberately keeps its
+# `:-90` default instead, since a .env written before that key existed must
+# still deploy.
+
+services:
+  openobserve:
+    image: ${OO_IMAGE:?set OO_IMAGE in .env}
+    restart: unless-stopped
+    environment:
+      ZO_ROOT_USER_EMAIL: ${OO_ROOT_USER_EMAIL:?set OO_ROOT_USER_EMAIL in .env}
+      ZO_ROOT_USER_PASSWORD: ${OO_ROOT_USER_PASSWORD:?set OO_ROOT_USER_PASSWORD in .env}
+      ZO_DATA_DIR: /data
+      ZO_HTTP_PORT: "5080"
+      # This instance's OWN product-analytics phone-home to OpenObserve, off.
+      ZO_TELEMETRY: "false"
+      # Global data retention. OpenObserve's own default is 3650 days (ten
+      # years), which on a modest boot disk means the VM fills silently and
+      # ingest starts failing for reasons that look nothing like "disk full".
+      # Error-only telemetry is low-volume, so the cap is about bounding the
+      # worst case, not the normal case. `:-90` so a .env written before this
+      # key existed still renders (compose substitutes the default rather than
+      # an empty string, which OpenObserve would reject). Minimum accepted by
+      # OpenObserve is 3.
+      ZO_COMPACT_DATA_RETENTION_DAYS: ${OO_RETENTION_DAYS:-90}
+    volumes:
+      - oo-data:/data
+    # No published ports: only the collector (export) and caddy (UI proxy) reach
+    # OpenObserve, over the private compose network. Nothing binds it to the host.
+
+  otel-collector:
+    image: ${COLLECTOR_IMAGE:?set COLLECTOR_IMAGE in .env}
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    environment:
+      # Validated against every install's `Authorization: Bearer <token>`.
+      INGEST_TOKEN: ${INGEST_TOKEN:?set INGEST_TOKEN in .env - an empty one accepts anonymous ingest}
+      # Server-side only — the collector authenticates to OpenObserve with these.
+      OO_ROOT_USER_EMAIL: ${OO_ROOT_USER_EMAIL:?set OO_ROOT_USER_EMAIL in .env}
+      OO_ROOT_USER_PASSWORD: ${OO_ROOT_USER_PASSWORD:?set OO_ROOT_USER_PASSWORD in .env}
+      OO_ORG: ${OO_ORG:?set OO_ORG in .env}
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    depends_on:
+      - openobserve
+
+  caddy:
+    image: ${CADDY_IMAGE:?set CADDY_IMAGE in .env}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      GATEWAY_DOMAIN: ${GATEWAY_DOMAIN:?set GATEWAY_DOMAIN in .env}
+      OO_UI_DOMAIN: ${OO_UI_DOMAIN:?set OO_UI_DOMAIN in .env}
+      # Basic auth in front of the OO UI only (see the Caddyfile). The hash
+      # MUST be `$`-escaped in .env or compose truncates it — .env.example
+      # explains why and how.
+      OO_UI_USER: ${OO_UI_USER:?set OO_UI_USER in .env}
+      OO_UI_PASSWORD_HASH: ${OO_UI_PASSWORD_HASH:?set OO_UI_PASSWORD_HASH in .env - an empty hash disables UI auth}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - otel-collector
+
+volumes:
+  oo-data:
+  caddy-data:
+  caddy-config:

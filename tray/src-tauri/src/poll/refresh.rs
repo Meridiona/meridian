@@ -31,6 +31,22 @@ pub(super) async fn refresh_health(
 ) {
     let hr = check_health().await;
 
+    // Surface the in-use LLM provider's health on the poll path too (the `get_health` command
+    // logs it on demand; this catches the background 60 s cadence). A warn when it's unavailable
+    // is genuinely worth having in the log - it means hourly summaries are paused.
+    if hr.llm_provider_ok == Some(false) {
+        tracing::warn!(
+            provider = ?hr.llm_provider_name,
+            detail = ?hr.llm_provider_detail,
+            "in-use LLM provider is unavailable — hourly summaries paused"
+        );
+    } else if hr.llm_provider_rate_limited == Some(true) {
+        tracing::info!(
+            provider = ?hr.llm_provider_name,
+            "in-use LLM provider is rate-limited — summaries will catch up when the limit clears"
+        );
+    }
+
     // Push the health detail to the dashboard webview (the ported
     // `/api/health/stream`). HealthResponse is a superset of the route's payload
     // (it also carries `daemon_running`, which the banner ignores).
