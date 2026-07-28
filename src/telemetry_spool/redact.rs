@@ -423,6 +423,29 @@ const HOST_NAME_KEY: &str = "host.name";
 /// the bare hostname computed elsewhere.
 const HOST_PSEUDONYM_SALT: &str = "meridian.host.pseudonym.v1:";
 
+/// Domain-separation prefix for [`pseudonymize_account`] — deliberately
+/// DIFFERENT from [`HOST_PSEUDONYM_SALT`] so the two hash spaces can never be
+/// cross-compared (a candidate email hashed under the wrong salt would never
+/// match a machine pseudonym, and vice versa), even though both go through
+/// the same [`hash_pseudonym`] shape.
+const ACCOUNT_PSEUDONYM_SALT: &str = "meridian.account.pseudonym.v1:";
+
+/// Shared SHA-256-salt-and-truncate shape behind both [`pseudonymize_host`]
+/// and [`pseudonymize_account`]. Truncated to 16 hex chars (8 bytes): ample
+/// against collisions at fleet scale, short enough to read in a dashboard.
+fn hash_pseudonym(salt: &str, seed: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(salt.as_bytes());
+    hasher.update(seed.as_bytes());
+    let digest = hasher.finalize();
+    digest[..8].iter().fold(String::new(), |mut acc, b| {
+        use std::fmt::Write;
+        let _ = write!(acc, "{b:02x}");
+        acc
+    })
+}
+
 /// Replace a hostname with a stable, non-reversible pseudonym.
 ///
 /// Dropping `host.name` outright was the other option, and is what the review
@@ -443,16 +466,23 @@ const HOST_PSEUDONYM_SALT: &str = "meridian.host.pseudonym.v1:";
 /// should actually use — hashing a caller-supplied hostname is exactly the
 /// mistake this module had (see that function's doc).
 pub fn pseudonymize_host(seed: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(HOST_PSEUDONYM_SALT.as_bytes());
-    hasher.update(seed.as_bytes());
-    let digest = hasher.finalize();
-    digest[..8].iter().fold(String::new(), |mut acc, b| {
-        use std::fmt::Write;
-        let _ = write!(acc, "{b:02x}");
-        acc
-    })
+    hash_pseudonym(HOST_PSEUDONYM_SALT, seed)
+}
+
+/// Hash a signed-in user's email into the same 16-hex shape as
+/// [`pseudonymize_host`], salted separately (see [`ACCOUNT_PSEUDONYM_SALT`]).
+///
+/// ALPHA TESTING ONLY — see [`local_host_pseudonym`]'s doc for the mechanism
+/// this feeds. `pub` because the tray computes this at sign-in
+/// (`tray/src-tauri/src/commands/account.rs::save_account_email`) and writes
+/// ONLY the resulting hash into `settings.json`'s `account_pseudonym` — the
+/// raw email never leaves that command.
+///
+/// Trimmed and lowercased before hashing so `User@Example.com` and
+/// `user@example.com` (the same signed-in person, different capitalisation)
+/// produce the identical pseudonym.
+pub fn pseudonymize_account(email: &str) -> String {
+    hash_pseudonym(ACCOUNT_PSEUDONYM_SALT, &email.trim().to_ascii_lowercase())
 }
 
 /// This machine's pseudonym - the exact value that appears as `host.name` in
@@ -488,11 +518,94 @@ pub fn pseudonymize_host(seed: &str) -> String {
 /// is a one-way hash of a low-entropy input, and hostnames are enumerable
 /// (`Akarshs-MacBook-Pro.local` can simply be hashed and compared) where a
 /// 128-bit hardware UUID is not.
+///
+/// # ALPHA TESTING ONLY — per-user override (expires 2026-08-28)
+/// Meridian's alpha runs on a small set of hand-picked testers, several of
+/// whom run Meridian on more than one machine. For that one-month window,
+/// support needs to trace a tester's errors across their devices, so this
+/// seeds from the signed-in account's pseudonym ([`pseudonymize_account`],
+/// mirrored into `settings.json` by `tray/src-tauri/src/commands/account.rs`)
+/// instead of the hardware id, when the tester is signed in. See
+/// [`choose_pseudonym_source`] for the exact rule.
+///
+/// This is gated on a hardcoded expiry date, NOT the release channel — unlike
+/// most temporary behaviour in this codebase, channel-gating doesn't apply
+/// here, because the hand-picked alpha testers install the SAME `stable`
+/// (production) channel build as every other user; there is no separate
+/// alpha channel to distinguish them by. So the automatic revert is time-based
+/// instead: once [`ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`] passes, EVERY build —
+/// stable included — reverts to the per-machine pseudonym on its own, with no
+/// deploy required. If the alpha window needs to extend, bump that constant;
+/// if it needs to end early, drop it to `0`.
+///
+/// This is a genuine, if temporary, relaxation of "not tied to your account"
+/// (the Settings → Account copy says so explicitly during alpha) — it is NOT
+/// a bug if a Support ID changes on sign-out/sign-in-as-someone-else, unlike
+/// the network-change regression this module was originally written to fix.
+///
+/// The value is also prefixed `mac_`/`win_` ([`platform_prefix`]) so a quoted
+/// Support ID reads its own platform without a separate lookup.
 pub fn local_host_pseudonym() -> String {
+    format!("{}{}", platform_prefix(), pseudonym_body())
+}
+
+/// `mac_` / `win_` / `""` (never built for anything else). Read fresh each
+/// call — a `cfg!` check, not worth caching.
+fn platform_prefix() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "mac_"
+    } else if cfg!(target_os = "windows") {
+        "win_"
+    } else {
+        ""
+    }
+}
+
+/// Unix seconds marking the end of the ALPHA per-user pseudonym window —
+/// 2026-08-28T00:00:00Z, one month out from when this shipped (2026-07-28).
+/// See [`local_host_pseudonym`]'s ALPHA doc for why this is a date, not a
+/// channel check.
+const ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX: u64 = 1_787_875_200;
+
+/// Now, as Unix seconds. Failure (a clock so broken `UNIX_EPOCH` is in the
+/// future) reads as "expired" — `u64::MAX` — rather than "still in the alpha
+/// window", so a clock fault fails CLOSED toward the stricter per-machine
+/// pseudonym instead of silently keeping the relaxed one active forever.
+fn now_unix_or_expired() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(u64::MAX)
+}
+
+/// The pseudonym body (no platform prefix): the ALPHA-only account override
+/// when [`choose_pseudonym_source`] says it applies, else the ordinary
+/// hardware-seeded pseudonym.
+fn pseudonym_body() -> String {
+    let account_pseudonym = crate::config::load_runtime_settings().account_pseudonym;
+    if let Some(hash) = choose_pseudonym_source(now_unix_or_expired(), account_pseudonym.as_deref())
+    {
+        return hash;
+    }
     match machine_id::stable_machine_id() {
         Some(id) => pseudonymize_host(id),
         None => pseudonymize_host(&gethostname::gethostname().to_string_lossy()),
     }
+}
+
+/// The ALPHA per-user rule, isolated as a pure function of `now_unix` so it's
+/// testable without touching `settings.json` or the real system clock: the
+/// account pseudonym applies only before
+/// [`ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`], and only when one is actually on
+/// record (signed in, non-empty).
+fn choose_pseudonym_source(now_unix: u64, account_pseudonym: Option<&str>) -> Option<String> {
+    if now_unix >= ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX {
+        return None;
+    }
+    account_pseudonym
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 fn is_safe_string_key(key: &str) -> bool {
@@ -1048,7 +1161,12 @@ mod tests {
         };
         assert!(!out.contains("Akarsh"), "raw hostname survived: {out}");
         assert!(!out.contains("MacBook"), "raw hostname survived: {out}");
-        assert_eq!(out.len(), 16, "expected a 16-hex-char pseudonym, got {out}");
+        // 16 hex chars plus whatever platform prefix this build carries.
+        assert_eq!(
+            out.len(),
+            platform_prefix().len() + 16,
+            "expected a 16-hex-char pseudonym (+ platform prefix), got {out}"
+        );
         // This machine's pseudonym, NOT a hash of the captured hostname — the
         // captured value is deliberately ignored (see `keep_attribute`).
         assert_eq!(out, local_host_pseudonym());
@@ -1185,6 +1303,97 @@ mod tests {
             };
             assert_eq!(out, value, "{key} was altered in transit");
         }
+    }
+
+    /// The Support ID / shipped `host.name` names its own platform so support
+    /// doesn't need a separate lookup to tell a Mac tester's row from a
+    /// Windows one.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn support_id_carries_the_platform_prefix() {
+        assert!(
+            local_host_pseudonym().starts_with("mac_"),
+            "expected a mac_ prefix: {}",
+            local_host_pseudonym()
+        );
+    }
+
+    /// [`pseudonymize_account`] must be salted separately from
+    /// [`pseudonymize_host`] — otherwise a hardware UUID and an email could
+    /// collide into the same identifier space, and a determined reader who
+    /// knows a candidate value of one kind could confirm it against the other.
+    #[test]
+    fn account_pseudonym_is_salted_independently_of_host_pseudonym() {
+        let same_string = "not-actually-an-email-or-a-uuid";
+        assert_ne!(
+            pseudonymize_host(same_string),
+            pseudonymize_account(same_string),
+            "account and host pseudonyms must not share a salt"
+        );
+    }
+
+    /// Case and incidental whitespace must not fork one person's Support ID
+    /// across their devices — Clerk emails aren't guaranteed to arrive
+    /// byte-identical from every call site.
+    #[test]
+    fn account_pseudonym_ignores_case_and_whitespace() {
+        assert_eq!(
+            pseudonymize_account("Alpha.Tester@Example.com"),
+            pseudonymize_account("  alpha.tester@example.com  ")
+        );
+        assert_ne!(
+            pseudonymize_account("alpha.tester@example.com"),
+            pseudonymize_account("someone.else@example.com")
+        );
+        assert_eq!(pseudonymize_account("alpha.tester@example.com").len(), 16);
+    }
+
+    /// The ALPHA per-user rule ([`choose_pseudonym_source`]), pinned as a pure
+    /// function of `now_unix` so it's testable without depending on the real
+    /// system clock. Alpha testers install the same `stable` channel as
+    /// everyone else, so this is gated on the expiry date, not the channel —
+    /// see [`ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`].
+    #[test]
+    fn account_pseudonym_only_overrides_before_the_expiry() {
+        let hash = "deadbeefcafebabe";
+        let expiry = ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX;
+        assert_eq!(
+            choose_pseudonym_source(expiry, Some(hash)),
+            None,
+            "at the expiry instant, must already have reverted"
+        );
+        assert_eq!(
+            choose_pseudonym_source(expiry + 1, Some(hash)),
+            None,
+            "after expiry, must never take the per-user path, even when signed in"
+        );
+        assert_eq!(
+            choose_pseudonym_source(expiry - 1, Some(hash)),
+            Some(hash.to_string()),
+            "before expiry, signed in, must use the per-user pseudonym"
+        );
+    }
+
+    /// A clock fault (`now_unix_or_expired`'s `u64::MAX` sentinel) must fail
+    /// CLOSED — toward the stricter per-machine pseudonym — never toward
+    /// silently keeping the relaxed alpha behaviour active forever.
+    #[test]
+    fn a_broken_clock_reads_as_expired_not_as_still_in_the_window() {
+        assert_eq!(
+            choose_pseudonym_source(u64::MAX, Some("deadbeefcafebabe")),
+            None
+        );
+    }
+
+    /// Not signed in (or a corrupt/empty settings value) must fall back to the
+    /// ordinary per-machine pseudonym rather than propagating an empty string
+    /// through as a Support ID.
+    #[test]
+    fn account_pseudonym_absent_or_empty_falls_back_to_machine() {
+        let before_expiry = ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX - 1;
+        assert_eq!(choose_pseudonym_source(before_expiry, None), None);
+        assert_eq!(choose_pseudonym_source(before_expiry, Some("")), None);
+        assert_eq!(choose_pseudonym_source(before_expiry, Some("   ")), None);
     }
 
     /// Every other free-text case here is Unix-shaped, but Windows installs

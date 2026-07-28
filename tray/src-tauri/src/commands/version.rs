@@ -266,10 +266,13 @@ pub(crate) fn build_channel() -> &'static str {
 pub struct AppInfo {
     pub version: String,
     pub channel: String,
-    /// This machine's pseudonym — the exact value error telemetry from here
-    /// carries as `host.name` in the central backend. Shown in Settings so a
-    /// user can quote it when they contact support; without it their error
-    /// rows are unfindable, since pseudonymisation is one-way by design.
+    /// This machine's pseudonym (ALPHA TESTING, until 2026-08-28: while
+    /// signed in, the signed-in account's pseudonym instead — see
+    /// `meridian::telemetry_spool::redact::local_host_pseudonym`'s doc) — the
+    /// exact value error telemetry from here carries as `host.name` in the
+    /// central backend. Shown in Settings so a user can quote it when they
+    /// contact support; without it their error rows are unfindable, since
+    /// pseudonymisation is one-way by design.
     pub support_id: String,
 }
 
