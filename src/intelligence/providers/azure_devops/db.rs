@@ -4,7 +4,7 @@
 //! Split from the connector root purely for file size.
 //!
 //! # Who calls this
-//! [`super::force_refresh`], via `db::{prune, stamp_sync, stamp_error}`.
+//! [`super::force_refresh`], via `db::{prune, stamp_sync}`.
 
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
@@ -106,29 +106,5 @@ pub(super) async fn stamp_sync(pool: &SqlitePool) -> Result<()> {
     .await
     .context("updating azure_devops sync state")?;
     let _ = crate::notices::clear(pool, "pm.azure_devops").await;
-    Ok(())
-}
-
-pub(super) async fn stamp_error(pool: &SqlitePool, error: &str) -> Result<()> {
-    let now = chrono::Utc::now().to_rfc3339();
-    sqlx::query(
-        "INSERT INTO pm_sync_state (provider, last_synced_at, last_error)
-         VALUES ('azure_devops', ?, ?)
-         ON CONFLICT(provider) DO UPDATE SET last_error = excluded.last_error",
-    )
-    .bind(&now)
-    .bind(error)
-    .execute(pool)
-    .await
-    .context("recording azure_devops sync error")?;
-    let _ = crate::notices::raise(
-        pool,
-        "pm.azure_devops",
-        "error",
-        "Azure DevOps sync failing",
-        error,
-        Some("Set AZURE_DEVOPS_PAT in .env"),
-    )
-    .await;
     Ok(())
 }

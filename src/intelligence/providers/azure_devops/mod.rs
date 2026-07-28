@@ -26,7 +26,7 @@ mod fetch;
 #[cfg(test)]
 mod tests;
 
-use db::{prune, stamp_error, stamp_sync};
+use db::{prune, stamp_sync};
 use fetch::{fetch_batch, fetch_state_categories, run_wiql, BATCH_SIZE};
 
 const SYNC_INTERVAL_MINS: i64 = 5;
@@ -184,24 +184,48 @@ pub async fn refresh_if_stale(
             }
         }
     }
-    force_refresh(pool, cfg).await.map(Some)
+    force_refresh(pool, cfg).await
 }
 
 /// Unconditionally refresh the Azure DevOps task cache.
+///
+/// # Why `Option`, like the other four providers
+/// This used to return `Result<Vec<String>>` and propagate `Err` after already
+/// recording a classified failure. That `Err` reached
+/// `intelligence::run_pm_sync`'s generic catch-all, which wrote a SECOND,
+/// unclassified, truncated notice on top of the correct one — so a transient
+/// Azure DevOps blip still raised "Reconnect Azure DevOps in Settings", and this
+/// provider's fix was undone by its own call site.
+///
+/// The other four providers never hit that because their `refresh_if_stale`
+/// resolves to `Ok(None)` once it has handled a provider failure itself. This
+/// now matches them: `Ok(None)` means "failed, already recorded, do not
+/// re-report". Returning `Ok(Some(vec![]))` instead would be wrong — the caller
+/// treats any `Ok(Some(_))` as success and calls `clear_sync_error`, wiping the
+/// notice we just raised.
 #[tracing::instrument(skip(pool, cfg), fields(provider = "azure_devops"))]
-pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result<Vec<String>> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .context("building HTTP client")?;
+pub async fn force_refresh(
+    pool: &SqlitePool,
+    cfg: &AzureDevOpsConfig,
+) -> Result<Option<Vec<String>>> {
+    // The shared client: same timeouts as every other provider, plus a connect
+    // deadline this one never had (it set a total timeout only, so a hung
+    // connect still consumed the full 30 s).
+    let client = super::http::client();
 
     // 1. WIQL: all work items assigned to me.
     let all_ids = match run_wiql(&client, cfg).await {
         Ok(ids) => ids,
         Err(e) => {
-            let msg = e.to_string();
-            stamp_error(pool, &msg).await?;
-            return Err(e);
+            // Was `stamp_error(pool, &e.to_string())`, which both reported every
+            // network blip as a credentials fault AND printed only the outermost
+            // context, dropping the cause.
+            super::record_sync_failure(pool, "azure_devops", "wiql", &e).await;
+            // NOT `Err(e)`: already recorded and classified. Propagating it
+            // would reach `run_pm_sync`'s generic catch-all, which reports
+            // unconditionally and truncates - overwriting this with the very
+            // bug this branch removes.
+            return Ok(None);
         }
     };
     tracing::debug!(count = all_ids.len(), "azure_devops: WIQL returned IDs");
@@ -209,7 +233,7 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
     if all_ids.is_empty() {
         prune(pool, &[]).await?;
         stamp_sync(pool).await?;
-        return Ok(vec![]);
+        return Ok(Some(vec![]));
     }
 
     // 2. Batch-fetch full detail (≤BATCH_SIZE per request). `raw_by_id` is the
@@ -219,7 +243,16 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
     let mut details: Vec<WorkItemDetail> = Vec::with_capacity(all_ids.len());
     let mut raw_by_id: HashMap<u64, serde_json::Value> = HashMap::with_capacity(all_ids.len());
     for chunk in all_ids.chunks(BATCH_SIZE) {
-        let batch = fetch_batch(&client, cfg, chunk).await?;
+        // Classified like the WIQL stage above rather than a bare `?`. A batch
+        // failure is just as fatal to the sync, and propagating it unrecorded
+        // meant a provider failing consistently HERE escalated never.
+        let batch = match fetch_batch(&client, cfg, chunk).await {
+            Ok(b) => b,
+            Err(e) => {
+                super::record_sync_failure(pool, "azure_devops", "work_item_batch", &e).await;
+                return Ok(None);
+            }
+        };
         for (detail, raw) in batch {
             raw_by_id.insert(detail.id, raw);
             details.push(detail);
@@ -455,7 +488,7 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         active = kept.len(),
         "azure_devops tasks refreshed"
     );
-    Ok(kept)
+    Ok(Some(kept))
 }
 
 // ---------------------------------------------------------------------------

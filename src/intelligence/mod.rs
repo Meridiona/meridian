@@ -47,9 +47,10 @@ pub async fn run_pm_force_sync(meridian: &SqlitePool, config: &Config) -> Result
             PmProviderConfig::Linear(cfg) => providers::linear::force_refresh(meridian, cfg).await,
             PmProviderConfig::Trello(cfg) => providers::trello::force_refresh(meridian, cfg).await,
             PmProviderConfig::AzureDevOps(cfg) => {
-                providers::azure_devops::force_refresh(meridian, cfg)
-                    .await
-                    .map(Some)
+                // No `.map(Some)`: azure_devops now returns `Option` like the
+                // other four, so a failure it already classified arrives as
+                // `Ok(None)` instead of an `Err` this loop would re-report.
+                providers::azure_devops::force_refresh(meridian, cfg).await
             }
         };
         match result {
@@ -59,8 +60,12 @@ pub async fn run_pm_force_sync(meridian: &SqlitePool, config: &Config) -> Result
                 println!("{name}: synced {} task(s)", keys.len());
             }
             Err(e) => {
-                tracing::warn!(provider = name, error = %e, "force sync failed");
-                eprintln!("{name}: sync failed: {e}");
+                // `{e:#}` - the full cause chain. A bare `{e}` printed only the
+                // outermost context, so the operator running a force sync saw
+                // "POST /graphql viewer" with the actual cause discarded.
+                let detail = providers::http::chain(&e);
+                tracing::warn!(provider = name, error = %detail, "force sync failed");
+                eprintln!("{name}: sync failed: {detail}");
             }
         }
     }
@@ -110,8 +115,15 @@ pub async fn run_pm_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
                 let _ = providers::clear_sync_error(meridian, name).await;
             }
             Err(e) => {
-                tracing::warn!(provider = name, error = %e, "provider refresh failed");
-                let _ = providers::stamp_sync_error(meridian, name, &e.to_string()).await;
+                // Was `stamp_sync_error(name, &e.to_string())`: unconditionally
+                // terminal, and `{e}` rather than `{e:#}` — both of the bugs the
+                // provider-level fix removes. That made this a silent undo
+                // button, since a provider could classify its own failure
+                // correctly and then have this generic write land on top and
+                // win. Anything still reaching here is a genuine infra error
+                // (a DB write, say), which classifies as terminal by default and
+                // now carries its whole cause chain.
+                providers::record_sync_failure(meridian, name, "refresh", &e).await;
             }
         }
     }

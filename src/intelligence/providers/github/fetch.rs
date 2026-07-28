@@ -160,12 +160,26 @@ fn post_graphql(
 // ---------------------------------------------------------------------------
 
 pub(super) async fn fetch_viewer_login(github: &GitHubConfig) -> Result<String> {
-    let client = reqwest::Client::new();
+    let client = crate::intelligence::providers::http::client();
     let resp = post_graphql(&client, github, json!({ "query": "{ viewer { login } }" }))
         .send()
         .await
         .context("POST /graphql viewer")?;
+    // Check the status BEFORE parsing. A 500 or a 429 has no `data` field, so
+    // it used to fall through to the parse and surface as "GraphQL viewer
+    // response missing data" — a GitHub outage reported to the user as a
+    // credentials problem. The typed error carries the status so
+    // `http::is_transient` can tell an outage from a dead token.
+    let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(crate::intelligence::providers::http::HttpStatusError::new(
+            status.as_u16(),
+            "GitHub GraphQL viewer",
+            &text,
+        )
+        .into());
+    }
     let parsed: GqlResponse<ViewerData> =
         serde_json::from_str(&text).context("deserialising viewer response")?;
     parsed
@@ -236,7 +250,12 @@ pub(super) async fn fetch_project_items(
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
-            anyhow::bail!("GitHub GraphQL → {}: {}", status, text);
+            return Err(crate::intelligence::providers::http::HttpStatusError::new(
+                status.as_u16(),
+                "GitHub GraphQL",
+                &text,
+            )
+            .into());
         }
 
         // Parse once as a Value so each raw item node survives verbatim for
