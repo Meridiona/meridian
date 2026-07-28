@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   CHOOSER_PROVIDER_IDS, LLM_RECOMMENDED_BADGE, LLM_RECOMMENDED_NOTE,
-  llmProvider, type LlmProviderId,
+  llmProvider, llmSignIn, type LlmProviderId,
 } from '@/lib/llm-providers'
 import { invoke } from '@/lib/bridge'
 import type {
@@ -113,16 +113,11 @@ export function useLlmProviderDetection() {
    *  (`claude_sign_in`). Each tray command drives that vendor's `… login` and opens the browser;
    *  none takes a provider argument, so the id picks the command here. */
   const signIn = useCallback(async (id: string): Promise<InstallOutcome> => {
-    // Explicit per-provider mapping - do NOT fall back to a default command. A missing entry
-    // means a provider was given an in-app sign-in button (its `signInProvider` descriptor in
-    // LlmProviderDetail) without a matching tray command here; fail loudly rather than silently
-    // running the wrong vendor's login (e.g. Cursor's) for it.
-    const SIGN_IN_COMMANDS: Record<string, string> = {
-      cursor: 'cursor_sign_in',
-      codex: 'codex_sign_in',
-      claude: 'claude_sign_in',
-    }
-    const command = SIGN_IN_COMMANDS[id]
+    // Resolved from `LLM_SIGN_IN`, the same record that gives LlmProviderDetail its button
+    // copy - so a provider either has both a button and a command, or neither. Still no
+    // default fallback: an unknown id must fail loudly rather than silently running some
+    // other vendor's login (e.g. Cursor's) for it.
+    const command = llmSignIn(id)?.trayCommand
     if (!command) {
       return { ok: false, message: `No in-app sign-in is wired up for "${id}".`, path: null, command: '' }
     }

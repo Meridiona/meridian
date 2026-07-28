@@ -15,7 +15,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { openExternal } from '@/lib/bridge'
 import { ProviderLogo } from '@/components/LlmProviderLogos'
-import { LLM_RECOMMENDED_BADGE, USAGE_FOOTPRINT_NOTE, type LlmProviderMeta } from '@/lib/llm-providers'
+import { LLM_RECOMMENDED_BADGE, USAGE_FOOTPRINT_NOTE, llmSignIn, type LlmProviderMeta } from '@/lib/llm-providers'
 import type { InstallOutcome, ProviderStatus, ProviderTestResult } from '@/components/LlmProviderPicker'
 
 /** The connection state we render, derived from install + last-test + in-flight flags. */
@@ -80,8 +80,10 @@ export interface LlmProviderDetailProps {
   onBack: () => void
   /** Run the vendor installer; resolves with what happened so we can show the message. */
   onInstall: () => Promise<InstallOutcome>
-  /** Run the interactive browser sign-in for this provider (Cursor or Codex — OAuth on the
-   *  user's own subscription). No-op for providers without an in-app sign-in. */
+  /** Run the interactive browser sign-in for this provider - OAuth against the user's own
+   *  subscription. Applies to every id in `LLM_SIGN_IN` (`@/lib/llm-providers`), currently
+   *  Cursor, Codex and Claude; deliberately not enumerated here, since that list is what
+   *  drifted. No-op for providers without an in-app sign-in. */
   onSignIn: () => Promise<InstallOutcome>
   onTest: () => void
   /** Commit this provider as the default. Rejects if the write failed (Settings save). */
@@ -247,17 +249,11 @@ function ConnectionBody({ phase, name, providerId, installHint, installMsg, sign
 }) {
   const mono = { fontSize: 11, lineHeight: 1.5, color: 'var(--t-key-text)', background: 'var(--t-key-bg)', borderRadius: 6, padding: '6px 9px' } as const
   // Providers whose CLI authenticates against the user's OWN subscription via a browser OAuth
-  // that Meridian can drive in-app (a "Sign in to …" button → the `*_sign_in` tray command).
-  // `account`/`subscription` fill the copy; `cmd` is the terminal fallback. `null` for
-  // providers with no in-app sign-in (e.g. Copilot, or a cloud endpoint).
-  const signInProvider =
-    providerId === 'cursor'
-      ? { label: 'Sign in to Cursor', account: 'Cursor', subscription: 'Cursor subscription', cmd: 'cursor-agent login' }
-      : providerId === 'codex'
-        ? { label: 'Sign in to Codex', account: 'ChatGPT', subscription: 'ChatGPT subscription', cmd: 'codex login' }
-        : providerId === 'claude'
-          ? { label: 'Sign in to Claude', account: 'Claude', subscription: 'Claude subscription', cmd: 'claude auth login' }
-          : null
+  // that Meridian can drive in-app. Resolved from the shared registry in
+  // `@/lib/llm-providers` so the copy here and the tray command the picker invokes cannot
+  // desync - they used to be two hard-coded lists. `null` for providers with no in-app
+  // sign-in (e.g. Copilot, or a cloud endpoint).
+  const signInProvider = llmSignIn(providerId)
 
   switch (phase.kind) {
     case 'installing':

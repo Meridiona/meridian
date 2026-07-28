@@ -223,6 +223,7 @@ static IN_USE_HEALTH_CACHE: std::sync::OnceLock<
 /// ([`IN_USE_HEALTH_TTL`]) so the recurring health poll doesn't re-run the (possibly
 /// login-shell-spawning) install probe on every tick. See [`classify_provider_health`] for the
 /// unavailable → rate-limited → fine decision.
+#[tracing::instrument(skip(settings), fields(provider = %settings.llm_provider))]
 pub async fn in_use_provider_health(settings: &RuntimeSettings) -> InUseProviderHealth {
     // Serve a fresh-enough cached result for the SAME provider.
     {
@@ -232,12 +233,37 @@ pub async fn in_use_provider_health(settings: &RuntimeSettings) -> InUseProvider
             .unwrap_or_else(|e| e.into_inner());
         if let Some((provider, at, health)) = guard.as_ref() {
             if provider == &settings.llm_provider && at.elapsed() < IN_USE_HEALTH_TTL {
+                tracing::debug!(cache = "hit", age_ms = at.elapsed().as_millis() as u64);
                 return health.clone();
             }
         }
     }
 
+    // Cache miss: this is the path that does real work - an install probe that can fall
+    // through to spawning a login shell (see `IN_USE_HEALTH_TTL`). Timed so a hang here is
+    // attributable from a shipped report rather than invisible.
+    tracing::debug!(cache = "miss");
+    let started = Instant::now();
     let health = compute_in_use_provider_health(settings).await;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+
+    if !health.ok {
+        // The ladder flipping to unavailable is what pauses hourly summaries, so it is a
+        // warning, not a debug line. `detail` is not on `redact::SAFE_STRING_KEYS`, so it
+        // stays local rather than egressing.
+        tracing::warn!(
+            elapsed_ms,
+            rate_limited = health.rate_limited,
+            detail = health.detail.as_deref().unwrap_or(""),
+            "in-use LLM provider is unavailable"
+        );
+    } else {
+        tracing::debug!(
+            elapsed_ms,
+            rate_limited = health.rate_limited,
+            "provider health probed"
+        );
+    }
 
     let mut guard = IN_USE_HEALTH_CACHE
         .get_or_init(Default::default)
@@ -254,6 +280,7 @@ pub async fn in_use_provider_health(settings: &RuntimeSettings) -> InUseProvider
 /// The uncached computation behind [`in_use_provider_health`]: resolve install state (one
 /// [`resolve_cli`] probe for a CLI provider; a cloud `Custom` endpoint has no binary) plus the
 /// last on-disk test result, then hand both to [`classify_provider_health`].
+#[tracing::instrument(skip(settings), fields(provider = %settings.llm_provider))]
 async fn compute_in_use_provider_health(settings: &RuntimeSettings) -> InUseProviderHealth {
     let Some(provider) = LlmProvider::from_wire(&settings.llm_provider) else {
         // An unrecognised provider string (a downgrade, a hand-edited settings file): don't
@@ -275,6 +302,17 @@ async fn compute_in_use_provider_health(settings: &RuntimeSettings) -> InUseProv
         Some(bin) => resolve_cli(bin).await.is_some(),
         None => true,
     };
+    tracing::debug!(
+        installed,
+        // The variant name only - the `message` payload can carry a provider's raw
+        // stderr, which has no business in a log field.
+        last_outcome = last_outcome.as_ref().map_or("none", |o| match o {
+            ProviderTestOutcome::Ok => "ok",
+            ProviderTestOutcome::RateLimited { .. } => "rate_limited",
+            ProviderTestOutcome::Failed { .. } => "failed",
+        }),
+        "resolved provider install state"
+    );
     classify_provider_health(name, installed, last_outcome.as_ref())
 }
 

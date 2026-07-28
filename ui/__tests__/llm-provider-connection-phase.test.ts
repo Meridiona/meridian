@@ -126,9 +126,27 @@ it('the subscription-provider "not signed in" copy only replaces the DISPLAY, no
   expect(failedBranch).toMatch(/not signed in yet/)
   expect(failedBranch).toMatch(/\{signInProvider\.label\}/)
   // Cursor, Codex, and Claude are each covered by the descriptor (each with its own label).
-  expect(detail).toMatch(/Sign in to Cursor/)
-  expect(detail).toMatch(/Sign in to Codex/)
-  expect(detail).toMatch(/Sign in to Claude/)
+  // The labels live in the shared registry, not inline here - see the desync test below.
+  const registry = src('lib/llm-providers.ts')
+  expect(registry).toMatch(/Sign in to Cursor/)
+  expect(registry).toMatch(/Sign in to Codex/)
+  expect(registry).toMatch(/Sign in to Claude/)
+})
+
+// The button copy and the tray command it fires used to live in two files - a provider added
+// to one and not the other got a sign-in button wired to nothing, or (worse) to another
+// vendor's login. One record now carries both, so they cannot desync.
+it('every in-app sign-in provider carries BOTH its copy and its tray command in one record', () => {
+  const registry = src('lib/llm-providers.ts')
+  for (const [id, cmd] of [['cursor', 'cursor_sign_in'], ['codex', 'codex_sign_in'], ['claude', 'claude_sign_in']]) {
+    const entry = registry.slice(registry.indexOf(`  ${id}: {`))
+    const block = entry.slice(0, entry.indexOf('},'))
+    expect(block).toMatch(/label:/)
+    expect(block).toMatch(new RegExp(`trayCommand: '${cmd}'`))
+  }
+  // ...and the picker must not have grown a second, competing map.
+  expect(picker).not.toMatch(/SIGN_IN_COMMANDS/)
+  expect(picker).toMatch(/llmSignIn\(id\)\?\.trayCommand/)
 })
 
 it('every other provider surfaces the real failure message verbatim, not a generic substitute', () => {

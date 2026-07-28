@@ -158,6 +158,39 @@ pub fn is_plaintext_sqlite(path: &Path) -> bool {
     matches!(f.read_exact(&mut magic), Ok(())) && &magic == SQLITE_MAGIC
 }
 
+/// Files an interrupted [`encrypt_in_place`] would have left beside `path`:
+/// the fully-written encrypted export (`…db.encrypting-tmp`) and any timestamped
+/// plaintext backup (`…db.plaintext-backup-<ts>`).
+///
+/// Used only to tell "fresh install" apart from "crashed mid-migration" when
+/// `path` is absent — the two look identical otherwise, and conflating them is
+/// how a user ends up staring at an empty app with their data intact on disk
+/// two directory entries away.
+fn interrupted_migration_leftovers(path: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let tmp = path.with_extension("db.encrypting-tmp");
+    if tmp.exists() {
+        found.push(tmp);
+    }
+    let (Some(dir), Some(stem)) = (path.parent(), path.file_name()) else {
+        return found;
+    };
+    // `with_extension("db.plaintext-backup-<ts>")` on `meridian.db` replaces the
+    // `db` extension, yielding `meridian.db.plaintext-backup-<ts>` — i.e. the
+    // full file name plus the suffix. Match that prefix rather than trying to
+    // reconstruct a timestamp.
+    let prefix = format!("{}.plaintext-backup-", stem.to_string_lossy());
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with(&prefix) {
+                found.push(entry.path());
+            }
+        }
+    }
+    found
+}
+
 /// Migrate an existing plaintext `meridian.db` to SQLCipher encryption at rest,
 /// in place. No-op if `path` doesn't exist yet (fresh install — the caller
 /// creates it encrypted from scratch) or is already encrypted.
@@ -170,7 +203,33 @@ pub fn is_plaintext_sqlite(path: &Path) -> bool {
 /// suffix), not deleted, so a bad migration is always recoverable by hand.
 pub async fn encrypt_in_place(path: &Path, key_hex: &str) -> anyhow::Result<()> {
     validate_key_hex(key_hex)?;
-    if !path.exists() || !is_plaintext_sqlite(path) {
+    if !path.exists() {
+        // "No database" normally means a fresh install, and the caller goes on
+        // to create one. But this function ALSO briefly unlinks `path` (see the
+        // two renames at the end), so a crash in that window leaves no database
+        // AND leftovers beside it. Treating that as a fresh install lets the
+        // caller create an empty encrypted DB while the user's real data sits
+        // untouched in those leftovers - the data is not lost, but nothing
+        // looks for it and nothing says so.
+        //
+        // Distinguishing the two is just "are there leftovers?", so say so
+        // loudly rather than returning Ok. This does NOT recover automatically:
+        // choosing between the encrypted export and the plaintext backup is a
+        // judgement call about which is newer, and guessing wrong overwrites
+        // real data. Surfacing it turns a silent empty-app into a supportable
+        // report with the exact filenames to restore.
+        for leftover in interrupted_migration_leftovers(path) {
+            tracing::error!(
+                db = %path.display(),
+                leftover = %leftover.display(),
+                "meridian.db is missing but an interrupted encryption migration left data \
+                 beside it - a new empty database is about to be created. Do not discard \
+                 this file; it holds the previous contents"
+            );
+        }
+        return Ok(());
+    }
+    if !is_plaintext_sqlite(path) {
         return Ok(());
     }
 
@@ -411,6 +470,42 @@ mod tests {
                 wrong.close().await;
             }
         }
+    }
+
+    /// The crash window in `encrypt_in_place` briefly unlinks `meridian.db`.
+    /// If the process dies there, the next run sees no database and the caller
+    /// creates an empty one - while the real data sits beside it in the
+    /// encrypted export and the plaintext backup. Absence alone cannot be
+    /// treated as "fresh install"; the leftovers are what distinguish them.
+    #[test]
+    fn leftovers_distinguish_a_crashed_migration_from_a_fresh_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("meridian.db");
+
+        // Fresh install: nothing beside it.
+        assert!(interrupted_migration_leftovers(&db).is_empty());
+
+        // Names must match exactly what `encrypt_in_place` writes.
+        let tmp = db.with_extension("db.encrypting-tmp");
+        let backup = db.with_extension("db.plaintext-backup-20260728120000");
+        std::fs::write(&tmp, b"encrypted").unwrap();
+        std::fs::write(&backup, b"plaintext").unwrap();
+
+        let found = interrupted_migration_leftovers(&db);
+        assert!(
+            found.contains(&tmp),
+            "encrypted export not found: {found:?}"
+        );
+        assert!(
+            found.contains(&backup),
+            "plaintext backup not found: {found:?}"
+        );
+
+        // An unrelated neighbour must not be mistaken for a leftover, or the
+        // error would fire on genuinely fresh installs.
+        std::fs::write(dir.path().join("meridian.db-wal"), b"x").unwrap();
+        std::fs::write(dir.path().join("other.db"), b"x").unwrap();
+        assert_eq!(interrupted_migration_leftovers(&db).len(), 2);
     }
 
     #[tokio::test]
