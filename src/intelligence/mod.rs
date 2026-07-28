@@ -123,7 +123,7 @@ pub async fn run_pm_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
                 // win. Anything still reaching here is a genuine infra error
                 // (a DB write, say), which classifies as terminal by default and
                 // now carries its whole cause chain.
-                let _ = providers::record_sync_failure(meridian, name, "refresh", &e).await;
+                providers::record_sync_failure(meridian, name, "refresh", &e).await;
             }
         }
     }

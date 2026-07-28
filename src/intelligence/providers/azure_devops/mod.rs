@@ -220,7 +220,7 @@ pub async fn force_refresh(
             // Was `stamp_error(pool, &e.to_string())`, which both reported every
             // network blip as a credentials fault AND printed only the outermost
             // context, dropping the cause.
-            super::record_sync_failure(pool, "azure_devops", "wiql", &e).await?;
+            super::record_sync_failure(pool, "azure_devops", "wiql", &e).await;
             // NOT `Err(e)`: already recorded and classified. Propagating it
             // would reach `run_pm_sync`'s generic catch-all, which reports
             // unconditionally and truncates - overwriting this with the very
@@ -249,7 +249,7 @@ pub async fn force_refresh(
         let batch = match fetch_batch(&client, cfg, chunk).await {
             Ok(b) => b,
             Err(e) => {
-                super::record_sync_failure(pool, "azure_devops", "work_item_batch", &e).await?;
+                super::record_sync_failure(pool, "azure_devops", "work_item_batch", &e).await;
                 return Ok(None);
             }
         };

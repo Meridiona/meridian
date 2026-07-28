@@ -187,12 +187,27 @@ pub async fn note_transient_sync_failure(
 ///
 /// `stage` names the failing step for the log only; the user-facing text is the
 /// classified detail.
+///
+/// # Best-effort by construction
+/// Returns `()`, not `Result`, so a failure to PERSIST the record can never
+/// replace the provider error that caused it. With a `Result` the callers wrote
+/// `record_sync_failure(...).await?`, which meant a transient `pm_sync_state`
+/// write failure turned a classified provider failure into an sqlx error — and
+/// in `azure_devops` that error then propagated back into
+/// `intelligence::run_pm_sync`'s catch-all, so the user would be shown a
+/// DATABASE error instead of "Azure DevOps sync failing". The classified outcome
+/// has to stay authoritative.
+///
+/// Nothing diagnostic is lost: the `tracing::warn!` carrying the full cause
+/// chain is emitted BEFORE the write, so the provider error reaches the logs and
+/// the telemetry backend either way, and the persistence failure is logged
+/// beside it rather than swallowed.
 pub async fn record_sync_failure(
     pool: &SqlitePool,
     provider: &str,
     stage: &str,
     err: &anyhow::Error,
-) -> Result<()> {
+) {
     match http::classify(err) {
         http::SyncFault::Retry { detail } => {
             tracing::warn!(
@@ -201,14 +216,17 @@ pub async fn record_sync_failure(
                 error = %detail,
                 "provider unreachable - keeping stale cache, will retry next sync"
             );
-            note_transient_sync_failure(pool, provider, &detail).await?;
+            if let Err(e) = note_transient_sync_failure(pool, provider, &detail).await {
+                tracing::warn!(provider, stage, error = %e, "recording transient sync failure failed");
+            }
         }
         http::SyncFault::Report { detail } => {
             tracing::warn!(provider, stage, error = %detail, "provider sync failed");
-            stamp_sync_error(pool, provider, &detail).await?;
+            if let Err(e) = stamp_sync_error(pool, provider, &detail).await {
+                tracing::warn!(provider, stage, error = %e, "recording sync failure failed");
+            }
         }
     }
-    Ok(())
 }
 
 /// Clear the last error for a provider after a successful sync.
@@ -530,9 +548,7 @@ mod tests {
         let pool = make_db().await;
         set_last_sync(&pool, "azure_devops", "-5 minutes").await;
 
-        record_sync_failure(&pool, "azure_devops", "wiql", &status_err(503, "down"))
-            .await
-            .unwrap();
+        record_sync_failure(&pool, "azure_devops", "wiql", &status_err(503, "down")).await;
 
         assert!(
             notice(&pool, "pm.azure_devops").await.is_none(),
@@ -550,8 +566,7 @@ mod tests {
             "wiql",
             &status_err(401, "permission_error: PAT is invalid"),
         )
-        .await
-        .unwrap();
+        .await;
 
         let (title, detail, _) = notice(&pool, "pm.azure_devops")
             .await
@@ -580,13 +595,9 @@ mod tests {
         let pool = make_db().await;
         let err = status_err(401, "permission_error: PAT is invalid");
 
-        record_sync_failure(&pool, "azure_devops", "wiql", &err)
-            .await
-            .unwrap();
+        record_sync_failure(&pool, "azure_devops", "wiql", &err).await;
         let first = notice(&pool, "pm.azure_devops").await.expect("first write");
-        record_sync_failure(&pool, "azure_devops", "refresh", &err)
-            .await
-            .unwrap();
+        record_sync_failure(&pool, "azure_devops", "refresh", &err).await;
         let second = notice(&pool, "pm.azure_devops")
             .await
             .expect("second write");
@@ -603,17 +614,33 @@ mod tests {
         set_last_sync(&pool, "azure_devops", "-5 minutes").await;
         let err = status_err(503, "down");
 
-        record_sync_failure(&pool, "azure_devops", "wiql", &err)
-            .await
-            .unwrap();
-        record_sync_failure(&pool, "azure_devops", "refresh", &err)
-            .await
-            .unwrap();
+        record_sync_failure(&pool, "azure_devops", "wiql", &err).await;
+        record_sync_failure(&pool, "azure_devops", "refresh", &err).await;
 
         assert!(
             notice(&pool, "pm.azure_devops").await.is_none(),
             "a re-reported blip must stay silent"
         );
+    }
+
+    /// A failure to PERSIST the record must never take the provider error down
+    /// with it. The `()` return makes that structural - it cannot propagate -
+    /// and this checks it also survives the write actually failing rather than
+    /// panicking. A dead pool is the cheapest way to force that.
+    ///
+    /// The case this protects: with the old `Result` signature and
+    /// `record_sync_failure(...).await?`, a transient DB error turned a
+    /// classified provider failure into an sqlx error, which in `azure_devops`
+    /// then propagated back into `run_pm_sync`'s catch-all - so the user was
+    /// shown a DATABASE error instead of "Azure DevOps sync failing".
+    #[tokio::test]
+    async fn a_persistence_failure_never_replaces_the_provider_error() {
+        let pool = make_db().await;
+        pool.close().await;
+
+        // Both branches, against a pool that cannot serve either write.
+        record_sync_failure(&pool, "azure_devops", "wiql", &status_err(503, "down")).await;
+        record_sync_failure(&pool, "azure_devops", "wiql", &status_err(401, "bad")).await;
     }
 
     /// The GitHub remedy must not name an unfollowable action: GitHub connects
