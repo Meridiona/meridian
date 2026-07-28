@@ -469,6 +469,12 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
             // exactly what made this fault flap on and off at random. Keep the
             // stale cache and stay quiet; the notice is reserved for a terminal
             // auth failure the user actually has to act on.
+            // Deliberately NOT `record_sync_failure` like the fetch arm below:
+            // this path needs the auth-method-specific remedy override that the
+            // shared helper has no way to express (basic auth really does want
+            // the `.env` wording). The classification policy is otherwise
+            // identical, so a change to one should be mirrored here.
+            //
             // `meridian_oauth::is_transient` only recognises a `TokenError` from
             // the token endpoint and answers `false` for anything else, so a raw
             // transport failure escaping the refresh would still land here as
@@ -581,24 +587,7 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
             // resolve path above covers REFRESHING the token, never USING it. An
             // Atlassian 5xx or a network blip during the search raised exactly
             // the terminal banner that path was fixed to suppress.
-            match super::http::classify(&e) {
-                SyncFault::Retry { detail } => {
-                    tracing::warn!(
-                        error = %detail,
-                        "jira unreachable - keeping stale cache, will retry next sync"
-                    );
-                    let _ = super::note_transient_sync_failure(pool, "jira", &detail).await;
-                }
-                SyncFault::Report { detail } => {
-                    tracing::warn!(error = %detail, "jira fetch failed - keeping stale cache");
-                    let _ = super::stamp_sync_error(
-                        pool,
-                        "jira",
-                        &format!("Jira sync failed: {detail}"),
-                    )
-                    .await;
-                }
-            }
+            super::record_sync_failure(pool, "jira", "fetch", &e).await;
             Ok(None)
         }
     }

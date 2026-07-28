@@ -187,27 +187,7 @@ pub async fn refresh_if_stale(
             // A connect failure here is the network, not the credential. It
             // used to raise "GitHub auth failed / Set GITHUB_TOKEN in .env",
             // telling the user to redo a token that was never broken.
-            match super::http::classify(&e) {
-                SyncFault::Retry { detail } => {
-                    tracing::warn!(
-                        error = %detail,
-                        "github unreachable - keeping stale cache, will retry next sync"
-                    );
-                    let _ = super::note_transient_sync_failure(pool, "github", &detail).await;
-                }
-                SyncFault::Report { detail } => {
-                    tracing::warn!(
-                        error = %detail,
-                        "github viewer fetch failed - keeping stale cache"
-                    );
-                    let _ = super::stamp_sync_error(
-                        pool,
-                        "github",
-                        &format!("GitHub sync failed: {detail}"),
-                    )
-                    .await;
-                }
-            }
+            super::record_sync_failure(pool, "github", "viewer", &e).await;
             return Ok(None);
         }
     };
@@ -248,43 +228,26 @@ pub async fn refresh_if_stale(
 
     if !any_ok {
         // One network outage hits every concurrent project fetch identically,
-        // so "all of them failed, all for a retryable reason" is the signature
-        // of an unreachable network rather than a broken board or credential.
-        // Stay quiet and retry; a mixed or terminal set still reaches the user.
-        // Report the first TERMINAL failure if there is one; stay quiet only
-        // when every single failure was retryable.
-        let terminal = failures
+        // so "all of them failed, all retryably" is the signature of an
+        // unreachable network rather than a broken board or credential.
+        //
+        // Pick the first TERMINAL failure to report if there is one, so a single
+        // dead board is not hidden behind a sibling's transient blip; otherwise
+        // hand over the first failure, which classifies retryable and stays
+        // quiet. Either way the recording itself goes through the shared policy
+        // rather than a fourth hand-rolled copy of it. `failures` is never empty
+        // here - a non-empty project list that produced no successes produced
+        // errors.
+        let representative = failures
             .iter()
-            .map(super::http::classify)
-            .find_map(|f| match f {
-                SyncFault::Report { detail } => Some(detail),
-                SyncFault::Retry { .. } => None,
-            });
-        match terminal {
-            // `failures` is never empty here (a non-empty project list that
-            // produced no successes produced errors), so this is the
-            // all-retryable case.
-            None => {
-                let detail = failures.first().map(super::http::chain).unwrap_or_default();
-                tracing::warn!(
-                    projects = failures.len(),
-                    error = %detail,
-                    "github unreachable for every project - keeping stale cache, will retry next sync"
-                );
-                let _ = super::note_transient_sync_failure(pool, "github", &detail).await;
-            }
-            Some(detail) => {
-                tracing::warn!(
-                    error = %detail,
-                    "all github project fetches failed - keeping stale cache"
-                );
-                let _ = super::stamp_sync_error(
-                    pool,
-                    "github",
-                    &format!("GitHub sync failed - every project fetch failed: {detail}"),
-                )
-                .await;
-            }
+            .find(|e| matches!(super::http::classify(e), SyncFault::Report { .. }))
+            .or_else(|| failures.first());
+        if let Some(e) = representative {
+            tracing::warn!(
+                projects = failures.len(),
+                "every github project fetch failed"
+            );
+            super::record_sync_failure(pool, "github", "project_fetch", e).await;
         }
         return Ok(None);
     }
