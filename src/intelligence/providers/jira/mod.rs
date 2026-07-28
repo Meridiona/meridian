@@ -480,10 +480,13 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
                 super::http::classify(&e)
             };
             match fault {
-                SyncFault::Retry { detail } => tracing::warn!(
-                    error = %detail,
-                    "jira auth temporarily unavailable - keeping stale cache, will retry next sync"
-                ),
+                SyncFault::Retry { detail } => {
+                    tracing::warn!(
+                        error = %detail,
+                        "jira auth temporarily unavailable - keeping stale cache, will retry next sync"
+                    );
+                    let _ = super::note_transient_sync_failure(pool, "jira", &detail).await;
+                }
                 SyncFault::Report { detail } => {
                     tracing::warn!(error = %detail, "jira auth unavailable - keeping stale cache");
                     let msg = format!("Jira auth failed: {detail}");
@@ -579,10 +582,13 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
             // Atlassian 5xx or a network blip during the search raised exactly
             // the terminal banner that path was fixed to suppress.
             match super::http::classify(&e) {
-                SyncFault::Retry { detail } => tracing::warn!(
-                    error = %detail,
-                    "jira unreachable - keeping stale cache, will retry next sync"
-                ),
+                SyncFault::Retry { detail } => {
+                    tracing::warn!(
+                        error = %detail,
+                        "jira unreachable - keeping stale cache, will retry next sync"
+                    );
+                    let _ = super::note_transient_sync_failure(pool, "jira", &detail).await;
+                }
                 SyncFault::Report { detail } => {
                     tracing::warn!(error = %detail, "jira fetch failed - keeping stale cache");
                     let _ = super::stamp_sync_error(

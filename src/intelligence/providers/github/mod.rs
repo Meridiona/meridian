@@ -188,10 +188,13 @@ pub async fn refresh_if_stale(
             // used to raise "GitHub auth failed / Set GITHUB_TOKEN in .env",
             // telling the user to redo a token that was never broken.
             match super::http::classify(&e) {
-                SyncFault::Retry { detail } => tracing::warn!(
-                    error = %detail,
-                    "github unreachable - keeping stale cache, will retry next sync"
-                ),
+                SyncFault::Retry { detail } => {
+                    tracing::warn!(
+                        error = %detail,
+                        "github unreachable - keeping stale cache, will retry next sync"
+                    );
+                    let _ = super::note_transient_sync_failure(pool, "github", &detail).await;
+                }
                 SyncFault::Report { detail } => {
                     tracing::warn!(
                         error = %detail,
@@ -261,10 +264,15 @@ pub async fn refresh_if_stale(
             // `failures` is never empty here (a non-empty project list that
             // produced no successes produced errors), so this is the
             // all-retryable case.
-            None => tracing::warn!(
-                projects = failures.len(),
-                "github unreachable for every project - keeping stale cache, will retry next sync"
-            ),
+            None => {
+                let detail = failures.first().map(super::http::chain).unwrap_or_default();
+                tracing::warn!(
+                    projects = failures.len(),
+                    error = %detail,
+                    "github unreachable for every project - keeping stale cache, will retry next sync"
+                );
+                let _ = super::note_transient_sync_failure(pool, "github", &detail).await;
+            }
             Some(detail) => {
                 tracing::warn!(
                     error = %detail,

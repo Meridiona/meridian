@@ -1,121 +1,19 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-//! Shared HTTP client and transient-failure classification for PM provider sync.
+//! Deciding whether a failed provider sync is the user's problem or the
+//! network's — and formatting the cause once, in one place.
 //!
-//! Two concerns that look separate but are the same concern: how we talk to a
-//! provider's API, and how we decide whether a failed conversation is the
-//! user's problem or the network's.
-//!
-//! # Why this exists
-//! Every provider sync used to build `reqwest::Client::new()` per call and then
-//! treat ANY failure as a terminal, user-facing fault. Both halves were wrong:
-//!
-//! 1. **No timeouts.** `reqwest`'s defaults are `timeout: no timeout` and
-//!    `connect_timeout: None`, so a connect that hung never came back and the
-//!    provider simply stopped syncing with no error at all.
-//! 2. **No transient/terminal distinction.** A DNS blip, a captive portal, a
-//!    laptop resuming from sleep mid-tick — each raised a persistent
-//!    "GitHub sync failing / Set GITHUB_TOKEN in .env" banner that told the
-//!    user to re-do credentials that were never broken. [`crate::intelligence::providers::jira`]'s
-//!    OAuth-refresh path already learned this (see the `is_transient` guard in
-//!    `jira::refresh_if_stale` and the comment above it: raising a terminal
-//!    fault for a network blip is "exactly what made this fault flap on and off
-//!    at random"). That guard was only ever applied to refreshing the token,
-//!    never to using it — so every data-fetch path kept the original bug.
-//!
-//! [`is_transient`] is the shared answer, and unlike
-//! [`meridian_oauth::flow::is_transient`] — which only recognises a
-//! `TokenError` from the token endpoint and returns `false` for everything else
-//! — it classifies the transport errors a data fetch actually produces. The two
-//! are complementary, not interchangeable: dropping the OAuth one onto a fetch
-//! path compiles, runs, and returns `false` every single time.
-//!
-//! # The deliberate trade-off
-//! A transient failure raises NO user-facing notice; the stale cache is kept and
-//! the next tick retries. So a provider that is unreachable *forever* now goes
-//! quiet rather than showing a (misleading) credentials banner. That is the
-//! same trade-off `jira::refresh_if_stale` already shipped, and this matches it
-//! on purpose rather than inventing a second policy. Escalating after N
-//! consecutive transient failures would need persisted state (a `pm_sync_state`
-//! column, so a migration) and is left as a follow-up.
+//! Split from [`super`] (which owns the shared client) purely on size; the two
+//! halves are one concern. See the parent module's docs for WHY this exists.
 //!
 //! # Who calls this
-//! - [`crate::intelligence::providers::github`] — `refresh_if_stale` (viewer
-//!   fetch + all-projects-failed) and `fetch::{fetch_viewer_login, fetch_project_items}`.
-//! - [`crate::intelligence::providers::jira`] — `refresh_if_stale` (fetch
-//!   failure) and `fetch::search`.
+//! Re-exported from [`super`], so call sites use `providers::http::classify`.
+//! The four provider paths that need it are listed in the parent's docs.
 //!
 //! # Related
-//! - [`crate::intelligence::providers::stamp_sync_error`] — what we call only
-//!   once a failure is classified terminal.
-//! - [`meridian_oauth::flow::is_transient`] — the OAuth-token-endpoint sibling.
-
-use std::sync::OnceLock;
-use std::time::Duration;
-
-/// Total deadline for one provider request, from connect to body complete.
-///
-/// Generous on purpose: this exists to bound a hang, not to police latency. A
-/// large Jira JQL search over a slow link is a legitimate slow request and must
-/// not be cut off, so this is set well above any observed healthy call.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Deadline for the connect phase alone. Much tighter than [`REQUEST_TIMEOUT`]
-/// because a connect that has not completed in this long is not slow, it is
-/// broken — the DNS/captive-portal/unreachable-host cases this module exists
-/// for. Failing fast here turns a silent stall into a classified transient
-/// error that retries on the next tick.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// How long an idle pooled connection may linger before being dropped.
-///
-/// Only relevant because the client is now SHARED across ticks (it previously
-/// was not, so every tick started with an empty pool and this could not
-/// happen). A pooled connection that a NAT, proxy, or the server has silently
-/// closed fails on reuse; bounding idle lifetime well below the multi-minute
-/// sync interval means a fresh connection is established each tick instead.
-const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// `SO_KEEPALIVE` interval — surfaces a dead peer rather than blocking until
-/// [`REQUEST_TIMEOUT`]. Paired with [`POOL_IDLE_TIMEOUT`] against the same
-/// silently-dropped-connection failure mode.
-const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
-
-/// The process-wide client for PM provider sync.
-///
-/// Cloning a `reqwest::Client` is cheap (it is an `Arc` internally) and shares
-/// the connection pool, so callers should call this per request rather than
-/// caching the returned value.
-///
-/// Note this deliberately does NOT disable proxy detection: a user behind a
-/// corporate proxy needs reqwest's env/system proxy support to reach the
-/// provider at all.
-pub fn client() -> reqwest::Client {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| build_client(REQUEST_TIMEOUT, CONNECT_TIMEOUT))
-        .clone()
-}
-
-/// Build a provider client with explicit timeouts. Split out from [`client`] so
-/// tests can drive the same builder with short deadlines — if the `.timeout()`
-/// wiring is ever dropped, `request_timeout_is_wired_and_classified_transient`
-/// fails rather than every install silently regaining unbounded hangs.
-///
-/// Falls back to `Client::new()` if the builder fails (only possible on TLS
-/// backend init failure): an un-timeouted client is strictly better than no
-/// sync at all, and the failure is logged.
-fn build_client(request_timeout: Duration, connect_timeout: Duration) -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(request_timeout)
-        .connect_timeout(connect_timeout)
-        .pool_idle_timeout(POOL_IDLE_TIMEOUT)
-        .tcp_keepalive(TCP_KEEPALIVE)
-        .build()
-        .unwrap_or_else(|e| {
-            tracing::error!(error = %e, "provider HTTP client builder failed - falling back to defaults (no timeouts)");
-            reqwest::Client::new()
-        })
-}
+//! - [`crate::intelligence::providers::note_transient_sync_failure`] — what a
+//!   [`SyncFault::Retry`] is handed to; bounds how long silence may last.
+//! - [`meridian_oauth::flow::is_transient`] — the token-endpoint sibling
+//!   classifier, which by design cannot see transport errors.
 
 /// A provider answered, but with a non-success status.
 ///
@@ -186,10 +84,12 @@ impl std::error::Error for HttpStatusError {}
 /// [`classify`] cannot.
 #[derive(Debug)]
 pub enum SyncFault {
-    /// Retryable. Log it, keep the stale cache, raise NOTHING — the next tick
-    /// will very likely succeed.
+    /// Retryable. Log it, keep the stale cache, and hand it to
+    /// [`crate::intelligence::providers::note_transient_sync_failure`] — which
+    /// stays quiet while the provider is merely flaky, but escalates once the
+    /// last SUCCESSFUL sync gets old enough that "blip" stops being credible.
     Retry {
-        /// Full `anyhow` chain, for the log line only.
+        /// Full `anyhow` chain, for the log line and the escalation notice.
         detail: String,
     },
     /// Terminal. Raise a user-facing notice; nothing here self-heals.
@@ -205,10 +105,17 @@ impl SyncFault {
     /// understands token-endpoint failures this module cannot see. Keeps detail
     /// formatting inside this module so the guarantee above still holds.
     pub fn retry(err: &anyhow::Error) -> Self {
-        Self::Retry {
-            detail: format!("{err:#}"),
-        }
+        Self::Retry { detail: chain(err) }
     }
+}
+
+/// Format an error as its FULL `anyhow` source chain.
+///
+/// The single place `{err:#}` is written. Everything that needs a cause string
+/// goes through here so the truncation this module exists to fix cannot come
+/// back one call site at a time.
+pub fn chain(err: &anyhow::Error) -> String {
+    format!("{err:#}")
 }
 
 /// Decide what to do about a provider-sync failure, and format its detail.
@@ -219,9 +126,7 @@ pub fn classify(err: &anyhow::Error) -> SyncFault {
     if is_transient(err) {
         SyncFault::retry(err)
     } else {
-        SyncFault::Report {
-            detail: format!("{err:#}"),
-        }
+        SyncFault::Report { detail: chain(err) }
     }
 }
 
@@ -264,6 +169,7 @@ fn reqwest_is_transient(e: &reqwest::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::client;
     use super::*;
 
     // ── status classification ────────────────────────────────────────────────
@@ -450,55 +356,6 @@ mod tests {
         assert!(
             !is_transient(&err),
             "a malformed credential must still reach the user"
-        );
-    }
-
-    /// Proves `.timeout()` is actually wired into [`build_client`]: the peer
-    /// accepts the TCP connection and then says nothing, so only a request
-    /// timeout can end this. Without the timeout the test hangs rather than
-    /// failing, which is itself the signal.
-    #[tokio::test]
-    async fn request_timeout_is_wired_and_classified_transient() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind loopback");
-        let addr = listener.local_addr().expect("local addr");
-        // Accept and hold the socket open without ever responding.
-        tokio::spawn(async move {
-            let mut held = Vec::new();
-            while let Ok((stream, _)) = listener.accept().await {
-                held.push(stream);
-            }
-        });
-
-        let short = Duration::from_millis(150);
-        let err = build_client(short, short)
-            .get(format!("http://{addr}/"))
-            .send()
-            .await
-            .expect_err("a peer that never responds must time out");
-        assert!(err.is_timeout(), "expected a timeout, got: {err}");
-
-        let err = anyhow::Error::new(err).context("POST /search/jql");
-        assert!(
-            is_transient(&err),
-            "a timeout must be retried, not reported"
-        );
-    }
-
-    /// The timeouts must stay bounded and ordered. A zero value disables the
-    /// timeout in reqwest, which would silently restore the unbounded-hang bug.
-    #[test]
-    fn timeout_constants_are_bounded_and_ordered() {
-        assert!(!REQUEST_TIMEOUT.is_zero(), "zero disables the timeout");
-        assert!(!CONNECT_TIMEOUT.is_zero(), "zero disables the timeout");
-        assert!(
-            CONNECT_TIMEOUT < REQUEST_TIMEOUT,
-            "connect deadline must fit inside the total deadline"
-        );
-        assert!(
-            REQUEST_TIMEOUT <= Duration::from_secs(120),
-            "an unbounded-in-practice timeout defeats the purpose"
         );
     }
 }
