@@ -42,6 +42,19 @@ name: Cache warm (release)
 #
 # Neither job signs, notarizes, bundles or publishes. Each is a compile and a
 # cache write.
+#
+# ── KNOWN GAP: NOT EVERY BAKED SECRET INVALIDATES THIS CACHE ─────────────────
+#
+# Neither job here sets release-build.yml's secret-bearing env vars (Clerk key,
+# Sentry DSN, PostHog key, GitHub/Jira OAuth ids, central OTLP endpoint/token,
+# channel), so a tag build restoring this cache compiles those constants in for
+# real for the first time. Cargo only recompiles a crate on an env var change
+# if that crate's OWN build.rs declares `cargo:rerun-if-env-changed=VAR` — most
+# of the vars above have no such declaration anywhere in the workspace, so a
+# rotated secret can silently stay baked at its old (here: absent) value across
+# a cache restore. Pre-existing (predates this file), not introduced by either
+# job below — tracked in
+# https://github.com/Meridiona/meridian/issues/601.
 
 on:
   # Every push to main re-seeds the cache with whatever production is at, so a
@@ -104,8 +117,12 @@ jobs:
           shared-key: macos-release-aarch64-apple-darwin
           cache-directories: |
             ~/.cargo/registry/src
-          # Unconditional: this job only ever runs on main (push/schedule) or by
-          # hand, and writing the main-scoped cache is its entire purpose.
+          # Unconditional: this job's push/schedule triggers only ever fire on
+          # `main`, and writing that cache is its entire purpose. A manual
+          # `workflow_dispatch` CAN target any branch, but GitHub scopes a
+          # cache save to the triggering ref, so a dispatch from elsewhere
+          # just writes a side entry under that ref — it can't clobber the
+          # `main`-scoped cache release-build.yml restores from.
           save-if: true
 
       - uses: actions/setup-node@v4
@@ -189,9 +206,13 @@ jobs:
       # source and needs NASM on PATH. windows-latest's bundled Strawberry
       # Perl already covers the Perl half — do not install a second one.
       - name: Install NASM (for vendored OpenSSL's assembly routines)
-        # Pinned to the commit behind v1.5.2, not the mutable `v1` tag — same
-        # supply-chain reasoning as release-build.yml (this job authenticates
-        # as GH_TOKEN and can write to the shared cache).
+        # Pinned to the commit behind v1.5.2, not the mutable `v1` tag: this
+        # job authenticates as GH_TOKEN and can write to the shared cache, so
+        # a repointed mutable tag is a supply-chain path worth closing here.
+        # NOTE: release-build.yml's own Windows job still uses the mutable
+        # `v1` tag as of this writing — this job is intentionally the more
+        # conservative of the two on this one line, not a byte-for-byte match.
+        # NASM's action choice doesn't affect cache-key parity either way.
         uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
 
       - name: Install Rust 1.93.1
@@ -207,8 +228,12 @@ jobs:
           # reasoning as the macOS job above.
           add-job-id-key: false
           shared-key: windows-release-x86_64-pc-windows-msvc
-          # Unconditional: this job only ever runs on main (push/schedule) or
-          # by hand, and writing the main-scoped cache is its entire purpose.
+          # Unconditional: this job's push/schedule triggers only ever fire on
+          # `main`, and writing that cache is its entire purpose. A manual
+          # `workflow_dispatch` CAN target any branch, but GitHub scopes a
+          # cache save to the triggering ref, so a dispatch from elsewhere
+          # just writes a side entry under that ref — it can't clobber the
+          # `main`-scoped cache release-build.yml restores from.
           save-if: true
 
       - uses: actions/setup-node@v4
