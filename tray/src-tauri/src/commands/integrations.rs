@@ -437,7 +437,25 @@ pub(crate) fn upsert_env(
         std::fs::create_dir_all(parent)?;
     }
     let content = format!("{}\n", lines.join("\n"));
-    std::fs::write(path, content)
+    std::fs::write(path, content)?;
+
+    // `std::fs::write` applies the process umask, so this file was typically
+    // 0644 — readable by every other local account. It holds the SQLCipher
+    // database key (`db_key::ensure_key`), tracker API tokens, and OAuth
+    // credentials, and it sits in the same directory as the database that key
+    // protects, so a readable copy defeats encryption-at-rest against the
+    // local-multi-user threat it exists for.
+    //
+    // Tightened here rather than at each caller: this is the single writer of
+    // `~/.meridian/.env`, so doing it once covers every secret that lands in it
+    // now and every one added later. Non-fatal on failure would hide the
+    // problem, so it propagates.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
 }
 
 /// Disconnect a tracker (the ported /api/integrations DELETE). Removes the
@@ -1782,6 +1800,32 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("meridian-int-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join(name)
+    }
+
+    /// `.env` holds the SQLCipher database key, tracker API tokens and OAuth
+    /// credentials, and sits beside the database that key protects - so the
+    /// default-umask 0644 this used to inherit made encryption-at-rest useless
+    /// against the local-multi-user threat it exists for.
+    #[cfg(unix)]
+    #[test]
+    fn upsert_env_writes_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = tmp_env("upsert-perms.env");
+        let _ = std::fs::remove_file(&path);
+
+        let mut updates = BTreeMap::new();
+        updates.insert("MERIDIAN_DB_KEY".to_string(), "a".repeat(64));
+        upsert_env(&path, &updates).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "new .env is group/world readable: {mode:o}");
+
+        // ...and a pre-existing loose file is tightened rather than left alone,
+        // which is the case that actually matters: every install that has run
+        // before this fix already has a 0644 file on disk.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        upsert_env(&path, &updates).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "existing loose .env not tightened: {mode:o}");
     }
 
     #[test]

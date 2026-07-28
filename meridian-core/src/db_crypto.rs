@@ -278,6 +278,29 @@ pub async fn export_plaintext(
     conn.execute("DETACH DATABASE plaintext_export;")
         .await
         .context("export_plaintext: DETACH failed")?;
+
+    // The ATTACH-created file inherits the process umask, typically 0644. This
+    // is the ONE place the SQLCipher rollout deliberately writes a full,
+    // unencrypted copy of the activity database, so leaving it group- and
+    // world-readable would undo — for that file — exactly the local-multi-user
+    // threat the rest of the encryption work exists to cover. It gets the same
+    // 0600 the encrypted original deserves.
+    //
+    // Tightened AFTER the export rather than pre-creating the file: SQLCipher's
+    // ATTACH wants to create it itself, and `remove_file` above deliberately
+    // clears any stale copy first.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(out_path, std::fs::Permissions::from_mode(0o600)).with_context(
+            || {
+                format!(
+                    "export_plaintext: failed to restrict permissions on {}",
+                    out_path.display()
+                )
+            },
+        )?;
+    }
     Ok(())
 }
 
@@ -423,5 +446,19 @@ mod tests {
             .unwrap();
         assert_eq!(row.get::<i64, _>(0), 7);
         pool.close().await;
+
+        // This is the one file the encryption work deliberately writes in
+        // plaintext, so it must not inherit the umask's usual 0644 - that
+        // would leave a full, unencrypted copy of the activity database
+        // readable by every other local account.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&out_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode, 0o600,
+                "plaintext export is readable by others: {mode:o}"
+            );
+        }
     }
 }
