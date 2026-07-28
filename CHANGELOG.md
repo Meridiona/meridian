@@ -1,3 +1,79 @@
+## [1.80.0](https://github.com/Meridiona/meridian/compare/v1.79.0...v1.80.0) (2026-07-28)
+
+### 🚀 Features
+
+* **health:** dashboard banner when in-use provider unavailable ([1206df4](https://github.com/Meridiona/meridian/commit/1206df4ea581f74db1730d4dc970bf0032e4eba5))
+* **health:** soft rate-limit notice, distinct from the unavailable alarm ([6e16502](https://github.com/Meridiona/meridian/commit/6e165023a30f5b8e025b61f8168dbf1f2de5a284))
+* **llm:** in-app Claude sign-in (parity with Cursor and Codex) ([7419d7c](https://github.com/Meridiona/meridian/commit/7419d7c86c1964749685d67017e470dfa04c1948))
+* **llm:** in-app Codex browser sign-in ([2256111](https://github.com/Meridiona/meridian/commit/2256111d174bffae0ce0036455818a039417c4e0))
+* **observability:** consented redacted error-only telemetry shipping (Phase 0) ([19fc15e](https://github.com/Meridiona/meridian/commit/19fc15e9a8110be5fa36f5bf3dd26442a6f809a4))
+* **observability:** drop known-benign WARN noise from the ship leg ([2bc2f7e](https://github.com/Meridiona/meridian/commit/2bc2f7e347e836a9fc01144754e73eff9493f17d))
+* **observability:** emit tray telemetry to the spool in release (Phase 2A) ([f6cb83a](https://github.com/Meridiona/meridian/commit/f6cb83a129fd1a6e4be116ce1c43c7230bad46b3))
+* **observability:** error reporting on by default (opt-out) as a disclosure note ([2bd4b14](https://github.com/Meridiona/meridian/commit/2bd4b148e3d80b9c3fbb5c3b399efaf9e298be71))
+* **observability:** error-reporting consent toggle in Settings (Phase 1) ([ae1af62](https://github.com/Meridiona/meridian/commit/ae1af6229ee2d2cf07301dbbb49fd644cc4bfd1b))
+* **observability:** first-run disclosure note for error reporting ([2df9575](https://github.com/Meridiona/meridian/commit/2df9575996385376ee5017ce3acbc8a67caa6e0e))
+* **observability:** Sentry native-crash reporting for the tray (Phase 2B) ([bfb63a2](https://github.com/Meridiona/meridian/commit/bfb63a295ffd5b3f382c048d37b8226bbeff0fdf))
+* **observability:** ship platform attributes and surface the Support ID ([87a54b7](https://github.com/Meridiona/meridian/commit/87a54b7a03d1327ef287f2103d800ba1d0738355))
+* **security:** encrypt meridian.db at rest with SQLCipher ([3441599](https://github.com/Meridiona/meridian/commit/34415998a0cec091deeddbf9692adf652eb48473)), closes [launchbadge/sqlx#2009](https://github.com/launchbadge/sqlx/issues/2009)
+
+### 🐛 Bug Fixes
+
+* **ci:** don't install a second Perl on Windows, it breaks the OpenSSL build ([d6ce397](https://github.com/Meridiona/meridian/commit/d6ce397b30271a3a0e7256f4da534cd968d68985))
+* **ci:** GITHUB_PATH needs a native Windows path, not the Git-Bash form ([b027f7d](https://github.com/Meridiona/meridian/commit/b027f7d9e0e52912bf1ede2740dc6a8b63e1a00f))
+* **ci:** make Strawberry Perl win over Git Bash's own minimal perl on Windows ([6ef3cef](https://github.com/Meridiona/meridian/commit/6ef3cef44926f813b0a096a26a53b6ac3b8c4ef5))
+* **ci:** run the Windows build step under pwsh, not Git Bash ([41dc248](https://github.com/Meridiona/meridian/commit/41dc2488c003e326664b92d87354e25f48f0dfc2))
+* **ci:** update the screenpipe MIT-pin guard's expected rev ([3eaca82](https://github.com/Meridiona/meridian/commit/3eaca8261cd42eceb28bb82fd6a19513e7a96a5f)), closes [#590](https://github.com/Meridiona/meridian/issues/590) [#589](https://github.com/Meridiona/meridian/issues/589)
+* **llm:** re-validate resolve_cli cache hits with exists() ([b43ce48](https://github.com/Meridiona/meridian/commit/b43ce48edb4e3cf7d8fb1176325fb3fe96e9baa9))
+* **llm:** scope resolve_cli cache read to avoid a re-lock deadlock ([6925edc](https://github.com/Meridiona/meridian/commit/6925edc9dca45ef74ade7651cc7d472e73ab0af1))
+* **observability:** cap central OpenObserve retention at 90 days ([2c01c81](https://github.com/Meridiona/meridian/commit/2c01c8171fb55cdec2a545b2bf901325dbeaeb10))
+* **observability:** capture OCR/a11y failures and stop dropping error causes ([fbc3cf3](https://github.com/Meridiona/meridian/commit/fbc3cf3b838ebe3cf10410c2ffe4a2d7b4554742))
+* **observability:** close the review findings on the redaction boundary ([05aa313](https://github.com/Meridiona/meridian/commit/05aa313889658b251d8d0f801af9ddbddfd170d7))
+* **observability:** drop app.install_mode, correct the Support ID copy ([ddcf6a5](https://github.com/Meridiona/meridian/commit/ddcf6a57164ff984ca038d90bd75f7cf2668d371)), closes [#545](https://github.com/Meridiona/meridian/issues/545)
+* **observability:** recognise the packaged Windows install (.exe suffix) ([a3b362d](https://github.com/Meridiona/meridian/commit/a3b362d566596371c5b83900fa3df68ddc27ed9e))
+* **observability:** seed the pseudonym from hardware id, not the hostname ([dbacabe](https://github.com/Meridiona/meridian/commit/dbacabefc24b415f3b5d9d0bdd1b976b59516ee6))
+* **review:** address PR [#581](https://github.com/Meridiona/meridian/issues/581) review — probe cadence, banner dismissal, sign-in mapping ([2710cd1](https://github.com/Meridiona/meridian/commit/2710cd136ae0ba9ed506fa2feac8b4ac9b51258c))
+* **review:** address the PR [#582](https://github.com/Meridiona/meridian/issues/582) findings in code I authored ([d168afc](https://github.com/Meridiona/meridian/commit/d168afc7f6d54a7b4fd5f48766be25e972478937))
+* **review:** close the mechanical PR [#582](https://github.com/Meridiona/meridian/issues/582) findings from other subsystems ([1002eb9](https://github.com/Meridiona/meridian/commit/1002eb921801b3c66aa89eb580e06de13aaa102e))
+* **review:** close the three later PR [#582](https://github.com/Meridiona/meridian/issues/582) findings on the tracker copy ([9b8acc1](https://github.com/Meridiona/meridian/commit/9b8acc13dde0312b4d7f736e734247e9662584ff))
+* **review:** surface interrupted migrations, instrument health, dedupe sign-in ([c0134da](https://github.com/Meridiona/meridian/commit/c0134da02bbdf5e61fa07c696a3f4f474162da13)), closes [#582](https://github.com/Meridiona/meridian/issues/582)
+* **screen:** bump screenpipe-fork pin for OCR PII redaction ([3b9a144](https://github.com/Meridiona/meridian/commit/3b9a144055e2660a3db40cb39791cb89680339f3)), closes [Meridiona/screenpipe-fork#6](https://github.com/Meridiona/screenpipe-fork/issues/6)
+* **security:** dev builds can still USE an existing db key, just never generate one ([04c2175](https://github.com/Meridiona/meridian/commit/04c21755cda49ee9d06bcf3c0b7d2e8785395936))
+* **security:** generate the db key on a brand-new install's first launch ([dcae4c8](https://github.com/Meridiona/meridian/commit/dcae4c888fc8c5731b1097b7952ea941b98b0fb9))
+* **security:** scope db.db encryption to Canonical installs only ([85ca8bd](https://github.com/Meridiona/meridian/commit/85ca8bd8fe26ab995780d714fbeb204d661d9748))
+* **tray:** stage the daemon binary via atomic rename, not in-place overwrite ([2785950](https://github.com/Meridiona/meridian/commit/27859502d8c31435489bcff2387a9749d1c777f6))
+* **tray:** sweep orphaned staging temp files, drop dead test literal ([31d40c7](https://github.com/Meridiona/meridian/commit/31d40c73412a1eae97324f9449fc15b0a0673c6c)), closes [#589](https://github.com/Meridiona/meridian/issues/589)
+* **ui:** fetch the daily plan for solo users too ([d0437cb](https://github.com/Meridiona/meridian/commit/d0437cb2d1cf36c9a5546ee8dc2aa6e31b23a24e))
+
+### ♻️ Refactoring
+
+* **observability:** derive capture directives, split the filter module ([d87db15](https://github.com/Meridiona/meridian/commit/d87db154821998c3a3100db5c02a790c0434a8ee))
+
+### 🤖 CI
+
+* **diag:** add diagnostic step to find out why the perl fix isn't taking ([83266f4](https://github.com/Meridiona/meridian/commit/83266f4aef92c8203725f2af3ce97d2e79ca02ae))
+* fix smoke workflow push trigger to match this branch name ([be05e93](https://github.com/Meridiona/meridian/commit/be05e934f569abaa2817014010e2382cd95eaf34))
+* **observability:** bake MERIDIAN_CENTRAL_OTLP_ENDPOINT into release builds ([81d1555](https://github.com/Meridiona/meridian/commit/81d1555c6fed491e9c030bc3748bb55249e06a5f))
+* **observability:** bake the central ingest token into release builds ([6d0f555](https://github.com/Meridiona/meridian/commit/6d0f55514a402c11bdfe2845c21fe27b171566af))
+* **release:** add cache_warm_only dispatch input ([211b56a](https://github.com/Meridiona/meridian/commit/211b56a7a455f829ca1f5feb4e1946682ae3fba2))
+* **release:** pin Perl + NASM for the Windows SQLCipher build ([ee47ec0](https://github.com/Meridiona/meridian/commit/ee47ec096137067a8e3c366d3ccae0c23114945a))
+* **release:** stop saving rust-cache on tag refs, only save from main ([57a7c69](https://github.com/Meridiona/meridian/commit/57a7c69b26f08ea6741b2670ea36c0c06f1959c0))
+
+### ✅ Tests
+
+* **llm:** update connection-phase assertions for the signInProvider generalization ([ec195ea](https://github.com/Meridiona/meridian/commit/ec195ea02bb26f48da5cd206e10e65285e29313a))
+
+### 📝 Documentation
+
+* **whats-new:** encryption ships in 1.80.0 - note it, drop it from the roadmap ([960989f](https://github.com/Meridiona/meridian/commit/960989fdb33891f1971c1b2aca1689d6b17f6e04))
+* **whats-new:** refresh release notes and roadmap, mark trackers coming soon ([6a95581](https://github.com/Meridiona/meridian/commit/6a955813c93bce0597e6c546d51be539690e4158)), closes [#585](https://github.com/Meridiona/meridian/issues/585)
+
+### 🔧 Chores
+
+* **observability:** basic-auth the central OpenObserve UI ([06b887a](https://github.com/Meridiona/meridian/commit/06b887a768426c3b1cbbd0098ac07113e3da18b3))
+* **observability:** central ingest gateway stack (compose + collector + caddy) ([de3906f](https://github.com/Meridiona/meridian/commit/de3906f9f3afd80e12edde73f9dc063277b6a811))
+* **observability:** deploy script for the central gateway config ([ab47286](https://github.com/Meridiona/meridian/commit/ab472863f05f7708779f9c18846458185f8d069e))
+* remove the temporary Windows SQLCipher smoke-test workflow ([16e1b5e](https://github.com/Meridiona/meridian/commit/16e1b5eea66ad355d5f890026a20156c2c389bdb))
+
 ## [1.79.0](https://github.com/Meridiona/meridian/compare/v1.78.0...v1.79.0) (2026-07-24)
 
 ### 🚀 Features

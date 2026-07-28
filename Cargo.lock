@@ -5162,7 +5162,7 @@ dependencies = [
 
 [[package]]
 name = "meridian"
-version = "1.79.0"
+version = "1.80.0"
 dependencies = [
  "anyhow",
  "async-trait",
