@@ -54,7 +54,7 @@ pub async fn stamp_sync_error_with_remedy(
         // CLI command. All five trackers are connected through Settings ->
         // Integrations, so a user who has only ever clicked Connect has no
         // `.env` to edit and no terminal to run `meridian oauth-login` in.
-        // `every_remedy_is_followable_from_the_app` pins this.
+        // `every_default_remedy_names_a_place_in_the_app` pins this.
         "linear" => (
             "Linear sync failing",
             Some("Reconnect Linear in Settings - Integrations"),
@@ -113,12 +113,19 @@ const TRANSIENT_ESCALATION_HOURS: i64 = 6;
 /// the provider has not synced successfully within
 /// [`TRANSIENT_ESCALATION_HOURS`].
 ///
-/// **A provider that has NEVER synced escalates immediately**, deliberately:
-/// now that transient failures no longer call [`stamp_sync_error`], a machine
-/// that has never once reached the provider has no `pm_sync_state` row at all,
-/// so an age test alone would no-op on exactly the installs that most need it —
-/// someone who just connected and whose network blocks the provider outright.
-/// `EXISTS` is false for a missing row, which buys that case for free.
+/// **A provider that has NEVER synced needs its own handling**, because it has
+/// no `pm_sync_state` row at all, so an age test alone would no-op forever on
+/// exactly the installs that most need it — someone who just connected and whose
+/// network blocks the provider outright.
+///
+/// It gets ONE retry rather than escalating on the first failure. Escalating
+/// immediately would reintroduce the very thing this change removes, just with
+/// connectivity wording instead of credentials wording: connect a tracker, have
+/// the first attempt land on an ordinary blip (a DNS hiccup, a proxy handshake,
+/// a laptop still waking up) and a "sync failing" banner appears seconds later.
+/// So the first failure writes the row and stays silent; the next one sees the
+/// row with an epoch `last_synced_at`, which is not recent, and escalates. One
+/// sync interval of grace, and the persistently-blocked case still surfaces.
 ///
 /// The remedy points at connectivity, NOT credentials: by construction we only
 /// reach here for failures that are not the user's token.
@@ -130,13 +137,16 @@ pub async fn note_transient_sync_failure(
     detail: &str,
 ) -> Result<bool> {
     let threshold = format!("-{TRANSIENT_ESCALATION_HOURS} hours");
-    let (recently_synced,): (i64,) = sqlx::query_as(
-        "SELECT EXISTS(
-             SELECT 1 FROM pm_sync_state
-             WHERE provider = ?
-               AND last_synced_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
-         )",
+    let (has_row, recently_synced): (i64, i64) = sqlx::query_as(
+        "SELECT
+             EXISTS(SELECT 1 FROM pm_sync_state WHERE provider = ?),
+             EXISTS(
+                 SELECT 1 FROM pm_sync_state
+                 WHERE provider = ?
+                   AND last_synced_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
+             )",
     )
+    .bind(provider)
     .bind(provider)
     .bind(&threshold)
     .fetch_one(pool)
@@ -144,6 +154,28 @@ pub async fn note_transient_sync_failure(
     .context("checking sync recency for transient-failure escalation")?;
 
     if recently_synced != 0 {
+        return Ok(false);
+    }
+
+    if has_row == 0 {
+        // First-ever failure on a provider that has never synced. Record the
+        // attempt so the NEXT one escalates, but raise nothing: a tracker
+        // connected seconds ago that hits one blip must not immediately show a
+        // fault. The epoch sentinel is deliberate - it is not a recent sync, so
+        // the next failure takes the escalation branch below.
+        sqlx::query(
+            "INSERT INTO pm_sync_state (provider, last_synced_at, last_error)
+             VALUES (?, '1970-01-01T00:00:00Z', ?)",
+        )
+        .bind(provider)
+        .bind(detail)
+        .execute(pool)
+        .await
+        .context("recording the first transient failure for a never-synced provider")?;
+        tracing::debug!(
+            provider,
+            "first transient failure on a never-synced provider - staying quiet until the next attempt"
+        );
         return Ok(false);
     }
 
@@ -388,24 +420,55 @@ mod tests {
         );
     }
 
-    /// The trap this fix has to survive: transient failures no longer call
+    /// The trap this has to survive: transient failures no longer call
     /// `stamp_sync_error`, so a machine that has NEVER reached the provider has
-    /// no `pm_sync_state` row at all. An age test alone would no-op on exactly
-    /// the installs that need it most - someone who just connected behind a
-    /// blocking proxy. `EXISTS` is false for a missing row, which covers it.
+    /// no `pm_sync_state` row at all, and an age test alone would no-op forever
+    /// on exactly the installs that need it most - someone who just connected
+    /// behind a blocking proxy.
+    ///
+    /// But it must not escalate on failure #1 either, or connecting a tracker
+    /// and hitting one DNS hiccup shows a fault seconds later - the same
+    /// false-positive banner this change exists to remove, just with
+    /// connectivity wording. One retry, then it surfaces.
     #[tokio::test]
-    async fn a_provider_that_has_never_synced_escalates_immediately() {
+    async fn a_never_synced_provider_gets_one_retry_before_escalating() {
         let pool = make_db().await;
 
-        let escalated = note_transient_sync_failure(&pool, "github", "dns error")
+        let first = note_transient_sync_failure(&pool, "github", "dns error")
+            .await
+            .unwrap();
+        assert!(!first, "the first blip after connecting must stay silent");
+        assert!(
+            notice(&pool, "pm.github").await.is_none(),
+            "no banner seconds after connecting a tracker"
+        );
+
+        let second = note_transient_sync_failure(&pool, "github", "dns error")
+            .await
+            .unwrap();
+        assert!(second, "a second failure means it is not just a blip");
+        assert!(notice(&pool, "pm.github").await.is_some());
+    }
+
+    /// The grace is exactly one retry, not an open-ended reprieve: the row the
+    /// first failure writes must carry the epoch sentinel, or it would read as
+    /// a recent sync and suppress escalation forever.
+    #[tokio::test]
+    async fn the_first_failure_row_does_not_look_like_a_sync() {
+        let pool = make_db().await;
+        note_transient_sync_failure(&pool, "github", "dns error")
             .await
             .unwrap();
 
+        let (last,): (String,) =
+            sqlx::query_as("SELECT last_synced_at FROM pm_sync_state WHERE provider = 'github'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert!(
-            escalated,
-            "no pm_sync_state row means never-synced, which must not be silent"
+            last.starts_with("1970"),
+            "the grace row must not count as a sync: {last}"
         );
-        assert!(notice(&pool, "pm.github").await.is_some());
     }
 
     /// A row left by an earlier TERMINAL failure carries the epoch sentinel
@@ -452,6 +515,10 @@ mod tests {
     #[tokio::test]
     async fn a_successful_sync_clears_an_escalated_notice() {
         let pool = make_db().await;
+        // Two failures: the first is the never-synced grace attempt.
+        note_transient_sync_failure(&pool, "github", "dns error")
+            .await
+            .unwrap();
         note_transient_sync_failure(&pool, "github", "dns error")
             .await
             .unwrap();
