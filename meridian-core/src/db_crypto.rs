@@ -72,6 +72,7 @@ pub async fn open_pool_with_key(
     create_if_missing: bool,
     extra_pragmas: &'static [(&'static str, &'static str)],
 ) -> anyhow::Result<SqlitePool> {
+    let key_hex = key_unless_plaintext(uri, key_hex);
     if let Some(k) = key_hex {
         validate_key_hex(k)?;
     }
@@ -119,6 +120,7 @@ pub async fn open_pool_with_key_readonly(
     uri: &str,
     key_hex: Option<&str>,
 ) -> anyhow::Result<SqlitePool> {
+    let key_hex = key_unless_plaintext(uri, key_hex);
     if let Some(k) = key_hex {
         validate_key_hex(k)?;
     }
@@ -158,6 +160,63 @@ pub fn is_plaintext_sqlite(path: &Path) -> bool {
     matches!(f.read_exact(&mut magic), Ok(())) && &magic == SQLITE_MAGIC
 }
 
+/// Best-effort extraction of the on-disk file path from a SQLite connection
+/// string, for the plaintext check in [`key_unless_plaintext`]. Accepts both a
+/// bare filesystem path (as [`encrypt_in_place`] passes) and a `sqlite://…` /
+/// `file:…` URI (as the daemon's `setup_db` and the tray's `open_existing`
+/// pass — `format!("sqlite://{path}")`), and strips any `?mode=ro&…` query.
+/// Returns `None` for `:memory:` (nothing on disk to inspect).
+fn sqlite_uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
+    let without_scheme = uri
+        .strip_prefix("sqlite://")
+        .or_else(|| uri.strip_prefix("sqlite:"))
+        .or_else(|| uri.strip_prefix("file://"))
+        .or_else(|| uri.strip_prefix("file:"))
+        .unwrap_or(uri);
+    let path = without_scheme
+        .split_once('?')
+        .map(|(p, _)| p)
+        .unwrap_or(without_scheme);
+    if path.is_empty() || path == ":memory:" {
+        return None;
+    }
+    Some(std::path::PathBuf::from(path))
+}
+
+/// Drop the encryption key when `uri` points at an existing **plaintext** SQLite
+/// file; otherwise return `key_hex` unchanged.
+///
+/// Applying a SQLCipher `PRAGMA key` to a file that is actually plaintext makes
+/// SQLCipher stall on the first page-touching pragma until the pool's 10s
+/// acquire timeout fires — surfacing to callers as `worklog-generate: open db:
+/// … pool timed out while waiting for an open connection`. That desync arises
+/// when an [`encrypt_in_place`] migration wrote the encrypted copy but could
+/// not complete its final swap (on Windows `std::fs::rename` fails while the
+/// daemon still holds `meridian.db` open), leaving the on-disk file plaintext
+/// while `MERIDIAN_DB_KEY` stays set in `.env`. Every DB opener the daemon and
+/// the CLI subprocesses use routes through [`open_pool_with_key`], so guarding
+/// here self-heals an already-stuck machine: a key never applies to a plaintext
+/// file, so drop it, open unencrypted, and warn so the stuck migration stays
+/// visible. [`is_plaintext_sqlite`] is `false` for a missing file (fresh
+/// install → keep the key and create encrypted) and for an encrypted file
+/// (ciphertext header → keep the key), so this fires only on the genuine
+/// plaintext-with-key desync.
+fn key_unless_plaintext<'a>(uri: &str, key_hex: Option<&'a str>) -> Option<&'a str> {
+    let key = key_hex?;
+    match sqlite_uri_to_path(uri) {
+        Some(path) if is_plaintext_sqlite(&path) => {
+            tracing::warn!(
+                db = %path.display(),
+                "meridian.db is plaintext but an encryption key is configured — opening \
+                 unencrypted and ignoring the key (a prior encrypt-in-place migration did \
+                 not complete; see meridian_core::db_crypto)"
+            );
+            None
+        }
+        _ => Some(key),
+    }
+}
+
 /// Files an interrupted [`encrypt_in_place`] would have left beside `path`:
 /// the fully-written encrypted export (`…db.encrypting-tmp`) and any timestamped
 /// plaintext backup (`…db.plaintext-backup-<ts>`).
@@ -189,6 +248,68 @@ fn interrupted_migration_leftovers(path: &Path) -> Vec<std::path::PathBuf> {
         }
     }
     found
+}
+
+/// Swap the freshly-written encrypted export at `tmp_path` into `path`, moving
+/// the plaintext original to `backup_path` first. Extracted from
+/// [`encrypt_in_place`] so the two-rename failure handling is unit-testable
+/// without a real Windows share violation (see the module tests).
+///
+/// Preserves [`encrypt_in_place`]'s "a failed migration never loses data"
+/// invariant across BOTH renames — each of which can fail on the same class of
+/// Windows lock (a lingering handle / AV scan) that motivated this whole fix:
+/// - First rename (`path` → `backup_path`) fails: the encrypted export is
+///   useless without the swap, so drop it and leave the plaintext original
+///   exactly where it is ("still plaintext, retry next launch").
+/// - Second rename (`tmp_path` → `path`) fails: `path` has ALREADY been moved to
+///   `backup_path`, so returning here would strand the user's data under a
+///   backup name while the caller (seeing no `meridian.db`) creates a fresh
+///   empty one. Roll back by renaming `backup_path` → `path` first, so the state
+///   degrades to "still plaintext, data intact" rather than "no database". Only
+///   if that rollback ALSO fails do we surface a hard error naming the file to
+///   restore by hand — strictly the last resort.
+fn finalize_encryption_swap(
+    path: &Path,
+    tmp_path: &Path,
+    backup_path: &Path,
+) -> anyhow::Result<()> {
+    if let Err(e) = std::fs::rename(path, backup_path) {
+        // On Windows `rename` fails with "os error 32" while another process
+        // (the running daemon) still holds `meridian.db` open. Remove the
+        // multi-GB encrypted export so it doesn't accumulate as an orphan every
+        // startup (a real disk-exhaustion risk on a large DB); `key_unless_plaintext`
+        // keeps the daemon and CLIs working against the plaintext file meanwhile.
+        let _ = std::fs::remove_file(tmp_path);
+        return Err(e).context(
+            "encrypt_in_place: failed to move plaintext original aside \
+             (is meridian.db still open by the daemon?)",
+        );
+    }
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = std::path::PathBuf::from(format!("{}{}", path.display(), suffix));
+        let _ = std::fs::remove_file(sidecar); // checkpointed to empty; safe to drop
+    }
+    if let Err(e) = std::fs::rename(tmp_path, path) {
+        // `path` was already moved to `backup_path` above; put it back so we
+        // never leave the user with no database at all.
+        match std::fs::rename(backup_path, path) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(tmp_path);
+                Err(e).context(
+                    "encrypt_in_place: failed to move encrypted export into place; \
+                     restored the plaintext original (will retry next launch)",
+                )
+            }
+            Err(restore_err) => Err(e).context(format!(
+                "encrypt_in_place: failed to move encrypted export into place AND failed \
+                 to restore the plaintext original ({restore_err:#}) — the previous data \
+                 is intact at {}; restore it by hand",
+                backup_path.display(),
+            )),
+        }
+    } else {
+        Ok(())
+    }
 }
 
 /// Migrate an existing plaintext `meridian.db` to SQLCipher encryption at rest,
@@ -276,14 +397,7 @@ pub async fn encrypt_in_place(path: &Path, key_hex: &str) -> anyhow::Result<()> 
         "db.plaintext-backup-{}",
         chrono::Utc::now().format("%Y%m%d%H%M%S")
     ));
-    std::fs::rename(path, &backup_path)
-        .context("encrypt_in_place: failed to move plaintext original aside")?;
-    for suffix in ["-wal", "-shm"] {
-        let sidecar = std::path::PathBuf::from(format!("{}{}", path.display(), suffix));
-        let _ = std::fs::remove_file(sidecar); // checkpointed to empty; safe to drop
-    }
-    std::fs::rename(&tmp_path, path)
-        .context("encrypt_in_place: failed to move encrypted export into place")?;
+    finalize_encryption_swap(path, &tmp_path, &backup_path)?;
 
     tracing::info!(
         db = %path.display(),
@@ -370,6 +484,279 @@ mod tests {
 
     const TEST_KEY: &str = "3a15689f73412c29d7ed3b902a01e33dbd5f767dc37b792e19ac9e2366bf2cd2";
     const OTHER_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    #[test]
+    fn sqlite_uri_to_path_extracts_file_path() {
+        use std::path::PathBuf;
+        // The daemon/tray form: `format!("sqlite://{path}")`.
+        assert_eq!(
+            sqlite_uri_to_path("sqlite://C:/Users/x/.meridian/meridian.db"),
+            Some(PathBuf::from("C:/Users/x/.meridian/meridian.db"))
+        );
+        // A POSIX absolute path keeps its leading slash.
+        assert_eq!(
+            sqlite_uri_to_path("sqlite:///home/u/.meridian/meridian.db"),
+            Some(PathBuf::from("/home/u/.meridian/meridian.db"))
+        );
+        // A bare path (as encrypt_in_place / the tests pass).
+        assert_eq!(
+            sqlite_uri_to_path("/tmp/plain.db"),
+            Some(PathBuf::from("/tmp/plain.db"))
+        );
+        // Query params are stripped (single and multi-param).
+        assert_eq!(
+            sqlite_uri_to_path("sqlite://C:/db.sqlite?mode=ro"),
+            Some(PathBuf::from("C:/db.sqlite"))
+        );
+        assert_eq!(
+            sqlite_uri_to_path("sqlite:///home/u/x.db?mode=ro&cache=shared"),
+            Some(PathBuf::from("/home/u/x.db"))
+        );
+        // The `file:` scheme (with and without the double slash).
+        assert_eq!(
+            sqlite_uri_to_path("file:///home/u/x.db"),
+            Some(PathBuf::from("/home/u/x.db"))
+        );
+        assert_eq!(
+            sqlite_uri_to_path("file:relative.db"),
+            Some(PathBuf::from("relative.db"))
+        );
+        // In-memory (any spelling) has nothing on disk to inspect.
+        assert_eq!(sqlite_uri_to_path("sqlite::memory:"), None);
+        assert_eq!(sqlite_uri_to_path(":memory:"), None);
+        assert_eq!(sqlite_uri_to_path("sqlite://:memory:"), None);
+        // An empty target yields nothing to check.
+        assert_eq!(sqlite_uri_to_path(""), None);
+        assert_eq!(sqlite_uri_to_path("sqlite://"), None);
+    }
+
+    /// The desync a half-finished `encrypt_in_place` leaves — an on-disk
+    /// plaintext file while `MERIDIAN_DB_KEY` is still configured — must NOT
+    /// stall (pre-fix: SQLCipher hangs on the first pragma until the 10s
+    /// acquire timeout → "pool timed out"). The guard drops the key, opens
+    /// plaintext, and reads the data back well under that timeout.
+    #[tokio::test]
+    async fn open_pool_ignores_key_on_plaintext_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("meridian.db");
+
+        // Seed a plaintext DB with data (no key).
+        let pool = open_pool_with_key(&db_path.display().to_string(), None, true, &[])
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t (x INTEGER)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO t (x) VALUES (99)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        assert!(is_plaintext_sqlite(&db_path));
+
+        // Reopen the SAME plaintext file WITH a key configured. Must not stall.
+        let opened = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            open_pool_with_key(&db_path.display().to_string(), Some(TEST_KEY), false, &[]),
+        )
+        .await
+        .expect("opening a plaintext file with a key set must not stall")
+        .expect("plaintext open should succeed with the key dropped");
+        let row = sqlx::query("SELECT x FROM t")
+            .fetch_one(&opened)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<i64, _>(0), 99);
+        opened.close().await;
+
+        // The read-only opener must apply the same guard.
+        let ro = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            open_pool_with_key_readonly(&db_path.display().to_string(), Some(TEST_KEY)),
+        )
+        .await
+        .expect("read-only opening a plaintext file with a key set must not stall")
+        .expect("plaintext read-only open should succeed with the key dropped");
+        let row = sqlx::query("SELECT x FROM t").fetch_one(&ro).await.unwrap();
+        assert_eq!(row.get::<i64, _>(0), 99);
+        ro.close().await;
+    }
+
+    /// The inverse invariant that keeps the guard honest: an actually
+    /// ENCRYPTED file with a key set must still open encrypted and read its
+    /// data. If the guard ever dropped the key here, every encrypted DB would
+    /// fail to decrypt — so this pins that it only fires on plaintext files.
+    #[tokio::test]
+    async fn open_pool_keeps_key_on_encrypted_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("meridian.db");
+
+        // Create an encrypted db with data.
+        let pool = open_pool_with_key(&db_path.display().to_string(), Some(TEST_KEY), true, &[])
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t (x INTEGER)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO t (x) VALUES (7)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        assert!(!is_plaintext_sqlite(&db_path), "file should be ciphertext");
+
+        // Reopen WITH the key — the guard must keep it (file is not plaintext).
+        let opened = open_pool_with_key(&db_path.display().to_string(), Some(TEST_KEY), false, &[])
+            .await
+            .expect("encrypted open with the correct key should succeed");
+        let row = sqlx::query("SELECT x FROM t")
+            .fetch_one(&opened)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<i64, _>(0), 7);
+        opened.close().await;
+
+        // Read-only likewise keeps the key.
+        let ro = open_pool_with_key_readonly(&db_path.display().to_string(), Some(TEST_KEY))
+            .await
+            .expect("encrypted read-only open with the correct key should succeed");
+        let row = sqlx::query("SELECT x FROM t").fetch_one(&ro).await.unwrap();
+        assert_eq!(row.get::<i64, _>(0), 7);
+        ro.close().await;
+    }
+
+    /// A fresh install (file does not exist yet) with a key + create_if_missing
+    /// must still create an ENCRYPTED file. The guard keys off an *existing*
+    /// plaintext file, so a missing path must not drop the key and leave a new
+    /// db created in the clear — otherwise new users would silently never get
+    /// encryption at rest.
+    #[tokio::test]
+    async fn open_pool_creates_encrypted_on_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("fresh.db");
+        assert!(!db_path.exists());
+
+        let pool = open_pool_with_key(&db_path.display().to_string(), Some(TEST_KEY), true, &[])
+            .await
+            .expect("fresh encrypted create should succeed");
+        sqlx::query("CREATE TABLE t (x INTEGER)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO t (x) VALUES (1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        // The new file must be ciphertext, not created in the clear.
+        assert!(
+            !is_plaintext_sqlite(&db_path),
+            "a fresh db opened with a key must be encrypted"
+        );
+
+        // ...and it round-trips with the correct key.
+        let reopened =
+            open_pool_with_key(&db_path.display().to_string(), Some(TEST_KEY), false, &[])
+                .await
+                .expect("reopen with the correct key should succeed");
+        let row = sqlx::query("SELECT x FROM t")
+            .fetch_one(&reopened)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<i64, _>(0), 1);
+        reopened.close().await;
+    }
+
+    /// First rename (`path` → `backup`) fails: the encrypted export must be
+    /// cleaned up and the plaintext original left exactly as it was. Forced
+    /// portably by making `backup` an existing non-empty directory, which
+    /// `rename` refuses to overwrite with a file.
+    #[test]
+    fn finalize_swap_cleans_up_when_first_rename_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meridian.db");
+        let tmp = dir.path().join("meridian.db.encrypting-tmp");
+        let backup = dir.path().join("backup-dir");
+        std::fs::create_dir(&backup).unwrap();
+        std::fs::write(backup.join("occupant"), b"x").unwrap(); // non-empty → rename fails
+
+        std::fs::write(&path, b"ORIGINAL-PLAINTEXT").unwrap();
+        std::fs::write(&tmp, b"ENCRYPTED-EXPORT").unwrap();
+
+        let err = finalize_encryption_swap(&path, &tmp, &backup).unwrap_err();
+        assert!(!tmp.exists(), "stale encrypted export must be removed");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"ORIGINAL-PLAINTEXT",
+            "plaintext original must be left intact"
+        );
+        assert!(
+            format!("{err:#}").contains("move plaintext original aside"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    /// Second rename (`tmp` → `path`) fails AFTER the first already moved
+    /// `path` → `backup`: the original must be rolled back into place so we
+    /// never leave "no database" for the caller to replace with an empty one.
+    /// Forced portably by pointing `tmp` at a file that does not exist.
+    #[test]
+    fn finalize_swap_rolls_back_when_second_rename_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meridian.db");
+        let backup = dir.path().join("meridian.db.plaintext-backup-x");
+        let tmp = dir.path().join("does-not-exist.tmp"); // rename(tmp, path) → ENOENT
+
+        std::fs::write(&path, b"ORIGINAL-PLAINTEXT").unwrap();
+
+        let err = finalize_encryption_swap(&path, &tmp, &backup).unwrap_err();
+        assert!(
+            path.exists(),
+            "the plaintext original must be restored, not stranded under the backup name"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"ORIGINAL-PLAINTEXT",
+            "restored data must match the original"
+        );
+        assert!(
+            !backup.exists(),
+            "backup should have been renamed back to path"
+        );
+        assert!(
+            format!("{err:#}").contains("restored the plaintext original"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    /// The happy path: both renames succeed — plaintext original preserved under
+    /// the backup name, encrypted export now at `path`.
+    #[test]
+    fn finalize_swap_succeeds_and_preserves_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meridian.db");
+        let tmp = dir.path().join("meridian.db.encrypting-tmp");
+        let backup = dir.path().join("meridian.db.plaintext-backup-x");
+
+        std::fs::write(&path, b"PLAINTEXT").unwrap();
+        std::fs::write(&tmp, b"CIPHERTEXT").unwrap();
+
+        finalize_encryption_swap(&path, &tmp, &backup).unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"CIPHERTEXT",
+            "encrypted export moved into place"
+        );
+        assert_eq!(
+            std::fs::read(&backup).unwrap(),
+            b"PLAINTEXT",
+            "plaintext backup preserved"
+        );
+        assert!(!tmp.exists(), "tmp consumed by the rename");
+    }
 
     #[test]
     fn validate_key_hex_rejects_bad_input() {
