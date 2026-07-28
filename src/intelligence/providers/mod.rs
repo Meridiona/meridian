@@ -3,6 +3,7 @@
 pub mod azure_devops;
 pub mod cdm;
 pub mod github;
+pub mod http;
 pub mod jira;
 pub mod linear;
 pub mod status;
@@ -48,7 +49,15 @@ pub async fn stamp_sync_error_with_remedy(
             "Trello sync failing",
             Some("Run: meridian oauth-login trello"),
         ),
-        "github" => ("GitHub sync failing", Some("Set GITHUB_TOKEN in .env")),
+        // NOT "Set GITHUB_TOKEN in .env": GitHub connects via the in-app browser
+        // device flow, which writes `GITHUB_TOKEN` to `.env` itself (see
+        // `intelligence::oauth`). So the variable name is accurate and the
+        // instruction is unfollowable — a user who clicked Connect has never
+        // seen a token. Settings covers both that flow and the PAT one.
+        "github" => (
+            "GitHub sync failing",
+            Some("Reconnect GitHub in Settings - Integrations"),
+        ),
         "azure_devops" => (
             "Azure DevOps sync failing",
             Some("Set AZURE_DEVOPS_PAT in .env"),

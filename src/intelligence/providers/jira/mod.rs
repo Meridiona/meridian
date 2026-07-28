@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use crate::config::JiraConfig;
 use crate::intelligence::oauth::jira::JiraReqCtx;
+use crate::intelligence::providers::http::SyncFault;
 
 mod fetch;
 #[cfg(test)]
@@ -468,25 +469,37 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
             // exactly what made this fault flap on and off at random. Keep the
             // stale cache and stay quiet; the notice is reserved for a terminal
             // auth failure the user actually has to act on.
-            if meridian_oauth::is_transient(&e) {
-                tracing::warn!(
-                    error = %e,
-                    "jira auth temporarily unavailable - keeping stale cache, will retry next sync"
-                );
-                return Ok(None);
-            }
-            tracing::warn!(error = %e, "jira auth unavailable - keeping stale cache");
-            let msg = format!("Jira auth failed: {e}");
-            // Basic-auth (JIRA_API_TOKEN/JIRA_BASE_URL) and OAuth are mutually
-            // exclusive here — has_basic_auth() mirrors resolve()'s own choice —
-            // so the remedy must match whichever path this failure came from,
-            // not always point at the .env fields.
-            let remedy = if crate::intelligence::oauth::jira::has_basic_auth(jira) {
-                "Set JIRA_API_TOKEN and JIRA_BASE_URL in .env"
+            // `meridian_oauth::is_transient` only recognises a `TokenError` from
+            // the token endpoint and answers `false` for anything else, so a raw
+            // transport failure escaping the refresh would still land here as
+            // terminal. Falling back to `http::classify` closes that hole
+            // without ever making a genuinely dead grant look retryable.
+            let fault = if meridian_oauth::is_transient(&e) {
+                SyncFault::retry(&e)
             } else {
-                "Run: meridian oauth-login jira"
+                super::http::classify(&e)
             };
-            let _ = super::stamp_sync_error_with_remedy(pool, "jira", &msg, Some(remedy)).await;
+            match fault {
+                SyncFault::Retry { detail } => tracing::warn!(
+                    error = %detail,
+                    "jira auth temporarily unavailable - keeping stale cache, will retry next sync"
+                ),
+                SyncFault::Report { detail } => {
+                    tracing::warn!(error = %detail, "jira auth unavailable - keeping stale cache");
+                    let msg = format!("Jira auth failed: {detail}");
+                    // Basic-auth (JIRA_API_TOKEN/JIRA_BASE_URL) and OAuth are
+                    // mutually exclusive here - has_basic_auth() mirrors
+                    // resolve()'s own choice - so the remedy must match whichever
+                    // path this failure came from, not always point at .env.
+                    let remedy = if crate::intelligence::oauth::jira::has_basic_auth(jira) {
+                        "Set JIRA_API_TOKEN and JIRA_BASE_URL in .env"
+                    } else {
+                        "Reconnect Jira in Settings - Integrations"
+                    };
+                    let _ =
+                        super::stamp_sync_error_with_remedy(pool, "jira", &msg, Some(remedy)).await;
+                }
+            }
             return Ok(None);
         }
     };
@@ -561,9 +574,25 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
             Ok(Some(keys))
         }
         Err(e) => {
-            tracing::warn!(error = %e, "jira fetch failed — keeping stale cache");
-            let msg = format!("Jira sync failed — {e}");
-            let _ = super::stamp_sync_error(pool, "jira", &msg).await;
+            // The gap that left Jira users flapping: the transient guard on the
+            // resolve path above covers REFRESHING the token, never USING it. An
+            // Atlassian 5xx or a network blip during the search raised exactly
+            // the terminal banner that path was fixed to suppress.
+            match super::http::classify(&e) {
+                SyncFault::Retry { detail } => tracing::warn!(
+                    error = %detail,
+                    "jira unreachable - keeping stale cache, will retry next sync"
+                ),
+                SyncFault::Report { detail } => {
+                    tracing::warn!(error = %detail, "jira fetch failed - keeping stale cache");
+                    let _ = super::stamp_sync_error(
+                        pool,
+                        "jira",
+                        &format!("Jira sync failed: {detail}"),
+                    )
+                    .await;
+                }
+            }
             Ok(None)
         }
     }

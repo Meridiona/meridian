@@ -38,7 +38,7 @@ struct JiraFieldMeta {
 ///
 /// Returns None if no match or if the request fails.
 pub(super) async fn discover_start_date_field(ctx: &JiraReqCtx) -> Option<String> {
-    let client = reqwest::Client::new();
+    let client = crate::intelligence::providers::http::client();
     let url = ctx.api_url("/rest/api/3/field");
     let resp = ctx.apply(client.get(&url)).send().await.ok()?;
     if !resp.status().is_success() {
@@ -140,7 +140,7 @@ async fn search(
     start_date_field: Option<&str>,
     jql: &str,
 ) -> Result<Vec<(JiraIssue, serde_json::Value)>> {
-    let client = reqwest::Client::new();
+    let client = crate::intelligence::providers::http::client();
     let url = ctx.api_url("/rest/api/3/search/jql");
 
     let mut fields = vec![
@@ -185,7 +185,16 @@ async fn search(
 
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Jira /search/jql → {}: {}", status, text);
+        // Typed rather than formatted: the STATUS decides whether the caller
+        // raises a "Reconnect Jira" banner (401/403) or stays quiet and retries
+        // (429/5xx). A `bail!` string throws that away — see
+        // `crate::intelligence::providers::http::HttpStatusError`.
+        return Err(crate::intelligence::providers::http::HttpStatusError::new(
+            status.as_u16(),
+            "Jira /search/jql",
+            &text,
+        )
+        .into());
     }
 
     // Parse once as a Value so we can keep each raw issue object verbatim for

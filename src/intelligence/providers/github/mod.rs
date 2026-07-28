@@ -8,6 +8,7 @@ use meridian_core::adapters::github::GithubAdapter;
 use sqlx::SqlitePool;
 
 use crate::config::GitHubConfig;
+use crate::intelligence::providers::http::SyncFault;
 
 mod fetch;
 #[cfg(test)]
@@ -183,14 +184,32 @@ pub async fn refresh_if_stale(
     let viewer_login = match fetch_viewer_login(github).await {
         Ok(l) => l,
         Err(e) => {
-            tracing::warn!(error = %e, "github viewer fetch failed — keeping stale cache");
-            let _ =
-                super::stamp_sync_error(pool, "github", &format!("GitHub auth failed — {e}")).await;
+            // A connect failure here is the network, not the credential. It
+            // used to raise "GitHub auth failed / Set GITHUB_TOKEN in .env",
+            // telling the user to redo a token that was never broken.
+            match super::http::classify(&e) {
+                SyncFault::Retry { detail } => tracing::warn!(
+                    error = %detail,
+                    "github unreachable - keeping stale cache, will retry next sync"
+                ),
+                SyncFault::Report { detail } => {
+                    tracing::warn!(
+                        error = %detail,
+                        "github viewer fetch failed - keeping stale cache"
+                    );
+                    let _ = super::stamp_sync_error(
+                        pool,
+                        "github",
+                        &format!("GitHub sync failed: {detail}"),
+                    )
+                    .await;
+                }
+            }
             return Ok(None);
         }
     };
 
-    let client = reqwest::Client::new();
+    let client = super::http::client();
 
     // Each project is an independent paginated GraphQL walk — fetch them all
     // concurrently, then fold the results preserving any_ok/all_ok semantics.
@@ -205,6 +224,9 @@ pub async fn refresh_if_stale(
     let mut all_tasks: Vec<(GhTask, serde_json::Value)> = Vec::new();
     let mut any_ok = false;
     let mut all_ok = true;
+    // Kept (not just counted) so the all-failed branch below can ask whether
+    // every project failed for a retryable reason.
+    let mut failures: Vec<anyhow::Error> = Vec::new();
     for (project_id, result) in github.project_ids.iter().zip(results) {
         match result {
             Ok(tasks) => {
@@ -213,20 +235,49 @@ pub async fn refresh_if_stale(
                 any_ok = true;
             }
             Err(e) => {
-                tracing::warn!(project_id, error = %e, "github project fetch failed — skipping");
+                let chain = format!("{e:#}");
+                tracing::warn!(project_id, error = %chain, "github project fetch failed - skipping");
+                failures.push(e);
                 all_ok = false;
             }
         }
     }
 
     if !any_ok {
-        tracing::warn!("all github project fetches failed — keeping stale cache");
-        let _ = super::stamp_sync_error(
-            pool,
-            "github",
-            "GitHub sync failed — all project fetches failed",
-        )
-        .await;
+        // One network outage hits every concurrent project fetch identically,
+        // so "all of them failed, all for a retryable reason" is the signature
+        // of an unreachable network rather than a broken board or credential.
+        // Stay quiet and retry; a mixed or terminal set still reaches the user.
+        // Report the first TERMINAL failure if there is one; stay quiet only
+        // when every single failure was retryable.
+        let terminal = failures
+            .iter()
+            .map(super::http::classify)
+            .find_map(|f| match f {
+                SyncFault::Report { detail } => Some(detail),
+                SyncFault::Retry { .. } => None,
+            });
+        match terminal {
+            // `failures` is never empty here (a non-empty project list that
+            // produced no successes produced errors), so this is the
+            // all-retryable case.
+            None => tracing::warn!(
+                projects = failures.len(),
+                "github unreachable for every project - keeping stale cache, will retry next sync"
+            ),
+            Some(detail) => {
+                tracing::warn!(
+                    error = %detail,
+                    "all github project fetches failed - keeping stale cache"
+                );
+                let _ = super::stamp_sync_error(
+                    pool,
+                    "github",
+                    &format!("GitHub sync failed - every project fetch failed: {detail}"),
+                )
+                .await;
+            }
+        }
         return Ok(None);
     }
 
