@@ -188,6 +188,35 @@ pub async fn refresh_if_stale(
     force_refresh(pool, cfg).await.map(Some)
 }
 
+/// Record a sync failure against the shared classification.
+///
+/// Every fatal stage of [`force_refresh`] must go through this, not just the
+/// first one. The stage that fails is invisible to the user - what matters is
+/// that a retryable failure stays quiet while still feeding the escalation
+/// clock, and a terminal one raises the notice. A stage that propagates its
+/// error without calling this produces a log line and nothing durable: no
+/// notice, and no escalation however long it keeps failing.
+///
+/// `stage` names the failing step for the log only; the user-facing text comes
+/// from the classified detail.
+async fn record_sync_failure(pool: &SqlitePool, stage: &str, e: &anyhow::Error) -> Result<()> {
+    match super::http::classify(e) {
+        SyncFault::Retry { detail } => {
+            tracing::warn!(
+                stage,
+                error = %detail,
+                "azure devops unreachable - keeping stale cache, will retry next sync"
+            );
+            let _ = super::note_transient_sync_failure(pool, "azure_devops", &detail).await;
+        }
+        SyncFault::Report { detail } => {
+            tracing::warn!(stage, error = %detail, "azure devops sync failed");
+            stamp_error(pool, &detail).await?;
+        }
+    }
+    Ok(())
+}
+
 /// Unconditionally refresh the Azure DevOps task cache.
 #[tracing::instrument(skip(pool, cfg), fields(provider = "azure_devops"))]
 pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result<Vec<String>> {
@@ -200,21 +229,10 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
     let all_ids = match run_wiql(&client, cfg).await {
         Ok(ids) => ids,
         Err(e) => {
-            // `e.to_string()` printed only the outermost context, dropping the
-            // cause - the same truncation the other providers had.
-            match super::http::classify(&e) {
-                SyncFault::Retry { detail } => {
-                    tracing::warn!(
-                        error = %detail,
-                        "azure devops unreachable - keeping stale cache, will retry next sync"
-                    );
-                    let _ = super::note_transient_sync_failure(pool, "azure_devops", &detail).await;
-                }
-                SyncFault::Report { detail } => {
-                    tracing::warn!(error = %detail, "azure devops WIQL failed");
-                    stamp_error(pool, &detail).await?;
-                }
-            }
+            // Was `stamp_error(pool, &e.to_string())`, which both reported every
+            // network blip as a credentials fault AND printed only the outermost
+            // context, dropping the cause.
+            record_sync_failure(pool, "wiql", &e).await?;
             return Err(e);
         }
     };
@@ -233,7 +251,16 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
     let mut details: Vec<WorkItemDetail> = Vec::with_capacity(all_ids.len());
     let mut raw_by_id: HashMap<u64, serde_json::Value> = HashMap::with_capacity(all_ids.len());
     for chunk in all_ids.chunks(BATCH_SIZE) {
-        let batch = fetch_batch(&client, cfg, chunk).await?;
+        // Classified like the WIQL stage above rather than a bare `?`. A batch
+        // failure is just as fatal to the sync, and propagating it unrecorded
+        // meant a provider failing consistently HERE escalated never.
+        let batch = match fetch_batch(&client, cfg, chunk).await {
+            Ok(b) => b,
+            Err(e) => {
+                record_sync_failure(pool, "work_item_batch", &e).await?;
+                return Err(e);
+            }
+        };
         for (detail, raw) in batch {
             raw_by_id.insert(detail.id, raw);
             details.push(detail);
