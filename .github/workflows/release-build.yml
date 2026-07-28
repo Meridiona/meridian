@@ -325,11 +325,23 @@ jobs:
           # on every run; caching the source directory removes the cause.
           cache-directories: |
             ~/.cargo/registry/src
-          # Save from the branches that actually cut releases. A run restores
-          # from its own ref or the DEFAULT branch only — it cannot read a
-          # sibling branch — so main must write its own copy or production
-          # releases can never warm from staging's.
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/pre-main' || startsWith(github.ref, 'refs/tags/v') }}
+          # Only ever save from `main`. A run restores from its own ref OR the
+          # default branch — nothing else — so a save on a tag ref is only
+          # ever restorable by a byte-identical re-run of that SAME tag, which
+          # in practice never happens (every release is a brand-new tag).
+          # `startsWith(refs/tags/v)` used to be in this condition on the
+          # theory that "main must write its own copy or releases can never
+          # warm from staging's" — but staging never had one to warm FROM in
+          # the first place, and every tag build was quietly writing a
+          # ~1.5 GB entry nothing could ever read back, which is what pushed
+          # the repo's cache quota (10 GiB, evicted globally by LRU once
+          # crossed) to the point of evicting entries other jobs actually
+          # need. `refs/heads/pre-main` was dead for the same underlying
+          # reason from a different angle: this workflow only ever triggers
+          # on a `v*` tag push or `workflow_dispatch` (see the `on:` block),
+          # never on a push to `pre-main` itself, so that branch of the
+          # condition could never evaluate true.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: actions/setup-node@v4
         with:
@@ -679,7 +691,20 @@ jobs:
           # cache shared across every workflow that compiles this target.
           add-job-id-key: false
           shared-key: windows-release-x86_64-pc-windows-msvc
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/pre-main' || startsWith(github.ref, 'refs/tags/v') }}
+          # Only ever save from `main` — see the macOS job's rust-cache step
+          # for the full reasoning. This one in particular had NEVER once
+          # saved to `main` (confirmed via the cache API: every
+          # windows-release-* entry that ever existed was tag-scoped), so
+          # every tag-triggered Windows release build restored nothing and
+          # compiled OpenSSL-from-source + SQLCipher + the daemon/tray from a
+          # stone-cold cache — every single time, not just once. Restoring
+          # `main`'s cache instead of a dead tag copy is what actually makes
+          # this job fast; dropping the tag-ref save alone would only make it
+          # cold forever instead of cold most of the time, so this job's
+          # `main`-scoped cache needs to exist before this change helps —
+          # currently seeded via a one-off `workflow_dispatch` run with branch
+          # context set to `main`.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: actions/setup-node@v4
         with:
