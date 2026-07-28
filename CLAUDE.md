@@ -436,6 +436,20 @@ machine a new identity on every network change, silently breaking the grouping
 the value exists for. See `telemetry_spool::machine_id` before touching any of
 this; `pseudonym_is_independent_of_the_captured_hostname` pins it.
 
+**ALPHA EXCEPTION (until 2026-08-28, `redact::ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`):**
+while Meridian is in hand-picked-tester alpha, the two paragraphs above and
+below are only true when signed out. While a tester is signed in,
+`local_host_pseudonym` deliberately seeds from a salted hash of their Clerk
+account email instead (`redact::pseudonymize_account`, mirrored into
+`settings.json`'s `account_pseudonym` by the tray on sign-in/out — never the
+raw email) — so support can trace one tester's errors across their Mac and
+Windows machines, at the cost of the pseudonym now being genuinely tied to an
+account rather than only a machine. `redact::support_id_is_account_scoped`
+reports which mode is currently active (surfaced in Settings → Account's
+copy) so this state is never asserted where it isn't true. Past the expiry
+date every install reverts to the per-machine-only behaviour described below,
+automatically, with no deploy required.
+
 That pseudonym is the ONLY identifier on an error row — nothing associates it
 with an account, and the hash is one-way. So it is surfaced to the user as
 **Support ID** (Settings → Account, and `bundle-info.txt` inside an export

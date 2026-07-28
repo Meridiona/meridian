@@ -92,7 +92,14 @@ export function AccountSection() {
             </span>
           )}
         </FieldRow>
-        <FieldRow label="Support ID" description="Identifies this device in error reports, without naming you or it. Quote it when you contact support so we can find the errors from this machine. It is not tied to your account and stays the same for this device.">
+        <FieldRow
+          label="Support ID"
+          description={
+            appInfo?.supportIdIsAccountScoped
+              ? 'Identifies you in error reports during alpha testing, so we can trace issues across your devices. Quote it when you contact support so we can find the errors from your account.'
+              : 'Identifies this device in error reports, without naming you or it. Quote it when you contact support so we can find the errors from this machine. It is not tied to your account and stays the same for this device.'
+          }
+        >
           {appInfo && (
             <div className="flex items-center gap-2">
               <span className="mt-body-sm font-mono" style={{ color: 'var(--t-muted)' }}>

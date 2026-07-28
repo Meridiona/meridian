@@ -659,6 +659,12 @@ export interface AppInfo {
   // a user can quote it to support; the hash is one-way, so without the user
   // supplying it their error rows cannot be located.
   supportId: string
+  // Whether `supportId` above is CURRENTLY the alpha-testing per-user
+  // pseudonym rather than the per-machine one — false while signed out, and
+  // false again automatically once the alpha window ends. Drives which
+  // Support ID description AccountSection.tsx shows, so that copy can't
+  // outlive what the pseudonym is actually doing.
+  supportIdIsAccountScoped: boolean
 }
 
 // ── LLM Lab (`get_llm_experiments` / `get_llm_experiment` / `run_llm_experiment`)
