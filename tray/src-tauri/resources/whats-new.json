@@ -4,6 +4,7 @@
       "version": "1.80.0",
       "date": "2026-07-27",
       "highlights": [
+        "Everything Meridian has captured is now encrypted on disk. The key is kept in your system keychain, and your existing data is upgraded automatically the first time you open this version - there is nothing to set up.",
         "Meridian can now send error reports to the team automatically, so crashes and failures get fixed without you having to report them. It is on by default and you can turn it off any time in Settings - Capture.",
         "Everything identifying is stripped on your device before a report is sent - file paths, web addresses, email addresses, and your computer's name. Your screen activity, OCR text, and window titles are never included.",
         "A new Support ID in Settings - Account. Quote it when you contact us and we can find the errors from your device, without it being linked to your account."
@@ -197,11 +198,6 @@
     }
   ],
   "roadmap": [
-    {
-      "title": "Encrypt your local data at rest",
-      "status": "in-progress",
-      "description": "Meridian's local database, which holds everything it has captured, is encrypted on disk so it stays unreadable to anything else on your machine."
-    },
     {
       "title": "More trackers - Linear, Trello, and Azure DevOps",
       "status": "planned",
