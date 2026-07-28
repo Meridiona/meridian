@@ -244,7 +244,17 @@ pub fn run() {
                     Some(env_path) => match db_key::resolve_or_create_key(&env_path) {
                         Ok(key) => Some(key),
                         Err(e) => {
-                            eprintln!("tray: failed to resolve DB encryption key, continuing unencrypted: {e}");
+                            // `tracing`, not `eprintln!`: observability is
+                            // already initialised above, and on a packaged
+                            // install stderr goes only to the launchd log -
+                            // never `meridian logs`, the diagnostics bundle,
+                            // or central error reporting. A silent fallback to
+                            // an UNENCRYPTED database is exactly the event
+                            // those channels exist to surface.
+                            tracing::error!(
+                                error = %e,
+                                "failed to resolve DB encryption key - continuing unencrypted"
+                            );
                             None
                         }
                     },
@@ -264,8 +274,9 @@ pub fn run() {
                         match tauri::async_runtime::block_on(migrate) {
                             Ok(()) => Some(key.clone()),
                             Err(e) => {
-                                eprintln!(
-                                    "tray: failed to migrate meridian.db to encrypted storage, continuing unencrypted this run: {e}"
+                                tracing::error!(
+                                    error = %e,
+                                    "failed to migrate meridian.db to encrypted storage - continuing unencrypted this run"
                                 );
                                 None
                             }
@@ -285,7 +296,7 @@ pub fn run() {
                 &db_path,
                 db_key_hex.as_deref(),
             ))
-            .map_err(|e| eprintln!("tray: meridian.db not opened ({db_path}): {e}"))
+            .map_err(|e| tracing::error!(error = %e, db_path = %db_path, "meridian.db not opened"))
             .ok();
             // Capture (slice 4a) writes to the SAME read-write pool the commands
             // use — clone the handle before it's moved into managed state.

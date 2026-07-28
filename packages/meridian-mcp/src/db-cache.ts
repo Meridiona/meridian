@@ -26,6 +26,7 @@ import initSqlJs from "sql.js";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import * as crypto from "crypto";
 import { execFile } from "child_process";
 import { promisify } from "util";
 
@@ -114,9 +115,18 @@ async function resolveReadablePath(dbPath: string): Promise<string> {
         `in this MCP server's environment, matching the key the Meridian tray generated.`,
     );
   }
+  // Hash the WHOLE path. The previous `Buffer.from(dbPath).toString("hex")
+  // .slice(0, 16)` was the hex of only the first EIGHT bytes, so any two DB
+  // paths sharing an 8-byte prefix mapped to the same snapshot file - and
+  // "/Users/a" is exactly eight bytes, which makes `/Users/alice/...` and
+  // `/Users/alison/...` collide. Since the caches key on `dbPath` rather than
+  // on this derived path, two paths can be resolved concurrently, and a
+  // collision lets one database's export overwrite the other between its
+  // export and its read - serving one user's data for a request against
+  // another's.
   const snapshotPath = path.join(
     os.tmpdir(),
-    `meridian-mcp-plaintext-${Buffer.from(dbPath).toString("hex").slice(0, 16)}.db`,
+    `meridian-mcp-plaintext-${crypto.createHash("sha256").update(dbPath).digest("hex").slice(0, 32)}.db`,
   );
   const bin = selectMeridianBinary(meridianCandidates());
   try {

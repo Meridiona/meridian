@@ -278,7 +278,13 @@ pub async fn install_llm_provider(
 #[tracing::instrument]
 pub async fn cursor_sign_in() -> Result<meridian::llm::detect::InstallOutcome, String> {
     let outcome = meridian::llm::detect::cursor_sign_in().await;
-    tracing::info!(ok = outcome.ok, "llm: cursor sign-in complete");
+    // WARN on failure so a "sign-in doesn't work" report is greppable by
+    // level, without having to know to filter on the `ok` field.
+    if outcome.ok {
+        tracing::info!("llm: cursor sign-in complete");
+    } else {
+        tracing::warn!(detail = %outcome.message, "llm: cursor sign-in failed");
+    }
     Ok(outcome)
 }
 
@@ -290,7 +296,13 @@ pub async fn cursor_sign_in() -> Result<meridian::llm::detect::InstallOutcome, S
 #[tracing::instrument]
 pub async fn codex_sign_in() -> Result<meridian::llm::detect::InstallOutcome, String> {
     let outcome = meridian::llm::detect::codex_sign_in().await;
-    tracing::info!(ok = outcome.ok, "llm: codex sign-in complete");
+    // WARN on failure so a "sign-in doesn't work" report is greppable by
+    // level, without having to know to filter on the `ok` field.
+    if outcome.ok {
+        tracing::info!("llm: codex sign-in complete");
+    } else {
+        tracing::warn!(detail = %outcome.message, "llm: codex sign-in failed");
+    }
     Ok(outcome)
 }
 
@@ -302,7 +314,13 @@ pub async fn codex_sign_in() -> Result<meridian::llm::detect::InstallOutcome, St
 #[tracing::instrument]
 pub async fn claude_sign_in() -> Result<meridian::llm::detect::InstallOutcome, String> {
     let outcome = meridian::llm::detect::claude_sign_in().await;
-    tracing::info!(ok = outcome.ok, "llm: claude sign-in complete");
+    // WARN on failure so a "sign-in doesn't work" report is greppable by
+    // level, without having to know to filter on the `ok` field.
+    if outcome.ok {
+        tracing::info!("llm: claude sign-in complete");
+    } else {
+        tracing::warn!(detail = %outcome.message, "llm: claude sign-in failed");
+    }
     Ok(outcome)
 }
 
