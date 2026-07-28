@@ -4,7 +4,7 @@
 //! Split from the connector root purely for file size.
 //!
 //! # Who calls this
-//! [`super::force_refresh`], via `db::{prune, stamp_sync, stamp_error}`.
+//! [`super::force_refresh`], via `db::{prune, stamp_sync}`.
 
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
@@ -107,21 +107,4 @@ pub(super) async fn stamp_sync(pool: &SqlitePool) -> Result<()> {
     .context("updating azure_devops sync state")?;
     let _ = crate::notices::clear(pool, "pm.azure_devops").await;
     Ok(())
-}
-
-/// Record a terminal Azure DevOps sync failure.
-///
-/// Delegates to the shared [`crate::intelligence::providers::stamp_sync_error`]
-/// rather than writing its own row, which fixes a silent bug: this used to
-/// stamp `last_synced_at = now` on a first-ever failure. Because
-/// `refresh_if_stale` skips the whole fetch while that column is recent, a
-/// failure suppressed its OWN next retry — and it would have made the
-/// transient-escalation clock (keyed on the same column) permanently
-/// unreachable. The shared helper writes the epoch sentinel instead;
-/// `no_provider_records_an_error_as_a_fresh_sync` pins it for every provider.
-///
-/// The title and remedy now come from the shared registry, so Azure DevOps is
-/// no longer the one provider whose notice copy lives somewhere else.
-pub(super) async fn stamp_error(pool: &SqlitePool, error: &str) -> Result<()> {
-    super::super::stamp_sync_error(pool, "azure_devops", error).await
 }

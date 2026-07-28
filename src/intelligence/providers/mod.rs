@@ -166,6 +166,51 @@ pub async fn note_transient_sync_failure(
     Ok(true)
 }
 
+/// Record a provider sync failure against the shared classification.
+///
+/// The one place an `anyhow::Error` from a provider becomes user-visible state.
+/// A retryable failure stays quiet (while still feeding the escalation clock);
+/// a terminal one raises the notice. Both carry the FULL cause chain, because
+/// [`http::classify`] formats it.
+///
+/// # Why this is shared rather than inlined
+/// `intelligence::run_pm_sync`'s catch-all used to do
+/// `stamp_sync_error(name, &e.to_string())` for ANY propagated error —
+/// unconditionally terminal, and `{e}` rather than `{e:#}`, i.e. both of the
+/// bugs this module exists to fix. That made it a silent undo button: a provider
+/// could classify its own failure correctly and then have a second, generic,
+/// truncated write land on top of it and win. `azure_devops` hit exactly that,
+/// because it is the one provider whose `force_refresh` propagated `Err` after
+/// already recording. Routing both the provider and the catch-all through this
+/// function means there is no longer a path that reports a failure WITHOUT
+/// classifying it.
+///
+/// `stage` names the failing step for the log only; the user-facing text is the
+/// classified detail.
+pub async fn record_sync_failure(
+    pool: &SqlitePool,
+    provider: &str,
+    stage: &str,
+    err: &anyhow::Error,
+) -> Result<()> {
+    match http::classify(err) {
+        http::SyncFault::Retry { detail } => {
+            tracing::warn!(
+                provider,
+                stage,
+                error = %detail,
+                "provider unreachable - keeping stale cache, will retry next sync"
+            );
+            note_transient_sync_failure(pool, provider, &detail).await?;
+        }
+        http::SyncFault::Report { detail } => {
+            tracing::warn!(provider, stage, error = %detail, "provider sync failed");
+            stamp_sync_error(pool, provider, &detail).await?;
+        }
+    }
+    Ok(())
+}
+
 /// Clear the last error for a provider after a successful sync.
 pub async fn clear_sync_error(pool: &SqlitePool, provider: &str) -> Result<()> {
     sqlx::query("UPDATE pm_sync_state SET last_error = NULL WHERE provider = ?")
@@ -461,6 +506,114 @@ mod tests {
                 "{provider} recorded a failure as a sync at {last}"
             );
         }
+    }
+
+    // ── the generic catch-all ────────────────────────────────────────────────
+    //
+    // `intelligence::run_pm_sync`'s error arm reports ANY propagated failure.
+    // It used to do so unconditionally and with `{e}`, which made it a silent
+    // undo button: a provider could classify its own failure correctly and then
+    // have this second, generic, truncated write land on top and win. It now
+    // routes through `record_sync_failure`, so these pin its behaviour.
+
+    fn status_err(status: u16, body: &str) -> anyhow::Error {
+        anyhow::Error::new(http::HttpStatusError::new(
+            status,
+            "Azure DevOps WIQL",
+            body,
+        ))
+        .context("Azure DevOps WIQL request")
+    }
+
+    #[tokio::test]
+    async fn a_transient_failure_at_the_catch_all_raises_no_notice() {
+        let pool = make_db().await;
+        set_last_sync(&pool, "azure_devops", "-5 minutes").await;
+
+        record_sync_failure(&pool, "azure_devops", "wiql", &status_err(503, "down"))
+            .await
+            .unwrap();
+
+        assert!(
+            notice(&pool, "pm.azure_devops").await.is_none(),
+            "a 503 reaching the catch-all must not raise a credentials banner"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_terminal_failure_at_the_catch_all_carries_the_whole_chain() {
+        let pool = make_db().await;
+
+        record_sync_failure(
+            &pool,
+            "azure_devops",
+            "wiql",
+            &status_err(401, "permission_error: PAT is invalid"),
+        )
+        .await
+        .unwrap();
+
+        let (title, detail, _) = notice(&pool, "pm.azure_devops")
+            .await
+            .expect("a 401 must still reach the user");
+        assert_eq!(title, "Azure DevOps sync failing");
+        assert!(
+            detail.contains("Azure DevOps WIQL request"),
+            "outer context lost: {detail}"
+        );
+        assert!(
+            detail.contains("401"),
+            "cause chain truncated - the `{{e}}` bug is back: {detail}"
+        );
+        assert!(
+            detail.contains("PAT is invalid"),
+            "cause body lost: {detail}"
+        );
+    }
+
+    /// The specific shape the review caught: a provider records its own failure,
+    /// then the error propagates and the catch-all records it again. Both writes
+    /// now go through the same classifier, so the second cannot downgrade the
+    /// first into an unclassified, truncated notice.
+    #[tokio::test]
+    async fn recording_the_same_failure_twice_cannot_degrade_it() {
+        let pool = make_db().await;
+        let err = status_err(401, "permission_error: PAT is invalid");
+
+        record_sync_failure(&pool, "azure_devops", "wiql", &err)
+            .await
+            .unwrap();
+        let first = notice(&pool, "pm.azure_devops").await.expect("first write");
+        record_sync_failure(&pool, "azure_devops", "refresh", &err)
+            .await
+            .unwrap();
+        let second = notice(&pool, "pm.azure_devops")
+            .await
+            .expect("second write");
+
+        assert_eq!(first.1, second.1, "second write changed the detail");
+        assert!(second.1.contains("401"), "second write truncated the cause");
+    }
+
+    /// And the transient half of the same shape: a re-report must not turn a
+    /// suppressed blip into a banner.
+    #[tokio::test]
+    async fn re_reporting_a_transient_failure_still_raises_nothing() {
+        let pool = make_db().await;
+        set_last_sync(&pool, "azure_devops", "-5 minutes").await;
+        let err = status_err(503, "down");
+
+        record_sync_failure(&pool, "azure_devops", "wiql", &err)
+            .await
+            .unwrap();
+        record_sync_failure(&pool, "azure_devops", "refresh", &err)
+            .await
+            .unwrap();
+
+        assert!(
+            notice(&pool, "pm.azure_devops").await.is_none(),
+            "a re-reported blip must stay silent"
+        );
     }
 
     /// The GitHub remedy must not name an unfollowable action: GitHub connects

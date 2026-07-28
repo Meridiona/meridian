@@ -20,14 +20,13 @@ use sqlx::SqlitePool;
 use std::collections::HashMap;
 
 use crate::config::AzureDevOpsConfig;
-use crate::intelligence::providers::http::SyncFault;
 
 mod db;
 mod fetch;
 #[cfg(test)]
 mod tests;
 
-use db::{prune, stamp_error, stamp_sync};
+use db::{prune, stamp_sync};
 use fetch::{fetch_batch, fetch_state_categories, run_wiql, BATCH_SIZE};
 
 const SYNC_INTERVAL_MINS: i64 = 5;
@@ -185,41 +184,30 @@ pub async fn refresh_if_stale(
             }
         }
     }
-    force_refresh(pool, cfg).await.map(Some)
-}
-
-/// Record a sync failure against the shared classification.
-///
-/// Every fatal stage of [`force_refresh`] must go through this, not just the
-/// first one. The stage that fails is invisible to the user - what matters is
-/// that a retryable failure stays quiet while still feeding the escalation
-/// clock, and a terminal one raises the notice. A stage that propagates its
-/// error without calling this produces a log line and nothing durable: no
-/// notice, and no escalation however long it keeps failing.
-///
-/// `stage` names the failing step for the log only; the user-facing text comes
-/// from the classified detail.
-async fn record_sync_failure(pool: &SqlitePool, stage: &str, e: &anyhow::Error) -> Result<()> {
-    match super::http::classify(e) {
-        SyncFault::Retry { detail } => {
-            tracing::warn!(
-                stage,
-                error = %detail,
-                "azure devops unreachable - keeping stale cache, will retry next sync"
-            );
-            let _ = super::note_transient_sync_failure(pool, "azure_devops", &detail).await;
-        }
-        SyncFault::Report { detail } => {
-            tracing::warn!(stage, error = %detail, "azure devops sync failed");
-            stamp_error(pool, &detail).await?;
-        }
-    }
-    Ok(())
+    force_refresh(pool, cfg).await
 }
 
 /// Unconditionally refresh the Azure DevOps task cache.
+///
+/// # Why `Option`, like the other four providers
+/// This used to return `Result<Vec<String>>` and propagate `Err` after already
+/// recording a classified failure. That `Err` reached
+/// `intelligence::run_pm_sync`'s generic catch-all, which wrote a SECOND,
+/// unclassified, truncated notice on top of the correct one — so a transient
+/// Azure DevOps blip still raised "Reconnect Azure DevOps in Settings", and this
+/// provider's fix was undone by its own call site.
+///
+/// The other four providers never hit that because their `refresh_if_stale`
+/// resolves to `Ok(None)` once it has handled a provider failure itself. This
+/// now matches them: `Ok(None)` means "failed, already recorded, do not
+/// re-report". Returning `Ok(Some(vec![]))` instead would be wrong — the caller
+/// treats any `Ok(Some(_))` as success and calls `clear_sync_error`, wiping the
+/// notice we just raised.
 #[tracing::instrument(skip(pool, cfg), fields(provider = "azure_devops"))]
-pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result<Vec<String>> {
+pub async fn force_refresh(
+    pool: &SqlitePool,
+    cfg: &AzureDevOpsConfig,
+) -> Result<Option<Vec<String>>> {
     // The shared client: same timeouts as every other provider, plus a connect
     // deadline this one never had (it set a total timeout only, so a hung
     // connect still consumed the full 30 s).
@@ -232,8 +220,12 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
             // Was `stamp_error(pool, &e.to_string())`, which both reported every
             // network blip as a credentials fault AND printed only the outermost
             // context, dropping the cause.
-            record_sync_failure(pool, "wiql", &e).await?;
-            return Err(e);
+            super::record_sync_failure(pool, "azure_devops", "wiql", &e).await?;
+            // NOT `Err(e)`: already recorded and classified. Propagating it
+            // would reach `run_pm_sync`'s generic catch-all, which reports
+            // unconditionally and truncates - overwriting this with the very
+            // bug this branch removes.
+            return Ok(None);
         }
     };
     tracing::debug!(count = all_ids.len(), "azure_devops: WIQL returned IDs");
@@ -241,7 +233,7 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
     if all_ids.is_empty() {
         prune(pool, &[]).await?;
         stamp_sync(pool).await?;
-        return Ok(vec![]);
+        return Ok(Some(vec![]));
     }
 
     // 2. Batch-fetch full detail (≤BATCH_SIZE per request). `raw_by_id` is the
@@ -257,8 +249,8 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         let batch = match fetch_batch(&client, cfg, chunk).await {
             Ok(b) => b,
             Err(e) => {
-                record_sync_failure(pool, "work_item_batch", &e).await?;
-                return Err(e);
+                super::record_sync_failure(pool, "azure_devops", "work_item_batch", &e).await?;
+                return Ok(None);
             }
         };
         for (detail, raw) in batch {
@@ -496,7 +488,7 @@ pub async fn force_refresh(pool: &SqlitePool, cfg: &AzureDevOpsConfig) -> Result
         active = kept.len(),
         "azure_devops tasks refreshed"
     );
-    Ok(kept)
+    Ok(Some(kept))
 }
 
 // ---------------------------------------------------------------------------
