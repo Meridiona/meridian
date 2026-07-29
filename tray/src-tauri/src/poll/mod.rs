@@ -161,6 +161,15 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
                 permissions::check_permissions(&app, pool).await;
             }
         }
+        // Disk-space guard: auto-pause capture when free disk space on the
+        // meridian.db volume drops below the low-disk threshold, auto-resume
+        // once it recovers. Checked before work-hours so a low-disk pause
+        // always wins the race to claim `pause_source` first; see
+        // check_disk_space's doc comment for why writing into a nearly-full
+        // disk must stop rather than degrade silently.
+        if let Some(pool) = &pool {
+            check_disk_space(&state, pool).await;
+        }
         // Work-hours schedule enforcement: auto-pause capture outside the
         // configured window, auto-resume when entering it. Only fires when the
         // feature is enabled; never overrides a user-initiated timed pause.
@@ -231,6 +240,119 @@ fn update_tray_icon(app: &tauri::AppHandle, state: &Arc<Mutex<AppState>>) {
     if let Some(id) = tray_id {
         if let Some(tray) = app.tray_by_id(&id) {
             let _ = tray.set_tooltip(Some(&tooltip));
+        }
+    }
+}
+
+/// Auto-pause capture when free disk space on the `meridian.db` volume drops
+/// below the low-disk threshold, auto-resume once it recovers. Runs every
+/// poll tick (30 s), before [`check_work_hours`] so a low-disk pause always
+/// wins the race to claim `pause_source` first.
+///
+/// Writing into a nearly-full disk is exactly how a real `meridian.db` got
+/// corrupted in practice: SQLite/SQLCipher torn page allocations under WAL
+/// when a write landed with the disk critically full, scrambling the
+/// page-allocation bookkeeping for `capture_frames`/`capture_ui_events` and
+/// one `app_sessions` row's overflow chain. The daemon already raises a
+/// `system.disk_low` notice every tick once space runs low
+/// (`meridian::health::daemon`) — this only makes the tray *act* on the same
+/// condition instead of writing blind.
+///
+/// The state machine mirrors [`check_work_hours`]:
+///   - Low disk + not disk-paused → start a disk-low pause (unless a Timed or
+///     Indefinite user pause is already active — never override those; a
+///     schedule pause is preempted, since disk safety is the higher-priority
+///     reason once space runs low and check_disk_space runs first each tick).
+///   - Disk recovered + disk-paused → end the pause, write the gap, resume.
+///
+/// Every OTHER resume path (manual "Resume now", a timed pause's own expiry
+/// timer) is separately gated in [`crate::commands::pause::resume_capture`],
+/// so a still-low disk can't be resumed into from any direction — this
+/// function only owns the disk-low pause's own start/end transition.
+async fn check_disk_space(state: &Arc<Mutex<AppState>>, pool: &meridian_core::SqlitePool) {
+    let low = meridian::health::platform::meridian_data_low_gb().is_some();
+
+    let (pause_source, started_at, capture_paused_flag) = {
+        let s = state.lock().unwrap();
+        (
+            s.pause_source.clone(),
+            s.pause_started_at,
+            s.capture_paused.clone(),
+        )
+    };
+
+    match (low, &pause_source) {
+        (true, None) | (true, Some(PauseSource::Schedule)) => {
+            // Disk low, not paused (or only schedule-paused, which this
+            // preempts) → begin a disk-low pause.
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            {
+                let mut s = state.lock().unwrap();
+                drop(s.engine_cancel.take());
+                drop(s.ui_consumer_cancel.take());
+                capture_paused_flag.store(true, Ordering::Relaxed);
+                s.pause_source = Some(PauseSource::DiskLow);
+                s.pause_started_at = Some(now);
+                s.schedule_resume_at = None;
+            }
+            tracing::warn!("disk-space guard: capture paused — free disk space is low");
+        }
+        (false, Some(PauseSource::DiskLow)) => {
+            // Disk recovered → end the pause and write the gap.
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let duration_s = started_at
+                .map(|s| now.saturating_sub(s) as i64)
+                .unwrap_or(0);
+
+            if let Some(started_secs) = started_at {
+                if duration_s > 0 {
+                    use chrono::{DateTime, SecondsFormat, Utc};
+                    let from = DateTime::<Utc>::from_timestamp(started_secs as i64, 0)
+                        .unwrap_or_else(Utc::now)
+                        .to_rfc3339_opts(SecondsFormat::Millis, true);
+                    let to = DateTime::<Utc>::from_timestamp(now as i64, 0)
+                        .unwrap_or_else(Utc::now)
+                        .to_rfc3339_opts(SecondsFormat::Millis, true);
+                    if let Err(e) = meridian_core::insert_pause_gap(
+                        pool,
+                        &from,
+                        &to,
+                        duration_s,
+                        "disk_low_paused",
+                    )
+                    .await
+                    {
+                        tracing::warn!(error = %e, "disk-space guard: failed to write disk_low_paused gap");
+                    }
+                }
+            }
+
+            {
+                let mut s = state.lock().unwrap();
+                capture_paused_flag.store(false, Ordering::Relaxed);
+                s.pause_source = None;
+                s.pause_started_at = None;
+                s.pause_until = None;
+            }
+            // Restart engine so capture resumes. If this happens to also be
+            // outside work hours, check_work_hours (running right after this,
+            // same tick) immediately re-pauses with Schedule — a harmless,
+            // rare blip (engine starts and stops within the same tick,
+            // capturing nothing) rather than a bug worth cross-checking
+            // schedule state here too.
+            #[cfg(feature = "capture")]
+            crate::start_capture(state.clone(), Some(pool.clone()));
+            tracing::info!(duration_s, "disk-space guard: capture resumed");
+        }
+        _ => {
+            // Still low and already disk-paused, still fine and untouched, or
+            // a Timed/Indefinite user pause is active — leave it alone.
         }
     }
 }
