@@ -1,3 +1,13 @@
+## [1.82.1](https://github.com/Meridiona/meridian/compare/v1.82.0...v1.82.1) (2026-07-29)
+
+### 🐛 Bug Fixes
+
+* **release:** remove literal expression syntax from a run: comment ([b5f01a0](https://github.com/Meridiona/meridian/commit/b5f01a09ef856af112fe2c44f44fe5c07b246536))
+
+### 🤖 CI
+
+* run cache pruning right after every pre-main merge, not just nightly ([67d40e4](https://github.com/Meridiona/meridian/commit/67d40e4404f17f96545d7c7f7f1a60dca9ce6337))
+
 ## [1.82.0](https://github.com/Meridiona/meridian/compare/v1.81.0...v1.82.0) (2026-07-29)
 
 ### 🚀 Features
