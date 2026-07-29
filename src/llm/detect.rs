@@ -1578,32 +1578,45 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn installer_command_sources_nvm_sh_when_present() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let original_home = std::env::var_os("HOME");
+        // The child inherits `HOME` at `spawn()`, which is synchronous — so the guard only
+        // needs to span the env mutation, spawn, and restoring `HOME`, not the awaited wait.
+        // Holding a std `MutexGuard` across an `.await` is a clippy deny (`await_holding_lock`).
+        // The temp dir must outlive the child's own exec (nvm.sh has to still be on disk when
+        // the spawned shell opens it), so it isn't removed until after `wait_with_output`.
         let temp_home =
             std::env::temp_dir().join(format!("meridian-detect-nvm-test-{}", std::process::id()));
-        let nvm_dir = temp_home.join(".nvm");
-        std::fs::create_dir_all(&nvm_dir).unwrap();
-        std::fs::write(
-            nvm_dir.join("nvm.sh"),
-            "export MERIDIAN_NVM_TEST_MARKER=sourced\n",
-        )
-        .unwrap();
-        std::env::set_var("HOME", &temp_home);
+        let child = {
+            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let original_home = std::env::var_os("HOME");
+            let nvm_dir = temp_home.join(".nvm");
+            std::fs::create_dir_all(&nvm_dir).unwrap();
+            std::fs::write(
+                nvm_dir.join("nvm.sh"),
+                "export MERIDIAN_NVM_TEST_MARKER=sourced\n",
+            )
+            .unwrap();
+            std::env::set_var("HOME", &temp_home);
 
-        let mut cmd = installer_command("echo \"$MERIDIAN_NVM_TEST_MARKER\"");
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let output = cmd.output().await;
+            let mut cmd = installer_command("echo \"$MERIDIAN_NVM_TEST_MARKER\"");
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let child = cmd.spawn();
 
-        match original_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+            match original_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            child
+        };
+
+        let output = child
+            .expect("installer_command must spawn")
+            .wait_with_output()
+            .await
+            .expect("installer_command must run to completion");
         let _ = std::fs::remove_dir_all(&temp_home);
 
-        let output = output.expect("installer_command must spawn");
         assert!(output.status.success(), "{output:?}");
         assert_eq!(
             String::from_utf8_lossy(&output.stdout).trim(),
@@ -1618,28 +1631,39 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn installer_command_is_a_no_op_without_nvm() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let original_home = std::env::var_os("HOME");
+        // See `installer_command_sources_nvm_sh_when_present`'s comment: the guard must not
+        // span the `.await` (clippy's `await_holding_lock`), so it only covers the env
+        // mutation + spawn, and `HOME` is restored before the wait.
         let temp_home = std::env::temp_dir().join(format!(
             "meridian-detect-no-nvm-test-{}",
             std::process::id()
         ));
-        std::fs::create_dir_all(&temp_home).unwrap();
-        std::env::set_var("HOME", &temp_home);
+        let child = {
+            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let original_home = std::env::var_os("HOME");
+            std::fs::create_dir_all(&temp_home).unwrap();
+            std::env::set_var("HOME", &temp_home);
 
-        let mut cmd = installer_command("echo hello-no-nvm");
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let output = cmd.output().await;
+            let mut cmd = installer_command("echo hello-no-nvm");
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let child = cmd.spawn();
 
-        match original_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+            match original_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            child
+        };
+
+        let output = child
+            .expect("installer_command must spawn")
+            .wait_with_output()
+            .await
+            .expect("installer_command must run to completion");
         let _ = std::fs::remove_dir_all(&temp_home);
 
-        let output = output.expect("installer_command must spawn");
         assert!(output.status.success(), "{output:?}");
         assert!(
             String::from_utf8_lossy(&output.stdout).contains("hello-no-nvm"),
