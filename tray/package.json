@@ -8,9 +8,8 @@
     "build": "npm run build:daemon && export APPLE_SIGNING_IDENTITY=\"${APPLE_SIGNING_IDENTITY:-$(bash ../scripts/dev-signing.sh identity)}\" && bash ../scripts/sign-daemon.sh && tauri build --target universal-apple-darwin",
     "build:staging": "npm run build:daemon && export APPLE_SIGNING_IDENTITY=\"${APPLE_SIGNING_IDENTITY:-$(bash ../scripts/dev-signing.sh identity)}\" MERIDIAN_RUNTIME_MANIFEST_URL=https://github.com/Meridiona/meridian/releases/download/runtime-staging/runtime-manifest.json MERIDIAN_HF_ENDPOINT=https://hf.meridiona.com MERIDIAN_CHANNEL=staging && bash ../scripts/sign-daemon.sh && tauri build --target universal-apple-darwin",
     "test": "vitest run src/__tests__",
-    "build:daemon:windows": "cargo build --locked --release --bin meridian --manifest-path ../Cargo.toml",
-    "build:windows": "npm run build:daemon:windows && tauri build",
-    "build:windows:staging": "npm run build:daemon:windows && tauri build --config src-tauri/tauri.staging.conf.json"
+    "build:windows": "cargo build --release --locked --manifest-path ../Cargo.toml -p meridian --bin meridian -p meridian-tray --bin meridian-tray --features tauri/custom-protocol && tauri bundle",
+    "build:windows:staging": "cargo build --release --locked --manifest-path ../Cargo.toml -p meridian --bin meridian -p meridian-tray --bin meridian-tray --features tauri/custom-protocol && tauri bundle --config src-tauri/tauri.staging.conf.json"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2",

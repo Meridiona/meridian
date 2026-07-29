@@ -263,32 +263,24 @@ fn interrupted_migration_leftovers(path: &Path) -> Vec<std::path::PathBuf> {
     found
 }
 
-/// `std::fs::rename` with a short bounded retry. On Windows a rename fails with
-/// os error 32 ("used by another process") while *any* handle to the source or
-/// destination is briefly open — an antivirus scan, the search indexer, or a
-/// SQLite handle sqlx's worker thread hasn't finished closing yet. A few
-/// backed-off attempts (~1s total) clear those transient holders without
-/// hanging; a genuinely stuck file (e.g. the daemon holding it for real) still
-/// fails, so the caller's fallback/rollback still runs. No-op fast path on the
-/// common case (first attempt succeeds). Unix renames don't hit this but the
-/// retry is harmless there.
+/// `std::fs::rename` with a short bounded retry (~1s of linear backoff across 5
+/// attempts) via the shared [`crate::retry::retry_transient_blocking`]. On
+/// Windows a rename fails with os error 32 ("used by another process") while
+/// *any* handle to the source or destination is briefly open — an antivirus
+/// scan, the search indexer, or a SQLite handle sqlx's worker thread hasn't
+/// finished closing yet; the retry clears those transient holders. A genuinely
+/// stuck file (e.g. the daemon holding it for real) still fails, so the caller's
+/// fallback/rollback still runs. First-attempt success is the common fast path;
+/// Unix renames don't hit this but the retry is harmless there.
 ///
-/// Kept synchronous (`std::thread::sleep`) deliberately: the only caller is
+/// The blocking variant is deliberate: the only caller is
 /// `finalize_encryption_swap`, reached from the tray's `block_on(migrate)`
 /// startup gate before any other async work is scheduled, so the worst-case
-/// ~1s-per-rename backoff blocks nothing but the migration it's part of.
+/// backoff blocks nothing but the migration it's part of.
 fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
-    const ATTEMPTS: u32 = 5;
-    for attempt in 1..=ATTEMPTS {
-        match std::fs::rename(from, to) {
-            Ok(()) => return Ok(()),
-            Err(e) if attempt == ATTEMPTS => return Err(e),
-            Err(_) => {
-                std::thread::sleep(std::time::Duration::from_millis(100 * attempt as u64));
-            }
-        }
-    }
-    unreachable!("loop returns on the final attempt")
+    crate::retry::retry_transient_blocking(5, std::time::Duration::from_millis(100), || {
+        std::fs::rename(from, to)
+    })
 }
 
 /// Swap the freshly-written encrypted export at `tmp_path` into `path`, moving
