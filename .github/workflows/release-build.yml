@@ -578,10 +578,14 @@ jobs:
         run: |
           set -euo pipefail
           echo "→ ${CHANNEL}: signing AND notarizing"
-          # Uses the already-bound $CHANNEL rather than re-interpolating
-          # ${{ }} into this script a second time — the exact
+          # Uses the already-bound $CHANNEL rather than re-interpolating an
+          # expression into this script a second time - the exact
           # template-injection shape this file's own convention (see the
-          # RAW_TAG/VERSION binding notes elsewhere) says to avoid.
+          # RAW_TAG/VERSION binding notes elsewhere) says to avoid. (Not
+          # spelled out literally here on purpose: GitHub Actions scans the
+          # WHOLE run: block's raw text for that syntax, even inside a shell
+          # comment, and an empty one fails to parse - this exact line broke
+          # every release build until this comment was reworded.)
           config_flag=""
           if [ "${CHANNEL}" = "staging" ]; then
             config_flag="--config src-tauri/tauri.staging.conf.json"
