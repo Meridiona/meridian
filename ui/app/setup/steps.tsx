@@ -64,13 +64,31 @@ export interface Wiz {
 // alone — the two TCC grants have no consent analogue there (see the step-meta
 // note below), so their cards would be permanent always-green no-ops.
 function PermissionsBody({ wiz }: { wiz: Wiz }) {
-  const cards = wiz.platform === 'windows' ? PERMISSIONS.filter((p) => p.id === 'notifications') : PERMISSIONS
+  const isWin = wiz.platform === 'windows'
+  const cards = isWin ? PERMISSIONS.filter((p) => p.id === 'notifications') : PERMISSIONS
   // Only Screen Recording lives locally on the Mac; on Windows the same
   // reassurance holds, just for "this PC".
-  const device = wiz.platform === 'windows' ? 'PC' : 'Mac'
+  const device = isWin ? 'PC' : 'Mac'
+  // On Windows the notifications card IS the whole step, so when PermCard hides
+  // it — no plugin (`unbundled tauri dev`) or a WinRT probe that returned None
+  // in a packaged build — the step would otherwise render blank. Show a
+  // fallback line so there is always something to read. (On macOS the same hide
+  // still leaves the two TCC cards, so no fallback is needed there.)
+  const notifHidden = isWin && wiz.perms.notifications === 'unavailable'
   return (
     <div className="flex flex-col" style={{ gap: 9 }}>
-      {cards.map((p) => <PermCard key={p.id} p={p} wiz={wiz} />)}
+      {notifHidden
+        ? <Row tone="surface">
+            <span className="flex items-center justify-center shrink-0" style={{
+              width: 34, height: 34, borderRadius: 10,
+              background: 'var(--t-box)', color: 'var(--t-faint)', border: '0.5px solid var(--t-card-border)',
+            }}><PermIcon icon="bell" /></span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>Notifications</span>
+              <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-muted)', marginTop: 3 }}>Notification settings aren&apos;t available in this build - you can turn them on later from Windows Settings.</p>
+            </div>
+          </Row>
+        : cards.map((p) => <PermCard key={p.id} p={p} wiz={wiz} />)}
       <p className="flex items-start" style={{ gap: 7, fontSize: 11, lineHeight: 1.5, color: 'var(--t-muted)', marginTop: 3 }}>
         <span style={{ width: 5, height: 5, borderRadius: 99, background: 'var(--color-state-approved)', marginTop: 5, flexShrink: 0 }} />
         Your screen, tasks, and worklogs stay on this {device} and are never uploaded. We send usage stats - daily focus time, app version, and your email once you sign in - to improve Meridian, never your content.
@@ -339,7 +357,9 @@ const PERMISSIONS_STEP: StepMeta = {
 const WINDOWS_NOTIFICATIONS_STEP: StepMeta = {
   id: 'permissions', n: '01', label: 'Notifications', kicker: 'Alerts',
   title: 'Turn on notifications',
-  subtitle: 'Let Meridian nudge you when a worklog draft is ready or your plan needs attention. Optional and quiet by default - you control every type in Settings.',
+  // Carries the WHY; the card below carries the WHAT (which events, quiet-hours)
+  // so the user doesn't read the same sentence twice in one viewport.
+  subtitle: 'Stay in the loop without watching the menu bar. Optional - turn it on now, or anytime from Settings.',
   Body: PermissionsBody,
   status: (s) => notifSummary(s.perms.notifications),
   canNext: () => true,
