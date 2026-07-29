@@ -26,7 +26,7 @@
 
 use anyhow::{bail, Context};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{ConnectOptions, Executor, SqlitePool};
+use sqlx::{ConnectOptions, Connection, Executor, SqlitePool};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -263,10 +263,40 @@ fn interrupted_migration_leftovers(path: &Path) -> Vec<std::path::PathBuf> {
     found
 }
 
+/// `std::fs::rename` with a short bounded retry. On Windows a rename fails with
+/// os error 32 ("used by another process") while *any* handle to the source or
+/// destination is briefly open — an antivirus scan, the search indexer, or a
+/// SQLite handle sqlx's worker thread hasn't finished closing yet. A few
+/// backed-off attempts (~1s total) clear those transient holders without
+/// hanging; a genuinely stuck file (e.g. the daemon holding it for real) still
+/// fails, so the caller's fallback/rollback still runs. No-op fast path on the
+/// common case (first attempt succeeds). Unix renames don't hit this but the
+/// retry is harmless there.
+///
+/// Kept synchronous (`std::thread::sleep`) deliberately: the only caller is
+/// `finalize_encryption_swap`, reached from the tray's `block_on(migrate)`
+/// startup gate before any other async work is scheduled, so the worst-case
+/// ~1s-per-rename backoff blocks nothing but the migration it's part of.
+fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    const ATTEMPTS: u32 = 5;
+    for attempt in 1..=ATTEMPTS {
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt == ATTEMPTS => return Err(e),
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_millis(100 * attempt as u64));
+            }
+        }
+    }
+    unreachable!("loop returns on the final attempt")
+}
+
 /// Swap the freshly-written encrypted export at `tmp_path` into `path`, moving
 /// the plaintext original to `backup_path` first. Extracted from
 /// [`encrypt_in_place`] so the two-rename failure handling is unit-testable
-/// without a real Windows share violation (see the module tests).
+/// without a real Windows share violation (see the module tests). Every rename
+/// here goes through [`rename_with_retry`], so a transient Windows lock on any
+/// of the moves (including the rollback) retries rather than failing the swap.
 ///
 /// Preserves [`encrypt_in_place`]'s "a failed migration never loses data"
 /// invariant across BOTH renames — each of which can fail on the same class of
@@ -286,7 +316,7 @@ fn finalize_encryption_swap(
     tmp_path: &Path,
     backup_path: &Path,
 ) -> anyhow::Result<()> {
-    if let Err(e) = std::fs::rename(path, backup_path) {
+    if let Err(e) = rename_with_retry(path, backup_path) {
         // On Windows `rename` fails with "os error 32" while another process
         // (the running daemon) still holds `meridian.db` open. Remove the
         // multi-GB encrypted export so it doesn't accumulate as an orphan every
@@ -307,10 +337,10 @@ fn finalize_encryption_swap(
         let sidecar = std::path::PathBuf::from(format!("{}{}", path.display(), suffix));
         let _ = std::fs::remove_file(sidecar); // checkpointed to empty; safe to drop
     }
-    if let Err(e) = std::fs::rename(tmp_path, path) {
+    if let Err(e) = rename_with_retry(tmp_path, path) {
         // `path` was already moved to `backup_path` above; put it back so we
         // never leave the user with no database at all.
-        match std::fs::rename(backup_path, path) {
+        match rename_with_retry(backup_path, path) {
             Ok(()) => {
                 let _ = std::fs::remove_file(tmp_path);
                 tracing::error!(
@@ -426,7 +456,17 @@ pub async fn encrypt_in_place(path: &Path, key_hex: &str) -> anyhow::Result<()> 
     conn.execute("DETACH DATABASE encrypted_export;")
         .await
         .context("encrypt_in_place: DETACH failed")?;
-    drop(conn);
+    // Deterministically CLOSE the connection (releasing the OS file handle on
+    // both the plaintext original and the encrypted export) before the rename
+    // below — a plain `drop(conn)` does NOT: sqlx runs SQLite on a worker
+    // thread, so dropping only *queues* the close, and on Windows the handle is
+    // frequently still open when the rename runs, failing it with the very
+    // os-error-32 this migration exists to survive. `close().await` waits for
+    // the sqlite3_close to actually complete. Best-effort — if it errors we
+    // still proceed (rename_with_retry covers a lingering handle either way).
+    if let Err(e) = conn.close().await {
+        tracing::warn!(error = %e, "encrypt_in_place: connection close returned an error; continuing to the swap");
+    }
 
     let backup_path = path.with_extension(format!(
         "db.plaintext-backup-{}",
@@ -765,6 +805,21 @@ mod tests {
             format!("{err:#}").contains("restored the plaintext original"),
             "unexpected error: {err:#}"
         );
+    }
+
+    #[test]
+    fn rename_with_retry_succeeds_and_surfaces_persistent_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::write(&a, b"x").unwrap();
+        // Happy path: renames (first attempt).
+        rename_with_retry(&a, &b).unwrap();
+        assert!(b.exists() && !a.exists());
+        // A persistent failure (missing source) still surfaces an Err after the
+        // retries are exhausted, so the caller's fallback/rollback runs.
+        let missing = dir.path().join("nope");
+        assert!(rename_with_retry(&missing, &b).is_err());
     }
 
     /// The happy path: both renames succeed — plaintext original preserved under
