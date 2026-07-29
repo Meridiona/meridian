@@ -1217,7 +1217,7 @@ mod tests {
     /// verbatim — on macOS it is routinely the account holder's real name.
     #[test]
     fn host_name_is_pseudonymised_not_shipped_raw() {
-        let _settings = MachineScopedSettings::install("host-name-pseudonymised");
+        let _settings = ScopedSettings::machine_scoped("host-name-pseudonymised");
         let mut kv = str_attr("host.name", "Akarshs-MacBook-Pro.local");
         assert!(keep(&mut kv), "host.name should be kept");
         let out = match kv.value.unwrap().value.unwrap() {
@@ -1244,7 +1244,7 @@ mod tests {
     /// Hashing the captured value (the previous behaviour) failed this.
     #[test]
     fn pseudonym_is_independent_of_the_captured_hostname() {
-        let _settings = MachineScopedSettings::install("pseudonym-independent");
+        let _settings = ScopedSettings::machine_scoped("pseudonym-independent");
         let shipped = |raw: &str| {
             let mut kv = str_attr("host.name", raw);
             assert!(keep(&mut kv));
@@ -1333,7 +1333,7 @@ mod tests {
     /// hostname is read.
     #[test]
     fn displayed_pseudonym_matches_shipped() {
-        let _settings = MachineScopedSettings::install("displayed-matches-shipped");
+        let _settings = ScopedSettings::machine_scoped("displayed-matches-shipped");
         let raw = gethostname::gethostname().to_string_lossy().into_owned();
         let mut kv = str_attr("host.name", &raw);
         assert!(keep(&mut kv));
@@ -1516,103 +1516,7 @@ mod tests {
         assert_eq!(choose_pseudonym_source(before_expiry, Some("   ")), None);
     }
 
-    /// `MERIDIAN_SETTINGS_PATH` is process-global and cargo runs tests in
-    /// parallel threads — mirrors `meridian_core::settings`'s own `ENV_LOCK`.
-    ///
-    /// EVERY test in this module that sets the variable OR calls anything that
-    /// reads settings ([`local_host_pseudonym`], and [`keep_attribute`] via the
-    /// `keep` shim) must hold this. See [`MachineScopedSettings`] for what went
-    /// wrong when they didn't.
-    static SETTINGS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// RAII restore for `MERIDIAN_SETTINGS_PATH`.
-    ///
-    /// The variable is process-global, so leaking it past this test would leak
-    /// into every later test in the same binary. The manual
-    /// `remove_var`-at-the-end this replaces was correct only on the happy
-    /// path: a failed `assert_eq!` unwinds straight past it, leaving a
-    /// now-deleted temp path installed as the settings location — so the real
-    /// failure would be followed by a cascade of unrelated ones, burying it.
-    /// Restores the PREVIOUS value rather than unconditionally removing, so it
-    /// composes if an outer harness ever sets its own.
-    struct SettingsPathGuard(Option<std::ffi::OsString>);
-
-    impl SettingsPathGuard {
-        fn set(path: &std::path::Path) -> Self {
-            let previous = std::env::var_os("MERIDIAN_SETTINGS_PATH");
-            std::env::set_var("MERIDIAN_SETTINGS_PATH", path);
-            Self(previous)
-        }
-    }
-
-    impl Drop for SettingsPathGuard {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(previous) => std::env::set_var("MERIDIAN_SETTINGS_PATH", previous),
-                None => std::env::remove_var("MERIDIAN_SETTINGS_PATH"),
-            }
-        }
-    }
-
-    /// Pin settings at an account-free file, so [`local_host_pseudonym`]
-    /// resolves to the per-MACHINE identity for the length of a test.
-    ///
-    /// # The bug this fixes
-    /// Three tests here assert the shipped `host.name` equals
-    /// [`local_host_pseudonym`]. That holds only while NO `account_pseudonym`
-    /// is visible in settings — and settings is reached through a
-    /// process-global env var, which those tests neither set nor locked. So
-    /// they read whatever `MERIDIAN_SETTINGS_PATH` happened to point at when
-    /// their thread ran.
-    ///
-    /// Two ways that bit. A concurrently-running settings test installs a temp
-    /// file carrying an `account_pseudonym`, and these three flip to the
-    /// account-scoped branch mid-run — reproducible today with
-    /// `cargo test --lib pseudonym`, where all three fail against `pre-main`
-    /// while each passes alone. And on a signed-in developer's machine the
-    /// ambient real `settings.json` has the same effect with no concurrency at
-    /// all. The full suite passes only because ~800 other tests make the
-    /// collision unlikely to be scheduled — it is luck, not isolation, and the
-    /// failure surfaces as a wrong-looking pseudonym rather than as anything
-    /// naming the env var.
-    ///
-    /// Worse, two of the three read settings TWICE at different instants (once
-    /// inside `keep`, once directly), so serialising on the lock alone would
-    /// not be enough if the ambient file were account-scoped. Hence hermetic:
-    /// the file is ours and is known to be account-free.
-    struct MachineScopedSettings {
-        _env: SettingsPathGuard,
-        _lock: std::sync::MutexGuard<'static, ()>,
-        dir: std::path::PathBuf,
-    }
-
-    impl MachineScopedSettings {
-        fn install(tag: &str) -> Self {
-            let lock = SETTINGS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            let dir = std::env::temp_dir().join(format!(
-                "meridian-redact-{tag}-{}-{:?}",
-                std::process::id(),
-                std::thread::current().id()
-            ));
-            std::fs::create_dir_all(&dir).unwrap();
-            let path = dir.join("settings.json");
-            // No `account_pseudonym` key: the machine-scoped branch.
-            std::fs::write(&path, "{}").unwrap();
-            Self {
-                _env: SettingsPathGuard::set(&path),
-                _lock: lock,
-                dir,
-            }
-        }
-    }
-
-    impl Drop for MachineScopedSettings {
-        fn drop(&mut self) {
-            // Runs before the fields, so the env var still points here — safe,
-            // because the lock (dropped after this) is still held.
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
-    }
+    use crate::test_env::ScopedSettings;
 
     /// [`support_id_is_account_scoped`] exists so the Settings → Account copy
     /// can never claim something the pseudonym itself isn't doing. Pinned
@@ -1623,22 +1527,15 @@ mod tests {
     /// "true" and breaking the day the alpha window ends.
     #[test]
     fn support_id_is_account_scoped_matches_choose_pseudonym_source() {
-        let _guard = SETTINGS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "meridian-redact-support-id-scoped-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("settings.json");
-        let _env = SettingsPathGuard::set(&path);
+        // Holds the crate-wide settings lock for the whole loop, so the two
+        // branches can't interleave with another module's env writes. Cleanup
+        // and env restore are the guard's, on an unwinding path too.
+        let settings = ScopedSettings::machine_scoped("support-id-scoped");
 
         for hash in [None, Some("deadbeefcafebabe")] {
             match hash {
-                None => std::fs::write(&path, "{}").unwrap(),
-                Some(h) => {
-                    std::fs::write(&path, format!(r#"{{"account_pseudonym":"{h}"}}"#)).unwrap()
-                }
+                None => settings.rewrite("{}"),
+                Some(h) => settings.rewrite(&format!(r#"{{"account_pseudonym":"{h}"}}"#)),
             }
             let expected = choose_pseudonym_source(now_unix_or_expired(), hash).is_some();
             assert_eq!(
@@ -1647,10 +1544,6 @@ mod tests {
                 "disagreed for account_pseudonym = {hash:?}"
             );
         }
-
-        // `MERIDIAN_SETTINGS_PATH` is restored by `_env`'s Drop, on this path
-        // and on an unwinding one alike.
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Every other free-text case here is Unix-shaped, but Windows installs
