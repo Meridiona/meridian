@@ -56,6 +56,10 @@ pub mod capture;
 /// on a console-subsystem child spawn. No-op on every other OS.
 pub mod proc_ext;
 
+/// Bounded linear-backoff retry for transient Windows file-sharing violations,
+/// shared by the tray's backend install and this crate's encrypt-in-place swap.
+pub mod retry;
+
 // ── Curated public API: flat module paths, stable across file moves ──────────
 pub use db::{get_active_session, open_existing, ActiveSession};
 
