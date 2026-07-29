@@ -250,6 +250,26 @@ pub async fn test_llm_provider(
     Ok(result)
 }
 
+/// Log a sign-in [`InstallOutcome`](meridian::llm::detect::InstallOutcome) at the right level
+/// and field name for OpenObserve to actually see a failure — shared by [`cursor_sign_in`],
+/// [`codex_sign_in`], and [`claude_sign_in`], whose bodies are otherwise identical modulo which
+/// vendor CLI they call.
+///
+/// Two easy-to-miss couplings this exists to satisfy (see `CLAUDE.md`'s Observability
+/// section): a packaged install's ship leg only egresses WARN+ severity, so logging a failure
+/// at INFO makes it invisible in OpenObserve even though it was captured locally; and the
+/// redaction allowlist (`telemetry_spool::redact::SAFE_STRING_KEYS`) is keyed on exact field
+/// names, so a failure message attached under a non-allowlisted key (`detail`, which these
+/// three call sites used before this fix) is stripped before shipping even at WARN. `error` is
+/// on that allowlist and gets the full free-text scrub, so it is the one to use.
+fn log_signin_outcome(vendor: &str, outcome: &meridian::llm::detect::InstallOutcome) {
+    if outcome.ok {
+        tracing::info!("llm: {vendor} sign-in complete");
+    } else {
+        tracing::warn!(error = %outcome.message, "llm: {vendor} sign-in failed");
+    }
+}
+
 /// Install one provider's CLI by running its official installer on the user's behalf - the
 /// provider detail view's "Install" button. Runs through the user's login shell so `npm`/PATH
 /// resolve (see [`meridian::llm::detect::install_provider`]), then confirms the binary is now
@@ -262,12 +282,20 @@ pub async fn install_llm_provider(
     let provider = meridian_core::LlmProvider::from_wire(&id)
         .ok_or_else(|| format!("unknown provider {id:?}"))?;
     let outcome = meridian::llm::detect::install_provider(provider).await;
-    tracing::info!(
-        provider = %id,
-        ok = outcome.ok,
-        "llm: provider install complete"
-    );
+    log_install_outcome(&id, &outcome);
     Ok(outcome)
+}
+
+/// Log an install [`InstallOutcome`](meridian::llm::detect::InstallOutcome) at the right level
+/// for OpenObserve to actually see a failure — see [`log_signin_outcome`]'s doc for why WARN +
+/// the `error` key specifically. Split from that function only because this call site also
+/// carries a `provider` field the sign-in commands don't have.
+fn log_install_outcome(id: &str, outcome: &meridian::llm::detect::InstallOutcome) {
+    if outcome.ok {
+        tracing::info!(provider = %id, "llm: provider install complete");
+    } else {
+        tracing::warn!(provider = %id, error = %outcome.message, "llm: provider install failed");
+    }
 }
 
 /// Run the interactive `cursor-agent login` - the Cursor detail view's "Sign in to Cursor"
@@ -278,13 +306,7 @@ pub async fn install_llm_provider(
 #[tracing::instrument]
 pub async fn cursor_sign_in() -> Result<meridian::llm::detect::InstallOutcome, String> {
     let outcome = meridian::llm::detect::cursor_sign_in().await;
-    // WARN on failure so a "sign-in doesn't work" report is greppable by
-    // level, without having to know to filter on the `ok` field.
-    if outcome.ok {
-        tracing::info!("llm: cursor sign-in complete");
-    } else {
-        tracing::warn!(detail = %outcome.message, "llm: cursor sign-in failed");
-    }
+    log_signin_outcome("cursor", &outcome);
     Ok(outcome)
 }
 
@@ -296,13 +318,7 @@ pub async fn cursor_sign_in() -> Result<meridian::llm::detect::InstallOutcome, S
 #[tracing::instrument]
 pub async fn codex_sign_in() -> Result<meridian::llm::detect::InstallOutcome, String> {
     let outcome = meridian::llm::detect::codex_sign_in().await;
-    // WARN on failure so a "sign-in doesn't work" report is greppable by
-    // level, without having to know to filter on the `ok` field.
-    if outcome.ok {
-        tracing::info!("llm: codex sign-in complete");
-    } else {
-        tracing::warn!(detail = %outcome.message, "llm: codex sign-in failed");
-    }
+    log_signin_outcome("codex", &outcome);
     Ok(outcome)
 }
 
@@ -314,13 +330,7 @@ pub async fn codex_sign_in() -> Result<meridian::llm::detect::InstallOutcome, St
 #[tracing::instrument]
 pub async fn claude_sign_in() -> Result<meridian::llm::detect::InstallOutcome, String> {
     let outcome = meridian::llm::detect::claude_sign_in().await;
-    // WARN on failure so a "sign-in doesn't work" report is greppable by
-    // level, without having to know to filter on the `ok` field.
-    if outcome.ok {
-        tracing::info!("llm: claude sign-in complete");
-    } else {
-        tracing::warn!(detail = %outcome.message, "llm: claude sign-in failed");
-    }
+    log_signin_outcome("claude", &outcome);
     Ok(outcome)
 }
 
@@ -347,8 +357,11 @@ pub async fn test_all_llm_providers(
 
 #[cfg(test)]
 mod tests {
-    use super::notification_state_label;
+    use super::{log_install_outcome, log_signin_outcome, notification_state_label};
+    use meridian::llm::detect::InstallOutcome;
+    use std::sync::{Arc, Mutex};
     use tauri_plugin_notifications::PermissionState;
+    use tracing_subscriber::{layer::SubscriberExt, registry, Layer};
 
     // The wizard's card branches on these exact strings (grant button action:
     // prompt → request dialog, denied → System Settings pane), so the mapping
@@ -365,5 +378,130 @@ mod tests {
             notification_state_label(PermissionState::PromptWithRationale),
             "prompt"
         );
+    }
+
+    /// One captured tracing event: level + `(field name, debug-formatted value)` pairs, so
+    /// tests below can assert both the severity (does it clear the packaged-install WARN+
+    /// ship threshold) and the exact field name a value landed under (does it clear the
+    /// redaction allowlist, which is keyed on exact names — see `log_signin_outcome`'s doc).
+    #[derive(Debug)]
+    struct CapturedEvent {
+        level: tracing::Level,
+        fields: Vec<(String, String)>,
+    }
+
+    struct Recorder(Arc<Mutex<Vec<CapturedEvent>>>);
+
+    impl<S: tracing::Subscriber> Layer<S> for Recorder {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct FieldVisitor(Vec<(String, String)>);
+            impl tracing::field::Visit for FieldVisitor {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0
+                        .push((field.name().to_string(), format!("{value:?}")));
+                }
+            }
+            let mut visitor = FieldVisitor(Vec::new());
+            event.record(&mut visitor);
+            self.0.lock().unwrap().push(CapturedEvent {
+                level: *event.metadata().level(),
+                fields: visitor.0,
+            });
+        }
+    }
+
+    /// Run `f` under a bare recording subscriber (no `EnvFilter` — every event is captured
+    /// regardless of level) and return what it emitted.
+    fn capture(f: impl FnOnce()) -> Vec<CapturedEvent> {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = registry().with(Recorder(Arc::clone(&seen)));
+        tracing::subscriber::with_default(subscriber, f);
+        Arc::try_unwrap(seen).unwrap().into_inner().unwrap()
+    }
+
+    fn field<'a>(event: &'a CapturedEvent, name: &str) -> Option<&'a str> {
+        event
+            .fields
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    fn ok_outcome() -> InstallOutcome {
+        InstallOutcome {
+            ok: true,
+            message: "codex 0.1.0".to_string(),
+            path: Some("/usr/local/bin/codex".to_string()),
+            command: "npm i -g @openai/codex".to_string(),
+        }
+    }
+
+    fn failed_outcome() -> InstallOutcome {
+        InstallOutcome {
+            ok: false,
+            message: "zsh:1: command not found: npm".to_string(),
+            path: None,
+            command: "npm i -g @openai/codex".to_string(),
+        }
+    }
+
+    // Regression: this used to log at INFO even on failure, which never egresses on a
+    // packaged install (only WARN+ ships to OpenObserve) — see the `npm: command not found`
+    // report this fixes.
+    #[test]
+    fn install_outcome_failure_logs_at_warn() {
+        let events = capture(|| log_install_outcome("codex", &failed_outcome()));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, tracing::Level::WARN);
+    }
+
+    #[test]
+    fn install_outcome_success_logs_at_info() {
+        let events = capture(|| log_install_outcome("codex", &ok_outcome()));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, tracing::Level::INFO);
+    }
+
+    // Regression: the failure message must land under `error` — the key
+    // `telemetry_spool::redact::SAFE_STRING_KEYS` allowlists — not `detail`, which is
+    // silently stripped before shipping even though the event clears the WARN severity gate.
+    #[test]
+    fn install_outcome_failure_uses_allowlisted_error_field() {
+        let events = capture(|| log_install_outcome("codex", &failed_outcome()));
+        let msg = field(&events[0], "error").expect("expected an `error` field");
+        assert!(msg.contains("command not found"));
+        assert!(
+            field(&events[0], "detail").is_none(),
+            "must not use the non-allowlisted `detail` key"
+        );
+        assert_eq!(field(&events[0], "provider"), Some("codex"));
+    }
+
+    #[test]
+    fn signin_outcome_failure_logs_at_warn_with_error_field() {
+        let events = capture(|| log_signin_outcome("cursor", &failed_outcome()));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, tracing::Level::WARN);
+        let msg = field(&events[0], "error").expect("expected an `error` field");
+        assert!(msg.contains("command not found"));
+        assert!(
+            field(&events[0], "detail").is_none(),
+            "must not use the non-allowlisted `detail` key"
+        );
+    }
+
+    #[test]
+    fn signin_outcome_success_logs_at_info() {
+        let events = capture(|| log_signin_outcome("cursor", &ok_outcome()));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, tracing::Level::INFO);
     }
 }

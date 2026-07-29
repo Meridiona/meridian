@@ -250,6 +250,10 @@ capture = [
 # whatever happens to exist on the machine running the tests.
 [dev-dependencies]
 tempfile = "3"
+# Test-only: captures tracing events (level + fields) to assert log-level and
+# redaction-allowlist-field regressions in commands/setup.rs's LLM install/
+# sign-in logging without spawning a real subscriber pipeline.
+tracing-subscriber = { version = "0.3.19", features = ["registry"] }
 # Test-only: an in-memory migrated DB for poll::refresh's stale-notice
 # reconciliation test — `meridian_core::SqlitePool` is the pool type, but
 # querying result rows needs sqlx itself, which the tray binary otherwise
