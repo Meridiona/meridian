@@ -123,6 +123,75 @@ async fn a_never_synced_provider_gets_one_retry_before_escalating() {
     assert!(notice(&pool, "pm.github").await.is_some());
 }
 
+/// The grace-row insert races a concurrent one across PROCESSES: `meridian
+/// ticket-update` force-syncs through its own pool on the same `meridian.db`
+/// while the daemon polls. Both can observe "no row" and both insert against
+/// the `provider` PRIMARY KEY.
+///
+/// Without `ON CONFLICT DO NOTHING` the loser gets a UNIQUE violation, which
+/// `record_sync_failure` swallows by design - so the grace row vanishes, the
+/// next failure takes the never-synced branch again, and the escalation clock
+/// never starts. A provider blocked forever would then stay silent forever,
+/// which is the failure mode this module exists to prevent.
+///
+/// The race has no deterministic hook, so this pins the property that makes
+/// the race survivable: inserting over an existing row is a no-op, not an
+/// error, and the first writer's row is left intact.
+#[tokio::test]
+async fn a_racing_grace_row_insert_is_a_no_op_not_an_error() {
+    let pool = make_db().await;
+
+    insert_grace_row(&pool, "github", "first writer")
+        .await
+        .unwrap();
+    insert_grace_row(&pool, "github", "second writer")
+        .await
+        .expect("a concurrent grace-row insert must not error");
+
+    let (count,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM pm_sync_state WHERE provider = 'github'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 1, "the racing insert must not duplicate the row");
+
+    let (last, detail): (String, Option<String>) = sqlx::query_as(
+        "SELECT last_synced_at, last_error FROM pm_sync_state WHERE provider = 'github'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        last.starts_with("1970"),
+        "the sentinel must survive the race, or escalation stalls: {last}"
+    );
+    assert_eq!(
+        detail.as_deref(),
+        Some("first writer"),
+        "DO NOTHING must leave the winner's row untouched"
+    );
+}
+
+/// A provider that HAS synced before must still escalate normally after a
+/// grace row lands - i.e. the conflict-tolerant insert did not change the
+/// contract the escalation clock reads.
+#[tokio::test]
+async fn a_grace_row_from_a_race_still_escalates_on_the_next_failure() {
+    let pool = make_db().await;
+    insert_grace_row(&pool, "github", "first writer")
+        .await
+        .unwrap();
+
+    let escalated = note_transient_sync_failure(&pool, "github", "dns error")
+        .await
+        .unwrap();
+    assert!(
+        escalated,
+        "the epoch sentinel is not a recent sync, so the next failure must surface"
+    );
+    assert!(notice(&pool, "pm.github").await.is_some());
+}
+
 /// The grace is exactly one retry, not an open-ended reprieve: the row the
 /// first failure writes must carry the epoch sentinel, or it would read as
 /// a recent sync and suppress escalation forever.
