@@ -309,7 +309,7 @@ pub struct RuntimeSettings {
     pub worklog_auto_generate_prompted: bool,
     // ALPHA TESTING ONLY (hand-picked users, all on the same `stable`
     // production channel as everyone else — there's no separate alpha
-    // channel to gate on). A salted, one-way hash of the signed-in Clerk
+    // channel to gate on). A domain-separated, one-way hash of the signed-in Clerk
     // account email — NEVER the raw email — written by the tray's
     // `commands::account::save_account_email` (cleared on sign-out) and read
     // by `telemetry_spool::redact::local_host_pseudonym` to seed the Support

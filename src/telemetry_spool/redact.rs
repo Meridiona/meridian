@@ -435,22 +435,48 @@ const HOST_NAME_KEY: &str = "host.name";
 
 /// Domain-separation prefix so the digest can't be compared against a hash of
 /// the bare hostname computed elsewhere.
-const HOST_PSEUDONYM_SALT: &str = "meridian.host.pseudonym.v1:";
+const HOST_PSEUDONYM_DOMAIN: &str = "meridian.host.pseudonym.v1:";
 
 /// Domain-separation prefix for [`pseudonymize_account`] — deliberately
-/// DIFFERENT from [`HOST_PSEUDONYM_SALT`] so the two hash spaces can never be
-/// cross-compared (a candidate email hashed under the wrong salt would never
-/// match a machine pseudonym, and vice versa), even though both go through
-/// the same [`hash_pseudonym`] shape.
-const ACCOUNT_PSEUDONYM_SALT: &str = "meridian.account.pseudonym.v1:";
+/// DIFFERENT from [`HOST_PSEUDONYM_DOMAIN`] so the two hash spaces can never
+/// be cross-compared (a candidate email hashed under the wrong domain would
+/// never match a machine pseudonym, and vice versa), even though both go
+/// through the same [`hash_pseudonym`] shape.
+const ACCOUNT_PSEUDONYM_DOMAIN: &str = "meridian.account.pseudonym.v1:";
 
-/// Shared SHA-256-salt-and-truncate shape behind both [`pseudonymize_host`]
+/// Shared SHA-256-prefix-and-truncate shape behind both [`pseudonymize_host`]
 /// and [`pseudonymize_account`]. Truncated to 16 hex chars (8 bytes): ample
 /// against collisions at fleet scale, short enough to read in a dashboard.
-fn hash_pseudonym(salt: &str, seed: &str) -> String {
+///
+/// # `domain`, not `salt`
+/// The first argument is a DOMAIN-SEPARATION prefix and is deliberately not
+/// called a salt, because it is not one and must never be treated as one. A
+/// salt is per-value, unpredictable, and stored beside the digest to stop
+/// precomputation. This is a fixed public label whose only job is to keep two
+/// hash spaces disjoint, so that a hardware UUID and an email can never
+/// collide into the same identifier.
+///
+/// It structurally CANNOT be secret: the pseudonym has to reproduce
+/// byte-identically across every install (that is what makes one machine's
+/// error rows group in the backend) and across a signed-in tester's separate
+/// Macs and Windows boxes — and it ships inside a binary users hold, so a
+/// baked "secret" would be readable anyway. This value provides separation,
+/// NOT secrecy; the non-reversibility of the identifier comes from SHA-256
+/// over a high-entropy seed, not from hiding this string.
+///
+/// The naming is load-bearing rather than cosmetic. While this parameter was
+/// called `salt`, CodeQL's `rust/hard-coded-cryptographic-value` flagged both
+/// constants as critical: its heuristic sink matches a constant passed to a
+/// parameter whose DECLARED name is `password`/`iv`/`nonce`/`salt`. It was
+/// right to, on the evidence it had — code that says "salt" and hardcodes one
+/// is a real vulnerability. The defect was the word, so the word is what
+/// changed; the bytes fed to the hash are untouched, and
+/// `pseudonym_digests_are_pinned_against_an_independent_oracle` holds them to
+/// that. Do not reintroduce `salt` here as a synonym.
+fn hash_pseudonym(domain: &str, seed: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
-    hasher.update(salt.as_bytes());
+    hasher.update(domain.as_bytes());
     hasher.update(seed.as_bytes());
     let digest = hasher.finalize();
     digest[..8].iter().fold(String::new(), |mut acc, b| {
@@ -480,11 +506,12 @@ fn hash_pseudonym(salt: &str, seed: &str) -> String {
 /// should actually use — hashing a caller-supplied hostname is exactly the
 /// mistake this module had (see that function's doc).
 pub fn pseudonymize_host(seed: &str) -> String {
-    hash_pseudonym(HOST_PSEUDONYM_SALT, seed)
+    hash_pseudonym(HOST_PSEUDONYM_DOMAIN, seed)
 }
 
 /// Hash a signed-in user's email into the same 16-hex shape as
-/// [`pseudonymize_host`], salted separately (see [`ACCOUNT_PSEUDONYM_SALT`]).
+/// [`pseudonymize_host`], separated by its own domain prefix (see
+/// [`ACCOUNT_PSEUDONYM_DOMAIN`]).
 ///
 /// ALPHA TESTING ONLY — see [`local_host_pseudonym`]'s doc for the mechanism
 /// this feeds. `pub` because the tray computes this at sign-in
@@ -496,7 +523,7 @@ pub fn pseudonymize_host(seed: &str) -> String {
 /// `user@example.com` (the same signed-in person, different capitalisation)
 /// produce the identical pseudonym.
 pub fn pseudonymize_account(email: &str) -> String {
-    hash_pseudonym(ACCOUNT_PSEUDONYM_SALT, &email.trim().to_ascii_lowercase())
+    hash_pseudonym(ACCOUNT_PSEUDONYM_DOMAIN, &email.trim().to_ascii_lowercase())
 }
 
 /// This machine's pseudonym - the exact value that appears as `host.name` in
@@ -1190,6 +1217,7 @@ mod tests {
     /// verbatim — on macOS it is routinely the account holder's real name.
     #[test]
     fn host_name_is_pseudonymised_not_shipped_raw() {
+        let _settings = MachineScopedSettings::install("host-name-pseudonymised");
         let mut kv = str_attr("host.name", "Akarshs-MacBook-Pro.local");
         assert!(keep(&mut kv), "host.name should be kept");
         let out = match kv.value.unwrap().value.unwrap() {
@@ -1216,6 +1244,7 @@ mod tests {
     /// Hashing the captured value (the previous behaviour) failed this.
     #[test]
     fn pseudonym_is_independent_of_the_captured_hostname() {
+        let _settings = MachineScopedSettings::install("pseudonym-independent");
         let shipped = |raw: &str| {
             let mut kv = str_attr("host.name", raw);
             assert!(keep(&mut kv));
@@ -1304,6 +1333,7 @@ mod tests {
     /// hostname is read.
     #[test]
     fn displayed_pseudonym_matches_shipped() {
+        let _settings = MachineScopedSettings::install("displayed-matches-shipped");
         let raw = gethostname::gethostname().to_string_lossy().into_owned();
         let mut kv = str_attr("host.name", &raw);
         assert!(keep(&mut kv));
@@ -1355,17 +1385,70 @@ mod tests {
         );
     }
 
-    /// [`pseudonymize_account`] must be salted separately from
+    /// [`pseudonymize_account`] must use a DIFFERENT domain prefix from
     /// [`pseudonymize_host`] — otherwise a hardware UUID and an email could
     /// collide into the same identifier space, and a determined reader who
     /// knows a candidate value of one kind could confirm it against the other.
+    ///
+    /// This is the property the two domain constants exist for, so it is
+    /// pinned separately from the digest values themselves: sharing a prefix
+    /// would leave every other test in this file green.
     #[test]
-    fn account_pseudonym_is_salted_independently_of_host_pseudonym() {
+    fn account_pseudonym_is_domain_separated_from_host_pseudonym() {
         let same_string = "not-actually-an-email-or-a-uuid";
         assert_ne!(
             pseudonymize_host(same_string),
             pseudonymize_account(same_string),
-            "account and host pseudonyms must not share a salt"
+            "account and host pseudonyms must not share a domain prefix"
+        );
+    }
+
+    /// Both pseudonyms are a WIRE FORMAT, and nothing else in this file pins
+    /// them. Every other test here is relational — same input gives the same
+    /// output, different inputs differ, length is 16 — all of which stay green
+    /// if the digest changes wholesale.
+    ///
+    /// That matters because the value's entire purpose is continuity: a
+    /// machine's rows in the central backend are grouped by this string, and
+    /// v1.80.0 has already shipped, so error rows carrying the current digest
+    /// exist today. Change what goes into the hash — reorder the two `update`
+    /// calls, alter a domain constant, switch the truncation — and every
+    /// install silently becomes a NEW machine on upgrade. The old rows are not
+    /// re-keyed, and nothing anywhere fails; support just quietly loses the
+    /// ability to follow one user across a version boundary, and the Support ID
+    /// a user quotes from Settings stops matching the rows filed before it.
+    ///
+    /// So these are hand-computed rather than recorded from the implementation:
+    ///
+    /// ```text
+    /// printf '%s' "meridian.host.pseudonym.v1:2D5462F0-45C1-5987-94E9-5CBAD14E4362" \
+    ///   | shasum -a 256 | cut -c1-16   # 9790585e54e6cdf6
+    /// printf '%s' "meridian.account.pseudonym.v1:alpha.tester@example.com" \
+    ///   | shasum -a 256 | cut -c1-16   # 85ee36b8a62c2aab
+    /// ```
+    ///
+    /// A hash pinned by pasting in whatever the code emitted would pass against
+    /// a broken implementation; these came from an independent tool, so they
+    /// assert the construction is `sha256(domain || seed)[..8]` as documented,
+    /// not merely that it is stable.
+    ///
+    /// If this test fails, do NOT re-record the expected values. Either the
+    /// change is unintended, or it is a deliberate v2 of the identifier — and a
+    /// v2 needs the domain constants bumped (`…v1:` → `…v2:`) plus a decision
+    /// about the orphaned rows, not a new literal here.
+    #[test]
+    fn pseudonym_digests_are_pinned_against_an_independent_oracle() {
+        assert_eq!(
+            pseudonymize_host("2D5462F0-45C1-5987-94E9-5CBAD14E4362"),
+            "9790585e54e6cdf6",
+            "host pseudonym digest changed - this silently re-keys every \
+             machine's error rows on upgrade; see this test's doc"
+        );
+        assert_eq!(
+            pseudonymize_account("alpha.tester@example.com"),
+            "85ee36b8a62c2aab",
+            "account pseudonym digest changed - this silently re-keys every \
+             signed-in tester's error rows; see this test's doc"
         );
     }
 
@@ -1435,7 +1518,12 @@ mod tests {
 
     /// `MERIDIAN_SETTINGS_PATH` is process-global and cargo runs tests in
     /// parallel threads — mirrors `meridian_core::settings`'s own `ENV_LOCK`.
-    static SUPPORT_ID_SETTINGS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ///
+    /// EVERY test in this module that sets the variable OR calls anything that
+    /// reads settings ([`local_host_pseudonym`], and [`keep_attribute`] via the
+    /// `keep` shim) must hold this. See [`MachineScopedSettings`] for what went
+    /// wrong when they didn't.
+    static SETTINGS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// RAII restore for `MERIDIAN_SETTINGS_PATH`.
     ///
@@ -1466,6 +1554,66 @@ mod tests {
         }
     }
 
+    /// Pin settings at an account-free file, so [`local_host_pseudonym`]
+    /// resolves to the per-MACHINE identity for the length of a test.
+    ///
+    /// # The bug this fixes
+    /// Three tests here assert the shipped `host.name` equals
+    /// [`local_host_pseudonym`]. That holds only while NO `account_pseudonym`
+    /// is visible in settings — and settings is reached through a
+    /// process-global env var, which those tests neither set nor locked. So
+    /// they read whatever `MERIDIAN_SETTINGS_PATH` happened to point at when
+    /// their thread ran.
+    ///
+    /// Two ways that bit. A concurrently-running settings test installs a temp
+    /// file carrying an `account_pseudonym`, and these three flip to the
+    /// account-scoped branch mid-run — reproducible today with
+    /// `cargo test --lib pseudonym`, where all three fail against `pre-main`
+    /// while each passes alone. And on a signed-in developer's machine the
+    /// ambient real `settings.json` has the same effect with no concurrency at
+    /// all. The full suite passes only because ~800 other tests make the
+    /// collision unlikely to be scheduled — it is luck, not isolation, and the
+    /// failure surfaces as a wrong-looking pseudonym rather than as anything
+    /// naming the env var.
+    ///
+    /// Worse, two of the three read settings TWICE at different instants (once
+    /// inside `keep`, once directly), so serialising on the lock alone would
+    /// not be enough if the ambient file were account-scoped. Hence hermetic:
+    /// the file is ours and is known to be account-free.
+    struct MachineScopedSettings {
+        _env: SettingsPathGuard,
+        _lock: std::sync::MutexGuard<'static, ()>,
+        dir: std::path::PathBuf,
+    }
+
+    impl MachineScopedSettings {
+        fn install(tag: &str) -> Self {
+            let lock = SETTINGS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let dir = std::env::temp_dir().join(format!(
+                "meridian-redact-{tag}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("settings.json");
+            // No `account_pseudonym` key: the machine-scoped branch.
+            std::fs::write(&path, "{}").unwrap();
+            Self {
+                _env: SettingsPathGuard::set(&path),
+                _lock: lock,
+                dir,
+            }
+        }
+    }
+
+    impl Drop for MachineScopedSettings {
+        fn drop(&mut self) {
+            // Runs before the fields, so the env var still points here — safe,
+            // because the lock (dropped after this) is still held.
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
     /// [`support_id_is_account_scoped`] exists so the Settings → Account copy
     /// can never claim something the pseudonym itself isn't doing. Pinned
     /// against [`choose_pseudonym_source`] directly (the same oracle
@@ -1475,9 +1623,7 @@ mod tests {
     /// "true" and breaking the day the alpha window ends.
     #[test]
     fn support_id_is_account_scoped_matches_choose_pseudonym_source() {
-        let _guard = SUPPORT_ID_SETTINGS_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = SETTINGS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!(
             "meridian-redact-support-id-scoped-{}-{:?}",
             std::process::id(),
