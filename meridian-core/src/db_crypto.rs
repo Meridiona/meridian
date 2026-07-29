@@ -250,24 +250,6 @@ fn interrupted_migration_leftovers(path: &Path) -> Vec<std::path::PathBuf> {
     found
 }
 
-/// Swap the freshly-written encrypted export at `tmp_path` into `path`, moving
-/// the plaintext original to `backup_path` first. Extracted from
-/// [`encrypt_in_place`] so the two-rename failure handling is unit-testable
-/// without a real Windows share violation (see the module tests).
-///
-/// Preserves [`encrypt_in_place`]'s "a failed migration never loses data"
-/// invariant across BOTH renames — each of which can fail on the same class of
-/// Windows lock (a lingering handle / AV scan) that motivated this whole fix:
-/// - First rename (`path` → `backup_path`) fails: the encrypted export is
-///   useless without the swap, so drop it and leave the plaintext original
-///   exactly where it is ("still plaintext, retry next launch").
-/// - Second rename (`tmp_path` → `path`) fails: `path` has ALREADY been moved to
-///   `backup_path`, so returning here would strand the user's data under a
-///   backup name while the caller (seeing no `meridian.db`) creates a fresh
-///   empty one. Roll back by renaming `backup_path` → `path` first, so the state
-///   degrades to "still plaintext, data intact" rather than "no database". Only
-///   if that rollback ALSO fails do we surface a hard error naming the file to
-///   restore by hand — strictly the last resort.
 /// `std::fs::rename` with a short bounded retry. On Windows a rename fails with
 /// os error 32 ("used by another process") while *any* handle to the source or
 /// destination is briefly open — an antivirus scan, the search indexer, or a
@@ -277,6 +259,11 @@ fn interrupted_migration_leftovers(path: &Path) -> Vec<std::path::PathBuf> {
 /// fails, so the caller's fallback/rollback still runs. No-op fast path on the
 /// common case (first attempt succeeds). Unix renames don't hit this but the
 /// retry is harmless there.
+///
+/// Kept synchronous (`std::thread::sleep`) deliberately: the only caller is
+/// `finalize_encryption_swap`, reached from the tray's `block_on(migrate)`
+/// startup gate before any other async work is scheduled, so the worst-case
+/// ~1s-per-rename backoff blocks nothing but the migration it's part of.
 fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
     const ATTEMPTS: u32 = 5;
     for attempt in 1..=ATTEMPTS {
@@ -291,6 +278,26 @@ fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
     unreachable!("loop returns on the final attempt")
 }
 
+/// Swap the freshly-written encrypted export at `tmp_path` into `path`, moving
+/// the plaintext original to `backup_path` first. Extracted from
+/// [`encrypt_in_place`] so the two-rename failure handling is unit-testable
+/// without a real Windows share violation (see the module tests). Every rename
+/// here goes through [`rename_with_retry`], so a transient Windows lock on any
+/// of the moves (including the rollback) retries rather than failing the swap.
+///
+/// Preserves [`encrypt_in_place`]'s "a failed migration never loses data"
+/// invariant across BOTH renames — each of which can fail on the same class of
+/// Windows lock (a lingering handle / AV scan) that motivated this whole fix:
+/// - First rename (`path` → `backup_path`) fails: the encrypted export is
+///   useless without the swap, so drop it and leave the plaintext original
+///   exactly where it is ("still plaintext, retry next launch").
+/// - Second rename (`tmp_path` → `path`) fails: `path` has ALREADY been moved to
+///   `backup_path`, so returning here would strand the user's data under a
+///   backup name while the caller (seeing no `meridian.db`) creates a fresh
+///   empty one. Roll back by renaming `backup_path` → `path` first, so the state
+///   degrades to "still plaintext, data intact" rather than "no database". Only
+///   if that rollback ALSO fails do we surface a hard error naming the file to
+///   restore by hand — strictly the last resort.
 fn finalize_encryption_swap(
     path: &Path,
     tmp_path: &Path,
