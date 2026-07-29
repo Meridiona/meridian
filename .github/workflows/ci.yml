@@ -81,6 +81,7 @@ jobs:
               - '**/Cargo.toml'
               - '**/Cargo.lock'
               - 'rust-toolchain.toml'
+              - '.cargo/**'
               - 'src/migrations/**'
               - '.github/workflows/ci.yml'
             ui:
@@ -91,16 +92,21 @@ jobs:
               - 'src/migrations/**'
               - '.github/workflows/ci.yml'
 
-  # ── The one Rust gate: macOS Apple Silicon ───────────────────────────────────
-  # macOS Apple Silicon is the shipped platform, so it is the ONLY Rust CI job.
-  # Windows, Intel (macos-13) and Linux jobs were removed deliberately — Meridian
-  # ships macOS arm; the others were either a non-shipped portability burn-down
-  # (Windows) or a scarce, slow runner that queued 25+ min (Intel). This single
+  # ── Rust gate #1: macOS Apple Silicon ─────────────────────────────────────
+  # macOS Apple Silicon is the primary shipped platform. Intel (macos-13) and
+  # Linux jobs were removed deliberately — Meridian never ships either; Intel
+  # in particular was a scarce, slow runner that queued 25+ min. This single
   # native runner compiles and tests the entire workspace — daemon, core, oauth,
-  # AND the macOS-only tray (which no other runner can build).
+  # AND the tray (including its macOS-only Swift/objc2 layer, which no other
+  # runner can build).
   #
   # It runs fmt + clippy + test in one job so there is one Rust signal, on the
-  # arch users actually run.
+  # arch most users actually run. Windows is a SEPARATE job below (`rust-windows`)
+  # — it used to only be exercised at release time, which meant a Windows-only
+  # regression (e.g. the vendored-OpenSSL build breaking, or a `cfg(windows)`
+  # branch with a real bug) shipped all the way to a tagged release before
+  # anyone found out. fmt is skipped there deliberately: it is platform-independent
+  # style, already checked once here — running it twice buys nothing.
   rust:
     name: Rust (macOS Apple Silicon)
     needs: changes
@@ -159,6 +165,85 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: test
+        run: cargo test
+
+  # ── Rust gate #2: Windows x86_64 ──────────────────────────────────────────
+  # Windows is a shipped platform (NSIS installer, see release-build.yml) but
+  # was previously only exercised at RELEASE time — a Windows-only regression
+  # (the vendored-OpenSSL build, a `cfg(windows)` branch, a `tauri.windows.conf.json`
+  # mismatch) shipped all the way to a tagged release before anyone found out.
+  # This closes that gap on every PR instead.
+  #
+  # A bare `cargo clippy`/`test` from the workspace root (no `-p`) covers the
+  # whole workspace by default — daemon, core, oauth, AND the tray (the
+  # `capture` feature's screenpipe-screen/-a11y stack already supports Windows;
+  # it ships there today) — same as the macOS job. No `fmt` here: it is
+  # platform-independent style, already checked once by the macOS job.
+  rust-windows:
+    name: Rust (Windows x86_64)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: windows-latest
+    defaults:
+      run:
+        # Every step below except the actual cargo commands is a POSIX script
+        # Git Bash handles fine. The cargo commands themselves run under pwsh —
+        # see the note on that step for why.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Authenticate git for the private screenpipe-fork dependency
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${GH_TOKEN}@github.com/Meridiona/screenpipe-fork".insteadOf \
+            "https://github.com/Meridiona/screenpipe-fork"
+
+      # `libsqlite3-sys`'s `bundled-sqlcipher-vendored-openssl` feature compiles
+      # OpenSSL from source (needs NASM), same as release-build.yml's Windows
+      # job — this is a workspace-wide direct dependency, so it applies to a
+      # debug/test build here too, not just release.
+      - name: Install NASM (for vendored OpenSSL's assembly routines)
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      - name: Install Rust 1.93.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93.1"
+          components: clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Same reasoning as the macOS job's cache step — see there for why
+          # save-if targets pre-main. Distinct shared-key: this is a debug/test
+          # profile build, unrelated to release-build.yml's release-profile
+          # windows-release-x86_64-pc-windows-msvc cache.
+          save-if: ${{ github.ref == 'refs/heads/pre-main' }}
+          add-job-id-key: false
+          shared-key: ci-windows
+
+      - name: Stub the tray bundle resource
+        # Same reasoning as the macOS job's equivalent step: tauri-build STATS
+        # bundle.resources when the tray compiles, even for a check/test build.
+        run: |
+          mkdir -p target/release
+          : > target/release/meridian.exe
+
+      # `shell: pwsh`, NOT this job's bash default — Git Bash unconditionally
+      # forces its own MSYS perl ahead of Strawberry Perl on PATH, which is
+      # missing CPAN modules OpenSSL's Configure script needs (see
+      # release-build.yml's Windows job for the full story).
+      - name: clippy
+        shell: pwsh
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: test
+        shell: pwsh
         run: cargo test
 
   ui:

@@ -507,12 +507,86 @@ pub struct InstallOutcome {
 /// `powershell.exe` directly there (not nested inside `cmd /C`, which would need a second,
 /// fragile layer of quote-escaping for the embedded `-Command` payload).
 ///
+/// # Why the leading binary is resolved to an absolute path first
+///
+/// `$SHELL -l` only gets the installer as far as whatever `~/.zprofile`/`~/.zshenv` put on
+/// `PATH` (see [`installer_command`]'s doc on why `-i` is avoided). In practice almost every
+/// PATH customization — Homebrew's `eval "$(brew shellenv)"`, nvm, Volta, a hand-added
+/// `export PATH=…` — ends up in `~/.zshrc` instead, purely because that is the file every
+/// popular tutorial and `oh-my-zsh` tell you to edit; `~/.zprofile` is rarely touched. Chasing
+/// each of those tools' own rc-sourcing convention one at a time (nvm's `nvm.sh` + `nvm use
+/// default` is one earlier example) does not scale. So before building the shell command, the
+/// leading binary name (`npm`, `curl`, …) is resolved through [`resolve_cli`] — the same
+/// multi-tier probe (current `PATH`, login shell, and fixed install directories like
+/// `/opt/homebrew/bin`) already used everywhere else in this module — and swapped in as an
+/// absolute path. That sidesteps the shell's own `PATH` resolution for the installer binary
+/// entirely, rather than adding another rc file to the sourcing allowlist. Falls back to the
+/// bare command unchanged when resolution fails, so this can only ever help, never break an
+/// install that already worked.
+///
 /// # Safety
 ///
 /// The command comes from [`LlmProvider::install_command`], a fixed literal per provider with
 /// no user input, so passing it to the shell cannot inject anything. This is the ONE place the
 /// daemon runs a vendor installer, and only ever on an explicit user click (the tray's
 /// `install_llm_provider` command) — never automatically.
+///
+/// Replaces `cmd`'s leading binary name with its resolved absolute path, when [`resolve_cli`]
+/// can find one — see [`install_provider`]'s "leading binary" doc section for why. Returns
+/// `cmd` unchanged (not an `Option`) so every caller has a command to run either way; the
+/// resolution is best-effort by design.
+async fn resolve_installer_binary(cmd: &str) -> String {
+    match cmd.split_once(' ') {
+        Some((installer_bin, rest)) => match resolve_cli(installer_bin).await {
+            // `npm` (and most CLIs installed by the same tooling) is itself a
+            // `#!/usr/bin/env node` script — the OS execs `env`, and `env` does its OWN
+            // independent PATH search for `node` using the shell's PATH, completely
+            // unaffected by how npm itself was invoked. Substituting only npm's absolute
+            // path fixed the FIRST lookup ("command not found: npm") but not this second,
+            // nested one ("env: node: No such file or directory") — every real npm
+            // install keeps `node` in the exact same directory as `npm` (Homebrew, nvm's
+            // per-version bin/, Volta's shim dir, the official installer), so prepending
+            // that directory onto PATH fixes the shebang lookup the same way resolving
+            // npm itself fixed the first one.
+            Some(resolved) => match resolved.parent() {
+                Some(dir) => format!(
+                    "export PATH=\"{}:$PATH\"; {} {rest}",
+                    dir.display(),
+                    resolved.display()
+                ),
+                None => format!("{} {rest}", resolved.display()),
+            },
+            None => cmd.to_string(),
+        },
+        None => cmd.to_string(),
+    }
+}
+
+/// Build a `Command` for `path`, a CLI already located via [`resolve_cli`], with `path`'s own
+/// directory prepended onto the child's `PATH` — same fix as [`resolve_installer_binary`],
+/// applied to the sign-in flows ([`cursor_sign_in`]/[`codex_sign_in`]/[`claude_sign_in`]),
+/// which spawn the resolved binary directly rather than through a shell.
+///
+/// Those CLIs are still spawned by ABSOLUTE PATH, so the OS doesn't need `PATH` to find `path`
+/// itself — but `codex`/`claude` (unlike `cursor-agent`, a native binary) are `#!/usr/bin/env
+/// node` scripts, and `env` does its own independent `PATH` search for `node` at exec time,
+/// using whatever environment the child inherits. `Command::new` inherits the CURRENT
+/// process's `PATH` by default — the tray's own stripped launchd one on macOS, with no
+/// `/opt/homebrew/bin` — so that inner lookup fails with "env: node: No such file or
+/// directory" exactly like [`resolve_installer_binary`]'s install-time case, even though the
+/// CLI itself was already found and resolved correctly.
+fn command_for_resolved_cli(path: &std::path::Path) -> Command {
+    let mut cmd = Command::new(path);
+    if let Some(dir) = path.parent() {
+        let existing = std::env::var_os("PATH").unwrap_or_default();
+        let mut new_path = std::ffi::OsString::from(dir);
+        new_path.push(":");
+        new_path.push(existing);
+        cmd.env("PATH", new_path);
+    }
+    cmd
+}
+
 #[tracing::instrument(
     skip_all,
     fields(
@@ -531,6 +605,9 @@ pub async fn install_provider(provider: LlmProvider) -> InstallOutcome {
         };
     };
     let bin = provider.cli_name().unwrap_or("");
+
+    let cmd = resolve_installer_binary(cmd).await;
+    let cmd = cmd.as_str();
 
     tracing::info!(provider = provider.as_str(), %cmd, "llm: running provider installer");
     let mut command = installer_command(cmd);
@@ -603,16 +680,26 @@ pub async fn install_provider(provider: LlmProvider) -> InstallOutcome {
 /// Windows in the first place).
 ///
 /// Unix: the user's login shell (`$SHELL -l -c`) — see the module docs on why a login shell
-/// specifically. Also sources `~/.nvm/nvm.sh` first if present, a no-op otherwise: `-l`
-/// without `-i` (see [`resolve_cli`]'s doc on why `-i` is avoided) sources `~/.zprofile`/
-/// `~/.zshenv` but NOT `~/.zshrc` — zsh only reads `~/.zshrc` for an interactive shell.
-/// nvm's own official install instructions add its init block to `~/.zshrc` (or it lands
-/// there via oh-my-zsh's nvm plugin), so on any machine where nvm was set up that
-/// conventional way, an `npm i -g …` install command would fail with "command not found:
-/// npm" even though a normal Terminal resolves it fine. Sourcing `nvm.sh` directly is nvm's
-/// own documented way to bootstrap it non-interactively (the same snippet CI systems use),
-/// so this isn't a one-off workaround — it's the vendor-sanctioned way to make npm
-/// resolvable without depending on which rc file happened to get the init block.
+/// specifically. Also sources `~/.nvm/nvm.sh` and runs `nvm use default` first if present, a
+/// no-op otherwise: `-l` without `-i` (see [`resolve_cli`]'s doc on why `-i` is avoided)
+/// sources `~/.zprofile`/`~/.zshenv` but NOT `~/.zshrc` — zsh only reads `~/.zshrc` for an
+/// interactive shell. nvm's own official install instructions add its init block to
+/// `~/.zshrc` (or it lands there via oh-my-zsh's nvm plugin), so on any machine where nvm
+/// was set up that conventional way, an `npm i -g …` install command would fail with
+/// "command not found: npm" even though a normal Terminal resolves it fine.
+///
+/// Sourcing `nvm.sh` alone is NOT sufficient, though — it only defines the `nvm` shell
+/// function; it does not itself put any installed Node's `bin/` on `PATH`. That only
+/// happens after an explicit `nvm use <version>`, which is why a first fix that stopped at
+/// sourcing `nvm.sh` still hit the exact same "command not found: npm" on a machine that
+/// never runs `nvm use` from a *second*, separately-added line in its shell rc (nvm does not
+/// add one itself — auto-switching on shell start is something the user or a plugin like
+/// oh-my-zsh's opts into on top of the base install). `nvm use default` mirrors what that
+/// second line does — activating whatever `nvm alias default` points at — and is itself a
+/// no-op (silently, via the trailing `>/dev/null 2>&1`) when no default alias is set, so it
+/// cannot make a working machine worse. Both nvm calls are `;`-separated from `{cmd}`, not
+/// `&&`-chained into it, so neither one failing (nvm absent, no default alias) skips running
+/// the actual install command.
 ///
 /// Windows: `powershell.exe` directly, NOT `cmd.exe`. `cmd /C` cannot run Cursor's Windows
 /// installer (`irm`/`iex` are PowerShell aliases, no `cmd` equivalent — see
@@ -646,7 +733,7 @@ pub(crate) fn installer_command(cmd: &str) -> Command {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let mut command = Command::new(shell);
     let script = format!(
-        "export NVM_DIR=\"$HOME/.nvm\"; [ -s \"$NVM_DIR/nvm.sh\" ] && \\. \"$NVM_DIR/nvm.sh\"; {cmd}"
+        "export NVM_DIR=\"$HOME/.nvm\"; [ -s \"$NVM_DIR/nvm.sh\" ] && \\. \"$NVM_DIR/nvm.sh\" && nvm use default >/dev/null 2>&1; {cmd}"
     );
     command.arg("-l").arg("-c").arg(script);
     command
@@ -728,7 +815,7 @@ pub async fn cursor_sign_in() -> InstallOutcome {
     };
 
     tracing::info!("llm: launching interactive cursor-agent login");
-    let mut cmd = Command::new(&path);
+    let mut cmd = command_for_resolved_cli(&path);
     cmd.arg("login")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -837,7 +924,7 @@ pub async fn codex_sign_in() -> InstallOutcome {
     };
 
     tracing::info!("llm: launching interactive codex login");
-    let mut cmd = Command::new(&path);
+    let mut cmd = command_for_resolved_cli(&path);
     cmd.arg("login")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -944,7 +1031,7 @@ pub async fn claude_sign_in() -> InstallOutcome {
     };
 
     tracing::info!("llm: launching interactive claude auth login");
-    let mut cmd = Command::new(&path);
+    let mut cmd = command_for_resolved_cli(&path);
     cmd.arg("auth")
         .arg("login")
         .arg("--claudeai")
@@ -1499,7 +1586,7 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn probe_current_path_prefers_pathext_over_a_bare_extensionless_shim() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.lock().await;
         let dir = std::env::temp_dir().join(format!(
             "meridian-detect-pathext-test-{}",
             std::process::id()
@@ -1586,7 +1673,7 @@ mod tests {
         let temp_home =
             std::env::temp_dir().join(format!("meridian-detect-nvm-test-{}", std::process::id()));
         let child = {
-            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _guard = ENV_LOCK.lock().await;
             let original_home = std::env::var_os("HOME");
             let nvm_dir = temp_home.join(".nvm");
             std::fs::create_dir_all(&nvm_dir).unwrap();
@@ -1639,7 +1726,7 @@ mod tests {
             std::process::id()
         ));
         let child = {
-            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _guard = ENV_LOCK.lock().await;
             let original_home = std::env::var_os("HOME");
             std::fs::create_dir_all(&temp_home).unwrap();
             std::env::set_var("HOME", &temp_home);
@@ -1671,6 +1758,241 @@ mod tests {
         );
     }
 
+    /// The regression `installer_command_sources_nvm_sh_when_present` did NOT catch: sourcing
+    /// `nvm.sh` only defines the `nvm` shell FUNCTION, it does not itself put any Node's
+    /// `bin/` on `PATH` — that needs an explicit `nvm use`. A real nvm install run through the
+    /// old fix (source-only) still could not find `npm`, because nvm.sh alone never adds it to
+    /// PATH. This fakes a minimal `nvm` function that only prepends a bin dir to `PATH` when
+    /// called as `nvm use default`, with a fake `npm` script living in that dir — proving
+    /// `installer_command` actually resolves npm, not merely that `nvm.sh` got sourced.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn installer_command_activates_the_default_nvm_version() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_home = std::env::temp_dir().join(format!(
+            "meridian-detect-nvm-use-default-test-{}",
+            std::process::id()
+        ));
+        let child = {
+            let _guard = ENV_LOCK.lock().await;
+            let original_home = std::env::var_os("HOME");
+            let nvm_dir = temp_home.join(".nvm");
+            let node_bin_dir = temp_home.join("fake-node-version").join("bin");
+            std::fs::create_dir_all(&nvm_dir).unwrap();
+            std::fs::create_dir_all(&node_bin_dir).unwrap();
+
+            let npm_path = node_bin_dir.join("npm");
+            std::fs::write(&npm_path, "#!/bin/sh\necho FAKE_NVM_NPM_RAN\n").unwrap();
+            let mut perms = std::fs::metadata(&npm_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&npm_path, perms).unwrap();
+
+            std::fs::write(
+                nvm_dir.join("nvm.sh"),
+                format!(
+                    "nvm() {{\n  if [ \"$1\" = use ] && [ \"$2\" = default ]; then\n    export PATH=\"{}:$PATH\"\n  fi\n}}\n",
+                    node_bin_dir.display()
+                ),
+            )
+            .unwrap();
+            std::env::set_var("HOME", &temp_home);
+
+            let mut cmd = installer_command("npm");
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let child = cmd.spawn();
+
+            match original_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            child
+        };
+
+        let output = child
+            .expect("installer_command must spawn")
+            .wait_with_output()
+            .await
+            .expect("installer_command must run to completion");
+        let _ = std::fs::remove_dir_all(&temp_home);
+
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "FAKE_NVM_NPM_RAN",
+            "{output:?}"
+        );
+    }
+
+    /// The Homebrew case that motivated `resolve_installer_binary`: a machine where `npm`
+    /// resolves fine in a normal Terminal (Homebrew's `brew shellenv` is set up in `~/.zshrc`,
+    /// not `~/.zprofile`) but not through the login-non-interactive shell `installer_command`
+    /// uses — `candidate_dirs()` already lists `/opt/homebrew/bin` (for a different reason:
+    /// finding an installed CLI afterward), so `resolve_cli` finds it there regardless of which
+    /// rc file the real PATH setup lives in. This uses `~/.local/bin` (also a candidate dir)
+    /// with a fake binary rather than the real `/opt/homebrew/bin`, so the test doesn't depend
+    /// on Homebrew being installed on the machine running it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn resolve_installer_binary_finds_a_binary_only_a_candidate_dir_knows_about() {
+        let _guard = ENV_LOCK.lock().await;
+        let original_home = std::env::var_os("HOME");
+        let temp_home = std::env::temp_dir().join(format!(
+            "meridian-detect-installer-bin-test-{}",
+            std::process::id()
+        ));
+        let bin_dir = temp_home.join(".local").join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let fake_bin = bin_dir.join("meridian-fake-installer-bin");
+        std::fs::write(&fake_bin, "#!/bin/sh\necho fake\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&fake_bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&fake_bin, perms).unwrap();
+        }
+        std::env::set_var("HOME", &temp_home);
+
+        let resolved =
+            resolve_installer_binary("meridian-fake-installer-bin i -g some-package").await;
+
+        match original_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&temp_home);
+
+        assert_eq!(
+            resolved,
+            format!(
+                "export PATH=\"{}:$PATH\"; {} i -g some-package",
+                bin_dir.display(),
+                fake_bin.display()
+            ),
+            "expected the leading binary swapped for its resolved absolute path, with its \
+             directory prepended onto PATH"
+        );
+    }
+
+    /// The Node-shebang case that motivated prepending PATH, not just resolving the leading
+    /// binary: `npm` is itself a `#!/usr/bin/env node` script, so the OS execs `env`, and `env`
+    /// does its OWN independent PATH search for `node` — resolving npm's own absolute path
+    /// does not help THAT lookup. Fakes an `npm` script with a real `env node` shebang plus a
+    /// fake `node` living alongside it, so this only passes if PATH was actually prepended
+    /// (not just npm's leading token swapped).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn resolve_installer_binary_fixes_the_env_node_shebang_lookup() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = ENV_LOCK.lock().await;
+        let original_home = std::env::var_os("HOME");
+        let temp_home = std::env::temp_dir().join(format!(
+            "meridian-detect-shebang-test-{}",
+            std::process::id()
+        ));
+        let bin_dir = temp_home.join(".local").join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let fake_node = bin_dir.join("node");
+        std::fs::write(&fake_node, "#!/bin/sh\necho FAKE_NODE_RAN\n").unwrap();
+        let fake_npm = bin_dir.join("meridian-fake-npm");
+        std::fs::write(&fake_npm, "#!/usr/bin/env node\n").unwrap();
+        for f in [&fake_node, &fake_npm] {
+            let mut perms = std::fs::metadata(f).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(f, perms).unwrap();
+        }
+        std::env::set_var("HOME", &temp_home);
+
+        let resolved_cmd = resolve_installer_binary("meridian-fake-npm i -g some-package").await;
+
+        let child = {
+            let mut cmd = installer_command(&resolved_cmd);
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            cmd.spawn()
+        };
+
+        match original_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+
+        let output = child
+            .expect("installer_command must spawn")
+            .wait_with_output()
+            .await
+            .expect("installer_command must run to completion");
+        let _ = std::fs::remove_dir_all(&temp_home);
+
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "FAKE_NODE_RAN",
+            "{output:?}"
+        );
+    }
+
+    /// When the leading binary cannot be resolved anywhere (no PATH, no login shell hit, no
+    /// candidate dir), `resolve_installer_binary` must return `cmd` unchanged rather than
+    /// producing something unspawnable — the caller still needs a command to try.
+    #[tokio::test]
+    async fn resolve_installer_binary_falls_back_when_unresolvable() {
+        let cmd = "meridian-definitely-not-a-real-binary --flag value";
+        let resolved = resolve_installer_binary(cmd).await;
+        assert_eq!(resolved, cmd);
+    }
+
+    /// The sign-in-flow counterpart to `resolve_installer_binary_fixes_the_env_node_shebang_lookup`:
+    /// `cursor_sign_in`/`codex_sign_in`/`claude_sign_in` spawn the resolved CLI directly
+    /// (`Command::new(&path)`, no shell), so `resolve_installer_binary`'s PATH-prepending fix
+    /// never applied to them — `codex`/`claude` are still `#!/usr/bin/env node` scripts, and a
+    /// directly-spawned child inherits the CURRENT process's `PATH` (the tray's own stripped
+    /// one), not any shell-derived one. Fakes a `#!/usr/bin/env node` CLI with a fake `node`
+    /// alongside it; only passes if `command_for_resolved_cli` actually set `PATH` on the child.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn command_for_resolved_cli_fixes_the_env_node_shebang_lookup() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "meridian-detect-cmd-resolved-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let fake_node = temp_dir.join("node");
+        std::fs::write(&fake_node, "#!/bin/sh\necho FAKE_NODE_RAN\n").unwrap();
+        let fake_cli = temp_dir.join("meridian-fake-cli");
+        std::fs::write(&fake_cli, "#!/usr/bin/env node\n").unwrap();
+        for f in [&fake_node, &fake_cli] {
+            let mut perms = std::fs::metadata(f).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(f, perms).unwrap();
+        }
+
+        let mut cmd = command_for_resolved_cli(&fake_cli);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = cmd
+            .output()
+            .await
+            .expect("command_for_resolved_cli must spawn");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "FAKE_NODE_RAN",
+            "{output:?}"
+        );
+    }
+
     /// cursor-agent does not install via npm on Windows (see
     /// `meridian_core::CURSOR_INSTALL_CMD`'s Windows doc) — its own installer root must be a
     /// fallback candidate dir, or a Cursor install's post-install re-probe (same process,
@@ -1678,7 +2000,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn candidate_dirs_includes_the_cursor_agent_install_root() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.blocking_lock();
         let original = std::env::var_os("LOCALAPPDATA");
         std::env::set_var("LOCALAPPDATA", r"C:\Users\meridian-test\AppData\Local");
 
@@ -1702,7 +2024,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn candidate_dirs_tolerates_a_missing_localappdata() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.blocking_lock();
         let original = std::env::var_os("LOCALAPPDATA");
         std::env::remove_var("LOCALAPPDATA");
 
@@ -1727,7 +2049,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn probe_candidates_prefers_pathext_over_a_bare_extensionless_shim() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.blocking_lock();
         let original_home = std::env::var_os("HOME");
         let temp_home = std::env::temp_dir().join(format!(
             "meridian-detect-candidates-test-{}",
@@ -1756,10 +2078,17 @@ mod tests {
         );
     }
 
-    /// `MERIDIAN_HOME` is a process-global env var and cargo runs tests in parallel threads
-    /// — every test that points the cache at a temp dir must hold this lock (same pattern
-    /// as `meridian_core::settings`'s `ENV_LOCK`).
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// `MERIDIAN_HOME`/`HOME` are process-global env vars and cargo runs tests in parallel
+    /// threads — every test that points one at a temp dir must hold this lock (same pattern
+    /// as `meridian_core::settings`'s `ENV_LOCK`). A `tokio::sync::Mutex`, not `std::sync`:
+    /// some `#[tokio::test]` callers (e.g. `resolve_installer_binary_*`) need the lock held
+    /// across an `.await` — `resolve_cli`'s async login-shell probe runs before its own
+    /// synchronous candidate-dir fallback, so the guard must still be held when that fallback
+    /// reads `HOME` — and a `std::sync::MutexGuard` held across `.await` is a clippy deny
+    /// (`await_holding_lock`). Sync `#[test]` callers use `.blocking_lock()` instead of
+    /// `.lock().await` — safe because plain `#[test]` functions never run inside a Tokio
+    /// runtime, which is the only case `blocking_lock` panics in.
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     fn with_temp_meridian_home() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -1774,7 +2103,7 @@ mod tests {
 
     #[test]
     fn test_cache_round_trips_and_survives_a_missing_file() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.blocking_lock();
         with_temp_meridian_home();
 
         // No cache on disk yet — a fresh install, not a failure.
@@ -1813,7 +2142,7 @@ mod tests {
     /// contention genuine.
     #[test]
     fn concurrent_persists_do_not_lose_results() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.blocking_lock();
         with_temp_meridian_home();
 
         const N: usize = 12;
@@ -1839,7 +2168,7 @@ mod tests {
 
     #[test]
     fn a_corrupt_cache_file_degrades_to_empty_not_a_panic() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.blocking_lock();
         let dir = with_temp_meridian_home();
         std::fs::write(dir.join("provider_test_cache.json"), "not json").unwrap();
         assert!(load_test_cache().is_empty());

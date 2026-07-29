@@ -15,12 +15,14 @@ name: Release (build & publish)
 #
 #     v1.75.0            -> stable   (browser-downloaded DMG; notarized;
 #                                     served from `releases/latest`)
-#     v1.72.0-staging.6  -> staging  (updater-only; NOT notarized;
-#                                     served from `updater-staging`)
+#     v1.72.0-staging.6  -> staging  (notarized too — a directly-downloaded
+#                                     staging DMG is quarantined exactly like
+#                                     a stable one, so it needs a ticket just
+#                                     the same; served from `updater-staging`)
 #
-# The two differ in exactly three places, all keyed off `prepare`'s `channel`
-# output: the staging tauri config, whether APPLE_API_* is passed (notarization),
-# and the DMG-notarize step. Everything else — compile, signing, packaging,
+# Both channels are now notarized identically — the one remaining difference
+# keyed off `prepare`'s `channel` output is the staging tauri config (updater
+# endpoint etc). Everything else — compile, signing, notarizing, packaging,
 # verification, publishing — is one shared path.
 #
 # ── SHAPE ────────────────────────────────────────────────────────────────────
@@ -535,50 +537,29 @@ jobs:
         # notarize call at all (tauri-apps/tauri#7533, open since 2023) — hence
         # the separate step below.
         #
-        # ── WHY STAGING UNSETS THE NOTARIZATION CREDENTIALS HERE ──────────────
-        #
-        # Tauri decides to notarize by LOOKING FOR the credentials, and it treats
-        # a defined-but-empty variable as present. So the skip cannot be done by
-        # gating the `env:` block with `cond && secret || ''` — that still defines
-        # the variables, and notarytool then runs with `--issuer ''` and kills the
-        # whole bundle:
-        #
-        #     The value '' is invalid for '--issuer <issuer>': must be a valid UUID
-        #
-        # (v1.72.0-staging.7 died exactly there.) APPLE_API_KEY_PATH makes it
-        # worse: .github/actions/import-apple-cert writes the .p8 and exports the
-        # path UNCONDITIONALLY via GITHUB_ENV, so it is present no matter what the
-        # job env says. `unset` in this shell is therefore the only reliable gate —
-        # it removes them from the environment tauri actually inherits.
-        #
-        # Why skipping is safe on staging and NOT on stable: Gatekeeper enforces
-        # notarization only on a QUARANTINED app, and the quarantine flag is set by
-        # whatever downloaded it — a browser. Staging is delivered exclusively by
-        # tauri-plugin-updater, which unpacks the tarball itself and sets no flag,
-        # so the relaunched app is verified on its Developer ID signature (still
-        # applied below) plus the updater's minisign key, and never consults a
-        # notarization ticket. Stable ships a DMG new users download in a browser —
-        # dropping notarization there would greet every new user with "Apple cannot
-        # check it for malicious software".
-        #
-        # SIGNING is unaffected: APPLE_SIGNING_IDENTITY and the keychain stay in
-        # place, so the .app is still Developer ID signed on every channel.
+        # Notarization now runs on EVERY channel, staging included. It used to be
+        # skipped on staging on the theory that tauri-plugin-updater never sets
+        # the quarantine flag Gatekeeper keys off — true for an in-place update,
+        # but false the moment someone downloads a staging DMG directly (browser,
+        # `gh release download`, Slack link, …), which quarantines it exactly like
+        # a stable DMG and trips "Apple could not verify this app is free of
+        # malware" with no ticket to fall back on. APPLE_API_* are already defined
+        # unconditionally in this job's `env:` (see the note there on why an
+        # Actions `cond && secret || ''` expression is NOT a safe way to gate
+        # them), so nothing needs to change to turn notarization on here — the
+        # credentials were always present, only the staging branch below used to
+        # `unset` them.
         run: |
           set -euo pipefail
-          if [ "${CHANNEL}" != "stable" ]; then
-            unset APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH
-            echo "→ ${CHANNEL}: signing without notarization (updater-only delivery)"
-          else
-            echo "→ stable: signing AND notarizing"
-          fi
+          echo "→ ${CHANNEL}: signing AND notarizing"
           npx tauri bundle --target ${{ matrix.target }} --bundles app,dmg \
             ${{ needs.prepare.outputs.channel == 'staging' && '--config src-tauri/tauri.staging.conf.json' || '' }}
 
       - name: Notarize and staple the DMG
-        # STABLE ONLY — staging is delivered by the updater, which never sets the
-        # quarantine flag, so no notarization ticket is ever consulted. See the
-        # APPLE_API_* note in this job's `env:` for the full reasoning.
-        if: ${{ !inputs.cache_warm_only && needs.prepare.outputs.channel == 'stable' }}
+        # Runs on every channel now — see the note on the bundle step above for
+        # why staging needs this too (a directly-downloaded staging DMG is
+        # quarantined exactly like a stable one).
+        if: ${{ !inputs.cache_warm_only }}
         # A notarization ticket is keyed to the cdhash of what was submitted, so
         # the stapled .app inside does not cover the container. Without this the
         # DMG a user downloads trips "can't check it for malicious software".
@@ -600,11 +581,9 @@ jobs:
         # presence of the updater artifacts. A non-zero exit aborts while the
         # release is still a draft and nothing is publicly reachable.
         #
-        # MERIDIAN_CHANNEL tells the script which assertions apply: on staging
-        # the notarized/stapled checks are skipped (nothing was notarized, by
-        # design) while every SIGNING check still runs — a staging build with a
-        # broken signature must still fail loudly, because the updater's
-        # relaunch depends on it.
+        # Notarized/stapled checks now run on every channel — see
+        # verify-release-bundle.sh's note on why staging needs the same
+        # Gatekeeper guarantees a directly-downloaded DMG would otherwise miss.
         if: ${{ !inputs.cache_warm_only }}
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
