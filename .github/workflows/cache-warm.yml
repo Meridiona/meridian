@@ -58,9 +58,16 @@ name: Cache warm (release)
 
 on:
   # Every push to main re-seeds the cache with whatever production is at, so a
-  # release cut minutes later is warm.
+  # release cut minutes later is warm. `pre-main` is ALSO a trigger now, but
+  # only for `prune-stale-caches` (see that job's `if:`) — the two compile
+  # jobs below skip entirely on a pre-main-triggered run (their `if:` gates
+  # on `github.ref == 'refs/heads/main'`), so a pre-main push doesn't burn
+  # ~15-30min of compile time it would just throw away (they only ever SAVE
+  # their cache on main anyway, per each job's own `save-if`). This makes the
+  # ci.yml-caches half of the pruning run right after every pre-main merge,
+  # not just once a night.
   push:
-    branches: [main]
+    branches: [main, pre-main]
   # Nightly, so staging tags stay warm even during a long stretch with no
   # production release. 04:00 UTC — off-peak for GitHub's macOS runner pool.
   schedule:
@@ -87,6 +94,12 @@ env:
 jobs:
   warm-macos:
     name: Warm the aarch64 release cache
+    # Skip entirely on a pre-main-triggered run — see the `on:` block comment.
+    # This job only ever exists to compile-and-save onto `main`; running it
+    # on pre-main would compile for ~15-20min and then throw the result away
+    # (save-if already restricts the save to main, so nothing would even be
+    # written).
+    if: github.ref == 'refs/heads/main' || github.event_name != 'push'
     runs-on: macos-26
     timeout-minutes: 60
     steps:
@@ -185,6 +198,9 @@ jobs:
 
   warm-windows:
     name: Warm the Windows x86_64 release cache
+    # Same reasoning as warm-macos's `if:` — skip on a pre-main-triggered
+    # push, this job only exists to compile-and-save onto main.
+    if: github.ref == 'refs/heads/main' || github.event_name != 'push'
     runs-on: windows-latest
     timeout-minutes: 60
     defaults:
