@@ -1437,6 +1437,35 @@ mod tests {
     /// parallel threads — mirrors `meridian_core::settings`'s own `ENV_LOCK`.
     static SUPPORT_ID_SETTINGS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// RAII restore for `MERIDIAN_SETTINGS_PATH`.
+    ///
+    /// The variable is process-global, so leaking it past this test would leak
+    /// into every later test in the same binary. The manual
+    /// `remove_var`-at-the-end this replaces was correct only on the happy
+    /// path: a failed `assert_eq!` unwinds straight past it, leaving a
+    /// now-deleted temp path installed as the settings location — so the real
+    /// failure would be followed by a cascade of unrelated ones, burying it.
+    /// Restores the PREVIOUS value rather than unconditionally removing, so it
+    /// composes if an outer harness ever sets its own.
+    struct SettingsPathGuard(Option<std::ffi::OsString>);
+
+    impl SettingsPathGuard {
+        fn set(path: &std::path::Path) -> Self {
+            let previous = std::env::var_os("MERIDIAN_SETTINGS_PATH");
+            std::env::set_var("MERIDIAN_SETTINGS_PATH", path);
+            Self(previous)
+        }
+    }
+
+    impl Drop for SettingsPathGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(previous) => std::env::set_var("MERIDIAN_SETTINGS_PATH", previous),
+                None => std::env::remove_var("MERIDIAN_SETTINGS_PATH"),
+            }
+        }
+    }
+
     /// [`support_id_is_account_scoped`] exists so the Settings → Account copy
     /// can never claim something the pseudonym itself isn't doing. Pinned
     /// against [`choose_pseudonym_source`] directly (the same oracle
@@ -1456,7 +1485,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
-        std::env::set_var("MERIDIAN_SETTINGS_PATH", &path);
+        let _env = SettingsPathGuard::set(&path);
 
         for hash in [None, Some("deadbeefcafebabe")] {
             match hash {
@@ -1473,7 +1502,8 @@ mod tests {
             );
         }
 
-        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
+        // `MERIDIAN_SETTINGS_PATH` is restored by `_env`'s Drop, on this path
+        // and on an unwinding one alike.
         let _ = std::fs::remove_dir_all(&dir);
     }
 

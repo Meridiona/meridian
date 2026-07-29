@@ -130,7 +130,50 @@ const TRANSIENT_ESCALATION_HOURS: i64 = 6;
 /// The remedy points at connectivity, NOT credentials: by construction we only
 /// reach here for failures that are not the user's token.
 ///
+/// Write the epoch-sentinel grace row for a provider that has never synced.
+///
+/// # Why `ON CONFLICT DO NOTHING`
+/// The caller's `has_row` check is a SEPARATE statement from this insert, and
+/// `pm_sync_state.provider` is a PRIMARY KEY - so anything that can run two
+/// sync passes for one provider concurrently can have both observe "no row"
+/// and both insert. That is not hypothetical here: `meridian ticket-update`
+/// opens its OWN pool to the same `meridian.db` and calls
+/// `intelligence::run_pm_force_sync` (`src/main.rs`) while the daemon's poll
+/// loop is running `run_pm_sync` against the same file, so the two racers are
+/// separate PROCESSES and no in-process lock would cover them.
+///
+/// Without the clause the loser gets `UNIQUE constraint failed`, which
+/// [`record_sync_failure`] swallows by design - so the grace row would be
+/// silently lost, the next failure would take the same branch again, and the
+/// escalation clock would never start. That is the exact failure this whole
+/// module exists to prevent, reintroduced by a race.
+///
+/// Doing nothing on conflict is the correct resolution rather than a
+/// compromise: the row the winner wrote carries the same epoch sentinel this
+/// one would have written, so both racers leave the state they intended.
+///
+/// Extracted from [`note_transient_sync_failure`] to give the conflict
+/// behaviour a testable seam - the race itself has no deterministic hook, but
+/// "inserting over an existing row is a no-op, not an error" does.
+async fn insert_grace_row(pool: &SqlitePool, provider: &str, detail: &str) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO pm_sync_state (provider, last_synced_at, last_error)
+         VALUES (?, '1970-01-01T00:00:00Z', ?)
+         ON CONFLICT(provider) DO NOTHING",
+    )
+    .bind(provider)
+    .bind(detail)
+    .execute(pool)
+    .await
+    .context("recording the first transient failure for a never-synced provider")?;
+    Ok(())
+}
+
 /// Returns whether it escalated.
+#[tracing::instrument(
+    skip(pool, detail),
+    fields(provider, escalated = tracing::field::Empty)
+)]
 pub async fn note_transient_sync_failure(
     pool: &SqlitePool,
     provider: &str,
@@ -154,6 +197,7 @@ pub async fn note_transient_sync_failure(
     .context("checking sync recency for transient-failure escalation")?;
 
     if recently_synced != 0 {
+        tracing::Span::current().record("escalated", false);
         return Ok(false);
     }
 
@@ -163,19 +207,12 @@ pub async fn note_transient_sync_failure(
         // connected seconds ago that hits one blip must not immediately show a
         // fault. The epoch sentinel is deliberate - it is not a recent sync, so
         // the next failure takes the escalation branch below.
-        sqlx::query(
-            "INSERT INTO pm_sync_state (provider, last_synced_at, last_error)
-             VALUES (?, '1970-01-01T00:00:00Z', ?)",
-        )
-        .bind(provider)
-        .bind(detail)
-        .execute(pool)
-        .await
-        .context("recording the first transient failure for a never-synced provider")?;
+        insert_grace_row(pool, provider, detail).await?;
         tracing::debug!(
             provider,
             "first transient failure on a never-synced provider - staying quiet until the next attempt"
         );
+        tracing::Span::current().record("escalated", false);
         return Ok(false);
     }
 
@@ -195,6 +232,7 @@ pub async fn note_transient_sync_failure(
         Some("Check your internet connection, VPN, or proxy settings"),
     )
     .await?;
+    tracing::Span::current().record("escalated", true);
     Ok(true)
 }
 
@@ -234,12 +272,30 @@ pub async fn note_transient_sync_failure(
 /// chain is emitted BEFORE the write, so the provider error reaches the logs and
 /// the telemetry backend either way, and the persistence failure is logged
 /// beside it rather than swallowed.
+///
+/// # Telemetry
+/// Instrumented because this is where a provider failure becomes user-visible
+/// state, and the outcome is not derivable from the provider's own spans: the
+/// same `anyhow::Error` can end as a silent retry or a raised notice depending
+/// on [`http::classify`]. `outcome` records which, and `otel.status_code` marks
+/// the span ERROR only on the terminal path - a retryable blip is an expected
+/// outcome, not a fault, and marking it would drown the real ones.
+#[tracing::instrument(
+    skip(pool, err),
+    fields(
+        provider,
+        stage,
+        outcome = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty,
+    )
+)]
 pub async fn record_sync_failure(
     pool: &SqlitePool,
     provider: &str,
     stage: &str,
     err: &anyhow::Error,
 ) {
+    let span = tracing::Span::current();
     match http::classify(err) {
         http::SyncFault::Retry { detail } => {
             tracing::warn!(
@@ -248,14 +304,31 @@ pub async fn record_sync_failure(
                 error = %detail,
                 "provider unreachable - keeping stale cache, will retry next sync"
             );
-            if let Err(e) = note_transient_sync_failure(pool, provider, &detail).await {
-                tracing::warn!(provider, stage, error = %e, "recording transient sync failure failed");
-            }
+            match note_transient_sync_failure(pool, provider, &detail).await {
+                Ok(escalated) => {
+                    span.record(
+                        "outcome",
+                        if escalated {
+                            "transient_escalated"
+                        } else {
+                            "transient_quiet"
+                        },
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(provider, stage, error = %e, "recording transient sync failure failed");
+                    span.record("outcome", "transient_record_failed");
+                    span.record("otel.status_code", "ERROR");
+                }
+            };
         }
         http::SyncFault::Report { detail } => {
             tracing::warn!(provider, stage, error = %detail, "provider sync failed");
+            span.record("outcome", "reported");
+            span.record("otel.status_code", "ERROR");
             if let Err(e) = stamp_sync_error(pool, provider, &detail).await {
                 tracing::warn!(provider, stage, error = %e, "recording sync failure failed");
+                span.record("outcome", "report_record_failed");
             }
         }
     }
