@@ -42,6 +42,7 @@ pub(crate) const SELF_BINARY_NAME: &str = "meridian-tray";
 pub(crate) mod format;
 mod install;
 mod poll;
+mod relocate;
 mod state;
 mod sys;
 mod tray;
@@ -165,6 +166,18 @@ pub fn run() {
         // openers, pulled by the dashboard shell on mount. See `deep_link`.
         .manage(deep_link::PendingDeepLink(std::sync::Mutex::new(None)))
         .setup(move |app| {
+            // Move-to-Applications self-relocation. Must run before anything
+            // else touches the DB pool or spawns the poll loop: a `true`
+            // return means a replacement process now exists at
+            // `/Applications` and this (transient DMG/translocation)
+            // instance must exit immediately, not continue starting up
+            // alongside it. Bundled only — an unbundled `cargo run`/`tauri
+            // dev` binary under `target/` is never "transient" in the sense
+            // this guards against. See `relocate.rs`.
+            if sys::is_bundled() && relocate::maybe_relocate_to_applications() {
+                std::process::exit(0);
+            }
+
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             // Dock tooltip, Activity Monitor, and the AX tree all key on the
