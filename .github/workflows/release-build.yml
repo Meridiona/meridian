@@ -15,12 +15,14 @@ name: Release (build & publish)
 #
 #     v1.75.0            -> stable   (browser-downloaded DMG; notarized;
 #                                     served from `releases/latest`)
-#     v1.72.0-staging.6  -> staging  (updater-only; NOT notarized;
-#                                     served from `updater-staging`)
+#     v1.72.0-staging.6  -> staging  (notarized too — a directly-downloaded
+#                                     staging DMG is quarantined exactly like
+#                                     a stable one, so it needs a ticket just
+#                                     the same; served from `updater-staging`)
 #
-# The two differ in exactly three places, all keyed off `prepare`'s `channel`
-# output: the staging tauri config, whether APPLE_API_* is passed (notarization),
-# and the DMG-notarize step. Everything else — compile, signing, packaging,
+# Both channels are now notarized identically — the one remaining difference
+# keyed off `prepare`'s `channel` output is the staging tauri config (updater
+# endpoint etc). Everything else — compile, signing, notarizing, packaging,
 # verification, publishing — is one shared path.
 #
 # ── SHAPE ────────────────────────────────────────────────────────────────────
@@ -167,6 +169,11 @@ env:
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  # sccache — see the "Set up sccache" step comment in each compile job for
+  # why this runs alongside rust-cache rather than replacing it. Harmless on
+  # jobs that never invoke cargo (prepare, publish).
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   # ── Stage 1: cheap validation + a draft release for everyone to upload into ──
@@ -295,6 +302,7 @@ jobs:
     timeout-minutes: 60 # a hung `notarytool --wait` otherwise burns 10x-billed minutes indefinitely
     permissions:
       contents: write # uploads assets into the draft
+      actions: write # sccache's GHA cache backend needs this to SAVE entries, not just read
     strategy:
       # One flaky architecture must not kill the other's artifacts — and we want
       # its timing either way.
@@ -356,6 +364,26 @@ jobs:
         with:
           toolchain: "1.93.1"
           targets: ${{ matrix.target }}
+
+      # Complements rust-cache below, doesn't replace it. rust-cache restores
+      # a whole target/ tarball keyed on Cargo.lock — great when it matches
+      # exactly, but a tag-triggered build can only ever restore from ITS OWN
+      # ref or `main` (GitHub's cache scoping), never from `pre-main` directly.
+      # A staging release cut from a `pre-main` that has drifted from `main`
+      # (routine — pre-main accumulates merges between releases) gets a
+      # partially-stale target/, and rust-cache's fingerprint mismatch forces
+      # full recompilation of anything that LOOKS different, even crates whose
+      # actual compiled output would be identical. sccache intercepts at the
+      # individual rustc-invocation level regardless of why cargo decided to
+      # invoke it, so it can still return a hit there. Free GHA cache backend
+      # (SCCACHE_GHA_ENABLED below) — same underlying service as rust-cache,
+      # so still ref-scoped in principle, but per-object rather than
+      # per-tarball, which degrades far more gracefully on drift. Does NOT
+      # cover the vendored-OpenSSL C compile or the Swift static-lib build
+      # (tauri-plugin-notifications) — that's still rust-cache's job via its
+      # cache-directories entry below.
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -535,50 +563,36 @@ jobs:
         # notarize call at all (tauri-apps/tauri#7533, open since 2023) — hence
         # the separate step below.
         #
-        # ── WHY STAGING UNSETS THE NOTARIZATION CREDENTIALS HERE ──────────────
-        #
-        # Tauri decides to notarize by LOOKING FOR the credentials, and it treats
-        # a defined-but-empty variable as present. So the skip cannot be done by
-        # gating the `env:` block with `cond && secret || ''` — that still defines
-        # the variables, and notarytool then runs with `--issuer ''` and kills the
-        # whole bundle:
-        #
-        #     The value '' is invalid for '--issuer <issuer>': must be a valid UUID
-        #
-        # (v1.72.0-staging.7 died exactly there.) APPLE_API_KEY_PATH makes it
-        # worse: .github/actions/import-apple-cert writes the .p8 and exports the
-        # path UNCONDITIONALLY via GITHUB_ENV, so it is present no matter what the
-        # job env says. `unset` in this shell is therefore the only reliable gate —
-        # it removes them from the environment tauri actually inherits.
-        #
-        # Why skipping is safe on staging and NOT on stable: Gatekeeper enforces
-        # notarization only on a QUARANTINED app, and the quarantine flag is set by
-        # whatever downloaded it — a browser. Staging is delivered exclusively by
-        # tauri-plugin-updater, which unpacks the tarball itself and sets no flag,
-        # so the relaunched app is verified on its Developer ID signature (still
-        # applied below) plus the updater's minisign key, and never consults a
-        # notarization ticket. Stable ships a DMG new users download in a browser —
-        # dropping notarization there would greet every new user with "Apple cannot
-        # check it for malicious software".
-        #
-        # SIGNING is unaffected: APPLE_SIGNING_IDENTITY and the keychain stay in
-        # place, so the .app is still Developer ID signed on every channel.
+        # Notarization now runs on EVERY channel, staging included. It used to be
+        # skipped on staging on the theory that tauri-plugin-updater never sets
+        # the quarantine flag Gatekeeper keys off — true for an in-place update,
+        # but false the moment someone downloads a staging DMG directly (browser,
+        # `gh release download`, Slack link, …), which quarantines it exactly like
+        # a stable DMG and trips "Apple could not verify this app is free of
+        # malware" with no ticket to fall back on. APPLE_API_* are already defined
+        # unconditionally in this job's `env:` (see the note there on why an
+        # Actions `cond && secret || ''` expression is NOT a safe way to gate
+        # them), so nothing needs to change to turn notarization on here — the
+        # credentials were always present, only the staging branch below used to
+        # `unset` them.
         run: |
           set -euo pipefail
-          if [ "${CHANNEL}" != "stable" ]; then
-            unset APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH
-            echo "→ ${CHANNEL}: signing without notarization (updater-only delivery)"
-          else
-            echo "→ stable: signing AND notarizing"
+          echo "→ ${CHANNEL}: signing AND notarizing"
+          # Uses the already-bound $CHANNEL rather than re-interpolating
+          # ${{ }} into this script a second time — the exact
+          # template-injection shape this file's own convention (see the
+          # RAW_TAG/VERSION binding notes elsewhere) says to avoid.
+          config_flag=""
+          if [ "${CHANNEL}" = "staging" ]; then
+            config_flag="--config src-tauri/tauri.staging.conf.json"
           fi
-          npx tauri bundle --target ${{ matrix.target }} --bundles app,dmg \
-            ${{ needs.prepare.outputs.channel == 'staging' && '--config src-tauri/tauri.staging.conf.json' || '' }}
+          npx tauri bundle --target ${{ matrix.target }} --bundles app,dmg ${config_flag}
 
       - name: Notarize and staple the DMG
-        # STABLE ONLY — staging is delivered by the updater, which never sets the
-        # quarantine flag, so no notarization ticket is ever consulted. See the
-        # APPLE_API_* note in this job's `env:` for the full reasoning.
-        if: ${{ !inputs.cache_warm_only && needs.prepare.outputs.channel == 'stable' }}
+        # Runs on every channel now — see the note on the bundle step above for
+        # why staging needs this too (a directly-downloaded staging DMG is
+        # quarantined exactly like a stable one).
+        if: ${{ !inputs.cache_warm_only }}
         # A notarization ticket is keyed to the cdhash of what was submitted, so
         # the stapled .app inside does not cover the container. Without this the
         # DMG a user downloads trips "can't check it for malicious software".
@@ -600,11 +614,9 @@ jobs:
         # presence of the updater artifacts. A non-zero exit aborts while the
         # release is still a draft and nothing is publicly reachable.
         #
-        # MERIDIAN_CHANNEL tells the script which assertions apply: on staging
-        # the notarized/stapled checks are skipped (nothing was notarized, by
-        # design) while every SIGNING check still runs — a staging build with a
-        # broken signature must still fail loudly, because the updater's
-        # relaunch depends on it.
+        # Notarized/stapled checks now run on every channel — see
+        # verify-release-bundle.sh's note on why staging needs the same
+        # Gatekeeper guarantees a directly-downloaded DMG would otherwise miss.
         if: ${{ !inputs.cache_warm_only }}
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -673,6 +685,7 @@ jobs:
     timeout-minutes: 60 # same cap as macos — bound a hung build instead of falling back to GitHub's 360-minute default
     permissions:
       contents: write # uploads assets into the draft
+      actions: write # sccache's GHA cache backend needs this to SAVE entries, not just read
     env:
       # Same compile-time constants the macOS job bakes in (see its `env:`
       # comment) — these are cross-platform values (OAuth client ids, public
@@ -753,6 +766,11 @@ jobs:
           # is exactly what we ship, so plain `cargo build --release` already
           # produces it — unlike the macOS job, which cross-arch-targets a
           # single shared runner.
+
+      # See the macOS job's "Set up sccache" step for the full reasoning —
+      # identical here, complements rust-cache rather than replacing it.
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
 
       - uses: Swatinem/rust-cache@v2
         with:

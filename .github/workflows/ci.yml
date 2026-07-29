@@ -81,6 +81,7 @@ jobs:
               - '**/Cargo.toml'
               - '**/Cargo.lock'
               - 'rust-toolchain.toml'
+              - '.cargo/**'
               - 'src/migrations/**'
               - '.github/workflows/ci.yml'
             ui:

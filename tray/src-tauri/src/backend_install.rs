@@ -108,7 +108,12 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
     };
     let marker = home.join(".meridian/backend-version");
     if tokio::fs::read_to_string(&marker).await.ok().as_deref() == Some(bundled_hash.as_str()) {
-        tracing::debug!(hash = %bundled_hash, "backend_install: backend up to date — skipping");
+        tracing::debug!(hash = %bundled_hash, "backend_install: backend up to date — skipping staging");
+        // Staging is current, but the daemon may not be running: the
+        // encrypt-in-place migration stops it earlier this launch (see lib.rs's
+        // setup hook) to unlock meridian.db, and it can also simply crash. Bring
+        // it back so a skipped *staging* never leaves a stopped *daemon*.
+        ensure_daemon_running(&home).await;
         return;
     }
 
@@ -163,6 +168,94 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
         tracing::error!(error = %e, "backend_install: could not write version marker");
     }
     tracing::info!("backend_install: backend installed");
+}
+
+/// Stop the running daemon so the tray's in-place `meridian.db` encryption
+/// migration can rename the file. **Windows-only concern**: a rename of a file
+/// another process holds open fails there with os error 32, which is why
+/// `encrypt_in_place` rolled back every launch while the daemon (autostarted at
+/// login) held the DB open. A no-op on other platforms, where the migration
+/// tolerates the open handle.
+///
+/// Called from the tray's setup hook BEFORE `encrypt_in_place`, and only when a
+/// migration will actually attempt (a key is set and the DB is still plaintext).
+/// The daemon is brought back up afterward by [`ensure_backend_installed`] —
+/// either its normal staging path (on an update) or [`ensure_daemon_running`]
+/// (on the up-to-date path).
+pub(crate) async fn stop_daemon_for_migration() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let home = meridian_core::paths::home_dir()
+            .ok_or_else(|| "home directory could not be resolved".to_string())?;
+        let daemon_bin = home.join(".meridian").join("bin").join(DAEMON_FILE);
+        stop_running_daemon_before_stage(&daemon_bin).await
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(())
+    }
+}
+
+/// Ensure the daemon is running, starting it if it isn't. Called on the
+/// backend-up-to-date path of [`ensure_backend_installed`] (where staging and
+/// [`register_service`] are skipped) so a skipped *staging* never leaves a
+/// *stopped* daemon — in particular after [`stop_daemon_for_migration`] stops it
+/// for the encryption migration, but also if it simply crashed.
+///
+/// **Windows-only work**: prefer the scheduled task, else spawn the binary
+/// directly (the same fallback [`register_service`] uses on policy-locked
+/// machines). On macOS launchd's `KeepAlive` restarts the daemon itself, so this
+/// is a no-op there.
+async fn ensure_daemon_running(home: &Path) {
+    #[cfg(target_os = "windows")]
+    {
+        let daemon_bin = home.join(".meridian").join("bin").join(DAEMON_FILE);
+        if !matching_daemon_pids(&daemon_bin).await.is_empty() {
+            return; // already up — nothing to do
+        }
+        let queued_via_task = tokio::process::Command::new("schtasks")
+            .args(["/Run", "/TN", WINDOWS_TASK_NAME])
+            .no_window()
+            .output()
+            .await
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if queued_via_task {
+            // `/Run` success only confirms the task was QUEUED — it's
+            // registered `/SC ONLOGON`, so a successful exit here doesn't
+            // mean the daemon actually launched. Give it a moment, then
+            // verify before trusting it; otherwise fall through to the
+            // direct spawn below rather than leaving the daemon down.
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if !matching_daemon_pids(&daemon_bin).await.is_empty() {
+                tracing::info!(
+                    task = WINDOWS_TASK_NAME,
+                    "backend_install: restarted daemon via scheduled task"
+                );
+                return;
+            }
+            tracing::warn!(
+                task = WINDOWS_TASK_NAME,
+                "backend_install: scheduled task ran but the daemon isn't up yet, falling back to a direct spawn"
+            );
+        }
+        match tokio::process::Command::new(&daemon_bin)
+            .no_window()
+            .spawn()
+        {
+            Ok(_) => {
+                tracing::info!(bin = %daemon_bin.display(), "backend_install: restarted daemon directly")
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, bin = %daemon_bin.display(), "backend_install: could not restart the daemon")
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // launchd `KeepAlive` restarts the daemon on its own — nothing to do.
+        let _ = home;
+    }
 }
 
 /// `Meridian.app/Contents/Resources/backend/` when it exists, else `None`.
@@ -953,6 +1046,20 @@ async fn launchctl(args: &[&str]) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// On non-Windows, `stop_daemon_for_migration` is an inert no-op that returns
+    /// `Ok` — the encryption migration tolerates an open handle there, so there
+    /// is nothing to stop and the tray's setup hook proceeds straight to
+    /// `encrypt_in_place`. Gated off Windows so the test never kills a real
+    /// daemon; CI runs on macOS, so it executes there.
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn stop_daemon_for_migration_is_a_noop_off_windows() {
+        assert!(
+            stop_daemon_for_migration().await.is_ok(),
+            "off Windows this must be an inert Ok, not attempt to stop anything"
+        );
+    }
 
     /// `migrate_legacy_bundle_env` must: copy the bundle `.env` to the canonical
     /// path when only the bundle exists; **never clobber** an existing canonical

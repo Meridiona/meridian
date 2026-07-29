@@ -992,7 +992,28 @@ async fn main() -> Result<()> {
     //     an agent CLI) is degraded; ordering it after a preflight that could
     //     block once left machines running a daemon that never created its own
     //     database.
-    let meridian = setup_db(&initial_cfg.meridian_db_uri()).await?;
+    let meridian = match setup_db(&initial_cfg.meridian_db_uri()).await {
+        Ok(pool) => pool,
+        Err(e) => {
+            // The daemon cannot run without its database, and a bare `?` here
+            // would unwind to `main`'s stderr Debug print — invisible to central
+            // OO, because this path dies *before* the telemetry shipper (7f
+            // below) ever starts, so nothing ever drains the spool. Report it
+            // through `tracing` and then flush + one-shot ship (mirroring the
+            // shutdown path at the end of `main`) so a daemon that can't open its
+            // DB — a wrong/absent encryption key, a file another process holds
+            // locked, corruption — is finally diagnosable in central telemetry
+            // instead of crash-looping silently. `shutdown` consumes the guard,
+            // but we exit immediately after, so the success path still owns it.
+            tracing::error!(
+                error = %e,
+                "daemon startup: failed to open the database — the daemon cannot start (wrong/absent encryption key, a locked file, or corruption)"
+            );
+            obs_guard.shutdown().await;
+            meridian::telemetry_spool::shipper::drain_once().await;
+            std::process::exit(1);
+        }
+    };
 
     // 4c. Capture-layer (L1) preflight: surface degraded in-process capture
     //     (revoked Screen Recording / Accessibility permission, the tray not

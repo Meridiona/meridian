@@ -42,6 +42,7 @@ pub(crate) const SELF_BINARY_NAME: &str = "meridian-tray";
 pub(crate) mod format;
 mod install;
 mod poll;
+mod relocate;
 mod state;
 mod sys;
 mod tray;
@@ -165,6 +166,18 @@ pub fn run() {
         // openers, pulled by the dashboard shell on mount. See `deep_link`.
         .manage(deep_link::PendingDeepLink(std::sync::Mutex::new(None)))
         .setup(move |app| {
+            // Move-to-Applications self-relocation. Must run before anything
+            // else touches the DB pool or spawns the poll loop: a `true`
+            // return means a replacement process now exists at
+            // `/Applications` and this (transient DMG/translocation)
+            // instance must exit immediately, not continue starting up
+            // alongside it. Bundled only — an unbundled `cargo run`/`tauri
+            // dev` binary under `target/` is never "transient" in the sense
+            // this guards against. See `relocate.rs`.
+            if sys::is_bundled() && relocate::maybe_relocate_to_applications() {
+                std::process::exit(0);
+            }
+
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             // Dock tooltip, Activity Monitor, and the AX tree all key on the
@@ -274,6 +287,29 @@ pub fn run() {
             // `!cfg!(debug_assertions)` style.
             let db_encryption_intended = db_key_hex.is_some();
 
+            // On Windows the daemon (autostarted at login) holds meridian.db
+            // open, so `encrypt_in_place`'s rename fails with os error 32 and
+            // rolls back every launch — the migration can never complete while
+            // the daemon is up. Stop it first, but ONLY when a migration will
+            // actually attempt (a key was resolved AND the DB is still
+            // plaintext); once encrypted this never runs again, so the stop is a
+            // one-time cost on the migration launch. A no-op on non-Windows,
+            // where rename tolerates an open handle. The daemon is brought back
+            // up by `ensure_backend_installed` later in this same setup hook.
+            if !cfg!(debug_assertions)
+                && db_encryption_intended
+                && meridian_core::db_crypto::is_plaintext_sqlite(std::path::Path::new(&db_path))
+            {
+                if let Err(e) =
+                    tauri::async_runtime::block_on(backend_install::stop_daemon_for_migration())
+                {
+                    tracing::warn!(
+                        error = %e,
+                        "could not stop the daemon before encrypting the database; encryption may not complete this launch"
+                    );
+                }
+            }
+
             let db_key_hex = if !cfg!(debug_assertions) {
                 match &db_key_hex {
                     Some(key) => {
@@ -351,7 +387,7 @@ pub fn run() {
                                     id: "tray.db_encryption_incomplete",
                                     severity: "warning",
                                     title: "Your data isn't encrypted at rest yet.",
-                                    detail: "Meridian couldn't finish encrypting its local database because another Meridian process was holding it open. Your data is safe but stored unencrypted for now - fully quit Meridian and reopen it to let encryption finish.",
+                                    detail: "Meridian couldn't finish encrypting its local database this time. Your data is safe but stored unencrypted for now - Meridian will retry automatically the next time it restarts.",
                                     remedy: None,
                                     event_key: "system.health",
                                     deep_link: Some("/logs"),
