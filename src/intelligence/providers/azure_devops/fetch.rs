@@ -88,12 +88,22 @@ pub(super) async fn run_wiql(
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
+        // The 401/403 guidance is kept verbatim as the error body, so a dead or
+        // under-scoped PAT still tells the user exactly what to do. Carrying the
+        // status in a typed error (rather than only in prose) is what lets
+        // `http::classify` retry a 429/5xx quietly while these two still raise a
+        // banner - they are the cases nothing self-heals.
         let msg = match status.as_u16() {
-            401 => "permission_error: PAT is invalid or expired — regenerate it in Azure DevOps User settings → Personal access tokens".to_string(),
-            403 => "permission_error: PAT lacks required scope — create a token with Work Items → Read & write scope".to_string(),
-            _ => format!("sync_error: HTTP {status}: {text}"),
+            401 => "permission_error: PAT is invalid or expired - regenerate it in Azure DevOps User settings, Personal access tokens".to_string(),
+            403 => "permission_error: PAT lacks required scope - create a token with Work Items Read & write scope".to_string(),
+            _ => text,
         };
-        anyhow::bail!("{msg}");
+        return Err(crate::intelligence::providers::http::HttpStatusError::new(
+            status.as_u16(),
+            "Azure DevOps WIQL",
+            &msg,
+        )
+        .into());
     }
     let wiql: WiqlResponse = resp.json().await.context("parsing WIQL response")?;
     Ok(wiql.work_items.iter().map(|w| w.id).collect())
@@ -139,7 +149,12 @@ pub(super) async fn fetch_batch(
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Azure DevOps work items batch returned {status}: {text}");
+        return Err(crate::intelligence::providers::http::HttpStatusError::new(
+            status.as_u16(),
+            "Azure DevOps work items batch",
+            &text,
+        )
+        .into());
     }
     let text = resp.text().await.context("reading batch response body")?;
     // Parse once as a Value so each raw work item survives verbatim for the

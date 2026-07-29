@@ -250,24 +250,81 @@ pub async fn test_llm_provider(
     Ok(result)
 }
 
+/// Log a sign-in [`InstallOutcome`](meridian::llm::detect::InstallOutcome) at the right level
+/// and field name for OpenObserve to actually see a failure — shared by [`cursor_sign_in`],
+/// [`codex_sign_in`], and [`claude_sign_in`], whose bodies are otherwise identical modulo which
+/// vendor CLI they call.
+///
+/// Two easy-to-miss couplings this exists to satisfy (see `CLAUDE.md`'s Observability
+/// section): a packaged install's ship leg only egresses WARN+ severity, so logging a failure
+/// at INFO makes it invisible in OpenObserve even though it was captured locally; and the
+/// redaction allowlist (`telemetry_spool::redact::SAFE_STRING_KEYS`) is keyed on exact field
+/// names, so a failure message attached under a non-allowlisted key (`detail`, which these
+/// three call sites used before this fix) is stripped before shipping even at WARN. `error` is
+/// on that allowlist and gets the full free-text scrub, so it is the one to use.
+/// `vendor` is a structured `provider` field rather than message interpolation, matching
+/// [`log_install_outcome`]. Two reasons beyond the house style: a backend can only group or
+/// filter "which CLI is failing sign-in" if the value is a field, and the redaction allowlist is
+/// keyed on field NAMES — a vendor baked into the message string reaches the free-text scrubber
+/// instead, which is not where it belongs. `provider` is on `SAFE_STRING_KEYS`, so it egresses
+/// intact.
+///
+/// Also marks the enclosing command span ERROR on failure. These commands return
+/// `Ok(outcome)` even when the CLI failed — the failure is data, not a transport error — so
+/// without this the span of a failed sign-in is indistinguishable from a successful one, and
+/// only the WARN log gives it away.
+fn log_signin_outcome(vendor: &str, outcome: &meridian::llm::detect::InstallOutcome) {
+    if outcome.ok {
+        tracing::info!(provider = %vendor, "llm: sign-in complete");
+    } else {
+        tracing::warn!(provider = %vendor, error = %outcome.message, "llm: sign-in failed");
+        mark_span_failed();
+    }
+}
+
+/// Set the current span's status to ERROR.
+///
+/// The four commands below hand back `Ok(InstallOutcome { ok: false, .. })` when the vendor CLI
+/// fails, because a failed install or sign-in is a result the UI renders, not an error to
+/// propagate. Correct for the frontend, invisible in traces: `#[tracing::instrument]` marks a
+/// span errored from the RETURN value, so every one of these looks successful.
+///
+/// `otel.status_code` is the field `tracing-opentelemetry` reads to set span status, and it is
+/// on `SAFE_STRING_KEYS`, so it survives the ship leg. Each caller declares it via
+/// `fields(otel.status_code = tracing::field::Empty)` — `record` on a field the span never
+/// declared is silently a no-op, which is exactly the kind of quiet nothing this fix exists to
+/// remove, so the declaration is not optional.
+fn mark_span_failed() {
+    tracing::Span::current().record("otel.status_code", "ERROR");
+}
+
 /// Install one provider's CLI by running its official installer on the user's behalf - the
 /// provider detail view's "Install" button. Runs through the user's login shell so `npm`/PATH
 /// resolve (see [`meridian::llm::detect::install_provider`]), then confirms the binary is now
 /// present. Only ever on an explicit click - the daemon never installs anything automatically.
 #[tauri::command]
-#[tracing::instrument]
+#[tracing::instrument(fields(otel.status_code = tracing::field::Empty))]
 pub async fn install_llm_provider(
     id: String,
 ) -> Result<meridian::llm::detect::InstallOutcome, String> {
     let provider = meridian_core::LlmProvider::from_wire(&id)
         .ok_or_else(|| format!("unknown provider {id:?}"))?;
     let outcome = meridian::llm::detect::install_provider(provider).await;
-    tracing::info!(
-        provider = %id,
-        ok = outcome.ok,
-        "llm: provider install complete"
-    );
+    log_install_outcome(&id, &outcome);
     Ok(outcome)
+}
+
+/// Log an install [`InstallOutcome`](meridian::llm::detect::InstallOutcome) at the right level
+/// for OpenObserve to actually see a failure — see [`log_signin_outcome`]'s doc for why WARN +
+/// the `error` key specifically. Split from that function only because this call site also
+/// carries a `provider` field the sign-in commands don't have.
+fn log_install_outcome(id: &str, outcome: &meridian::llm::detect::InstallOutcome) {
+    if outcome.ok {
+        tracing::info!(provider = %id, "llm: provider install complete");
+    } else {
+        tracing::warn!(provider = %id, error = %outcome.message, "llm: provider install failed");
+        mark_span_failed();
+    }
 }
 
 /// Run the interactive `cursor-agent login` - the Cursor detail view's "Sign in to Cursor"
@@ -275,16 +332,10 @@ pub async fn install_llm_provider(
 /// runs on their Cursor SUBSCRIPTION (no API key, nothing metered). Only ever on an explicit
 /// click; the daemon's own unattended path never opens a browser.
 #[tauri::command]
-#[tracing::instrument]
+#[tracing::instrument(fields(otel.status_code = tracing::field::Empty))]
 pub async fn cursor_sign_in() -> Result<meridian::llm::detect::InstallOutcome, String> {
     let outcome = meridian::llm::detect::cursor_sign_in().await;
-    // WARN on failure so a "sign-in doesn't work" report is greppable by
-    // level, without having to know to filter on the `ok` field.
-    if outcome.ok {
-        tracing::info!("llm: cursor sign-in complete");
-    } else {
-        tracing::warn!(detail = %outcome.message, "llm: cursor sign-in failed");
-    }
+    log_signin_outcome("cursor", &outcome);
     Ok(outcome)
 }
 
@@ -293,16 +344,10 @@ pub async fn cursor_sign_in() -> Result<meridian::llm::detect::InstallOutcome, S
 /// ChatGPT SUBSCRIPTION (no API key, nothing metered). Only ever on an explicit click; the
 /// daemon's own unattended path never opens a browser. Mirrors [`cursor_sign_in`].
 #[tauri::command]
-#[tracing::instrument]
+#[tracing::instrument(fields(otel.status_code = tracing::field::Empty))]
 pub async fn codex_sign_in() -> Result<meridian::llm::detect::InstallOutcome, String> {
     let outcome = meridian::llm::detect::codex_sign_in().await;
-    // WARN on failure so a "sign-in doesn't work" report is greppable by
-    // level, without having to know to filter on the `ok` field.
-    if outcome.ok {
-        tracing::info!("llm: codex sign-in complete");
-    } else {
-        tracing::warn!(detail = %outcome.message, "llm: codex sign-in failed");
-    }
+    log_signin_outcome("codex", &outcome);
     Ok(outcome)
 }
 
@@ -311,16 +356,10 @@ pub async fn codex_sign_in() -> Result<meridian::llm::detect::InstallOutcome, St
 /// on their Claude SUBSCRIPTION (no API key, nothing metered). Only ever on an explicit click;
 /// the daemon's own unattended path never opens a browser. Mirrors [`cursor_sign_in`].
 #[tauri::command]
-#[tracing::instrument]
+#[tracing::instrument(fields(otel.status_code = tracing::field::Empty))]
 pub async fn claude_sign_in() -> Result<meridian::llm::detect::InstallOutcome, String> {
     let outcome = meridian::llm::detect::claude_sign_in().await;
-    // WARN on failure so a "sign-in doesn't work" report is greppable by
-    // level, without having to know to filter on the `ok` field.
-    if outcome.ok {
-        tracing::info!("llm: claude sign-in complete");
-    } else {
-        tracing::warn!(detail = %outcome.message, "llm: claude sign-in failed");
-    }
+    log_signin_outcome("claude", &outcome);
     Ok(outcome)
 }
 
@@ -347,8 +386,11 @@ pub async fn test_all_llm_providers(
 
 #[cfg(test)]
 mod tests {
-    use super::notification_state_label;
+    use super::{log_install_outcome, log_signin_outcome, notification_state_label};
+    use meridian::llm::detect::InstallOutcome;
+    use std::sync::{Arc, Mutex};
     use tauri_plugin_notifications::PermissionState;
+    use tracing_subscriber::{layer::SubscriberExt, registry, Layer};
 
     // The wizard's card branches on these exact strings (grant button action:
     // prompt → request dialog, denied → System Settings pane), so the mapping
@@ -365,5 +407,236 @@ mod tests {
             notification_state_label(PermissionState::PromptWithRationale),
             "prompt"
         );
+    }
+
+    /// One captured tracing event: level + `(field name, debug-formatted value)` pairs, so
+    /// tests below can assert both the severity (does it clear the packaged-install WARN+
+    /// ship threshold) and the exact field name a value landed under (does it clear the
+    /// redaction allowlist, which is keyed on exact names — see `log_signin_outcome`'s doc).
+    #[derive(Debug)]
+    struct CapturedEvent {
+        level: tracing::Level,
+        fields: Vec<(String, String)>,
+    }
+
+    struct Recorder(Arc<Mutex<Vec<CapturedEvent>>>);
+
+    impl<S: tracing::Subscriber> Layer<S> for Recorder {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct FieldVisitor(Vec<(String, String)>);
+            impl tracing::field::Visit for FieldVisitor {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0
+                        .push((field.name().to_string(), format!("{value:?}")));
+                }
+            }
+            let mut visitor = FieldVisitor(Vec::new());
+            event.record(&mut visitor);
+            self.0.lock().unwrap().push(CapturedEvent {
+                level: *event.metadata().level(),
+                fields: visitor.0,
+            });
+        }
+    }
+
+    /// Run `f` under a bare recording subscriber (no `EnvFilter` — every event is captured
+    /// regardless of level) and return what it emitted.
+    fn capture(f: impl FnOnce()) -> Vec<CapturedEvent> {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = registry().with(Recorder(Arc::clone(&seen)));
+        tracing::subscriber::with_default(subscriber, f);
+        Arc::try_unwrap(seen).unwrap().into_inner().unwrap()
+    }
+
+    fn field<'a>(event: &'a CapturedEvent, name: &str) -> Option<&'a str> {
+        event
+            .fields
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    fn ok_outcome() -> InstallOutcome {
+        InstallOutcome {
+            ok: true,
+            message: "codex 0.1.0".to_string(),
+            path: Some("/usr/local/bin/codex".to_string()),
+            command: "npm i -g @openai/codex".to_string(),
+        }
+    }
+
+    fn failed_outcome() -> InstallOutcome {
+        InstallOutcome {
+            ok: false,
+            message: "zsh:1: command not found: npm".to_string(),
+            path: None,
+            command: "npm i -g @openai/codex".to_string(),
+        }
+    }
+
+    // Regression: this used to log at INFO even on failure, which never egresses on a
+    // packaged install (only WARN+ ships to OpenObserve) — see the `npm: command not found`
+    // report this fixes.
+    #[test]
+    fn install_outcome_failure_logs_at_warn() {
+        let events = capture(|| log_install_outcome("codex", &failed_outcome()));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, tracing::Level::WARN);
+    }
+
+    #[test]
+    fn install_outcome_success_logs_at_info() {
+        let events = capture(|| log_install_outcome("codex", &ok_outcome()));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, tracing::Level::INFO);
+    }
+
+    // Regression: the failure message must land under `error` — the key
+    // `telemetry_spool::redact::SAFE_STRING_KEYS` allowlists — not `detail`, which is
+    // silently stripped before shipping even though the event clears the WARN severity gate.
+    #[test]
+    fn install_outcome_failure_uses_allowlisted_error_field() {
+        let events = capture(|| log_install_outcome("codex", &failed_outcome()));
+        let msg = field(&events[0], "error").expect("expected an `error` field");
+        assert!(msg.contains("command not found"));
+        assert!(
+            field(&events[0], "detail").is_none(),
+            "must not use the non-allowlisted `detail` key"
+        );
+        assert_eq!(field(&events[0], "provider"), Some("codex"));
+    }
+
+    #[test]
+    fn signin_outcome_failure_logs_at_warn_with_error_field() {
+        let events = capture(|| log_signin_outcome("cursor", &failed_outcome()));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, tracing::Level::WARN);
+        let msg = field(&events[0], "error").expect("expected an `error` field");
+        assert!(msg.contains("command not found"));
+        assert!(
+            field(&events[0], "detail").is_none(),
+            "must not use the non-allowlisted `detail` key"
+        );
+    }
+
+    #[test]
+    fn signin_outcome_success_logs_at_info() {
+        let events = capture(|| log_signin_outcome("cursor", &ok_outcome()));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].level, tracing::Level::INFO);
+    }
+
+    /// The vendor has to be a FIELD, not interpolated into the message, for the same
+    /// allowlist reason the `error` key exists: redaction is keyed on field names, and a
+    /// backend can only group "which CLI is failing sign-in" over a field. `provider` is
+    /// the name `log_install_outcome` already uses and is on `SAFE_STRING_KEYS` — a
+    /// different spelling here would ship as nothing.
+    #[test]
+    fn signin_outcome_records_the_vendor_as_a_provider_field() {
+        for (outcome, label) in [(failed_outcome(), "failure"), (ok_outcome(), "success")] {
+            let events = capture(|| log_signin_outcome("cursor", &outcome));
+            assert_eq!(
+                field(&events[0], "provider"),
+                Some("cursor"),
+                "the {label} branch must carry the vendor as a `provider` field"
+            );
+        }
+    }
+
+    /// Sign-in and install commands return `Ok(InstallOutcome { ok: false, .. })` when the
+    /// vendor CLI fails — right for the UI, but it means `#[tracing::instrument]` (which
+    /// derives span status from the return value) marks a FAILED sign-in as a successful
+    /// span. `mark_span_failed` is what corrects that.
+    ///
+    /// Asserted through a real span rather than by inspecting the helper, because the part
+    /// that silently breaks is the coupling: `record` on a field the span never declared in
+    /// `fields(...)` is a no-op, so dropping the declaration from a command's
+    /// `#[tracing::instrument]` would lose the status with nothing failing.
+    #[test]
+    fn a_failed_outcome_marks_the_enclosing_span_errored() {
+        let recorded: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+
+        struct SpanRecorder(Arc<Mutex<Vec<(String, String)>>>);
+        impl<S> Layer<S> for SpanRecorder
+        where
+            S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+        {
+            fn on_record(
+                &self,
+                _id: &tracing::span::Id,
+                values: &tracing::span::Record<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                struct V(Arc<Mutex<Vec<(String, String)>>>);
+                impl tracing::field::Visit for V {
+                    fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+                        self.0
+                            .lock()
+                            .unwrap()
+                            .push((f.name().to_string(), format!("{v:?}")));
+                    }
+                }
+                values.record(&mut V(Arc::clone(&self.0)));
+            }
+        }
+
+        let subscriber = registry().with(SpanRecorder(Arc::clone(&recorded)));
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("llm_sign_in", otel.status_code = tracing::field::Empty);
+            span.in_scope(|| log_signin_outcome("cursor", &failed_outcome()));
+        });
+
+        let got = recorded.lock().unwrap().clone();
+        assert!(
+            got.iter()
+                .any(|(k, v)| k == "otel.status_code" && v.contains("ERROR")),
+            "a failed sign-in must mark its span ERROR, got {got:?}"
+        );
+
+        // And the success path must NOT, or every trace would look broken.
+        let clean: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = registry().with(SpanRecorder(Arc::clone(&clean)));
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("llm_sign_in", otel.status_code = tracing::field::Empty);
+            span.in_scope(|| log_signin_outcome("cursor", &ok_outcome()));
+        });
+        assert!(
+            !clean
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(k, _)| k == "otel.status_code"),
+            "a successful sign-in must leave span status unset"
+        );
+    }
+
+    /// Every command that can hand back `ok: false` must DECLARE `otel.status_code` in its
+    /// `#[tracing::instrument]`, or `mark_span_failed`'s `record` is a silent no-op. Source
+    /// text is the only place this is checkable — the attribute leaves nothing to inspect at
+    /// runtime from here.
+    #[test]
+    fn the_failable_commands_declare_the_span_status_field() {
+        let src = include_str!("setup.rs");
+        for func in [
+            "pub async fn install_llm_provider(",
+            "pub async fn cursor_sign_in()",
+            "pub async fn codex_sign_in()",
+            "pub async fn claude_sign_in()",
+        ] {
+            let at = src.find(func).unwrap_or_else(|| panic!("{func} not found"));
+            let preceding = &src[at.saturating_sub(200)..at];
+            assert!(
+                preceding.contains("otel.status_code = tracing::field::Empty"),
+                "{func} must declare otel.status_code, or mark_span_failed silently does nothing"
+            );
+        }
     }
 }

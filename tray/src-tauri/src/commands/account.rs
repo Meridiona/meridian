@@ -28,11 +28,26 @@
 //!   PostHog event is sent at all until this returns `Some` (the email
 //!   becomes the event's `distinct_id` directly, never an anonymous id).
 //!
+//! # ALPHA TESTING ONLY — per-user Support ID (expires 2026-08-28)
+//! [`save_account_email`] also derives a domain-separated, one-way hash of the email
+//! (`meridian::telemetry_spool::redact::pseudonymize_account`) and mirrors
+//! ONLY that hash into `settings.json`'s `account_pseudonym` — never the raw
+//! email, which stays confined to this module's own `account.json`. The
+//! daemon has no other way to see who's signed in (`settings.json` is the one
+//! file both processes read), and it's what
+//! `telemetry_spool::redact::local_host_pseudonym` reads to seed the Support
+//! ID/shipped `host.name` per account instead of per machine, until that
+//! function's hardcoded expiry passes. [`clear_account_email`] clears it back
+//! out on sign-out. See that function's doc for the full rationale — this is
+//! gated on the wall clock, NOT the release channel, because the hand-picked
+//! alpha testers install the same `stable` build as everyone else.
+//!
 //! # Related
 //! - `crate::analytics` — the PostHog capture this feeds (email = `distinct_id`).
 //! - `commands::setup` — `mark_setup_complete`/`is_first_run`, the same
 //!   `~/.meridian/*` marker-file pattern this module follows.
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -122,7 +137,58 @@ pub async fn save_account_email(email: String) -> Result<(), String> {
         .map_err(|e| format!("join account write task: {e}"))?
         .map_err(|e| format!("persist account file: {e:#}"))?;
     tracing::info!("account: email captured");
+
+    // ALPHA TESTING ONLY — see the module doc. Mirrors ONLY the hash, never
+    // the email, into settings.json for the daemon to seed the per-user
+    // Support ID from.
+    write_account_pseudonym(Some(&email))
+        .await
+        .map_err(|e| format!("persist account pseudonym: {e:#}"))?;
+
     Ok(())
+}
+
+/// ALPHA TESTING ONLY (revert target: ~1 month from 2026-07-28) — mirror the
+/// signed-in account's hashed pseudonym into `settings.json`'s
+/// `account_pseudonym`, or clear it (`email = None`) on sign-out. Never
+/// writes the raw email — only
+/// [`meridian::telemetry_spool::redact::pseudonymize_account`]'s one-way
+/// hash, which is all `telemetry_spool::redact::local_host_pseudonym` needs.
+/// Clearing promptly on sign-out matters: a lingering hash would keep
+/// grouping error reports under someone no longer signed in on this machine.
+/// Mirror the account pseudonym (a one-way hash, never the raw email) into
+/// `settings.json`, or clear it on sign-out.
+///
+/// Instrumented because it does real I/O whose failure is otherwise invisible:
+/// the mapped `String` error stops at the Tauri command boundary and never
+/// reaches `meridian logs` or the telemetry backend, so a persistently failing
+/// settings write would silently leave the Support ID stale - the one value
+/// support uses to find this user's error rows.
+#[tracing::instrument(skip(email), fields(signed_in = email.is_some()))]
+async fn write_account_pseudonym(email: Option<&str>) -> anyhow::Result<()> {
+    let hash = email.map(meridian::telemetry_spool::redact::pseudonymize_account);
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let mut v = meridian_core::settings::read_settings_value();
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert(
+                "account_pseudonym".to_string(),
+                match &hash {
+                    Some(h) => serde_json::Value::String(h.clone()),
+                    None => serde_json::Value::Null,
+                },
+            );
+        }
+        meridian_core::settings::write_settings_value(&v)
+    })
+    .await
+    .context("join settings write task")
+    .and_then(|inner| inner);
+    if let Err(e) = &result {
+        // The failure boundary. No email and no hash in the field set - the
+        // hash IS the pseudonymous identifier, so it stays out of logs.
+        tracing::error!(error = %format!("{e:#}"), "writing the account pseudonym failed");
+    }
+    result
 }
 
 /// Read the persisted account email, if any. `None` before the sign-in step
@@ -154,6 +220,14 @@ pub async fn get_account_email() -> Option<String> {
 #[tauri::command]
 #[tracing::instrument]
 pub async fn clear_account_email() -> Result<(), String> {
+    // ALPHA TESTING ONLY (see module doc) — clear the mirrored pseudonym
+    // FIRST, so a crash between the two writes fails toward "back to the
+    // per-machine Support ID", never toward "still grouped under the old
+    // account" with no email left to explain why.
+    write_account_pseudonym(None)
+        .await
+        .map_err(|e| format!("clear account pseudonym: {e:#}"))?;
+
     let Some(path) = account_path() else {
         return Ok(());
     };

@@ -92,7 +92,7 @@ async fn fetch(trello: &TrelloConfig) -> Result<Vec<(TrelloCard, serde_json::Val
         trello.app_key, token,
     );
 
-    let client = reqwest::Client::new();
+    let client = super::http::client();
     let resp = client
         .get(&url)
         .header("Accept", "application/json")
@@ -104,7 +104,9 @@ async fn fetch(trello: &TrelloConfig) -> Result<Vec<(TrelloCard, serde_json::Val
     tracing::Span::current().record("status_code", status.as_u16() as i64);
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        anyhow::bail!("Trello API → {}: {}", status, text);
+        // Typed rather than formatted: the STATUS is what decides whether the
+        // caller raises a banner (401/403) or stays quiet and retries (429/5xx).
+        return Err(super::http::HttpStatusError::new(status.as_u16(), "Trello API", &text).into());
     }
 
     // Parse once as a Value so each raw card survives verbatim for the
@@ -323,9 +325,7 @@ pub async fn refresh_if_stale(
             Ok(Some(kept))
         }
         Err(e) => {
-            tracing::warn!(error = %e, "trello fetch failed — keeping stale cache");
-            let _ =
-                super::stamp_sync_error(pool, "trello", &format!("Trello sync failed — {e}")).await;
+            super::record_sync_failure(pool, "trello", "fetch", &e).await;
             Ok(None)
         }
     }

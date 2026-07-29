@@ -117,7 +117,11 @@ fn read_platform_id() -> Option<String> {
     None
 }
 
-#[cfg(test)]
+// Every test below is macOS-only (they exercise parse_ioreg_uuid/stable_machine_id,
+// which only exist on macOS - see read_platform_id's non-macOS stub above). Gating
+// the whole module, not just each test, keeps `use super::*` from being flagged as
+// unused on other platforms, where nothing in this module would otherwise compile.
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 

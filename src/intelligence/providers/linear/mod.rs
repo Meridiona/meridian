@@ -174,7 +174,7 @@ async fn fetch(linear: &LinearConfig) -> Result<Vec<(LinearIssue, serde_json::Va
     );
     let body = serde_json::json!({ "query": query });
 
-    let client = reqwest::Client::new();
+    let client = super::http::client();
     let resp = client
         .post(LINEAR_GRAPHQL_URL)
         .header("Authorization", &linear.api_key)
@@ -188,7 +188,11 @@ async fn fetch(linear: &LinearConfig) -> Result<Vec<(LinearIssue, serde_json::Va
     tracing::Span::current().record("status_code", status.as_u16() as i64);
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        anyhow::bail!("Linear GraphQL → {}: {}", status, text);
+        // Typed rather than formatted: the STATUS is what decides whether the
+        // caller raises a banner (401/403) or stays quiet and retries (429/5xx).
+        return Err(
+            super::http::HttpStatusError::new(status.as_u16(), "Linear GraphQL", &text).into(),
+        );
     }
 
     // Parse once as a Value so the raw issue nodes survive verbatim for the
@@ -472,9 +476,7 @@ pub async fn refresh_if_stale(
             Ok(Some(kept))
         }
         Err(e) => {
-            tracing::warn!(error = %e, "linear fetch failed — keeping stale cache");
-            let _ =
-                super::stamp_sync_error(pool, "linear", &format!("Linear sync failed — {e}")).await;
+            super::record_sync_failure(pool, "linear", "fetch", &e).await;
             Ok(None)
         }
     }

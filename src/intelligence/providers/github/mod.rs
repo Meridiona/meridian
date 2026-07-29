@@ -8,6 +8,7 @@ use meridian_core::adapters::github::GithubAdapter;
 use sqlx::SqlitePool;
 
 use crate::config::GitHubConfig;
+use crate::intelligence::providers::http::SyncFault;
 
 mod fetch;
 #[cfg(test)]
@@ -183,14 +184,15 @@ pub async fn refresh_if_stale(
     let viewer_login = match fetch_viewer_login(github).await {
         Ok(l) => l,
         Err(e) => {
-            tracing::warn!(error = %e, "github viewer fetch failed — keeping stale cache");
-            let _ =
-                super::stamp_sync_error(pool, "github", &format!("GitHub auth failed — {e}")).await;
+            // A connect failure here is the network, not the credential. It
+            // used to raise "GitHub auth failed / Set GITHUB_TOKEN in .env",
+            // telling the user to redo a token that was never broken.
+            super::record_sync_failure(pool, "github", "viewer", &e).await;
             return Ok(None);
         }
     };
 
-    let client = reqwest::Client::new();
+    let client = super::http::client();
 
     // Each project is an independent paginated GraphQL walk — fetch them all
     // concurrently, then fold the results preserving any_ok/all_ok semantics.
@@ -205,6 +207,9 @@ pub async fn refresh_if_stale(
     let mut all_tasks: Vec<(GhTask, serde_json::Value)> = Vec::new();
     let mut any_ok = false;
     let mut all_ok = true;
+    // Kept (not just counted) so the all-failed branch below can ask whether
+    // every project failed for a retryable reason.
+    let mut failures: Vec<anyhow::Error> = Vec::new();
     for (project_id, result) in github.project_ids.iter().zip(results) {
         match result {
             Ok(tasks) => {
@@ -213,20 +218,37 @@ pub async fn refresh_if_stale(
                 any_ok = true;
             }
             Err(e) => {
-                tracing::warn!(project_id, error = %e, "github project fetch failed — skipping");
+                let chain = format!("{e:#}");
+                tracing::warn!(project_id, error = %chain, "github project fetch failed - skipping");
+                failures.push(e);
                 all_ok = false;
             }
         }
     }
 
     if !any_ok {
-        tracing::warn!("all github project fetches failed — keeping stale cache");
-        let _ = super::stamp_sync_error(
-            pool,
-            "github",
-            "GitHub sync failed — all project fetches failed",
-        )
-        .await;
+        // One network outage hits every concurrent project fetch identically,
+        // so "all of them failed, all retryably" is the signature of an
+        // unreachable network rather than a broken board or credential.
+        //
+        // Pick the first TERMINAL failure to report if there is one, so a single
+        // dead board is not hidden behind a sibling's transient blip; otherwise
+        // hand over the first failure, which classifies retryable and stays
+        // quiet. Either way the recording itself goes through the shared policy
+        // rather than a fourth hand-rolled copy of it. `failures` is never empty
+        // here - a non-empty project list that produced no successes produced
+        // errors.
+        let representative = failures
+            .iter()
+            .find(|e| matches!(super::http::classify(e), SyncFault::Report { .. }))
+            .or_else(|| failures.first());
+        if let Some(e) = representative {
+            tracing::warn!(
+                projects = failures.len(),
+                "every github project fetch failed"
+            );
+            super::record_sync_failure(pool, "github", "project_fetch", e).await;
+        }
         return Ok(None);
     }
 

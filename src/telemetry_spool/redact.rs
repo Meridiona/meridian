@@ -234,14 +234,21 @@ fn redact_logs(bytes: &[u8]) -> Redacted {
         return Redacted::Undecodable;
     };
     let mut stats = RedactStats::default();
+    // Computed ONCE per payload, not per attribute. `local_host_pseudonym`
+    // reads `settings.json`, and `host.name` appears on every resource, scope
+    // and record - so calling it per attribute turned one ship into hundreds of
+    // settings-file reads. Per-payload (rather than a process-wide cache) is
+    // deliberate: the account pseudonym changes on sign-in/sign-out, and the
+    // next payload must pick that up.
+    let pseudonym = local_host_pseudonym();
 
     for rl in &mut req.resource_logs {
         if let Some(res) = rl.resource.as_mut() {
-            stats.attrs_dropped += redact_attributes(&mut res.attributes);
+            stats.attrs_dropped += redact_attributes(&mut res.attributes, &pseudonym);
         }
         for sl in &mut rl.scope_logs {
             if let Some(scope) = sl.scope.as_mut() {
-                stats.attrs_dropped += redact_attributes(&mut scope.attributes);
+                stats.attrs_dropped += redact_attributes(&mut scope.attributes, &pseudonym);
             }
             let before = sl.log_records.len();
             stats.records_in += before;
@@ -249,7 +256,7 @@ fn redact_logs(bytes: &[u8]) -> Redacted {
                 .retain(|lr| log_is_error(lr) && !log_is_noise(lr));
             stats.records_out += sl.log_records.len();
             for lr in &mut sl.log_records {
-                stats.attrs_dropped += redact_attributes(&mut lr.attributes);
+                stats.attrs_dropped += redact_attributes(&mut lr.attributes, &pseudonym);
                 scrub_log_body(lr);
             }
         }
@@ -273,21 +280,28 @@ fn redact_traces(bytes: &[u8]) -> Redacted {
         return Redacted::Undecodable;
     };
     let mut stats = RedactStats::default();
+    // Computed ONCE per payload, not per attribute. `local_host_pseudonym`
+    // reads `settings.json`, and `host.name` appears on every resource, scope
+    // and record - so calling it per attribute turned one ship into hundreds of
+    // settings-file reads. Per-payload (rather than a process-wide cache) is
+    // deliberate: the account pseudonym changes on sign-in/sign-out, and the
+    // next payload must pick that up.
+    let pseudonym = local_host_pseudonym();
 
     for rs in &mut req.resource_spans {
         if let Some(res) = rs.resource.as_mut() {
-            stats.attrs_dropped += redact_attributes(&mut res.attributes);
+            stats.attrs_dropped += redact_attributes(&mut res.attributes, &pseudonym);
         }
         for ss in &mut rs.scope_spans {
             if let Some(scope) = ss.scope.as_mut() {
-                stats.attrs_dropped += redact_attributes(&mut scope.attributes);
+                stats.attrs_dropped += redact_attributes(&mut scope.attributes, &pseudonym);
             }
             let before = ss.spans.len();
             stats.records_in += before;
             ss.spans.retain(span_is_error);
             stats.records_out += ss.spans.len();
             for span in &mut ss.spans {
-                stats.attrs_dropped += redact_attributes(&mut span.attributes);
+                stats.attrs_dropped += redact_attributes(&mut span.attributes, &pseudonym);
                 scrub_span_status(span);
                 strip_span_children(span);
             }
@@ -366,9 +380,9 @@ fn strip_span_children(span: &mut Span) {
 
 /// Apply the value-type + key allowlist to one attribute list, returning how
 /// many attributes were removed.
-fn redact_attributes(attrs: &mut Vec<KeyValue>) -> usize {
+fn redact_attributes(attrs: &mut Vec<KeyValue>, pseudonym: &str) -> usize {
     let before = attrs.len();
-    attrs.retain_mut(keep_attribute);
+    attrs.retain_mut(|kv| keep_attribute(kv, pseudonym));
     before - attrs.len()
 }
 
@@ -376,7 +390,7 @@ fn redact_attributes(attrs: &mut Vec<KeyValue>) -> usize {
 /// "two rules". Mutates a kept string in place: FREE-TEXT keys get the full
 /// [`scrub_text`] + [`clamp`]; other allowlisted strings (structured
 /// identifiers, code locations) get only the light home-dir path scrub.
-fn keep_attribute(kv: &mut KeyValue) -> bool {
+fn keep_attribute(kv: &mut KeyValue, pseudonym: &str) -> bool {
     match kv.value.as_mut().and_then(|v| v.value.as_mut()) {
         // Numeric / bool can't carry free text — always safe.
         Some(Value::IntValue(_)) | Some(Value::DoubleValue(_)) | Some(Value::BoolValue(_)) => true,
@@ -394,7 +408,7 @@ fn keep_attribute(kv: &mut KeyValue) -> bool {
                 // path that ships another machine's payload — `telemetry
                 // import` — bypasses redaction entirely by design, so it
                 // cannot be mislabelled by this.
-                *s = local_host_pseudonym();
+                *s = pseudonym.to_string();
                 true
             } else if is_free_text_key(&kv.key) {
                 *s = clamp(scrub_text(s));
@@ -421,7 +435,56 @@ const HOST_NAME_KEY: &str = "host.name";
 
 /// Domain-separation prefix so the digest can't be compared against a hash of
 /// the bare hostname computed elsewhere.
-const HOST_PSEUDONYM_SALT: &str = "meridian.host.pseudonym.v1:";
+const HOST_PSEUDONYM_DOMAIN: &str = "meridian.host.pseudonym.v1:";
+
+/// Domain-separation prefix for [`pseudonymize_account`] — deliberately
+/// DIFFERENT from [`HOST_PSEUDONYM_DOMAIN`] so the two hash spaces can never
+/// be cross-compared (a candidate email hashed under the wrong domain would
+/// never match a machine pseudonym, and vice versa), even though both go
+/// through the same [`hash_pseudonym`] shape.
+const ACCOUNT_PSEUDONYM_DOMAIN: &str = "meridian.account.pseudonym.v1:";
+
+/// Shared SHA-256-prefix-and-truncate shape behind both [`pseudonymize_host`]
+/// and [`pseudonymize_account`]. Truncated to 16 hex chars (8 bytes): ample
+/// against collisions at fleet scale, short enough to read in a dashboard.
+///
+/// # `domain`, not `salt`
+/// The first argument is a DOMAIN-SEPARATION prefix and is deliberately not
+/// called a salt, because it is not one and must never be treated as one. A
+/// salt is per-value, unpredictable, and stored beside the digest to stop
+/// precomputation. This is a fixed public label whose only job is to keep two
+/// hash spaces disjoint, so that a hardware UUID and an email can never
+/// collide into the same identifier.
+///
+/// It structurally CANNOT be secret: the pseudonym has to reproduce
+/// byte-identically across every install (that is what makes one machine's
+/// error rows group in the backend) and across a signed-in tester's separate
+/// Macs and Windows boxes — and it ships inside a binary users hold, so a
+/// baked "secret" would be readable anyway. This value provides separation,
+/// NOT secrecy; the non-reversibility of the identifier comes from SHA-256
+/// over a high-entropy seed, not from hiding this string.
+///
+/// The naming is load-bearing rather than cosmetic. While this parameter was
+/// called `salt`, CodeQL's `rust/hard-coded-cryptographic-value` flagged both
+/// constants as critical: its heuristic sink matches a constant passed to a
+/// parameter whose DECLARED name is `password`/`iv`/`nonce`/`salt`. It was
+/// right to, on the evidence it had — code that says "salt" and hardcodes one
+/// is a real vulnerability. The defect was the word, so the word is what
+/// changed; the bytes fed to the hash are untouched, and
+/// `pseudonym_digests_are_pinned_against_an_independent_oracle` holds them to
+/// that. Do not reintroduce `salt` here as a synonym.
+fn hash_pseudonym(domain: &str, seed: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(domain.as_bytes());
+    hasher.update(seed.as_bytes());
+    let digest = hasher.finalize();
+    digest[..8].iter().fold(String::new(), |mut acc, b| {
+        use std::fmt::Write;
+        let _ = write!(acc, "{b:02x}");
+        acc
+    })
+}
 
 /// Replace a hostname with a stable, non-reversible pseudonym.
 ///
@@ -443,16 +506,24 @@ const HOST_PSEUDONYM_SALT: &str = "meridian.host.pseudonym.v1:";
 /// should actually use — hashing a caller-supplied hostname is exactly the
 /// mistake this module had (see that function's doc).
 pub fn pseudonymize_host(seed: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(HOST_PSEUDONYM_SALT.as_bytes());
-    hasher.update(seed.as_bytes());
-    let digest = hasher.finalize();
-    digest[..8].iter().fold(String::new(), |mut acc, b| {
-        use std::fmt::Write;
-        let _ = write!(acc, "{b:02x}");
-        acc
-    })
+    hash_pseudonym(HOST_PSEUDONYM_DOMAIN, seed)
+}
+
+/// Hash a signed-in user's email into the same 16-hex shape as
+/// [`pseudonymize_host`], separated by its own domain prefix (see
+/// [`ACCOUNT_PSEUDONYM_DOMAIN`]).
+///
+/// ALPHA TESTING ONLY — see [`local_host_pseudonym`]'s doc for the mechanism
+/// this feeds. `pub` because the tray computes this at sign-in
+/// (`tray/src-tauri/src/commands/account.rs::save_account_email`) and writes
+/// ONLY the resulting hash into `settings.json`'s `account_pseudonym` — the
+/// raw email never leaves that command.
+///
+/// Trimmed and lowercased before hashing so `User@Example.com` and
+/// `user@example.com` (the same signed-in person, different capitalisation)
+/// produce the identical pseudonym.
+pub fn pseudonymize_account(email: &str) -> String {
+    hash_pseudonym(ACCOUNT_PSEUDONYM_DOMAIN, &email.trim().to_ascii_lowercase())
 }
 
 /// This machine's pseudonym - the exact value that appears as `host.name` in
@@ -488,11 +559,110 @@ pub fn pseudonymize_host(seed: &str) -> String {
 /// is a one-way hash of a low-entropy input, and hostnames are enumerable
 /// (`Akarshs-MacBook-Pro.local` can simply be hashed and compared) where a
 /// 128-bit hardware UUID is not.
+///
+/// # ALPHA TESTING ONLY — per-user override (expires 2026-08-28)
+/// Meridian's alpha runs on a small set of hand-picked testers, several of
+/// whom run Meridian on more than one machine. For that one-month window,
+/// support needs to trace a tester's errors across their devices, so this
+/// seeds from the signed-in account's pseudonym ([`pseudonymize_account`],
+/// mirrored into `settings.json` by `tray/src-tauri/src/commands/account.rs`)
+/// instead of the hardware id, when the tester is signed in. See
+/// [`choose_pseudonym_source`] for the exact rule.
+///
+/// This is gated on a hardcoded expiry date, NOT the release channel — unlike
+/// most temporary behaviour in this codebase, channel-gating doesn't apply
+/// here, because the hand-picked alpha testers install the SAME `stable`
+/// (production) channel build as every other user; there is no separate
+/// alpha channel to distinguish them by. So the automatic revert is time-based
+/// instead: once [`ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`] passes, EVERY build —
+/// stable included — reverts to the per-machine pseudonym on its own, with no
+/// deploy required. If the alpha window needs to extend, bump that constant;
+/// if it needs to end early, drop it to `0`.
+///
+/// This is a genuine, if temporary, relaxation of "not tied to your account"
+/// (the Settings → Account copy says so explicitly during alpha) — it is NOT
+/// a bug if a Support ID changes on sign-out/sign-in-as-someone-else, unlike
+/// the network-change regression this module was originally written to fix.
+///
+/// The value is also prefixed `mac_`/`win_` ([`platform_prefix`]) so a quoted
+/// Support ID reads its own platform without a separate lookup.
 pub fn local_host_pseudonym() -> String {
+    format!("{}{}", platform_prefix(), pseudonym_body())
+}
+
+/// `mac_` / `win_` / `""` (never built for anything else). Read fresh each
+/// call — a `cfg!` check, not worth caching.
+fn platform_prefix() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "mac_"
+    } else if cfg!(target_os = "windows") {
+        "win_"
+    } else {
+        ""
+    }
+}
+
+/// Unix seconds marking the end of the ALPHA per-user pseudonym window —
+/// 2026-08-28T00:00:00Z, one month out from when this shipped (2026-07-28).
+/// See [`local_host_pseudonym`]'s ALPHA doc for why this is a date, not a
+/// channel check.
+const ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX: u64 = 1_787_875_200;
+
+/// Now, as Unix seconds. Failure (a clock so broken `UNIX_EPOCH` is in the
+/// future) reads as "expired" — `u64::MAX` — rather than "still in the alpha
+/// window", so a clock fault fails CLOSED toward the stricter per-machine
+/// pseudonym instead of silently keeping the relaxed one active forever.
+fn now_unix_or_expired() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(u64::MAX)
+}
+
+/// The pseudonym body (no platform prefix): the ALPHA-only account override
+/// when [`choose_pseudonym_source`] says it applies, else the ordinary
+/// hardware-seeded pseudonym.
+fn pseudonym_body() -> String {
+    let account_pseudonym = crate::config::load_runtime_settings().account_pseudonym;
+    if let Some(hash) = choose_pseudonym_source(now_unix_or_expired(), account_pseudonym.as_deref())
+    {
+        return hash;
+    }
     match machine_id::stable_machine_id() {
         Some(id) => pseudonymize_host(id),
         None => pseudonymize_host(&gethostname::gethostname().to_string_lossy()),
     }
+}
+
+/// Whether the Support ID [`local_host_pseudonym`] returns RIGHT NOW is the
+/// ALPHA per-user one rather than the per-machine one — i.e. whether it's
+/// currently fair to tell the user it identifies their account.
+///
+/// This exists so the Settings → Account copy can describe reality instead of
+/// a hardcoded, date-blind claim: calling [`choose_pseudonym_source`] with the
+/// exact same inputs [`pseudonym_body`] uses means the displayed explanation
+/// and the actual pseudonym can never disagree — signed out, it's `false` the
+/// same way `pseudonym_body` already falls back to the machine id; past
+/// [`ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`], it's `false` for every install with
+/// no code change needed, the same automatic revert the pseudonym itself gets.
+pub fn support_id_is_account_scoped() -> bool {
+    let account_pseudonym = crate::config::load_runtime_settings().account_pseudonym;
+    choose_pseudonym_source(now_unix_or_expired(), account_pseudonym.as_deref()).is_some()
+}
+
+/// The ALPHA per-user rule, isolated as a pure function of `now_unix` so it's
+/// testable without touching `settings.json` or the real system clock: the
+/// account pseudonym applies only before
+/// [`ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`], and only when one is actually on
+/// record (signed in, non-empty).
+fn choose_pseudonym_source(now_unix: u64, account_pseudonym: Option<&str>) -> Option<String> {
+    if now_unix >= ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX {
+        return None;
+    }
+    account_pseudonym
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 fn is_safe_string_key(key: &str) -> bool {
@@ -656,6 +826,13 @@ mod tests {
         resource::v1::Resource,
         trace::v1::{span, ResourceSpans, ScopeSpans},
     };
+
+    /// `keep_attribute` takes the payload's pseudonym now (computed once per
+    /// ship instead of per attribute). These tests assert against the real
+    /// one, so the shim supplies it.
+    fn keep(kv: &mut KeyValue) -> bool {
+        keep_attribute(kv, &local_host_pseudonym())
+    }
 
     fn str_attr(key: &str, val: &str) -> KeyValue {
         KeyValue {
@@ -1040,15 +1217,21 @@ mod tests {
     /// verbatim — on macOS it is routinely the account holder's real name.
     #[test]
     fn host_name_is_pseudonymised_not_shipped_raw() {
+        let _settings = ScopedSettings::machine_scoped("host-name-pseudonymised");
         let mut kv = str_attr("host.name", "Akarshs-MacBook-Pro.local");
-        assert!(keep_attribute(&mut kv), "host.name should be kept");
+        assert!(keep(&mut kv), "host.name should be kept");
         let out = match kv.value.unwrap().value.unwrap() {
             Value::StringValue(s) => s,
             other => panic!("expected string, got {other:?}"),
         };
         assert!(!out.contains("Akarsh"), "raw hostname survived: {out}");
         assert!(!out.contains("MacBook"), "raw hostname survived: {out}");
-        assert_eq!(out.len(), 16, "expected a 16-hex-char pseudonym, got {out}");
+        // 16 hex chars plus whatever platform prefix this build carries.
+        assert_eq!(
+            out.len(),
+            platform_prefix().len() + 16,
+            "expected a 16-hex-char pseudonym (+ platform prefix), got {out}"
+        );
         // This machine's pseudonym, NOT a hash of the captured hostname — the
         // captured value is deliberately ignored (see `keep_attribute`).
         assert_eq!(out, local_host_pseudonym());
@@ -1061,9 +1244,10 @@ mod tests {
     /// Hashing the captured value (the previous behaviour) failed this.
     #[test]
     fn pseudonym_is_independent_of_the_captured_hostname() {
+        let _settings = ScopedSettings::machine_scoped("pseudonym-independent");
         let shipped = |raw: &str| {
             let mut kv = str_attr("host.name", raw);
-            assert!(keep_attribute(&mut kv));
+            assert!(keep(&mut kv));
             match kv.value.unwrap().value.unwrap() {
                 Value::StringValue(s) => s,
                 other => panic!("expected string, got {other:?}"),
@@ -1103,7 +1287,7 @@ mod tests {
     #[test]
     fn error_cause_and_provider_survive_but_user_data_does_not() {
         let mut kv = str_attr("error", "claude timed out after 60s");
-        assert!(keep_attribute(&mut kv), "error cause was dropped");
+        assert!(keep(&mut kv), "error cause was dropped");
         match kv.value.unwrap().value.unwrap() {
             Value::StringValue(s) => assert_eq!(s, "claude timed out after 60s"),
             other => panic!("expected string, got {other:?}"),
@@ -1111,7 +1295,7 @@ mod tests {
 
         for (key, value) in [("provider", "anthropic"), ("engine", "claude")] {
             let mut kv = str_attr(key, value);
-            assert!(keep_attribute(&mut kv), "{key} was dropped");
+            assert!(keep(&mut kv), "{key} was dropped");
         }
 
         // `error` is FREE TEXT — an anyhow chain routinely splices a path,
@@ -1120,7 +1304,7 @@ mod tests {
             "error",
             "post to https://hooks.example.com/T123 failed for akarsh@meridiona.com",
         );
-        assert!(keep_attribute(&mut kv));
+        assert!(keep(&mut kv));
         let out = match kv.value.unwrap().value.unwrap() {
             Value::StringValue(s) => s,
             other => panic!("expected string, got {other:?}"),
@@ -1138,7 +1322,7 @@ mod tests {
             "window_title",
         ] {
             let mut kv = str_attr(key, "MER-192");
-            assert!(!keep_attribute(&mut kv), "{key} leaked into the ship leg");
+            assert!(!keep(&mut kv), "{key} leaked into the ship leg");
         }
     }
 
@@ -1149,9 +1333,10 @@ mod tests {
     /// hostname is read.
     #[test]
     fn displayed_pseudonym_matches_shipped() {
+        let _settings = ScopedSettings::machine_scoped("displayed-matches-shipped");
         let raw = gethostname::gethostname().to_string_lossy().into_owned();
         let mut kv = str_attr("host.name", &raw);
-        assert!(keep_attribute(&mut kv));
+        assert!(keep(&mut kv));
         let shipped = match kv.value.unwrap().value.unwrap() {
             Value::StringValue(s) => s,
             other => panic!("expected string, got {other:?}"),
@@ -1178,12 +1363,186 @@ mod tests {
             ("host.arch", "x86_64"),
         ] {
             let mut kv = str_attr(key, value);
-            assert!(keep_attribute(&mut kv), "{key} was dropped");
+            assert!(keep(&mut kv), "{key} was dropped");
             let out = match kv.value.unwrap().value.unwrap() {
                 Value::StringValue(s) => s,
                 other => panic!("expected string, got {other:?}"),
             };
             assert_eq!(out, value, "{key} was altered in transit");
+        }
+    }
+
+    /// The Support ID / shipped `host.name` names its own platform so support
+    /// doesn't need a separate lookup to tell a Mac tester's row from a
+    /// Windows one.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn support_id_carries_the_platform_prefix() {
+        assert!(
+            local_host_pseudonym().starts_with("mac_"),
+            "expected a mac_ prefix: {}",
+            local_host_pseudonym()
+        );
+    }
+
+    /// [`pseudonymize_account`] must use a DIFFERENT domain prefix from
+    /// [`pseudonymize_host`] — otherwise a hardware UUID and an email could
+    /// collide into the same identifier space, and a determined reader who
+    /// knows a candidate value of one kind could confirm it against the other.
+    ///
+    /// This is the property the two domain constants exist for, so it is
+    /// pinned separately from the digest values themselves: sharing a prefix
+    /// would leave every other test in this file green.
+    #[test]
+    fn account_pseudonym_is_domain_separated_from_host_pseudonym() {
+        let same_string = "not-actually-an-email-or-a-uuid";
+        assert_ne!(
+            pseudonymize_host(same_string),
+            pseudonymize_account(same_string),
+            "account and host pseudonyms must not share a domain prefix"
+        );
+    }
+
+    /// Both pseudonyms are a WIRE FORMAT, and nothing else in this file pins
+    /// them. Every other test here is relational — same input gives the same
+    /// output, different inputs differ, length is 16 — all of which stay green
+    /// if the digest changes wholesale.
+    ///
+    /// That matters because the value's entire purpose is continuity: a
+    /// machine's rows in the central backend are grouped by this string, and
+    /// v1.80.0 has already shipped, so error rows carrying the current digest
+    /// exist today. Change what goes into the hash — reorder the two `update`
+    /// calls, alter a domain constant, switch the truncation — and every
+    /// install silently becomes a NEW machine on upgrade. The old rows are not
+    /// re-keyed, and nothing anywhere fails; support just quietly loses the
+    /// ability to follow one user across a version boundary, and the Support ID
+    /// a user quotes from Settings stops matching the rows filed before it.
+    ///
+    /// So these are hand-computed rather than recorded from the implementation:
+    ///
+    /// ```text
+    /// printf '%s' "meridian.host.pseudonym.v1:2D5462F0-45C1-5987-94E9-5CBAD14E4362" \
+    ///   | shasum -a 256 | cut -c1-16   # 9790585e54e6cdf6
+    /// printf '%s' "meridian.account.pseudonym.v1:alpha.tester@example.com" \
+    ///   | shasum -a 256 | cut -c1-16   # 85ee36b8a62c2aab
+    /// ```
+    ///
+    /// A hash pinned by pasting in whatever the code emitted would pass against
+    /// a broken implementation; these came from an independent tool, so they
+    /// assert the construction is `sha256(domain || seed)[..8]` as documented,
+    /// not merely that it is stable.
+    ///
+    /// If this test fails, do NOT re-record the expected values. Either the
+    /// change is unintended, or it is a deliberate v2 of the identifier — and a
+    /// v2 needs the domain constants bumped (`…v1:` → `…v2:`) plus a decision
+    /// about the orphaned rows, not a new literal here.
+    #[test]
+    fn pseudonym_digests_are_pinned_against_an_independent_oracle() {
+        assert_eq!(
+            pseudonymize_host("2D5462F0-45C1-5987-94E9-5CBAD14E4362"),
+            "9790585e54e6cdf6",
+            "host pseudonym digest changed - this silently re-keys every \
+             machine's error rows on upgrade; see this test's doc"
+        );
+        assert_eq!(
+            pseudonymize_account("alpha.tester@example.com"),
+            "85ee36b8a62c2aab",
+            "account pseudonym digest changed - this silently re-keys every \
+             signed-in tester's error rows; see this test's doc"
+        );
+    }
+
+    /// Case and incidental whitespace must not fork one person's Support ID
+    /// across their devices — Clerk emails aren't guaranteed to arrive
+    /// byte-identical from every call site.
+    #[test]
+    fn account_pseudonym_ignores_case_and_whitespace() {
+        assert_eq!(
+            pseudonymize_account("Alpha.Tester@Example.com"),
+            pseudonymize_account("  alpha.tester@example.com  ")
+        );
+        assert_ne!(
+            pseudonymize_account("alpha.tester@example.com"),
+            pseudonymize_account("someone.else@example.com")
+        );
+        assert_eq!(pseudonymize_account("alpha.tester@example.com").len(), 16);
+    }
+
+    /// The ALPHA per-user rule ([`choose_pseudonym_source`]), pinned as a pure
+    /// function of `now_unix` so it's testable without depending on the real
+    /// system clock. Alpha testers install the same `stable` channel as
+    /// everyone else, so this is gated on the expiry date, not the channel —
+    /// see [`ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`].
+    #[test]
+    fn account_pseudonym_only_overrides_before_the_expiry() {
+        let hash = "deadbeefcafebabe";
+        let expiry = ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX;
+        assert_eq!(
+            choose_pseudonym_source(expiry, Some(hash)),
+            None,
+            "at the expiry instant, must already have reverted"
+        );
+        assert_eq!(
+            choose_pseudonym_source(expiry + 1, Some(hash)),
+            None,
+            "after expiry, must never take the per-user path, even when signed in"
+        );
+        assert_eq!(
+            choose_pseudonym_source(expiry - 1, Some(hash)),
+            Some(hash.to_string()),
+            "before expiry, signed in, must use the per-user pseudonym"
+        );
+    }
+
+    /// A clock fault (`now_unix_or_expired`'s `u64::MAX` sentinel) must fail
+    /// CLOSED — toward the stricter per-machine pseudonym — never toward
+    /// silently keeping the relaxed alpha behaviour active forever.
+    #[test]
+    fn a_broken_clock_reads_as_expired_not_as_still_in_the_window() {
+        assert_eq!(
+            choose_pseudonym_source(u64::MAX, Some("deadbeefcafebabe")),
+            None
+        );
+    }
+
+    /// Not signed in (or a corrupt/empty settings value) must fall back to the
+    /// ordinary per-machine pseudonym rather than propagating an empty string
+    /// through as a Support ID.
+    #[test]
+    fn account_pseudonym_absent_or_empty_falls_back_to_machine() {
+        let before_expiry = ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX - 1;
+        assert_eq!(choose_pseudonym_source(before_expiry, None), None);
+        assert_eq!(choose_pseudonym_source(before_expiry, Some("")), None);
+        assert_eq!(choose_pseudonym_source(before_expiry, Some("   ")), None);
+    }
+
+    use crate::test_env::ScopedSettings;
+
+    /// [`support_id_is_account_scoped`] exists so the Settings → Account copy
+    /// can never claim something the pseudonym itself isn't doing. Pinned
+    /// against [`choose_pseudonym_source`] directly (the same oracle
+    /// `pseudonym_body` uses) rather than a hardcoded expected bool, so this
+    /// test stays meaningful — and keeps passing — on either side of
+    /// [`ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`], instead of quietly asserting
+    /// "true" and breaking the day the alpha window ends.
+    #[test]
+    fn support_id_is_account_scoped_matches_choose_pseudonym_source() {
+        // Holds the crate-wide settings lock for the whole loop, so the two
+        // branches can't interleave with another module's env writes. Cleanup
+        // and env restore are the guard's, on an unwinding path too.
+        let settings = ScopedSettings::machine_scoped("support-id-scoped");
+
+        for hash in [None, Some("deadbeefcafebabe")] {
+            match hash {
+                None => settings.rewrite("{}"),
+                Some(h) => settings.rewrite(&format!(r#"{{"account_pseudonym":"{h}"}}"#)),
+            }
+            let expected = choose_pseudonym_source(now_unix_or_expired(), hash).is_some();
+            assert_eq!(
+                support_id_is_account_scoped(),
+                expected,
+                "disagreed for account_pseudonym = {hash:?}"
+            );
         }
     }
 

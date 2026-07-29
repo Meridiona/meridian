@@ -307,6 +307,21 @@ pub struct RuntimeSettings {
     // at the struct level makes this `false` for every settings.json written before
     // this field existed, which is exactly the "reprompt existing users once" case.
     pub worklog_auto_generate_prompted: bool,
+    // ALPHA TESTING ONLY (hand-picked users, all on the same `stable`
+    // production channel as everyone else — there's no separate alpha
+    // channel to gate on). A domain-separated, one-way hash of the signed-in Clerk
+    // account email — NEVER the raw email — written by the tray's
+    // `commands::account::save_account_email` (cleared on sign-out) and read
+    // by `telemetry_spool::redact::local_host_pseudonym` to seed the Support
+    // ID/shipped `host.name` per-USER instead of per-machine, so support can
+    // trace one alpha tester's errors across their Mac and Windows boxes.
+    // Only takes effect before `redact::ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`
+    // (2026-08-28) — a hardcoded date, checked against the wall clock, is the
+    // revert here since channel can't distinguish alpha testers from anyone
+    // else on the same build. `None` (not signed in, or past the expiry)
+    // falls back to the pre-existing per-machine hardware-UUID pseudonym.
+    #[serde(default)]
+    pub account_pseudonym: Option<String>,
 }
 
 /// Default surface palette when `settings.json` predates the `theme` key. Must
@@ -366,6 +381,8 @@ impl Default for RuntimeSettings {
             // SETTINGS_DEFAULTS in ui/lib/settings.ts.
             worklog_auto_generate_time: None,
             worklog_auto_generate_prompted: false,
+            // Signed out (or never signed in) until the tray says otherwise.
+            account_pseudonym: None,
         }
     }
 }

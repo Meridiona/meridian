@@ -3,6 +3,7 @@
 pub mod azure_devops;
 pub mod cdm;
 pub mod github;
+pub mod http;
 pub mod jira;
 pub mod linear;
 pub mod status;
@@ -39,19 +40,41 @@ pub async fn stamp_sync_error_with_remedy(
     .await?;
 
     let (title, remedy): (&str, Option<&str>) = match provider {
+        // The DEFAULT, used by every Jira path that does not know which auth
+        // method is in play (notably the fetch failure). It has to be the answer
+        // that is right for both, which is Settings - the `.env` wording is kept
+        // only as an explicit override on the resolve path, where
+        // `has_basic_auth()` has actually established the user configured it
+        // that way.
         "jira" => (
             "Jira sync failing",
-            Some("Set JIRA_API_TOKEN and JIRA_BASE_URL in .env"),
+            Some("Reconnect Jira in Settings - Integrations"),
         ),
-        "linear" => ("Linear sync failing", Some("Set LINEAR_API_KEY in .env")),
+        // Every remedy below names a place in the app rather than a file or a
+        // CLI command. All five trackers are connected through Settings ->
+        // Integrations, so a user who has only ever clicked Connect has no
+        // `.env` to edit and no terminal to run `meridian oauth-login` in.
+        // `every_default_remedy_names_a_place_in_the_app` pins this.
+        "linear" => (
+            "Linear sync failing",
+            Some("Reconnect Linear in Settings - Integrations"),
+        ),
         "trello" => (
             "Trello sync failing",
-            Some("Run: meridian oauth-login trello"),
+            Some("Reconnect Trello in Settings - Integrations"),
         ),
-        "github" => ("GitHub sync failing", Some("Set GITHUB_TOKEN in .env")),
+        // NOT "Set GITHUB_TOKEN in .env": GitHub connects via the in-app browser
+        // device flow, which writes `GITHUB_TOKEN` to `.env` itself (see
+        // `intelligence::oauth`). So the variable name is accurate and the
+        // instruction is unfollowable — a user who clicked Connect has never
+        // seen a token. Settings covers both that flow and the PAT one.
+        "github" => (
+            "GitHub sync failing",
+            Some("Reconnect GitHub in Settings - Integrations"),
+        ),
         "azure_devops" => (
             "Azure DevOps sync failing",
-            Some("Set AZURE_DEVOPS_PAT in .env"),
+            Some("Reconnect Azure DevOps in Settings - Integrations"),
         ),
         _ => ("PM sync failing", None),
     };
@@ -66,6 +89,249 @@ pub async fn stamp_sync_error_with_remedy(
     )
     .await;
     Ok(())
+}
+
+/// How stale the last SUCCESSFUL sync may get before a run of otherwise-
+/// suppressed transient failures is escalated to a user-facing notice.
+///
+/// Comfortably longer than any provider's sync interval, so an ordinary flaky
+/// hour never trips it — but short enough that a persistently blocked provider
+/// surfaces the same working day.
+const TRANSIENT_ESCALATION_HOURS: i64 = 6;
+
+/// Record a transient (retryable) sync failure.
+///
+/// Normally raises NOTHING — [`http::SyncFault::Retry`] exists precisely so a
+/// network blip stops producing a "check your credentials" banner for
+/// credentials that are fine.
+///
+/// But silence has to be BOUNDED. A provider blocked persistently (corporate
+/// proxy, TLS interception, a firewall rule) is unreachable on every tick
+/// forever, and suppressing that outright would leave the user's board silently
+/// going stale with no signal at all — strictly worse than the misleading banner
+/// this change removes. So the failure escalates to a normal sync notice once
+/// the provider has not synced successfully within
+/// [`TRANSIENT_ESCALATION_HOURS`].
+///
+/// **A provider that has NEVER synced needs its own handling**, because it has
+/// no `pm_sync_state` row at all, so an age test alone would no-op forever on
+/// exactly the installs that most need it — someone who just connected and whose
+/// network blocks the provider outright.
+///
+/// It gets ONE retry rather than escalating on the first failure. Escalating
+/// immediately would reintroduce the very thing this change removes, just with
+/// connectivity wording instead of credentials wording: connect a tracker, have
+/// the first attempt land on an ordinary blip (a DNS hiccup, a proxy handshake,
+/// a laptop still waking up) and a "sync failing" banner appears seconds later.
+/// So the first failure writes the row and stays silent; the next one sees the
+/// row with an epoch `last_synced_at`, which is not recent, and escalates. One
+/// sync interval of grace, and the persistently-blocked case still surfaces.
+///
+/// The remedy points at connectivity, NOT credentials: by construction we only
+/// reach here for failures that are not the user's token.
+///
+/// Write the epoch-sentinel grace row for a provider that has never synced.
+///
+/// # Why `ON CONFLICT DO NOTHING`
+/// The caller's `has_row` check is a SEPARATE statement from this insert, and
+/// `pm_sync_state.provider` is a PRIMARY KEY - so anything that can run two
+/// sync passes for one provider concurrently can have both observe "no row"
+/// and both insert. That is not hypothetical here: `meridian ticket-update`
+/// opens its OWN pool to the same `meridian.db` and calls
+/// `intelligence::run_pm_force_sync` (`src/main.rs`) while the daemon's poll
+/// loop is running `run_pm_sync` against the same file, so the two racers are
+/// separate PROCESSES and no in-process lock would cover them.
+///
+/// Without the clause the loser gets `UNIQUE constraint failed`, which
+/// [`record_sync_failure`] swallows by design - so the grace row would be
+/// silently lost, the next failure would take the same branch again, and the
+/// escalation clock would never start. That is the exact failure this whole
+/// module exists to prevent, reintroduced by a race.
+///
+/// Doing nothing on conflict is the correct resolution rather than a
+/// compromise: the row the winner wrote carries the same epoch sentinel this
+/// one would have written, so both racers leave the state they intended.
+///
+/// Extracted from [`note_transient_sync_failure`] to give the conflict
+/// behaviour a testable seam - the race itself has no deterministic hook, but
+/// "inserting over an existing row is a no-op, not an error" does.
+async fn insert_grace_row(pool: &SqlitePool, provider: &str, detail: &str) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO pm_sync_state (provider, last_synced_at, last_error)
+         VALUES (?, '1970-01-01T00:00:00Z', ?)
+         ON CONFLICT(provider) DO NOTHING",
+    )
+    .bind(provider)
+    .bind(detail)
+    .execute(pool)
+    .await
+    .context("recording the first transient failure for a never-synced provider")?;
+    Ok(())
+}
+
+/// Returns whether it escalated.
+#[tracing::instrument(
+    skip(pool, detail),
+    fields(provider, escalated = tracing::field::Empty)
+)]
+pub async fn note_transient_sync_failure(
+    pool: &SqlitePool,
+    provider: &str,
+    detail: &str,
+) -> Result<bool> {
+    let threshold = format!("-{TRANSIENT_ESCALATION_HOURS} hours");
+    let (has_row, recently_synced): (i64, i64) = sqlx::query_as(
+        "SELECT
+             EXISTS(SELECT 1 FROM pm_sync_state WHERE provider = ?),
+             EXISTS(
+                 SELECT 1 FROM pm_sync_state
+                 WHERE provider = ?
+                   AND last_synced_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
+             )",
+    )
+    .bind(provider)
+    .bind(provider)
+    .bind(&threshold)
+    .fetch_one(pool)
+    .await
+    .context("checking sync recency for transient-failure escalation")?;
+
+    if recently_synced != 0 {
+        tracing::Span::current().record("escalated", false);
+        return Ok(false);
+    }
+
+    if has_row == 0 {
+        // First-ever failure on a provider that has never synced. Record the
+        // attempt so the NEXT one escalates, but raise nothing: a tracker
+        // connected seconds ago that hits one blip must not immediately show a
+        // fault. The epoch sentinel is deliberate - it is not a recent sync, so
+        // the next failure takes the escalation branch below.
+        insert_grace_row(pool, provider, detail).await?;
+        tracing::debug!(
+            provider,
+            "first transient failure on a never-synced provider - staying quiet until the next attempt"
+        );
+        tracing::Span::current().record("escalated", false);
+        return Ok(false);
+    }
+
+    tracing::warn!(
+        provider,
+        hours = TRANSIENT_ESCALATION_HOURS,
+        "provider unreachable with no recent successful sync - escalating to a notice"
+    );
+    // The title already names the provider, so the body only has to say what is
+    // wrong and carry the cause.
+    let msg =
+        format!("No successful sync in the last {TRANSIENT_ESCALATION_HOURS} hours - {detail}");
+    stamp_sync_error_with_remedy(
+        pool,
+        provider,
+        &msg,
+        Some("Check your internet connection, VPN, or proxy settings"),
+    )
+    .await?;
+    tracing::Span::current().record("escalated", true);
+    Ok(true)
+}
+
+/// Record a provider sync failure against the shared classification.
+///
+/// The one place an `anyhow::Error` from a provider becomes user-visible state.
+/// A retryable failure stays quiet (while still feeding the escalation clock);
+/// a terminal one raises the notice. Both carry the FULL cause chain, because
+/// [`http::classify`] formats it.
+///
+/// # Why this is shared rather than inlined
+/// `intelligence::run_pm_sync`'s catch-all used to do
+/// `stamp_sync_error(name, &e.to_string())` for ANY propagated error —
+/// unconditionally terminal, and `{e}` rather than `{e:#}`, i.e. both of the
+/// bugs this module exists to fix. That made it a silent undo button: a provider
+/// could classify its own failure correctly and then have a second, generic,
+/// truncated write land on top of it and win. `azure_devops` hit exactly that,
+/// because it is the one provider whose `force_refresh` propagated `Err` after
+/// already recording. Routing both the provider and the catch-all through this
+/// function means there is no longer a path that reports a failure WITHOUT
+/// classifying it.
+///
+/// `stage` names the failing step for the log only; the user-facing text is the
+/// classified detail.
+///
+/// # Best-effort by construction
+/// Returns `()`, not `Result`, so a failure to PERSIST the record can never
+/// replace the provider error that caused it. With a `Result` the callers wrote
+/// `record_sync_failure(...).await?`, which meant a transient `pm_sync_state`
+/// write failure turned a classified provider failure into an sqlx error — and
+/// in `azure_devops` that error then propagated back into
+/// `intelligence::run_pm_sync`'s catch-all, so the user would be shown a
+/// DATABASE error instead of "Azure DevOps sync failing". The classified outcome
+/// has to stay authoritative.
+///
+/// Nothing diagnostic is lost: the `tracing::warn!` carrying the full cause
+/// chain is emitted BEFORE the write, so the provider error reaches the logs and
+/// the telemetry backend either way, and the persistence failure is logged
+/// beside it rather than swallowed.
+///
+/// # Telemetry
+/// Instrumented because this is where a provider failure becomes user-visible
+/// state, and the outcome is not derivable from the provider's own spans: the
+/// same `anyhow::Error` can end as a silent retry or a raised notice depending
+/// on [`http::classify`]. `outcome` records which, and `otel.status_code` marks
+/// the span ERROR only on the terminal path - a retryable blip is an expected
+/// outcome, not a fault, and marking it would drown the real ones.
+#[tracing::instrument(
+    skip(pool, err),
+    fields(
+        provider,
+        stage,
+        outcome = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty,
+    )
+)]
+pub async fn record_sync_failure(
+    pool: &SqlitePool,
+    provider: &str,
+    stage: &str,
+    err: &anyhow::Error,
+) {
+    let span = tracing::Span::current();
+    match http::classify(err) {
+        http::SyncFault::Retry { detail } => {
+            tracing::warn!(
+                provider,
+                stage,
+                error = %detail,
+                "provider unreachable - keeping stale cache, will retry next sync"
+            );
+            match note_transient_sync_failure(pool, provider, &detail).await {
+                Ok(escalated) => {
+                    span.record(
+                        "outcome",
+                        if escalated {
+                            "transient_escalated"
+                        } else {
+                            "transient_quiet"
+                        },
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(provider, stage, error = %e, "recording transient sync failure failed");
+                    span.record("outcome", "transient_record_failed");
+                    span.record("otel.status_code", "ERROR");
+                }
+            };
+        }
+        http::SyncFault::Report { detail } => {
+            tracing::warn!(provider, stage, error = %detail, "provider sync failed");
+            span.record("outcome", "reported");
+            span.record("otel.status_code", "ERROR");
+            if let Err(e) = stamp_sync_error(pool, provider, &detail).await {
+                tracing::warn!(provider, stage, error = %e, "recording sync failure failed");
+                span.record("outcome", "report_record_failed");
+            }
+        }
+    }
 }
 
 /// Clear the last error for a provider after a successful sync.
@@ -140,3 +406,6 @@ pub async fn mark_retained_offboard(
         .with_context(|| format!("flagging retained off-board {provider} tasks"))?;
     Ok(result.rows_affected())
 }
+
+#[cfg(test)]
+mod sync_failure_tests;

@@ -40,6 +40,7 @@
 //! - `scripts/install-daemon.sh` — the source-install shell flow this parallels.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 // Used only by the Windows service-registration spawns below (schtasks / taskkill
 // / tasklist / the daemon launch) to suppress their console-window flash; the
@@ -329,6 +330,43 @@ async fn register_service(_backend: &Path, home: &Path, daemon_bin: &Path) -> Re
     }
 }
 
+/// How many times [`stop_running_daemon_before_stage`] re-checks that the old
+/// daemon has exited, and the gap between checks — ~10s total. Longer than the
+/// original 3s on purpose: a kill doesn't release the file instantly, so a
+/// tight window gives up while the hold would still have cleared, needlessly
+/// surfacing an "couldn't finish installing" notice for a blip.
+#[cfg(target_os = "windows")]
+const STOP_POLL_ATTEMPTS: u32 = 40;
+#[cfg(target_os = "windows")]
+const STOP_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Poll `probe` until it reports the daemon gone (an empty pid list) or the
+/// attempt budget is exhausted, returning the final list — empty means it
+/// exited in time, non-empty means it's still holding the binary and the caller
+/// must fail loudly rather than overwrite a locked file.
+///
+/// Split out from [`stop_running_daemon_before_stage`] and kept platform-neutral
+/// (generic over the probe, no Windows syscalls of its own) so the poll logic is
+/// unit-tested on macOS CI — the one platform CI runs — even though its only
+/// production caller is Windows-only. `attempts`/`interval` are parameters so a
+/// test can drive it with a fake probe and a zero interval, deterministically
+/// and without real waiting.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+async fn wait_until_gone<F, Fut>(mut probe: F, attempts: u32, interval: Duration) -> Vec<u32>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Vec<u32>>,
+{
+    let mut remaining = probe().await;
+    let mut tries = 0;
+    while !remaining.is_empty() && tries < attempts {
+        tokio::time::sleep(interval).await;
+        remaining = probe().await;
+        tries += 1;
+    }
+    remaining
+}
+
 /// Stop the running instance(s) of **the staged daemon** so [`stage_binary`]
 /// can overwrite `~/.meridian/bin/meridian.exe`. Targets only processes whose
 /// executable is exactly `daemon_bin` — never an unrelated `meridian.exe` (an
@@ -387,21 +425,40 @@ async fn stop_running_daemon_before_stage(daemon_bin: &Path) -> Result<(), Strin
     // Poll until the staged daemon's own processes are gone (the file handle
     // lingers briefly after the kill), then require an empty set — a still-alive
     // holder means the overwrite below would fail, so fail loudly here instead.
-    for attempt in 0..10 {
-        let remaining = matching_daemon_pids(daemon_bin).await;
-        if remaining.is_empty() {
-            return Ok(());
-        }
-        tracing::debug!(
-            attempt,
-            path = %daemon_bin.display(),
-            remaining = remaining.len(),
-            "backend_install: waiting for staged daemon to exit"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    }
-
-    let remaining = matching_daemon_pids(daemon_bin).await;
+    // The window is deliberately generous (~10s): a kill doesn't release the
+    // file instantly, and on a loaded machine the daemon can take several
+    // seconds to unwind. A tighter window gives up while the hold would still
+    // have cleared on its own — which is exactly what surfaced the spurious
+    // "couldn't finish installing" notice.
+    //
+    // `wait_until_gone` is deliberately silent (platform-neutral + testable), so
+    // wrap the probe to emit a throttled breadcrumb — roughly every ~2s rather
+    // than the original per-probe spam — keeping a live `meridian logs` tail
+    // informed across the up-to-10s wait without flooding it.
+    let mut probes_since_log: u32 = 0;
+    let remaining = wait_until_gone(
+        || {
+            probes_since_log += 1;
+            let emit = probes_since_log >= 8;
+            if emit {
+                probes_since_log = 0;
+            }
+            async move {
+                let pids = matching_daemon_pids(daemon_bin).await;
+                if emit && !pids.is_empty() {
+                    tracing::debug!(
+                        path = %daemon_bin.display(),
+                        remaining = pids.len(),
+                        "backend_install: still waiting for the previous daemon to exit"
+                    );
+                }
+                pids
+            }
+        },
+        STOP_POLL_ATTEMPTS,
+        STOP_POLL_INTERVAL,
+    )
+    .await;
     if remaining.is_empty() {
         return Ok(());
     }
@@ -677,6 +734,28 @@ async fn migrate_legacy_bundle_env(home: &Path) {
     }
 }
 
+/// How many times [`rename_with_retry`] attempts the swap, and the base gap
+/// between tries (grown linearly). Short by design — the rename either succeeds
+/// at once or is briefly blocked by a scanner/indexer that lets go within a
+/// second or two; a genuinely locked file should surface quickly, not stall the
+/// whole install.
+const RENAME_ATTEMPTS: u32 = 5;
+const RENAME_BASE_DELAY: Duration = Duration::from_millis(100);
+
+/// `tokio::fs::rename` with the bounded transient-failure retry from the shared
+/// [`meridian_core::retry::retry_transient`]. [`stage_binary`]'s rename swaps the
+/// freshly staged binary over `~/.meridian/bin/meridian(.exe)` — the live
+/// daemon's image path, exactly where a momentary Windows file hold lands — so
+/// retrying turns a self-clearing blip into a silent success instead of an
+/// install-failed notice. A persistent failure still returns the real error so a
+/// genuinely locked file is not swept under the rug.
+async fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    meridian_core::retry::retry_transient(RENAME_ATTEMPTS, RENAME_BASE_DELAY, || {
+        tokio::fs::rename(from, to)
+    })
+    .await
+}
+
 /// Copy `src` → `dest` only when the bytes differ, then `chmod 0755`.
 /// Skipping an identical copy keeps the code hash (and any TCC grant) stable.
 ///
@@ -716,7 +795,7 @@ async fn stage_binary(src: &Path, dest: &Path) -> Result<(), String> {
         let _ = tokio::fs::remove_file(&tmp).await;
         return Err(e);
     }
-    if let Err(e) = tokio::fs::rename(&tmp, dest).await {
+    if let Err(e) = rename_with_retry(&tmp, dest).await {
         let _ = tokio::fs::remove_file(&tmp).await;
         return Err(format!(
             "rename {} → {}: {e}",
@@ -1115,6 +1194,170 @@ mod tests {
         assert!(
             !rendered.contains("{{"),
             "daemon plist body still has an unsubstituted placeholder: {rendered}"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Windows install-lock hardening: `rename_with_retry` (the tray-side thin
+    // wrapper over the shared `meridian_core::retry::retry_transient`) and the
+    // daemon-exit poll `wait_until_gone`. The retry primitive itself is
+    // unit-tested in `meridian-core::retry`; these cover the wrapper's wiring
+    // and the poll loop.
+    //
+    // The failures they guard against — os error 32 when overwriting a
+    // still-open `meridian.exe`, a daemon that needs a beat to release its
+    // binary — only occur on Windows, but the *logic* is deliberately
+    // platform-neutral so it compiles and these tests actually run on the
+    // macOS-only CI. They use zero-delay backoff and call-counting fakes so
+    // they are deterministic, fast, and free of any real timing dependence.
+    // ---------------------------------------------------------------------
+
+    /// `rename_with_retry` moves the file and clears the source on the happy
+    /// path — the same contract as a bare `rename`, so wiring it into
+    /// `stage_binary` changes nothing for the common case.
+    #[tokio::test]
+    async fn rename_with_retry_moves_the_file_on_success() {
+        let dir = std::env::temp_dir().join(format!("meridian-rename-ok-{}", std::process::id()));
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let from = dir.join("from");
+        let to = dir.join("to");
+        tokio::fs::write(&from, b"payload").await.unwrap();
+
+        rename_with_retry(&from, &to).await.unwrap();
+
+        assert!(
+            tokio::fs::metadata(&from).await.is_err(),
+            "source is gone after a successful rename"
+        );
+        assert_eq!(tokio::fs::read(&to).await.unwrap(), b"payload");
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    /// A rename whose source never exists fails on every attempt: it must
+    /// surface the real `NotFound` error (proving the loop terminates and does
+    /// not mask the cause) and must not conjure a destination file.
+    #[tokio::test]
+    async fn rename_with_retry_surfaces_a_persistent_failure() {
+        let dir = std::env::temp_dir().join(format!("meridian-rename-fail-{}", std::process::id()));
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let missing = dir.join("does-not-exist");
+        let to = dir.join("dest");
+
+        let err = rename_with_retry(&missing, &to).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(
+            tokio::fs::metadata(&to).await.is_err(),
+            "a failed rename must not have created the destination"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    /// `wait_until_gone` reports the daemon gone on the very first probe when
+    /// it has already exited — no waiting, no wasted install latency.
+    #[tokio::test]
+    async fn wait_until_gone_returns_on_first_probe_when_already_gone() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let probes = AtomicU32::new(0);
+        let remaining = wait_until_gone(
+            || {
+                probes.fetch_add(1, Ordering::SeqCst);
+                async { Vec::<u32>::new() }
+            },
+            40,
+            Duration::ZERO,
+        )
+        .await;
+        assert!(remaining.is_empty());
+        assert_eq!(
+            probes.load(Ordering::SeqCst),
+            1,
+            "an already-exited daemon is detected on the first probe, with no waiting"
+        );
+    }
+
+    /// `wait_until_gone` keeps polling across live probes and succeeds the
+    /// instant the daemon disappears mid-window — the case the widened 10s
+    /// budget exists to catch (a daemon that takes a few seconds to unwind).
+    #[tokio::test]
+    async fn wait_until_gone_keeps_polling_until_the_daemon_exits() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let probes = AtomicU32::new(0);
+        let remaining = wait_until_gone(
+            || {
+                let n = probes.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if n < 3 {
+                        vec![4321]
+                    } else {
+                        Vec::new()
+                    }
+                }
+            },
+            40,
+            Duration::ZERO,
+        )
+        .await;
+        assert!(
+            remaining.is_empty(),
+            "polling continues across live probes until the daemon is gone"
+        );
+        assert_eq!(probes.load(Ordering::SeqCst), 4);
+    }
+
+    /// A daemon that never exits within the budget must be *returned*, not
+    /// hidden — that non-empty list is what makes `stop_running_daemon_before_stage`
+    /// fail the install loudly rather than overwrite a locked binary.
+    #[tokio::test]
+    async fn wait_until_gone_reports_survivors_when_the_window_expires() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let probes = AtomicU32::new(0);
+        let remaining = wait_until_gone(
+            || {
+                probes.fetch_add(1, Ordering::SeqCst);
+                async { vec![12516u32] }
+            },
+            3,
+            Duration::ZERO,
+        )
+        .await;
+        assert_eq!(
+            remaining,
+            vec![12516],
+            "a daemon that never exits is surfaced so the caller fails loudly"
+        );
+        // one initial probe + `attempts` (3) re-probes
+        assert_eq!(probes.load(Ordering::SeqCst), 4);
+    }
+
+    /// Degenerate floor: `attempts == 0` still does the one initial probe and
+    /// returns its result — it must never skip probing entirely (which would
+    /// let a locked binary through) nor loop.
+    #[tokio::test]
+    async fn wait_until_gone_probes_once_when_attempts_is_zero() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let probes = AtomicU32::new(0);
+        let remaining = wait_until_gone(
+            || {
+                probes.fetch_add(1, Ordering::SeqCst);
+                async { vec![7u32] }
+            },
+            0,
+            Duration::ZERO,
+        )
+        .await;
+        assert_eq!(
+            remaining,
+            vec![7],
+            "the initial probe's result is returned as-is"
+        );
+        assert_eq!(
+            probes.load(Ordering::SeqCst),
+            1,
+            "exactly one probe, never zero"
         );
     }
 }

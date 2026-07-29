@@ -236,7 +236,19 @@ mod tests {
 
     #[test]
     fn nudge_hold_back_covers_the_grace_hour_only() {
-        let now = Local::now();
+        // Anchored to local midday rather than `Local::now()`. The `stamp_ago`
+        // offsets below reach up to AUTO_OPEN_GRACE_SECS (1 h) into the past, so
+        // with the real clock every run between 00:00 and 01:00 local put those
+        // stamps on the PREVIOUS day - where `nudge_held_back` correctly reports
+        // "not held" for a prior-day marker, failing the assertions. The subject
+        // under test takes `now` as a parameter precisely so it need not depend
+        // on the wall clock; this uses that.
+        let now = Local::now()
+            .with_hour(12)
+            .and_then(|t| t.with_minute(0))
+            .and_then(|t| t.with_second(0))
+            .and_then(|t| t.with_nanosecond(0))
+            .expect("local midday exists on every date");
         let today = now.format("%Y-%m-%d").to_string();
         let stamp_ago =
             |secs: i64| meridian_core::plan_marker::stamp(&(now - chrono::Duration::seconds(secs)));
