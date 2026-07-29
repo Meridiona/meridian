@@ -538,7 +538,24 @@ pub struct InstallOutcome {
 async fn resolve_installer_binary(cmd: &str) -> String {
     match cmd.split_once(' ') {
         Some((installer_bin, rest)) => match resolve_cli(installer_bin).await {
-            Some(resolved) => format!("{} {rest}", resolved.display()),
+            // `npm` (and most CLIs installed by the same tooling) is itself a
+            // `#!/usr/bin/env node` script — the OS execs `env`, and `env` does its OWN
+            // independent PATH search for `node` using the shell's PATH, completely
+            // unaffected by how npm itself was invoked. Substituting only npm's absolute
+            // path fixed the FIRST lookup ("command not found: npm") but not this second,
+            // nested one ("env: node: No such file or directory") — every real npm
+            // install keeps `node` in the exact same directory as `npm` (Homebrew, nvm's
+            // per-version bin/, Volta's shim dir, the official installer), so prepending
+            // that directory onto PATH fixes the shebang lookup the same way resolving
+            // npm itself fixed the first one.
+            Some(resolved) => match resolved.parent() {
+                Some(dir) => format!(
+                    "export PATH=\"{}:$PATH\"; {} {rest}",
+                    dir.display(),
+                    resolved.display()
+                ),
+                None => format!("{} {rest}", resolved.display()),
+            },
             None => cmd.to_string(),
         },
         None => cmd.to_string(),
@@ -1825,8 +1842,74 @@ mod tests {
 
         assert_eq!(
             resolved,
-            format!("{} i -g some-package", fake_bin.display()),
-            "expected the leading binary swapped for its resolved absolute path"
+            format!(
+                "export PATH=\"{}:$PATH\"; {} i -g some-package",
+                bin_dir.display(),
+                fake_bin.display()
+            ),
+            "expected the leading binary swapped for its resolved absolute path, with its \
+             directory prepended onto PATH"
+        );
+    }
+
+    /// The Node-shebang case that motivated prepending PATH, not just resolving the leading
+    /// binary: `npm` is itself a `#!/usr/bin/env node` script, so the OS execs `env`, and `env`
+    /// does its OWN independent PATH search for `node` — resolving npm's own absolute path
+    /// does not help THAT lookup. Fakes an `npm` script with a real `env node` shebang plus a
+    /// fake `node` living alongside it, so this only passes if PATH was actually prepended
+    /// (not just npm's leading token swapped).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn resolve_installer_binary_fixes_the_env_node_shebang_lookup() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = ENV_LOCK.lock().await;
+        let original_home = std::env::var_os("HOME");
+        let temp_home = std::env::temp_dir().join(format!(
+            "meridian-detect-shebang-test-{}",
+            std::process::id()
+        ));
+        let bin_dir = temp_home.join(".local").join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let fake_node = bin_dir.join("node");
+        std::fs::write(&fake_node, "#!/bin/sh\necho FAKE_NODE_RAN\n").unwrap();
+        let fake_npm = bin_dir.join("meridian-fake-npm");
+        std::fs::write(&fake_npm, "#!/usr/bin/env node\n").unwrap();
+        for f in [&fake_node, &fake_npm] {
+            let mut perms = std::fs::metadata(f).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(f, perms).unwrap();
+        }
+        std::env::set_var("HOME", &temp_home);
+
+        let resolved_cmd = resolve_installer_binary("meridian-fake-npm i -g some-package").await;
+
+        let child = {
+            let mut cmd = installer_command(&resolved_cmd);
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            cmd.spawn()
+        };
+
+        match original_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+
+        let output = child
+            .expect("installer_command must spawn")
+            .wait_with_output()
+            .await
+            .expect("installer_command must run to completion");
+        let _ = std::fs::remove_dir_all(&temp_home);
+
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "FAKE_NODE_RAN",
+            "{output:?}"
         );
     }
 
