@@ -538,11 +538,53 @@ pub struct InstallOutcome {
 async fn resolve_installer_binary(cmd: &str) -> String {
     match cmd.split_once(' ') {
         Some((installer_bin, rest)) => match resolve_cli(installer_bin).await {
-            Some(resolved) => format!("{} {rest}", resolved.display()),
+            // `npm` (and most CLIs installed by the same tooling) is itself a
+            // `#!/usr/bin/env node` script — the OS execs `env`, and `env` does its OWN
+            // independent PATH search for `node` using the shell's PATH, completely
+            // unaffected by how npm itself was invoked. Substituting only npm's absolute
+            // path fixed the FIRST lookup ("command not found: npm") but not this second,
+            // nested one ("env: node: No such file or directory") — every real npm
+            // install keeps `node` in the exact same directory as `npm` (Homebrew, nvm's
+            // per-version bin/, Volta's shim dir, the official installer), so prepending
+            // that directory onto PATH fixes the shebang lookup the same way resolving
+            // npm itself fixed the first one.
+            Some(resolved) => match resolved.parent() {
+                Some(dir) => format!(
+                    "export PATH=\"{}:$PATH\"; {} {rest}",
+                    dir.display(),
+                    resolved.display()
+                ),
+                None => format!("{} {rest}", resolved.display()),
+            },
             None => cmd.to_string(),
         },
         None => cmd.to_string(),
     }
+}
+
+/// Build a `Command` for `path`, a CLI already located via [`resolve_cli`], with `path`'s own
+/// directory prepended onto the child's `PATH` — same fix as [`resolve_installer_binary`],
+/// applied to the sign-in flows ([`cursor_sign_in`]/[`codex_sign_in`]/[`claude_sign_in`]),
+/// which spawn the resolved binary directly rather than through a shell.
+///
+/// Those CLIs are still spawned by ABSOLUTE PATH, so the OS doesn't need `PATH` to find `path`
+/// itself — but `codex`/`claude` (unlike `cursor-agent`, a native binary) are `#!/usr/bin/env
+/// node` scripts, and `env` does its own independent `PATH` search for `node` at exec time,
+/// using whatever environment the child inherits. `Command::new` inherits the CURRENT
+/// process's `PATH` by default — the tray's own stripped launchd one on macOS, with no
+/// `/opt/homebrew/bin` — so that inner lookup fails with "env: node: No such file or
+/// directory" exactly like [`resolve_installer_binary`]'s install-time case, even though the
+/// CLI itself was already found and resolved correctly.
+fn command_for_resolved_cli(path: &std::path::Path) -> Command {
+    let mut cmd = Command::new(path);
+    if let Some(dir) = path.parent() {
+        let existing = std::env::var_os("PATH").unwrap_or_default();
+        let mut new_path = std::ffi::OsString::from(dir);
+        new_path.push(":");
+        new_path.push(existing);
+        cmd.env("PATH", new_path);
+    }
+    cmd
 }
 
 #[tracing::instrument(
@@ -773,7 +815,7 @@ pub async fn cursor_sign_in() -> InstallOutcome {
     };
 
     tracing::info!("llm: launching interactive cursor-agent login");
-    let mut cmd = Command::new(&path);
+    let mut cmd = command_for_resolved_cli(&path);
     cmd.arg("login")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -882,7 +924,7 @@ pub async fn codex_sign_in() -> InstallOutcome {
     };
 
     tracing::info!("llm: launching interactive codex login");
-    let mut cmd = Command::new(&path);
+    let mut cmd = command_for_resolved_cli(&path);
     cmd.arg("login")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -989,7 +1031,7 @@ pub async fn claude_sign_in() -> InstallOutcome {
     };
 
     tracing::info!("llm: launching interactive claude auth login");
-    let mut cmd = Command::new(&path);
+    let mut cmd = command_for_resolved_cli(&path);
     cmd.arg("auth")
         .arg("login")
         .arg("--claudeai")
@@ -1825,8 +1867,74 @@ mod tests {
 
         assert_eq!(
             resolved,
-            format!("{} i -g some-package", fake_bin.display()),
-            "expected the leading binary swapped for its resolved absolute path"
+            format!(
+                "export PATH=\"{}:$PATH\"; {} i -g some-package",
+                bin_dir.display(),
+                fake_bin.display()
+            ),
+            "expected the leading binary swapped for its resolved absolute path, with its \
+             directory prepended onto PATH"
+        );
+    }
+
+    /// The Node-shebang case that motivated prepending PATH, not just resolving the leading
+    /// binary: `npm` is itself a `#!/usr/bin/env node` script, so the OS execs `env`, and `env`
+    /// does its OWN independent PATH search for `node` — resolving npm's own absolute path
+    /// does not help THAT lookup. Fakes an `npm` script with a real `env node` shebang plus a
+    /// fake `node` living alongside it, so this only passes if PATH was actually prepended
+    /// (not just npm's leading token swapped).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn resolve_installer_binary_fixes_the_env_node_shebang_lookup() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = ENV_LOCK.lock().await;
+        let original_home = std::env::var_os("HOME");
+        let temp_home = std::env::temp_dir().join(format!(
+            "meridian-detect-shebang-test-{}",
+            std::process::id()
+        ));
+        let bin_dir = temp_home.join(".local").join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let fake_node = bin_dir.join("node");
+        std::fs::write(&fake_node, "#!/bin/sh\necho FAKE_NODE_RAN\n").unwrap();
+        let fake_npm = bin_dir.join("meridian-fake-npm");
+        std::fs::write(&fake_npm, "#!/usr/bin/env node\n").unwrap();
+        for f in [&fake_node, &fake_npm] {
+            let mut perms = std::fs::metadata(f).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(f, perms).unwrap();
+        }
+        std::env::set_var("HOME", &temp_home);
+
+        let resolved_cmd = resolve_installer_binary("meridian-fake-npm i -g some-package").await;
+
+        let child = {
+            let mut cmd = installer_command(&resolved_cmd);
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            cmd.spawn()
+        };
+
+        match original_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+
+        let output = child
+            .expect("installer_command must spawn")
+            .wait_with_output()
+            .await
+            .expect("installer_command must run to completion");
+        let _ = std::fs::remove_dir_all(&temp_home);
+
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "FAKE_NODE_RAN",
+            "{output:?}"
         );
     }
 
@@ -1838,6 +1946,51 @@ mod tests {
         let cmd = "meridian-definitely-not-a-real-binary --flag value";
         let resolved = resolve_installer_binary(cmd).await;
         assert_eq!(resolved, cmd);
+    }
+
+    /// The sign-in-flow counterpart to `resolve_installer_binary_fixes_the_env_node_shebang_lookup`:
+    /// `cursor_sign_in`/`codex_sign_in`/`claude_sign_in` spawn the resolved CLI directly
+    /// (`Command::new(&path)`, no shell), so `resolve_installer_binary`'s PATH-prepending fix
+    /// never applied to them — `codex`/`claude` are still `#!/usr/bin/env node` scripts, and a
+    /// directly-spawned child inherits the CURRENT process's `PATH` (the tray's own stripped
+    /// one), not any shell-derived one. Fakes a `#!/usr/bin/env node` CLI with a fake `node`
+    /// alongside it; only passes if `command_for_resolved_cli` actually set `PATH` on the child.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn command_for_resolved_cli_fixes_the_env_node_shebang_lookup() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "meridian-detect-cmd-resolved-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let fake_node = temp_dir.join("node");
+        std::fs::write(&fake_node, "#!/bin/sh\necho FAKE_NODE_RAN\n").unwrap();
+        let fake_cli = temp_dir.join("meridian-fake-cli");
+        std::fs::write(&fake_cli, "#!/usr/bin/env node\n").unwrap();
+        for f in [&fake_node, &fake_cli] {
+            let mut perms = std::fs::metadata(f).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(f, perms).unwrap();
+        }
+
+        let mut cmd = command_for_resolved_cli(&fake_cli);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = cmd
+            .output()
+            .await
+            .expect("command_for_resolved_cli must spawn");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "FAKE_NODE_RAN",
+            "{output:?}"
+        );
     }
 
     /// cursor-agent does not install via npm on Windows (see

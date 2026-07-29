@@ -300,3 +300,71 @@ jobs:
             echo "### Cache warm (Windows)"
             echo "Seeded \`windows-release-x86_64-pc-windows-msvc\` under \`refs/heads/main\`."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Prune superseded caches (release AND ci.yml's PR-check caches) ──────────
+  #
+  # GitHub Actions caches are IMMUTABLE per key. Swatinem/rust-cache's key
+  # includes a hash component that shifts over time (toolchain/workspace
+  # fingerprinting), so every run that can't reuse an EXACT prior key writes a
+  # brand-new ~750MB-1.4GB entry rather than replacing the old one — the old
+  # one just sits there, unreachable by any future restore, until the repo
+  # crosses its 10GB cache cap and GitHub's LRU eviction removes SOMETHING
+  # (not necessarily the stale one). Measured directly: this repo hit
+  # 11.3GB/34 caches once (fixed by hand), climbed back to 10.49GB/42 after a
+  # single subsequent warm run — and separately, ci.yml's `ci-macos-silicon`
+  # cache (unrelated to the release caches below, a debug/test profile build
+  # on `pre-main`) was found sitting at FOUR duplicate copies of itself before
+  # this job covered it too. Manual cleanup doesn't scale — this job
+  # automates all of it.
+  #
+  # Runs after both warm jobs (needs + always()) so it sees whatever they just
+  # saved, keeps the newest cache per prefix on its OWN ref, deletes every
+  # older one matching that prefix. Safe by construction: each prefix is
+  # paired with the one ref it's ever scoped to (release caches only ever
+  # live on `main`; ci.yml's caches only ever save on `pre-main` — see each
+  # job's own `save-if`), so this never touches a tag or PR cache, and never
+  # deletes the newest entry for any prefix (so a future build always has
+  # something to restore).
+  prune-stale-caches:
+    name: Prune superseded caches
+    needs: [warm-macos, warm-windows]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Deleting a cache entry via the REST API needs actions:write — kept
+      # scoped to just this job, not the whole workflow.
+      actions: write
+    steps:
+      - name: Delete every cache except the newest per prefix on its own ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # prefix|ref pairs. Release caches live on main (this workflow's own
+          # target); ci.yml's caches save on pre-main (see ci.yml's rust/
+          # rust-windows jobs' save-if) — a different ref, so each pair is
+          # queried separately rather than assuming one ref for everything.
+          pairs=(
+            "v0-rust-macos-release-aarch64-apple-darwin|refs/heads/main"
+            "v0-rust-windows-release-x86_64-pc-windows-msvc|refs/heads/main"
+            "v0-rust-ci-macos-silicon|refs/heads/pre-main"
+            "v0-rust-ci-windows|refs/heads/pre-main"
+          )
+          for pair in "${pairs[@]}"; do
+            prefix="${pair%%|*}"
+            ref="${pair##*|}"
+            echo "=== ${prefix} (${ref}) ==="
+            stale=$(gh api "repos/${{ github.repository }}/actions/caches?per_page=100&ref=${ref}" \
+              --jq --arg p "$prefix" \
+              '[.actions_caches[] | select(.key | startswith($p))] | sort_by(.created_at) | reverse | .[1:] | .[].id')
+            if [ -z "$stale" ]; then
+              echo "nothing to prune"
+              continue
+            fi
+            for id in $stale; do
+              echo "deleting superseded cache $id"
+              gh api -X DELETE "repos/${{ github.repository }}/actions/caches/${id}" \
+                || echo "::warning::failed to delete cache ${id} (non-fatal, next run will retry)"
+            done
+          done
