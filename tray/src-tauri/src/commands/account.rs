@@ -29,7 +29,7 @@
 //!   becomes the event's `distinct_id` directly, never an anonymous id).
 //!
 //! # ALPHA TESTING ONLY — per-user Support ID (expires 2026-08-28)
-//! [`save_account_email`] also derives a salted, one-way hash of the email
+//! [`save_account_email`] also derives a domain-separated, one-way hash of the email
 //! (`meridian::telemetry_spool::redact::pseudonymize_account`) and mirrors
 //! ONLY that hash into `settings.json`'s `account_pseudonym` — never the raw
 //! email, which stays confined to this module's own `account.json`. The
@@ -156,7 +156,7 @@ pub async fn save_account_email(email: String) -> Result<(), String> {
 /// hash, which is all `telemetry_spool::redact::local_host_pseudonym` needs.
 /// Clearing promptly on sign-out matters: a lingering hash would keep
 /// grouping error reports under someone no longer signed in on this machine.
-/// Mirror the account pseudonym (a salted hash, never the raw email) into
+/// Mirror the account pseudonym (a one-way hash, never the raw email) into
 /// `settings.json`, or clear it on sign-out.
 ///
 /// Instrumented because it does real I/O whose failure is otherwise invisible:
