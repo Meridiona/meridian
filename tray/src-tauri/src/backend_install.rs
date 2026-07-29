@@ -1332,4 +1332,32 @@ mod tests {
         // one initial probe + `attempts` (3) re-probes
         assert_eq!(probes.load(Ordering::SeqCst), 4);
     }
+
+    /// Degenerate floor: `attempts == 0` still does the one initial probe and
+    /// returns its result — it must never skip probing entirely (which would
+    /// let a locked binary through) nor loop.
+    #[tokio::test]
+    async fn wait_until_gone_probes_once_when_attempts_is_zero() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let probes = AtomicU32::new(0);
+        let remaining = wait_until_gone(
+            || {
+                probes.fetch_add(1, Ordering::SeqCst);
+                async { vec![7u32] }
+            },
+            0,
+            Duration::ZERO,
+        )
+        .await;
+        assert_eq!(
+            remaining,
+            vec![7],
+            "the initial probe's result is returned as-is"
+        );
+        assert_eq!(
+            probes.load(Ordering::SeqCst),
+            1,
+            "exactly one probe, never zero"
+        );
+    }
 }

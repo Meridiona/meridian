@@ -207,4 +207,151 @@ mod tests {
         assert_eq!(out, Err("locked"));
         assert_eq!(calls, 1);
     }
+
+    // ── boundary + schedule (both variants) ─────────────────────────────────
+    // The cases the four-property pair above doesn't pin: success landing on
+    // the *last allowed* attempt (off-by-one either way), which error is
+    // surfaced when they differ, the `attempts == 0` degenerate floor, and that
+    // the backoff is actually linear (`base × attempt`), not constant.
+
+    /// Success on exactly the final allowed attempt returns `Ok` — the retry
+    /// must not give up one attempt early. Distinct from the "recovers" test,
+    /// which has slack (5 attempts, succeeds on the 4th); here `attempts == 3`
+    /// and success is on the 3rd, so an off-by-one would wrongly return `Err`.
+    #[tokio::test]
+    async fn retry_transient_succeeds_on_the_final_allowed_attempt() {
+        let calls = AtomicU32::new(0);
+        let out: Result<&str, ()> = retry_transient(3, Duration::ZERO, || {
+            let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
+            async move {
+                if n < 3 {
+                    Err(())
+                } else {
+                    Ok("made it")
+                }
+            }
+        })
+        .await;
+        assert_eq!(out, Ok("made it"));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "no extra attempt past the success"
+        );
+    }
+
+    /// When every attempt fails with a *different* error, the one surfaced is
+    /// the final attempt's — not the first, not an arbitrary one.
+    #[tokio::test]
+    async fn retry_transient_returns_the_last_error_not_the_first() {
+        let calls = AtomicU32::new(0);
+        let out: Result<(), u32> = retry_transient(4, Duration::ZERO, || {
+            let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
+            async move { Err(n) }
+        })
+        .await;
+        assert_eq!(
+            out,
+            Err(4),
+            "the fourth (final) attempt's error is surfaced"
+        );
+    }
+
+    /// `attempts == 0` degenerates to a single try, never zero — the operation
+    /// is always run at least once (a "retry 0 times" caller still gets one go).
+    #[tokio::test]
+    async fn retry_transient_with_zero_attempts_still_makes_one_call() {
+        let calls = AtomicU32::new(0);
+        let out: Result<(), &str> = retry_transient(0, Duration::ZERO, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Err("x") }
+        })
+        .await;
+        assert_eq!(out, Err("x"));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "attempts==0 still runs the op once"
+        );
+    }
+
+    /// The backoff is linear (`base × attempt`), not constant: with all attempts
+    /// failing, the total time slept is `base × (1 + 2 + … + (attempts-1))`.
+    /// Uses tokio's paused clock so this is exact and instant — no real waiting.
+    #[tokio::test(start_paused = true)]
+    async fn retry_transient_uses_linear_backoff_schedule() {
+        let base = Duration::from_millis(100);
+        let start = tokio::time::Instant::now();
+        let out: Result<(), ()> = retry_transient(4, base, || async { Err(()) }).await;
+        let elapsed = start.elapsed();
+        assert_eq!(out, Err(()));
+        // Sleeps after attempts 1, 2, 3 (attempt 4 is final, no sleep): 100+200+300.
+        assert_eq!(
+            elapsed,
+            base + base * 2 + base * 3,
+            "linear backoff: base×1 + base×2 + base×3 = 600ms of virtual time"
+        );
+    }
+
+    #[test]
+    fn retry_transient_blocking_succeeds_on_the_final_allowed_attempt() {
+        let mut calls = 0u32;
+        let out: Result<&str, ()> = retry_transient_blocking(3, Duration::ZERO, || {
+            calls += 1;
+            if calls < 3 {
+                Err(())
+            } else {
+                Ok("made it")
+            }
+        });
+        assert_eq!(out, Ok("made it"));
+        assert_eq!(calls, 3, "no extra attempt past the success");
+    }
+
+    #[test]
+    fn retry_transient_blocking_returns_the_last_error_not_the_first() {
+        let mut calls = 0u32;
+        let out: Result<(), u32> = retry_transient_blocking(4, Duration::ZERO, || {
+            calls += 1;
+            Err(calls)
+        });
+        assert_eq!(
+            out,
+            Err(4),
+            "the fourth (final) attempt's error is surfaced"
+        );
+    }
+
+    #[test]
+    fn retry_transient_blocking_with_zero_attempts_still_makes_one_call() {
+        let mut calls = 0u32;
+        let out: Result<(), &str> = retry_transient_blocking(0, Duration::ZERO, || {
+            calls += 1;
+            Err("x")
+        });
+        assert_eq!(out, Err("x"));
+        assert_eq!(calls, 1, "attempts==0 still runs the op once");
+    }
+
+    /// The blocking variant sleeps for real, so verify the linear schedule via
+    /// elapsed wall-clock. Small `base` keeps it quick; asserting a *lower*
+    /// bound (`std::thread::sleep` only ever oversleeps) keeps it non-flaky,
+    /// while the sum still distinguishes linear (5+10+15=30ms) from constant
+    /// (5+5+5=15ms).
+    #[test]
+    fn retry_transient_blocking_uses_linear_backoff_schedule() {
+        let base = Duration::from_millis(5);
+        let start = std::time::Instant::now();
+        let out: Result<(), ()> = retry_transient_blocking(4, base, || Err(()));
+        let elapsed = start.elapsed();
+        assert_eq!(out, Err(()));
+        assert!(
+            elapsed >= base + base * 2 + base * 3,
+            "linear backoff sleeps at least base×1 + base×2 + base×3 (30ms), got {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "sanity upper bound, got {elapsed:?}"
+        );
+    }
 }
