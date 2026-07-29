@@ -111,8 +111,30 @@ pub(super) async fn refresh_health(
         async {
             let r = crate::commands::daemon_control::restart().await;
             match &r {
-                Err(e) => tracing::warn!(error = %e, "daemon-health auto-restart attempt failed"),
-                Ok(()) => tracing::info!("daemon-health auto-restart attempted"),
+                // ERROR (not WARN) so this line crosses the error-only central
+                // telemetry filter. The went-quiet *notice* is a local DB row
+                // and the watchdog's per-tick retries are WARN, so a
+                // paused/offline daemon the tray also couldn't restart was
+                // previously invisible in central OO — you could see the banner
+                // on the machine but nothing shipped. Edge-triggered
+                // (`attempt_restart` fires once on the 2nd consecutive failure),
+                // so it's one event per down-episode, not per poll. The fields
+                // are what you debug from: `daemon_running` vs `db_ready`
+                // pinpoints which subsystem is down, and `cold_start` (never seen
+                // healthy this run) distinguishes an install/autostart gap from a
+                // crash of a daemon that had been up.
+                Err(e) => tracing::error!(
+                    error = %e,
+                    daemon_running,
+                    db_ready,
+                    cold_start = !notify_down,
+                    "daemon offline and automatic restart failed — the daemon is down with no recovery this episode"
+                ),
+                Ok(()) => tracing::info!(
+                    daemon_running,
+                    db_ready,
+                    "daemon offline — automatic restart attempted"
+                ),
             }
             Some(r)
         }
