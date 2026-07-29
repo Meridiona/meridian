@@ -300,3 +300,57 @@ jobs:
             echo "### Cache warm (Windows)"
             echo "Seeded \`windows-release-x86_64-pc-windows-msvc\` under \`refs/heads/main\`."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Prune superseded release caches ─────────────────────────────────────────
+  #
+  # GitHub Actions caches are IMMUTABLE per key. Swatinem/rust-cache's key
+  # includes a hash component that shifts over time (toolchain/workspace
+  # fingerprinting), so every run that can't reuse an EXACT prior key writes a
+  # brand-new ~1.4GB entry rather than replacing the old one — the old one
+  # just sits there, unreachable by any future restore, until the repo crosses
+  # its 10GB cache cap and GitHub's LRU eviction removes SOMETHING (not
+  # necessarily the stale one). Measured directly: this repo hit 11.3GB/34
+  # caches once already (fixed by hand), then climbed back to 10.49GB/42 after
+  # a single subsequent warm run. Manual cleanup doesn't scale — this job
+  # automates it.
+  #
+  # Runs after BOTH warm jobs (needs + always()) so it sees whatever they just
+  # saved, keeps the newest cache per platform on `refs/heads/main`, deletes
+  # every older one matching the same prefix. Safe by construction: it only
+  # ever touches `macos-release-*`/`windows-release-*` keys on `main` — never
+  # a tag, PR, or `pre-main` cache, and never the newest entry for either
+  # platform (so a tag-triggered release build always has something to
+  # restore).
+  prune-stale-caches:
+    name: Prune superseded release caches
+    needs: [warm-macos, warm-windows]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Deleting a cache entry via the REST API needs actions:write — kept
+      # scoped to just this job, not the whole workflow.
+      actions: write
+    steps:
+      - name: Delete every cache except the newest per platform on refs/heads/main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for prefix in \
+            "v0-rust-macos-release-aarch64-apple-darwin" \
+            "v0-rust-windows-release-x86_64-pc-windows-msvc"; do
+            echo "=== ${prefix} ==="
+            stale=$(gh api "repos/${{ github.repository }}/actions/caches?per_page=100&ref=refs/heads/main" \
+              --jq --arg p "$prefix" \
+              '[.actions_caches[] | select(.key | startswith($p))] | sort_by(.created_at) | reverse | .[1:] | .[].id')
+            if [ -z "$stale" ]; then
+              echo "nothing to prune"
+              continue
+            fi
+            for id in $stale; do
+              echo "deleting superseded cache $id"
+              gh api -X DELETE "repos/${{ github.repository }}/actions/caches/${id}" \
+                || echo "::warning::failed to delete cache ${id} (non-fatal, next run will retry)"
+            done
+          done

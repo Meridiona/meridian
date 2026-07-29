@@ -11,3 +11,19 @@ incremental = false
 # Harmless for non-git sources (crates.io fetches are unaffected).
 [net]
 git-fetch-with-cli = true
+
+# rust-lld (LLD bundled in rustc's own sysroot, not an external LLVM install)
+# for the MSVC linker. Measured real-world speedup for a workspace this size
+# is modest (~5-10% of total build time, not the "2x" headline number some
+# guides quote — that figure is dominated by link time, and most of this
+# workspace's build time is compilation, not linking), but it's free and
+# nothing in this workspace's native deps (vendored OpenSSL, Sentry's
+# minidump handling, Windows resource embedding, windows-rs/WinRT bindings)
+# is known to conflict with it — verified before adding this.
+#
+# IMPORTANT: a target-specific `rustflags` REPLACES the `[build] rustflags`
+# above rather than merging with it, so `-D warnings` is repeated here — an
+# easy silent regression otherwise (Windows would stop treating warnings as
+# errors, exactly the gap the Windows CI job exists to close).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-D", "warnings", "-C", "linker=rust-lld"]
