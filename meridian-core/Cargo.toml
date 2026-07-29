@@ -29,17 +29,18 @@ dirs = "5"
 # Instrumentation facade only (~no-op without a subscriber) — the heavy OTLP
 # exporter is wired by the binary (daemon, or the tray's `otel` dev feature).
 tracing = "0.1"
-# Only the `process` feature, only for `proc_ext::NoWindow`'s impl on
-# `tokio::process::Command` (the std impl needs no dep). tokio is already in the
-# workspace tree via sqlx's tokio runtime and every binary that depends on this
-# crate (daemon, tray) already builds it with `full`, so feature-unification
-# means this adds nothing new to compile — it just brings the `process` module
-# into scope here.
-tokio = { version = "1", features = ["process"] }
+# `process` for `proc_ext::NoWindow`'s impl on `tokio::process::Command` (the std
+# impl needs no dep); `time` for `retry::retry_transient`'s async backoff sleep.
+# tokio is already in the workspace tree via sqlx's tokio runtime and every binary
+# that depends on this crate (daemon, tray) already builds it with `full`, so
+# feature-unification means this adds nothing new to compile — it just brings the
+# `process` and `time` modules into scope here.
+tokio = { version = "1", features = ["process", "time"] }
 
 [dev-dependencies]
-# For the #[ignore]d golden-compare smoke test (runs get_today against the real DB).
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# `macros`/`rt-multi-thread` for #[tokio::test]; `test-util` for the paused-clock
+# (`start_paused`) tests in `retry` that verify the backoff schedule deterministically.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
 # Integration tests build an in-memory schema + seed rows to exercise the
 # readers (sqlx is a regular dep, but integration tests need it in scope too).
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls"] }

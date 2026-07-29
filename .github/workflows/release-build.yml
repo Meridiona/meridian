@@ -68,18 +68,56 @@ name: Release (build & publish)
 # Splitting arches is also what the OFFICIAL Tauri matrix does; universal is
 # relegated to an example file upstream.
 #
-# ── WHY THE BUILD USES TWO CARGO INVOCATIONS ─────────────────────────────────
+# ── WHY THE BUILD IS ONE CARGO INVOCATION, NOT TWO ───────────────────────────
 #
-# See the "Compile daemon + tray" step. A single invocation was tried — passing
-# `-- -p meridian --bin meridian` through the Tauri CLI so the daemon shared the
-# tray's feature resolution — to avoid recompiling ~214 shared crates twice. It
-# does not build: `tauri build` injects `--features tauri/custom-protocol`, and
-# cargo applies it to the `-p meridian` scope, which has no `tauri` dependency,
-# so every platform fails with `the package 'meridian' does not contain this
-# feature: tauri/custom-protocol`. The scope switch and the injected feature are
-# structurally incompatible, so the daemon and the tray are compiled in two
-# separate cargo invocations. The double-compile of shared crates is the
-# accepted cost of a build that actually produces an artifact.
+# See the "Compile daemon + tray" step. This used to be two separate
+# invocations (`cargo build -p meridian --bin meridian`, then `tauri build`),
+# because passing `-- -p meridian --bin meridian` *through the Tauri CLI*
+# fails: `tauri build` injects `--features tauri/custom-protocol` scoped to
+# whatever it thinks the app package is, and when the CLI's own `-p` and the
+# passthrough `-p meridian` collide, cargo tries to apply that feature to
+# `meridian` — which has no `tauri` dependency — and every platform fails with
+# `the package 'meridian' does not contain this feature: tauri/custom-protocol`.
+#
+# That failure is specific to going through the Tauri CLI's own package
+# scoping, not to combining the two builds. Invoking `cargo` directly instead —
+# `cargo build -p meridian --bin meridian -p meridian-tray --bin
+# meridian-tray --features tauri/custom-protocol` — works: `tauri/custom-protocol`
+# uses Cargo's `dep-name/feature-name` syntax (activate a feature on a named
+# dependency, wherever it appears in the build graph), and `tauri` IS reachable
+# from this combined request (via `meridian-tray`), so it resolves cleanly.
+#
+# This was the actual cost, not a theoretical one: the old two-invocation shape
+# recompiled `meridian`/`meridian-core`/every shared dependency a SECOND time
+# inside the `tauri build` step, because cargo's fingerprinting is scoped per
+# invocation — two separate `cargo`/`tauri build` processes, even against the
+# same `target/`, compute different build-graph metadata and don't share
+# fingerprints. Confirmed directly from raw build logs (not assumed): `meridian`,
+# `meridian-core`, and `tokio` each compiled twice, ~5-6 minutes of pure waste
+# on a warm macOS build. One combined invocation compiles every shared crate
+# exactly once — verified on a true cold build, both platforms, before this
+# was rolled in (macOS: local test, each shared crate compiled once, correct
+# binaries, `tauri bundle` packaged in ~1s with zero extra compilation; Windows:
+# GitHub Actions windows-latest, cold compile 46m6s → 30m48s, zero duplicate
+# compiles, NSIS bundle succeeded with zero recompilation).
+#
+# `tauri bundle` (used below, separately, for packaging/signing/notarizing)
+# already ran zero cargo invocations even before this change — bundling was
+# never part of the duplication, only the compile step was.
+#
+# Compile-time config (e.g. the staging channel's updater endpoint, baked into
+# the binary by `generate_context!()`) still needs to differ by channel even
+# though this now bypasses the Tauri CLI's own `--config` flag. `tauri-build`'s
+# `build()` (called from `tray/src-tauri/build.rs`) reads a `TAURI_CONFIG` env
+# var — a JSON string it `json_patch::merge`s onto the base config — which is
+# exactly the mechanism `--config` uses under the hood (confirmed directly
+# against tauri-build 2.6.2's source, not assumed). The "Compile daemon + tray"
+# step below sets that env var to the staging config file's contents for
+# staging builds, replicating `--config src-tauri/tauri.staging.conf.json`
+# without going through the CLI. The later `tauri bundle` step keeps its
+# explicit `--config` flag unchanged — bundling metadata (naming, identifiers)
+# goes through the CLI as before; only the compile step needed the env-var
+# equivalent.
 
 on:
   push:
@@ -396,6 +434,14 @@ jobs:
           (cd ui && npm ci --no-audit --no-fund)
           (cd tray && npm ci --no-audit --no-fund)
 
+      - name: Build the UI
+        # `tauri build`'s `beforeBuildCommand` used to do this automatically.
+        # Compiling with plain `cargo build` (see "Compile daemon + tray"
+        # below) bypasses the Tauri CLI entirely, so this has to run
+        # explicitly now — generate_context! embeds ui/out at compile time and
+        # panics ("frontendDist ... doesn't exist") if it's missing.
+        run: cd ui && npm run build
+
       - name: Stub the daemon so tauri-build's resource check passes
         # tauri-build only STATS bundle.resources during compilation (it reads
         # the contents at BUNDLE time), so a zero-byte placeholder satisfies it.
@@ -430,29 +476,29 @@ jobs:
           # so a repo variable, not a secret. Unset → the tray never initialises
           # Sentry, exactly like a source build.
           MERIDIAN_SENTRY_DSN: ${{ vars.MERIDIAN_SENTRY_DSN }}
-        # TWO cargo invocations: the daemon binary, then the tray app.
-        #
-        # The old shape tried to do both in one invocation by passing
-        # `-- -p meridian --bin meridian` through the Tauri CLI to cargo, to
-        # share one feature resolution. It does not work: `tauri build` injects
-        # `--features tauri/custom-protocol` for the app crate, and cargo applies
-        # that to the `-p meridian` scope — a package with no `tauri` dependency
-        # — so every platform failed with `the package 'meridian' does not
-        # contain this feature: tauri/custom-protocol`. The scope switch and the
-        # injected feature are structurally incompatible; no flag reconciles
-        # them. Building the two crates separately is the correct, standard shape
-        # (it is what the pre-optimisation pipeline and `build:windows` did).
-        #
-        # The cost is that some shared crates compile twice under diverging
-        # feature sets — accepted: a build that ships beats a faster one that
-        # never produces an artifact. The daemon lands in
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+        # ONE cargo invocation for both binaries — see the header comment
+        # "WHY THE BUILD IS ONE CARGO INVOCATION, NOT TWO" for the full story
+        # (why the earlier attempt through the Tauri CLI failed, why invoking
+        # cargo directly doesn't hit the same error, and the measured cost of
+        # the old two-invocation shape). The daemon lands in
         # target/<triple>/release/meridian; the "Stage the real daemon" step
         # copies it over the stub before bundling.
+        #
+        # TAURI_CONFIG replicates `--config src-tauri/tauri.staging.conf.json`
+        # for the compile-time-baked config (e.g. the updater endpoint) —
+        # `tauri-build`'s build.rs reads this env var and JSON-patches it onto
+        # the base config, the same mechanism `--config` uses under the hood.
+        # The later `tauri bundle` step keeps its own explicit `--config` flag
+        # for bundling metadata, unchanged.
         run: |
+          if [ "${CHANNEL}" = "staging" ]; then
+            export TAURI_CONFIG="$(cat src-tauri/tauri.staging.conf.json)"
+          fi
           cargo build --release --locked --target ${{ matrix.target }} \
-            -p meridian --bin meridian
-          npx tauri build --no-bundle --target ${{ matrix.target }} \
-            ${{ needs.prepare.outputs.channel == 'staging' && '--config src-tauri/tauri.staging.conf.json' || '' }}
+            -p meridian --bin meridian \
+            -p meridian-tray --bin meridian-tray \
+            --features tauri/custom-protocol
 
       - name: Stage the real daemon for bundling
         # Replaces the stub with the binary the same invocation just produced.
@@ -758,15 +804,37 @@ jobs:
           (cd ui && npm ci --no-audit --no-fund)
           (cd tray && npm ci --no-audit --no-fund)
 
+      - name: Build the UI
+        # Same reasoning as the macOS job's "Build the UI" step: compiling via
+        # a single `cargo build` (see below) bypasses `tauri build`'s
+        # automatic `beforeBuildCommand`, so this has to run explicitly.
+        shell: bash
+        run: cd ui && npm run build
+
+      - name: Stub the daemon so tauri-build's resource check passes
+        # No longer true that Windows skips this the way it used to: that
+        # relied on `build:daemon:windows` fully finishing (and producing a
+        # REAL target/release/meridian.exe) before `tauri build` ran, in a
+        # separate npm-script invocation. Now both binaries compile in ONE
+        # cargo invocation (see below), with no ordering guarantee that
+        # meridian.exe finishes linking before meridian-tray's build.rs stats
+        # it — same reason the macOS job needs a stub. Verified on a true
+        # cold GitHub Actions windows-latest build with this stub in place:
+        # zero duplicate compiles, correct binaries, NSIS bundle succeeded.
+        shell: bash
+        run: |
+          mkdir -p target/release
+          : > target/release/meridian.exe
+
       - name: Build the daemon + tray (NSIS)
         working-directory: tray
         # `tauri.windows.conf.json` swaps the bundle to NSIS and points
         # bundle.resources at the daemon exe automatically for this target —
-        # no stub step is needed the way the macOS job needs one: the
-        # extensionless `target/release/meridian` resource entry from the base
-        # config is explicitly NULLED OUT by tauri.windows.conf.json, replaced
-        # with `target/release/meridian.exe`, which `cargo build --bin meridian`
-        # already produces at exactly that path with no cross-target copy step.
+        # the extensionless `target/release/meridian` resource entry from the
+        # base config is explicitly NULLED OUT by tauri.windows.conf.json,
+        # replaced with `target/release/meridian.exe`, which the combined
+        # cargo invocation below already produces at exactly that path with
+        # no cross-target copy step.
         #
         # `shell: pwsh` here, NOT this job's bash default — see the NOTE above
         # the NASM step for why: Git Bash forces its own MSYS perl (missing
@@ -791,8 +859,19 @@ jobs:
           # native-crash reporting. Client-embeddable DSN → repo variable; unset
           # → the tray never initialises Sentry.
           MERIDIAN_SENTRY_DSN: ${{ vars.MERIDIAN_SENTRY_DSN }}
+        # ONE cargo invocation for both binaries — same fix as the macOS job,
+        # see the header comment "WHY THE BUILD IS ONE CARGO INVOCATION, NOT
+        # TWO". `build:windows`/`build:windows:staging` (tray/package.json)
+        # now do the combined compile + `tauri bundle` in one script; the
+        # channel split is only about which config `tauri bundle` packages
+        # with. TAURI_CONFIG is set here (not in package.json) so it applies
+        # to the compile half via plain env-var inheritance — npm/node
+        # processes inherit the parent shell's environment regardless of
+        # which shell they internally spawn, so this works the same way
+        # whether `npm run` is invoked from pwsh (here) or bash.
         run: |
           if ($env:CHANNEL -eq "staging") {
+            $env:TAURI_CONFIG = Get-Content -Raw src-tauri/tauri.staging.conf.json
             npm run build:windows:staging
           } else {
             npm run build:windows
