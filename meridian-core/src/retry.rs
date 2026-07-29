@@ -17,6 +17,11 @@
 //! Keeping them platform-neutral means the logic compiles and is unit-tested on
 //! CI (macOS) — the one platform CI runs tests on — even though the failures
 //! they absorb are Windows-specific.
+//!
+//! Each retried attempt emits a `debug`-level trace (`attempt`, `attempts`)
+//! before backing off, so a live `meridian logs` tail shows the retry cadence —
+//! the diagnosability this failure class needs, since it can only be reproduced
+//! on a real Windows box, never in CI.
 
 use std::time::Duration;
 
@@ -41,6 +46,11 @@ where
             Ok(v) => return Ok(v),
             Err(e) if attempt >= attempts => return Err(e),
             Err(_) => {
+                tracing::debug!(
+                    attempt,
+                    attempts,
+                    "retry: transient failure, backing off before the next attempt"
+                );
                 tokio::time::sleep(base_delay * attempt).await;
                 attempt += 1;
             }
@@ -68,6 +78,11 @@ where
             Ok(v) => return Ok(v),
             Err(e) if attempt >= attempts => return Err(e),
             Err(_) => {
+                tracing::debug!(
+                    attempt,
+                    attempts,
+                    "retry: transient failure, backing off before the next attempt"
+                );
                 std::thread::sleep(base_delay * attempt);
                 attempt += 1;
             }
