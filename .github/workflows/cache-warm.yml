@@ -134,11 +134,15 @@ jobs:
             tray/package-lock.json
 
       - name: Install UI + tray deps
-        # `tauri build` runs the UI build as its beforeBuildCommand, so the node
-        # deps are a prerequisite of compiling at all.
         run: |
           (cd ui && npm ci --no-audit --no-fund)
           (cd tray && npm ci --no-audit --no-fund)
+
+      - name: Build the UI
+        # Compiling with plain `cargo build` (see below) bypasses `tauri
+        # build`'s automatic `beforeBuildCommand`, so this has to run
+        # explicitly — generate_context! embeds ui/out at compile time.
+        run: cd ui && npm run build
 
       - name: Stub the daemon so tauri-build's resource check passes
         # tauri-build only STATS bundle.resources during compilation; a
@@ -150,21 +154,23 @@ jobs:
 
       - name: Compile daemon + tray (aarch64-apple-darwin)
         working-directory: tray
-        # IDENTICAL to release-build.yml's compile step. Two invocations, for the
-        # reason documented there: `tauri build` injects
-        # `--features tauri/custom-protocol`, which cargo cannot apply to the
-        # `-p meridian` scope (no tauri dependency), so the two crates cannot
-        # share one invocation.
+        # ONE cargo invocation for both binaries — IDENTICAL to
+        # release-build.yml's macOS compile step; see that file's header
+        # comment "WHY THE BUILD IS ONE CARGO INVOCATION, NOT TWO" for the
+        # full story. Must stay byte-for-byte identical to release-build.yml's
+        # command (same reasoning as the shared-key comment above) or the
+        # cache silently stops matching.
         #
-        # No `--config src-tauri/tauri.staging.conf.json`: this job only ever
-        # runs on `main` (see the header), which release-build.yml always builds
-        # with the default (stable) Tauri config — never the staging one. Passing
-        # the staging config here would warm a cache under a different Tauri
-        # fingerprint than the stable release build actually compiles with.
+        # No TAURI_CONFIG: this job only ever runs on `main` (see the
+        # header), which release-build.yml always builds with the default
+        # (stable) Tauri config — never the staging one. Setting it here
+        # would warm a cache under a different Tauri fingerprint than the
+        # stable release build actually compiles with.
         run: |
           cargo build --release --locked --target aarch64-apple-darwin \
-            -p meridian --bin meridian
-          npx tauri build --no-bundle --target aarch64-apple-darwin
+            -p meridian --bin meridian \
+            -p meridian-tray --bin meridian-tray \
+            --features tauri/custom-protocol
 
       - name: Summary
         if: always()
@@ -245,25 +251,47 @@ jobs:
             tray/package-lock.json
 
       - name: Install UI + tray deps
-        # `tauri build` runs the UI build as its beforeBuildCommand, so the
-        # node deps are a prerequisite of compiling at all.
         run: |
           (cd ui && npm ci --no-audit --no-fund)
           (cd tray && npm ci --no-audit --no-fund)
 
+      - name: Build the UI
+        # Compiling with plain `cargo build` (see below) bypasses `tauri
+        # build`'s automatic `beforeBuildCommand`, so this has to run
+        # explicitly — generate_context! embeds ui/out at compile time.
+        shell: bash
+        run: cd ui && npm run build
+
+      - name: Stub the daemon so tauri-build's resource check passes
+        # Both binaries now compile in ONE cargo invocation (see below), with
+        # no ordering guarantee that meridian.exe finishes linking before
+        # meridian-tray's build.rs stats it — same reason release-build.yml's
+        # Windows job needs this now.
+        shell: bash
+        run: |
+          mkdir -p target/release
+          : > target/release/meridian.exe
+
       - name: Compile daemon + tray (x86_64-pc-windows-msvc)
         working-directory: tray
+        # ONE cargo invocation for both binaries — IDENTICAL to
+        # release-build.yml's Windows compile command (minus TAURI_CONFIG,
+        # same reasoning as the macOS warm job above: this only ever runs on
+        # `main`, the stable config). Must stay byte-for-byte identical or
+        # the cache silently stops matching.
+        #
         # `shell: pwsh`, NOT this job's bash default — see release-build.yml's
         # Windows job for why: Git Bash unconditionally forces its own MSYS
         # perl ahead of Strawberry Perl on PATH regardless of PATH ordering,
         # and MSYS perl is missing CPAN modules OpenSSL's Configure script
-        # needs. `--no-bundle` skips NSIS packaging/signing entirely — this
-        # job compiles, it doesn't ship, so none of the signing secrets are
-        # needed here.
+        # needs. No `tauri bundle` here — this job compiles to seed the
+        # cache, it doesn't ship, so none of the signing secrets are needed.
         shell: pwsh
         run: |
-          cargo build --locked --release --bin meridian --manifest-path ../Cargo.toml
-          npx tauri build --no-bundle
+          cargo build --release --locked --manifest-path ../Cargo.toml `
+            -p meridian --bin meridian `
+            -p meridian-tray --bin meridian-tray `
+            --features tauri/custom-protocol
 
       - name: Summary
         if: always()
