@@ -9,7 +9,7 @@
 import type { ReactNode } from 'react'
 import { Btn, Check, DISPLAY, Kicker, PermIcon, Row } from './atoms'
 import { PERMISSIONS } from './data'
-import type { NotifState } from './data'
+import type { NotifState, PermissionMeta } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import { TRACKERS, availableTrackers, availableTrackerNames } from '@/lib/integrations'
 import { llmProvider, LLM_INTRO_BODY, LLM_INTRO_TITLE, type LlmProviderId } from '@/lib/llm-providers'
@@ -19,6 +19,10 @@ import { SignInWidget } from './signin'
 
 /** The live wizard handle page.tsx builds and threads to every step body. */
 export interface Wiz {
+  // The resolved OS (`get_platform`). Shapes the Permissions step: macOS shows
+  // the two TCC grants + notifications; Windows shows notifications only (see
+  // the step-meta note below and `buildSteps`). `null` until resolved.
+  platform: string | null
   // Step 1 — permissions (live, polled every 2 s). The two TCC grants are
   // booleans; notifications is tri-state (see `NotifState`) because deny and
   // not-yet-asked need different grant actions.
@@ -55,52 +59,90 @@ export interface Wiz {
 }
 
 // ── STEP 1 — Permissions ──────────────────────────────────────────────────────
+// One card per OS permission. macOS shows all three (Accessibility + Screen
+// Recording required, Notifications optional); Windows shows Notifications
+// alone — the two TCC grants have no consent analogue there (see the step-meta
+// note below), so their cards would be permanent always-green no-ops.
 function PermissionsBody({ wiz }: { wiz: Wiz }) {
+  const isWin = wiz.platform === 'windows'
+  const cards = isWin ? PERMISSIONS.filter((p) => p.id === 'notifications') : PERMISSIONS
+  // Only Screen Recording lives locally on the Mac; on Windows the same
+  // reassurance holds, just for "this PC".
+  const device = isWin ? 'PC' : 'Mac'
+  // On Windows the notifications card IS the whole step, so when PermCard hides
+  // it — no plugin (`unbundled tauri dev`) or a WinRT probe that returned None
+  // in a packaged build — the step would otherwise render blank. Show a
+  // fallback line so there is always something to read. (On macOS the same hide
+  // still leaves the two TCC cards, so no fallback is needed there.)
+  const notifHidden = isWin && wiz.perms.notifications === 'unavailable'
   return (
     <div className="flex flex-col" style={{ gap: 9 }}>
-      {PERMISSIONS.map((p) => {
-        const notif = p.id === 'notifications'
-        // Unbundled runs (`tauri dev`) have no notification plugin at all —
-        // nothing to grant, so the card hides rather than dead-ends.
-        if (notif && wiz.perms.notifications === 'unavailable') return null
-        const granted = notif ? wiz.perms.notifications === 'granted' : !!wiz.perms[p.id]
-        return (
-          <Row key={p.id} tone={granted ? 'tint' : 'surface'}>
+      {notifHidden
+        ? <Row tone="surface">
             <span className="flex items-center justify-center shrink-0" style={{
               width: 34, height: 34, borderRadius: 10,
-              background: granted ? 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)' : 'var(--t-box)',
-              color: granted ? 'var(--color-state-proposal)' : 'var(--t-faint)',
-              border: '0.5px solid var(--t-card-border)',
-            }}><PermIcon icon={p.icon} /></span>
-
+              background: 'var(--t-box)', color: 'var(--t-faint)', border: '0.5px solid var(--t-card-border)',
+            }}><PermIcon icon="bell" /></span>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="flex items-center" style={{ gap: 8 }}>
-                <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>{p.name}</span>
-                {!notif && <span className="mt-chip" style={{ color: 'var(--t-muted)', border: '0.5px solid var(--t-card-border)', borderRadius: 4, padding: '1px 5px' }}>{p.required ? 'REQUIRED' : 'OPTIONAL'}</span>}
-              </div>
-              <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-muted)', marginTop: 3 }}>{p.desc}</p>
-            </div>
-
-            <div className="shrink-0">
-              {granted
-                ? <span className="flex items-center" style={{ gap: 6, fontSize: 12, color: 'var(--color-state-approved)', fontWeight: 500 }}><Check size={15} color="var(--color-state-approved)" />Granted</span>
-                : notif
-                  // 'prompt' → the button surfaces the one-shot OS dialog;
-                  // 'denied' → macOS won't re-prompt, so it opens the
-                  // Notifications pane directly (grantNotifications skips the
-                  // pointless re-request when told it's already denied).
-                  ? <Btn size="sm" variant="secondary" onClick={() => wiz.grantNotifications(wiz.perms.notifications === 'denied')}>{wiz.perms.notifications === 'denied' ? 'Open Settings' : 'Allow'}</Btn>
-                  : <Btn size="sm" variant="secondary" onClick={() => p.id === 'screen' ? wiz.grantScreen() : wiz.openPane(p.pane)}>Open Settings</Btn>}
+              <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>Notifications</span>
+              <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-muted)', marginTop: 3 }}>Notification settings aren&apos;t available in this build - you can turn them on later from Windows Settings.</p>
             </div>
           </Row>
-        )
-      })}
+        : cards.map((p) => <PermCard key={p.id} p={p} wiz={wiz} />)}
       <p className="flex items-start" style={{ gap: 7, fontSize: 11, lineHeight: 1.5, color: 'var(--t-muted)', marginTop: 3 }}>
         <span style={{ width: 5, height: 5, borderRadius: 99, background: 'var(--color-state-approved)', marginTop: 5, flexShrink: 0 }} />
-        Your screen, tasks, and worklogs stay on this Mac and are never uploaded. We send usage stats - daily focus time, app version, and your email once you sign in - to improve Meridian, never your content.
+        Your screen, tasks, and worklogs stay on this {device} and are never uploaded. We send usage stats - daily focus time, app version, and your email once you sign in - to improve Meridian, never your content.
       </p>
     </div>
   )
+}
+
+// A single OS-permission card, shared by macOS and Windows. Notifications is
+// tri-state (deny and not-yet-asked need different grant actions); the two TCC
+// grants are booleans.
+function PermCard({ p, wiz }: { p: PermissionMeta; wiz: Wiz }) {
+  const notif = p.id === 'notifications'
+  // Unbundled runs (`tauri dev`) have no notification plugin at all — nothing
+  // to grant, so the card hides rather than dead-ends.
+  if (notif && wiz.perms.notifications === 'unavailable') return null
+  const granted = notif ? wiz.perms.notifications === 'granted' : !!wiz.perms[p.id]
+  return (
+    <Row tone={granted ? 'tint' : 'surface'}>
+      <span className="flex items-center justify-center shrink-0" style={{
+        width: 34, height: 34, borderRadius: 10,
+        background: granted ? 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)' : 'var(--t-box)',
+        color: granted ? 'var(--color-state-proposal)' : 'var(--t-faint)',
+        border: '0.5px solid var(--t-card-border)',
+      }}><PermIcon icon={p.icon} /></span>
+
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div className="flex items-center" style={{ gap: 8 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>{p.name}</span>
+          {!notif && <span className="mt-chip" style={{ color: 'var(--t-muted)', border: '0.5px solid var(--t-card-border)', borderRadius: 4, padding: '1px 5px' }}>{p.required ? 'REQUIRED' : 'OPTIONAL'}</span>}
+        </div>
+        <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-muted)', marginTop: 3 }}>{p.desc}</p>
+      </div>
+
+      <div className="shrink-0">
+        {granted
+          ? <span className="flex items-center" style={{ gap: 6, fontSize: 12, color: 'var(--color-state-approved)', fontWeight: 500 }}><Check size={15} color="var(--color-state-approved)" />Granted</span>
+          : notif
+            // 'prompt' → the button surfaces the one-shot OS dialog (macOS only —
+            // Windows reports only granted/denied, never prompt);
+            // 'denied' → the OS won't re-prompt, so it opens the Notifications
+            // pane directly (grantNotifications skips the pointless re-request
+            // when told it's already denied).
+            ? <Btn size="sm" variant="secondary" onClick={() => wiz.grantNotifications(wiz.perms.notifications === 'denied')}>{wiz.perms.notifications === 'denied' ? 'Open Settings' : 'Allow'}</Btn>
+            : <Btn size="sm" variant="secondary" onClick={() => p.id === 'screen' ? wiz.grantScreen() : wiz.openPane(p.pane)}>Open Settings</Btn>}
+      </div>
+    </Row>
+  )
+}
+
+/** Rail/summary label for the optional Notifications card on Windows, where it
+ *  is the whole permissions step. */
+function notifSummary(n: NotifState | null): string {
+  return n === 'granted' ? 'Enabled' : n === 'denied' ? 'Off' : 'Optional'
 }
 
 // ── STEP 2 — Integrations ─────────────────────────────────────────────────────
@@ -236,8 +278,14 @@ export function Welcome({ onBegin, steps, ready, error, onRetry }: {
 export function Completion({ wiz }: { wiz: Wiz }) {
   const connected = TRACKERS.filter((t) => wiz.integrations?.[t.id])
   const grantedCount = [wiz.perms.accessibility, wiz.perms.screen].filter(Boolean).length
+  // macOS summarises the two TCC grants; Windows has no such step — only the
+  // optional Notifications card — so it reports that instead of "2 of 2 granted",
+  // which would count permissions Windows never actually prompts for.
+  const permsLine = wiz.platform === 'windows'
+    ? { k: 'Notifications', v: notifSummary(wiz.perms.notifications) }
+    : { k: 'Permissions', v: `${grantedCount} of 2 granted` }
   const lines = [
-    { k: 'Permissions', v: `${grantedCount} of 2 granted` },
+    permsLine,
     { k: 'Intelligence', v: llmProvider(wiz.provider).name },
     { k: 'Connected', v: connected.length ? connected.map((c) => c.name).join(', ') : 'None yet' },
   ]
@@ -279,24 +327,46 @@ export interface StepMeta {
   canNext: (w: Wiz) => boolean
 }
 
-// Permissions stays first on macOS (capture needs them); the AI-provider
+// Permissions stays first (capture needs the grants on macOS); the AI-provider
 // choice comes last so the user has connected their trackers and signed in
 // before picking which model writes their summaries.
 //
-// Permissions is macOS-only: Windows capture (UIA + WGC) has no TCC-style
-// consent system — screenpipe_a11y::platform::windows reports every grant as
-// already true — so there is nothing for that step to request, and its copy
-// ("Two macOS permissions...") is actively wrong on Windows. `buildSteps`
-// drops it entirely there rather than rendering an always-green no-op card.
+// The step is platform-SHAPED, not platform-dropped. macOS capture needs
+// Accessibility + Screen Recording — TCC grants with no analogue on Windows,
+// where UIA + WGC capture needs no consent (screenpipe_a11y::platform::windows
+// reports every one as already true) — so those two cards, and the "Two macOS
+// permissions…" copy, are macOS-only. Notifications, though, is a real per-app
+// setting on BOTH OSes (macOS UNUserNotificationCenter, Windows WinRT
+// ToastNotifier::Setting), so Windows keeps a notifications-only variant of
+// this step (`WINDOWS_NOTIFICATIONS_STEP`) rather than losing notification
+// onboarding entirely. Both variants keep id:'permissions' so page.tsx's
+// check_notifications poll fires on either.
+const PERMISSIONS_STEP: StepMeta = {
+  id: 'permissions', n: '01', label: 'Permissions', kicker: 'Access',
+  title: 'Let Meridian see your work',
+  subtitle: "Two macOS permissions let Meridian recognise what you're focused on. Read locally, never uploaded.",
+  Body: PermissionsBody,
+  status: (s) => { const g = [s.perms.accessibility, s.perms.screen].filter(Boolean).length; return g ? `${g} granted` : 'Not granted' },
+  canNext: (s) => !!(s.perms.accessibility && s.perms.screen),
+}
+
+// Windows variant: notifications is the only user-settable permission there and
+// it's optional (on by default for most apps), so this never gates Continue.
+// The card, grant action, and deny→Settings recovery are all shared with macOS
+// via PermCard — only the copy and the never-blocking gate differ.
+const WINDOWS_NOTIFICATIONS_STEP: StepMeta = {
+  id: 'permissions', n: '01', label: 'Notifications', kicker: 'Alerts',
+  title: 'Turn on notifications',
+  // Carries the WHY; the card below carries the WHAT (which events, quiet-hours)
+  // so the user doesn't read the same sentence twice in one viewport.
+  subtitle: 'Stay in the loop without watching the menu bar. Optional - turn it on now, or anytime from Settings.',
+  Body: PermissionsBody,
+  status: (s) => notifSummary(s.perms.notifications),
+  canNext: () => true,
+}
+
 const ALL_STEPS: StepMeta[] = [
-  {
-    id: 'permissions', n: '01', label: 'Permissions', kicker: 'Access',
-    title: 'Let Meridian see your work',
-    subtitle: "Two macOS permissions let Meridian recognise what you're focused on. Read locally, never uploaded.",
-    Body: PermissionsBody,
-    status: (s) => { const g = [s.perms.accessibility, s.perms.screen].filter(Boolean).length; return g ? `${g} granted` : 'Not granted' },
-    canNext: (s) => !!(s.perms.accessibility && s.perms.screen),
-  },
+  PERMISSIONS_STEP,
   {
     id: 'integrations', n: '02', label: 'Integrations', kicker: 'Project tools',
     title: 'Connect your trackers',
@@ -327,9 +397,12 @@ const ALL_STEPS: StepMeta[] = [
   },
 ]
 
-/** Platform-specific step list. `n` is renumbered to the filtered position so
- *  the rail never shows a gap (e.g. "02, 03, 04" with only three steps). */
+/** Platform-specific step list. On Windows the Permissions step is swapped for
+ *  its notifications-only variant (same id, so the poll still fires); the count
+ *  is unchanged. `n` is renumbered to position so the rail never shows a gap. */
 export function buildSteps(platform: string | null): StepMeta[] {
-  const steps = platform === 'windows' ? ALL_STEPS.filter((s) => s.id !== 'permissions') : ALL_STEPS
+  const steps = platform === 'windows'
+    ? ALL_STEPS.map((s) => (s.id === 'permissions' ? WINDOWS_NOTIFICATIONS_STEP : s))
+    : ALL_STEPS
   return steps.map((s, i) => ({ ...s, n: String(i + 1).padStart(2, '0') }))
 }
