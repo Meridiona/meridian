@@ -603,7 +603,16 @@ pub async fn install_provider(provider: LlmProvider) -> InstallOutcome {
 /// Windows in the first place).
 ///
 /// Unix: the user's login shell (`$SHELL -l -c`) — see the module docs on why a login shell
-/// specifically.
+/// specifically. Also sources `~/.nvm/nvm.sh` first if present, a no-op otherwise: `-l`
+/// without `-i` (see [`resolve_cli`]'s doc on why `-i` is avoided) sources `~/.zprofile`/
+/// `~/.zshenv` but NOT `~/.zshrc` — zsh only reads `~/.zshrc` for an interactive shell.
+/// nvm's own official install instructions add its init block to `~/.zshrc` (or it lands
+/// there via oh-my-zsh's nvm plugin), so on any machine where nvm was set up that
+/// conventional way, an `npm i -g …` install command would fail with "command not found:
+/// npm" even though a normal Terminal resolves it fine. Sourcing `nvm.sh` directly is nvm's
+/// own documented way to bootstrap it non-interactively (the same snippet CI systems use),
+/// so this isn't a one-off workaround — it's the vendor-sanctioned way to make npm
+/// resolvable without depending on which rc file happened to get the init block.
 ///
 /// Windows: `powershell.exe` directly, NOT `cmd.exe`. `cmd /C` cannot run Cursor's Windows
 /// installer (`irm`/`iex` are PowerShell aliases, no `cmd` equivalent — see
@@ -636,7 +645,10 @@ pub(crate) fn installer_command(cmd: &str) -> Command {
 pub(crate) fn installer_command(cmd: &str) -> Command {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let mut command = Command::new(shell);
-    command.arg("-l").arg("-c").arg(cmd);
+    let script = format!(
+        "export NVM_DIR=\"$HOME/.nvm\"; [ -s \"$NVM_DIR/nvm.sh\" ] && \\. \"$NVM_DIR/nvm.sh\"; {cmd}"
+    );
+    command.arg("-l").arg("-c").arg(script);
     command
 }
 
@@ -1556,6 +1568,83 @@ mod tests {
         let output = cmd.output().await.expect("installer_command must spawn");
         assert!(!output.status.success());
         assert_eq!(output.status.code(), Some(7));
+    }
+
+    /// The regression this exists for: an npm-based install (`npm i -g @openai/codex`, etc.)
+    /// failed with "command not found: npm" on any Mac where nvm's init block lives only in
+    /// `~/.zshrc` — `installer_command`'s `-l` (login, non-interactive) shell never sources
+    /// that file. Faking `$HOME/.nvm/nvm.sh` with a script that exports a marker var proves
+    /// the fix actually sources it, not just that the file happens to exist on disk.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn installer_command_sources_nvm_sh_when_present() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_home = std::env::var_os("HOME");
+        let temp_home =
+            std::env::temp_dir().join(format!("meridian-detect-nvm-test-{}", std::process::id()));
+        let nvm_dir = temp_home.join(".nvm");
+        std::fs::create_dir_all(&nvm_dir).unwrap();
+        std::fs::write(
+            nvm_dir.join("nvm.sh"),
+            "export MERIDIAN_NVM_TEST_MARKER=sourced\n",
+        )
+        .unwrap();
+        std::env::set_var("HOME", &temp_home);
+
+        let mut cmd = installer_command("echo \"$MERIDIAN_NVM_TEST_MARKER\"");
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = cmd.output().await;
+
+        match original_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&temp_home);
+
+        let output = output.expect("installer_command must spawn");
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "sourced",
+            "{output:?}"
+        );
+    }
+
+    /// Most machines don't use nvm at all — the `[ -s "$NVM_DIR/nvm.sh" ] &&` guard must be a
+    /// true no-op (no error, no hang) when `~/.nvm` doesn't exist, so the fix can't regress the
+    /// common case it was already passing before.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn installer_command_is_a_no_op_without_nvm() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_home = std::env::var_os("HOME");
+        let temp_home = std::env::temp_dir().join(format!(
+            "meridian-detect-no-nvm-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_home).unwrap();
+        std::env::set_var("HOME", &temp_home);
+
+        let mut cmd = installer_command("echo hello-no-nvm");
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = cmd.output().await;
+
+        match original_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&temp_home);
+
+        let output = output.expect("installer_command must spawn");
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("hello-no-nvm"),
+            "{output:?}"
+        );
     }
 
     /// cursor-agent does not install via npm on Windows (see
