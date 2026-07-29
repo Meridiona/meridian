@@ -779,9 +779,43 @@ where
 /// self-clearing blip into a silent success instead of an install-failed notice.
 /// A persistent failure still returns the real error so a genuinely locked file
 /// is not swept under the rug.
+///
+/// # Why each failed attempt is logged
+/// Silence here is indistinguishable from success. The retries exist for the
+/// Windows case where a scanner or the Search Indexer briefly holds the daemon
+/// binary, and that hold is exactly when someone is tailing `meridian logs`
+/// asking why an install is slow - but with no per-attempt breadcrumb the tail
+/// shows nothing at all until the final success or failure, so "retried four
+/// times and recovered" and "went straight through" look identical after the
+/// fact. Given retrying is precisely what turns a self-clearing blip into a
+/// silent success, whether it happened is the thing worth being able to see.
+///
+/// `debug!` rather than `warn!`: a transient hold that the retry absorbs is
+/// expected behaviour on Windows, not a fault. The genuinely stuck case still
+/// surfaces through the returned error at the call site.
+///
+/// The counter lives here rather than in [`retry_transient`] because the useful
+/// fields are `from`/`to`, which only the caller knows - the generic helper
+/// stays a silent, unit-testable utility.
 async fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut attempt: u32 = 0;
     retry_transient(RENAME_ATTEMPTS, RENAME_BASE_DELAY, || {
-        tokio::fs::rename(from, to)
+        attempt += 1;
+        let this_attempt = attempt;
+        async move {
+            let result = tokio::fs::rename(from, to).await;
+            if let Err(e) = &result {
+                tracing::debug!(
+                    attempt = this_attempt,
+                    attempts = RENAME_ATTEMPTS,
+                    from = %from.display(),
+                    to = %to.display(),
+                    error = %e,
+                    "backend_install: rename attempt failed, retrying if attempts remain"
+                );
+            }
+            result
+        }
     })
     .await
 }
