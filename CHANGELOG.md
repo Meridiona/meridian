@@ -1,3 +1,59 @@
+## [1.81.0](https://github.com/Meridiona/meridian/compare/v1.80.0...v1.81.0) (2026-07-29)
+
+### 🚀 Features
+
+* **core:** trace each retry attempt in the shared retry module ([8c455fe](https://github.com/Meridiona/meridian/commit/8c455feb508f0b29db2650fa52ef9cb1bb041424))
+* **telemetry:** per-user Support ID + platform prefix for alpha testing ([00ffc8c](https://github.com/Meridiona/meridian/commit/00ffc8c2a8fa8652385ecc94ad7f1d33977b3747))
+
+### 🐛 Bug Fixes
+
+* address CodeRabbit review findings on [#603](https://github.com/Meridiona/meridian/issues/603) ([7f76bdd](https://github.com/Meridiona/meridian/commit/7f76bddd7299b98525f2c5579191798728486b46)), closes [#605](https://github.com/Meridiona/meridian/issues/605)
+* address release review findings on [#603](https://github.com/Meridiona/meridian/issues/603) ([2e74e1d](https://github.com/Meridiona/meridian/commit/2e74e1db17629a020f752d0d8be1fa8cca9a328f))
+* **db:** address review — surface plaintext downgrade, harden 2nd rename ([6a3d186](https://github.com/Meridiona/meridian/commit/6a3d186d8a154c85681392250f472aefa2a77afb))
+* **db:** complete the Windows encrypt-in-place migration (close handle, retry rename) ([82aba7b](https://github.com/Meridiona/meridian/commit/82aba7baedd643943c946c81fcae9ad9b041a0d8)), closes [#598](https://github.com/Meridiona/meridian/issues/598) [#598](https://github.com/Meridiona/meridian/issues/598)
+* **db:** fix review — restore doc block onto finalize_encryption_swap ([53b7a11](https://github.com/Meridiona/meridian/commit/53b7a11a7ea676241e9ee0135a70dbbea78a337c)), closes [#606](https://github.com/Meridiona/meridian/issues/606) [#598](https://github.com/Meridiona/meridian/issues/598)
+* **db:** open plaintext meridian.db as plaintext even when a key is set ([c8d92ca](https://github.com/Meridiona/meridian/commit/c8d92ca445c5c082d5b7bb99c7e04f80666c36d1))
+* **intelligence:** harden the grace-row insert and trace the sync-failure path ([74329cc](https://github.com/Meridiona/meridian/commit/74329cc92dd04db39534909ae814eeb63fd7ef1b))
+* **llm:** don't hold a MutexGuard across await in the nvm bootstrap tests ([40240f7](https://github.com/Meridiona/meridian/commit/40240f727f9117605bd2947d07c1986a563d8dd8))
+* **llm:** resolve the installer's binary to an absolute path first ([858d15f](https://github.com/Meridiona/meridian/commit/858d15fa42f50226a504f79c1058cf5f1957733e))
+* **llm:** source nvm.sh before npm-based CLI installs ([0f4fcbb](https://github.com/Meridiona/meridian/commit/0f4fcbb886654e7f9178a646a97719ae6279567c))
+* **pm-sync:** bound how long a suppressed failure can stay silent ([c0f58f3](https://github.com/Meridiona/meridian/commit/c0f58f3b4c7943d32a0b71d4f8db4f749ddb80d2))
+* **pm-sync:** classify azure batch failures too, not just WIQL ([65e3b7c](https://github.com/Meridiona/meridian/commit/65e3b7c7cff8e574f8a50b9ad3e71666051f400b))
+* **pm-sync:** extend transient classification to the last three providers ([f4e3579](https://github.com/Meridiona/meridian/commit/f4e357995df496b2c1ec2a280653951df502c9e5))
+* **pm-sync:** make failure recording best-effort so it cannot mask the cause ([35de846](https://github.com/Meridiona/meridian/commit/35de846c3c2a1e9ec6701ee4c5025ab3af83463a))
+* **pm-sync:** stop reporting network blips as credential failures ([8a0c589](https://github.com/Meridiona/meridian/commit/8a0c58949b86d71939241264bf84a3700efc5859))
+* **pm-sync:** stop the generic catch-all undoing provider classification ([5150114](https://github.com/Meridiona/meridian/commit/515011424615c220f7664ad351f559d70d279f4e))
+* **telemetry:** fix review findings — update CLAUDE.md, make Support ID copy honest ([a3b6a4f](https://github.com/Meridiona/meridian/commit/a3b6a4f2be0209d6a23394cf773dcea9e522baec))
+* **telemetry:** gate machine_id's whole test module to macOS, not just each test ([7053307](https://github.com/Meridiona/meridian/commit/70533078e1190a524ddac424971a45b2b6a43d6d))
+* **telemetry:** name the pseudonym prefixes domains, not salts ([6dfe6a8](https://github.com/Meridiona/meridian/commit/6dfe6a826eb9e2e1de7206e6b7fdcbaf8153de16)), closes [#603](https://github.com/Meridiona/meridian/issues/603)
+* **tests:** give the crate ONE lock for process-global test state ([b0c4a7a](https://github.com/Meridiona/meridian/commit/b0c4a7a4638b7cfee3503039575ffb763ccebedd))
+* **tray:** harden Windows daemon-binary install against transient locks ([03fcbb4](https://github.com/Meridiona/meridian/commit/03fcbb477a298b4cdbfc1a787f6a65d06669de9e)), closes [#606](https://github.com/Meridiona/meridian/issues/606)
+* **tray:** log each failed rename attempt during daemon staging ([d000b60](https://github.com/Meridiona/meridian/commit/d000b60de4c2458fdd6186ababca806c87b3ee0e)), closes [#598](https://github.com/Meridiona/meridian/issues/598)
+* **tray:** make failed provider installs and sign-ins visible in traces ([1b24b00](https://github.com/Meridiona/meridian/commit/1b24b00fba23764ac88f1d71febd2697af128541))
+* **tray:** restore a throttled progress breadcrumb during the daemon-exit wait ([18de191](https://github.com/Meridiona/meridian/commit/18de191ae1f53c0ea685027db766c032e89fc339)), closes [#607](https://github.com/Meridiona/meridian/issues/607) [606/#607](https://github.com/606/meridian/issues/607)
+* **tray:** ship LLM install/sign-in failures to OpenObserve ([e8fb9a5](https://github.com/Meridiona/meridian/commit/e8fb9a51a2ee921eb63efecd92c90a2c9aba4363))
+
+### ♻️ Refactoring
+
+* **core:** unify the Windows transient-lock retry into meridian-core ([3802c2d](https://github.com/Meridiona/meridian/commit/3802c2da6c184eeb85d14463f8ed9c0586319c93)), closes [#606](https://github.com/Meridiona/meridian/issues/606) [#607](https://github.com/Meridiona/meridian/issues/607) [#606](https://github.com/Meridiona/meridian/issues/606) [#607](https://github.com/Meridiona/meridian/issues/607)
+
+### 🤖 CI
+
+* add a Windows Rust check to PR gates, not just release time ([c10acc3](https://github.com/Meridiona/meridian/commit/c10acc34e6e4f5bea5c0c969536b84015a2f4bd3))
+* **release:** address review on the Windows cache-warm job ([74a8dee](https://github.com/Meridiona/meridian/commit/74a8deeaac6882b8edf833ac994139176500c2c7)), closes [#601](https://github.com/Meridiona/meridian/issues/601)
+* **release:** compile daemon + tray in one cargo invocation, not two ([e2ac82d](https://github.com/Meridiona/meridian/commit/e2ac82d2a9e0dbc6f0227f83cc08c8048eeebe55))
+* **release:** warm the Windows release cache on main + nightly ([fc84821](https://github.com/Meridiona/meridian/commit/fc848214ad9cca1341e870ec2c535a4940482751))
+
+### ✅ Tests
+
+* **core:** exhaustively cover the retry primitive's boundaries + backoff ([7af4f3f](https://github.com/Meridiona/meridian/commit/7af4f3f728618266698717759e76421d2810d8de))
+* **daily-plan:** stop the nudge grace test failing after local midnight ([8024c20](https://github.com/Meridiona/meridian/commit/8024c20ec8074e45715822cc9c3fc28453b9732b))
+* **db:** lock in the plaintext-key guard invariants ([6d0a09c](https://github.com/Meridiona/meridian/commit/6d0a09c94a0dc1ba9f82d18f0447fefd61b0bff2))
+
+### 📝 Documentation
+
+* **whats-new:** add the 1.81.0 entry and correct the 1.80.0 date ([54a4561](https://github.com/Meridiona/meridian/commit/54a45613340c54b1251589e0ed956e716dcf7b1b)), closes [#603](https://github.com/Meridiona/meridian/issues/603)
+
 ## [1.80.0](https://github.com/Meridiona/meridian/compare/v1.79.0...v1.80.0) (2026-07-28)
 
 ### 🚀 Features
