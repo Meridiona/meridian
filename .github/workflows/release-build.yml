@@ -578,8 +578,15 @@ jobs:
         run: |
           set -euo pipefail
           echo "→ ${CHANNEL}: signing AND notarizing"
-          npx tauri bundle --target ${{ matrix.target }} --bundles app,dmg \
-            ${{ needs.prepare.outputs.channel == 'staging' && '--config src-tauri/tauri.staging.conf.json' || '' }}
+          # Uses the already-bound $CHANNEL rather than re-interpolating
+          # ${{ }} into this script a second time — the exact
+          # template-injection shape this file's own convention (see the
+          # RAW_TAG/VERSION binding notes elsewhere) says to avoid.
+          config_flag=""
+          if [ "${CHANNEL}" = "staging" ]; then
+            config_flag="--config src-tauri/tauri.staging.conf.json"
+          fi
+          npx tauri bundle --target ${{ matrix.target }} --bundles app,dmg ${config_flag}
 
       - name: Notarize and staple the DMG
         # Runs on every channel now — see the note on the bundle step above for

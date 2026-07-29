@@ -375,9 +375,20 @@ jobs:
             prefix="${pair%%|*}"
             ref="${pair##*|}"
             echo "=== ${prefix} (${ref}) ==="
-            stale=$(gh api "repos/${{ github.repository }}/actions/caches?per_page=100&ref=${ref}" \
+            # --paginate: without it, per_page=100 silently caps this pair at
+            # its first 100 caches with no follow-up page — this repo already
+            # climbed to 42 caches after a single warm run, so a busy prefix
+            # exceeding 100 would hide older stale entries from pruning
+            # entirely, the exact unbounded-growth failure this job exists to
+            # close. `|| true` on the listing itself: a transient gh api
+            # failure (rate limit, etc.) on one pair must not abort the whole
+            # script under set -euo pipefail — skip just this pair and let
+            # the next scheduled run retry it, same tolerance the delete call
+            # below already has.
+            stale=$(gh api --paginate "repos/${{ github.repository }}/actions/caches?per_page=100&ref=${ref}" \
               --jq --arg p "$prefix" \
-              '[.actions_caches[] | select(.key | startswith($p))] | sort_by(.created_at) | reverse | .[1:] | .[].id')
+              '[.actions_caches[] | select(.key | startswith($p))] | sort_by(.created_at) | reverse | .[1:] | .[].id') \
+              || { echo "::warning::failed to list caches for ${prefix} (${ref}), skipping this pair"; continue; }
             if [ -z "$stale" ]; then
               echo "nothing to prune"
               continue
