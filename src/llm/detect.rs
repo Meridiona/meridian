@@ -579,9 +579,11 @@ fn command_for_resolved_cli(path: &std::path::Path) -> Command {
     let mut cmd = Command::new(path);
     if let Some(dir) = path.parent() {
         let existing = std::env::var_os("PATH").unwrap_or_default();
-        let mut new_path = std::ffi::OsString::from(dir);
-        new_path.push(":");
-        new_path.push(existing);
+        // std::env::join_paths/split_paths, not a hardcoded `:` — this is called
+        // on every platform (cursor_sign_in/codex_sign_in/claude_sign_in all use
+        // it directly), and Windows PATH entries are `;`-separated, not `:`.
+        let dirs = std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&existing));
+        let new_path = std::env::join_paths(dirs).unwrap_or(existing);
         cmd.env("PATH", new_path);
     }
     cmd

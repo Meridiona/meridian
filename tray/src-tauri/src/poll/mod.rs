@@ -273,7 +273,16 @@ async fn check_disk_space(state: &Arc<Mutex<AppState>>, pool: &meridian_core::Sq
     let low = meridian::health::platform::meridian_data_low_gb().is_some();
 
     let (pause_source, started_at, capture_paused_flag) = {
-        let s = state.lock().unwrap();
+        // Degrade gracefully on a poisoned mutex rather than unwrap — this
+        // runs synchronously inside run_poll_loop's loop body (not isolated
+        // in its own task), so a panic here would kill the entire poll loop
+        // for the rest of the process's life (health checks, notifications,
+        // tray icon updates, and this same guard, all silently dead), not
+        // just this one check. Same pattern refresh_health/refresh_active use.
+        let Ok(s) = state.lock() else {
+            tracing::warn!("check_disk_space: state lock poisoned");
+            return;
+        };
         (
             s.pause_source.clone(),
             s.pause_started_at,
@@ -289,8 +298,43 @@ async fn check_disk_space(state: &Arc<Mutex<AppState>>, pool: &meridian_core::Sq
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
+
+            // Preempting a Schedule pause must close out its own interval
+            // first — same as pause.rs::transition_pause does for the
+            // command-driven pause paths. Without this, the time already
+            // spent Schedule-paused before disk-low kicked in silently
+            // vanishes from the gaps table, and downstream worklog/analytics
+            // logic (which relies on gaps to exclude paused time) would
+            // treat it as tracked/active time instead.
+            if let (Some(PauseSource::Schedule), Some(prev_started)) = (&pause_source, started_at) {
+                let duration_s = now.saturating_sub(prev_started) as i64;
+                if duration_s > 0 {
+                    use chrono::{DateTime, SecondsFormat, Utc};
+                    let from = DateTime::<Utc>::from_timestamp(prev_started as i64, 0)
+                        .unwrap_or_else(Utc::now)
+                        .to_rfc3339_opts(SecondsFormat::Millis, true);
+                    let to = DateTime::<Utc>::from_timestamp(now as i64, 0)
+                        .unwrap_or_else(Utc::now)
+                        .to_rfc3339_opts(SecondsFormat::Millis, true);
+                    if let Err(e) = meridian_core::insert_pause_gap(
+                        pool,
+                        &from,
+                        &to,
+                        duration_s,
+                        "schedule_paused",
+                    )
+                    .await
+                    {
+                        tracing::warn!(error = %e, "disk-space guard: failed to write preempted schedule_paused gap");
+                    }
+                }
+            }
+
             {
-                let mut s = state.lock().unwrap();
+                let Ok(mut s) = state.lock() else {
+                    tracing::warn!("check_disk_space: state lock poisoned");
+                    return;
+                };
                 drop(s.engine_cancel.take());
                 drop(s.ui_consumer_cancel.take());
                 capture_paused_flag.store(true, Ordering::Relaxed);
@@ -334,7 +378,10 @@ async fn check_disk_space(state: &Arc<Mutex<AppState>>, pool: &meridian_core::Sq
             }
 
             {
-                let mut s = state.lock().unwrap();
+                let Ok(mut s) = state.lock() else {
+                    tracing::warn!("check_disk_space: state lock poisoned");
+                    return;
+                };
                 capture_paused_flag.store(false, Ordering::Relaxed);
                 s.pause_source = None;
                 s.pause_started_at = None;
