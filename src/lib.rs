@@ -31,3 +31,9 @@ pub mod pm_worklog;
 pub mod telemetry_spool;
 pub mod uninstall;
 pub mod worklog_pipeline;
+
+/// Test-only. Crate-wide coordination for the process-global
+/// `MERIDIAN_SETTINGS_PATH`, which more than one module's tests manipulate -
+/// see the module docs for the bug that per-module locks caused.
+#[cfg(test)]
+pub(crate) mod test_env;

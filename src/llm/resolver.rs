@@ -438,15 +438,14 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
 mod tests {
     use super::*;
 
-    /// `MERIDIAN_SETTINGS_PATH` is process-global and cargo runs tests in parallel.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::test_env::ScopedSettings;
 
-    fn write_settings(dir: &std::path::Path, provider: &str) -> std::path::PathBuf {
-        std::fs::create_dir_all(dir).unwrap();
-        let path = dir.join("settings.json");
-        std::fs::write(&path, format!(r#"{{"llm_provider":"{provider}"}}"#)).unwrap();
-        std::env::set_var("MERIDIAN_SETTINGS_PATH", &path);
-        path
+    /// `MERIDIAN_SETTINGS_PATH` is process-global, so the lock lives in
+    /// [`crate::test_env`] rather than here. A module-local one used to guard
+    /// these tests, and `telemetry_spool::redact` had its own - two locks over
+    /// one variable, which is the same as none. See that module's docs.
+    fn settings_for(tag: &str, provider: &str) -> ScopedSettings {
+        ScopedSettings::install(tag, &format!(r#"{{"llm_provider":"{provider}"}}"#))
     }
 
     /// THE test for this design. The resolver re-reads settings on every call, so flipping
@@ -454,34 +453,25 @@ mod tests {
     /// reload hook. If someone "optimises" this with a OnceLock, this fails.
     #[test]
     fn resolve_rereads_settings_every_call() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Guard FIRST: `clear_backoff` mutates a process-global map the
+        // sibling tests also write, so it must happen under the lock.
+        let settings = settings_for("resolver-rereads", "claude");
         clear_backoff();
-        let dir = std::env::temp_dir().join(format!("meridian-resolver-{}", std::process::id()));
-
-        write_settings(&dir, "claude");
         assert_eq!(resolve().provider(), LlmProvider::Claude);
 
         // Same process, no restart — just a different settings file.
-        write_settings(&dir, "codex");
+        settings.rewrite(r#"{"llm_provider":"codex"}"#);
         assert_eq!(resolve().provider(), LlmProvider::Codex);
 
-        write_settings(&dir, "cursor");
+        settings.rewrite(r#"{"llm_provider":"cursor"}"#);
         assert_eq!(resolve().provider(), LlmProvider::Cursor);
-
-        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn an_unknown_provider_resolves_to_the_default() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _settings = settings_for("resolver-unknown", "gemini");
         clear_backoff();
-        let dir =
-            std::env::temp_dir().join(format!("meridian-resolver-unknown-{}", std::process::id()));
-        write_settings(&dir, "gemini");
         assert_eq!(resolve().provider(), LlmProvider::default());
-        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A rate limit degrades the TIMING, never the user's choice. With the on-device
@@ -490,11 +480,8 @@ mod tests {
     /// [`resolve`] keeps handing back the provider they picked.
     #[test]
     fn a_rate_limit_backoff_never_rewrites_the_users_choice() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let settings = settings_for("resolver-backoff", "claude");
         clear_backoff();
-        let dir =
-            std::env::temp_dir().join(format!("meridian-resolver-backoff-{}", std::process::id()));
-        let path = write_settings(&dir, "claude");
 
         start_backoff("claude", RATE_LIMIT_BACKOFF);
         assert!(
@@ -506,7 +493,7 @@ mod tests {
             LlmProvider::Claude,
             "the factory still reports the user's provider — nothing substitutes for it"
         );
-        let on_disk = std::fs::read_to_string(&path).unwrap();
+        let on_disk = std::fs::read_to_string(settings.path()).unwrap();
         assert!(
             on_disk.contains("claude"),
             "and the stored choice is untouched: {on_disk}"
@@ -514,9 +501,6 @@ mod tests {
 
         clear_backoff();
         assert!(!is_backing_off("claude"), "calls resume once it expires");
-
-        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The fix for the cross-provider backoff bug: a rate limit on ONE provider must not
@@ -525,7 +509,14 @@ mod tests {
     /// tray↔daemon process boundary anyway).
     #[test]
     fn a_backoff_on_one_provider_does_not_stall_another() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Takes the lock despite reading no settings. The backoff map is ALSO
+        // process-global, and every sibling test here calls `clear_backoff()` -
+        // so one of them landing between this test's `start_backoff` and its
+        // assertion wipes the entry and fails it. The old module-local
+        // `ENV_LOCK` was quietly doing double duty as the backoff lock too;
+        // dropping it here (this test touches no settings) reintroduced the
+        // race, at roughly 1 run in 15.
+        let _lock = crate::test_env::lock_settings_env();
         clear_backoff();
 
         start_backoff("claude", RATE_LIMIT_BACKOFF);
