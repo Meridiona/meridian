@@ -62,6 +62,7 @@ async fn transition_pause(
         let kind = match prev_src {
             PauseSource::Timed | PauseSource::Indefinite => "tracking_paused",
             PauseSource::Schedule => "schedule_paused",
+            PauseSource::DiskLow => "disk_low_paused",
         };
         let duration_s = now.saturating_sub(prev_started) as i64;
         if duration_s > 0 {
@@ -268,12 +269,34 @@ fn secs_to_iso(secs: u64) -> String {
 
 /// Clear the capture pause, write a gap row, and optionally toast the user.
 /// Shared by manual resume (`seconds = 0`) and auto-resume (timer expiry).
+///
+/// Gated on free disk space first: a nearly-full disk is how a real
+/// `meridian.db` got corrupted (SQLite/SQLCipher torn page allocations under
+/// WAL when a write landed with no room left to grow). If disk is still low
+/// at resume time — for any pause reason, including a manual "Resume now"
+/// click — this refuses to restart the capture engine and instead converts
+/// the pause to [`PauseSource::DiskLow`], so it can only clear once
+/// [`poll::check_disk_space`] sees space recover. The existing
+/// `system.disk_low` daemon notice (raised every poll tick) already tells the
+/// user why, so no separate notification is raised here.
 pub(crate) async fn resume_capture(
     state: &Arc<Mutex<AppState>>,
     pool: Option<&SqlitePool>,
     app: &tauri::AppHandle,
     auto: bool,
 ) {
+    if meridian::health::platform::meridian_data_low_gb().is_some() {
+        tracing::warn!("resume_capture: refusing to resume — disk space still low");
+        let now = now_secs();
+        if let Err(e) = transition_pause(state, pool, now, PauseSource::DiskLow, None).await {
+            tracing::warn!(error = %e, "resume_capture: failed to convert pause to disk-low");
+        }
+        if let Ok(s) = state.lock() {
+            let _ = app.emit("status-update", s.to_payload());
+        }
+        return;
+    }
+
     let (started, source) = {
         let mut s = match state.lock() {
             Ok(s) => s,
@@ -294,6 +317,7 @@ pub(crate) async fn resume_capture(
         let kind = match src {
             PauseSource::Timed | PauseSource::Indefinite => "tracking_paused",
             PauseSource::Schedule => "schedule_paused",
+            PauseSource::DiskLow => "disk_low_paused",
         };
         let now = now_secs();
         let duration_s = now.saturating_sub(started_secs) as i64;

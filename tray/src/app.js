@@ -148,7 +148,7 @@ function paintOptionHints() {
 function render(status) {
   const healthy = status.ui_reachable && status.healthy
   const hasActive = !!status.active_app
-  const pauseSource = status.pause_source || null // null | 'timed' | 'schedule' | 'indefinite'
+  const pauseSource = status.pause_source || null // null | 'timed' | 'schedule' | 'indefinite' | 'disk_low'
   const isPaused = !!pauseSource
 
   brandMark.classList.toggle('down', !healthy)
@@ -204,6 +204,11 @@ function render(status) {
     statusTitle.textContent = 'Outside work hours'
     const resumeAt = status.schedule_resume_at || ''
     statusSub.textContent = resumeAt ? `Resumes at ${resumeAt}` : 'Work hours not active'
+    primaryBtn.hidden = true
+  } else if (pauseSource === 'disk_low') {
+    daemonUnhealthy = false
+    statusTitle.textContent = 'Capture paused'
+    statusSub.textContent = 'Disk space is low - free up space to resume'
     primaryBtn.hidden = true
   } else if (hasActive) {
     daemonUnhealthy = false

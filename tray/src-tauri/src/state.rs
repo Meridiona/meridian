@@ -25,6 +25,11 @@ pub enum PauseSource {
     /// User paused with no expiry ("Pause indefinitely") — no auto-resume timer;
     /// only a manual "Resume now" clears it. See `commands::pause_indefinitely`.
     Indefinite,
+    /// Auto-paused because free disk space on the `meridian.db` volume fell
+    /// below the low-disk threshold (`meridian::health::platform::meridian_data_low_gb`,
+    /// 2 GB) — writing into a nearly-full disk is how a real `meridian.db` got
+    /// corrupted (torn page allocations under WAL). See `poll::check_disk_space`.
+    DiskLow,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,7 +66,7 @@ pub struct StatusPayload {
     /// Unix timestamp (ms) when the current timed pause expires. `None` when
     /// not paused or when paused by a schedule (no fixed end time).
     pub pause_until_ms: Option<u64>,
-    /// `"timed"` | `"schedule"` | `"indefinite"` when capture is actively paused; `None` otherwise.
+    /// `"timed"` | `"schedule"` | `"indefinite"` | `"disk_low"` when capture is actively paused; `None` otherwise.
     pub pause_source: Option<String>,
     /// Display hint for the schedule-paused panel: the work-hours start time
     /// ("09:00"). `None` when not schedule-paused.
@@ -231,6 +236,7 @@ impl AppState {
                 PauseSource::Timed => "timed".to_string(),
                 PauseSource::Schedule => "schedule".to_string(),
                 PauseSource::Indefinite => "indefinite".to_string(),
+                PauseSource::DiskLow => "disk_low".to_string(),
             }),
             schedule_resume_at: self.schedule_resume_at.clone(),
             active_app: active.map(|a| a.app_name.clone()),
