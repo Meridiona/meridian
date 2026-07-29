@@ -15,7 +15,6 @@ use sqlx::SqlitePool;
 
 use crate::config::TrelloConfig;
 use crate::intelligence::oauth::trello as oauth_trello;
-use crate::intelligence::providers::http::SyncFault;
 
 const TRELLO_BASE: &str = "https://api.trello.com/1";
 const MAX_RESULTS: usize = 100;
@@ -326,24 +325,7 @@ pub async fn refresh_if_stale(
             Ok(Some(kept))
         }
         Err(e) => {
-            match super::http::classify(&e) {
-                SyncFault::Retry { detail } => {
-                    tracing::warn!(
-                        error = %detail,
-                        "trello unreachable - keeping stale cache, will retry next sync"
-                    );
-                    let _ = super::note_transient_sync_failure(pool, "trello", &detail).await;
-                }
-                SyncFault::Report { detail } => {
-                    tracing::warn!(error = %detail, "trello fetch failed - keeping stale cache");
-                    let _ = super::stamp_sync_error(
-                        pool,
-                        "trello",
-                        &format!("Trello sync failed: {detail}"),
-                    )
-                    .await;
-                }
-            }
+            super::record_sync_failure(pool, "trello", "fetch", &e).await;
             Ok(None)
         }
     }

@@ -152,12 +152,25 @@ pub async fn open_pool_with_key_readonly(
 /// migration attempt is skipped and the caller's own open surfaces the real
 /// problem instead of this heuristic guessing wrong).
 pub fn is_plaintext_sqlite(path: &Path) -> bool {
+    plaintext_state(path).unwrap_or(false)
+}
+
+/// The same probe as [`is_plaintext_sqlite`], but three-valued: `Some(true)`
+/// definitely plaintext, `Some(false)` definitely NOT plaintext, and `None`
+/// when the file could not be read at all and the answer is simply unknown.
+///
+/// [`is_plaintext_sqlite`] deliberately collapses `None` to `false`, which is
+/// right for its callers (a missing file on a fresh install must not trigger a
+/// migration). It is wrong for anything that acts on "the database is safely
+/// encrypted", because an unreadable file would masquerade as a confirmed
+/// encrypted one. The tray's encryption-warning notice uses this instead, so it
+/// can decline to clear a warning it cannot disprove.
+pub fn plaintext_state(path: &Path) -> Option<bool> {
     use std::io::Read;
-    let Ok(mut f) = std::fs::File::open(path) else {
-        return false;
-    };
+    let mut f = std::fs::File::open(path).ok()?;
     let mut magic = [0u8; 16];
-    matches!(f.read_exact(&mut magic), Ok(())) && &magic == SQLITE_MAGIC
+    f.read_exact(&mut magic).ok()?;
+    Some(&magic == SQLITE_MAGIC)
 }
 
 /// Best-effort extraction of the on-disk file path from a SQLite connection
@@ -280,6 +293,11 @@ fn finalize_encryption_swap(
         // startup (a real disk-exhaustion risk on a large DB); `key_unless_plaintext`
         // keeps the daemon and CLIs working against the plaintext file meanwhile.
         let _ = std::fs::remove_file(tmp_path);
+        tracing::error!(
+            error = %e,
+            stage = "move_original_aside",
+            "encryption swap failed - database left plaintext, will retry next launch"
+        );
         return Err(e).context(
             "encrypt_in_place: failed to move plaintext original aside \
              (is meridian.db still open by the daemon?)",
@@ -295,17 +313,34 @@ fn finalize_encryption_swap(
         match std::fs::rename(backup_path, path) {
             Ok(()) => {
                 let _ = std::fs::remove_file(tmp_path);
+                tracing::error!(
+                    error = %e,
+                    stage = "move_encrypted_into_place",
+                    "encryption swap failed - plaintext original restored, will retry next launch"
+                );
                 Err(e).context(
                     "encrypt_in_place: failed to move encrypted export into place; \
                      restored the plaintext original (will retry next launch)",
                 )
             }
-            Err(restore_err) => Err(e).context(format!(
-                "encrypt_in_place: failed to move encrypted export into place AND failed \
-                 to restore the plaintext original ({restore_err:#}) — the previous data \
+            Err(restore_err) => {
+                // The only branch that needs a human. Logged at ERROR with no
+                // path attached (a home-dir path is user data): the message and
+                // the stage are enough to identify it in telemetry, and the
+                // returned error carries the path for the local operator.
+                tracing::error!(
+                    error = %e,
+                    restore_error = %restore_err,
+                    stage = "restore_original",
+                    "encryption swap failed AND rollback failed - the database needs restoring by hand"
+                );
+                Err(e).context(format!(
+                    "encrypt_in_place: failed to move encrypted export into place AND failed \
+                 to restore the plaintext original ({restore_err:#}) - the previous data \
                  is intact at {}; restore it by hand",
-                backup_path.display(),
-            )),
+                    backup_path.display(),
+                ))
+            }
         }
     } else {
         Ok(())

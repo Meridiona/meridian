@@ -1,8 +1,22 @@
 {
   "releases": [
     {
+      "version": "1.81.0",
+      "date": "2026-07-28",
+      "highlights": [
+        "If Meridian cannot finish encrypting your data because a copy of it is still running, it now says so plainly and tells you how to finish the job - rather than quietly leaving your database unencrypted.",
+        "While you are signed in, your Support ID now stays the same across all of your devices, so support can piece together what happened if you are testing an early build."
+      ],
+      "fixes": [
+        "Fixed Meridian being unable to open its own database after an interrupted encryption step. On Windows this could stop tracking altogether, and it did not recover on its own.",
+        "Tracker sync no longer tells you to check your credentials when the real problem is a passing network glitch. It stays quiet, retries on its own, and only raises it if the connection stays broken.",
+        "When a sync problem does need you, the message now says what actually went wrong and points you to Settings - instead of naming a file most people have never opened.",
+        "Tracker sync can no longer hang forever waiting on a server that has stopped responding."
+      ]
+    },
+    {
       "version": "1.80.0",
-      "date": "2026-07-27",
+      "date": "2026-07-28",
       "highlights": [
         "Everything Meridian has captured is now encrypted on disk. The key is kept in your system keychain, and your existing data is upgraded automatically the first time you open this version - there is nothing to set up.",
         "Meridian can now send error reports to the team automatically, so crashes and failures get fixed without you having to report them. It is on by default and you can turn it off any time in Settings - Capture.",

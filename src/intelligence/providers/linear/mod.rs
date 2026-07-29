@@ -17,7 +17,6 @@ use serde::Deserialize;
 use sqlx::SqlitePool;
 
 use crate::config::LinearConfig;
-use crate::intelligence::providers::http::SyncFault;
 
 const LINEAR_GRAPHQL_URL: &str = "https://api.linear.app/graphql";
 const MAX_RESULTS: usize = 100;
@@ -477,24 +476,7 @@ pub async fn refresh_if_stale(
             Ok(Some(kept))
         }
         Err(e) => {
-            match super::http::classify(&e) {
-                SyncFault::Retry { detail } => {
-                    tracing::warn!(
-                        error = %detail,
-                        "linear unreachable - keeping stale cache, will retry next sync"
-                    );
-                    let _ = super::note_transient_sync_failure(pool, "linear", &detail).await;
-                }
-                SyncFault::Report { detail } => {
-                    tracing::warn!(error = %detail, "linear fetch failed - keeping stale cache");
-                    let _ = super::stamp_sync_error(
-                        pool,
-                        "linear",
-                        &format!("Linear sync failed: {detail}"),
-                    )
-                    .await;
-                }
-            }
+            super::record_sync_failure(pool, "linear", "fetch", &e).await;
             Ok(None)
         }
     }

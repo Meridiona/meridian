@@ -234,14 +234,21 @@ fn redact_logs(bytes: &[u8]) -> Redacted {
         return Redacted::Undecodable;
     };
     let mut stats = RedactStats::default();
+    // Computed ONCE per payload, not per attribute. `local_host_pseudonym`
+    // reads `settings.json`, and `host.name` appears on every resource, scope
+    // and record - so calling it per attribute turned one ship into hundreds of
+    // settings-file reads. Per-payload (rather than a process-wide cache) is
+    // deliberate: the account pseudonym changes on sign-in/sign-out, and the
+    // next payload must pick that up.
+    let pseudonym = local_host_pseudonym();
 
     for rl in &mut req.resource_logs {
         if let Some(res) = rl.resource.as_mut() {
-            stats.attrs_dropped += redact_attributes(&mut res.attributes);
+            stats.attrs_dropped += redact_attributes(&mut res.attributes, &pseudonym);
         }
         for sl in &mut rl.scope_logs {
             if let Some(scope) = sl.scope.as_mut() {
-                stats.attrs_dropped += redact_attributes(&mut scope.attributes);
+                stats.attrs_dropped += redact_attributes(&mut scope.attributes, &pseudonym);
             }
             let before = sl.log_records.len();
             stats.records_in += before;
@@ -249,7 +256,7 @@ fn redact_logs(bytes: &[u8]) -> Redacted {
                 .retain(|lr| log_is_error(lr) && !log_is_noise(lr));
             stats.records_out += sl.log_records.len();
             for lr in &mut sl.log_records {
-                stats.attrs_dropped += redact_attributes(&mut lr.attributes);
+                stats.attrs_dropped += redact_attributes(&mut lr.attributes, &pseudonym);
                 scrub_log_body(lr);
             }
         }
@@ -273,21 +280,28 @@ fn redact_traces(bytes: &[u8]) -> Redacted {
         return Redacted::Undecodable;
     };
     let mut stats = RedactStats::default();
+    // Computed ONCE per payload, not per attribute. `local_host_pseudonym`
+    // reads `settings.json`, and `host.name` appears on every resource, scope
+    // and record - so calling it per attribute turned one ship into hundreds of
+    // settings-file reads. Per-payload (rather than a process-wide cache) is
+    // deliberate: the account pseudonym changes on sign-in/sign-out, and the
+    // next payload must pick that up.
+    let pseudonym = local_host_pseudonym();
 
     for rs in &mut req.resource_spans {
         if let Some(res) = rs.resource.as_mut() {
-            stats.attrs_dropped += redact_attributes(&mut res.attributes);
+            stats.attrs_dropped += redact_attributes(&mut res.attributes, &pseudonym);
         }
         for ss in &mut rs.scope_spans {
             if let Some(scope) = ss.scope.as_mut() {
-                stats.attrs_dropped += redact_attributes(&mut scope.attributes);
+                stats.attrs_dropped += redact_attributes(&mut scope.attributes, &pseudonym);
             }
             let before = ss.spans.len();
             stats.records_in += before;
             ss.spans.retain(span_is_error);
             stats.records_out += ss.spans.len();
             for span in &mut ss.spans {
-                stats.attrs_dropped += redact_attributes(&mut span.attributes);
+                stats.attrs_dropped += redact_attributes(&mut span.attributes, &pseudonym);
                 scrub_span_status(span);
                 strip_span_children(span);
             }
@@ -366,9 +380,9 @@ fn strip_span_children(span: &mut Span) {
 
 /// Apply the value-type + key allowlist to one attribute list, returning how
 /// many attributes were removed.
-fn redact_attributes(attrs: &mut Vec<KeyValue>) -> usize {
+fn redact_attributes(attrs: &mut Vec<KeyValue>, pseudonym: &str) -> usize {
     let before = attrs.len();
-    attrs.retain_mut(keep_attribute);
+    attrs.retain_mut(|kv| keep_attribute(kv, pseudonym));
     before - attrs.len()
 }
 
@@ -376,7 +390,7 @@ fn redact_attributes(attrs: &mut Vec<KeyValue>) -> usize {
 /// "two rules". Mutates a kept string in place: FREE-TEXT keys get the full
 /// [`scrub_text`] + [`clamp`]; other allowlisted strings (structured
 /// identifiers, code locations) get only the light home-dir path scrub.
-fn keep_attribute(kv: &mut KeyValue) -> bool {
+fn keep_attribute(kv: &mut KeyValue, pseudonym: &str) -> bool {
     match kv.value.as_mut().and_then(|v| v.value.as_mut()) {
         // Numeric / bool can't carry free text — always safe.
         Some(Value::IntValue(_)) | Some(Value::DoubleValue(_)) | Some(Value::BoolValue(_)) => true,
@@ -394,7 +408,7 @@ fn keep_attribute(kv: &mut KeyValue) -> bool {
                 // path that ships another machine's payload — `telemetry
                 // import` — bypasses redaction entirely by design, so it
                 // cannot be mislabelled by this.
-                *s = local_host_pseudonym();
+                *s = pseudonym.to_string();
                 true
             } else if is_free_text_key(&kv.key) {
                 *s = clamp(scrub_text(s));
@@ -786,6 +800,13 @@ mod tests {
         trace::v1::{span, ResourceSpans, ScopeSpans},
     };
 
+    /// `keep_attribute` takes the payload's pseudonym now (computed once per
+    /// ship instead of per attribute). These tests assert against the real
+    /// one, so the shim supplies it.
+    fn keep(kv: &mut KeyValue) -> bool {
+        keep_attribute(kv, &local_host_pseudonym())
+    }
+
     fn str_attr(key: &str, val: &str) -> KeyValue {
         KeyValue {
             key: key.to_string(),
@@ -1170,7 +1191,7 @@ mod tests {
     #[test]
     fn host_name_is_pseudonymised_not_shipped_raw() {
         let mut kv = str_attr("host.name", "Akarshs-MacBook-Pro.local");
-        assert!(keep_attribute(&mut kv), "host.name should be kept");
+        assert!(keep(&mut kv), "host.name should be kept");
         let out = match kv.value.unwrap().value.unwrap() {
             Value::StringValue(s) => s,
             other => panic!("expected string, got {other:?}"),
@@ -1197,7 +1218,7 @@ mod tests {
     fn pseudonym_is_independent_of_the_captured_hostname() {
         let shipped = |raw: &str| {
             let mut kv = str_attr("host.name", raw);
-            assert!(keep_attribute(&mut kv));
+            assert!(keep(&mut kv));
             match kv.value.unwrap().value.unwrap() {
                 Value::StringValue(s) => s,
                 other => panic!("expected string, got {other:?}"),
@@ -1237,7 +1258,7 @@ mod tests {
     #[test]
     fn error_cause_and_provider_survive_but_user_data_does_not() {
         let mut kv = str_attr("error", "claude timed out after 60s");
-        assert!(keep_attribute(&mut kv), "error cause was dropped");
+        assert!(keep(&mut kv), "error cause was dropped");
         match kv.value.unwrap().value.unwrap() {
             Value::StringValue(s) => assert_eq!(s, "claude timed out after 60s"),
             other => panic!("expected string, got {other:?}"),
@@ -1245,7 +1266,7 @@ mod tests {
 
         for (key, value) in [("provider", "anthropic"), ("engine", "claude")] {
             let mut kv = str_attr(key, value);
-            assert!(keep_attribute(&mut kv), "{key} was dropped");
+            assert!(keep(&mut kv), "{key} was dropped");
         }
 
         // `error` is FREE TEXT — an anyhow chain routinely splices a path,
@@ -1254,7 +1275,7 @@ mod tests {
             "error",
             "post to https://hooks.example.com/T123 failed for akarsh@meridiona.com",
         );
-        assert!(keep_attribute(&mut kv));
+        assert!(keep(&mut kv));
         let out = match kv.value.unwrap().value.unwrap() {
             Value::StringValue(s) => s,
             other => panic!("expected string, got {other:?}"),
@@ -1272,7 +1293,7 @@ mod tests {
             "window_title",
         ] {
             let mut kv = str_attr(key, "MER-192");
-            assert!(!keep_attribute(&mut kv), "{key} leaked into the ship leg");
+            assert!(!keep(&mut kv), "{key} leaked into the ship leg");
         }
     }
 
@@ -1285,7 +1306,7 @@ mod tests {
     fn displayed_pseudonym_matches_shipped() {
         let raw = gethostname::gethostname().to_string_lossy().into_owned();
         let mut kv = str_attr("host.name", &raw);
-        assert!(keep_attribute(&mut kv));
+        assert!(keep(&mut kv));
         let shipped = match kv.value.unwrap().value.unwrap() {
             Value::StringValue(s) => s,
             other => panic!("expected string, got {other:?}"),
@@ -1312,7 +1333,7 @@ mod tests {
             ("host.arch", "x86_64"),
         ] {
             let mut kv = str_attr(key, value);
-            assert!(keep_attribute(&mut kv), "{key} was dropped");
+            assert!(keep(&mut kv), "{key} was dropped");
             let out = match kv.value.unwrap().value.unwrap() {
                 Value::StringValue(s) => s,
                 other => panic!("expected string, got {other:?}"),

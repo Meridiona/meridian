@@ -156,9 +156,18 @@ pub async fn save_account_email(email: String) -> Result<(), String> {
 /// hash, which is all `telemetry_spool::redact::local_host_pseudonym` needs.
 /// Clearing promptly on sign-out matters: a lingering hash would keep
 /// grouping error reports under someone no longer signed in on this machine.
+/// Mirror the account pseudonym (a salted hash, never the raw email) into
+/// `settings.json`, or clear it on sign-out.
+///
+/// Instrumented because it does real I/O whose failure is otherwise invisible:
+/// the mapped `String` error stops at the Tauri command boundary and never
+/// reaches `meridian logs` or the telemetry backend, so a persistently failing
+/// settings write would silently leave the Support ID stale - the one value
+/// support uses to find this user's error rows.
+#[tracing::instrument(skip(email), fields(signed_in = email.is_some()))]
 async fn write_account_pseudonym(email: Option<&str>) -> anyhow::Result<()> {
     let hash = email.map(meridian::telemetry_spool::redact::pseudonymize_account);
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let mut v = meridian_core::settings::read_settings_value();
         if let Some(obj) = v.as_object_mut() {
             obj.insert(
@@ -172,7 +181,14 @@ async fn write_account_pseudonym(email: Option<&str>) -> anyhow::Result<()> {
         meridian_core::settings::write_settings_value(&v)
     })
     .await
-    .context("join settings write task")?
+    .context("join settings write task")
+    .and_then(|inner| inner);
+    if let Err(e) = &result {
+        // The failure boundary. No email and no hash in the field set - the
+        // hash IS the pseudonymous identifier, so it stays out of logs.
+        tracing::error!(error = %format!("{e:#}"), "writing the account pseudonym failed");
+    }
+    result
 }
 
 /// Read the persisted account email, if any. `None` before the sign-in step

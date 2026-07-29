@@ -328,18 +328,30 @@ pub fn run() {
             // failure must not block startup.
             if !cfg!(debug_assertions) {
                 if let Some(pool) = encryption_notice_pool.as_ref() {
-                    let still_plaintext = meridian_core::db_crypto::is_plaintext_sqlite(
+                    let plaintext = meridian_core::db_crypto::plaintext_state(
                         std::path::Path::new(&db_path),
                     );
-                    let result = tauri::async_runtime::block_on(async {
-                        if db_encryption_intended && still_plaintext {
+                    let action = db_encryption_notice_action(db_encryption_intended, plaintext);
+                    // No `db_path` on the span: a home-dir path is user data.
+                    let span = tracing::info_span!("tray.db_encryption_notice", ?action);
+                    let _entered = span.enter();
+                    // Deliberately an if/else and NOT an early return: this
+                    // runs inside Tauri's `setup` closure, so returning here
+                    // would skip the tray menu and the whole rest of startup.
+                    if action == DbEncryptionNotice::Leave {
+                        tracing::warn!(
+                            "database encryption state could not be established - leaving any existing notice untouched"
+                        );
+                    } else {
+                        let result = tauri::async_runtime::block_on(async {
+                        if action == DbEncryptionNotice::Raise {
                             meridian::notices::raise_typed(
                                 pool,
                                 meridian::notices::Notice {
                                     id: "tray.db_encryption_incomplete",
                                     severity: "warning",
                                     title: "Your data isn't encrypted at rest yet.",
-                                    detail: "Meridian couldn't finish encrypting its local database because another Meridian process was holding it open. Your data is safe but stored unencrypted for now — fully quit Meridian and reopen it to let encryption finish.",
+                                    detail: "Meridian couldn't finish encrypting its local database because another Meridian process was holding it open. Your data is safe but stored unencrypted for now - fully quit Meridian and reopen it to let encryption finish.",
                                     remedy: None,
                                     event_key: "system.health",
                                     deep_link: Some("/logs"),
@@ -355,8 +367,15 @@ pub fn run() {
                             .await
                         }
                     });
-                    if let Err(e) = result {
-                        tracing::warn!(error = %e, "db-encryption-state notice update failed");
+                        if let Err(e) = result {
+                            // ERROR, not WARN: this is the failure boundary for
+                            // the one thing that tells a user their data is not
+                            // encrypted, and WARN-level would be easy to lose.
+                            tracing::error!(
+                                error = %e,
+                                "db-encryption-state notice update failed"
+                            );
+                        }
                     }
                 }
             }
@@ -915,6 +934,94 @@ fn monitor_work_area(window: &tauri::WebviewWindow) -> (i32, i32, i32, i32) {
             )
         }
         _ => (0, 0, i32::MAX, i32::MAX),
+    }
+}
+
+/// What to do with the "encryption did not finish" notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DbEncryptionNotice {
+    /// Encryption was intended but the database on disk is still plaintext.
+    Raise,
+    /// Positively confirmed encrypted.
+    Clear,
+    /// The state could not be established. Leave whatever notice exists alone.
+    Leave,
+}
+
+/// Decide the notice state from the two facts the startup path has.
+///
+/// Extracted from `run()` purely so it is testable. This is the one part of the
+/// plaintext-key hotfix that actually surfaces the remaining failure mode to the
+/// user, and inline in `run()` it had no CI coverage at all - the review called
+/// that out as the single unverified piece of the headline fix.
+///
+/// The asymmetry matters: the notice is raised ONLY when a key was resolved AND
+/// the file is still plaintext (a real, silent security downgrade). Every other
+/// combination clears it, including "no key intended", so a user who never
+/// enabled encryption is never nagged, and the notice disappears by itself once
+/// the migration finally completes.
+pub(crate) fn db_encryption_notice_action(
+    encryption_intended: bool,
+    plaintext: Option<bool>,
+) -> DbEncryptionNotice {
+    match (encryption_intended, plaintext) {
+        // Unknown state. Clearing here was the bug: `is_plaintext_sqlite`
+        // answers `false` for a file it cannot open, which is indistinguishable
+        // from "confirmed encrypted" - so an unreadable database silently
+        // dismissed a warning that was still true.
+        (_, None) => DbEncryptionNotice::Leave,
+        // Intended, and the file on disk is still plaintext.
+        (true, Some(true)) => DbEncryptionNotice::Raise,
+        // The only state that earns a clear: positively confirmed encrypted.
+        (_, Some(false)) => DbEncryptionNotice::Clear,
+        // Plaintext, but no key resolved this launch. That is either "the user
+        // never enabled encryption" (nothing was ever raised, so leaving is a
+        // no-op) or "key resolution failed this run" (the warning is still
+        // true). Indistinguishable from here, and only one of them is safe.
+        (false, Some(true)) => DbEncryptionNotice::Leave,
+    }
+}
+
+#[cfg(test)]
+mod db_encryption_notice_tests {
+    use super::{db_encryption_notice_action as action, DbEncryptionNotice::*};
+
+    /// The only state that warrants warning the user: encryption was asked for
+    /// and did not happen.
+    #[test]
+    fn raises_only_when_encryption_was_intended_but_did_not_happen() {
+        assert_eq!(action(true, Some(true)), Raise);
+    }
+
+    /// A clear must be EARNED by a positive result. Review finding: the probe
+    /// answers `false` both for "confirmed encrypted" and for "could not read
+    /// the file", so collapsing them let an unreadable database dismiss a
+    /// warning that was still true.
+    #[test]
+    fn clears_only_on_a_confirmed_encrypted_database() {
+        assert_eq!(action(true, Some(false)), Clear, "migration completed");
+        assert_eq!(
+            action(false, Some(false)),
+            Clear,
+            "no key, already encrypted"
+        );
+    }
+
+    /// Never clear on ignorance. `None` is "the probe could not read the file",
+    /// which is not evidence of anything.
+    #[test]
+    fn leaves_the_notice_alone_when_the_state_is_unknown() {
+        assert_eq!(action(true, None), Leave, "unreadable, encryption intended");
+        assert_eq!(action(false, None), Leave, "unreadable, no key resolved");
+    }
+
+    /// Plaintext with no key resolved is ambiguous: either the user never
+    /// enabled encryption (nothing was raised, so this is a no-op) or key
+    /// resolution failed this launch (the warning is still true). Only one of
+    /// those is safe to act on, so act on neither.
+    #[test]
+    fn leaves_the_notice_alone_when_plaintext_but_no_key_resolved() {
+        assert_eq!(action(false, Some(true)), Leave);
     }
 }
 
