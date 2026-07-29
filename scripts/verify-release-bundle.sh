@@ -126,45 +126,27 @@ pass "app + bundled daemon: Developer ID (${TEAM_ID}), Hardened Runtime"
 codesign --verify --deep --strict "${APP}" 2>/dev/null || fail "codesign --verify --deep --strict failed on ${APP} — the bundle seal is broken"
 pass "bundle seal verifies (--deep --strict)"
 
-# 3c/3d. Notarization — STABLE ONLY.
+# 3c/3d. Notarization — every channel.
 #
-# Gatekeeper enforces notarization only on a QUARANTINED app, and the quarantine
-# flag is set by whatever downloaded it — a browser. The two channels differ in
-# exactly that:
-#
-#   stable  — ships a DMG that new users download in a browser. Quarantined, so
-#             an un-notarized build gives every new user "Apple cannot check it
-#             for malicious software". Notarization is mandatory.
-#   staging — delivered ONLY by tauri-plugin-updater, which unpacks the tarball
-#             itself and sets no quarantine flag. The relaunched app is verified
-#             on its Developer ID signature (checked above, unconditionally) and
-#             the updater's minisign key. No notarization ticket is ever
-#             consulted, so submitting one costs build time and buys nothing.
-#
-# The SIGNING assertions above run on every channel and are the ones that matter
-# for staging: a broken signature breaks the updater's relaunch.
-if [[ "${MERIDIAN_CHANNEL:-stable}" == "stable" ]]; then
-    # Notarized + stapled: Gatekeeper must accept the app OFFLINE. `spctl`
-    # reports "Notarized Developer ID" only when a stapled ticket is present.
-    _spctl="$(spctl --assess --type exec -vv "${APP}" 2>&1 || true)"
-    grep -q "accepted" <<<"${_spctl}" || fail "Gatekeeper REJECTED ${APP}: ${_spctl}"
-    grep -q "Notarized Developer ID" <<<"${_spctl}" || fail "${APP} is signed but NOT notarized (${_spctl}) — users get a Gatekeeper warning. Check the APPLE_API_* notarization secrets."
-    xcrun stapler validate "${APP}" >/dev/null 2>&1 || fail "no stapled notarization ticket on ${APP} — first launch would need an online Gatekeeper check"
-    pass "notarized + stapled (Gatekeeper accepts offline)"
+# This used to run STABLE ONLY, on the theory that Gatekeeper only enforces
+# notarization on a QUARANTINED app and tauri-plugin-updater (staging's only
+# delivery path) never sets that flag. True for an in-place update — false the
+# moment a staging DMG is downloaded directly (browser, `gh release download`,
+# a shared link), which quarantines it exactly like a stable DMG and produces
+# "Apple could not verify this app is free of malware" with no ticket to fall
+# back on. So both channels now get the same check.
+_spctl="$(spctl --assess --type exec -vv "${APP}" 2>&1 || true)"
+grep -q "accepted" <<<"${_spctl}" || fail "Gatekeeper REJECTED ${APP}: ${_spctl}"
+grep -q "Notarized Developer ID" <<<"${_spctl}" || fail "${APP} is signed but NOT notarized (${_spctl}) — users get a Gatekeeper warning. Check the APPLE_API_* notarization secrets."
+xcrun stapler validate "${APP}" >/dev/null 2>&1 || fail "no stapled notarization ticket on ${APP} — first launch would need an online Gatekeeper check"
+pass "notarized + stapled (Gatekeeper accepts offline)"
 
-    # The DMG users actually download must itself be stapled.
-    if [[ -f "${DMG}" ]]; then
-        xcrun stapler validate "${DMG}" >/dev/null 2>&1 || fail "no stapled notarization ticket on ${DMG} — the downloaded DMG would trip Gatekeeper"
-        pass "DMG stapled: $(basename "${DMG}")"
-    else
-        fail "${DMG} not found — package-updater.sh should have made the stable-named copy"
-    fi
+# The DMG users actually download must itself be stapled.
+if [[ -f "${DMG}" ]]; then
+    xcrun stapler validate "${DMG}" >/dev/null 2>&1 || fail "no stapled notarization ticket on ${DMG} — the downloaded DMG would trip Gatekeeper"
+    pass "DMG stapled: $(basename "${DMG}")"
 else
-    echo "  ~ skipping notarization checks (channel=${MERIDIAN_CHANNEL}) — updater-only delivery sets no quarantine flag"
-    # The DMG must still EXIST even unstapled: package-updater.sh produces the
-    # stable-named copy the manifest and the download link both point at.
-    [[ -f "${DMG}" ]] || fail "${DMG} not found — package-updater.sh should have made the stable-named copy"
-    pass "DMG present (unstapled, staging): $(basename "${DMG}")"
+    fail "${DMG} not found — package-updater.sh should have made the stable-named copy"
 fi
 
 # ── 2. updater artifacts — the silent-no-auto-update guard ───────────────────
