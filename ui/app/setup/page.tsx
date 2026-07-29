@@ -26,8 +26,9 @@ export default function SetupWizard() {
   const [done, setDone] = useState(false)
   const [err, setErr] = useState('')
 
-  // Platform gates which steps exist — Permissions is macOS-only (Windows
-  // capture needs no TCC-style grant; see buildSteps in ./steps.tsx). `null`
+  // Platform shapes the Permissions step — macOS shows the two TCC grants +
+  // notifications, Windows shows notifications only (no TCC analogue there; see
+  // buildSteps in ./steps.tsx). The step count is the same on both. `null`
   // until resolved. The Welcome screen (the only way past `welcome`) blocks
   // "Get started" until this resolves, so `steps` can never change shape
   // out from under a `step` index the user already navigated to — a late
@@ -193,6 +194,7 @@ export default function SetupWizard() {
   }, [])
 
   const wiz: Wiz = {
+    platform,
     perms, openPane, grantScreen, grantNotifications,
     integrations, refetchIntegrations,
     signedInEmail, onSignedIn,
