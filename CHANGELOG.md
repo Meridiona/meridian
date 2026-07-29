@@ -1,3 +1,29 @@
+## [1.82.0](https://github.com/Meridiona/meridian/compare/v1.81.0...v1.82.0) (2026-07-29)
+
+### 🚀 Features
+
+* **daemon:** report a startup DB-open failure to central telemetry before exiting ([c3138c2](https://github.com/Meridiona/meridian/commit/c3138c25970df6f596dd8f16a26768a4009dcfb2)), closes [#625](https://github.com/Meridiona/meridian/issues/625)
+* **setup:** add Windows notification permission step to setup wizard ([831aae5](https://github.com/Meridiona/meridian/commit/831aae5b8665c37751f5fd405d60bda9a339c213))
+* **tray:** self-relocate to /Applications on a DMG/translocation launch ([6965aaa](https://github.com/Meridiona/meridian/commit/6965aaa26071ace9262553239594bfff83c8dfbf))
+* **tray:** ship a central-telemetry error when the daemon is offline and can't be restarted ([cd5b909](https://github.com/Meridiona/meridian/commit/cd5b909a4fb279ab853827e1f43a894bf8dc2900))
+
+### 🐛 Bug Fixes
+
+* address CodeRabbit findings on PR [#630](https://github.com/Meridiona/meridian/issues/630) ([25cb6d4](https://github.com/Meridiona/meridian/commit/25cb6d4408f64ef965a02a9fbde470a86242b2c3))
+* **llm:** fix the env node shebang lookup in sign-in flows too ([6d26e9e](https://github.com/Meridiona/meridian/commit/6d26e9e27c54f33bd706c3e9feafdfe624c2635a))
+* **llm:** prepend the resolved binary's own directory onto PATH ([2f2ff0c](https://github.com/Meridiona/meridian/commit/2f2ff0c44c33cbb755a32bd123a46d4e7880d9fb))
+* **release:** notarize staging builds, not just stable ([c3bdbac](https://github.com/Meridiona/meridian/commit/c3bdbaccfa454166ce56ec1b3441d272b46fca2c))
+* **setup:** address review — make guard test real, handle empty Windows step ([531bc18](https://github.com/Meridiona/meridian/commit/531bc18d9c8341dc9901fcafcac8a7bc6d934b3a))
+* **tray:** pause capture when disk space runs low ([79b2171](https://github.com/Meridiona/meridian/commit/79b21717eda0b7f8beb0e3de397d8fd63debe142))
+* **tray:** stop the daemon before encrypt-in-place so encryption completes on Windows ([29591da](https://github.com/Meridiona/meridian/commit/29591da7cf5da463fe2421bc8f4208126d21d59d))
+
+### 🤖 CI
+
+* add sccache alongside rust-cache to degrade more gracefully on drift ([10c3705](https://github.com/Meridiona/meridian/commit/10c3705ab230d6c04ea8bf6aa90752285eb3e047))
+* extend cache pruning to ci.yml's PR-check caches too ([d1b7e15](https://github.com/Meridiona/meridian/commit/d1b7e15d23ffdd249798c5c264547643aee165f2)), closes [#622](https://github.com/Meridiona/meridian/issues/622)
+* include .cargo/ in the rust path filter ([c7a35ae](https://github.com/Meridiona/meridian/commit/c7a35aee5ad5f9c6f4ba9215d6630a3ffd364d0f))
+* use rust-lld on Windows, auto-prune superseded release caches ([635b3aa](https://github.com/Meridiona/meridian/commit/635b3aa8affd962ed2797bd2d945a0e922b7ac42))
+
 ## [1.81.0](https://github.com/Meridiona/meridian/compare/v1.80.0...v1.81.0) (2026-07-29)
 
 ### 🚀 Features
