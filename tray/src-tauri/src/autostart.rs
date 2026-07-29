@@ -9,6 +9,9 @@
 //!
 //! # Related
 //! - [`crate::backend_install`] — the daemon's equivalent self-heal registration.
+//! - [`crate::relocate`] — runs earlier in `setup()` and actively fixes a
+//!   transient (DMG/translocation) launch instead of just deferring around it
+//!   the way [`ensure_enabled_once`] does.
 
 use tauri_plugin_autostart::ManagerExt;
 
@@ -42,7 +45,7 @@ pub async fn ensure_enabled_once(app: &tauri::AppHandle) {
     // once (marker on success) the broken pin would never self-heal. Deferring
     // — without writing the marker — retries on the next launch, by which time
     // the user has dragged the app into a stable location (e.g. /Applications).
-    if !running_from_stable_location() {
+    if !crate::sys::running_from_stable_location() {
         tracing::info!(
             "autostart: running from a transient location (DMG mount / translocation) — \
              deferring login-item registration until the app is in a stable path"
@@ -66,60 +69,6 @@ pub async fn ensure_enabled_once(app: &tauri::AppHandle) {
     }
 }
 
-/// macOS: `true` unless the running binary sits in a location that won't
-/// survive — a mounted disk image (`/Volumes/…`, read-only and ejected after a
-/// drag-install) or Gatekeeper's App Translocation quarantine
-/// (`…/AppTranslocation/…`, a randomized read-only mount the OS discards). See
-/// [`ensure_enabled_once`] for why pinning a login item from those paths would
-/// silently and permanently break self-heal.
-///
-/// Non-macOS: always `true` — Windows Run-key entries and Linux desktop entries
-/// point at the installed path, so the mounted-image failure class doesn't
-/// apply there.
-#[cfg(target_os = "macos")]
-fn running_from_stable_location() -> bool {
-    match std::env::current_exe() {
-        Ok(exe) => path_is_stable(&exe.to_string_lossy()),
-        // Can't resolve our own path ⇒ can't vouch for it. Skip and retry next
-        // launch rather than gamble on pinning a bad target.
-        Err(_) => false,
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn running_from_stable_location() -> bool {
-    true
-}
-
-/// The pure string test behind [`running_from_stable_location`], split out so
-/// it can be unit-tested without a real `current_exe()`.
-#[cfg(target_os = "macos")]
-fn path_is_stable(exe_path: &str) -> bool {
-    !exe_path.starts_with("/Volumes/") && !exe_path.contains("/AppTranslocation/")
-}
-
-#[cfg(all(test, target_os = "macos"))]
-mod tests {
-    use super::path_is_stable;
-
-    #[test]
-    fn rejects_transient_locations() {
-        // Mounted DMG (drag-install source) and translocation quarantine.
-        assert!(!path_is_stable(
-            "/Volumes/Meridian/Meridian.app/Contents/MacOS/Meridian"
-        ));
-        assert!(!path_is_stable(
-            "/private/var/folders/ab/xyz/T/AppTranslocation/ABC-123/d/Meridian.app/Contents/MacOS/Meridian"
-        ));
-    }
-
-    #[test]
-    fn accepts_stable_locations() {
-        assert!(path_is_stable(
-            "/Applications/Meridian.app/Contents/MacOS/Meridian"
-        ));
-        assert!(path_is_stable(
-            "/Users/dev/Applications/Meridian.app/Contents/MacOS/Meridian"
-        ));
-    }
-}
+// The stable-vs-transient-path check now lives in `crate::sys` — shared with
+// `crate::relocate`, which is the module that actively fixes a transient
+// launch rather than just deferring around it.
