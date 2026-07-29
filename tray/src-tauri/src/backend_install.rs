@@ -430,8 +430,31 @@ async fn stop_running_daemon_before_stage(daemon_bin: &Path) -> Result<(), Strin
     // seconds to unwind. A tighter window gives up while the hold would still
     // have cleared on its own — which is exactly what surfaced the spurious
     // "couldn't finish installing" notice.
+    //
+    // `wait_until_gone` is deliberately silent (platform-neutral + testable), so
+    // wrap the probe to emit a throttled breadcrumb — roughly every ~2s rather
+    // than the original per-probe spam — keeping a live `meridian logs` tail
+    // informed across the up-to-10s wait without flooding it.
+    let mut probes_since_log: u32 = 0;
     let remaining = wait_until_gone(
-        || matching_daemon_pids(daemon_bin),
+        || {
+            probes_since_log += 1;
+            let emit = probes_since_log >= 8;
+            if emit {
+                probes_since_log = 0;
+            }
+            async move {
+                let pids = matching_daemon_pids(daemon_bin).await;
+                if emit && !pids.is_empty() {
+                    tracing::debug!(
+                        path = %daemon_bin.display(),
+                        remaining = pids.len(),
+                        "backend_install: still waiting for the previous daemon to exit"
+                    );
+                }
+                pids
+            }
+        },
         STOP_POLL_ATTEMPTS,
         STOP_POLL_INTERVAL,
     )
