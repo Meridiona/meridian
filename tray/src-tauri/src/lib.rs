@@ -254,7 +254,10 @@ pub fn run() {
                 existing_key
             } else if !cfg!(debug_assertions) {
                 match install::canonical_env_path() {
-                    Some(env_path) => match db_key::resolve_or_create_key(&env_path) {
+                    Some(env_path) => match db_key::resolve_or_create_key(
+                        &env_path,
+                        std::path::Path::new(&db_path),
+                    ) {
                         Ok(key) => Some(key),
                         Err(e) => {
                             // `tracing`, not `eprintln!`: observability is
@@ -264,10 +267,34 @@ pub fn run() {
                             // or central error reporting. A silent fallback to
                             // an UNENCRYPTED database is exactly the event
                             // those channels exist to surface.
-                            tracing::error!(
-                                error = %e,
-                                "failed to resolve DB encryption key - continuing unencrypted"
-                            );
+                            //
+                            // `would_orphan_existing_db` is a DIFFERENT, worse
+                            // case than the generic fallback below: the DB
+                            // already exists and is NOT plaintext, so there is
+                            // no unencrypted file to "continue" into - opening
+                            // it further down with no key will just fail, the
+                            // same way it's been failing already. The
+                            // DB-backed notices system (used elsewhere in this
+                            // function) can't carry this one: it's the very
+                            // database that's unreadable. A native OS
+                            // notification is the only channel left that
+                            // doesn't itself depend on meridian.db opening.
+                            if db_key::would_orphan_existing_db(std::path::Path::new(&db_path)) {
+                                tracing::error!(
+                                    error = %e,
+                                    "refusing to generate a replacement DB encryption key - meridian.db exists and appears already encrypted under a key this install can no longer find"
+                                );
+                                sys::notify(
+                                    app.handle(),
+                                    "Meridian can't read your local data",
+                                    "Your local database appears to be encrypted with a key this install can no longer find. Contact support with your Support ID (Settings -> Account) before removing anything.",
+                                );
+                            } else {
+                                tracing::error!(
+                                    error = %e,
+                                    "failed to resolve DB encryption key - continuing unencrypted"
+                                );
+                            }
                             None
                         }
                     },
