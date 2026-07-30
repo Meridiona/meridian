@@ -38,14 +38,66 @@ fn generate_key_hex() -> String {
     hex::encode(bytes)
 }
 
+/// Length of the SQLite file-header magic. A file shorter than this cannot be
+/// probed for it at all — see [`ExistingDb::TooSmallToBeADatabase`].
+const SQLITE_MAGIC_LEN: u64 = 16;
+
+/// What the on-disk `meridian.db` looks like, as far as deciding whether it is
+/// safe to mint a fresh encryption key is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExistingDb {
+    /// No file — a genuine first run.
+    Absent,
+    /// A confirmed plaintext SQLite file. Nothing is encrypted yet, so
+    /// `encrypt_in_place` will migrate it under the newly minted key.
+    Plaintext,
+    /// Present, but shorter than [`SQLITE_MAGIC_LEN`]. SQLCipher's smallest
+    /// page is 512 bytes, so a file this short cannot hold encrypted data
+    /// under any key — it is an empty or truncated leftover (a torn write, a
+    /// disk-full stub), not a database. Nothing is lost by keying a fresh one
+    /// over it, and blocking startup to demand a support ticket for a file
+    /// with no recoverable content would be a false alarm. Carries the
+    /// observed length so the caller can log it without re-stat'ing (and
+    /// without having to invent a value if that second stat were to fail).
+    TooSmallToBeADatabase { bytes: u64 },
+    /// Present, long enough to be real, and carrying no recognizable SQLite
+    /// header — i.e. ciphertext under some key that is not in the keychain.
+    /// This is the case that must never be overwritten.
+    LooksEncrypted,
+}
+
+/// Classify `db_path` into the four states that matter before minting a key.
+///
+/// Note this cannot be answered by [`meridian_core::db_crypto::plaintext_state`]
+/// alone: it collapses *both* "file too short to read a header from" and "file
+/// unreadable" into `None`, which is right for its own callers but would lump a
+/// harmless empty stub in with real ciphertext here. The file length is what
+/// actually separates them, so it is consulted directly.
+///
+/// An existing file whose metadata cannot be read is deliberately classified
+/// [`ExistingDb::LooksEncrypted`] — the conservative direction, since guessing
+/// "harmless" about a file we cannot inspect is the one mistake with an
+/// irreversible outcome.
+pub(crate) fn classify_existing_db(db_path: &std::path::Path) -> ExistingDb {
+    if !db_path.exists() {
+        return ExistingDb::Absent;
+    }
+    if meridian_core::db_crypto::is_plaintext_sqlite(db_path) {
+        return ExistingDb::Plaintext;
+    }
+    match std::fs::metadata(db_path) {
+        Ok(m) if m.len() < SQLITE_MAGIC_LEN => ExistingDb::TooSmallToBeADatabase { bytes: m.len() },
+        _ => ExistingDb::LooksEncrypted,
+    }
+}
+
 /// Would minting a brand-new key orphan an already-encrypted `meridian.db`?
-/// True only when `db_path` exists and does not look like a plaintext SQLite
-/// file — i.e. it looks like ciphertext under some key this install can no
-/// longer find in the keychain. A missing file (fresh install) or a
-/// confirmed-plaintext file (nothing encrypted yet — `encrypt_in_place` will
-/// migrate it under the new key) are both safe to proceed on.
+/// True only for [`ExistingDb::LooksEncrypted`] — a file that exists, is long
+/// enough to be a real database, and is not plaintext, i.e. ciphertext under a
+/// key this install can no longer find. A missing file, a confirmed-plaintext
+/// file, and an empty/truncated stub are all safe to proceed on.
 pub(crate) fn would_orphan_existing_db(db_path: &std::path::Path) -> bool {
-    db_path.exists() && !meridian_core::db_crypto::is_plaintext_sqlite(db_path)
+    matches!(classify_existing_db(db_path), ExistingDb::LooksEncrypted)
 }
 
 /// Get-or-create this machine's `meridian.db` encryption key from the OS
@@ -74,8 +126,8 @@ pub fn resolve_or_create_key(
     let key_hex = match entry.get_password() {
         Ok(existing) => existing,
         Err(keyring::Error::NoEntry) => {
-            if would_orphan_existing_db(db_path) {
-                anyhow::bail!(
+            match classify_existing_db(db_path) {
+                ExistingDb::LooksEncrypted => anyhow::bail!(
                     "no DB encryption key found in the OS keychain, but {} already exists and \
                      does not look like a plaintext SQLite file - it looks encrypted under a \
                      key this install can no longer find. Refusing to generate a replacement \
@@ -83,7 +135,19 @@ pub fn resolve_or_create_key(
                      of surfacing the problem. If this file is known-safe to discard, remove \
                      it and restart.",
                     db_path.display()
-                );
+                ),
+                // Distinct from the bail above on purpose: this file is too
+                // short to hold encrypted data, so it is a leftover stub
+                // rather than orphaned user data. Proceed (a fresh database
+                // gets keyed over it), but say so — silently stepping over a
+                // corrupt file is how the original bug stayed invisible.
+                ExistingDb::TooSmallToBeADatabase { bytes } => {
+                    tracing::warn!(
+                        db_bytes = bytes,
+                        "keying a fresh database over an empty or truncated meridian.db stub - too short to hold encrypted data, so nothing recoverable is being replaced"
+                    );
+                }
+                ExistingDb::Absent | ExistingDb::Plaintext => {}
             }
             let generated = generate_key_hex();
             entry
@@ -124,6 +188,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("meridian.db");
         assert!(!db_path.exists());
+        assert_eq!(classify_existing_db(&db_path), ExistingDb::Absent);
         assert!(!would_orphan_existing_db(&db_path));
     }
 
@@ -132,6 +197,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("meridian.db");
         std::fs::write(&db_path, b"SQLite format 3\0rest-of-a-plaintext-file").unwrap();
+        assert_eq!(classify_existing_db(&db_path), ExistingDb::Plaintext);
         assert!(!would_orphan_existing_db(&db_path));
     }
 
@@ -141,6 +207,50 @@ mod tests {
         let db_path = dir.path().join("meridian.db");
         // No recognizable SQLite header - stands in for SQLCipher ciphertext.
         std::fs::write(&db_path, b"not-a-sqlite-header-at-all-just-ciphertext").unwrap();
+        assert_eq!(classify_existing_db(&db_path), ExistingDb::LooksEncrypted);
+        assert!(would_orphan_existing_db(&db_path));
+    }
+
+    /// A zero-byte `meridian.db` — the shape a torn write or a disk-full stub
+    /// leaves behind. It reads as "not plaintext" (there is no header to read),
+    /// so it must be told apart from real ciphertext explicitly, or a user with
+    /// nothing to lose is sent to support instead of simply being healed.
+    #[test]
+    fn an_empty_stub_is_not_treated_as_encrypted_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("meridian.db");
+        std::fs::write(&db_path, b"").unwrap();
+        assert!(!meridian_core::db_crypto::is_plaintext_sqlite(&db_path));
+        assert_eq!(
+            classify_existing_db(&db_path),
+            ExistingDb::TooSmallToBeADatabase { bytes: 0 }
+        );
+        assert!(!would_orphan_existing_db(&db_path));
+    }
+
+    /// Truncated part-way through the magic — same reasoning as the empty stub:
+    /// too short to hold a SQLCipher page, so there is nothing to orphan.
+    #[test]
+    fn a_truncated_stub_is_not_treated_as_encrypted_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("meridian.db");
+        std::fs::write(&db_path, b"SQLite f").unwrap();
+        assert_eq!(
+            classify_existing_db(&db_path),
+            ExistingDb::TooSmallToBeADatabase { bytes: 8 }
+        );
+        assert!(!would_orphan_existing_db(&db_path));
+    }
+
+    /// The boundary itself: exactly `SQLITE_MAGIC_LEN` bytes of non-header
+    /// content is long enough to probe, so it stays on the conservative side.
+    #[test]
+    fn exactly_magic_length_of_non_header_still_looks_encrypted() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("meridian.db");
+        let contents = vec![0xABu8; SQLITE_MAGIC_LEN as usize];
+        std::fs::write(&db_path, &contents).unwrap();
+        assert_eq!(classify_existing_db(&db_path), ExistingDb::LooksEncrypted);
         assert!(would_orphan_existing_db(&db_path));
     }
 }
