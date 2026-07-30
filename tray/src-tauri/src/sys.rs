@@ -272,7 +272,38 @@ fn windows_notification_setting(
     use windows::core::HSTRING;
     use windows::UI::Notifications::ToastNotificationManager;
     let aumid = HSTRING::from(&app.config().identifier);
-    ToastNotificationManager::CreateToastNotifierWithId(&aumid)?.Setting()
+    let raw = ToastNotificationManager::CreateToastNotifierWithId(&aumid).and_then(|n| n.Setting());
+    resolve_notification_setting(raw)
+}
+
+/// Fold the "AUMID not registered yet" probe error into the benign default.
+/// `ToastNotifier::Setting()` throws `ERROR_NOT_FOUND` (`0x80070490`) when this
+/// app has no identity Windows can read a setting for — it has never delivered a
+/// toast and no Start Menu shortcut carries its AUMID, so there is no app record
+/// to answer for. That is the *pre-registration default*, NOT a denial: the
+/// first toast registers the app and Windows defaults its toast delivery to
+/// `Enabled` (verified live — a single `Toast::show()` re-creates the
+/// `Notifications\Settings\<AUMID>` entry and the setting then reads `Enabled`).
+/// So map it to `Enabled`; otherwise the error bubbles to `None` in
+/// [`notification_permission_state`] and the wizard renders a spurious
+/// "notifications unavailable" on a perfectly healthy machine that simply hasn't
+/// toasted yet — observed in the field as `windows notification setting probe
+/// failed` / `Element not found (0x80070490)`. Every other error is a genuine
+/// probe failure and propagates unchanged (the caller logs it and reports
+/// `None`). Pure/free-standing so the `ERROR_NOT_FOUND` rule is unit-testable
+/// without a live WinRT call.
+#[cfg(target_os = "windows")]
+fn resolve_notification_setting(
+    raw: windows::core::Result<windows::UI::Notifications::NotificationSetting>,
+) -> windows::core::Result<windows::UI::Notifications::NotificationSetting> {
+    use windows::core::HRESULT;
+    use windows::UI::Notifications::NotificationSetting;
+    // HRESULT_FROM_WIN32(ERROR_NOT_FOUND) — the unregistered-AUMID sentinel.
+    const ERROR_NOT_FOUND: HRESULT = HRESULT(0x8007_0490u32 as i32);
+    match raw {
+        Err(e) if e.code() == ERROR_NOT_FOUND => Ok(NotificationSetting::Enabled),
+        other => other,
+    }
 }
 
 /// Map WinRT's `NotificationSetting` to the plugin's `PermissionState` so the
@@ -538,6 +569,52 @@ mod tests {
                 "{setting:?} must not be reported as Granted"
             );
         }
+    }
+
+    /// Regression guard for the field bug where a fresh Windows machine that
+    /// has never delivered a toast shows a spurious "notifications unavailable"
+    /// in the setup wizard: `ToastNotifier::Setting()` throws `ERROR_NOT_FOUND`
+    /// because the AUMID isn't registered yet, which is the benign default, not
+    /// a denial — it must resolve to `Enabled` (→ `Granted`) so the wizard stays
+    /// green. Observed in telemetry as `windows notification setting probe
+    /// failed` / `Element not found (0x80070490)`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn error_not_found_probe_resolves_to_enabled() {
+        use windows::core::{Error, HRESULT};
+        use windows::UI::Notifications::NotificationSetting;
+        let not_found = Error::from(HRESULT(0x8007_0490u32 as i32));
+        assert_eq!(
+            super::resolve_notification_setting(Err(not_found)).unwrap(),
+            NotificationSetting::Enabled,
+        );
+    }
+
+    /// A genuine probe failure (anything other than `ERROR_NOT_FOUND`) must stay
+    /// an error, not be laundered into a false `Granted` — the caller logs it and
+    /// reports `None`/`unavailable`, the correct signal for a real WinRT fault.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn other_probe_errors_propagate() {
+        use windows::core::{Error, HRESULT};
+        // E_ACCESSDENIED — a real fault, unrelated to the unregistered-AUMID case.
+        let denied = Error::from(HRESULT(0x8007_0005u32 as i32));
+        assert!(super::resolve_notification_setting(Err(denied)).is_err());
+    }
+
+    /// A successfully-read setting passes through untouched — the
+    /// `ERROR_NOT_FOUND` special-case must not perturb the normal
+    /// `Enabled`/`Disabled*` readings that [`super::windows_permission_state`]
+    /// then maps.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_real_setting_passes_through_unchanged() {
+        use windows::UI::Notifications::NotificationSetting;
+        assert_eq!(
+            super::resolve_notification_setting(Ok(NotificationSetting::DisabledForApplication))
+                .unwrap(),
+            NotificationSetting::DisabledForApplication,
+        );
     }
 
     /// Regression guard: these two must report `true` on Windows (see the
