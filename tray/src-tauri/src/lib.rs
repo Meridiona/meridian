@@ -245,6 +245,11 @@ pub fn run() {
             //    meridian_core::db_crypto::encrypt_in_place's doc comments
             //    for why that's the safe failure mode.
             let db_path = install::meridian_db_path();
+            // Bound once: the same path is re-borrowed as a `Path` several
+            // times below (key resolution, the orphan check, the plaintext
+            // probe, the migration), and `db_path` itself stays a `String`
+            // because the tracing/`open` call sites still want it as one.
+            let db_path_ref = std::path::Path::new(&db_path);
             let install_mode = install::detect_install_mode();
             let existing_key = install_mode
                 .env_path()
@@ -254,7 +259,10 @@ pub fn run() {
                 existing_key
             } else if !cfg!(debug_assertions) {
                 match install::canonical_env_path() {
-                    Some(env_path) => match db_key::resolve_or_create_key(&env_path) {
+                    Some(env_path) => match db_key::resolve_or_create_key(
+                        &env_path,
+                        db_path_ref,
+                    ) {
                         Ok(key) => Some(key),
                         Err(e) => {
                             // `tracing`, not `eprintln!`: observability is
@@ -264,10 +272,34 @@ pub fn run() {
                             // or central error reporting. A silent fallback to
                             // an UNENCRYPTED database is exactly the event
                             // those channels exist to surface.
-                            tracing::error!(
-                                error = %e,
-                                "failed to resolve DB encryption key - continuing unencrypted"
-                            );
+                            //
+                            // `would_orphan_existing_db` is a DIFFERENT, worse
+                            // case than the generic fallback below: the DB
+                            // already exists and is NOT plaintext, so there is
+                            // no unencrypted file to "continue" into - opening
+                            // it further down with no key will just fail, the
+                            // same way it's been failing already. The
+                            // DB-backed notices system (used elsewhere in this
+                            // function) can't carry this one: it's the very
+                            // database that's unreadable. A native OS
+                            // notification is the only channel left that
+                            // doesn't itself depend on meridian.db opening.
+                            if db_key::would_orphan_existing_db(db_path_ref) {
+                                tracing::error!(
+                                    error = %e,
+                                    "refusing to generate a replacement DB encryption key - meridian.db exists and appears already encrypted under a key this install can no longer find"
+                                );
+                                sys::notify(
+                                    app.handle(),
+                                    "Meridian can't read your local data",
+                                    "Your local database appears to be encrypted with a key this install can no longer find. Contact support with your Support ID (Settings -> Account) before removing anything.",
+                                );
+                            } else {
+                                tracing::error!(
+                                    error = %e,
+                                    "failed to resolve DB encryption key - continuing unencrypted"
+                                );
+                            }
                             None
                         }
                     },
@@ -298,7 +330,7 @@ pub fn run() {
             // up by `ensure_backend_installed` later in this same setup hook.
             if !cfg!(debug_assertions)
                 && db_encryption_intended
-                && meridian_core::db_crypto::is_plaintext_sqlite(std::path::Path::new(&db_path))
+                && meridian_core::db_crypto::is_plaintext_sqlite(db_path_ref)
             {
                 if let Err(e) =
                     tauri::async_runtime::block_on(backend_install::stop_daemon_for_migration())
@@ -314,7 +346,7 @@ pub fn run() {
                 match &db_key_hex {
                     Some(key) => {
                         let migrate = meridian_core::db_crypto::encrypt_in_place(
-                            std::path::Path::new(&db_path),
+                            db_path_ref,
                             key,
                         );
                         match tauri::async_runtime::block_on(migrate) {
@@ -365,7 +397,7 @@ pub fn run() {
             if !cfg!(debug_assertions) {
                 if let Some(pool) = encryption_notice_pool.as_ref() {
                     let plaintext = meridian_core::db_crypto::plaintext_state(
-                        std::path::Path::new(&db_path),
+                        db_path_ref,
                     );
                     let action = db_encryption_notice_action(db_encryption_intended, plaintext);
                     // No `db_path` on the span: a home-dir path is user data.
