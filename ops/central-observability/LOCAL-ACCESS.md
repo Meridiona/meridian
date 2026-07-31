@@ -62,7 +62,9 @@ gcloud compute ssh --zone "asia-south1-a" "meridian-telemetry" --project "meridi
 cd central-observability
 container_id="$(docker compose ps -q openobserve)"
 test -n "$container_id" || { echo "openobserve service not running"; exit 1; }
-docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_id"
+address="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_id")"
+test -n "$address" || { echo "container has no network address"; exit 1; }
+echo "$address"
 # e.g. 172.18.0.2
 exit
 ```
@@ -108,7 +110,7 @@ curl --user "$OO_ROOT_USER_EMAIL" \
   -H 'Content-Type: application/json' \
   -d '{
     "query": {
-      "sql": "SELECT * FROM \"default\" WHERE body LIKE '\''%mac_970e5ebf236cb0ce%'\'' ORDER BY _timestamp DESC LIMIT 50",
+      "sql": "SELECT * FROM \"default\" WHERE host_name = '\''mac_970e5ebf236cb0ce'\'' ORDER BY _timestamp DESC LIMIT 50",
       "start_time": '"$start_time"',
       "end_time": '"$end_time"'
     }
@@ -123,10 +125,19 @@ Notes:
   window at run time so it never goes stale. `start_time`/`end_time` in the
   request body only bound the search window — they're independent of any
   `_timestamp` condition inside `sql`.
-- The log stream's actual column is `body`, not `message` — `SELECT * FROM
-  "default"` (or `/api/default/streams`) shows the full schema when unsure.
-  The stream/table name and available columns otherwise depend on what the
-  OTel Collector is configured to write (see `otel-collector-config.yaml`).
+- A Support ID is the pseudonymized `host_name` **resource attribute**, not
+  text inside the log message — filter on `host_name = '<support id>'`
+  (exact match), not a `LIKE` search over `body`. The log message column
+  itself is called `body`, not `message`.
+- If you do need a substring search over `body`, remember `_` and `%` are
+  SQL `LIKE` wildcards — a literal underscore (as in `mac_970e...`) matches
+  any single character unless escaped, e.g. `LIKE '%foo\_bar%' ESCAPE '\'`.
+  `host_name` needs no such escaping since it's an exact-match column, not a
+  pattern.
+- `SELECT * FROM "default"` (or `/api/default/streams`) shows the full
+  schema when unsure what's queryable — the stream/table name and available
+  columns otherwise depend on what the OTel Collector is configured to write
+  (see `otel-collector-config.yaml`).
 
 ## When you're done
 
