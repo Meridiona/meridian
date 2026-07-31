@@ -1,6 +1,10 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// Run `claude -p` with the session-summary skill + structured output. Returns
+// Run `claude -p` with the summary rules embedded inline + structured output.
+// (It does NOT invoke a `/session-summary` slash-skill — that was replaced by
+// the inline SUMMARY_RULES prompt below, and `SUMMARISER_SKILL` is deprecated.
+// This comment claiming otherwise is what kept a stale doctor check alive.)
+// Returns
 // the validated {summary}, or RateLimited / Failed — both leave the row pending
 // for a later drain (no cross-engine fallback).
 //

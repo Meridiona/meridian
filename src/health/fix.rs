@@ -62,11 +62,10 @@ pub fn fix_for(c: &Check) -> Option<FixAction> {
         ("jira", name) if name.contains("ticket sync") => {
             guided("refresh the Jira ticket cache", &["meridian", "restart"])
         }
-        // Missing session-summary skill → write the file (safe, idempotent).
-        ("coding-agent", name) if name.contains("session-summary skill") => auto(
-            "install the session-summary Claude Code command",
-            &["meridian", "coding-agent-install-skill"],
-        ),
+        // (No arm for "session-summary skill": the check that produced it is
+        // gone — the Claude engine embeds its prompt inline and never invokes a
+        // slash-skill, so `coding-agent-install-skill` wrote a file nothing
+        // read. See `summariser::claude`.)
         // Summariser backlog → drain it (mutates data → guided).
         ("meridian daemon", name) if name.contains("summariser queue") => guided(
             "drain the summariser queue",

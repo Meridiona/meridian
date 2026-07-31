@@ -49,14 +49,14 @@ pub fn root_causes(report: &Report) -> Vec<Diagnosis> {
 
     // 1. Coding-agent summariser cascade — sealed sessions must be summarised
     //    (via each agent's own CLI) before they reach the classifier and worklog.
-    if bad("coding-agent", "session-summary skill") {
-        out.push(Diagnosis {
-            title: "session-summary Claude Code command is missing".into(),
-            cause: "The `claude -p /session-summary` invocation that produces transcript summaries returns 'Unknown command' because ~/.claude/commands/session-summary.md doesn't exist, so Claude Code sessions can't be summarised.".into(),
-            contributing: contributing(&[("coding-agent", "session-summary skill")]),
-            action: "`meridian doctor --fix`  (or: `meridian coding-agent-install-skill`)".into(),
-        });
-    } else if bad("meridian daemon", "summariser queue") {
+    //
+    //    There used to be a higher-priority branch here for a missing
+    //    ~/.claude/commands/session-summary.md. It was stale: the Claude engine
+    //    embeds SUMMARY_RULES inline in `claude -p` and has not invoked a
+    //    slash-skill since (see `summariser::claude`), so the file's absence
+    //    means nothing — but this diagnosis outranked the queue check below,
+    //    which is the one that actually detects a stalled summariser.
+    if bad("meridian daemon", "summariser queue") {
         out.push(Diagnosis {
             title: "Coding-agent summariser is stalled".into(),
             cause: "Sealed sessions aren't being summarised, so they never reach the classifier and the worklog hour-ledger backs up behind them.".into(),

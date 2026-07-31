@@ -145,7 +145,7 @@ standalone poll).
 | `SUMMARISER_SWEEP_S` | `30` | catch-up sweep cadence |
 | `SUMMARISER_BATCH_PER_TICK` | `8` | rows per drain pass |
 | `SUMMARISER_MODEL` | `claude-haiku-4-5-20251001` | Claude model |
-| `SUMMARISER_SKILL` | `session-summary` | skill name |
+| `SUMMARISER_SKILL` | `session-summary` | **DEPRECATED — no effect.** The Claude engine embeds `SUMMARY_RULES` inline in `claude -p`; it has not invoked a slash-skill since. Setting this to anything else only logs a warning. |
 | `SUMMARISER_CLAUDE_TIMEOUT_S` | `240` | `claude -p` timeout |
 | `SUMMARISER_CODEX_MODEL` | (empty → codex default) | Codex model |
 | `SUMMARISER_CODEX_TIMEOUT_S` | `240` | `codex exec` timeout |
