@@ -148,10 +148,22 @@ pub async fn open_pool_with_key(
 /// means the pool always keys (or declines to key) against the file as it
 /// actually is when the connection is made.
 ///
-/// Non-async and infallible-to-connect by construction — the only error it can
-/// return is a malformed `uri` or `key_hex`. `create_if_missing` is always
-/// false: the daemon owns creation and migrations (see [`crate::db`]).
-pub fn open_pool_with_key_lazy(uri: &str, key_hex: Option<&str>) -> anyhow::Result<SqlitePool> {
+/// # Must be called from inside a Tokio runtime
+/// `async` even though it never awaits, and that is load-bearing: sqlx's
+/// `connect_lazy_with` spawns the pool's maintenance task while *building* the
+/// handle, so it panics with "this functionality requires a Tokio context" when
+/// constructed outside a runtime. Being `async` forces every caller through an
+/// executor (`block_on` / `.await`) instead of leaving that requirement to a
+/// comment nobody reads — which is exactly how it was first shipped broken, as
+/// a synchronous call in Tauri's `setup()` that panicked the tray on launch.
+///
+/// Infallible-to-connect by construction — the only error it can return is a
+/// malformed `uri` or `key_hex`. `create_if_missing` is always false: the
+/// daemon owns creation and migrations (see [`crate::db`]).
+pub async fn open_pool_with_key_lazy(
+    uri: &str,
+    key_hex: Option<&str>,
+) -> anyhow::Result<SqlitePool> {
     if let Some(k) = key_hex {
         validate_key_hex(k)?;
     }
@@ -829,6 +841,7 @@ mod tests {
         // retry window is itself useful here — a command issued during the
         // first-launch gap tends to succeed rather than error.)
         let pool = open_pool_with_key_lazy(&uri, Some(TEST_KEY))
+            .await
             .expect("building a lazy pool must not require the file to exist");
 
         // The daemon creates and populates the database (encrypted, as it does
@@ -866,7 +879,7 @@ mod tests {
         let db_path = dir.path().join("meridian.db");
         let uri = db_path.display().to_string();
 
-        let pool = open_pool_with_key_lazy(&uri, Some(TEST_KEY)).unwrap();
+        let pool = open_pool_with_key_lazy(&uri, Some(TEST_KEY)).await.unwrap();
 
         // Create it PLAINTEXT after the pool was built (the stuck
         // encrypt-in-place state: key configured, file still in the clear).

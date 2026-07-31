@@ -90,9 +90,13 @@ pub async fn open_existing(uri: &str, key: Option<&str>) -> anyhow::Result<Sqlit
 ///
 /// Because no connection is attempted here, a returned `Ok` says nothing about
 /// reachability — use [`ping`] when you want that answer at a point in time.
+///
+/// Must be called from inside a Tokio runtime even though it never awaits — see
+/// [`crate::db_crypto::open_pool_with_key_lazy`] for why building the handle
+/// needs one, and why that requirement is encoded in the signature.
 #[tracing::instrument(skip_all, fields(uri = %uri, encrypted = key.is_some()))]
-pub fn open_existing_lazy(uri: &str, key: Option<&str>) -> anyhow::Result<SqlitePool> {
-    let pool = crate::db_crypto::open_pool_with_key_lazy(uri, key)?;
+pub async fn open_existing_lazy(uri: &str, key: Option<&str>) -> anyhow::Result<SqlitePool> {
+    let pool = crate::db_crypto::open_pool_with_key_lazy(uri, key).await?;
     tracing::info!(
         uri,
         encrypted = key.is_some(),
