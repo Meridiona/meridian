@@ -297,3 +297,125 @@ jobs:
               echo "No release cut."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Back-merge main → pre-main ──────────────────────────────────────────────
+  #
+  # WHY THIS EXISTS. semantic-release derives the next version from the tags
+  # REACHABLE FROM THE BRANCH it runs on. The stable config's
+  # @semantic-release/git plugin commits the version bump onto `main`, and the
+  # tag points at that commit — so both live only on `main`. Nothing ever
+  # carried them back to `pre-main`, and the release flow is one-way
+  # (pre-main → main), so `pre-main` could not see them either.
+  #
+  # The result was silent and cumulative: measured on 2026-07-31, `main` was at
+  # v1.82.1 while the newest tag reachable from `pre-main` was
+  # v1.78.0-staging.16, and pre-main's own Cargo.toml / tauri.conf.json still
+  # read 1.77.0 — five minor versions of drift across twelve unmerged release
+  # commits. Staging kept incrementing `-staging.N` on a 1.78.0 base forever.
+  #
+  # That is not cosmetic. `1.78.0-staging.16` sorts BELOW `1.82.1` under semver,
+  # so tauri-plugin-updater will not offer a staging build to anyone already on
+  # a current stable install — the staging channel silently stops being
+  # installable by exactly the people meant to test it, and they have to fetch
+  # the asset by hand.
+  #
+  # Merging main back makes its tags reachable, so the next staging cut is
+  # numbered off the real current version and sorts above it again.
+  #
+  # A PR, NOT A DIRECT PUSH. pre-main is the staging branch everything is cut
+  # from; nothing here bypasses its review gate. This job only ever prepares the
+  # merge and opens the PR — a human merges it, exactly like the pre-main → main
+  # release PR. The trade-off is that an unmerged back-merge PR leaves staging
+  # stuck, which is why the PR body says so in as many words.
+  backmerge:
+    name: Back-merge main → pre-main
+    needs: prepare
+    # Stable channel only, and only when a release actually happened. A staging
+    # dispatch on pre-main has nothing to merge back, and a no-op run on main
+    # (semantic-release's own bump commit re-entering this workflow) must not
+    # open an empty PR.
+    if: ${{ github.ref_name == 'main' && needs.prepare.outputs.released == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # pushes the back-merge branch
+      pull-requests: write # opens the PR
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          # The PAT for the same reason the prepare job needs it: a branch
+          # pushed with the default GITHUB_TOKEN does not trigger downstream
+          # workflows, so the back-merge PR would open with no CI on it.
+          token: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Open the back-merge PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin main pre-main
+
+          # Already contained (e.g. a re-run after the PR was merged): nothing
+          # to do, and opening an empty PR would be noise.
+          if [ "$(git rev-list --count origin/pre-main..origin/main)" = "0" ]; then
+            echo "→ pre-main already contains main; nothing to back-merge"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          branch="chore/backmerge-${TAG}"
+          git checkout -B "${branch}" origin/pre-main
+
+          # Conflicts are a human's call — the version manifests are the likely
+          # site, and guessing at them would corrupt the very numbers this job
+          # exists to keep straight. Fail loudly rather than push something
+          # half-resolved.
+          if ! git merge --no-edit origin/main; then
+            git merge --abort || true
+            echo "::error::main → pre-main back-merge conflicts; resolve it by hand"
+            {
+              echo "### Back-merge needs a human"
+              echo ""
+              echo "Merging \`main\` (\`${TAG}\`) into \`pre-main\` conflicts."
+              echo ""
+              echo '```bash'
+              echo "git checkout pre-main && git pull"
+              echo "git merge main   # resolve, keeping main's version manifests"
+              echo '```'
+              echo ""
+              echo "Until this lands, staging versions keep being cut from a stale"
+              echo "base and sort below the current stable release."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          git push --force-with-lease origin "${branch}"
+
+          if gh pr view "${branch}" --json number >/dev/null 2>&1; then
+            echo "→ PR already open for ${branch}"
+          else
+            gh pr create \
+              --base pre-main --head "${branch}" \
+              --title "chore: back-merge ${TAG} into pre-main" \
+              --body "$(printf '%s\n' \
+                "Automated back-merge of \`main\` (\`${TAG}\`) into \`pre-main\`." \
+                "" \
+                "**Merge this.** semantic-release numbers a staging cut from the tags" \
+                "reachable from \`pre-main\`. The stable release commit and its tag are" \
+                "created on \`main\` and never come back on their own, so until this lands," \
+                "staging keeps being cut from a stale base — and a staging version that" \
+                "sorts below the current stable release is one the updater will not offer" \
+                "to anyone already on stable." \
+                "" \
+                "Opened automatically by \`release-prepare.yml\`.")"
+          fi
+
+          {
+            echo "### Back-merge PR"
+            echo ""
+            echo "Opened \`${branch}\` → \`pre-main\` for \`${TAG}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
