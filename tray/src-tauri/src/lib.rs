@@ -245,6 +245,11 @@ pub fn run() {
             //    meridian_core::db_crypto::encrypt_in_place's doc comments
             //    for why that's the safe failure mode.
             let db_path = install::meridian_db_path();
+            // Bound once: the same path is re-borrowed as a `Path` several
+            // times below (key resolution, the orphan check, the plaintext
+            // probe, the migration), and `db_path` itself stays a `String`
+            // because the tracing/`open` call sites still want it as one.
+            let db_path_ref = std::path::Path::new(&db_path);
             let install_mode = install::detect_install_mode();
             let existing_key = install_mode
                 .env_path()
@@ -254,7 +259,10 @@ pub fn run() {
                 existing_key
             } else if !cfg!(debug_assertions) {
                 match install::canonical_env_path() {
-                    Some(env_path) => match db_key::resolve_or_create_key(&env_path) {
+                    Some(env_path) => match db_key::resolve_or_create_key(
+                        &env_path,
+                        db_path_ref,
+                    ) {
                         Ok(key) => Some(key),
                         Err(e) => {
                             // `tracing`, not `eprintln!`: observability is
@@ -264,10 +272,34 @@ pub fn run() {
                             // or central error reporting. A silent fallback to
                             // an UNENCRYPTED database is exactly the event
                             // those channels exist to surface.
-                            tracing::error!(
-                                error = %e,
-                                "failed to resolve DB encryption key - continuing unencrypted"
-                            );
+                            //
+                            // `would_orphan_existing_db` is a DIFFERENT, worse
+                            // case than the generic fallback below: the DB
+                            // already exists and is NOT plaintext, so there is
+                            // no unencrypted file to "continue" into - opening
+                            // it further down with no key will just fail, the
+                            // same way it's been failing already. The
+                            // DB-backed notices system (used elsewhere in this
+                            // function) can't carry this one: it's the very
+                            // database that's unreadable. A native OS
+                            // notification is the only channel left that
+                            // doesn't itself depend on meridian.db opening.
+                            if db_key::would_orphan_existing_db(db_path_ref) {
+                                tracing::error!(
+                                    error = %e,
+                                    "refusing to generate a replacement DB encryption key - meridian.db exists and appears already encrypted under a key this install can no longer find"
+                                );
+                                sys::notify(
+                                    app.handle(),
+                                    "Meridian can't read your local data",
+                                    "Your local database appears to be encrypted with a key this install can no longer find. Contact support with your Support ID (Settings -> Account) before removing anything.",
+                                );
+                            } else {
+                                tracing::error!(
+                                    error = %e,
+                                    "failed to resolve DB encryption key - continuing unencrypted"
+                                );
+                            }
                             None
                         }
                     },
@@ -298,7 +330,7 @@ pub fn run() {
             // up by `ensure_backend_installed` later in this same setup hook.
             if !cfg!(debug_assertions)
                 && db_encryption_intended
-                && meridian_core::db_crypto::is_plaintext_sqlite(std::path::Path::new(&db_path))
+                && meridian_core::db_crypto::is_plaintext_sqlite(db_path_ref)
             {
                 if let Err(e) =
                     tauri::async_runtime::block_on(backend_install::stop_daemon_for_migration())
@@ -314,7 +346,7 @@ pub fn run() {
                 match &db_key_hex {
                     Some(key) => {
                         let migrate = meridian_core::db_crypto::encrypt_in_place(
-                            std::path::Path::new(&db_path),
+                            db_path_ref,
                             key,
                         );
                         match tauri::async_runtime::block_on(migrate) {
@@ -334,16 +366,57 @@ pub fn run() {
                 db_key_hex
             };
 
-            // Open meridian.db ONCE at startup and share it with commands via
-            // managed state (no migrations — the daemon owns the schema). `None`
-            // if the DB can't be opened yet, so reads error gracefully instead
-            // of crashing the tray.
-            let db_pool = tauri::async_runtime::block_on(meridian_core::open_existing(
+            // Prepare the meridian.db pool ONCE at startup and share it with
+            // commands via managed state (no migrations — the daemon owns the
+            // schema). `None` only if the path/key is malformed, so reads error
+            // gracefully instead of crashing the tray.
+            //
+            // LAZY on purpose. On a first launch this line runs seconds BEFORE
+            // `ensure_backend_installed` (below) starts the daemon that creates
+            // meridian.db, so an eager open fails — and since the result is
+            // stored as an `Option` that nothing retries, the tray then ran its
+            // entire session against `None`: every DB-backed command silently
+            // returned its empty default and every captured frame was dropped
+            // by the consumers' `else { continue }`, until the user happened to
+            // restart the tray. A lazy pool connects on first use instead, so
+            // the very next command or frame after the daemon creates the file
+            // succeeds on its own.
+            // `block_on`, not a bare call: sqlx spawns the pool's maintenance
+            // task while BUILDING the lazy handle, so constructing it outside a
+            // Tokio runtime panics ("this functionality requires a Tokio
+            // context") and takes the whole tray down before the tray icon even
+            // appears. `setup()` is not itself async, so the runtime has to be
+            // entered explicitly here — exactly as the eager open it replaced
+            // already did.
+            let db_pool = tauri::async_runtime::block_on(meridian_core::open_existing_lazy(
                 &db_path,
                 db_key_hex.as_deref(),
             ))
-            .map_err(|e| tracing::error!(error = %e, db_path = %db_path, "meridian.db not opened"))
+            .map_err(
+                |e| tracing::error!(error = %e, db_path = %db_path, "meridian.db pool not prepared"),
+            )
             .ok();
+            // A lazy pool cannot report reachability at build time, and losing
+            // that startup signal is how the failure above stayed invisible for
+            // a whole session. Probe once, purely to log it — an unreachable DB
+            // here is expected on a first launch and heals by itself, so this
+            // deliberately gates nothing.
+            //
+            // SPAWNED, never blocked on: sqlx retries a failed connection until
+            // the pool's 10s acquire timeout, so a first launch (file not
+            // created yet) would otherwise freeze the whole `setup` closure —
+            // and with it the tray menu — for ten seconds.
+            if let Some(p) = db_pool.clone() {
+                tauri::async_runtime::spawn(async move {
+                    match meridian_core::ping(&p).await {
+                        Ok(()) => tracing::info!("meridian.db reachable"),
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            "meridian.db not reachable yet — the pool will connect once the daemon creates it"
+                        ),
+                    }
+                });
+            }
             // Capture (slice 4a) writes to the SAME read-write pool the commands
             // use — clone the handle before it's moved into managed state.
             #[cfg(feature = "capture")]
@@ -365,7 +438,7 @@ pub fn run() {
             if !cfg!(debug_assertions) {
                 if let Some(pool) = encryption_notice_pool.as_ref() {
                     let plaintext = meridian_core::db_crypto::plaintext_state(
-                        std::path::Path::new(&db_path),
+                        db_path_ref,
                     );
                     let action = db_encryption_notice_action(db_encryption_intended, plaintext);
                     // No `db_path` on the span: a home-dir path is user data.
@@ -439,6 +512,26 @@ pub fn run() {
                 .on_tray_icon_event(|tray_handle, event| {
                     let app = tray_handle.app_handle();
                     match &event {
+                        // Hide the tooltip on mouse-DOWN, which is the only click event
+                        // a right-click reliably delivers. tray-icon's `rightMouseDown:`
+                        // emits Down and then calls performClick, which runs the NSMenu
+                        // in a modal tracking loop; that loop swallows `rightMouseUp:`,
+                        // so the Up arm below never fires for a right-click, and `Leave`
+                        // doesn't either while the menu holds the run loop. Hiding here
+                        // is what actually stops the tooltip stranding behind the menu —
+                        // the Up arm's hide alone could never run for a right-click.
+                        // Left-click hides here too and is harmless: the Up arm then
+                        // takes over and toggles the popover.
+                        TrayIconEvent::Click {
+                            button,
+                            button_state: MouseButtonState::Down,
+                            ..
+                        } => {
+                            tracing::info!(?button, "tray.event: Click(Down) — hiding tooltip");
+                            if let Some(tt) = app.get_webview_window("tray-tooltip") {
+                                let _ = tt.hide();
+                            }
+                        }
                         TrayIconEvent::Click {
                             button,
                             button_state: MouseButtonState::Up,
@@ -446,10 +539,9 @@ pub fn run() {
                             ..
                         } => {
                             tracing::info!(?button, "tray.event: Click");
-                            // Hide the hover tooltip on ANY click — left (popover takes
-                            // over) or right (native menu takes over). Right-click was
-                            // previously unhandled here, leaving the tooltip stuck
-                            // visible behind the context menu.
+                            // Belt-and-braces for the left-click path (and any platform
+                            // that delivers Up without a preceding Down) — the Down arm
+                            // above is what covers right-click.
                             if let Some(tt) = app.get_webview_window("tray-tooltip") {
                                 let _ = tt.hide();
                             }

@@ -61,7 +61,7 @@ pub mod proc_ext;
 pub mod retry;
 
 // ── Curated public API: flat module paths, stable across file moves ──────────
-pub use db::{get_active_session, open_existing, ActiveSession};
+pub use db::{get_active_session, open_existing, open_existing_lazy, ping, ActiveSession};
 
 pub use capture::{
     insert_capture_frame, insert_capture_secondary_screen, insert_capture_ui_event,

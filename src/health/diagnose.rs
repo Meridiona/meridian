@@ -49,14 +49,14 @@ pub fn root_causes(report: &Report) -> Vec<Diagnosis> {
 
     // 1. Coding-agent summariser cascade — sealed sessions must be summarised
     //    (via each agent's own CLI) before they reach the classifier and worklog.
-    if bad("coding-agent", "session-summary skill") {
-        out.push(Diagnosis {
-            title: "session-summary Claude Code command is missing".into(),
-            cause: "The `claude -p /session-summary` invocation that produces transcript summaries returns 'Unknown command' because ~/.claude/commands/session-summary.md doesn't exist, so Claude Code sessions can't be summarised.".into(),
-            contributing: contributing(&[("coding-agent", "session-summary skill")]),
-            action: "`meridian doctor --fix`  (or: `meridian coding-agent-install-skill`)".into(),
-        });
-    } else if bad("meridian daemon", "summariser queue") {
+    //
+    //    There used to be a higher-priority branch here for a missing
+    //    ~/.claude/commands/session-summary.md. It was stale: the Claude engine
+    //    embeds SUMMARY_RULES inline in `claude -p` and has not invoked a
+    //    slash-skill since (see `summariser::claude`), so the file's absence
+    //    means nothing — but this diagnosis outranked the queue check below,
+    //    which is the one that actually detects a stalled summariser.
+    if bad("meridian daemon", "summariser queue") {
         out.push(Diagnosis {
             title: "Coding-agent summariser is stalled".into(),
             cause: "Sealed sessions aren't being summarised, so they never reach the classifier and the worklog hour-ledger backs up behind them.".into(),
@@ -218,6 +218,38 @@ mod tests {
         assert!(dx[0].title.contains("summariser"));
         // both symptoms attributed to the one cause
         assert_eq!(dx[0].contributing.len(), 2);
+    }
+
+    /// The branch-priority regression, pinned.
+    ///
+    /// `root_causes` used to test a "session-summary skill" check FIRST, in an
+    /// `if/else if` chain ahead of "summariser queue". That check fired on any
+    /// machine missing `~/.claude/commands/session-summary.md` — a file nothing
+    /// reads — so a genuinely stalled summariser was reported as a phantom
+    /// skill problem and the real diagnosis never ran at all.
+    ///
+    /// This deliberately feeds in BOTH signals rather than asserting the queue
+    /// branch works alone (`summariser_backlog_chains_to_one_root_cause`
+    /// already covers that): the bug was only ever visible when something else
+    /// in the chain outranked it. Any future higher-priority branch that
+    /// swallows a real stall the same way fails here.
+    #[test]
+    fn a_coding_agent_warning_does_not_mask_a_real_summariser_stall() {
+        let report = Report::new(vec![
+            Check::warn("session-summary skill", "L2", "missing").in_group("coding-agent"),
+            Check::warn("summariser queue", "L2", "293 backed up").in_group("meridian daemon"),
+        ]);
+        let dx = root_causes(&report);
+        let titles: Vec<&str> = dx.iter().map(|d| d.title.as_str()).collect();
+        assert!(
+            titles.iter().any(|t| t.contains("summariser")),
+            "a real summariser stall must still be diagnosed, got: {titles:?}"
+        );
+        // …and the removed check must never come back as a diagnosis of its own.
+        assert!(
+            !titles.iter().any(|t| t.contains("session-summary")),
+            "the deleted session-summary skill check must not diagnose anything, got: {titles:?}"
+        );
     }
 
     #[test]

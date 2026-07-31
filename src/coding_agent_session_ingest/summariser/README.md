@@ -36,8 +36,9 @@ A fallback summary is recorded as `summary_source = "fallback:<provider>"`, so a
 summary written by a substitute is never mistaken for one the agent that did the
 work produced.
 
-- **Claude sessions → `claude -p`** (`claude.rs`) — loads the `session-summary`
-  skill, structured output. Runs on the user's Claude subscription;
+- **Claude sessions → `claude -p`** (`claude.rs`) — `SUMMARY_RULES` embedded
+  directly in the `-p` prompt (no slash-skill invocation), structured output.
+  Runs on the user's Claude subscription;
   `ANTHROPIC_API_KEY` is dropped from the child env so a stray key can't switch
   to metered billing. `MERIDIAN_SUMMARISER=1` makes the indexer hook ignore the
   throwaway session, and `--no-session-persistence` means no JSONL is written.
@@ -57,8 +58,8 @@ work produced.
   runs persist to `~/.cursor/chats/` — see "Self-ingest guard" below.
 
 All engines target the same `SUMMARY_SCHEMA` and share `SUMMARY_RULES`
-(`prompts.rs`): Claude via the skill's `SKILL.md`, the others via the prompt —
-kept in one place so they can't drift.
+(`prompts.rs`), embedded inline in each engine's own prompt (no slash-skill
+invocation for any of them) — kept in one place so they can't drift.
 
 ### Self-ingest guard
 
@@ -145,7 +146,7 @@ standalone poll).
 | `SUMMARISER_SWEEP_S` | `30` | catch-up sweep cadence |
 | `SUMMARISER_BATCH_PER_TICK` | `8` | rows per drain pass |
 | `SUMMARISER_MODEL` | `claude-haiku-4-5-20251001` | Claude model |
-| `SUMMARISER_SKILL` | `session-summary` | skill name |
+| `SUMMARISER_SKILL` | `session-summary` | **DEPRECATED — no effect.** The Claude engine embeds `SUMMARY_RULES` inline in `claude -p`; it has not invoked a slash-skill since. Setting this to anything else only logs a warning. |
 | `SUMMARISER_CLAUDE_TIMEOUT_S` | `240` | `claude -p` timeout |
 | `SUMMARISER_CODEX_MODEL` | (empty → codex default) | Codex model |
 | `SUMMARISER_CODEX_TIMEOUT_S` | `240` | `codex exec` timeout |

@@ -54,6 +54,18 @@ fn key_pragma(key_hex: &str) -> String {
     format!("PRAGMA key = \"x'{key_hex}'\"")
 }
 
+/// The standard connection pragmas every read-write `meridian.db` pool applies,
+/// in order, AFTER `PRAGMA key`.
+///
+/// Shared by [`open_pool_with_key`] and [`open_pool_with_key_lazy`] so a pragma
+/// added for one opener can never be silently missed by the other — the two
+/// differ only in *when* they connect, never in how a connection is set up.
+const BASE_PRAGMAS: [&str; 3] = [
+    "PRAGMA journal_mode=WAL;",
+    "PRAGMA synchronous=NORMAL;",
+    "PRAGMA busy_timeout=5000;",
+];
+
 /// Open a pool at `uri`, applying the SQLCipher key (if any) as the FIRST
 /// statement on every new physical connection, before any other pragma.
 ///
@@ -95,9 +107,9 @@ pub async fn open_pool_with_key(
                 if let Some(k) = &key_owned {
                     conn.execute(key_pragma(k).as_str()).await?;
                 }
-                conn.execute("PRAGMA journal_mode=WAL;").await?;
-                conn.execute("PRAGMA synchronous=NORMAL;").await?;
-                conn.execute("PRAGMA busy_timeout=5000;").await?;
+                for pragma in BASE_PRAGMAS {
+                    conn.execute(pragma).await?;
+                }
                 for (name, value) in extra_pragmas {
                     conn.execute(format!("PRAGMA {name}={value};").as_str())
                         .await?;
@@ -109,6 +121,75 @@ pub async fn open_pool_with_key(
         .await
         .with_context(|| format!("failed to open SQLite at {uri}"))?;
     Ok(pool)
+}
+
+/// Build a pool at `uri` **without connecting**, applying the same key and
+/// pragmas as [`open_pool_with_key`] on each connection the pool later opens
+/// on demand.
+///
+/// # Why this exists
+/// The tray opens `meridian.db` once during Tauri `setup` and shares the handle
+/// with every DB-backed command and the capture consumers. On a **first
+/// launch** it reaches that point seconds before `ensure_backend_installed`
+/// starts the daemon — and the daemon is what CREATES `meridian.db`. An eager
+/// open therefore fails with "unable to open database file", and because the
+/// tray stores the result as an `Option` there is nothing that ever retries:
+/// the whole process runs to shutdown with `None`, silently returning empty
+/// data from every command and dropping every captured frame on the floor.
+/// Connecting lazily makes that self-healing — the first acquire after the
+/// daemon creates the file succeeds, with no restart and no retry loop.
+///
+/// # Why the key decision moves into `after_connect`
+/// [`key_unless_plaintext`] probes the file header to decide whether the key
+/// applies at all. [`open_pool_with_key`] can evaluate that once up front
+/// because it has just proven the file is openable. A lazy pool has not: at
+/// build time the file routinely does not exist yet, and a decision cached
+/// from that moment would be made against nothing. Re-resolving per connection
+/// means the pool always keys (or declines to key) against the file as it
+/// actually is when the connection is made.
+///
+/// # Must be called from inside a Tokio runtime
+/// `async` even though it never awaits, and that is load-bearing: sqlx's
+/// `connect_lazy_with` spawns the pool's maintenance task while *building* the
+/// handle, so it panics with "this functionality requires a Tokio context" when
+/// constructed outside a runtime. Being `async` forces every caller through an
+/// executor (`block_on` / `.await`) instead of leaving that requirement to a
+/// comment nobody reads — which is exactly how it was first shipped broken, as
+/// a synchronous call in Tauri's `setup()` that panicked the tray on launch.
+///
+/// Infallible-to-connect by construction — the only error it can return is a
+/// malformed `uri` or `key_hex`. `create_if_missing` is always false: the
+/// daemon owns creation and migrations (see [`crate::db`]).
+pub async fn open_pool_with_key_lazy(
+    uri: &str,
+    key_hex: Option<&str>,
+) -> anyhow::Result<SqlitePool> {
+    if let Some(k) = key_hex {
+        validate_key_hex(k)?;
+    }
+    let opts = SqliteConnectOptions::from_str(uri)
+        .with_context(|| format!("invalid SQLite URI: {uri}"))?
+        .create_if_missing(false);
+
+    let uri_owned = uri.to_string();
+    let key_owned = key_hex.map(|s| s.to_string());
+    Ok(SqlitePoolOptions::new()
+        .acquire_timeout(std::time::Duration::from_secs(10)) // see open_pool_with_key
+        .after_connect(move |conn, _meta| {
+            let uri_owned = uri_owned.clone();
+            let key_owned = key_owned.clone();
+            Box::pin(async move {
+                // Resolved here, not at build time — see the doc comment above.
+                if let Some(k) = key_unless_plaintext(&uri_owned, key_owned.as_deref()) {
+                    conn.execute(key_pragma(k).as_str()).await?;
+                }
+                for pragma in BASE_PRAGMAS {
+                    conn.execute(pragma).await?;
+                }
+                Ok(())
+            })
+        })
+        .connect_lazy_with(opts))
 }
 
 /// Open a READ-ONLY pool at `uri`, applying the SQLCipher key (if any) as the
@@ -735,6 +816,91 @@ mod tests {
             .unwrap();
         assert_eq!(row.get::<i64, _>(0), 1);
         reopened.close().await;
+    }
+
+    /// The tray's first-launch regression, end to end: a pool built while
+    /// `meridian.db` does not exist yet must NOT be permanently dead. It may
+    /// fail while the file is absent, but the *same handle* has to start
+    /// working once the daemon creates the database — no reopen, no restart.
+    ///
+    /// Guards the bug this opener was added for: the tray built its pool
+    /// seconds before the daemon created the file, cached the failure as
+    /// `None`, and ran its whole session with every DB command returning empty
+    /// and every captured frame discarded.
+    #[tokio::test]
+    async fn lazy_pool_recovers_once_the_database_appears() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("meridian.db");
+        let uri = db_path.display().to_string();
+        assert!(!db_path.exists());
+
+        // Built against nothing — this must still hand back a usable handle.
+        // (Not asserting that a query fails while the file is absent: sqlx
+        // retries a failed connect until the 10s acquire timeout, so such an
+        // assertion would just make this test sleep for ten seconds. That
+        // retry window is itself useful here — a command issued during the
+        // first-launch gap tends to succeed rather than error.)
+        let pool = open_pool_with_key_lazy(&uri, Some(TEST_KEY))
+            .await
+            .expect("building a lazy pool must not require the file to exist");
+
+        // The daemon creates and populates the database (encrypted, as it does
+        // whenever MERIDIAN_DB_KEY is set).
+        let daemon = open_pool_with_key(&uri, Some(TEST_KEY), true, &[])
+            .await
+            .expect("daemon-side create should succeed");
+        sqlx::query("CREATE TABLE capture_frames (id INTEGER PRIMARY KEY)")
+            .execute(&daemon)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO capture_frames (id) VALUES (7)")
+            .execute(&daemon)
+            .await
+            .unwrap();
+        daemon.close().await;
+
+        // The ORIGINAL handle now works — this is the whole point.
+        let row = sqlx::query("SELECT id FROM capture_frames")
+            .fetch_one(&pool)
+            .await
+            .expect("the lazy pool must connect once the database exists");
+        assert_eq!(row.get::<i64, _>(0), 7);
+        pool.close().await;
+    }
+
+    /// The lazy opener resolves the key/plaintext question per connection, so a
+    /// plaintext database is opened unencrypted even though the pool was built
+    /// with a key — and built before the file existed, so nothing could have
+    /// been probed up front. Same guarantee [`key_unless_plaintext`] gives the
+    /// eager opener, at the point a lazy pool can actually make it.
+    #[tokio::test]
+    async fn lazy_pool_drops_the_key_for_a_plaintext_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("meridian.db");
+        let uri = db_path.display().to_string();
+
+        let pool = open_pool_with_key_lazy(&uri, Some(TEST_KEY)).await.unwrap();
+
+        // Create it PLAINTEXT after the pool was built (the stuck
+        // encrypt-in-place state: key configured, file still in the clear).
+        let plain = open_pool_with_key(&uri, None, true, &[]).await.unwrap();
+        sqlx::query("CREATE TABLE t (x INTEGER)")
+            .execute(&plain)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO t (x) VALUES (3)")
+            .execute(&plain)
+            .await
+            .unwrap();
+        plain.close().await;
+        assert!(is_plaintext_sqlite(&db_path));
+
+        let row = sqlx::query("SELECT x FROM t")
+            .fetch_one(&pool)
+            .await
+            .expect("a keyed lazy pool must still read a plaintext database");
+        assert_eq!(row.get::<i64, _>(0), 3);
+        pool.close().await;
     }
 
     /// First rename (`path` → `backup`) fails: the encrypted export must be

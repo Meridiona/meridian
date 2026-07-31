@@ -14,13 +14,40 @@ use tokio::sync::Notify;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 1. Load the repo-local .env — the single source of config for the daemon.
-    //    Nothing is read from outside the repo.
-    //    The launchd plist sets WorkingDirectory to the repo root, so
-    //    dotenv_override reads <repo>/.env and its values beat any empty
-    //    defaults injected by the plist. (CLI subcommands invoked from elsewhere
-    //    fall back to built-in defaults, e.g. MERIDIAN_DB → ~/.meridian/meridian.db.)
+    // 1. Load the working-directory .env. `dotenv_override` walks UP from the
+    //    CWD and stops at the first `.env`, so a source/dev run picks up
+    //    <repo>/.env, and on macOS — where the launchd plist sets
+    //    WorkingDirectory — a packaged install picks up ~/.meridian/.env. Its
+    //    values beat any empty defaults injected by the plist. (CLI subcommands
+    //    invoked from elsewhere fall back to built-in defaults, e.g.
+    //    MERIDIAN_DB → ~/.meridian/meridian.db.)
     let _ = dotenvy::dotenv_override();
+
+    // 1a. …but that walk is CWD-dependent, and on Windows NOTHING sets a
+    //     working directory for the daemon. Neither launcher the tray installs
+    //     has one: `schtasks /Create` (see `backend_install.rs`) has no "Start
+    //     in" field, and the Startup-folder fallback calls `WScript.Shell.Run`
+    //     without setting `CurrentDirectory`. Both therefore start the daemon in
+    //     system32, where the walk finds no `.env` at all — so it came up with
+    //     no MERIDIAN_DB_KEY.
+    //
+    //     That stayed invisible for as long as meridian.db was plaintext:
+    //     `key_unless_plaintext` drops the key for a plaintext file, so the open
+    //     succeeded without one. It turns fatal the moment the tray's
+    //     encrypt-in-place completes (which it does as soon as it runs while the
+    //     daemon is not holding the file open) — from then on every connection
+    //     fails in `after_connect`, permanently, with the key sitting in a file
+    //     this process never read.
+    //
+    //     So also load the canonical ~/.meridian/.env, the file the tray writes
+    //     the key and tracker credentials into, regardless of where we were
+    //     started from. `from_path` does NOT override, so anything already set —
+    //     by the real environment or by the repo .env above — still wins: dev
+    //     and macOS behaviour are unchanged, and this only fills the gap left
+    //     when the walk came up empty.
+    if let Some(home) = meridian_core::paths::home_dir() {
+        let _ = dotenvy::from_path(home.join(".meridian").join(".env"));
+    }
 
     // 1b. Subcommand dispatch. `meridian coding-agent-hook` is the Claude Code
     //     SessionEnd hook entry point: one-shot, reads a JSON payload on stdin,
@@ -72,47 +99,15 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // `meridian coding-agent-install-skill` — write the session-summary Claude
-    // Code command file so `claude -p /session-summary` works. Idempotent; safe
-    // to run any number of times. Also called by `meridian doctor --fix`.
-    if std::env::args().nth(1).as_deref() == Some("coding-agent-install-skill") {
-        let home = meridian_core::paths::home_dir_or_cwd();
-        let commands_dir = home.join(".claude/commands");
-        let skill_path = commands_dir.join("session-summary.md");
-        // Keep in sync with assets/skills/coding-agent/session-summary/SKILL.md.
-        // install.sh runs this command; it is also the fallback for
-        // `meridian doctor --fix` and direct `meridian coding-agent-install-skill`.
-        let content = concat!(
-            "---\n",
-            "description: Summarise a coding-agent session transcript for a Jira work-log.\n",
-            "---\n\n",
-            "You summarise ONE work-burst of a developer's coding-agent session for a Jira ",
-            "work-log. The transcript is timestamped as `[<ISO ts>] [role] <message>`. Write ",
-            "a factual prose summary of 10-40 sentences: name the files edited, commands run, ",
-            "errors hit, decisions made, tests/validations performed, and any rework. ",
-            "State ONLY what is in the transcript — never invent files, tickets, ",
-            "commands, or outcomes. No preamble, no markdown headings, no bullet lists — just ",
-            "clear paragraphs. If an 'EARLIER IN THIS SESSION' section is present, do not ",
-            "repeat it; summarise only this burst.\n\n",
-            "Return JSON with `summary` (the prose).\n"
-        );
-        if let Err(e) = std::fs::create_dir_all(&commands_dir) {
-            eprintln!("coding-agent-install-skill: create dir: {e}");
-            return Ok(());
-        }
-        if skill_path.exists() {
-            println!(
-                "coding-agent-install-skill: already present at {}",
-                skill_path.display()
-            );
-        } else {
-            match std::fs::write(&skill_path, content) {
-                Ok(()) => println!("coding-agent-install-skill: wrote {}", skill_path.display()),
-                Err(e) => eprintln!("coding-agent-install-skill: write: {e}"),
-            }
-        }
-        return Ok(());
-    }
+    // (`meridian coding-agent-install-skill` used to live here. It wrote
+    // ~/.claude/commands/session-summary.md so `claude -p /session-summary`
+    // would resolve — an invocation the summariser no longer makes: the Claude
+    // engine embeds SUMMARY_RULES inline (see
+    // `coding_agent_session_ingest::summariser::claude`), so nothing has read
+    // that file since. It also kept a hand-copied duplicate of
+    // assets/skills/coding-agent/session-summary/SKILL.md in sync by comment
+    // only — while `summariser::prompts` `include_str!`s the real file. The
+    // asset stays; only the dead writer is gone.)
 
     // `meridian oauth-login <provider> [--client-id ID] [--port N]` — interactive
     // browser OAuth flow for a PM provider. Opens the system browser, captures
