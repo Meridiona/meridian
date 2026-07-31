@@ -381,11 +381,21 @@ pub fn run() {
             // restart the tray. A lazy pool connects on first use instead, so
             // the very next command or frame after the daemon creates the file
             // succeeds on its own.
-            let db_pool = meridian_core::open_existing_lazy(&db_path, db_key_hex.as_deref())
-                .map_err(
-                    |e| tracing::error!(error = %e, db_path = %db_path, "meridian.db pool not prepared"),
-                )
-                .ok();
+            // `block_on`, not a bare call: sqlx spawns the pool's maintenance
+            // task while BUILDING the lazy handle, so constructing it outside a
+            // Tokio runtime panics ("this functionality requires a Tokio
+            // context") and takes the whole tray down before the tray icon even
+            // appears. `setup()` is not itself async, so the runtime has to be
+            // entered explicitly here — exactly as the eager open it replaced
+            // already did.
+            let db_pool = tauri::async_runtime::block_on(meridian_core::open_existing_lazy(
+                &db_path,
+                db_key_hex.as_deref(),
+            ))
+            .map_err(
+                |e| tracing::error!(error = %e, db_path = %db_path, "meridian.db pool not prepared"),
+            )
+            .ok();
             // A lazy pool cannot report reachability at build time, and losing
             // that startup signal is how the failure above stayed invisible for
             // a whole session. Probe once, purely to log it — an unreachable DB
