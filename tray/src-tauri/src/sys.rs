@@ -100,6 +100,66 @@ pub fn is_bundled() -> bool {
     }
 }
 
+/// macOS: `true` unless the running binary sits in a location that won't
+/// survive — a mounted disk image (`/Volumes/…`, read-only and ejected after a
+/// drag-install) or Gatekeeper's App Translocation quarantine
+/// (`…/AppTranslocation/…`, a randomized read-only mount the OS discards).
+///
+/// Shared by two callers that both care about the same failure class:
+/// [`crate::autostart::ensure_enabled_once`] (don't pin a login item to a path
+/// that's about to vanish) and [`crate::relocate::maybe_relocate_to_applications`]
+/// (that's exactly the situation it offers to fix).
+///
+/// Non-macOS: always `true` — Windows Run-key entries and Linux desktop
+/// entries point at the installed path, so the mounted-image failure class
+/// doesn't apply there.
+#[cfg(target_os = "macos")]
+pub(crate) fn running_from_stable_location() -> bool {
+    match std::env::current_exe() {
+        Ok(exe) => path_is_stable(&exe.to_string_lossy()),
+        // Can't resolve our own path ⇒ can't vouch for it.
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn running_from_stable_location() -> bool {
+    true
+}
+
+/// The pure string test behind [`running_from_stable_location`], split out so
+/// it can be unit-tested without a real `current_exe()`.
+#[cfg(target_os = "macos")]
+fn path_is_stable(exe_path: &str) -> bool {
+    !exe_path.starts_with("/Volumes/") && !exe_path.contains("/AppTranslocation/")
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod stable_location_tests {
+    use super::path_is_stable;
+
+    #[test]
+    fn rejects_transient_locations() {
+        // Mounted DMG (drag-install source) and translocation quarantine.
+        assert!(!path_is_stable(
+            "/Volumes/Meridian/Meridian.app/Contents/MacOS/Meridian"
+        ));
+        assert!(!path_is_stable(
+            "/private/var/folders/ab/xyz/T/AppTranslocation/ABC-123/d/Meridian.app/Contents/MacOS/Meridian"
+        ));
+    }
+
+    #[test]
+    fn accepts_stable_locations() {
+        assert!(path_is_stable(
+            "/Applications/Meridian.app/Contents/MacOS/Meridian"
+        ));
+        assert!(path_is_stable(
+            "/Users/dev/Applications/Meridian.app/Contents/MacOS/Meridian"
+        ));
+    }
+}
+
 // NOTE: a process-spawning `open_url_detached` (+ its `is_web_url` scheme gate)
 // used to live here for the GitHub device flow's auto-open. That was removed:
 // the device-flow checklist now opens GitHub only when the user clicks its

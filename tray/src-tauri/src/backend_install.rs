@@ -213,19 +213,31 @@ async fn ensure_daemon_running(home: &Path) {
         if !matching_daemon_pids(&daemon_bin).await.is_empty() {
             return; // already up — nothing to do
         }
-        let started_via_task = tokio::process::Command::new("schtasks")
+        let queued_via_task = tokio::process::Command::new("schtasks")
             .args(["/Run", "/TN", WINDOWS_TASK_NAME])
             .no_window()
             .output()
             .await
             .map(|o| o.status.success())
             .unwrap_or(false);
-        if started_via_task {
-            tracing::info!(
+        if queued_via_task {
+            // `/Run` success only confirms the task was QUEUED — it's
+            // registered `/SC ONLOGON`, so a successful exit here doesn't
+            // mean the daemon actually launched. Give it a moment, then
+            // verify before trusting it; otherwise fall through to the
+            // direct spawn below rather than leaving the daemon down.
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if !matching_daemon_pids(&daemon_bin).await.is_empty() {
+                tracing::info!(
+                    task = WINDOWS_TASK_NAME,
+                    "backend_install: restarted daemon via scheduled task"
+                );
+                return;
+            }
+            tracing::warn!(
                 task = WINDOWS_TASK_NAME,
-                "backend_install: restarted daemon via scheduled task"
+                "backend_install: scheduled task ran but the daemon isn't up yet, falling back to a direct spawn"
             );
-            return;
         }
         match tokio::process::Command::new(&daemon_bin)
             .no_window()

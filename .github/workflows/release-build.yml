@@ -169,6 +169,11 @@ env:
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  # sccache — see the "Set up sccache" step comment in each compile job for
+  # why this runs alongside rust-cache rather than replacing it. Harmless on
+  # jobs that never invoke cargo (prepare, publish).
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   # ── Stage 1: cheap validation + a draft release for everyone to upload into ──
@@ -297,6 +302,7 @@ jobs:
     timeout-minutes: 60 # a hung `notarytool --wait` otherwise burns 10x-billed minutes indefinitely
     permissions:
       contents: write # uploads assets into the draft
+      actions: write # sccache's GHA cache backend needs this to SAVE entries, not just read
     strategy:
       # One flaky architecture must not kill the other's artifacts — and we want
       # its timing either way.
@@ -358,6 +364,26 @@ jobs:
         with:
           toolchain: "1.93.1"
           targets: ${{ matrix.target }}
+
+      # Complements rust-cache below, doesn't replace it. rust-cache restores
+      # a whole target/ tarball keyed on Cargo.lock — great when it matches
+      # exactly, but a tag-triggered build can only ever restore from ITS OWN
+      # ref or `main` (GitHub's cache scoping), never from `pre-main` directly.
+      # A staging release cut from a `pre-main` that has drifted from `main`
+      # (routine — pre-main accumulates merges between releases) gets a
+      # partially-stale target/, and rust-cache's fingerprint mismatch forces
+      # full recompilation of anything that LOOKS different, even crates whose
+      # actual compiled output would be identical. sccache intercepts at the
+      # individual rustc-invocation level regardless of why cargo decided to
+      # invoke it, so it can still return a hit there. Free GHA cache backend
+      # (SCCACHE_GHA_ENABLED below) — same underlying service as rust-cache,
+      # so still ref-scoped in principle, but per-object rather than
+      # per-tarball, which degrades far more gracefully on drift. Does NOT
+      # cover the vendored-OpenSSL C compile or the Swift static-lib build
+      # (tauri-plugin-notifications) — that's still rust-cache's job via its
+      # cache-directories entry below.
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -552,8 +578,19 @@ jobs:
         run: |
           set -euo pipefail
           echo "→ ${CHANNEL}: signing AND notarizing"
-          npx tauri bundle --target ${{ matrix.target }} --bundles app,dmg \
-            ${{ needs.prepare.outputs.channel == 'staging' && '--config src-tauri/tauri.staging.conf.json' || '' }}
+          # Uses the already-bound $CHANNEL rather than re-interpolating an
+          # expression into this script a second time - the exact
+          # template-injection shape this file's own convention (see the
+          # RAW_TAG/VERSION binding notes elsewhere) says to avoid. (Not
+          # spelled out literally here on purpose: GitHub Actions scans the
+          # WHOLE run: block's raw text for that syntax, even inside a shell
+          # comment, and an empty one fails to parse - this exact line broke
+          # every release build until this comment was reworded.)
+          config_flag=""
+          if [ "${CHANNEL}" = "staging" ]; then
+            config_flag="--config src-tauri/tauri.staging.conf.json"
+          fi
+          npx tauri bundle --target ${{ matrix.target }} --bundles app,dmg ${config_flag}
 
       - name: Notarize and staple the DMG
         # Runs on every channel now — see the note on the bundle step above for
@@ -652,6 +689,7 @@ jobs:
     timeout-minutes: 60 # same cap as macos — bound a hung build instead of falling back to GitHub's 360-minute default
     permissions:
       contents: write # uploads assets into the draft
+      actions: write # sccache's GHA cache backend needs this to SAVE entries, not just read
     env:
       # Same compile-time constants the macOS job bakes in (see its `env:`
       # comment) — these are cross-platform values (OAuth client ids, public
@@ -732,6 +770,11 @@ jobs:
           # is exactly what we ship, so plain `cargo build --release` already
           # produces it — unlike the macOS job, which cross-arch-targets a
           # single shared runner.
+
+      # See the macOS job's "Set up sccache" step for the full reasoning —
+      # identical here, complements rust-cache rather than replacing it.
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
 
       - uses: Swatinem/rust-cache@v2
         with:
