@@ -276,7 +276,6 @@ button:focus-visible {
 .status-title {
   font: var(--mt-card-title);
   letter-spacing: var(--mt-card-title-tracking);
-  letter-spacing: -0.01em;
   color: #0F7A54;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }

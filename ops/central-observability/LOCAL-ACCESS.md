@@ -36,6 +36,15 @@ straight to OpenObserve's container port, entirely bypassing Caddy.
   calls. Ask whoever deployed the stack, or read them off the VM directly —
   never copy them into a file in this repo.
 
+  **Root is a stopgap, not the sanctioned end state.** The SSH tunnel bypasses
+  Caddy entirely, so "read-only" here is enforced only by the convention of
+  this doc — root can do anything the API allows, not just `_search`. Prefer
+  authenticating as a dedicated **Viewer**-role OpenObserve user (Settings ->
+  Users in the UI, or the `/api/{org}/users` endpoint) once one exists for
+  this org; ask whoever administers the instance to provision it. Provisioning
+  and rotating that account is tracked as follow-up work, not done as part of
+  this doc.
+
 **Run every command below in a real terminal on your own machine — not Google
 Cloud Shell.** Cloud Shell is a separate, ephemeral environment; the SSH
 tunnel's local port-forward has to bind on *your* machine, and running it in
@@ -49,17 +58,21 @@ because there's nothing local there to serve it to.
 ```bash
 gcloud compute ssh --zone "asia-south1-a" "meridian-telemetry" --project "meridiona-observability"
 
-# once on the VM:
-cd central-observability   # wherever docker-compose.yml lives on this VM
-docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
-  central-observability-openobserve-1
+# once on the VM, in the directory with docker-compose.yml:
+cd central-observability
+container_id="$(docker compose ps -q openobserve)"
+test -n "$container_id" || { echo "openobserve service not running"; exit 1; }
+address="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_id")"
+test -n "$address" || { echo "container has no network address"; exit 1; }
+echo "$address"
 # e.g. 172.18.0.2
 exit
 ```
 
-This only needs to be redone if the stack is redeployed and the container gets
-recreated (compose's private network typically hands out the same IP, but
-don't assume it).
+Resolving through the Compose service name (rather than a hardcoded container
+name) means this keeps working across a redeploy. Still re-run it after any
+redeploy though — the bridge IP is only stable for the container currently
+running; don't cache it.
 
 **2. Open the tunnel** (from your own terminal, not Cloud Shell):
 
@@ -75,20 +88,31 @@ session.
 **3. Verify:**
 
 ```bash
-curl http://127.0.0.1:5080/healthz   # expect 200 OK
+curl -fsS -o /dev/null -w 'HTTP %{http_code}\n' http://127.0.0.1:5080/healthz
 ```
+
+`-f` makes curl exit non-zero on a 4xx/5xx instead of silently reporting
+success on a transfer that completed but returned an error status.
 
 **4. Query `_search` directly:**
 
 ```bash
-curl -s -u '<OO_ROOT_USER_EMAIL>:<OO_ROOT_USER_PASSWORD>' \
+export OO_ROOT_USER_EMAIL='<from the VM .env>'
+# Give curl the user only, not "user:password" — it then prompts for the
+# password interactively, which keeps it out of shell history and `ps` output
+# (a literal '<user>:<password>' on the command line ends up in both).
+
+end_time=$(( $(date +%s) * 1000000 ))
+start_time=$(( end_time - 30 * 86400 * 1000000 ))   # last 30 days; adjust as needed
+
+curl --user "$OO_ROOT_USER_EMAIL" \
   -X POST 'http://127.0.0.1:5080/api/default/_search' \
   -H 'Content-Type: application/json' \
   -d '{
     "query": {
-      "sql": "SELECT * FROM \"default\" WHERE message LIKE '\''%mac_970e5ebf236cb0ce%'\'' ORDER BY _timestamp DESC LIMIT 50",
-      "start_time": 1735689600000000,
-      "end_time": 1753900800000000
+      "sql": "SELECT * FROM \"default\" WHERE host_name = '\''mac_970e5ebf236cb0ce'\'' ORDER BY _timestamp DESC LIMIT 50",
+      "start_time": '"$start_time"',
+      "end_time": '"$end_time"'
     }
   }'
 ```
@@ -97,12 +121,23 @@ Notes:
 - Org is `default` (matches `OO_ORG` in `.env.example`) unless the deploy was
   changed.
 - `start_time`/`end_time` are **microsecond epoch timestamps** — `0` is
-  rejected with `invalid time range`. Compute a real window, e.g. in Python:
-  `int(time.time() * 1_000_000)` for "now", and subtract
-  `N * 86_400 * 1_000_000` for N days back.
-- The stream/table name and available columns depend on what the OTel
-  Collector is configured to write (see `otel-collector-config.yaml`) — when
-  unsure what's queryable, `SHOW STREAMS` or hit `/api/default/streams` first.
+  rejected with `invalid time range`; the snippet above computes a real
+  window at run time so it never goes stale. `start_time`/`end_time` in the
+  request body only bound the search window — they're independent of any
+  `_timestamp` condition inside `sql`.
+- A Support ID is the pseudonymized `host_name` **resource attribute**, not
+  text inside the log message — filter on `host_name = '<support id>'`
+  (exact match), not a `LIKE` search over `body`. The log message column
+  itself is called `body`, not `message`.
+- If you do need a substring search over `body`, remember `_` and `%` are
+  SQL `LIKE` wildcards — a literal underscore (as in `mac_970e...`) matches
+  any single character unless escaped, e.g. `LIKE '%foo\_bar%' ESCAPE '\'`.
+  `host_name` needs no such escaping since it's an exact-match column, not a
+  pattern.
+- `SELECT * FROM "default"` (or `/api/default/streams`) shows the full
+  schema when unsure what's queryable — the stream/table name and available
+  columns otherwise depend on what the OTel Collector is configured to write
+  (see `otel-collector-config.yaml`).
 
 ## When you're done
 
