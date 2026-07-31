@@ -134,3 +134,32 @@ export function itemKey(w: Pick<WorklogItem, 'id' | 'is_proposed'>): string {
 export function isPending(w: WorklogItem): boolean {
   return w.is_proposed ? w.state === 'proposed' : w.state === 'drafted'
 }
+
+// Should OverviewPanel's "Today's focus" section render at all?
+//
+// Deliberately takes NO `isSolo` argument. It used to: the populated checklist
+// and a past day's read-only note were gated on `!isSolo`, while the
+// empty-today nudge was shown to everyone. That combination is incoherent — a
+// solo user was invited to plan (the nudge), PlanView's composer let them
+// commit a personal, tracker-free task, and then the committed plan rendered
+// nowhere, because the moment it stopped being empty the only branch that
+// admitted solo users stopped matching. A confirmed plan disappearing the
+// instant you confirm it is the bug this predicate exists to prevent
+// recurring; a tracker is not what makes a plan worth showing you.
+//
+// `planLoaded` is whether `get_plan` has resolved for this day. It gates the
+// empty case only, so an empty section never flashes before the first fetch —
+// items already imply a resolved fetch.
+export function focusSectionVisible({ isToday, planLoaded, itemCount }: {
+  isToday: boolean
+  planLoaded: boolean
+  itemCount: number
+}): boolean {
+  // A past date always renders: that day's committed focus, or a quiet
+  // "nothing planned" note. Editing affordances are suppressed separately.
+  if (!isToday) return true
+  // Today with a committed plan → the checklist.
+  if (itemCount > 0) return true
+  // Today with nothing planned → the nudge, once the fetch has resolved.
+  return planLoaded
+}
