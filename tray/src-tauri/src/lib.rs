@@ -366,16 +366,47 @@ pub fn run() {
                 db_key_hex
             };
 
-            // Open meridian.db ONCE at startup and share it with commands via
-            // managed state (no migrations — the daemon owns the schema). `None`
-            // if the DB can't be opened yet, so reads error gracefully instead
-            // of crashing the tray.
-            let db_pool = tauri::async_runtime::block_on(meridian_core::open_existing(
-                &db_path,
-                db_key_hex.as_deref(),
-            ))
-            .map_err(|e| tracing::error!(error = %e, db_path = %db_path, "meridian.db not opened"))
-            .ok();
+            // Prepare the meridian.db pool ONCE at startup and share it with
+            // commands via managed state (no migrations — the daemon owns the
+            // schema). `None` only if the path/key is malformed, so reads error
+            // gracefully instead of crashing the tray.
+            //
+            // LAZY on purpose. On a first launch this line runs seconds BEFORE
+            // `ensure_backend_installed` (below) starts the daemon that creates
+            // meridian.db, so an eager open fails — and since the result is
+            // stored as an `Option` that nothing retries, the tray then ran its
+            // entire session against `None`: every DB-backed command silently
+            // returned its empty default and every captured frame was dropped
+            // by the consumers' `else { continue }`, until the user happened to
+            // restart the tray. A lazy pool connects on first use instead, so
+            // the very next command or frame after the daemon creates the file
+            // succeeds on its own.
+            let db_pool = meridian_core::open_existing_lazy(&db_path, db_key_hex.as_deref())
+                .map_err(
+                    |e| tracing::error!(error = %e, db_path = %db_path, "meridian.db pool not prepared"),
+                )
+                .ok();
+            // A lazy pool cannot report reachability at build time, and losing
+            // that startup signal is how the failure above stayed invisible for
+            // a whole session. Probe once, purely to log it — an unreachable DB
+            // here is expected on a first launch and heals by itself, so this
+            // deliberately gates nothing.
+            //
+            // SPAWNED, never blocked on: sqlx retries a failed connection until
+            // the pool's 10s acquire timeout, so a first launch (file not
+            // created yet) would otherwise freeze the whole `setup` closure —
+            // and with it the tray menu — for ten seconds.
+            if let Some(p) = db_pool.clone() {
+                tauri::async_runtime::spawn(async move {
+                    match meridian_core::ping(&p).await {
+                        Ok(()) => tracing::info!("meridian.db reachable"),
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            "meridian.db not reachable yet — the pool will connect once the daemon creates it"
+                        ),
+                    }
+                });
+            }
             // Capture (slice 4a) writes to the SAME read-write pool the commands
             // use — clone the handle before it's moved into managed state.
             #[cfg(feature = "capture")]
