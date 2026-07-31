@@ -572,12 +572,9 @@ if [[ "${NO_DAEMON}" -eq 0 ]]; then
     # to your tracker (Jira/Linear/GitHub) only after you approve them in the
     # dashboard (Worklogs view).
 
-    info "Installing session-summary Claude Code command..."
-    if run "${MERIDIAN_BIN}" coding-agent-install-skill; then
-        ok "session-summary command → ~/.claude/commands/session-summary.md"
-    else
-        warn "session-summary command install skipped — run 'meridian coding-agent-install-skill' later"
-    fi
+    # No session-summary Claude Code command is installed any more: the Claude
+    # summariser embeds its prompt inline in `claude -p`, so the file this step
+    # used to write was never read. See src/coding_agent_session_ingest/summariser/claude.rs.
 
     # Coding-agent summariser engines (informational): each agent's sessions are
     # summarised by its OWN CLI when present. There is no fallback — a missing CLI
