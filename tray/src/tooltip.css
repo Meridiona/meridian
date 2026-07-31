@@ -42,9 +42,8 @@ body {
 }
 
 .tt-key {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
+  font: var(--mt-label);
+  letter-spacing: var(--mt-label-tracking);
   color: var(--ink);
   background: var(--surface-2);
   border: 0.5px solid var(--rule-2);
@@ -55,7 +54,7 @@ body {
 }
 
 .tt-status {
-  font-size: 11.5px;
+  font: var(--mt-body-sm);
   color: var(--ink-3);
   flex: 1;
   min-width: 0;
@@ -65,8 +64,7 @@ body {
 }
 
 .tt-priority {
-  font-size: 11px;
-  font-weight: 500;
+  font: var(--mt-body-xs);
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -76,8 +74,8 @@ body {
 
 /* ── Title ── */
 .tt-title {
-  font-size: 13.5px;
-  font-weight: 450;
+  font: var(--mt-card-title);
+  letter-spacing: var(--mt-card-title-tracking);
   line-height: 1.35;
   color: var(--ink);
   margin-bottom: 11px;
@@ -96,15 +94,15 @@ body {
 }
 
 .tt-time {
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font: var(--mt-body-sm);
+  font-variant-numeric: tabular-nums;
   color: var(--ink-2);
 }
 
 .tt-pct {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 600;
+  font: var(--mt-body-sm);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
   color: var(--accent);
 }
 
@@ -132,8 +130,7 @@ body {
 }
 
 .tt-ctx {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
+  font: var(--mt-body-xs);
   color: var(--ink-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -143,7 +140,7 @@ body {
 }
 
 .tt-hint {
-  font-size: 10.5px;
+  font: var(--mt-body-xs);
   color: var(--ink-4);
   white-space: nowrap;
   flex-shrink: 0;

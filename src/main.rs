@@ -14,13 +14,40 @@ use tokio::sync::Notify;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 1. Load the repo-local .env — the single source of config for the daemon.
-    //    Nothing is read from outside the repo.
-    //    The launchd plist sets WorkingDirectory to the repo root, so
-    //    dotenv_override reads <repo>/.env and its values beat any empty
-    //    defaults injected by the plist. (CLI subcommands invoked from elsewhere
-    //    fall back to built-in defaults, e.g. MERIDIAN_DB → ~/.meridian/meridian.db.)
+    // 1. Load the working-directory .env. `dotenv_override` walks UP from the
+    //    CWD and stops at the first `.env`, so a source/dev run picks up
+    //    <repo>/.env, and on macOS — where the launchd plist sets
+    //    WorkingDirectory — a packaged install picks up ~/.meridian/.env. Its
+    //    values beat any empty defaults injected by the plist. (CLI subcommands
+    //    invoked from elsewhere fall back to built-in defaults, e.g.
+    //    MERIDIAN_DB → ~/.meridian/meridian.db.)
     let _ = dotenvy::dotenv_override();
+
+    // 1a. …but that walk is CWD-dependent, and on Windows NOTHING sets a
+    //     working directory for the daemon. Neither launcher the tray installs
+    //     has one: `schtasks /Create` (see `backend_install.rs`) has no "Start
+    //     in" field, and the Startup-folder fallback calls `WScript.Shell.Run`
+    //     without setting `CurrentDirectory`. Both therefore start the daemon in
+    //     system32, where the walk finds no `.env` at all — so it came up with
+    //     no MERIDIAN_DB_KEY.
+    //
+    //     That stayed invisible for as long as meridian.db was plaintext:
+    //     `key_unless_plaintext` drops the key for a plaintext file, so the open
+    //     succeeded without one. It turns fatal the moment the tray's
+    //     encrypt-in-place completes (which it does as soon as it runs while the
+    //     daemon is not holding the file open) — from then on every connection
+    //     fails in `after_connect`, permanently, with the key sitting in a file
+    //     this process never read.
+    //
+    //     So also load the canonical ~/.meridian/.env, the file the tray writes
+    //     the key and tracker credentials into, regardless of where we were
+    //     started from. `from_path` does NOT override, so anything already set —
+    //     by the real environment or by the repo .env above — still wins: dev
+    //     and macOS behaviour are unchanged, and this only fills the gap left
+    //     when the walk came up empty.
+    if let Some(home) = meridian_core::paths::home_dir() {
+        let _ = dotenvy::from_path(home.join(".meridian").join(".env"));
+    }
 
     // 1b. Subcommand dispatch. `meridian coding-agent-hook` is the Claude Code
     //     SessionEnd hook entry point: one-shot, reads a JSON payload on stdin,

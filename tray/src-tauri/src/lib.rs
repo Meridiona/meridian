@@ -502,6 +502,26 @@ pub fn run() {
                 .on_tray_icon_event(|tray_handle, event| {
                     let app = tray_handle.app_handle();
                     match &event {
+                        // Hide the tooltip on mouse-DOWN, which is the only click event
+                        // a right-click reliably delivers. tray-icon's `rightMouseDown:`
+                        // emits Down and then calls performClick, which runs the NSMenu
+                        // in a modal tracking loop; that loop swallows `rightMouseUp:`,
+                        // so the Up arm below never fires for a right-click, and `Leave`
+                        // doesn't either while the menu holds the run loop. Hiding here
+                        // is what actually stops the tooltip stranding behind the menu —
+                        // the Up arm's hide alone could never run for a right-click.
+                        // Left-click hides here too and is harmless: the Up arm then
+                        // takes over and toggles the popover.
+                        TrayIconEvent::Click {
+                            button,
+                            button_state: MouseButtonState::Down,
+                            ..
+                        } => {
+                            tracing::info!(?button, "tray.event: Click(Down) — hiding tooltip");
+                            if let Some(tt) = app.get_webview_window("tray-tooltip") {
+                                let _ = tt.hide();
+                            }
+                        }
                         TrayIconEvent::Click {
                             button,
                             button_state: MouseButtonState::Up,
@@ -509,10 +529,9 @@ pub fn run() {
                             ..
                         } => {
                             tracing::info!(?button, "tray.event: Click");
-                            // Hide the hover tooltip on ANY click — left (popover takes
-                            // over) or right (native menu takes over). Right-click was
-                            // previously unhandled here, leaving the tooltip stuck
-                            // visible behind the context menu.
+                            // Belt-and-braces for the left-click path (and any platform
+                            // that delivers Up without a preceding Down) — the Down arm
+                            // above is what covers right-click.
                             if let Some(tt) = app.get_webview_window("tray-tooltip") {
                                 let _ = tt.hide();
                             }
