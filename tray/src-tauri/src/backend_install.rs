@@ -20,6 +20,16 @@
 //! agents (screenpipe / a11y-helper / MLX / UI server) are booted out during
 //! [`install`].
 //!
+//! **Windows has no equivalent of that plist key**, and getting it wrong is
+//! silent: `schtasks /Create` has no "Start in" field and the Startup-folder
+//! VBScript defaults to system32, so a daemon launched by either sees no `.env`
+//! — and therefore no `MERIDIAN_DB_KEY`, which is fatal once meridian.db has
+//! been encrypted in place. Every launch path here consequently sets the
+//! working directory to `~/.meridian` explicitly (the VBScript's
+//! `CurrentDirectory`, and `current_dir` on both direct spawns). The daemon
+//! *also* loads that file by absolute path (`src/main.rs`), so this is defence
+//! in depth and the fix for anyone whose task was registered by an older build.
+//!
 //! **The `meridian-a11y-helper` launchd agent is retired** (was
 //! `com.meridiona.a11y-helper`): it existed to poke `AXManualAccessibility`
 //! on Electron/Chromium apps for the old *external* screenpipe process. The
@@ -239,7 +249,10 @@ async fn ensure_daemon_running(home: &Path) {
                 "backend_install: scheduled task ran but the daemon isn't up yet, falling back to a direct spawn"
             );
         }
+        // `current_dir`: the daemon resolves its `.env` relative to the working
+        // directory, and a bare spawn would inherit the tray's instead.
         match tokio::process::Command::new(&daemon_bin)
+            .current_dir(home.join(".meridian"))
             .no_window()
             .spawn()
         {
@@ -405,9 +418,17 @@ async fn register_service(_backend: &Path, home: &Path, daemon_bin: &Path) -> Re
                 error = %e,
                 "backend_install: schtasks registration failed — falling back to a Startup-folder launcher"
             );
-            install_startup_folder_launcher(daemon_bin).await?;
+            let meridian_home = home.join(".meridian");
+            install_startup_folder_launcher(&meridian_home, daemon_bin).await?;
             // Nothing else will start the daemon until next login — start it now.
-            if let Err(e) = tokio::process::Command::new(daemon_bin).no_window().spawn() {
+            // `current_dir` for the same reason the launcher sets it: the daemon
+            // resolves its `.env` relative to the working directory, and this
+            // spawn inherits the tray's otherwise.
+            if let Err(e) = tokio::process::Command::new(daemon_bin)
+                .current_dir(&meridian_home)
+                .no_window()
+                .spawn()
+            {
                 tracing::warn!(
                     error = %e,
                     bin = %daemon_bin.display(),
@@ -684,19 +705,35 @@ fn startup_folder() -> Result<PathBuf, String> {
 
 /// Write the hidden-launch VBScript to the Startup folder. Idempotent:
 /// overwrites unconditionally, same as `schtasks /Create /F`.
+///
+/// `meridian_home` is the daemon's working directory (`~/.meridian`), the
+/// Windows counterpart of the macOS plist's `WorkingDirectory`.
 #[cfg(target_os = "windows")]
-async fn install_startup_folder_launcher(daemon_bin: &Path) -> Result<(), String> {
+async fn install_startup_folder_launcher(
+    meridian_home: &Path,
+    daemon_bin: &Path,
+) -> Result<(), String> {
     let dir = startup_folder()?;
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
     let script = dir.join(STARTUP_LAUNCHER_NAME);
+    // `CurrentDirectory` is set for parity with the macOS plist's
+    // `WorkingDirectory`: the daemon's `dotenvy` walk starts at the CWD, and a
+    // launcher that leaves it at system32 gives the daemon no `.env` — and so
+    // no MERIDIAN_DB_KEY — which is fatal once meridian.db is encrypted. The
+    // daemon also resolves ~/.meridian/.env by absolute path (`src/main.rs`),
+    // so this is defence in depth rather than the sole fix.
+    //
     // VBScript has no backslash-escaping to worry about — only `"` needs
     // doubling to embed a literal quote, wrapping the path so a space
     // anywhere in it (a differently-named Windows profile, say) can't split
     // `Run`'s argument.
     let contents = format!(
-        "CreateObject(\"WScript.Shell\").Run \"\"\"{}\"\"\", 0, False\r\n",
+        "Set sh = CreateObject(\"WScript.Shell\")\r\n\
+         sh.CurrentDirectory = \"{}\"\r\n\
+         sh.Run \"\"\"{}\"\"\", 0, False\r\n",
+        meridian_home.display(),
         daemon_bin.display()
     );
     tokio::fs::write(&script, contents)

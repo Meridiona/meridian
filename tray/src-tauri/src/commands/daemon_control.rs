@@ -198,7 +198,13 @@ fn spawn_staged_daemon() -> Result<(), String> {
     if !daemon_bin.exists() {
         return Err(format!("no staged daemon at {}", daemon_bin.display()));
     }
+    // `current_dir` is load-bearing, not cosmetic: the daemon resolves its
+    // `.env` relative to the working directory, so a bare spawn inherits the
+    // tray's and the daemon comes up without MERIDIAN_DB_KEY — fatal once
+    // meridian.db is encrypted. Matches every other daemon launch path (see
+    // `crate::backend_install`'s module docs).
     std::process::Command::new(&daemon_bin)
+        .current_dir(home.join(".meridian"))
         .no_window()
         .spawn()
         .map(|_| ())
