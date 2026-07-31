@@ -35,6 +35,24 @@
      .font-mono below). */
   --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, "Segoe UI", helvetica, sans-serif;
   --font-mono: var(--font-sans);
+
+  /* Type scale — hand-synced with the .mt-* classes in ui/app/globals.css.
+     The tray popover and tooltip are plain webviews with no Tailwind and no
+     import path to the dashboard's stylesheet, so the VALUES are mirrored here
+     as tokens rather than the classes being shared. Consume with the `font`
+     shorthand (`font: var(--mt-body-sm)`); letter-spacing is separate because the
+     shorthand can't carry it — the paired --mt-*-tracking tokens supply it.
+     Before these existed, every rule below hand-rolled its own size/weight,
+     which is how the tooltip title ended up at weight 450 — a weight that
+     appears nowhere in the dashboard. Keep in sync when globals.css changes.
+     Only the steps these two surfaces actually use are mirrored; add more from
+     globals.css's .mt-* block as new surfaces need them. */
+  --mt-card-title: 700 13.5px var(--font-sans);
+  --mt-body-sm:    500 12px/1.45 var(--font-sans);
+  --mt-body-xs:    500 11.5px/1.45 var(--font-sans);
+  --mt-label:      700 11px var(--font-sans);
+  --mt-card-title-tracking: -0.01em;
+  --mt-label-tracking:      0.08em;
 }
 
 *, *::before, *::after {
@@ -110,8 +128,8 @@ button:focus-visible {
 }
 
 .kicker {
-  font: 700 10.5px var(--font-sans);
-  letter-spacing: 0.07em;
+  font: var(--mt-label);
+  letter-spacing: var(--mt-label-tracking);
   color: var(--ink-3);
 }
 
@@ -145,7 +163,7 @@ button:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font: 600 11px var(--font-sans);
+  font: var(--mt-body-xs);
   color: var(--ink-3);
   margin-top: 1px;
   overflow: hidden;
@@ -200,11 +218,11 @@ button:focus-visible {
 .health-dot[data-state="bad"]  { background: #e53e3e; }
 .health-label {
   flex: 1;
-  font: 600 11.5px var(--font-sans);
+  font: var(--mt-body-xs);
   color: var(--ink-2);
 }
 .health-val {
-  font: 500 11px var(--font-sans);
+  font: var(--mt-body-xs);
   color: var(--ink-3);
   font-variant-numeric: tabular-nums;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -256,14 +274,15 @@ button:focus-visible {
 
 .status-text { flex: 1; min-width: 0; }
 .status-title {
-  font: 700 13.5px var(--font-sans);
+  font: var(--mt-card-title);
+  letter-spacing: var(--mt-card-title-tracking);
   letter-spacing: -0.01em;
   color: #0F7A54;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .status-card.paused .status-title { color: #B4690E; }
 .status-sub {
-  font: 600 11.5px var(--font-sans);
+  font: var(--mt-body-xs);
   color: #4FA383;
   margin-top: 1px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -401,7 +420,7 @@ button:focus-visible {
 }
 .privacy-line svg { flex: none; color: #8B7FB8; }
 .privacy-line span {
-  font: 600 10.5px/1.35 var(--font-sans);
+  font: var(--mt-body-xs);
   flex: 1;
 }
 
@@ -423,7 +442,7 @@ button:focus-visible {
   flex-shrink: 0; width: 18px; height: 18px; border-radius: 6px;
   font-size: 12px; font-weight: 700; color: #fff; background: var(--accent);
 }
-.upd-text { font-size: 12px; color: var(--ink); font-weight: 500; white-space: nowrap; }
+.upd-text { font: var(--mt-body-sm); color: var(--ink); white-space: nowrap; }
 .upd-ver {
   font-family: var(--font-mono); font-size: 10px; color: var(--ink-3);
   flex-shrink: 0; white-space: nowrap;
