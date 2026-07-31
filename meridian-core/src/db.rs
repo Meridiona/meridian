@@ -13,7 +13,8 @@
 //! rides out the daemon's short write transactions.
 //!
 //! Re-exported at the crate root (`meridian_core::{open_existing,
-//! get_active_session, ActiveSession}`) — `db` is internal organization only.
+//! open_existing_lazy, ping, get_active_session, ActiveSession}`) — `db` is
+//! internal organization only.
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -72,6 +73,50 @@ pub async fn open_existing(uri: &str, key: Option<&str>) -> anyhow::Result<Sqlit
         "opened meridian.db (WAL, 5s busy_timeout)"
     );
     Ok(pool)
+}
+
+/// Same contract as [`open_existing`], but the pool is built **without
+/// connecting** — the first connection is made on demand and every later
+/// acquire retries, so a database that does not exist yet is recovered from
+/// automatically once it appears.
+///
+/// This is what the tray uses at startup. It must not require `meridian.db` to
+/// already exist: on a first launch the tray builds this handle seconds before
+/// it installs and starts the daemon that creates the file, and an eager open
+/// there yields a `None` pool that nothing ever retries — disabling every
+/// DB-backed command and silently discarding every captured frame until the
+/// user restarts the tray. See [`crate::db_crypto::open_pool_with_key_lazy`]
+/// for the full rationale and for why the key decision is per-connection.
+///
+/// Because no connection is attempted here, a returned `Ok` says nothing about
+/// reachability — use [`ping`] when you want that answer at a point in time.
+#[tracing::instrument(skip_all, fields(uri = %uri, encrypted = key.is_some()))]
+pub fn open_existing_lazy(uri: &str, key: Option<&str>) -> anyhow::Result<SqlitePool> {
+    let pool = crate::db_crypto::open_pool_with_key_lazy(uri, key)?;
+    tracing::info!(
+        uri,
+        encrypted = key.is_some(),
+        "prepared meridian.db pool (lazy, WAL, 5s busy_timeout)"
+    );
+    Ok(pool)
+}
+
+/// Acquire one connection and run `SELECT 1`, reporting whether the database is
+/// reachable *right now*.
+///
+/// Exists for [`open_existing_lazy`]'s callers: a lazy pool cannot fail at
+/// build time, so without an explicit probe a tray whose database is
+/// unreachable would produce no startup signal at all — which is precisely how
+/// the first-launch failure this pair replaces stayed invisible for a whole
+/// session. Purely diagnostic: callers log the result and carry on, because the
+/// pool recovers by itself.
+#[tracing::instrument(skip_all)]
+pub async fn ping(pool: &SqlitePool) -> anyhow::Result<()> {
+    sqlx::query("SELECT 1")
+        .execute(pool)
+        .await
+        .context("ping: meridian.db is not reachable")?;
+    Ok(())
 }
 
 /// Read the single active session (the `active_session` row, id = 1), or `None`.
