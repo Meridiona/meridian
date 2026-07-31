@@ -19,7 +19,7 @@ import { fmtDur } from '@/components/atoms'
 import { load as loadData, mutate as mutateData, openExternal } from '@/lib/bridge'
 import { usePlan, refreshPlan } from '@/components/plan/planStore'
 import type { PlanItem, CodingAgentsResponse } from '@/lib/api-types'
-import { formatDayLabel, isPending } from './types'
+import { focusSectionVisible, formatDayLabel, isPending } from './types'
 import { TimeByApp, appTotals } from './TimeByApp'
 import { TimeByCategory, categoryRows } from './TimeByCategory'
 import { UpdateCard } from './UpdateCard'
@@ -214,13 +214,14 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
           past. On a past date the section is read-only: it shows that day's
           committed focus (or a quiet empty note), with no Edit/Add
           affordances. `focusLabel` relabels the heading off "Today's".
-          The empty-TODAY case is shown to every user, including solo/
-          no-tracker (PlanView's composer already supports a personal,
-          tracker-free task, see PlanView.tsx's `boardEmpty` path) — everything
-          else (the populated checklist, and a past day's read-only note)
-          stays tracker-only, unchanged. `plan` gates the empty branch so it
-          never flashes before the first `get_plan` resolves. */}
-      {((isToday && plan && focusItems.length === 0) || (!isSolo && (focusItems.length > 0 || !isToday))) && (
+          Shown to every user, solo/no-tracker included — PlanView's composer
+          supports a personal, tracker-free task (see its `boardEmpty` path),
+          and `toggleDone` below already routes a personal task to our own DB
+          rather than a tracker, so nothing here needs a board. This used to
+          gate everything except the empty-today nudge on `!isSolo`, which meant
+          a solo user was invited to plan and then never shown the plan they
+          committed. See `focusSectionVisible` for the whole rule. */}
+      {focusSectionVisible({ isToday, planLoaded: !!plan, itemCount: focusItems.length }) && (
         <div>
           {focusItems.length === 0 && isToday ? (
             <div>
