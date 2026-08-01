@@ -1,3 +1,31 @@
+## [1.82.2](https://github.com/Meridiona/meridian/compare/v1.82.1...v1.82.2) (2026-07-31)
+
+### 🐛 Bug Fixes
+
+* **health:** drop the stale session-summary skill check and its diagnosis ([7e72cdf](https://github.com/Meridiona/meridian/commit/7e72cdfcc8cd1bedbe396e856ddad238d3b44085))
+* **tray:** build the lazy meridian.db pool inside a Tokio runtime ([be368d4](https://github.com/Meridiona/meridian/commit/be368d4eedcb58b2c2bacf85615d455730e9cfac)), closes [#638](https://github.com/Meridiona/meridian/issues/638)
+* **tray:** connect meridian.db lazily so a first launch is not dead until restart ([d2775f6](https://github.com/Meridiona/meridian/commit/d2775f6698eb5d01318a647d0c5844ba34a9f74f))
+* **tray:** don't flag an empty or truncated db stub as orphaned data ([fba2250](https://github.com/Meridiona/meridian/commit/fba22505ce317d60d45d9612986a49acd7d25b89))
+* **tray:** hide the hover tooltip on mouse-down so right-click can't strand it ([27af9c0](https://github.com/Meridiona/meridian/commit/27af9c00c726eb434a38da3968b10a08a9bbac10))
+* **tray:** refuse to mint a DB key that would orphan an encrypted db ([3703477](https://github.com/Meridiona/meridian/commit/3703477c09c2b995ba60d5d9ebd4ae7294d7f5af))
+* **tray:** treat ERROR_NOT_FOUND from the Windows toast probe as Enabled ([ae3eeb7](https://github.com/Meridiona/meridian/commit/ae3eeb7382ed6dbec9f9b5409389d94ff27b3945))
+* **windows:** load the canonical .env so the daemon can open an encrypted db ([5aa4165](https://github.com/Meridiona/meridian/commit/5aa4165edf55163e8181a9c93755711a2f425db9))
+
+### ♻️ Refactoring
+
+* **cli:** remove the dead coding-agent-install-skill subcommand ([f502b5e](https://github.com/Meridiona/meridian/commit/f502b5ed298b328d7f67b58a33cd17a37ced46d0))
+* **tray:** put the tooltip and popover on the dashboard's type scale ([471863f](https://github.com/Meridiona/meridian/commit/471863f373a4b350208feb833b890086be7f3505))
+
+### ✅ Tests
+
+* **health:** pin the branch-priority fix in root_causes ([f7e7b63](https://github.com/Meridiona/meridian/commit/f7e7b63224dd5d6a3928adca13e88425a0c13cf2))
+
+### 📝 Documentation
+
+* **observability:** address PR [#644](https://github.com/Meridiona/meridian/issues/644) review comments ([2d00b41](https://github.com/Meridiona/meridian/commit/2d00b4155d3262f6228989a76f4aca36d8da4730))
+* **observability:** fix CodeRabbit's second-pass findings on [#644](https://github.com/Meridiona/meridian/issues/644) ([2d458af](https://github.com/Meridiona/meridian/commit/2d458af0fae33f9c441378a9f8f86d9860612cf7))
+* **observability:** how to query central OpenObserve locally ([90dd9fe](https://github.com/Meridiona/meridian/commit/90dd9fe6d3bfa41b5ffb1dd4b8820ed29cae34b0))
+
 ## [1.82.1](https://github.com/Meridiona/meridian/compare/v1.82.0...v1.82.1) (2026-07-29)
 
 ### 🐛 Bug Fixes
