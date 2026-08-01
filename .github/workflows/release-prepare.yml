@@ -340,18 +340,42 @@ jobs:
       contents: write # pushes the back-merge branch
       pull-requests: write # opens the PR
     steps:
+      # *** THE PAT IS REQUIRED HERE, NOT A PREFERENCE. ***
+      #
+      # GitHub does not trigger workflows for refs pushed with the default
+      # GITHUB_TOKEN (the recursion guard), and a pull_request opened with it
+      # only ever lands in an approval-required state. Either way the
+      # back-merge PR arrives with no CI on it — and pre-main's checks are
+      # what a human merges it on, so it would sit unmergeable and silent,
+      # which is the exact failure mode this job exists to end.
+      #
+      # So there is deliberately NO `|| secrets.GITHUB_TOKEN` fallback below:
+      # a degraded back-merge is worse than a loud one. Fail here, before
+      # anything is pushed, with a message that names the missing secret.
+      - name: Require the release PAT
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::secrets.GH_TOKEN is not available; the back-merge PR would open with no CI on it. Configure the org PAT and re-run."
+            exit 1
+          fi
+          echo "→ GH_TOKEN present"
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           fetch-tags: true
-          # The PAT for the same reason the prepare job needs it: a branch
-          # pushed with the default GITHUB_TOKEN does not trigger downstream
-          # workflows, so the back-merge PR would open with no CI on it.
-          token: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          # Persisted on purpose: `git push` below reuses this credential, so
+          # it must be the PAT (see the guard step above), not the default
+          # token.
+          persist-credentials: true
+          token: ${{ secrets.GH_TOKEN }}
 
       - name: Open the back-merge PR
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
