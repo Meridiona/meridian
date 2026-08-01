@@ -1,3 +1,5 @@
+# Changelog
+
 ## [1.82.2](https://github.com/Meridiona/meridian/compare/v1.82.1...v1.82.2) (2026-07-31)
 
 ### 🐛 Bug Fixes
@@ -74,7 +76,7 @@
 * address CodeRabbit review findings on [#603](https://github.com/Meridiona/meridian/issues/603) ([7f76bdd](https://github.com/Meridiona/meridian/commit/7f76bddd7299b98525f2c5579191798728486b46)), closes [#605](https://github.com/Meridiona/meridian/issues/605)
 * address release review findings on [#603](https://github.com/Meridiona/meridian/issues/603) ([2e74e1d](https://github.com/Meridiona/meridian/commit/2e74e1db17629a020f752d0d8be1fa8cca9a328f))
 * **db:** address review — surface plaintext downgrade, harden 2nd rename ([6a3d186](https://github.com/Meridiona/meridian/commit/6a3d186d8a154c85681392250f472aefa2a77afb))
-* **db:** complete the Windows encrypt-in-place migration (close handle, retry rename) ([82aba7b](https://github.com/Meridiona/meridian/commit/82aba7baedd643943c946c81fcae9ad9b041a0d8)), closes [#598](https://github.com/Meridiona/meridian/issues/598) [#598](https://github.com/Meridiona/meridian/issues/598)
+* **db:** complete the Windows encrypt-in-place migration (close handle, retry rename) ([82aba7b](https://github.com/Meridiona/meridian/commit/82aba7baedd643943c946c81fcae9ad9b041a0d8)), closes [#598](https://github.com/Meridiona/meridian/issues/598)
 * **db:** fix review — restore doc block onto finalize_encryption_swap ([53b7a11](https://github.com/Meridiona/meridian/commit/53b7a11a7ea676241e9ee0135a70dbbea78a337c)), closes [#606](https://github.com/Meridiona/meridian/issues/606) [#598](https://github.com/Meridiona/meridian/issues/598)
 * **db:** open plaintext meridian.db as plaintext even when a key is set ([c8d92ca](https://github.com/Meridiona/meridian/commit/c8d92ca445c5c082d5b7bb99c7e04f80666c36d1))
 * **intelligence:** harden the grace-row insert and trace the sync-failure path ([74329cc](https://github.com/Meridiona/meridian/commit/74329cc92dd04db39534909ae814eeb63fd7ef1b))
@@ -94,12 +96,12 @@
 * **tray:** harden Windows daemon-binary install against transient locks ([03fcbb4](https://github.com/Meridiona/meridian/commit/03fcbb477a298b4cdbfc1a787f6a65d06669de9e)), closes [#606](https://github.com/Meridiona/meridian/issues/606)
 * **tray:** log each failed rename attempt during daemon staging ([d000b60](https://github.com/Meridiona/meridian/commit/d000b60de4c2458fdd6186ababca806c87b3ee0e)), closes [#598](https://github.com/Meridiona/meridian/issues/598)
 * **tray:** make failed provider installs and sign-ins visible in traces ([1b24b00](https://github.com/Meridiona/meridian/commit/1b24b00fba23764ac88f1d71febd2697af128541))
-* **tray:** restore a throttled progress breadcrumb during the daemon-exit wait ([18de191](https://github.com/Meridiona/meridian/commit/18de191ae1f53c0ea685027db766c032e89fc339)), closes [#607](https://github.com/Meridiona/meridian/issues/607) [606/#607](https://github.com/606/meridian/issues/607)
+* **tray:** restore a throttled progress breadcrumb during the daemon-exit wait ([18de191](https://github.com/Meridiona/meridian/commit/18de191ae1f53c0ea685027db766c032e89fc339)), closes [#606](https://github.com/Meridiona/meridian/issues/606) [#607](https://github.com/Meridiona/meridian/issues/607)
 * **tray:** ship LLM install/sign-in failures to OpenObserve ([e8fb9a5](https://github.com/Meridiona/meridian/commit/e8fb9a51a2ee921eb63efecd92c90a2c9aba4363))
 
 ### ♻️ Refactoring
 
-* **core:** unify the Windows transient-lock retry into meridian-core ([3802c2d](https://github.com/Meridiona/meridian/commit/3802c2da6c184eeb85d14463f8ed9c0586319c93)), closes [#606](https://github.com/Meridiona/meridian/issues/606) [#607](https://github.com/Meridiona/meridian/issues/607) [#606](https://github.com/Meridiona/meridian/issues/606) [#607](https://github.com/Meridiona/meridian/issues/607)
+* **core:** unify the Windows transient-lock retry into meridian-core ([3802c2d](https://github.com/Meridiona/meridian/commit/3802c2da6c184eeb85d14463f8ed9c0586319c93)), closes [#606](https://github.com/Meridiona/meridian/issues/606) [#607](https://github.com/Meridiona/meridian/issues/607)
 
 ### 🤖 CI
 
