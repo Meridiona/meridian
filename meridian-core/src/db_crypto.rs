@@ -355,7 +355,7 @@ fn interrupted_migration_leftovers(path: &Path) -> Vec<std::path::PathBuf> {
 /// Unix renames don't hit this but the retry is harmless there.
 ///
 /// The blocking variant is deliberate: the only caller is
-/// `finalize_encryption_swap`, reached from the tray's `block_on(migrate)`
+/// `swap_database_file`, reached from the tray's `block_on(migrate)`
 /// startup gate before any other async work is scheduled, so the worst-case
 /// backoff blocks nothing but the migration it's part of.
 fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -364,30 +364,38 @@ fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
     })
 }
 
-/// Swap the freshly-written encrypted export at `tmp_path` into `path`, moving
-/// the plaintext original to `backup_path` first. Extracted from
-/// [`encrypt_in_place`] so the two-rename failure handling is unit-testable
-/// without a real Windows share violation (see the module tests). Every rename
-/// here goes through [`rename_with_retry`], so a transient Windows lock on any
-/// of the moves (including the rollback) retries rather than failing the swap.
+/// Swap a freshly-written replacement database at `tmp_path` into `path`,
+/// moving the original to `backup_path` first. `op` names the calling
+/// operation and appears in every error context, so a failure reads as
+/// `"encrypt_in_place: …"` or `"db repair: …"` rather than something generic.
 ///
-/// Preserves [`encrypt_in_place`]'s "a failed migration never loses data"
-/// invariant across BOTH renames — each of which can fail on the same class of
-/// Windows lock (a lingering handle / AV scan) that motivated this whole fix:
-/// - First rename (`path` → `backup_path`) fails: the encrypted export is
-///   useless without the swap, so drop it and leave the plaintext original
-///   exactly where it is ("still plaintext, retry next launch").
+/// Extracted from [`encrypt_in_place`] so the two-rename failure handling is
+/// unit-testable without a real Windows share violation (see the module
+/// tests), and shared with the daemon's corruption recovery
+/// (`meridian::db::repair`), which performs the identical dance: build a
+/// replacement alongside, then swap it in without ever risking a window where
+/// no database exists. Every rename goes through [`rename_with_retry`], so a
+/// transient Windows lock on any of the moves (including the rollback) retries
+/// rather than failing the swap.
+///
+/// Preserves the "a failed swap never loses data" invariant across BOTH
+/// renames — each of which can fail on the same class of Windows lock (a
+/// lingering handle / AV scan) that motivated this fix:
+/// - First rename (`path` → `backup_path`) fails: the replacement is useless
+///   without the swap, so drop it and leave the original exactly where it is
+///   ("unchanged, retry later").
 /// - Second rename (`tmp_path` → `path`) fails: `path` has ALREADY been moved to
 ///   `backup_path`, so returning here would strand the user's data under a
 ///   backup name while the caller (seeing no `meridian.db`) creates a fresh
 ///   empty one. Roll back by renaming `backup_path` → `path` first, so the state
-///   degrades to "still plaintext, data intact" rather than "no database". Only
+///   degrades to "unchanged, data intact" rather than "no database". Only
 ///   if that rollback ALSO fails do we surface a hard error naming the file to
 ///   restore by hand — strictly the last resort.
-fn finalize_encryption_swap(
+pub fn swap_database_file(
     path: &Path,
     tmp_path: &Path,
     backup_path: &Path,
+    op: &str,
 ) -> anyhow::Result<()> {
     if let Err(e) = rename_with_retry(path, backup_path) {
         // On Windows `rename` fails with "os error 32" while another process
@@ -399,12 +407,13 @@ fn finalize_encryption_swap(
         tracing::error!(
             error = %e,
             stage = "move_original_aside",
-            "encryption swap failed - database left plaintext, will retry next launch"
+            op,
+            "database swap failed - the original is untouched, will retry later"
         );
-        return Err(e).context(
-            "encrypt_in_place: failed to move plaintext original aside \
-             (is meridian.db still open by the daemon?)",
-        );
+        return Err(e).context(format!(
+            "{op}: failed to move the original database aside \
+             (is meridian.db still open by the daemon or the tray?)"
+        ));
     }
     for suffix in ["-wal", "-shm"] {
         let sidecar = std::path::PathBuf::from(format!("{}{}", path.display(), suffix));
@@ -418,13 +427,14 @@ fn finalize_encryption_swap(
                 let _ = std::fs::remove_file(tmp_path);
                 tracing::error!(
                     error = %e,
-                    stage = "move_encrypted_into_place",
-                    "encryption swap failed - plaintext original restored, will retry next launch"
+                    stage = "move_replacement_into_place",
+                    op,
+                    "database swap failed - the original was restored, will retry later"
                 );
-                Err(e).context(
-                    "encrypt_in_place: failed to move encrypted export into place; \
-                     restored the plaintext original (will retry next launch)",
-                )
+                Err(e).context(format!(
+                    "{op}: failed to move the replacement database into place; \
+                     restored the original (will retry later)"
+                ))
             }
             Err(restore_err) => {
                 // The only branch that needs a human. Logged at ERROR with no
@@ -435,11 +445,11 @@ fn finalize_encryption_swap(
                     error = %e,
                     restore_error = %restore_err,
                     stage = "restore_original",
-                    "encryption swap failed AND rollback failed - the database needs restoring by hand"
+                    "database swap failed AND rollback failed - the database needs restoring by hand"
                 );
                 Err(e).context(format!(
-                    "encrypt_in_place: failed to move encrypted export into place AND failed \
-                 to restore the plaintext original ({restore_err:#}) - the previous data \
+                    "{op}: failed to move the replacement into place AND failed \
+                 to restore the original ({restore_err:#}) - the previous data \
                  is intact at {}; restore it by hand",
                     backup_path.display(),
                 ))
@@ -545,7 +555,7 @@ pub async fn encrypt_in_place(path: &Path, key_hex: &str) -> anyhow::Result<()> 
         "db.plaintext-backup-{}",
         chrono::Utc::now().format("%Y%m%d%H%M%S")
     ));
-    finalize_encryption_swap(path, &tmp_path, &backup_path)?;
+    swap_database_file(path, &tmp_path, &backup_path, "encrypt_in_place")?;
 
     tracing::info!(
         db = %path.display(),
@@ -919,7 +929,7 @@ mod tests {
         std::fs::write(&path, b"ORIGINAL-PLAINTEXT").unwrap();
         std::fs::write(&tmp, b"ENCRYPTED-EXPORT").unwrap();
 
-        let err = finalize_encryption_swap(&path, &tmp, &backup).unwrap_err();
+        let err = swap_database_file(&path, &tmp, &backup, "encrypt_in_place").unwrap_err();
         assert!(!tmp.exists(), "stale encrypted export must be removed");
         assert_eq!(
             std::fs::read(&path).unwrap(),
@@ -945,7 +955,7 @@ mod tests {
 
         std::fs::write(&path, b"ORIGINAL-PLAINTEXT").unwrap();
 
-        let err = finalize_encryption_swap(&path, &tmp, &backup).unwrap_err();
+        let err = swap_database_file(&path, &tmp, &backup, "encrypt_in_place").unwrap_err();
         assert!(
             path.exists(),
             "the plaintext original must be restored, not stranded under the backup name"
@@ -992,7 +1002,7 @@ mod tests {
         std::fs::write(&path, b"PLAINTEXT").unwrap();
         std::fs::write(&tmp, b"CIPHERTEXT").unwrap();
 
-        finalize_encryption_swap(&path, &tmp, &backup).unwrap();
+        swap_database_file(&path, &tmp, &backup, "encrypt_in_place").unwrap();
         assert_eq!(
             std::fs::read(&path).unwrap(),
             b"CIPHERTEXT",

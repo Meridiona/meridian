@@ -613,7 +613,39 @@ anymore; a failing/rate-limited provider leaves work pending for the next cycle.
 # coding-agent ingest — runs inside the daemon; these are the one-shot CLIs
 echo '{"transcript_path":"~/.claude/projects/.../<uuid>.jsonl"}' | meridian coding-agent-hook  # SessionEnd: seal one session
 meridian coding-agent-summarise [--dry-run] [--day YYYY-MM-DD] [--limit N]                     # summarise the pending queue
+
+# database corruption — diagnose and recover (see "Database corruption" below)
+meridian db check    # per-table scan; exit 0 healthy, 1 damaged
+meridian db repair   # rebuild into a fresh file; requires the daemon AND tray stopped
 ```
+
+---
+
+## Database corruption (`src/db/integrity.rs`, `src/db/repair.rs`)
+
+SQLite b-tree damage is detected and recovered explicitly; it is not something
+the daemon can shrug off.
+
+- **Detection** — `quick_check` at daemon startup, plus `integrity::is_corrupt_error`
+  on the ETL error path. On a positive the daemon raises the `db.corrupt` notice
+  and **latches**: it stops calling `run_etl` for the rest of the process's life,
+  because the condition cannot clear without an operator and retrying only
+  re-reads damaged pages. Everything else in the poll loop keeps running.
+- **Recovery is never automatic.** Two processes write `meridian.db` (daemon +
+  tray), and the daemon cannot ask the tray to stop, so `meridian db repair`
+  refuses to run while either is alive. It rebuilds into a fresh file and swaps
+  it in; the damaged original is kept as `meridian.db.corrupt-backup-<ts>` and
+  never deleted.
+- **Repair-in-place is impossible** — on a corrupt tree both `REINDEX` and
+  `DROP TABLE` themselves raise `SQLITE_CORRUPT`. Salvage into a new file is the
+  only primitive that works.
+- **Never test table health with `count(*)`.** It is answered from an index and
+  reports a corrupt table as fine; even `count(*) … NOT INDEXED` misses overflow
+  pages. Only a full column read is authoritative — `integrity::scan_tables`.
+
+Both modules' headers carry the full reasoning and the measured numbers. Test
+fixtures that produce genuinely corrupt files live in `src/db/test_corrupt.rs`
+(`cargo test` covers them; `sqlite::memory:` cannot be corrupted).
 
 ---
 
