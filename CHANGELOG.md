@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.82.3](https://github.com/Meridiona/meridian/compare/v1.82.2...v1.82.3) (2026-08-01)
+
+### 🐛 Bug Fixes
+
+* **tray:** contain panics in setup() instead of a fatal process abort ([bd03203](https://github.com/Meridiona/meridian/commit/bd0320356cd25f5820a2bdba1fd3ada7dfc3e899))
+* **ui:** show a confirmed daily plan to solo users ([6b7eb77](https://github.com/Meridiona/meridian/commit/6b7eb77bda5acf0fca211903310cc088240c1368))
+
+### 🤖 CI
+
+* **release:** back-merge main into pre-main so staging versions sort above stable ([94749da](https://github.com/Meridiona/meridian/commit/94749daab6cf11cb27db81f8d45a3ea8f6abec9a))
+* **release:** require the release PAT in the back-merge job ([b16dd7d](https://github.com/Meridiona/meridian/commit/b16dd7d3efcc26b7c77bfebd9122b3e76eef38d2))
+
+### 📝 Documentation
+
+* **changelog:** add the top-level heading, fix malformed issue refs ([7f98013](https://github.com/Meridiona/meridian/commit/7f980138d52251fc41f5bc19cd842c5abb1b0ecf))
+
 ## [1.82.2](https://github.com/Meridiona/meridian/compare/v1.82.1...v1.82.2) (2026-07-31)
 
 ### 🐛 Bug Fixes
