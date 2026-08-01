@@ -58,6 +58,71 @@ use tauri::{
     Emitter, Manager,
 };
 
+/// Runs `f`, converting a panic into `None` instead of letting it propagate.
+///
+/// `setup()` runs synchronously inside tao's `did_finish_launching`, itself
+/// invoked by Cocoa across an `extern "C"` boundary. An unwinding panic
+/// cannot cross that boundary — Rust detects it and calls
+/// `panic_cannot_unwind`, aborting the ENTIRE process before the tray icon
+/// exists, regardless of this workspace's `panic = "unwind"` profile
+/// (`Cargo.toml`'s release-profile guard explains why that's chosen
+/// deliberately over `panic = "abort"`: "we ship a data daemon; no"). Stopping
+/// the unwind here, inside ordinary Rust frames well short of that boundary,
+/// is what makes the profile's guarantee actually hold for `setup()`.
+///
+/// `be368d4e` fixed one instance of exactly this failure mode (sqlx's lazy
+/// pool builder panicking outside a Tokio context) by hardening that one call
+/// site. This contains the FAILURE MODE itself, so the next unforeseen panic
+/// inside a wrapped span degrades the tray instead of bricking it — and, for
+/// spans wrapped before `update::enforce_minimum_version` runs later in
+/// `setup()`, keeps that force-update kill switch reachable instead of a
+/// fatal abort taking it down along with everything else. This is NOT
+/// blanket protection for all of `setup()` — only the spans actually passed
+/// through this wrapper (currently the DB key/pool/encryption-notice work;
+/// see its call sites) are covered. A panic in unwrapped code — the tray
+/// menu build, the tray icon, anything after it — still aborts the process.
+///
+/// `what` is folded into the log MESSAGE, not passed as a separate `tracing`
+/// attribute key: an attribute key not on `redact::SAFE_STRING_KEYS` is
+/// stripped from the packaged-build ship leg (see CLAUDE.md's observability
+/// section), which would silently gut the one line telling us a startup
+/// panic happened.
+fn catch_setup_panic<T>(what: &str, f: impl FnOnce() -> T + std::panic::UnwindSafe) -> Option<T> {
+    match std::panic::catch_unwind(f) {
+        Ok(v) => Some(v),
+        Err(payload) => {
+            let msg = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "non-string panic payload".to_string());
+            tracing::error!(
+                "tray setup panicked during {what}: {msg} — degrading to a disabled state instead of crashing the tray"
+            );
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod catch_setup_panic_tests {
+    use super::catch_setup_panic;
+
+    #[test]
+    fn returns_the_value_on_success() {
+        assert_eq!(catch_setup_panic("test", || 42), Some(42));
+    }
+
+    /// The actual point of the wrapper: a panic must degrade to `None`, not
+    /// propagate — Rust's default panic hook still prints to stderr for this
+    /// case, which is expected, harmless test noise.
+    #[test]
+    fn returns_none_instead_of_propagating_a_panic() {
+        let result = catch_setup_panic("test", || -> i32 { panic!("boom") });
+        assert_eq!(result, None);
+    }
+}
+
 pub fn run() {
     // Native-crash capture (Phase 2B). MUST be first: `tauri-plugin-sentry`'s
     // minidump reporter relaunches this exe in a special reporter mode that has
@@ -244,250 +309,293 @@ pub fn run() {
             //    rather than blocking tray startup — see db_key.rs and
             //    meridian_core::db_crypto::encrypt_in_place's doc comments
             //    for why that's the safe failure mode.
-            let db_path = install::meridian_db_path();
-            // Bound once: the same path is re-borrowed as a `Path` several
-            // times below (key resolution, the orphan check, the plaintext
-            // probe, the migration), and `db_path` itself stays a `String`
-            // because the tracing/`open` call sites still want it as one.
-            let db_path_ref = std::path::Path::new(&db_path);
-            let install_mode = install::detect_install_mode();
-            let existing_key = install_mode
-                .env_path()
-                .and_then(|p| install::env_key_from_path(p, "MERIDIAN_DB_KEY"));
+            // The whole span through the encryption notice below runs inside
+            // `catch_setup_panic`: it does keychain access, an in-place file
+            // migration, and builds sqlx's lazy pool — the exact operation
+            // `be368d4e` fixed one instance of (see that helper's doc). An
+            // unforeseen panic anywhere in this span now degrades to the SAME
+            // `db_pool: None` state every other failure here already
+            // produces, instead of taking the whole process down.
+            let db_setup_result = catch_setup_panic(
+                "meridian.db key resolution + pool build + encryption notice",
+                std::panic::AssertUnwindSafe(|| {
+                    let db_path = install::meridian_db_path();
+                    // Bound once: the same path is re-borrowed as a `Path` several
+                    // times below (key resolution, the orphan check, the plaintext
+                    // probe, the migration), and `db_path` itself stays a `String`
+                    // because the tracing/`open` call sites still want it as one.
+                    let db_path_ref = std::path::Path::new(&db_path);
+                    let install_mode = install::detect_install_mode();
+                    let existing_key = install_mode
+                        .env_path()
+                        .and_then(|p| install::env_key_from_path(p, "MERIDIAN_DB_KEY"));
 
-            let db_key_hex = if existing_key.is_some() {
-                existing_key
-            } else if !cfg!(debug_assertions) {
-                match install::canonical_env_path() {
-                    Some(env_path) => match db_key::resolve_or_create_key(
-                        &env_path,
-                        db_path_ref,
-                    ) {
-                        Ok(key) => Some(key),
-                        Err(e) => {
-                            // `tracing`, not `eprintln!`: observability is
-                            // already initialised above, and on a packaged
-                            // install stderr goes only to the launchd log -
-                            // never `meridian logs`, the diagnostics bundle,
-                            // or central error reporting. A silent fallback to
-                            // an UNENCRYPTED database is exactly the event
-                            // those channels exist to surface.
-                            //
-                            // `would_orphan_existing_db` is a DIFFERENT, worse
-                            // case than the generic fallback below: the DB
-                            // already exists and is NOT plaintext, so there is
-                            // no unencrypted file to "continue" into - opening
-                            // it further down with no key will just fail, the
-                            // same way it's been failing already. The
-                            // DB-backed notices system (used elsewhere in this
-                            // function) can't carry this one: it's the very
-                            // database that's unreadable. A native OS
-                            // notification is the only channel left that
-                            // doesn't itself depend on meridian.db opening.
-                            if db_key::would_orphan_existing_db(db_path_ref) {
-                                tracing::error!(
-                                    error = %e,
-                                    "refusing to generate a replacement DB encryption key - meridian.db exists and appears already encrypted under a key this install can no longer find"
-                                );
-                                sys::notify(
-                                    app.handle(),
-                                    "Meridian can't read your local data",
-                                    "Your local database appears to be encrypted with a key this install can no longer find. Contact support with your Support ID (Settings -> Account) before removing anything.",
-                                );
-                            } else {
-                                tracing::error!(
-                                    error = %e,
-                                    "failed to resolve DB encryption key - continuing unencrypted"
-                                );
+                    let db_key_hex = if existing_key.is_some() {
+                        existing_key
+                    } else if !cfg!(debug_assertions) {
+                        match install::canonical_env_path() {
+                            Some(env_path) => {
+                                match db_key::resolve_or_create_key(&env_path, db_path_ref) {
+                                    Ok(key) => Some(key),
+                                    Err(e) => {
+                                        // `tracing`, not `eprintln!`: observability is
+                                        // already initialised above, and on a packaged
+                                        // install stderr goes only to the launchd log -
+                                        // never `meridian logs`, the diagnostics bundle,
+                                        // or central error reporting. A silent fallback to
+                                        // an UNENCRYPTED database is exactly the event
+                                        // those channels exist to surface.
+                                        //
+                                        // `would_orphan_existing_db` is a DIFFERENT, worse
+                                        // case than the generic fallback below: the DB
+                                        // already exists and is NOT plaintext, so there is
+                                        // no unencrypted file to "continue" into - opening
+                                        // it further down with no key will just fail, the
+                                        // same way it's been failing already. The
+                                        // DB-backed notices system (used elsewhere in this
+                                        // function) can't carry this one: it's the very
+                                        // database that's unreadable. A native OS
+                                        // notification is the only channel left that
+                                        // doesn't itself depend on meridian.db opening.
+                                        if db_key::would_orphan_existing_db(db_path_ref) {
+                                            tracing::error!(
+                                                error = %e,
+                                                "refusing to generate a replacement DB encryption key - meridian.db exists and appears already encrypted under a key this install can no longer find"
+                                            );
+                                            sys::notify(
+                                                app.handle(),
+                                                "Meridian can't read your local data",
+                                                "Your local database appears to be encrypted with a key this install can no longer find. Contact support with your Support ID (Settings -> Account) before removing anything.",
+                                            );
+                                        } else {
+                                            tracing::error!(
+                                                error = %e,
+                                                "failed to resolve DB encryption key - continuing unencrypted"
+                                            );
+                                        }
+                                        None
+                                    }
+                                }
                             }
-                            None
+                            None => None,
                         }
-                    },
-                    None => None,
-                }
-            } else {
-                None
-            };
-
-            // Whether encryption was intended this launch (a key was resolved).
-            // Re-checked against the on-disk file after the pool opens, to raise
-            // a user-visible notice if the DB is nonetheless still plaintext
-            // (the encrypt-in-place migration didn't complete) — otherwise the
-            // db_crypto plaintext guard keeps operating unencrypted with only a
-            // log line nobody sees. Runtime-gated below (not `#[cfg]`) so it is
-            // always compiled/linted, matching the migration block's own
-            // `!cfg!(debug_assertions)` style.
-            let db_encryption_intended = db_key_hex.is_some();
-
-            // On Windows the daemon (autostarted at login) holds meridian.db
-            // open, so `encrypt_in_place`'s rename fails with os error 32 and
-            // rolls back every launch — the migration can never complete while
-            // the daemon is up. Stop it first, but ONLY when a migration will
-            // actually attempt (a key was resolved AND the DB is still
-            // plaintext); once encrypted this never runs again, so the stop is a
-            // one-time cost on the migration launch. A no-op on non-Windows,
-            // where rename tolerates an open handle. The daemon is brought back
-            // up by `ensure_backend_installed` later in this same setup hook.
-            if !cfg!(debug_assertions)
-                && db_encryption_intended
-                && meridian_core::db_crypto::is_plaintext_sqlite(db_path_ref)
-            {
-                if let Err(e) =
-                    tauri::async_runtime::block_on(backend_install::stop_daemon_for_migration())
-                {
-                    tracing::warn!(
-                        error = %e,
-                        "could not stop the daemon before encrypting the database; encryption may not complete this launch"
-                    );
-                }
-            }
-
-            let db_key_hex = if !cfg!(debug_assertions) {
-                match &db_key_hex {
-                    Some(key) => {
-                        let migrate = meridian_core::db_crypto::encrypt_in_place(
-                            db_path_ref,
-                            key,
-                        );
-                        match tauri::async_runtime::block_on(migrate) {
-                            Ok(()) => Some(key.clone()),
-                            Err(e) => {
-                                tracing::error!(
-                                    error = %e,
-                                    "failed to migrate meridian.db to encrypted storage - continuing unencrypted this run"
-                                );
-                                None
-                            }
-                        }
-                    }
-                    None => None,
-                }
-            } else {
-                db_key_hex
-            };
-
-            // Prepare the meridian.db pool ONCE at startup and share it with
-            // commands via managed state (no migrations — the daemon owns the
-            // schema). `None` only if the path/key is malformed, so reads error
-            // gracefully instead of crashing the tray.
-            //
-            // LAZY on purpose. On a first launch this line runs seconds BEFORE
-            // `ensure_backend_installed` (below) starts the daemon that creates
-            // meridian.db, so an eager open fails — and since the result is
-            // stored as an `Option` that nothing retries, the tray then ran its
-            // entire session against `None`: every DB-backed command silently
-            // returned its empty default and every captured frame was dropped
-            // by the consumers' `else { continue }`, until the user happened to
-            // restart the tray. A lazy pool connects on first use instead, so
-            // the very next command or frame after the daemon creates the file
-            // succeeds on its own.
-            // `block_on`, not a bare call: sqlx spawns the pool's maintenance
-            // task while BUILDING the lazy handle, so constructing it outside a
-            // Tokio runtime panics ("this functionality requires a Tokio
-            // context") and takes the whole tray down before the tray icon even
-            // appears. `setup()` is not itself async, so the runtime has to be
-            // entered explicitly here — exactly as the eager open it replaced
-            // already did.
-            let db_pool = tauri::async_runtime::block_on(meridian_core::open_existing_lazy(
-                &db_path,
-                db_key_hex.as_deref(),
-            ))
-            .map_err(
-                |e| tracing::error!(error = %e, db_path = %db_path, "meridian.db pool not prepared"),
-            )
-            .ok();
-            // A lazy pool cannot report reachability at build time, and losing
-            // that startup signal is how the failure above stayed invisible for
-            // a whole session. Probe once, purely to log it — an unreachable DB
-            // here is expected on a first launch and heals by itself, so this
-            // deliberately gates nothing.
-            //
-            // SPAWNED, never blocked on: sqlx retries a failed connection until
-            // the pool's 10s acquire timeout, so a first launch (file not
-            // created yet) would otherwise freeze the whole `setup` closure —
-            // and with it the tray menu — for ten seconds.
-            if let Some(p) = db_pool.clone() {
-                tauri::async_runtime::spawn(async move {
-                    match meridian_core::ping(&p).await {
-                        Ok(()) => tracing::info!("meridian.db reachable"),
-                        Err(e) => tracing::warn!(
-                            error = %e,
-                            "meridian.db not reachable yet — the pool will connect once the daemon creates it"
-                        ),
-                    }
-                });
-            }
-            // Capture (slice 4a) writes to the SAME read-write pool the commands
-            // use — clone the handle before it's moved into managed state.
-            #[cfg(feature = "capture")]
-            let capture_pool = db_pool.clone();
-            // The encryption-state notice below needs a pool handle before
-            // db_pool is moved into managed state.
-            let encryption_notice_pool = db_pool.clone();
-            app.manage(db_pool);
-
-            // Encryption was intended (a key was resolved) but the on-disk DB is
-            // still plaintext ⇒ encrypt_in_place didn't complete (on Windows the
-            // daemon holds the file open, so its final rename fails every
-            // launch). The db_crypto guard keeps the app working by opening
-            // plaintext — a silent security downgrade otherwise — so surface it
-            // to the user, and clear the notice once the DB is actually
-            // encrypted. Skipped in debug builds, where the migration never runs
-            // and a plaintext dev DB is expected. Best-effort: a notice-write
-            // failure must not block startup.
-            if !cfg!(debug_assertions) {
-                if let Some(pool) = encryption_notice_pool.as_ref() {
-                    let plaintext = meridian_core::db_crypto::plaintext_state(
-                        db_path_ref,
-                    );
-                    let action = db_encryption_notice_action(db_encryption_intended, plaintext);
-                    // No `db_path` on the span: a home-dir path is user data.
-                    let span = tracing::info_span!("tray.db_encryption_notice", ?action);
-                    let _entered = span.enter();
-                    // Deliberately an if/else and NOT an early return: this
-                    // runs inside Tauri's `setup` closure, so returning here
-                    // would skip the tray menu and the whole rest of startup.
-                    if action == DbEncryptionNotice::Leave {
-                        tracing::warn!(
-                            "database encryption state could not be established - leaving any existing notice untouched"
-                        );
                     } else {
-                        let result = tauri::async_runtime::block_on(async {
-                        if action == DbEncryptionNotice::Raise {
-                            meridian::notices::raise_typed(
-                                pool,
-                                meridian::notices::Notice {
-                                    id: "tray.db_encryption_incomplete",
-                                    severity: "warning",
-                                    title: "Your data isn't encrypted at rest yet.",
-                                    detail: "Meridian couldn't finish encrypting its local database this time. Your data is safe but stored unencrypted for now - Meridian will retry automatically the next time it restarts.",
-                                    remedy: None,
-                                    event_key: "system.health",
-                                    deep_link: Some("/logs"),
-                                },
-                            )
-                            .await
-                        } else {
-                            meridian::notices::clear_typed(
-                                pool,
-                                "tray.db_encryption_incomplete",
-                                "system.health",
-                            )
-                            .await
-                        }
-                    });
-                        if let Err(e) = result {
-                            // ERROR, not WARN: this is the failure boundary for
-                            // the one thing that tells a user their data is not
-                            // encrypted, and WARN-level would be easy to lose.
-                            tracing::error!(
+                        None
+                    };
+
+                    // Whether encryption was intended this launch (a key was resolved).
+                    // Re-checked against the on-disk file after the pool opens, to raise
+                    // a user-visible notice if the DB is nonetheless still plaintext
+                    // (the encrypt-in-place migration didn't complete) — otherwise the
+                    // db_crypto plaintext guard keeps operating unencrypted with only a
+                    // log line nobody sees. Runtime-gated below (not `#[cfg]`) so it is
+                    // always compiled/linted, matching the migration block's own
+                    // `!cfg!(debug_assertions)` style.
+                    let db_encryption_intended = db_key_hex.is_some();
+
+                    // On Windows the daemon (autostarted at login) holds meridian.db
+                    // open, so `encrypt_in_place`'s rename fails with os error 32 and
+                    // rolls back every launch — the migration can never complete while
+                    // the daemon is up. Stop it first, but ONLY when a migration will
+                    // actually attempt (a key was resolved AND the DB is still
+                    // plaintext); once encrypted this never runs again, so the stop is a
+                    // one-time cost on the migration launch. A no-op on non-Windows,
+                    // where rename tolerates an open handle. The daemon is brought back
+                    // up by `ensure_backend_installed` later in this same setup hook.
+                    if !cfg!(debug_assertions)
+                        && db_encryption_intended
+                        && meridian_core::db_crypto::is_plaintext_sqlite(db_path_ref)
+                    {
+                        if let Err(e) = tauri::async_runtime::block_on(
+                            backend_install::stop_daemon_for_migration(),
+                        ) {
+                            tracing::warn!(
                                 error = %e,
-                                "db-encryption-state notice update failed"
+                                "could not stop the daemon before encrypting the database; encryption may not complete this launch"
                             );
                         }
                     }
-                }
-            }
+
+                    let db_key_hex = if !cfg!(debug_assertions) {
+                        match &db_key_hex {
+                            Some(key) => {
+                                let migrate =
+                                    meridian_core::db_crypto::encrypt_in_place(db_path_ref, key);
+                                match tauri::async_runtime::block_on(migrate) {
+                                    Ok(()) => Some(key.clone()),
+                                    Err(e) => {
+                                        tracing::error!(
+                                            error = %e,
+                                            "failed to migrate meridian.db to encrypted storage - continuing unencrypted this run"
+                                        );
+                                        None
+                                    }
+                                }
+                            }
+                            None => None,
+                        }
+                    } else {
+                        db_key_hex
+                    };
+
+                    // Prepare the meridian.db pool ONCE at startup and share it with
+                    // commands via managed state (no migrations — the daemon owns the
+                    // schema). `None` only if the path/key is malformed, so reads error
+                    // gracefully instead of crashing the tray.
+                    //
+                    // LAZY on purpose. On a first launch this line runs seconds BEFORE
+                    // `ensure_backend_installed` (below) starts the daemon that creates
+                    // meridian.db, so an eager open fails — and since the result is
+                    // stored as an `Option` that nothing retries, the tray then ran its
+                    // entire session against `None`: every DB-backed command silently
+                    // returned its empty default and every captured frame was dropped
+                    // by the consumers' `else { continue }`, until the user happened to
+                    // restart the tray. A lazy pool connects on first use instead, so
+                    // the very next command or frame after the daemon creates the file
+                    // succeeds on its own.
+                    // `block_on`, not a bare call: sqlx spawns the pool's maintenance
+                    // task while BUILDING the lazy handle, so constructing it outside a
+                    // Tokio runtime panics ("this functionality requires a Tokio
+                    // context") and takes the whole tray down before the tray icon even
+                    // appears. `setup()` is not itself async, so the runtime has to be
+                    // entered explicitly here — exactly as the eager open it replaced
+                    // already did. Should this or any sibling third-party call in this
+                    // span panic outright instead of returning an `Err`,
+                    // `catch_setup_panic` around this whole block is the backstop.
+                    let db_pool = tauri::async_runtime::block_on(meridian_core::open_existing_lazy(
+                        &db_path,
+                        db_key_hex.as_deref(),
+                    ))
+                    .map_err(
+                        |e| tracing::error!(error = %e, db_path = %db_path, "meridian.db pool not prepared"),
+                    )
+                    .ok();
+                    // A lazy pool cannot report reachability at build time, and losing
+                    // that startup signal is how the failure above stayed invisible for
+                    // a whole session. Probe once, purely to log it — an unreachable DB
+                    // here is expected on a first launch and heals by itself, so this
+                    // deliberately gates nothing.
+                    //
+                    // SPAWNED, never blocked on: sqlx retries a failed connection until
+                    // the pool's 10s acquire timeout, so a first launch (file not
+                    // created yet) would otherwise freeze the whole `setup` closure —
+                    // and with it the tray menu — for ten seconds.
+                    if let Some(p) = db_pool.clone() {
+                        tauri::async_runtime::spawn(async move {
+                            match meridian_core::ping(&p).await {
+                                Ok(()) => tracing::info!("meridian.db reachable"),
+                                Err(e) => tracing::warn!(
+                                    error = %e,
+                                    "meridian.db not reachable yet — the pool will connect once the daemon creates it"
+                                ),
+                            }
+                        });
+                    }
+                    // Handed back as this closure's return value below, so the
+                    // caller can guarantee `app.manage` runs even when this whole
+                    // span panicked before reaching it a few lines down — see
+                    // there. Unconditional now (not `#[cfg(feature = "capture")]`
+                    // as it was before this span grew a wrapper): the capture
+                    // feature is the only later consumer, but the clone itself is
+                    // cheap and every build needs a value to return.
+                    let capture_pool = db_pool.clone();
+                    // The encryption-state notice below needs a pool handle before
+                    // db_pool is moved into managed state.
+                    let encryption_notice_pool = db_pool.clone();
+                    app.manage(db_pool);
+
+                    // Encryption was intended (a key was resolved) but the on-disk DB is
+                    // still plaintext ⇒ encrypt_in_place didn't complete (on Windows the
+                    // daemon holds the file open, so its final rename fails every
+                    // launch). The db_crypto guard keeps the app working by opening
+                    // plaintext — a silent security downgrade otherwise — so surface it
+                    // to the user, and clear the notice once the DB is actually
+                    // encrypted. Skipped in debug builds, where the migration never runs
+                    // and a plaintext dev DB is expected. Best-effort: a notice-write
+                    // failure must not block startup.
+                    //
+                    // Contained in its OWN `catch_setup_panic`, separate from the outer
+                    // one wrapping this whole span: `app.manage(db_pool)` above already
+                    // ran by this point, so a panic here must not cost `capture_pool` —
+                    // that's this closure's still-pending return value below, and losing
+                    // it would silently drop every captured frame for the rest of the
+                    // session (`start_capture`'s caller degrades a missing pool exactly
+                    // that quietly) while the DB itself keeps working normally.
+                    let _ = catch_setup_panic(
+                        "meridian.db encryption notice",
+                        std::panic::AssertUnwindSafe(|| {
+                            if !cfg!(debug_assertions) {
+                                if let Some(pool) = encryption_notice_pool.as_ref() {
+                                    let plaintext =
+                                        meridian_core::db_crypto::plaintext_state(db_path_ref);
+                                    let action = db_encryption_notice_action(
+                                        db_encryption_intended,
+                                        plaintext,
+                                    );
+                                    // No `db_path` on the span: a home-dir path is user data.
+                                    let span =
+                                        tracing::info_span!("tray.db_encryption_notice", ?action);
+                                    let _entered = span.enter();
+                                    // Deliberately an if/else and NOT an early return: this
+                                    // runs inside Tauri's `setup` closure, so returning here
+                                    // would skip the tray menu and the whole rest of startup.
+                                    if action == DbEncryptionNotice::Leave {
+                                        tracing::warn!(
+                                            "database encryption state could not be established - leaving any existing notice untouched"
+                                        );
+                                    } else {
+                                        let result = tauri::async_runtime::block_on(async {
+                                            if action == DbEncryptionNotice::Raise {
+                                                meridian::notices::raise_typed(
+                                                    pool,
+                                                    meridian::notices::Notice {
+                                                        id: "tray.db_encryption_incomplete",
+                                                        severity: "warning",
+                                                        title: "Your data isn't encrypted at rest yet.",
+                                                        detail: "Meridian couldn't finish encrypting its local database this time. Your data is safe but stored unencrypted for now - Meridian will retry automatically the next time it restarts.",
+                                                        remedy: None,
+                                                        event_key: "system.health",
+                                                        deep_link: Some("/logs"),
+                                                    },
+                                                )
+                                                .await
+                                            } else {
+                                                meridian::notices::clear_typed(
+                                                    pool,
+                                                    "tray.db_encryption_incomplete",
+                                                    "system.health",
+                                                )
+                                                .await
+                                            }
+                                        });
+                                        if let Err(e) = result {
+                                            // ERROR, not WARN: this is the failure boundary for
+                                            // the one thing that tells a user their data is not
+                                            // encrypted, and WARN-level would be easy to lose.
+                                            tracing::error!(
+                                                error = %e,
+                                                "db-encryption-state notice update failed"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }),
+                    );
+
+                    capture_pool
+                }),
+            )
+            .flatten();
+            // `.manage()` no-ops (returns `false`) when the type is already
+            // managed — see `tauri::Manager::manage`'s doc — so this only takes
+            // effect on the panic path above, where `app.manage(db_pool)` inside
+            // the closure never ran. Guarantees `State<Option<SqlitePool>>>` is
+            // always resolvable, so a command extracting it doesn't panic a
+            // second, unrelated time on missing managed state.
+            app.manage(db_setup_result.clone());
+            #[cfg(feature = "capture")]
+            let capture_pool = db_setup_result;
 
             // Single source of truth for the tray menu lives in `tray.rs`, so the
             // poll loop's health-driven rebuild can't drift out of sync. Initial
