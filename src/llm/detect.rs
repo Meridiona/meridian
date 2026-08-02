@@ -293,9 +293,14 @@ async fn compute_in_use_provider_health(settings: &RuntimeSettings) -> InUseProv
         };
     };
     let name = provider_display_name(provider).to_string();
-    let last_outcome = load_test_cache()
-        .get(provider.as_str())
-        .map(|r| r.outcome.clone());
+    // Two independent signals: the last MANUAL Settings → Test, and what the pipeline last
+    // observed on a real call. The manual test alone can't see a provider that passed an hour
+    // ago and is failing every call since — the state that stalls the worklog pipeline — so
+    // the fresher of the two wins (see `runtime_health::most_recent_outcome`).
+    let cache = load_test_cache();
+    let last_test = cache.get(provider.as_str());
+    let last_runtime = super::runtime_health::latest_for(provider);
+    let last_outcome = super::runtime_health::most_recent_outcome(last_test, last_runtime.as_ref());
     // A cloud endpoint (`Custom`, `cli_name() == None`) has no binary to probe, so it's treated
     // as "installed" here — only its last test can tell us anything.
     let installed = match provider.cli_name() {
