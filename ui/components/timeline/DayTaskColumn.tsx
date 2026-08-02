@@ -184,12 +184,20 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, refre
   // collapsing (see dayTaskLayout.ts) keeps every visible hour-to-hour gap
   // the same size, active or collapsed.
   const hourLines = useMemo(() => {
-    const shown = new Set<number>([firstHour])
+    const shown = new Set<number>()
     for (let h = firstHour; h <= tickCeiling; h++) {
       if (hourHasWork(laidBase, win, h) || (h > firstHour && hourHasWork(laidBase, win, h - 1))) {
         shown.add(h)
       }
     }
+    // The column always needs a top label, but it must not be an hour nothing
+    // happened in. `taskWindow` pads ~20 min before the first segment, so a day
+    // whose first work starts at 9:00 has win.lo at 8:40 and firstHour = 8 —
+    // anchoring firstHour unconditionally then drew an "8 AM" tick above an
+    // empty stretch, immediately followed by the real "9 AM". Anchor the first
+    // hour with actual work instead, falling back to firstHour only when the
+    // day has no work at all (an empty day, which draws no cards either).
+    if (shown.size === 0) shown.add(firstHour)
     const out: { hour: number; top: number }[] = []
     for (const h of Array.from(shown).sort((a, b) => a - b)) {
       const top = toPx(h * 60)
@@ -207,8 +215,18 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, refre
   // labelled with how long it lasted. Positioned on the same toPx axis as
   // everything else, so it always sits between the task bands it actually
   // fell between.
+  //
+  // Tasks lay out in independent side-by-side lanes across this same row
+  // width, so a gap can fall exactly inside another task's vertical span
+  // (its own "6 sittings" straddling the pause) — drawing the divider full
+  // width then sliced straight across that card's face. `free` carves out
+  // the horizontal ranges NOT covered by any task active at this gap's pixel
+  // row (in the same laneIndex/laneCount fractions TaskBand positions with),
+  // so the dashes only run through genuinely empty space and the label
+  // lands in whichever free gap is widest.
   const pausedBands = useMemo(() => {
-    const out: { id: number; top: number; durSec: number }[] = []
+    type Raw = { top: number; dur: number }
+    const raw: Raw[] = []
     for (const g of gaps) {
       if (g.kind !== 'tracking_paused' && g.kind !== 'schedule_paused') continue
       const startMin = minutesFromIso(g.started_at)
@@ -223,10 +241,62 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, refre
       const lo = Math.max(startMin, win.lo)
       const hi = Math.min(endMin, win.hi)
       if (hi <= lo) continue
-      out.push({ id: g.id, top: toPx((lo + hi) / 2), durSec: g.dur })
+      raw.push({ top: toPx((lo + hi) / 2), dur: g.dur })
     }
+    raw.sort((a, b) => a.top - b.top)
+    // Idle hours collapse on this axis (see hourLines above), so pixel
+    // distance is NOT proportional to real time apart — two gap rows can be
+    // hours apart on the clock yet land on nearly the same row (or be the
+    // same real pause reported twice, e.g. a tracking_paused row and a
+    // schedule_paused row for one stretch). Either way they'd render as two
+    // dividers stacked on top of each other, so merge by PIXEL proximity, not
+    // by minutes. `dur` takes the max of the merged rows rather than summing
+    // them: the common case is the same underlying pause reported twice, and
+    // summing would double-count it (an undercount for two genuinely
+    // separate close pauses is the safer failure of the two).
+    // Use a generous threshold to catch labels that would render overlapped or
+    // too-close even if their underlying gaps are a few minutes apart.
+    const MERGE_PX = 28
+    const merged: Raw[] = []
+    for (const r of raw) {
+      const last = merged[merged.length - 1]
+      if (last && r.top - last.top <= MERGE_PX) {
+        last.top = (last.top + r.top) / 2
+        last.dur = Math.max(last.dur, r.dur)
+      } else {
+        merged.push({ ...r })
+      }
+    }
+
+    const out: { id: number; top: number; durSec: number; free: [number, number][] }[] = []
+    merged.forEach((band, idx) => {
+      const top = band.top
+
+      const occupied: [number, number][] = []
+      for (const l of laid) {
+        if (top < toPx(l.footLo) || top > toPx(l.footHi)) continue
+        const left = l.laneIndex / l.laneCount
+        occupied.push([left, left + 1 / l.laneCount])
+      }
+      occupied.sort((a, b) => a[0] - b[0])
+      const mergedLanes: [number, number][] = []
+      for (const [s, e] of occupied) {
+        const last = mergedLanes[mergedLanes.length - 1]
+        if (last && s <= last[1]) last[1] = Math.max(last[1], e)
+        else mergedLanes.push([s, e])
+      }
+      const free: [number, number][] = []
+      let cursor = 0
+      for (const [s, e] of mergedLanes) {
+        if (s > cursor) free.push([cursor, s])
+        cursor = Math.max(cursor, e)
+      }
+      if (cursor < 1) free.push([cursor, 1])
+
+      out.push({ id: idx, top, durSec: band.dur, free })
+    })
     return out
-  }, [gaps, win, toPx])
+  }, [gaps, win, toPx, laid])
 
   const taskCount = laid.length
 
@@ -343,24 +413,46 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, refre
             })}
 
             {/* Paused-time dividers — one per tracking_paused/schedule_paused
-                gap, centred in its own span. Same row body as the hour
-                gridlines (starts past the gutter, not at it) so it reads as
-                a peer of those dividers rather than the task-card rail. */}
-            {pausedBands.map(({ id, top, durSec }) => (
-              <div key={`gap-${id}`} className="absolute flex items-center gap-2 pointer-events-none"
-                style={{ top, left: GUTTER + CARD_GUTTER_GAP, right: 6, height: 0 }}>
-                <span className="flex-1 border-t border-dashed"
-                  style={{ borderColor: 'color-mix(in srgb, var(--color-state-pending) 40%, transparent)' }} />
-                <span className="mt-mono-sm shrink-0 -translate-y-1/2" style={{
-                  fontSize: 9.5, fontWeight: 600, letterSpacing: 0.2,
-                  color: 'var(--color-state-pending)', opacity: 0.85,
-                }}>
-                  Paused · {fmtDur(durSec)}
-                </span>
-                <span className="flex-1 border-t border-dashed"
-                  style={{ borderColor: 'color-mix(in srgb, var(--color-state-pending) 40%, transparent)' }} />
-              </div>
-            ))}
+                gap, centred in its own span. Dashes only run through `free`
+                (ranges not occupied by task cards at this row), so the line
+                never slices across a card's face. Label sits in whichever free
+                gap is widest, with a pill background + z-10 so it stays
+                legible. */}
+            {pausedBands.map(({ id, top, durSec, free }) => {
+              const freeWidths = free.map(([s, e]) => e - s)
+              const widestFree = free[freeWidths.indexOf(Math.max(...freeWidths))] ?? [0, 1]
+              const labelLeft = `calc(${GUTTER + CARD_GUTTER_GAP}px + ${(widestFree[0] + widestFree[1]) / 2 * 100}%)`
+              return (
+                <div key={id} className="absolute left-0 right-0 flex items-center z-10" style={{ top, height: 0 }}>
+                  <span className="relative -translate-y-1/2 px-2 rounded-full text-xs font-medium"
+                    style={{
+                      left: labelLeft,
+                      transform: 'translateX(-50%) translateY(-50%)',
+                      background: 'var(--t-panel)',
+                      color: 'var(--t-faint)',
+                      whiteSpace: 'nowrap',
+                      boxShadow: '0 0 0 1px var(--t-card-border)',
+                    }}>
+                    Paused · {fmtDur(durSec)}
+                  </span>
+                  {free.map((_, idx) => {
+                    const [s, e] = free[idx]
+                    if (s >= e) return null
+                    const left = `calc(${GUTTER + CARD_GUTTER_GAP}px + ${s * 100}%)`
+                    const width = `calc(${(e - s) * 100}% - 12px)`
+                    return (
+                      <span key={idx} className="absolute border-t border-dashed"
+                        style={{
+                          left,
+                          width,
+                          borderColor: 'color-mix(in srgb, var(--color-state-pending) 40%, transparent)',
+                        }}
+                      />
+                    )
+                  })}
+                </div>
+              )
+            })}
 
             {/* Task workstreams — inset further than the rail itself (GUTTER)
                 so the cards read as their own column, not flush against the
@@ -542,6 +634,11 @@ function TaskBand({ laid, hue, toPx, selected, dimmed, onSelect }: {
     <button
       onClick={e => { e.stopPropagation(); onSelect() }}
       title={laid.task.title || 'Activity'}
+      // Addressable by the first-run walkthrough, which points at and waits on
+      // specific example cards (components/tutorial/script.ts). Note this card
+      // stops propagation, so the walkthrough's click listener is registered in
+      // the capture phase to still see it.
+      data-task-id={laid.task.id}
       className="dt-card absolute text-left transition-all"
       style={{
         top: cardTop,

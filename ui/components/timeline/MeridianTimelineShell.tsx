@@ -20,6 +20,7 @@ import { Toolbar } from './Toolbar'
 import { DayTaskColumn } from './DayTaskColumn'
 import type { DayTaskDetail } from './DayTaskDetailPanel'
 import { RightPanel } from './RightPanel'
+import { useTutorial } from '@/components/tutorial/useTutorial'
 import { FloatingDraftsPill } from './FloatingDraftsPill'
 import { ReviewModal } from './ReviewModal'
 // Board Cleanup temporarily disabled (not deleted) — re-enable by uncommenting
@@ -28,6 +29,7 @@ import { ReviewModal } from './ReviewModal'
 // import { CleanupModal } from './CleanupModal'
 import { SettingsModal } from './SettingsModal'
 import { PlanModal } from './PlanModal'
+import { armResume } from '@/components/plan/useTaskComposer'
 import { TasksModal } from './TasksModal'
 import { TaskDetailDialog } from './TaskDetailDialog'
 import { ReportModal } from './ReportModal'
@@ -62,6 +64,16 @@ export default function MeridianTimelineShell() {
   // deep-link (e.g. the nav pill's "Integrations" item); undefined defaults
   // to Settings' own DEFAULT_SETTINGS_SECTION.
   const [settingsSection, setSettingsSection] = useState<SettingsSection | undefined>(undefined)
+  // Set only when Settings was opened to finish a required step, so it can drop its
+  // incidental dismissals. See ModalShell's `lock`.
+  //
+  // TWO STRENGTHS, and the difference is whether a way out exists elsewhere. Inside the
+  // walkthrough this is `'required'`: connecting an engine is not optional there, and the
+  // tour's own Skip sits above the modal at z-9000 as the escape hatch. Outside it, the
+  // same "Draft with AI with no provider" press gets `'soft'` - no Escape or backdrop, but
+  // a plainly labelled exit - because there IS no overlay to skip with, and a modal with
+  // no way out and no walkthrough around it is simply a trapped app.
+  const [settingsLock, setSettingsLock] = useState<'soft' | 'required' | undefined>(undefined)
   // The ticket detail dialog is a separate, stackable layer (not part of
   // ActiveModal) — it can open on top of the Tasks/Plan modals or straight
   // from the timeline/Overview panel.
@@ -122,6 +134,17 @@ export default function MeridianTimelineShell() {
     return () => window.removeEventListener('meridian:open-tasks', openTasks)
   }, [])
 
+
+  // THE LOCK BELONGS TO THE VISIT THAT SET IT. Clearing it in SettingsModal's `onClose` was
+  // not enough: the walkthrough's Skip closes the modal by setting `activeModal` directly
+  // (useTutorial's `finish`), which never runs that handler - so the flag survived, and the
+  // NEXT ordinary Settings open, from the toolbar, came up locked with its sidebar blurred
+  // for no reason the user could see. Tying it to the modal actually being open makes it
+  // correct regardless of who closed it, or how.
+  useEffect(() => {
+    if (activeModal !== 'settings') setSettingsLock(undefined)
+  }, [activeModal])
+
   // Tray-side openers (the daily plan auto-open, notification click-throughs)
   // steer this window to a specific view. subscribe()'s prime is the pull half
   // (`take_pending_deep_link` — a fresh window misses any event emitted before
@@ -167,6 +190,37 @@ export default function MeridianTimelineShell() {
     setSelectedDayTask(detail)
     if (detail) { setSelectedHour(null); setSelectedCardKey(null) }
   }
+
+  // First-run walkthrough. Deliberately a THIN seam: it owns its own full
+  // surface (`tutorial.screen`, an opaque layer over this whole view) and its
+  // own example data, so nothing in the real timeline or right panel knows it
+  // exists. All this shell gives it is the ability to open real modals — the
+  // planner, Settings — which are the only places the walkthrough touches the
+  // actual product. See components/tutorial/.
+  const tutorial = useTutorial({
+    setActiveModal,
+    setSettingsSection,
+    ready: !data.loading,
+  })
+
+  // "Draft with AI" pressed with no provider installed. The composer raises this
+  // rather than taking a callback, because it is rendered two modals deep
+  // (PlanModal → PlanView → TaskComposer) and threading an opener through both
+  // would put a Settings concern in two components that have nothing to do with
+  // Settings. Same window-event pattern as `meridian:open-tasks` above.
+  useEffect(() => {
+    const connectAi = () => {
+      setSettingsSection('intelligence')
+      // Just the FACT that they were sent here. SettingsModal owns what that means -
+      // it makes the step required, labels the corner, and releases itself once a
+      // provider is actually written. An exit label chosen here would be a promise
+      // this component is in no position to keep.
+      setSettingsLock(tutorial.running ? 'required' : 'soft')
+      setActiveModal('settings')
+    }
+    window.addEventListener('meridian:connect-ai', connectAi)
+    return () => window.removeEventListener('meridian:connect-ai', connectAi)
+  }, [tutorial.running])
 
   // Bumped after a day-task is dismissed/merged so DayTaskColumn (which owns its
   // own fetch) reloads; the corrected task also leaves the detail panel.
@@ -265,7 +319,25 @@ export default function MeridianTimelineShell() {
       )}
       */}
       {activeModal === 'settings' && (
-        <SettingsModal onClose={() => setActiveModal(null)} initialSection={settingsSection} />
+        <SettingsModal
+          // The lock is one-shot: it belongs to the visit that set it, so
+          // clearing it on close stops the next ordinary Settings open (from the
+          // toolbar) inheriting a locked ×.
+          lock={settingsLock}
+          onClose={() => setActiveModal(null)}
+          // The connect flow finished. Hand the user straight back to the planner they
+          // were pulled out of, with the note they typed and the draft they already
+          // asked for - rather than dropping them on the timeline to work out for
+          // themselves that they now have to start over.
+          onLockSatisfied={() => {
+            armResume()
+            setActiveModal('plan')
+          }}
+          initialSection={settingsSection}
+          // Close Settings before restarting: the walkthrough opens this very
+          // modal in two of its beats, so replaying from inside it would have
+          // it opening a modal that is already open.
+          onReplayTour={() => { setActiveModal(null); tutorial.replay() }} />
       )}
       {activeModal === 'report' && <ReportModal onClose={() => setActiveModal(null)} />}
       {activeModal === 'llmlab' && channel === 'dev' && (
@@ -295,9 +367,16 @@ export default function MeridianTimelineShell() {
       )}
       {/* Deferred, never dropped, while any other modal/dialog has the user's
           attention — it retries on the next render once the app is idle again. */}
-      {showWorklogPrompt && !activeModal && !openTask && (
+      {showWorklogPrompt && !activeModal && !openTask && !tutorial.running && (
         <WorklogAutoGenerateDialog onDone={() => setShowWorklogPrompt(false)} />
       )}
+
+      {/* The walkthrough, in two layers: an opaque surface that REPLACES the
+          view with an example day (so the user's real work is never narrated
+          over), and the narration overlay above everything including modals.
+          Both are null when it is not running. */}
+      {tutorial.screen}
+      {tutorial.overlay}
     </div>
   )
 }

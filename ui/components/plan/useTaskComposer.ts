@@ -138,6 +138,35 @@ export const resetComposer = () => {
   listeners.forEach((l) => l())
 }
 
+// ── Resuming after a detour ───────────────────────────────────────────────────
+//
+// `resetComposer` runs on every mount, which is right: a half-typed task from an hour ago
+// is never what the user wants back. But there is exactly one case where the composer is
+// remounted MID-FLOW rather than reopened - pressing "Draft with AI" with no provider
+// connected sends the user to Settings, which replaces the plan modal in the shell's single
+// modal slot, and the composer unmounts with the note they had just typed.
+//
+// The module store survives that unmount. The reset did not, so the note came back blank
+// and the tour told them it was still there. This flag is how the two are told apart: the
+// connect flow arms it before reopening the planner, and the composer consumes it once.
+//
+// Deliberately NOT part of ComposerState - it is a one-shot instruction to the next mount,
+// not a field anything renders, and putting it in the rendered state invites a component to
+// branch on "are we resuming" long after the answer stopped being true.
+let resumePending = false
+
+/** Tell the next composer mount to KEEP what is in the store and pick the flow back up.
+ *  Call it before reopening the planner - see `TaskComposer`'s mount effect. */
+export const armResume = () => { resumePending = true }
+
+/** Read and clear the resume flag. One-shot by construction: a second mount after the same
+ *  detour is a fresh open and must reset like any other. */
+export const consumeResume = (): boolean => {
+  const was = resumePending
+  resumePending = false
+  return was
+}
+
 /** Fewest words a title may have. A short title ("Roadmap", "Login bug") names a
  *  SUBJECT and omits the work - it's a label, and on a board tomorrow it tells you
  *  nothing you didn't already know. The same floor is written into the draft prompt

@@ -351,25 +351,106 @@ export const CHOOSER_PROVIDER_IDS: LlmProviderId[] = ['claude', 'codex', 'cursor
  *  so the one choice reads identically wherever it is made. Plain hyphens (user-facing). */
 export const LLM_INTRO_TITLE = 'Choose your AI provider'
 
-/** The shared sub-heading. States the job, the tiny footprint, and the escape hatch in one
- *  breath, in plain language. */
+/** The shared sub-heading. States the job and the escape hatch, and stops.
+ *
+ *  It used to also quote the usage footprint ("well under 1% of your plan") - a THIRD wording
+ *  of a number that `LLM_RECOMMENDED_NOTE` states directly under the grid, in the same
+ *  viewport, as 2%. Three sizes of the same claim, two of them disagreeing, is how a
+ *  reassurance turns into a reason for doubt. The number is made once now, below the tiles. */
 export const LLM_INTRO_BODY =
-  'Meridian uses this to write your hourly summaries and worklogs. It sends about one short request per active hour - well under 1% of your plan with Claude, Codex, or Cursor, so it never eats into your own coding. Pick one, or bring your own API key.'
+  'Meridian uses this to write your hourly summaries and worklogs. Pick a coding agent you already pay for, or bring your own API key.'
 
-/** The badge every recommended CLI carries at the top level. */
+/**
+ * The one question asked before any provider is shown, and the two answers.
+ *
+ * It exists because the old chooser put four tiles in front of someone who had, a moment
+ * earlier, only asked to draft a task. Three of those tiles are useless without a paid
+ * subscription and the fourth was labelled "advanced" - so the screen silently required the
+ * user to know which group they were in before it would help them. Asking outright costs one
+ * click and lets each answer get a screen built for it.
+ *
+ * THE RECOMMENDATION IS A BADGE, NOT A PARAGRAPH. Both answers are legitimate and one of
+ * them is free; ranking them in prose would read as pressure to spend money, and burying the
+ * ranking entirely would leave someone with a Claude subscription on the weaker path for no
+ * reason. A badge states it and gets out of the way.
+ */
+/** The gate's recommendation. Used ONLY where it ranks one thing against another - which,
+ *  on the gate, it does: a paid coding agent is the more accurate path than the free one.
+ *
+ *  It is deliberately NOT the chooser grid's badge any more. All three tiles there carried
+ *  it, and a badge every option wears cannot rank anything: three cards each shouting
+ *  RECOMMENDED just made the row loud. The grid uses the kind labels below instead, which
+ *  say what the tile IS - the real distinction between the three and the fourth. */
 export const LLM_RECOMMENDED_BADGE = 'RECOMMENDED'
 
-/** Why we recommend them - shown once under the recommended row. */
-export const LLM_RECOMMENDED_NOTE =
-  'These run on frontier models through a subscription you already pay for - the most accurate option, and no extra cost.'
+/** How the two paths rank, as the pair of badges BOTH screens show.
+ *
+ *  The gate asks which path you are on; the chooser grid then shows one path's tiles beside
+ *  the other's. Those are the same claim made twice, so they read from one record - a user
+ *  who is told BEST ACCURACY on the question and then sees nothing on the tiles has been
+ *  given a ranking and then had it taken away at the moment they act on it.
+ *
+ *  `badge` is the ranking itself and renders FILLED; `note` is what you get and renders
+ *  outlined. Neither is coloured - see LlmProviderGate's header for why. */
+export interface LlmRank { badge: string; note: string }
+export const LLM_RANK_SUBSCRIPTION: LlmRank = {
+  badge: LLM_RECOMMENDED_BADGE,
+  note: 'BEST ACCURACY',
+}
+export const LLM_RANK_FREE: LlmRank = { badge: 'FREE', note: 'GOOD ACCURACY' }
+
+export const LLM_GATE_TITLE = 'Do you have a Claude, ChatGPT or Cursor subscription?'
+export const LLM_GATE_BODY =
+  'Meridian writes your summaries with an AI engine. It can use a subscription you already pay for, or set you up with a free one.'
+
+export interface LlmGateChoice {
+  value: 'subscription' | 'free'
+  label: string
+  /** The primary badge - the recommendation itself. */
+  badge: string
+  /** The second badge - what you get, in two words. */
+  note: string
+  /** One line naming what happens next, so neither answer is a leap of faith. */
+  detail: string
+}
+
+export const LLM_GATE_CHOICES: LlmGateChoice[] = [
+  {
+    value: 'subscription',
+    ...LLM_RANK_SUBSCRIPTION,
+    label: 'Yes, I have one',
+    detail: 'Claude Code, Codex or Cursor - Meridian runs on the plan you already have.',
+  },
+  {
+    value: 'free',
+    ...LLM_RANK_FREE,
+    label: 'No, set me up',
+    detail: 'A free Groq key, in three steps. No card, no subscription.',
+  },
+]
+
+
+/** The one line under the recommended row.
+ *
+ *  It used to be a 20-word sentence about frontier models and marginal cost, set at 11px -
+ *  which is the size you use for a footnote nobody is expected to read, carrying the one
+ *  fact that decides the question. The real objection to pointing Meridian at a plan you
+ *  already pay for is "will it eat my usage", so that is the whole line now, short enough
+ *  to be set at a readable size. */
+export const LLM_RECOMMENDED_NOTE = 'Meridian uses less than 2% of your daily usage.'
 
 /**
  * The rough share of a plan's usage limit that Meridian's hourly summaries consume - one
  * short request per active hour. Surfaced to reassure users that pointing Meridian at
  * their coding-agent subscription won't eat into their own coding headroom.
+ *
+ * It quotes the SAME figure as `LLM_RECOMMENDED_NOTE` on purpose. The two used to disagree
+ * ("less than 2%" on the grid, "well under 1%" one click later on the detail screen), which
+ * is the kind of thing a user reads as a number chosen to sound good rather than measured.
+ * The higher, more conservative one is the one both say.
  */
 export const USAGE_FOOTPRINT_NOTE =
-  'Meridian sends about one short request per active hour - well under 1% of your plan’s usage limits, so it won’t eat into your own coding.'
+  'About one short request per active hour - less than 2% of your daily usage, so it will not eat into your own coding.'
 
 /**
  * The warning shown wherever a custom endpoint is added or listed.
@@ -409,42 +490,113 @@ export interface CustomVendorPreset {
   hint?: string
 }
 
+/**
+ * GROQ IS THE ONLY PRESET, and that is a product decision rather than a shortlist.
+ *
+ * This list used to carry Gemini, OpenRouter, OpenAI and a free-text "other". Every one of
+ * them made the no-subscription path a configuration exercise: pick a vendor, judge whether
+ * its tier is free, find its key page, then choose a model from a list nobody outside the
+ * team could rank. That is the WRONG question to put in front of someone whose answer to
+ * "do you have a coding-agent subscription" was no - they are here precisely because they
+ * do not want to make this decision.
+ *
+ * So there is exactly one: free, no card, no prompt retention, no training on your data
+ * (see [`GROQ`]). One vendor means the whole screen can be a three-step walkthrough with a
+ * single paste field instead of a form - which is what `<GroqSetup>` renders.
+ *
+ * The cost of dropping "other" is real and worth naming: an advanced user can no longer
+ * point Meridian at an arbitrary OpenAI-compatible endpoint from the UI. The registry
+ * underneath is unchanged and still holds any endpoint added by an older build, so nobody's
+ * existing configuration breaks - only the ADD path narrowed.
+ */
 export const CUSTOM_VENDOR_PRESETS: CustomVendorPreset[] = [
-  {
-    id: 'gemini',
-    name: 'Google Gemini',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    keyUrl: 'https://aistudio.google.com/apikey',
-    hint: 'Has a free tier. Verified against Meridian’s schemas.',
-  },
   {
     id: 'groq',
     name: 'Groq',
     baseUrl: 'https://api.groq.com/openai/v1',
     keyUrl: 'https://console.groq.com/keys',
-    hint: 'Has a free tier.',
-  },
-  {
-    id: 'openrouter',
-    name: 'OpenRouter',
-    baseUrl: 'https://openrouter.ai/api/v1',
-    keyUrl: 'https://openrouter.ai/keys',
-    hint: 'Free models exist (ids ending in :free). Paid models bill per call.',
-  },
-  {
-    id: 'openai',
-    name: 'OpenAI',
-    baseUrl: 'https://api.openai.com/v1',
-    keyUrl: 'https://platform.openai.com/api-keys',
-    hint: 'Paid only - every call is billed.',
-  },
-  {
-    id: 'other',
-    name: 'Other (OpenAI-compatible)',
-    baseUrl: '',
-    hint: 'Any endpoint serving /chat/completions.',
+    hint: 'Free. No card required.',
   },
 ]
+
+/**
+ * Everything the no-subscription path says and points at, in one record.
+ *
+ * The privacy claims are LINKED, not just asserted. This screen asks someone to paste a key
+ * on the strength of a sentence about data handling, and a sentence with no source is
+ * exactly the thing a careful user should not accept - so each claim carries the vendor's
+ * own page next to it, and the wording stays close enough to that page to survive being
+ * checked against it.
+ *
+ * All hyphens plain, per the user-facing text rule.
+ */
+export const GROQ = {
+  vendor: 'groq',
+  /** The name stored on the registry row, and what the rest of the app then calls it. */
+  name: 'Groq',
+  baseUrl: 'https://api.groq.com/openai/v1',
+  signUpUrl: 'https://console.groq.com/login',
+  keyUrl: 'https://console.groq.com/keys',
+  privacyUrl: 'https://groq.com/privacy-policy/',
+  termsUrl: 'https://groq.com/terms-of-sale/',
+  /** Shown at the very top - the single fact that makes this option make sense. */
+  freeBadge: 'FREE',
+  headline: 'Groq Cloud',
+  blurb: 'A free API key, and Meridian handles the rest. No card, no subscription.',
+  /** The three claims, each with the page that backs it. */
+  trust: [
+    'Groq does not train any model on what you send.',
+    'Prompts and replies are not retained after the request is answered.',
+    'Only the hour Meridian is summarising is ever sent - never your files or your screen.',
+  ],
+  /** Keys look like `gsk_…` - shown as a placeholder so a wrong paste is obvious. */
+  keyPlaceholder: 'gsk_…',
+} as const
+
+/**
+ * Which Groq model Meridian picks, best first - matched as a PREFIX against whatever the
+ * endpoint's own `/models` actually returns.
+ *
+ * Asking the endpoint rather than hardcoding one id is the whole point. Groq's catalogue
+ * turns over quickly, and a hardcoded id that has been retired fails at the first real hour
+ * rather than at setup - the worst possible place. Prefixes (not exact ids) so a dated
+ * revision like `…-0905` still matches its family.
+ *
+ * Order is by structured-output support, which is the only property that matters here: the
+ * pipeline asks for JSON conforming to a schema, and an endpoint that cannot do that is
+ * rejected by `production_eligible` no matter how good its prose is.
+ */
+export const GROQ_MODEL_PREFERENCE: string[] = [
+  'moonshotai/kimi-k2',
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+  'llama-3.3-70b',
+  'meta-llama/llama-4-maverick',
+  'meta-llama/llama-4-scout',
+]
+
+/** Model families that cannot answer a chat completion at all - speech, embeddings and the
+ *  safety classifiers Groq lists alongside the chat models. Excluded before ranking so a
+ *  fallback can never land on one. */
+const GROQ_NON_CHAT = ['whisper', 'tts', 'embed', 'guard', 'prompt-guard']
+
+/**
+ * Choose the model to configure from the ids the endpoint reported.
+ *
+ * Falls back to the first usable id when nothing preferred is on offer, and to `null` only
+ * when the list is empty or entirely non-chat - which the caller must treat as "could not
+ * set this up", never as "use the default", since there is no default to use.
+ */
+export function pickGroqModel(available: string[]): string | null {
+  const usable = available.filter(
+    (m) => !GROQ_NON_CHAT.some((bad) => m.toLowerCase().includes(bad)),
+  )
+  for (const want of GROQ_MODEL_PREFERENCE) {
+    const hit = usable.find((m) => m.toLowerCase().startsWith(want.toLowerCase()))
+    if (hit) return hit
+  }
+  return usable[0] ?? null
+}
 
 export function customVendorPreset(id: string): CustomVendorPreset | undefined {
   return CUSTOM_VENDOR_PRESETS.find(v => v.id === id)

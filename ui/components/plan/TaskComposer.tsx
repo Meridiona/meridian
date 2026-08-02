@@ -16,17 +16,23 @@
 // --gen-* tokens are §9.2's reserved "a model is generating right now" treatment,
 // which is exactly what's happening.
 
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Tracker } from '@/lib/integrations'
 import { LOCAL_PROVIDER } from '@/lib/api-types'
+import { load } from '@/lib/bridge'
 import {
   useTaskComposer, setNote, setTitle, setDescription, setIssueType, setTarget,
-  draftFromNote, createTask, canCreate, resetComposer, titleWords, MIN_TITLE_WORDS,
+  draftFromNote, createTask, canCreate, resetComposer, consumeResume, titleWords, MIN_TITLE_WORDS,
   boardProviderFor, isBoardTarget,
 } from '@/components/plan/useTaskComposer'
 import { FOCUS, PRIMARY_BTN } from '@/components/plan/planStyles'
+import { AiEngineNotice } from '@/components/plan/AiEngineNotice'
 import { GeneratingBar } from '@/components/GeneratingBar'
 import { ProviderIcon } from '@/components/ProviderIcon'
+
+/** Floor on the "checking your AI" beat — see `draftOrConnect`. */
+const CHECK_MIN_MS = 750
+const wait = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
 const INPUT = 'w-full px-3 py-2 rounded-lg mt-body'
 const inputStyle = {
@@ -69,9 +75,27 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
   // A fresh composer every time it opens — a stale half-typed task from an hour ago is
   // never what the user wants back. (The store's job is surviving an unmount DURING a
   // flow, not resurrecting an abandoned one.)
+  //
+  // The ONE exception is a resume: pressing "Draft with AI" with no provider sends the user
+  // to Settings, which takes the shell's single modal slot and unmounts this. Coming back
+  // is the same flow continuing, not a new open — so the note is kept and the draft they
+  // already asked for runs on its own. Without this the reset below wiped the note and the
+  // user was returned to an empty box having been promised otherwise.
   useEffect(() => {
+    if (consumeResume()) {
+      // Whatever the health probe last thought is stale by definition - they just
+      // connected one. Clear the notice so it cannot flash back over the fields.
+      setNoProvider(false)
+      setShowAiNotice(false)
+      // A beat, so the planner has visibly reappeared before it starts doing things by
+      // itself. Drafting in the same frame as the modal opens reads as a glitch rather
+      // than as the app picking up where it left off.
+      const t = setTimeout(() => { if (s.note.trim()) draftFromNote() }, 650)
+      return () => clearTimeout(t)
+    }
     resetComposer()
     noteRef.current?.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // A tracker can be disconnected in Settings while this composer sits open, stranding
@@ -92,8 +116,63 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.created])
 
+  // Can "Draft with AI" work at all? On a fresh install nobody has connected a
+  // provider yet, and the draft call would come back as a red error string under
+  // the button — a dead end at the exact moment a new user is being asked to
+  // trust the feature.
+  //
+  // "Connected" is APP state, not what happens to be on the disk: the provider
+  // the user picked in Settings, plus whether its last real test passed. That is
+  // exactly the ladder `classify_provider_health` already runs (not installed, or
+  // last test Failed → `ok: false`), surfaced as `get_health`'s `llm_provider_ok`
+  // — so this reuses it rather than inventing a second, disagreeing definition of
+  // connected. An earlier version asked `detect_llm_providers` whether ANY CLI
+  // existed anywhere, which called a signed-out user connected because the binary
+  // was on their machine.
+  const [noProvider, setNoProvider] = useState(false)
+  const probeProviders = useCallback(async () => {
+    try {
+      const h = await load<{ llm_provider_ok?: boolean }>('/api/health', 'get_health')
+      const bad = h?.llm_provider_ok === false
+      setNoProvider(bad)
+      return !bad
+    } catch {
+      // Probe failed - assume it works. Blocking the button on a failed probe
+      // would break drafting for reasons that have nothing to do with the model.
+      setNoProvider(false)
+      return true
+    }
+  }, [])
+  useEffect(() => { if (hero) void probeProviders() }, [hero, probeProviders])
+
+  /** Draft, or explain why it cannot run yet.
+   *
+   *  Re-probes before giving up: they may have connected one in Settings since
+   *  this composer mounted, and telling a user to set up something they just set
+   *  up is worse than the original dead end.
+   *
+   *  Shows [`AiEngineNotice`] rather than jumping straight to Settings — the jump
+   *  is then the user's own click, on a button that says what it does.
+   *
+   *  PACED, not instant. The probe answers in single-digit milliseconds, so
+   *  without the floor below the notice materialises in the same frame as the
+   *  click — which reads as the form glitching rather than as an answer to what
+   *  was just pressed. The button holds a "Checking…" state for long enough to
+   *  be read, and the notice then fades in over its own ~600ms. */
+  const [showAiNotice, setShowAiNotice] = useState(false)
+  const [checking, setChecking] = useState(false)
+  const draftOrConnect = useCallback(async () => {
+    if (!noProvider) { draftFromNote(); return }
+    setChecking(true)
+    const [ok] = await Promise.all([probeProviders(), wait(CHECK_MIN_MS)])
+    setChecking(false)
+    if (ok) { draftFromNote(); return }
+    setShowAiNotice(true)
+  }, [noProvider, probeProviders])
+
   const drafting = s.phase === 'drafting'
   const creating = s.phase === 'creating'
+  const busy = drafting || checking
   const ready = canCreate(s)
   const words = titleWords(s.title)
   // Null exactly when no tracker is connected - the whole "Where" block is then moot.
@@ -114,15 +193,27 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
         {hero && (
           <div className="mb-4">
             <p className="mt-title" style={{ color: 'var(--t-title)' }}>What are you working on today?</p>
+            {/* One short line. The old subtitle spent two sentences explaining
+                the form's two paths before the user had used either — the note
+                box teaches the first by being there, and the fields below teach
+                the second. */}
             <p className="mt-body-sm mt-1.5" style={{ color: 'var(--t-faint)' }}>
-              Jot it down however it comes out - we&apos;ll shape it into a task. Or just fill the fields in yourself.
+              One line is enough - Meridian turns it into a task.
             </p>
           </div>
         )}
 
         {/* ── The note → AI draft ─────────────────────────────────────────── */}
-        <FieldLabel>{hero ? 'Your note' : 'What are you working on?'}</FieldLabel>
+        {/* "In your own words" rather than "Your note" — the label's job is to
+            say how to write, not to name the box. "Note" reads as a field to
+            fill in correctly, which is the opposite of what this one wants. */}
+        <FieldLabel>{hero ? 'In your own words' : 'What are you working on?'}</FieldLabel>
+        {/* data-tour markers: inert hooks the first-run walkthrough points at.
+            Attributes rather than exported refs or a `tour` prop on purpose —
+            they add no behaviour, no branch and no import here, so this form
+            stays a form. See ui/components/tutorial/script.ts. */}
         <textarea
+          data-tour="task-note"
           ref={noteRef} rows={2} value={s.note} onChange={e => setNote(e.target.value)}
           disabled={drafting}
           placeholder="fix the flaky login test…"
@@ -130,17 +221,30 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
           style={{ ...inputStyle, resize: 'vertical', opacity: drafting ? 0.6 : 1 }}
         />
         <div className="flex justify-end mt-2">
-          <button onClick={draftFromNote} disabled={drafting || !s.note.trim()}
+          <button data-tour="task-draft" onClick={draftOrConnect} disabled={busy || !s.note.trim()}
+            title={noProvider ? 'Connect an AI provider to draft this for you' : undefined}
             className={`mt-body-sm inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg ${FOCUS}`}
             style={{
               fontWeight: 700, color: '#fff', background: 'var(--color-state-proposal)',
-              opacity: drafting || !s.note.trim() ? 0.5 : 1,
-              cursor: drafting || !s.note.trim() ? 'default' : 'pointer',
+              opacity: busy || !s.note.trim() ? 0.5 : 1,
+              cursor: busy || !s.note.trim() ? 'default' : 'pointer',
               boxShadow: '0 8px 22px -10px var(--color-state-proposal)',
             }}>
-            <span aria-hidden>✨</span> {drafting ? 'Drafting…' : 'Draft it'}
+            {/* "Draft with AI", not "Draft it" - the old label never said WHO
+                was drafting, so the one button on this form that spends a model
+                call read like a formatting helper. */}
+            <span aria-hidden>✨</span> {drafting ? 'Drafting…' : checking ? 'Checking your AI…' : 'Draft with AI'}
           </button>
         </div>
+
+        {showAiNotice && (
+          <AiEngineNotice
+            onConnect={() => {
+              setShowAiNotice(false)
+              window.dispatchEvent(new Event('meridian:connect-ai'))
+            }}
+          />
+        )}
 
         {drafting && (
           <div className="mt-3">
@@ -160,7 +264,18 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
           </p>
         )}
 
-        <div className="my-4 border-t" style={{ borderColor: 'var(--t-hair)' }} />
+        {/* The rule between the two halves, with the choice written ON it. A
+            bare line reads as "next section", so the fields below looked like
+            more of the form to fill in after drafting - when they are in fact
+            the ALTERNATIVE to it. Saying so here is the difference between a
+            user who thinks the AI step is mandatory and one who knows it is not. */}
+        <div className="my-4 flex items-center gap-3" aria-hidden>
+          <span className="flex-1 border-t" style={{ borderColor: 'var(--t-hair)' }} />
+          <span className="mt-body-sm shrink-0" style={{ color: 'var(--t-faint-2)' }}>
+            or write it yourself
+          </span>
+          <span className="flex-1 border-t" style={{ borderColor: 'var(--t-hair)' }} />
+        </div>
 
         {/* ── The task itself — ALWAYS editable, never gated on the draft ──── */}
         <div className={`rounded-xl ${drafting ? 'mer-gen-shimmer p-3 -m-0.5' : ''}`}
@@ -171,6 +286,7 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
           } : undefined}>
           <FieldLabel drafted={s.titleDrafted}>Title</FieldLabel>
           <input
+            data-tour="task-title"
             value={s.title} onChange={e => setTitle(e.target.value)}
             placeholder="What needs doing?"
             className={`${INPUT} ${FOCUS}`} style={inputStyle}
@@ -255,7 +371,7 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
       {/* ── Commit. Green = you committed it (violet is reserved for AI). ───── */}
       <div className={hero ? 'mt-4' : 'shrink-0 pt-3 mt-3 border-t'}
         style={hero ? undefined : { borderColor: 'var(--t-hair)' }}>
-        <button onClick={() => createTask(day)} disabled={!ready}
+        <button data-tour="task-add" onClick={() => createTask(day)} disabled={!ready}
           className={`w-full ${PRIMARY_BTN} ${FOCUS}`}
           style={{
             background: 'var(--color-state-approved)', color: '#fff',

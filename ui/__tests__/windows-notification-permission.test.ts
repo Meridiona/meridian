@@ -58,6 +58,29 @@ describe('windows notification permission onboarding', () => {
   it('keeps a notifications entry the Windows card can render', () => {
     const notif = declBlock(readSrc('app/setup/data.ts'), "id: 'notifications'")
     expect(notif).toContain("pane: 'notifications'")
-    expect(notif).toContain('required: false')
+  })
+
+  // `required` on a PermissionMeta is BADGE COPY ONLY — it picks the
+  // REQUIRED/OPTIONAL chip on the card. It is deliberately not wired to any
+  // gate: what can actually block Continue is the step's own `canNext`, which
+  // on Windows is unconditional (asserted above) and on macOS checks only
+  // accessibility + screen.
+  //
+  // This used to assert `required: false`, which read as "notifications cannot
+  // block setup" — but it was pinning the chip's wording to prove a gating
+  // property it never controlled. Flipping the chip to REQUIRED (a deliberate
+  // copy change) then failed a test about gating, for a reason unrelated to
+  // gating. This asserts the decoupling itself instead.
+  it('never lets the notifications card gate a step, whatever its badge says', () => {
+    const data = readSrc('app/setup/data.ts')
+    const steps = readSrc('app/setup/steps.tsx')
+    const notif = declBlock(data, "id: 'notifications'")
+    // Whichever way the badge reads, it must be a bare literal — not derived
+    // from live permission state, which would make it a gate in disguise.
+    expect(notif).toMatch(/required: (true|false),/)
+    // And no step's canNext may consult notification state.
+    const macGate = declBlock(steps, 'const PERMISSIONS_STEP')
+    expect(macGate).toContain('canNext:')
+    expect(macGate).not.toContain('perms.notifications')
   })
 })

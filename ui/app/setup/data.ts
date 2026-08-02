@@ -30,6 +30,12 @@ export interface PermissionMeta {
   required: boolean
 }
 
+// ── Welcome screen — early-customer badge ─────────────────────────────────────
+// Hand-updated placeholder, not a live counter: no shared signup-count source
+// exists yet (no users table, no waitlist API - Clerk's frontend SDK can't
+// report a total). Bump this by hand as the customer base grows.
+export const EARLY_CUSTOMER_NUMBER = 42
+
 export const PERMISSIONS: PermissionMeta[] = [
   {
     id: 'accessibility', icon: 'access', name: 'Accessibility', pane: 'accessibility', required: true,
@@ -40,7 +46,11 @@ export const PERMISSIONS: PermissionMeta[] = [
     desc: 'Reads on-screen text to understand your work. Pixels/video are never stored; extracted text stays on-device.',
   },
   {
-    id: 'notifications', icon: 'bell', name: 'Notifications', pane: 'notifications', required: false,
+    // Badge-level "required" only (matches the other two's REQUIRED chip) -
+    // NOT wired into the step's `canNext` gate (PERMISSIONS_STEP below still
+    // only checks accessibility+screen), so it doesn't block Continue. Flip
+    // that too if notifications should actually block setup completion.
+    id: 'notifications', icon: 'bell', name: 'Notifications', pane: 'notifications', required: true,
     desc: 'Nudges you when a worklog draft is ready or your plan needs attention. Quiet by default - you control every type in Settings.',
   },
 ]

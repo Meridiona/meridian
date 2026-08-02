@@ -260,23 +260,32 @@ function AddForm({ onAdd, onCancel }: {
       gap: 10, padding: '13px 14px', borderRadius: 13,
       background: 'var(--t-box)', border: '1px solid var(--t-card-border)',
     }}>
-      <label className="flex flex-col" style={{ gap: 4 }}>
+      {/* A one-option dropdown is a control that cannot be used - since the preset list was
+          cut to Groq alone (see CUSTOM_VENDOR_PRESETS), the vendor is simply stated. The
+          select comes back on its own the day a second preset is added. */}
+      {CUSTOM_VENDOR_PRESETS.length > 1 ? (
+        <label className="flex flex-col" style={{ gap: 4 }}>
+          <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t-faint)' }}>
+            Provider
+          </span>
+          <select value={vendor} onChange={(e) => pickVendor(e.target.value)}
+            style={{
+              fontSize: 11.5, padding: '6px 8px', borderRadius: 7,
+              border: '1px solid var(--t-ctrl-border)', background: 'var(--t-ctrl)', color: 'var(--t-title)',
+            }}>
+            {CUSTOM_VENDOR_PRESETS.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </label>
+      ) : (
         <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t-faint)' }}>
-          Provider
+          {preset?.name}
         </span>
-        <select value={vendor} onChange={(e) => pickVendor(e.target.value)}
-          style={{
-            fontSize: 11.5, padding: '6px 8px', borderRadius: 7,
-            border: '1px solid var(--t-ctrl-border)', background: 'var(--t-ctrl)', color: 'var(--t-title)',
-          }}>
-          {CUSTOM_VENDOR_PRESETS.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-      </label>
+      )}
       {preset?.hint && (
         <p style={{ fontSize: 10.5, lineHeight: 1.4, color: 'var(--t-faint)', marginTop: -4 }}>{preset.hint}</p>
       )}
 
-      <Field label="Name" value={name} onChange={setName} placeholder="Gemini Flash" />
+      <Field label="Name" value={name} onChange={setName} placeholder="Groq" />
       {urlEditable && (
         <Field label="Base URL" value={baseUrl} onChange={(v) => { setBaseUrl(v); resetModelDiscovery() }} mono
           placeholder="https://host/v1" />

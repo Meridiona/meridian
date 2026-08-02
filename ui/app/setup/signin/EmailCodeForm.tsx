@@ -8,10 +8,46 @@
 // replaced. Errors come back as `{ error }`, not thrown.
 
 import { useEffect, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import { useSignIn, useSignUp } from '@clerk/react'
 import { Btn, PermIcon, Spinner } from '../atoms'
-import { TextInput } from '@/components/ui/TextInput'
 import { clerkErrorCode, clerkErrorMessage } from './errors'
+
+/** A bespoke input for this form rather than the shared `<TextInput>` (used
+ *  elsewhere for compact settings rows, 12px/5px padding) - an auth form is
+ *  the one place in the wizard that warrants its own larger, more deliberate
+ *  input treatment. `focusRing` is applied via onFocus/onBlur rather than a
+ *  CSS class since this file has no stylesheet of its own. */
+function AuthInput(props: {
+  value: string
+  onChange: (v: string) => void
+  onEnter: () => void
+  type: 'email' | 'text'
+  placeholder: string
+  style?: CSSProperties
+}) {
+  return (
+    <input
+      type={props.type}
+      inputMode={props.type === 'text' ? 'numeric' : undefined}
+      value={props.value}
+      onChange={(e) => props.onChange(e.target.value)}
+      onKeyDown={(e) => e.key === 'Enter' && props.onEnter()}
+      placeholder={props.placeholder}
+      autoFocus
+      style={{
+        width: '100%', fontSize: 14, padding: '11px 14px',
+        background: 'var(--t-input)', color: 'var(--t-title)',
+        border: '1px solid var(--t-input-border)', borderRadius: 10,
+        outline: 'none', fontFamily: 'inherit', textAlign: 'center',
+        transition: 'border-color .14s',
+        ...props.style,
+      }}
+      onFocus={(e) => { e.target.style.borderColor = 'var(--color-state-proposal)' }}
+      onBlur={(e) => { e.target.style.borderColor = 'var(--t-input-border)' }}
+    />
+  )
+}
 
 /** Standard OTP-industry resend cooldown (Google/GitHub/Stripe et al. all
  *  gate resend at ~30s) — stops a mis-tap or impatience from spamming Clerk's
@@ -179,61 +215,68 @@ export function EmailCodeForm() {
     }
   }
 
-  return (
-    <div className="flex flex-col items-center" style={{ gap: 14, padding: '6px 0 2px', textAlign: 'center' }}>
-      <span className="flex items-center justify-center shrink-0 mer-pop" style={{
-        width: 44, height: 44, borderRadius: 13,
-        background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)',
-        color: 'var(--color-state-proposal)',
-      }}>
-        <PermIcon icon={phase === 'email' ? 'mail' : 'shield'} size={19} />
-      </span>
+  const canSubmit = phase === 'email' ? email.includes('@') : code.trim().length > 0
 
-      <div className="flex flex-col items-center" style={{ gap: 10 }}>
-        {phase === 'email' ? (
-          <TextInput type="email" value={email} onChange={setEmail} placeholder="you@example.com" width={260} />
-        ) : (
-          <>
-            <p style={{ fontSize: 11.5, color: 'var(--t-muted)' }}>
-              Enter the code we sent to <span style={{ color: 'var(--t-title)', fontWeight: 500 }}>{email}</span>.
-            </p>
-            <TextInput type="text" value={code} onChange={setCode} placeholder="123456" width={260} />
-          </>
-        )}
-        <div className="flex items-center justify-center" style={{ gap: 10 }}>
+  return (
+    <div className="flex flex-col items-center" style={{ width: '100%', maxWidth: 340, margin: '0 auto' }}>
+      <div className="w-full" style={{
+        borderRadius: 16, padding: '26px 26px 22px', border: '0.5px solid var(--t-card-border)',
+        background: 'var(--t-card)', boxShadow: '0 1px 3px rgba(0,0,0,.05)',
+      }}>
+        <div className="flex flex-col items-center mer-pop" style={{ gap: 5, marginBottom: 20, textAlign: 'center' }}>
+          <span className="flex items-center justify-center shrink-0" style={{
+            width: 42, height: 42, borderRadius: 13, marginBottom: 4,
+            background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)',
+            color: 'var(--color-state-proposal)',
+          }}>
+            <PermIcon icon={phase === 'email' ? 'mail' : 'shield'} size={19} />
+          </span>
+          <p style={{ fontSize: 14.5, fontWeight: 600, color: 'var(--t-title)' }}>
+            {phase === 'email' ? "What's your email?" : 'Check your inbox'}
+          </p>
+          <p style={{ fontSize: 12, lineHeight: 1.45, color: 'var(--t-muted)' }}>
+            {phase === 'email'
+              ? "No password needed - we'll email you a one-time code."
+              : <>Enter the code sent to <span style={{ fontWeight: 600, color: 'var(--t-title)' }}>{email}</span></>}
+          </p>
+        </div>
+
+        <div className="flex flex-col" style={{ gap: 12 }}>
+          {phase === 'email' ? (
+            <AuthInput type="email" value={email} onChange={setEmail} onEnter={() => canSubmit && !busy && submitEmail()} placeholder="you@example.com" />
+          ) : (
+            <AuthInput type="text" value={code} onChange={setCode} onEnter={() => canSubmit && !busy && submitCode()} placeholder="123456"
+              style={{ fontSize: 20, fontWeight: 600, letterSpacing: '.4em', paddingLeft: 20 }} />
+          )}
+
           <Btn
-            size="sm"
             onClick={() => (phase === 'email' ? submitEmail() : submitCode())}
-            disabled={busy || (phase === 'email' ? !email.includes('@') : code.trim().length === 0)}
+            disabled={busy || !canSubmit}
+            style={{ width: '100%', padding: '11px', fontSize: 13.5 }}
           >
-            {busy ? <Spinner size={14} width={1.8} color="#fff" /> : phase === 'email' ? 'Continue' : 'Verify'}
+            {busy ? <Spinner size={14} width={1.8} color="#fff" /> : phase === 'email' ? 'Send code' : 'Verify & continue'}
           </Btn>
+
           {phase === 'code' && (
-            <>
+            <div className="flex items-center justify-center" style={{ gap: 10, fontSize: 11.5 }}>
               <Btn variant="ghost" size="sm" disabled={busy || resendCooldownS > 0} onClick={resendCode}>
-                {resendCooldownS > 0 ? `Resend code (${resendCooldownS}s)` : 'Resend code'}
+                {resendCooldownS > 0 ? `Resend in ${resendCooldownS}s` : 'Resend code'}
               </Btn>
+              <span style={{ color: 'var(--t-faint)' }}>·</span>
               <Btn variant="ghost" size="sm" disabled={busy} onClick={() => { setPhase('email'); setCode(''); setErr('') }}>
                 Use a different email
               </Btn>
-            </>
+            </div>
           )}
         </div>
-      </div>
-      {err && <p style={{ fontSize: 11, color: 'var(--color-state-pending)' }}>{err}</p>}
 
-      <div className="flex items-start" style={{
-        gap: 9, marginTop: 2, padding: '11px 13px', maxWidth: 320, textAlign: 'left',
-        background: 'var(--t-box)', border: '0.5px solid var(--t-card-border)', borderRadius: 10,
-      }}>
-        <span className="shrink-0" style={{ color: 'var(--color-state-approved)', marginTop: 1 }}>
-          <PermIcon icon="shield" size={14} />
-        </span>
-        <p style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--t-muted)' }}>
-          We never see your screen, OCR text, or activity - none of it leaves your Mac. Signing in only tells
-          us which teammate is using Meridian; your email is never sold or shared with outside companies.
-        </p>
+        {err && <p style={{ fontSize: 11, color: 'var(--color-state-pending)', textAlign: 'center', marginTop: 10 }}>{err}</p>}
       </div>
+
+      <p className="flex items-center" style={{ gap: 6, marginTop: 14, fontSize: 11, lineHeight: 1.4, color: 'var(--t-faint)', textAlign: 'center' }}>
+        <span className="shrink-0" style={{ color: 'var(--color-state-approved)' }}><PermIcon icon="shield" size={12} /></span>
+        We never see your screen or activity - this only tells us who&apos;s signed in.
+      </p>
     </div>
   )
 }

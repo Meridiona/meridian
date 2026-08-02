@@ -30,6 +30,191 @@ export const DISPLAY: CSSProperties = {
   letterSpacing: '-.03em',
 }
 
+// ── Brand mark (the real app icon, not a colored dot) ────────────────────────
+// Renders `ui/public/meridian-logo.png`, cropped in to the mark itself (same
+// idea as the tray popover's `.brand-mark`, tray/src/style.css). The mark's
+// pixel bounding box is ~60.5% of the 512x512 canvas BUT is not centered on
+// it - it sits ~17px above true centre (measured directly from the PNG:
+// content spans x:100-409, y:85-394). backgroundPosition:center crops around
+// the canvas's geometric centre, not the mark's, so the old 166% zoom (sized
+// to exactly match the bbox width) clipped the top of the outer rings. 146%
+// is the largest zoom that still keeps the full off-centre bbox inside the
+// crop window on every side.
+export function Logo({ size = 30 }: { size?: number }) {
+  return (
+    <span aria-hidden="true" className="shrink-0" style={{
+      width: size, height: size, borderRadius: size / 3.6,
+      backgroundImage: 'url(/meridian-logo.png)',
+      backgroundSize: '146% 146%', backgroundPosition: 'center', backgroundRepeat: 'no-repeat',
+    }} />
+  )
+}
+
+// ── OS permission-toggle preview ──────────────────────────────────────────────
+// A small illustrative mock of "Meridian" as it appears, switched on, in the
+// OS's own permissions list — not a captured screenshot (no access to either
+// OS's real UI here), reconstructed from the real macOS System Settings panes
+// (Privacy & Security → Accessibility / Screen & System Audio Recording -
+// Notifications uses the same list-of-apps-with-toggles structure on macOS
+// too, so it reuses the same template) to read as "this is what you'll see"
+// rather than a generic illustration. Windows never shows Accessibility/Screen
+// Recording at all (no TCC consent analogue there), so it only ever needs the
+// simpler single-row preview for Notifications.
+//
+// Font sizes here run a couple of points bigger than a literal 1:1 shrink of
+// the real System Settings pane would use - at this card's actual on-screen
+// size a true-to-scale reproduction (8-9px type) read as barely legible, not
+// authentically tiny.
+const MAC_PANE_COPY: Record<'accessibility' | 'screen' | 'notifications', { title: string; blurb: string; others: string[] }> = {
+  accessibility: {
+    title: 'Accessibility',
+    blurb: 'Allow the applications below to control your computer.',
+    others: ['Terminal', 'Google Chrome'],
+  },
+  screen: {
+    title: 'Screen & System Audio Recording',
+    blurb: 'Allow the applications below to record the content of your screen.',
+    others: ['Terminal', 'Google Chrome'],
+  },
+  notifications: {
+    title: 'Notifications',
+    blurb: 'Allow the applications below to send notifications.',
+    others: ['Terminal', 'Google Chrome'],
+  },
+}
+
+function MacToggleOn() {
+  return (
+    <span aria-hidden="true" className="flex items-center shrink-0" style={{
+      width: 32, height: 19, borderRadius: 99, background: '#0A84FF', padding: 2, justifyContent: 'flex-end',
+    }}>
+      <span style={{ width: 15, height: 15, borderRadius: 99, background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,.25)' }} />
+    </span>
+  )
+}
+
+/** Reconstructed macOS System Settings pane (header chevrons, title, blurb,
+ *  and the app list) - used for all three permissions on macOS. Every OTHER
+ *  app in the list is a blurred, generic placeholder (never a real app's
+ *  name/icon - not what was in the reference screenshots, genericised on
+ *  purpose, and the SAME two placeholders for every permission so all three
+ *  panes have identical structure); the Meridian row is the one thing left
+ *  sharp and highlighted so the eye lands on it immediately.
+ *
+ *  Fills the full height of its container (`height:'100%'`, the app list
+ *  `flex:1`) rather than sizing to content - the three permission cards are
+ *  equal height (`items-stretch` in PermissionsBody), so without this the
+ *  pane itself would end up a different visible size in each card depending
+ *  on how much text its title/blurb wrapped to. */
+function MacSettingsPanePreview({ permissionId }: { permissionId: 'accessibility' | 'screen' | 'notifications' }) {
+  const copy = MAC_PANE_COPY[permissionId]
+  return (
+    <div className="w-full flex flex-col" style={{
+      height: '100%', borderRadius: 10, overflow: 'hidden',
+      border: '0.5px solid var(--t-card-border)', background: '#fff',
+    }}>
+      <div className="flex items-center shrink-0" style={{ gap: 7, padding: '6px 10px', background: '#F0F0F1' }}>
+        <span style={{
+          width: 16, height: 16, borderRadius: 99, background: '#fff', border: '0.5px solid #d2d2d7',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#1d1d1f', lineHeight: 1,
+        }}>‹</span>
+        <span style={{
+          width: 16, height: 16, borderRadius: 99, background: '#fff', border: '0.5px solid #e5e5e7',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#c7c7cc', lineHeight: 1,
+        }}>›</span>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: '#1d1d1f', marginLeft: 2 }}>{copy.title}</span>
+      </div>
+
+      <p className="shrink-0" style={{ fontSize: 10.5, lineHeight: 1.35, color: '#48484a', padding: '5px 10px 4px' }}>{copy.blurb}</p>
+
+      <div className="flex flex-col" style={{ flex: 1, margin: '2px 8px 7px', borderRadius: 8, overflow: 'hidden', background: '#F0F0F1' }}>
+        {copy.others.map((name) => (
+          <div key={name} className="flex items-center shrink-0" style={{
+            gap: 8, padding: '5px 10px', borderBottom: '0.5px solid rgba(0,0,0,.07)',
+            filter: 'blur(2px)', opacity: 0.5,
+          }}>
+            <span style={{ width: 16, height: 16, borderRadius: 4, background: '#c7c7cc', flexShrink: 0 }} />
+            <span style={{ flex: 1, fontSize: 10.5, color: '#1d1d1f' }}>{name}</span>
+            <MacToggleOn />
+          </div>
+        ))}
+        {/* Meridian - sharp and tinted so it visually "pops" out from the
+           blurred rows above it. A bigger icon/text/padding (not a transform
+           scale) makes it read as "larger" without risking an overflow past
+           the pane's own rounded corners - a scale() here used to spill the
+           toggle out past the card edge. flex:1 so it absorbs whatever height
+           the (equal-length, but wrap-sensitive) blurred rows above don't. */}
+        <div className="flex items-center" style={{
+          flex: 1, gap: 9, padding: '7px 11px', position: 'relative', zIndex: 1, borderRadius: 8,
+          background: 'color-mix(in srgb, var(--color-state-proposal) 11%, #fff)',
+          boxShadow: 'inset 0 0 0 1.5px color-mix(in srgb, var(--color-state-proposal) 50%, transparent)',
+        }}>
+          <Logo size={19} />
+          <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: '#1d1d1f' }}>Meridian</span>
+          <MacToggleOn />
+        </div>
+      </div>
+
+      <div className="flex items-center shrink-0" style={{ gap: 6, padding: '0 8px 6px' }}>
+        {['+', '−'].map((glyph) => (
+          <span key={glyph} style={{
+            width: 17, height: 17, borderRadius: 3, background: '#F0F0F1', border: '0.5px solid #e5e5e7',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#48484a', lineHeight: 1,
+          }}>{glyph}</span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** The simple single-row preview - used for Notifications on Windows only now
+ *  (macOS Notifications uses `MacSettingsPanePreview` like the other two).
+ *  Also fills its container height, centering the row vertically, so it
+ *  matches whatever height the (equal-height, `items-stretch`) sibling cards
+ *  end up at. */
+function SimpleTogglePreview({ os }: { os: 'macos' | 'windows' }) {
+  const isWin = os === 'windows'
+  return (
+    <div className="flex flex-col items-center justify-center" style={{ gap: 6, width: '100%', height: '100%' }}>
+      <div className="flex items-center" style={{
+        gap: 10, width: '100%', padding: '9px 12px',
+        borderRadius: isWin ? 6 : 10,
+        background: 'var(--t-box)', border: '0.5px solid var(--t-card-border)',
+      }}>
+        <Logo size={22} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--t-title)', lineHeight: 1.2 }}>Meridian</p>
+          {/* Windows Settings rows carry a subtext line (publisher/path) the
+             macOS list doesn't - the detail that makes each read as its own
+             OS rather than a reskinned copy of the other. */}
+          {isWin && <p style={{ fontSize: 10.5, color: 'var(--t-faint)', lineHeight: 1.2, marginTop: 1 }}>Meridian.exe</p>}
+        </div>
+        {/* macOS toggle: fully pill-shaped track, system blue when on.
+           Windows toggle: flatter rounded-rect track, accent blue when on -
+           the two OSes' actual toggle shapes differ and this keeps that. */}
+        <span aria-hidden="true" className="flex items-center shrink-0" style={{
+          width: isWin ? 42 : 34, height: 21, borderRadius: isWin ? 10 : 99,
+          background: isWin ? '#0067C0' : '#0A84FF',
+          padding: 2, justifyContent: 'flex-end',
+        }}>
+          <span style={{ width: 17, height: 17, borderRadius: 99, background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,.25)' }} />
+        </span>
+      </div>
+      <p style={{ fontSize: 10.5, color: 'var(--t-faint)' }}>What you&apos;ll see in {isWin ? 'Windows Settings' : 'System Settings'}</p>
+    </div>
+  )
+}
+
+export function PermissionPreview({ os, permissionId }: {
+  os: 'macos' | 'windows'
+  permissionId: 'accessibility' | 'screen' | 'notifications'
+}) {
+  if (os === 'macos') {
+    return <MacSettingsPanePreview permissionId={permissionId} />
+  }
+  return <SimpleTogglePreview os={os} />
+}
+
 // ── Rounded mono glyph mark (apps / integrations) ────────────────────────────
 export function Mark({ mono, color, size = 34, radius }: {
   mono: string; color: string; size?: number; radius?: number

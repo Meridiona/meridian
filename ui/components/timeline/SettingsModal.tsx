@@ -26,11 +26,46 @@ import { AccountSection } from './settings/AccountSection'
 import { useRuntimeSettings } from './settings/useRuntimeSettings'
 import { DEFAULT_SETTINGS_SECTION, type SettingsSection } from './settings/types'
 
-export function SettingsModal({ onClose, initialSection }: {
+export function SettingsModal({ onClose, initialSection, onReplayTour, lock, onLockSatisfied }: {
   onClose: () => void
   initialSection?: SettingsSection
+  /** Restart the first-run walkthrough — surfaced in the Account section. */
+  onReplayTour: () => void
+  /** Set when the user was sent here to finish something — connecting an AI engine.
+   *
+   *  `'soft'` drops the incidental exits (Escape, backdrop, the ×) but keeps a plainly
+   *  labelled one. `'required'` removes the exit until the step is actually done, and is
+   *  only safe where something else can still get the user out — see the shell, which
+   *  reserves it for the walkthrough. Either way this modal owns the release. */
+  lock?: 'soft' | 'required'
+  /** The required step completed. The caller decides where the user goes next; this
+   *  fires once, shortly after the write lands, so the "Connected" state is readable
+   *  before the screen moves. */
+  onLockSatisfied?: () => void
 }) {
   const [section, setSection] = useState<SettingsSection>(initialSection ?? DEFAULT_SETTINGS_SECTION)
+  // THE RELEASE. While locked there is no way out of this modal, which is only defensible
+  // because the step that closes it is right there and this flips the moment it lands. It
+  // is set by Intelligence's own commit, so "connected" means a provider was actually
+  // written to settings.json and accepted - never merely that a screen was visited.
+  const [connected, setConnected] = useState(false)
+  const required = lock === 'required' && !connected
+  const shellLock = lock
+    ? {
+        label: connected ? 'Done' : lock === 'required' ? 'Connect one to continue' : "I'll do this later",
+        required,
+      }
+    : undefined
+
+  // Hand the flow back on its own. Making the user press Done here would be asking for a
+  // click that carries no decision - they just made the only one this screen exists for,
+  // and the thing they were doing when it interrupted them is still waiting. The delay is
+  // so "Connected" is read as an outcome rather than glimpsed as a flicker.
+  useEffect(() => {
+    if (!connected || !onLockSatisfied) return
+    const t = setTimeout(onLockSatisfied, 1500)
+    return () => clearTimeout(t)
+  }, [connected, onLockSatisfied])
   const [integrations, setIntegrations] = useState<IntegrationsResponse | null>(null)
   const [integrationsError, setIntegrationsError] = useState(false)
   const { settings, patch, save } = useRuntimeSettings()
@@ -43,9 +78,11 @@ export function SettingsModal({ onClose, initialSection }: {
   useEffect(fetchIntegrations, [])
 
   return (
-    <ModalShell title="Settings" onClose={onClose} maxWidth={980} scrollInside>
+    <ModalShell title={lock ? 'Connect your AI engine' : 'Settings'} onClose={onClose}
+      lock={shellLock} maxWidth={980} scrollInside>
       <div className="flex flex-1 min-h-0">
-        <SettingsSidebar section={section} onSelect={setSection} integrations={integrations} />
+        <SettingsSidebar section={section} onSelect={setSection} integrations={integrations}
+          disabled={required} />
         <div className="flex-1 min-w-0 overflow-y-auto nice-scroll px-8 py-7">
           {!settings ? (
             <div className="flex flex-col gap-3 max-w-[640px]">
@@ -75,14 +112,20 @@ export function SettingsModal({ onClose, initialSection }: {
                 <WorklogSection settings={settings} patch={patch} save={save} integrations={integrations} />
               )}
               {/* No `patch`: Intelligence stages its pick locally and writes only on Save. */}
-              {section === 'intelligence' && <IntelligenceSection settings={settings} save={save} />}
+              {/* `gate` rides the lock: the modal is locked ONLY when opened by the "Meridian
+                  needs an AI engine" path, which is exactly the case where the user has no
+                  working provider and is being set up rather than adjusting one. */}
+              {section === 'intelligence' && (
+                <IntelligenceSection settings={settings} save={save} gate={!!lock}
+                  onConnected={() => setConnected(true)} />
+              )}
               {section === 'capture' && <CaptureSection settings={settings} patch={patch} save={save} />}
               {section === 'notifications' && <NotificationsSection settings={settings} patch={patch} save={save} />}
               {section === 'appearance' && <AppearanceSection />}
               {/* {section === 'advanced' && (
                 <AdvancedSection settings={settings} setSettings={setSettings} patch={patch} save={save} />
               )} */}
-              {section === 'account' && <AccountSection />}
+              {section === 'account' && <AccountSection onReplayTour={onReplayTour} />}
             </>
           )}
         </div>

@@ -80,6 +80,7 @@ export function Toolbar({
         {/* Daily summary — sits with the date nav because it is about the day
             being viewed, not about the app. */}
         <button onClick={onOpenSummary}
+          data-tour="summary-pill"
           className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 bg-ctrl shrink-0 transition-transform hover:-translate-y-px"
           style={{ border: '1px solid var(--t-ctrl-border)' }}
           title="How this day went">

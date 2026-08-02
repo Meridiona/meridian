@@ -101,7 +101,16 @@ describe('composer state survives the plan modal closing mid-draft', () => {
   })
 
   it('the component holds no useState for composer fields', () => {
-    expect(composer.includes('useState')).toBe(false)
+    // The point of this guard is that the fields the user has TYPED INTO survive
+    // the component unmounting mid-flow — so it names them, rather than banning
+    // useState outright. Ephemeral UI state that SHOULD reset on reopen (the
+    // "is any AI provider installed" probe) is not what this protects, and
+    // blanket-banning the hook pushed such state into the shared store, where a
+    // stale value would then outlive the composer it belonged to.
+    for (const field of ['title', 'description', 'note', 'issueType', 'target']) {
+      const re = new RegExp(`useState[^\\n]*\\b${field}\\b|\\[\\s*${field}\\s*,\\s*set`, 'i')
+      expect(re.test(composer)).toBe(false)
+    }
   })
 
   it('personal is the default target - filing on a shared board is a deliberate click', () => {
@@ -121,5 +130,53 @@ describe('nothing calls the plan-task commands outside the store', () => {
     }
     expect(store.includes('draft_plan_task')).toBe(true)
     expect(store.includes('create_plan_task')).toBe(true)
+  })
+})
+
+// A new user pressing "Draft with AI" with no provider connected used to get a
+// red error string, then (briefly) an instant jump into Settings. Both are the
+// same failure: the app changing state without saying why. These pin the shape
+// of the replacement, all of which is invisible to a type checker.
+describe('drafting with no AI provider connected', () => {
+  const notice = readFileSync(`${uiRoot}/components/plan/AiEngineNotice.tsx`, 'utf8')
+  const modalShell = readFileSync(`${uiRoot}/components/timeline/ModalShell.tsx`, 'utf8')
+
+  it('explains before navigating - the jump is never the button\'s own doing', () => {
+    // draftOrConnect may only OPEN THE NOTICE. If it dispatches the navigation
+    // itself, the user is back to being teleported by a click on "Draft".
+    const fn = composer.slice(composer.indexOf('const draftOrConnect'))
+    const body = fn.slice(0, fn.indexOf('\n  const '))
+    expect(body).toContain('setShowAiNotice(true)')
+    expect(body).not.toContain('meridian:connect-ai')
+    expect(notice.length).toBeGreaterThan(0)
+  })
+
+  it('is one line and one action - no second way to do nothing', () => {
+    // The card has exactly one button. A dismiss would be a second control that
+    // does what ignoring the card already does: the fields below stay editable
+    // the whole time and "Add to today" never depended on a model, so there is
+    // nothing to dismiss. Two buttons here spent the card's one clear call to
+    // action arguing with itself.
+    const buttons = notice.match(/<button/g) ?? []
+    expect(buttons.length).toBe(1)
+    expect(notice.replace(/\s+/g, ' ')).toMatch(/Meridian needs an AI engine/i)
+    expect(notice).toContain('onConnect')
+  })
+
+  it('leaves the manual path untouched while it is showing', () => {
+    // The notice renders inline, above the divider - never in place of the
+    // title/description fields, which is what makes having no dismiss safe.
+    const at = (s: string) => composer.indexOf(s)
+    expect(at('showAiNotice &&')).toBeLessThan(at('value={s.title}'))
+    expect(at('value={s.title}')).toBeGreaterThan(0)
+  })
+
+  it('a locked modal drops every INCIDENTAL exit but keeps a labelled one', () => {
+    // Escape and the backdrop go; the corner button stays and is renamed. A lock
+    // that removed the last way out would be a trap, which is never the intent.
+    expect(modalShell).toContain('if (lock) return')          // no Escape handler
+    expect(modalShell).toContain('onClick={lock ? undefined : onClose}')  // no backdrop
+    expect(modalShell).toContain('{lock ? lock.label :')      // labelled, not an ×
+    expect(modalShell).toContain('data-tour="modal-close"')   // still ends the tour beat
   })
 })

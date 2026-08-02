@@ -191,6 +191,30 @@ html.dark {
    SURF/THEMES token tables. Gradient-valued tokens (--win-bg/--desk/--glow/
    --chip) are consumed via inline style, not Tailwind utilities.
    ─────────────────────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────────────────────
+   PROVIDER BRAND COLOURS — the AI-provider marks in components/LlmProviderLogos.tsx.
+
+   Theme tokens rather than hardcoded fills, for one reason: two of these brands
+   ARE black. OpenAI's and Cursor's marks are published as black-on-light and
+   white-on-dark, exactly as their own brand guidance says, so they need the
+   `ink` override below or they vanish into a dark card. Claude's coral and
+   Groq's orange carry across both and are stated once.
+
+   Deliberately OUTSIDE the theme palettes below: a brand colour is not ours to
+   restyle per theme, so `ink` overrides only the two that must flip.
+   ─────────────────────────────────────────────────────────────────────────── */
+:root {
+  --logo-claude: #D97757;
+  --logo-openai: #000000;
+  --logo-cursor: #000000;
+  --logo-groq:   #F43E01;
+}
+
+html[data-theme="ink"] {
+  --logo-openai: #FFFFFF;
+  --logo-cursor: #FFFFFF;
+}
+
 :root, html[data-theme="lilac"] {
   --win-bg:     linear-gradient(165deg,#FCFBFF 0%,#EEE9FC 48%,#DCD3F3 78%,#CFC2ED 100%);
   --chrome-bg:  linear-gradient(180deg,#FCFBFF,#F0EAFC);

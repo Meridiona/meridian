@@ -27,6 +27,57 @@ pub async fn is_first_run() -> bool {
     }
 }
 
+/// Name of the marker holding when the user OPENED the wizard, the counterpart to
+/// `onboarded` (which records when they finished).
+const STARTED_MARKER: &str = "setup_started";
+
+/// Stamp `~/.meridian/setup_started` with the current time — called once when the
+/// wizard's first screen mounts.
+///
+/// Completion has always been timestamped (`onboarded`), but nothing recorded when
+/// onboarding *began*, so the elapsed time was not derivable. That duration is
+/// user-facing twice over: the "Setup complete in Ns" line the walkthrough opens
+/// with, and the time span on the "Setting up Meridian" day-task card the
+/// walkthrough writes at the end (see [`setup_elapsed_secs`]).
+///
+/// Overwrites rather than preserving a first-ever value: re-running setup (Settings
+/// → Account → Re-run Setup) is a fresh run and should report its own duration, not
+/// the months since the original install.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn mark_setup_started() -> Result<(), String> {
+    let dir = meridian_core::paths::meridian_dir()
+        .ok_or_else(|| "could not resolve home directory".to_string())?;
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("create ~/.meridian: {e}"))?;
+    tokio::fs::write(dir.join(STARTED_MARKER), chrono::Local::now().to_rfc3339())
+        .await
+        .map_err(|e| format!("write {STARTED_MARKER}: {e}"))?;
+    tracing::info!("setup: start marker written");
+    Ok(())
+}
+
+/// Seconds elapsed since [`mark_setup_started`] stamped its marker, or `None` when
+/// the marker is missing or unparseable (an install that onboarded before this
+/// existed, or a hand-edited file).
+///
+/// `None` is a normal outcome the caller must render around — the walkthrough drops
+/// its "in Ns" clause rather than showing a wrong or zero duration. A negative delta
+/// (clock moved backwards between the two reads) is also reported as `None` for the
+/// same reason.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn setup_elapsed_secs() -> Option<u64> {
+    let dir = meridian_core::paths::meridian_dir()?;
+    let raw = tokio::fs::read_to_string(dir.join(STARTED_MARKER))
+        .await
+        .ok()?;
+    let started = chrono::DateTime::parse_from_rfc3339(raw.trim()).ok()?;
+    let secs = (chrono::Local::now() - started.with_timezone(&chrono::Local)).num_seconds();
+    u64::try_from(secs).ok()
+}
+
 /// Write `~/.meridian/onboarded` (RFC-3339 timestamp) to mark wizard completion.
 /// Future tray launches skip the auto-open. Idempotent — safe to call more than once.
 #[tauri::command]
@@ -248,6 +299,45 @@ pub async fn test_llm_provider(
         "llm: provider test complete"
     );
     Ok(result)
+}
+
+/// Forget `id`'s recorded connectivity test, so the app treats it as signed out.
+/// **Dev builds only.**
+///
+/// This exists because "connected" is app state with no UI that can un-set it: the
+/// picker only ever records successes, so once a provider tests OK there is no way
+/// back to the not-connected state short of hand-editing
+/// `~/.meridian/provider_test_cache.json`. That state is the entire first-run
+/// experience — the "Meridian needs an AI engine" prompt, the locked provider
+/// screen, the tour beat that leads into it — and it was being re-created by hand
+/// every time any of it needed a look.
+///
+/// Writes a `Failed` outcome rather than deleting the entry, because that is the
+/// real shape of the case worth rehearsing: a CLI that is installed but signed
+/// out. A missing entry means "never tested", which
+/// [`classify_provider_health`](meridian::llm::detect) deliberately treats as fine.
+///
+/// Gated exactly like the LLM Lab (`commands/llm_lab.rs`): `cfg!(debug_assertions)`,
+/// refused in shipped builds even against a hand-crafted `invoke`, so no release
+/// can be talked into disconnecting a user's provider.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn disconnect_llm_provider(id: String) -> Result<(), String> {
+    if !cfg!(debug_assertions) {
+        return Err("disconnecting a provider is a dev-only surface".to_string());
+    }
+    let provider = meridian_core::LlmProvider::from_wire(&id)
+        .ok_or_else(|| format!("unknown provider {id:?}"))?;
+    meridian::llm::detect::persist_test_result(&meridian::llm::detect::ProviderTestResult {
+        id: provider.as_str().to_string(),
+        outcome: meridian::llm::detect::ProviderTestOutcome::Failed {
+            message: "Disconnected from the dev panel".to_string(),
+        },
+        elapsed_ms: 0,
+        tested_at: chrono::Utc::now().to_rfc3339(),
+    });
+    tracing::info!(provider = %id, "llm: provider disconnected (dev)");
+    Ok(())
 }
 
 /// Log a sign-in [`InstallOutcome`](meridian::llm::detect::InstallOutcome) at the right level

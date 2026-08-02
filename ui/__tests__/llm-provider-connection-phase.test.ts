@@ -19,7 +19,10 @@
 import { describe, it, expect } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { phaseFor } from '../components/LlmProviderDetail'
+import { BLOCKS_USE, phaseFor, statusPill } from '../components/LlmProviderDetail'
+import {
+  LLM_INTRO_BODY, LLM_RANK_FREE, LLM_RANK_SUBSCRIPTION, LLM_RECOMMENDED_NOTE, USAGE_FOOTPRINT_NOTE,
+} from '../lib/llm-providers'
 import type { ProviderStatus, ProviderTestResult } from '../lib/api-types'
 
 const src = (p: string) => readFileSync(join(import.meta.dir, '..', p), 'utf8')
@@ -108,7 +111,10 @@ it('onTest is wired straight to the real backend test command, not a local heuri
   expect(detail).toMatch(/onClick=\{onTest\}/)
 })
 
-const picker = src('components/LlmProviderPicker.tsx')
+// The picker's surface spans two files: the component, and the detection hook that was split
+// out of it to keep both under the 500-line rule. These assertions are about the behaviour,
+// not about which file it lives in, so they scan both.
+const picker = src('components/LlmProviderPicker.tsx') + src('components/useLlmProviderDetection.ts')
 
 it("the picker's test handler invokes the real Tauri command against the live CLI, not a mock", () => {
   expect(picker).toMatch(/invoke<ProviderTestResult>\('test_llm_provider'/)
@@ -150,5 +156,129 @@ it('every in-app sign-in provider carries BOTH its copy and its tray command in 
 })
 
 it('every other provider surfaces the real failure message verbatim, not a generic substitute', () => {
-  expect(detail).toMatch(/isn&apos;t responding: \{phase\.message\}/)
+  // The heading names the provider; the body IS the message the backend returned. A generic
+  // substitute ("something went wrong") would throw away the only text that says what to fix.
+  const generic = detail.slice(detail.indexOf("isn&apos;t responding"))
+  expect(generic.slice(0, 400)).toMatch(/\{phase\.message\}/)
+})
+
+// ── What this screen is allowed to CLAIM ─────────────────────────────────────────────────
+
+describe('"is writing your summaries" is gated on proof, not on a stored string', () => {
+  it('requires a passing test as well as being selected', () => {
+    // `selected` means only "this id is in settings.json" - true of the DEFAULT provider
+    // before anyone has touched anything. Reading it as "working" put a green "Claude Code
+    // is writing your summaries" banner directly under a panel saying the CLI was not
+    // signed in, on a first run where neither was true.
+    expect(detail).toContain("const active = selected && phase.kind === 'ok'")
+    // Every claim of working-ness hangs off `active`, never off `selected`.
+    // lastIndexOf: the phrase is quoted in the file header too, explaining exactly this.
+    const at = detail.lastIndexOf('is writing your summaries')
+    expect(detail.slice(at - 900, at)).toContain('active ? (')
+  })
+
+  it('says where the provider actually stands, in one pill', () => {
+    expect(statusPill({ kind: 'ok' }, true).label).toBe('IN USE')
+    expect(statusPill({ kind: 'ok' }, false).label).toBe('CONNECTED')
+    // The states that need the user to do something read as such - not as a neutral label.
+    expect(statusPill({ kind: 'failed', message: 'x' }, false).label).toBe('ACTION NEEDED')
+    expect(statusPill({ kind: 'not_installed' }, false).label).toBe('NOT INSTALLED')
+  })
+
+  it('refuses to commit a provider that has just been PROVED not to work', () => {
+    // Writing a known-broken provider has exactly one visible effect: the hourly summaries
+    // silently never run. In the walkthrough it would also release the required lock on a
+    // step that is not done.
+    for (const k of ['not_installed', 'failed', 'installing', 'signing', 'testing']) {
+      expect(BLOCKS_USE).toContain(k as never)
+    }
+    // ...but an un-probed CLI is NOT blocked: it may well be installed and signed in, and
+    // refusing it would strand anyone whose probe failed for an unrelated reason.
+    expect(BLOCKS_USE).not.toContain('unknown' as never)
+    expect(BLOCKS_USE).not.toContain('ready_untested' as never)
+    expect(BLOCKS_USE).not.toContain('ok' as never)
+    // Disabled with a REASON. A dead button with no explanation is the same dead end.
+    expect(detail).toContain('disabled={applying || blocked}')
+    expect(detail).toContain('Finish the step above and this turns on.')
+  })
+})
+
+describe('the usage claim is made once, and says the same thing everywhere', () => {
+  it('quotes one number, not one per screen', () => {
+    // The grid said "less than 2% of your daily usage" and the detail screen one click later
+    // said "well under 1%". Two different numbers for the same fact reads as marketing.
+    const pct = (s: string) => s.match(/(\d+)%/)?.[1]
+    expect(pct(USAGE_FOOTPRINT_NOTE)).toBe(pct(LLM_RECOMMENDED_NOTE)!)
+  })
+
+  it('is not ALSO made in the section intro, 40px above itself', () => {
+    // The intro carried a third wording of it, in the same viewport as the note under the
+    // grid and disagreeing with it. Reassurance repeated three times at three sizes stops
+    // being reassurance.
+    expect(LLM_INTRO_BODY).not.toMatch(/\d+%/)
+  })
+})
+
+describe('the chooser grid', () => {
+  const picker = src('components/LlmProviderPicker.tsx')
+
+  it('is always a complete rectangle - 3 across gated, 2 x 2 in Settings', () => {
+    // auto-fill laid four tiles out 3 + 1, which reads as "and one afterthought" and left the
+    // last card a different shape from its siblings.
+    expect(picker).toContain('repeat(${gate ? 3 : 2}, minmax(0, 1fr))')
+  })
+
+  it('carries the SAME ranking the gate showed, on every tile', () => {
+    // The gate ranks the two paths, then the grid shows one path's tiles beside the other's.
+    // Telling someone BEST ACCURACY on the question and then showing nothing on the tiles
+    // hands them a ranking and takes it away at the moment they act on it. One record backs
+    // both, and one <Badge> renders both.
+    expect(LLM_RANK_SUBSCRIPTION.badge).toBe('RECOMMENDED')
+    expect(LLM_RANK_SUBSCRIPTION.note).toBe('BEST ACCURACY')
+    expect(LLM_RANK_FREE.badge).toBe('FREE')
+    expect(LLM_RANK_FREE.note).toBe('GOOD ACCURACY')
+    expect(picker).toContain('rank={LLM_RANK_SUBSCRIPTION}')
+    expect(picker).toContain('rank={LLM_RANK_FREE}')
+    expect(picker).toContain("import LlmProviderGate, { Badge } from '@/components/LlmProviderGate'")
+    // The gate reads from the same record rather than repeating the strings.
+    const registry = src('lib/llm-providers.ts')
+    expect(registry).toContain('...LLM_RANK_SUBSCRIPTION')
+    expect(registry).toContain('...LLM_RANK_FREE')
+  })
+
+  it('ranks by contrast - never by colour, never by a heavy dark chip', () => {
+    // Every hue in this app already means something (green connected, violet AI, amber
+    // attention) and a rank badge means none of them - the gate learnt that with a green
+    // card next to a violet one. The next attempt, a near-black filled chip, avoided the
+    // colour problem by becoming the loudest thing on the screen instead: at this size a
+    // solid dark block is the heaviest mark available, and there are two of them per tile.
+    const gate = src('components/LlmProviderGate.tsx')
+    const badge = gate.slice(gate.indexOf('export function Badge'))
+    expect(badge).not.toMatch(/--color-state-(approved|proposal|pending)/)
+    expect(badge).not.toContain("background: filled ? 'var(--t-title)'")
+    // A soft tint carrying full-strength text, against a bare outline carrying muted text.
+    expect(badge).toContain("color: filled ? 'var(--t-title)' : 'var(--t-faint)'")
+    expect(badge).toContain("background: filled ? 'var(--t-box)' : 'transparent'")
+  })
+
+  it('names the fourth tile Groq and says FREE, not "bring your own API key / ADVANCED"', () => {
+    // That label described the plumbing, not the offer. Someone with no subscription - the
+    // exact person the tile is for - could not tell from it that this is the free path, and
+    // "advanced" actively warns them off. Groq is the only preset left, so the tile is Groq.
+    expect(picker).toContain('name={GROQ.name}')
+    // ...and it opens the SAME three-step walkthrough the gate's free answer lands on, not a
+    // second, differently-shaped route to the same place.
+    expect(picker).toContain('custom.providers.length === 0')
+  })
+
+  it('shows a rescan long enough to be believed', () => {
+    // The probe answers in single-digit milliseconds, so the old bare underlined link
+    // changed its label and changed back inside one frame: pressed, nothing moved, and the
+    // only reasonable conclusion was that it does nothing. The floor is on the STATE, not
+    // the work - results still land as soon as they arrive.
+    const hook = src('components/useLlmProviderDetection.ts')
+    expect(hook).toContain('PROBE_MIN_VISIBLE_MS')
+    expect(hook).toContain('await floor')
+    expect(picker).toContain("animation: 'spin 0.7s linear infinite'")
+  })
 })

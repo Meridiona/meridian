@@ -27,7 +27,11 @@ const CHANNEL_COLOR: Record<AppInfo['channel'], string> = {
   prod: 'var(--t-faint)',
 }
 
-export function AccountSection() {
+export function AccountSection({ onReplayTour }: {
+  /** Restart the first-run walkthrough. Supplied by the shell (which owns the
+   *  walkthrough) and threaded through SettingsModal. */
+  onReplayTour: () => void
+}) {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [copied, setCopied] = useState(false)
   const { status: exportStatus, path: exportPath, errorMsg: exportError, exportBundle } = useExportDiagnostics()
@@ -79,6 +83,15 @@ export function AccountSection() {
             mutate('/api/setup', 'open_setup', {}).catch(err => console.error('Failed to open setup wizard', err))
           }}>
             Go to Setup
+          </SettingsButton>
+        </FieldRow>
+        {/* The walkthrough is a once-ever surface, so without this the only way
+            back to it is clearing a localStorage marker by hand. Closes Settings
+            first — the walkthrough drives this very modal in two of its beats,
+            so leaving it open would have it opening a modal already open. */}
+        <FieldRow label="Replay the walkthrough" description="Take the guided tour of the timeline, daily summary, and worklog drafts again - shown over an example day, not your own.">
+          <SettingsButton onClick={onReplayTour}>
+            Show me around
           </SettingsButton>
         </FieldRow>
       </SectionCard>

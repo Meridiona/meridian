@@ -93,6 +93,30 @@ pub async fn open_setup(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Resize the setup wizard window's client area (a no-op if the window isn't
+/// open). The wizard's card is a different fixed height on the Welcome screen
+/// than in the step flow (see `ui/app/setup/page.tsx`) - the window was
+/// previously one static size for both, which left a big empty backdrop
+/// margin around the shorter Welcome card. The frontend calls this once, when
+/// leaving Welcome for step 1, to grow the window back to the step-flow size;
+/// [`crate::tray::open_wizard_window`] opens it small (sized for Welcome) in
+/// the first place. Also raises the min size to match, so the user can't
+/// resize the window smaller than whichever card is currently showing.
+#[tauri::command]
+pub async fn resize_setup_window(
+    app: tauri::AppHandle,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let Some(win) = app.get_webview_window("setup") else {
+        return Ok(());
+    };
+    win.set_min_size(Some(tauri::LogicalSize::new(width, height)))
+        .map_err(|e| e.to_string())?;
+    win.set_size(tauri::LogicalSize::new(width, height))
+        .map_err(|e| e.to_string())
+}
+
 /// Fetch-and-clear the pending dashboard navigation target (e.g. "/plan") —
 /// the pull half of [`crate::deep_link`]. Called once by
 /// `MeridianTimelineShell` on mount; `None` on a plain open. Infallible today,

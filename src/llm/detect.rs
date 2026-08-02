@@ -1180,11 +1180,29 @@ static CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// The whole read-modify-write is held under [`CACHE_LOCK`] so concurrent persists (a
 /// Rescan testing every installed provider at once) can't lose each other's results.
 pub fn persist_test_result(result: &ProviderTestResult) {
-    let _guard = CACHE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut cache = load_test_cache();
-    cache.insert(result.id.clone(), result.clone());
-    if let Err(e) = meridian_core::fs_utils::atomic_write_json(&test_cache_path(), &cache) {
-        tracing::warn!(error = %e, provider = %result.id, "failed to persist provider test result");
+    {
+        let _guard = CACHE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = load_test_cache();
+        cache.insert(result.id.clone(), result.clone());
+        if let Err(e) = meridian_core::fs_utils::atomic_write_json(&test_cache_path(), &cache) {
+            tracing::warn!(error = %e, provider = %result.id, "failed to persist provider test result");
+        }
+    }
+    // A recorded outcome is the ONLY thing that changes the health verdict, and
+    // that verdict is memoised for IN_USE_HEALTH_TTL (5 min). Without this the
+    // banner contradicts the panel for up to five minutes in both directions: a
+    // user who fixes a signed-out provider and watches its card go green still
+    // sees "unavailable" across the top, and concludes the fix did not work.
+    // Every path that records an outcome comes through here, so this is the one
+    // place it can be done without a caller being able to forget.
+    invalidate_in_use_health();
+}
+
+/// Drop the memoised in-use provider verdict, so the next
+/// [`in_use_provider_health`] recomputes instead of serving a stale answer.
+pub fn invalidate_in_use_health() {
+    if let Some(cell) = IN_USE_HEALTH_CACHE.get() {
+        *cell.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
 
@@ -1569,6 +1587,39 @@ mod tests {
             let h = classify_provider_health("Codex".into(), true, last);
             assert!(h.ok && !h.rate_limited && h.detail.is_none());
         }
+    }
+
+    /// The health verdict is memoised for 5 minutes, and recording a test result is
+    /// the only thing that can change it. When the two were not wired together, the
+    /// banner disagreed with the Intelligence panel for up to that long IN BOTH
+    /// DIRECTIONS — a user who fixed a signed-out provider watched its card go green
+    /// while "provider unavailable" stayed across the top, and reasonably concluded
+    /// the fix had not worked. Nothing about that failure is visible in a type or a
+    /// log; it just looks like the app ignoring you.
+    #[test]
+    fn recording_a_test_result_drops_the_memoised_health_verdict() {
+        // Seed the cache with a verdict, as a health poll would.
+        *IN_USE_HEALTH_CACHE
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap() = Some((
+            "claude".to_string(),
+            Instant::now(),
+            InUseProviderHealth {
+                ok: true,
+                rate_limited: false,
+                name: "Claude Code".into(),
+                detail: None,
+            },
+        ));
+
+        invalidate_in_use_health();
+
+        assert!(
+            IN_USE_HEALTH_CACHE.get().unwrap().lock().unwrap().is_none(),
+            "a recorded outcome must invalidate the memoised verdict, or the banner \
+             serves a stale answer for up to IN_USE_HEALTH_TTL"
+        );
     }
 
     #[tokio::test]
