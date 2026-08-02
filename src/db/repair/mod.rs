@@ -151,8 +151,8 @@ impl RepairReport {
 pub async fn ensure_no_writers() -> Result<()> {
     if crate::platform::daemon_already_running().await {
         bail!(
-            "the meridian daemon is still running - stop it first ('meridian stop'), \
-             then run this again"
+            "the Meridian daemon is still running - {}, then run this again",
+            stop_daemon_hint()
         );
     }
     if tray_is_running() {
@@ -162,6 +162,43 @@ pub async fn ensure_no_writers() -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// How to actually stop the daemon, in words that name something real.
+///
+/// The first version of this message said "stop it first ('meridian stop')".
+/// There is no `stop` subcommand - the binary answers `unknown subcommand
+/// "stop"` - so the one instruction the user got was a dead end. That is the
+/// exact failure this whole feature exists to remove, reintroduced in its own
+/// error path.
+///
+/// Two things make the real answer non-obvious, which is why it is spelled out
+/// rather than left to the reader:
+/// - **Quitting the tray does not stop the daemon.** They are separate
+///   processes; the daemon is its own launchd agent (`com.meridiona.daemon`) /
+///   scheduled task.
+/// - **Killing the process does not stop it either.** The launchd plist sets
+///   `KeepAlive=true`, so it is relaunched within seconds - and a daemon that
+///   respawns mid-rebuild writes to the file being copied.
+///
+/// Pausing from the tray menu is offered first because it is the supported
+/// control (`tray/src-tauri/src/commands/daemon.rs`'s `toggle_daemon` ->
+/// `daemon_control::set_running`) and it is the same on every platform.
+fn stop_daemon_hint() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "pause tracking from the Meridian tray menu, or run: \
+         launchctl bootout gui/$(id -u)/com.meridiona.daemon"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "pause tracking from the Meridian tray menu, or disable the Meridian \
+         scheduled task"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        "pause tracking from the Meridian tray menu"
+    }
 }
 
 /// True when a `meridian-tray` process is alive.
@@ -303,6 +340,42 @@ use rebuild::build_replacement;
 mod tests {
     use super::*;
     use crate::db::test_corrupt::corrupt_db_fixture;
+
+    /// The remedy must not invent a CLI. The first version told users to run
+    /// `meridian stop`, which does not exist - `main.rs` dispatches only
+    /// `coding-agent-hook`, `coding-agent-summarise`, `oauth-login` and `db`,
+    /// and the binary answers `unknown subcommand "stop"`.
+    ///
+    /// A guard that hands out a dead end is worse than one that says nothing,
+    /// because the user burns time believing they were told the answer. Naming
+    /// no `meridian <verb>` at all is the cheap invariant that holds even as
+    /// the subcommand list changes.
+    #[test]
+    fn stop_hint_does_not_name_a_nonexistent_subcommand() {
+        let hint = stop_daemon_hint();
+        assert!(
+            !hint.contains("meridian stop"),
+            "the `meridian stop` subcommand does not exist: {hint}"
+        );
+        assert!(
+            !regex_lite_names_meridian_subcommand(hint),
+            "hint names a `meridian <verb>` that may not exist: {hint}"
+        );
+        // ...and it must still tell the user something concrete to do.
+        assert!(
+            hint.contains("pause tracking"),
+            "hint must name the supported control: {hint}"
+        );
+    }
+
+    /// True if `s` contains `meridian ` followed by a bare word - i.e. it looks
+    /// like a subcommand invocation. Deliberately hand-rolled: the crate has no
+    /// regex dependency and this only needs to catch the one shape.
+    fn regex_lite_names_meridian_subcommand(s: &str) -> bool {
+        s.split("meridian ")
+            .skip(1)
+            .any(|rest| rest.chars().next().is_some_and(|c| c.is_ascii_alphabetic()))
+    }
 
     #[test]
     fn report_separates_corruption_loss_from_schema_rejection() {
