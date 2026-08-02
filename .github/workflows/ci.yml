@@ -158,14 +158,16 @@ jobs:
           mkdir -p target/release
           : > target/release/meridian
 
+      # `--workspace` is load-bearing, NOT redundant — see the note above
+      # `rust-windows` for the trap it closes.
       - name: fmt
         run: cargo fmt --check
 
       - name: clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: test
-        run: cargo test
+        run: cargo test --workspace
 
   # ── Rust gate #2: Windows x86_64 ──────────────────────────────────────────
   # Windows is a shipped platform (NSIS installer, see release-build.yml) but
@@ -174,11 +176,26 @@ jobs:
   # mismatch) shipped all the way to a tagged release before anyone found out.
   # This closes that gap on every PR instead.
   #
-  # A bare `cargo clippy`/`test` from the workspace root (no `-p`) covers the
-  # whole workspace by default — daemon, core, oauth, AND the tray (the
-  # `capture` feature's screenpipe-screen/-a11y stack already supports Windows;
-  # it ships there today) — same as the macOS job. No `fmt` here: it is
-  # platform-independent style, already checked once by the macOS job.
+  # `--workspace` on clippy and test is REQUIRED, and its absence is a silent
+  # coverage hole rather than a style choice.
+  #
+  # A bare `cargo clippy`/`test` covers the whole workspace ONLY when the root
+  # manifest is virtual. Ours is not: `members = [".", ...]` makes the repo root
+  # itself a package, so cargo defaults to *that package alone* and silently
+  # skips meridian-core, meridian-oauth and the tray. Those crates still COMPILE
+  # (the daemon depends on them), which is what makes it convincing — they are
+  # simply never tested and their test code is never linted.
+  #
+  # This comment previously asserted the opposite, and the cost was real:
+  # meridian-core's 269 lib tests had never run here, and two db_crypto tests
+  # sat red for days after PR #655's refactor changed the error wording they
+  # assert on, with every gate green the whole time.
+  #
+  # With `--workspace` the coverage matches what this always claimed: daemon,
+  # core, oauth, AND the tray (the `capture` feature's screenpipe-screen/-a11y
+  # stack already supports Windows; it ships there today) — same as the macOS
+  # job. No `fmt` here: it is platform-independent style, already checked once
+  # by the macOS job.
   rust-windows:
     name: Rust (Windows x86_64)
     needs: changes
@@ -240,11 +257,11 @@ jobs:
       # release-build.yml's Windows job for the full story).
       - name: clippy
         shell: pwsh
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: test
         shell: pwsh
-        run: cargo test
+        run: cargo test --workspace
 
   ui:
     name: UI

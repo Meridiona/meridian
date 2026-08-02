@@ -55,7 +55,10 @@ fi
 echo ""
 echo "[wave 2/3] cargo clippy  +  ui tests"
 
-run_check "cargo clippy" cargo clippy -- -D warnings &
+# `--workspace` is REQUIRED, not decorative: `members = [".", ...]` makes the
+# repo root a package, so bare cargo lints/tests that package ALONE and silently
+# skips meridian-core, meridian-oauth and the tray. See .github/workflows/ci.yml.
+run_check "cargo clippy" cargo clippy --workspace --all-targets -- -D warnings &
 W2_CLIPPY=$!
 
 run_check "ui tests" bash -c "cd '$REPO_ROOT/ui' && bun test" &
@@ -103,7 +106,7 @@ else
   echo "  - security audit skipped (claude CLI not found)"
 fi
 
-run_check "cargo test" cargo test &
+run_check "cargo test" cargo test --workspace &
 W3_TEST=$!
 
 wait $W3_TEST || FAIL=1
