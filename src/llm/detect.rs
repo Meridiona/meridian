@@ -75,8 +75,22 @@ fn candidate_dirs() -> Vec<PathBuf> {
         }
         if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
             dirs.push(
-                PathBuf::from(local_appdata)
+                PathBuf::from(&local_appdata)
                     .join("cursor-agent")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            // Where OpenAI's native installer puts `codex.exe`
+            // ([`meridian_core::CODEX_INSTALL_CMD`]'s Windows form). It writes the USER
+            // PATH, which an already-running tray cannot see, so without this entry a
+            // SUCCESSFUL install reports itself as failed - the same trap `cursor-agent`
+            // above exists for. Keep the two in lockstep with those install commands.
+            dirs.push(
+                PathBuf::from(&local_appdata)
+                    .join("Programs")
+                    .join("OpenAI")
+                    .join("Codex")
+                    .join("bin")
                     .to_string_lossy()
                     .into_owned(),
             );
@@ -115,6 +129,18 @@ pub struct ProviderStatus {
     /// the on-disk cache, never freshly run by [`detect`]/[`detect_all`] themselves. `None`
     /// means "never tested", not "failed".
     pub last_test: Option<ProviderTestResult>,
+    /// The installer this platform will actually run
+    /// ([`meridian_core::LlmProvider::install_command`]), or `None` for a provider with
+    /// nothing to install.
+    ///
+    /// Reported to the frontend because the UI's own `installHint`
+    /// (`ui/lib/llm-providers.ts`) is a single static string compiled into a dashboard that
+    /// runs on BOTH platforms, so it cannot be right on both: it names the npm command,
+    /// while Windows installs natively. That mattered beyond cosmetics — the hint doubles as
+    /// the "run this yourself" fallback shown when an install fails, so a Windows user was
+    /// told to run the exact command that cannot work there. Sourcing it from here makes the
+    /// displayed command the one that ran, on every platform, by construction.
+    pub install_command: Option<String>,
 }
 
 /// Probe one provider. A provider with no CLI binary (only `Custom`, a cloud endpoint) has
@@ -122,6 +148,7 @@ pub struct ProviderStatus {
 /// registry), so this early-return is not reached in practice.
 pub async fn detect(provider: LlmProvider) -> ProviderStatus {
     let id = provider.as_str().to_string();
+    let install_command = provider.install_command().map(str::to_string);
     let Some(bin) = provider.cli_name() else {
         return ProviderStatus {
             id,
@@ -129,6 +156,7 @@ pub async fn detect(provider: LlmProvider) -> ProviderStatus {
             path: None,
             authenticated: None,
             last_test: None,
+            install_command,
         };
     };
 
@@ -137,6 +165,7 @@ pub async fn detect(provider: LlmProvider) -> ProviderStatus {
         id,
         installed: found.is_some(),
         path: found.map(|p| p.display().to_string()),
+        install_command,
         authenticated: None,
         last_test: None,
     }
@@ -540,6 +569,34 @@ pub struct InstallOutcome {
 /// can find one — see [`install_provider`]'s "leading binary" doc section for why. Returns
 /// `cmd` unchanged (not an `Option`) so every caller has a command to run either way; the
 /// resolution is best-effort by design.
+///
+/// # Windows: deliberately a no-op
+///
+/// Every reason above is a macOS/Linux reason, and the rewrite it produces is POSIX shell
+/// text - `export PATH="…:$PATH"; <abs path> …` - which [`installer_command`] feeds to
+/// **PowerShell**, where it is not merely suboptimal but unrunnable:
+///
+/// - `export` is not a PowerShell command (`$env:PATH` is, and entries are `;`-separated,
+///   not `:`), and `$PATH` is an undefined variable there.
+/// - The substituted absolute path is interpolated unquoted and without the `&` call
+///   operator, so a perfectly ordinary `C:\Program Files\nodejs\npm.cmd` is parsed as the
+///   command `C:\Program`.
+///
+/// Both fail with `CommandNotFoundException` before the vendor's installer runs at all. The
+/// premise doesn't hold here either: Windows has no Finder/launchd PATH stripping (see
+/// [`resolve_cli`]'s doc), so the current process's `PATH` already sees what a terminal
+/// does, and PowerShell resolves `npm` → `npm.cmd` itself via `PATHEXT`. Passing `cmd`
+/// through untouched is therefore both correct and sufficient.
+///
+/// This was a live bug: it made the Install button fail for every npm-based provider on
+/// Windows, and - because the leading token is what triggers the rewrite - Cursor was
+/// unaffected purely by accident, its command starting with `$s`.
+#[cfg(windows)]
+async fn resolve_installer_binary(cmd: &str) -> String {
+    cmd.to_string()
+}
+
+#[cfg(not(windows))]
 async fn resolve_installer_binary(cmd: &str) -> String {
     match cmd.split_once(' ') {
         Some((installer_bin, rest)) => match resolve_cli(installer_bin).await {
@@ -718,11 +775,34 @@ pub async fn install_provider(provider: LlmProvider) -> InstallOutcome {
 /// (`npm i -g …`) run identically well under `-Command` as they did under `cmd /C`.
 /// `-ExecutionPolicy Bypass` is defensive: inline `-Command` text isn't normally subject to
 /// the script-file execution policy, but a locked-down machine's policy could still be
-/// stricter than default, and there is no `.ps1` file here to sign. `; exit $LASTEXITCODE`
-/// guarantees the process's own exit code reflects the command's success/failure — relying on
-/// PowerShell's implicit propagation for the LAST statement in a `-Command` script is not
-/// documented behaviour and would silently report a failed `npm i -g …` as a successful
-/// install.
+/// stricter than default, and there is no `.ps1` file here to sign.
+///
+/// # Why the exit-code epilogue is more than `; exit $LASTEXITCODE`
+///
+/// Propagating the exit code explicitly is necessary — relying on PowerShell's implicit
+/// propagation for the LAST statement in a `-Command` script is not documented behaviour.
+/// But `; exit $LASTEXITCODE` ALONE is not sufficient, and its insufficiency is silent:
+///
+/// **`$LASTEXITCODE` is only ever set by a NATIVE executable.** If the command dies before
+/// reaching one — a `CommandNotFoundException` from a malformed command, a parse error — the
+/// variable is still `$null`, and `exit $null` exits **0**. [`install_provider`] then reads
+/// `status.success()` as true, skips the branch that surfaces stderr, and reports the
+/// generic "installer finished but the CLI still isn't on your PATH". That message sends the
+/// user to debug their PATH over what is really a broken install command, and the actual
+/// error — sitting in stderr — is discarded unread.
+///
+/// So the epilogue distinguishes three cases:
+///
+/// 1. A native exe ran → trust its code verbatim, exactly as before.
+/// 2. No native exe ran AND a command name failed to resolve → exit 127 (the conventional
+///    "command not found"), so the real stderr reaches the user.
+/// 3. Anything else → exit 0.
+///
+/// Case 2 keys on `CommandNotFoundException` specifically rather than "`$Error` is
+/// non-empty" on purpose: a vendor installer that raises and HANDLES a non-terminating error
+/// still leaves it in `$Error`, and failing on that would break installs that work today
+/// (Cursor's `iex`-ed script is pure PowerShell and may never set `$LASTEXITCODE` at all).
+/// An unresolvable command name, by contrast, is never a recoverable condition.
 #[cfg(windows)]
 pub(crate) fn installer_command(cmd: &str) -> Command {
     let mut command = Command::new("powershell");
@@ -731,9 +811,26 @@ pub(crate) fn installer_command(cmd: &str) -> Command {
         .arg("-ExecutionPolicy")
         .arg("Bypass")
         .arg("-Command")
-        .arg(format!("{cmd}; exit $LASTEXITCODE"));
+        .arg(format!("$Error.Clear(); {cmd}; {EXIT_EPILOGUE}"));
     command
 }
+
+/// The exit-code epilogue appended to every Windows installer command — see
+/// [`installer_command`]'s "Why the exit-code epilogue is more than `; exit $LASTEXITCODE`".
+///
+/// Split out as a named constant rather than inlined into the `format!` so the three-case
+/// logic is readable on its own, and so there is exactly one definition of it to change.
+/// Its BEHAVIOUR is pinned by `installer_command_reports_an_unrunnable_command_as_failed`
+/// and `installer_command_tolerates_a_handled_powershell_error`, which run the real shell
+/// rather than string-matching this text - a match on the text would pass just as happily
+/// for an epilogue that PowerShell rejects.
+#[cfg(windows)]
+pub(crate) const EXIT_EPILOGUE: &str = concat!(
+    "if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }; ",
+    "if ($Error | Where-Object { $_.FullyQualifiedErrorId -like 'CommandNotFound*' }) ",
+    "{ exit 127 }; ",
+    "exit 0"
+);
 
 #[cfg(not(windows))]
 pub(crate) fn installer_command(cmd: &str) -> Command {
@@ -1662,6 +1759,105 @@ mod tests {
         let output = cmd.output().await.expect("installer_command must spawn");
         assert!(!output.status.success());
         assert_eq!(output.status.code(), Some(7));
+    }
+
+    /// The measured Windows regression, pinned end to end: a command that dies before
+    /// reaching any native executable must be reported as FAILED, with its real error on
+    /// stderr.
+    ///
+    /// This is the exact shape `resolve_installer_binary` used to hand PowerShell — POSIX
+    /// `export` plus an unquoted space-bearing path — and every part of the old epilogue's
+    /// failure is reproduced here: PowerShell raises `CommandNotFoundException` twice, no
+    /// native exe ever runs, so `$LASTEXITCODE` stays `$null` and the old `exit $LASTEXITCODE`
+    /// exited **0**. `install_provider` read that as success, never looked at stderr, and told
+    /// the user their PATH was wrong.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn installer_command_reports_an_unrunnable_command_as_failed() {
+        let mut cmd = installer_command(
+            r#"export PATH="C:\Some Dir\bin:$PATH"; C:\Some Dir\bin\npm.cmd i -g some-package"#,
+        );
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = cmd.output().await.expect("installer_command must spawn");
+        assert!(
+            !output.status.success(),
+            "a command that never reached a native exe must not report success: {output:?}"
+        );
+        assert_eq!(output.status.code(), Some(127), "{output:?}");
+        // The cause must survive to stderr — `install_provider` only reads it on !success(),
+        // so reporting this as success is what silently discarded it.
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("not recognized"),
+            "the real error must reach stderr: {output:?}"
+        );
+    }
+
+    /// The other half of that fix, and the reason it keys on `CommandNotFoundException`
+    /// rather than "`$Error` is non-empty": a pure-PowerShell installer that raises and
+    /// HANDLES an error still leaves it in `$Error` and may never set `$LASTEXITCODE` at all.
+    /// Cursor's `iex`-ed script is exactly that shape, and it installs correctly today —
+    /// failing it would be a regression caused by the fix.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn installer_command_tolerates_a_handled_powershell_error() {
+        let mut cmd = installer_command(
+            r#"try { Get-Item 'C:\meridian\definitely\missing' -ErrorAction Stop } catch { }"#,
+        );
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = cmd.output().await.expect("installer_command must spawn");
+        assert!(
+            output.status.success(),
+            "a handled non-terminating error must not fail the install: {output:?}"
+        );
+    }
+
+    /// `resolve_installer_binary` must leave the command ALONE on Windows. Its rewrite is
+    /// POSIX shell text (`export PATH="…:$PATH"; <abs path> …`) which PowerShell cannot run,
+    /// and the premise doesn't hold here anyway — see the fn's Windows doc. Uses `cmd`, which
+    /// always resolves on Windows (`C:\Windows\System32\cmd.exe`), so this only passes
+    /// because the fn is a no-op, not because resolution happened to fail.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn resolve_installer_binary_is_a_no_op_on_windows() {
+        let original = "cmd /c exit 0";
+        assert_eq!(
+            resolve_installer_binary(original).await,
+            original,
+            "Windows must pass the installer command through untouched"
+        );
+    }
+
+    /// OpenAI's native installer writes the USER PATH, which an already-running tray cannot
+    /// see, so `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin` is the ONLY way the post-install
+    /// probe finds `codex.exe`. Dropping it turns a successful install into a reported
+    /// failure — the same bug `%LOCALAPPDATA%\cursor-agent` was added to prevent.
+    #[cfg(windows)]
+    #[test]
+    fn candidate_dirs_covers_the_native_codex_install_dir() {
+        // Same pattern as `candidate_dirs_includes_the_cursor_agent_install_root`: the lock
+        // and a pinned value are load-bearing, because a sibling test removes `LOCALAPPDATA`
+        // and these run in parallel.
+        let _guard = ENV_LOCK.blocking_lock();
+        let original = std::env::var_os("LOCALAPPDATA");
+        std::env::set_var("LOCALAPPDATA", r"C:\Users\meridian-test\AppData\Local");
+
+        let dirs = candidate_dirs();
+
+        match original {
+            Some(v) => std::env::set_var("LOCALAPPDATA", v),
+            None => std::env::remove_var("LOCALAPPDATA"),
+        }
+
+        assert!(
+            dirs.contains(&PathBuf::from(
+                r"C:\Users\meridian-test\AppData\Local\Programs\OpenAI\Codex\bin"
+            )),
+            "{dirs:?}"
+        );
     }
 
     /// The regression this exists for: an npm-based install (`npm i -g @openai/codex`, etc.)
