@@ -99,6 +99,20 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `meridian db check` / `meridian db repair` — corruption diagnosis and
+    // recovery. Both are one-shot and exit; `repair` refuses to run while the
+    // daemon or the tray is alive, because rebuilding a file underneath a live
+    // writer is how you turn one corrupt database into two.
+    if std::env::args().nth(1).as_deref() == Some("db") {
+        let sub = std::env::args().nth(2).unwrap_or_default();
+        let obs_guard = observability::init("meridian-rust").ok();
+        let code = meridian::db::cli::run_db_command(&sub).await;
+        if let Some(g) = obs_guard {
+            g.shutdown().await;
+        }
+        std::process::exit(code);
+    }
+
     // (`meridian coding-agent-install-skill` used to live here. It wrote
     // ~/.claude/commands/session-summary.md so `claude -p /session-summary`
     // would resolve — an invocation the summariser no longer makes: the Claude
@@ -1078,6 +1092,53 @@ async fn main() -> Result<()> {
     let etl_tick_span: Arc<std::sync::Mutex<Option<tracing::Span>>> =
         Arc::new(std::sync::Mutex::new(None));
 
+    // 7b-bis. Structural screen of meridian.db before the first ETL pass.
+    //
+    //     `quick_check` catches damage the ETL would otherwise only discover
+    //     when a query happened to touch a bad page — which, depending on
+    //     where the corruption sits, can be hours later or (if it is confined
+    //     to a table the ETL never reads) never, while the tray silently fails
+    //     every frame write. Finding it here means the notice is raised once,
+    //     at a moment the user can connect to something.
+    //
+    //     Deliberately NOT inside `setup_db`: that has ~20 call sites, almost
+    //     all short-lived CLI hops, and this reads every page in the file.
+    //
+    //     Non-fatal. A corrupt database still serves the dashboard from the
+    //     tables that survived, and `meridian db repair` needs the user to
+    //     stop the daemon anyway — exiting here would just crash-loop under
+    //     launchd's KeepAlive.
+    let mut db_corrupt = match meridian::db::integrity::quick_check(&meridian, 20).await {
+        Ok(problems) if problems.is_empty() => false,
+        Ok(problems) => {
+            tracing::error!(
+                problem_count = problems.len(),
+                first = %problems.first().map(String::as_str).unwrap_or_default(),
+                "meridian.db failed its integrity check at startup — the ETL will not run until it is repaired"
+            );
+            let _ = meridian::notices::raise_typed(
+                &meridian,
+                meridian::notices::Notice {
+                    id: DB_CORRUPT_NOTICE,
+                    severity: "error",
+                    title: "Meridian's database is damaged",
+                    detail: &problems.join("; "),
+                    remedy: Some("Quit Meridian, then run 'meridian db repair' in a terminal"),
+                    event_key: DB_CORRUPT_NOTICE,
+                    deep_link: Some("/logs"),
+                },
+            )
+            .await;
+            true
+        }
+        // The check itself failing is not evidence either way — carry on and
+        // let the ETL's own error path classify it.
+        Err(e) => {
+            tracing::warn!(error = %e, "startup integrity check could not run");
+            false
+        }
+    };
+
     // 7c. Run ETL once immediately before entering the loop.
     //     Re-read config so that any settings.json present at startup takes effect.
     {
@@ -1085,24 +1146,21 @@ async fn main() -> Result<()> {
         let startup_tick = tracing::info_span!("startup_tick");
         *etl_tick_span.lock().unwrap_or_else(|e| e.into_inner()) = Some(startup_tick.clone());
         let _guard = startup_tick.enter();
-        tracing::info!("running initial ETL pass");
-        if let Err(e) = run_etl(&meridian).await {
-            tracing::error!(error = %e, "ETL run failed");
-            let _ = meridian::notices::raise(
-                &meridian,
-                "etl.failed",
-                "error",
-                "Activity capture pipeline failed",
-                &e.to_string(),
-                Some("Open /logs in the dashboard to see details"),
-            )
-            .await;
-        } else {
-            let _ = meridian::notices::clear(&meridian, "etl.failed").await;
+        // Skipped outright when 7b-bis already found the database damaged —
+        // the notice is raised and the pass could only fail.
+        if !db_corrupt {
+            tracing::info!("running initial ETL pass");
+            db_corrupt = etl_tick(&meridian).await;
         }
         etl_notify.notify_one();
-        if let Err(e) = meridian::etl::capture_retention::prune_capture_tables(&meridian).await {
-            tracing::warn!(error = %e, "capture retention sweep failed");
+        // Retention reads capture_frames too, so on a corrupt database it can
+        // only fail the same way — skip it rather than log a second, more
+        // confusing error for the same root cause.
+        if !db_corrupt {
+            if let Err(e) = meridian::etl::capture_retention::prune_capture_tables(&meridian).await
+            {
+                tracing::warn!(error = %e, "capture retention sweep failed");
+            }
         }
         if let Err(e) = run_pm_sync(&meridian, &cfg).await {
             tracing::error!("intelligence run failed: {}", e);
@@ -1229,26 +1287,24 @@ async fn main() -> Result<()> {
                 *etl_tick_span.lock().unwrap_or_else(|e| e.into_inner()) = Some(poll_tick.clone());
                 let _guard = poll_tick.enter();
                 tracing::debug!("starting ETL tick");
-                if let Err(e) = run_etl(&meridian).await {
-                    tracing::error!(error = %e, "ETL run failed");
-                    let _ = meridian::notices::raise(
-                        &meridian, "etl.failed", "error",
-                        "Activity capture pipeline failed",
-                        &e.to_string(),
-                        Some("Open /logs in the dashboard to see details"),
-                    ).await;
-                } else {
-                    let _ = meridian::notices::clear(&meridian, "etl.failed").await;
-                }
-                // Wake the background task linker to drain newly-created sessions.
-                etl_notify.notify_one();
+                // Latched, never re-tried — see DB_CORRUPT_NOTICE. Everything
+                // else in the tick (PM sync, notifications, plan nudge) reads
+                // tables corruption may not have touched, so the daemon stays
+                // useful instead of exiting.
+                if !db_corrupt {
+                    db_corrupt = etl_tick(&meridian).await;
+                    // Wake the background task linker to drain newly-created sessions.
+                    etl_notify.notify_one();
 
-                // Capture-table retention — age + processed-based prune of
-                // capture_frames/capture_ui_events/capture_secondary_screens,
-                // which otherwise grow unbounded. Runs every tick; internally
-                // paces its own incremental_vacuum to a coarser cadence.
-                if let Err(e) = meridian::etl::capture_retention::prune_capture_tables(&meridian).await {
-                    tracing::warn!(error = %e, "capture retention sweep failed");
+                    // Capture-table retention — age + processed-based prune of
+                    // capture_frames/capture_ui_events/capture_secondary_screens,
+                    // which otherwise grow unbounded. Runs every tick; internally
+                    // paces its own incremental_vacuum to a coarser cadence.
+                    if !db_corrupt {
+                        if let Err(e) = meridian::etl::capture_retention::prune_capture_tables(&meridian).await {
+                            tracing::warn!(error = %e, "capture retention sweep failed");
+                        }
+                    }
                 }
 
                 // Morning plan nudge — idempotent per day, gated to working hours.
@@ -1341,3 +1397,70 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
+
+/// Runs one ETL pass and maps the outcome onto the notice bus.
+///
+/// Returns `true` when the failure was database corruption, which the caller
+/// MUST treat as terminal for the ETL: see [`DB_CORRUPT_NOTICE`].
+///
+/// Shared by the startup pass and the poll loop so the two cannot drift - they
+/// previously carried copy-pasted `raise`/`clear` blocks, and a corruption
+/// branch added to one of them only would leave whichever path the user hit
+/// first still spinning.
+async fn etl_tick(meridian: &meridian::db::SqlitePool) -> bool {
+    match run_etl(meridian).await {
+        Ok(_) => {
+            let _ = meridian::notices::clear(meridian, "etl.failed").await;
+            false
+        }
+        Err(e) if meridian::db::integrity::is_corrupt_error(&e) => {
+            tracing::error!(
+                error = %e,
+                "ETL run failed: meridian.db is corrupt - stopping the ETL until it is repaired"
+            );
+            // Distinct from `etl.failed` on purpose. The generic notice says
+            // "Open /logs", which for corruption is a dead end: nothing in the
+            // logs tells the user what to do, and the condition cannot clear
+            // by itself.
+            let _ = meridian::notices::raise_typed(
+                meridian,
+                meridian::notices::Notice {
+                    id: DB_CORRUPT_NOTICE,
+                    severity: "error",
+                    title: "Meridian's database is damaged",
+                    detail: &e.to_string(),
+                    remedy: Some("Quit Meridian, then run 'meridian db repair' in a terminal"),
+                    event_key: DB_CORRUPT_NOTICE,
+                    deep_link: Some("/logs"),
+                },
+            )
+            .await;
+            true
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "ETL run failed");
+            let _ = meridian::notices::raise(
+                meridian,
+                "etl.failed",
+                "error",
+                "Activity capture pipeline failed",
+                &e.to_string(),
+                Some("Open /logs in the dashboard to see details"),
+            )
+            .await;
+            false
+        }
+    }
+}
+
+/// Notice id raised when `meridian.db` is structurally damaged.
+///
+/// Unlike every other fault on the bus this one is **latched, not polled**:
+/// once raised, the daemon stops calling `run_etl` for the rest of the
+/// process's life. Corruption cannot resolve without an operator running
+/// `meridian db repair` (which requires the daemon to be stopped anyway), so
+/// retrying every 60 s only re-reads damaged pages behind a banner that is
+/// already correct. That retry loop is what this whole feature replaces: the
+/// motivating incident spun a failing `get_frames_since` once a minute for
+/// over a day.
+const DB_CORRUPT_NOTICE: &str = "db.corrupt";
