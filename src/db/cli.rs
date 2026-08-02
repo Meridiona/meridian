@@ -36,48 +36,51 @@ pub async fn run_db_command(sub: &str) -> i32 {
     let key = std::env::var("MERIDIAN_DB_KEY").ok();
 
     match sub {
-        "check" => match crate::db::repair::inspect(&db_path, key.as_deref()).await {
-            Ok((problems, scan)) if problems.is_empty() && scan.is_healthy() => {
-                println!(
-                    "meridian.db is healthy ({} tables scanned).",
-                    scan.healthy.len()
-                );
-                0
-            }
-            Ok((problems, scan)) => {
-                println!("meridian.db is DAMAGED.\n");
-                if !problems.is_empty() {
-                    let shown = problems.len().min(10);
-                    println!("Structural problems ({shown} of {} shown):", problems.len());
-                    for p in problems.iter().take(shown) {
-                        println!("  {p}");
-                    }
-                    println!();
+        "check" => {
+            match crate::db::repair::inspect(&db_path, key.as_deref()).await {
+                Ok((problems, scan)) if problems.is_empty() && scan.is_healthy() => {
+                    println!(
+                        "meridian.db is healthy ({} tables scanned).",
+                        scan.healthy.len()
+                    );
+                    0
                 }
-                if !scan.corrupt.is_empty() {
-                    println!("Unreadable tables:");
-                    for t in &scan.corrupt {
-                        let kind = if crate::db::integrity::DISPOSABLE_TABLES.contains(&t.as_str())
-                        {
-                            "capture scratch - safe to lose"
-                        } else {
-                            "contains your data"
-                        };
-                        println!("  {t}  ({kind})");
+                Ok((problems, scan)) => {
+                    println!("meridian.db is DAMAGED.\n");
+                    if !problems.is_empty() {
+                        let shown = problems.len().min(10);
+                        println!("Structural problems ({shown} of {} shown):", problems.len());
+                        for p in problems.iter().take(shown) {
+                            println!("  {p}");
+                        }
+                        println!();
                     }
-                    println!();
-                }
-                println!(
+                    if !scan.corrupt.is_empty() {
+                        println!("Unreadable tables:");
+                        for t in &scan.corrupt {
+                            let kind =
+                                if crate::db::integrity::DISPOSABLE_TABLES.contains(&t.as_str()) {
+                                    "capture scratch - safe to lose"
+                                } else {
+                                    "contains your data"
+                                };
+                            println!("  {t}  ({kind})");
+                        }
+                        println!();
+                    }
+                    println!(
                     "Run 'meridian db repair' to rebuild it, keeping every row that still reads."
                 );
-                println!("Quit the Meridian app and stop the daemon first.");
-                1
+                    println!("Pause tracking from the tray menu and quit Meridian first - repair refuses to");
+                    println!("run while either the daemon or the tray is still writing.");
+                    1
+                }
+                Err(e) => {
+                    eprintln!("could not inspect the database: {e:#}");
+                    1
+                }
             }
-            Err(e) => {
-                eprintln!("could not inspect the database: {e:#}");
-                1
-            }
-        },
+        }
         "repair" => {
             // Enforced here, not inside repair(): see that function's doc for
             // why the precondition lives at the boundary.
