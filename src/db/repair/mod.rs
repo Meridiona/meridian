@@ -102,13 +102,32 @@ pub struct TableOutcome {
 }
 
 /// Outcome of a whole repair.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct RepairReport {
     pub tables: Vec<TableOutcome>,
     /// Where the damaged original was moved to. Never deleted.
     pub original_backup: PathBuf,
     pub before_bytes: u64,
     pub after_bytes: u64,
+    /// False when `sqlite_sequence` could not be carried across - every table
+    /// still copied, but AUTOINCREMENT ids may restart and get reused. See
+    /// [`rebuild::carry_sqlite_sequence`].
+    pub sequence_carried: bool,
+}
+
+impl Default for RepairReport {
+    fn default() -> Self {
+        Self {
+            tables: Vec::new(),
+            original_backup: PathBuf::new(),
+            before_bytes: 0,
+            after_bytes: 0,
+            // Most repairs never touch this path (no AUTOINCREMENT table, or
+            // the carry succeeds) - default to "nothing to warn about" so
+            // only an actual failure flips it.
+            sequence_carried: true,
+        }
+    }
 }
 
 impl RepairReport {
@@ -148,6 +167,21 @@ impl RepairReport {
 /// out from under an open handle. The daemon has no way to *ask* the tray to
 /// stop - `daemon.sock` runs the other direction - so this is a hard refusal
 /// with instructions, not something to coordinate around.
+///
+/// # Known limitation: this is a point-in-time check, not a held lock
+///
+/// A rebuild of a multi-GB database takes minutes, and nothing stops a user
+/// from relaunching the daemon or tray after this check passes but before the
+/// swap completes - which would replace the file out from under a fresh
+/// writer, turning one corrupt database into two. This is specific to the
+/// **CLI** path (`meridian db repair`): the tray-initiated repair
+/// ([`marker`], `tray/src-tauri/src/repair_boot.rs`) already closes the
+/// equivalent window properly, via a marker the daemon checks and stands down
+/// for plus an app restart that guarantees the tray itself holds no pool.
+/// Giving the CLI path the same guarantee would mean this function writing
+/// that same marker and waiting on it rather than taking one snapshot, which
+/// is a real fix along an already-proven pattern, just not one folded into
+/// this pass.
 pub async fn ensure_no_writers() -> Result<()> {
     if crate::platform::daemon_already_running().await {
         bail!(
@@ -201,19 +235,25 @@ fn stop_daemon_hint() -> &'static str {
     }
 }
 
-/// True when a `meridian-tray` process is alive.
+/// True when a `meridian-tray` process is alive, OR the probe itself could
+/// not run.
 ///
 /// Deliberately a process probe rather than anything the tray cooperates with:
 /// a tray that is wedged (the failure mode that motivated this whole feature
 /// was a tray crash-loop) would not answer a handshake, and "it did not reply"
-/// must not read as "it is safe to proceed".
+/// must not read as "it is safe to proceed". The same reasoning applies to the
+/// probe command itself - if `pgrep`/`tasklist` is missing from `PATH` or
+/// fails to spawn, that proves nothing about the tray, so it fails closed
+/// (assumes a writer is present) rather than open.
 #[cfg(unix)]
 fn tray_is_running() -> bool {
     std::process::Command::new("pgrep")
         .args(["-x", "meridian-tray"])
         .output()
         .map(|o| o.status.success() && !o.stdout.is_empty())
-        .unwrap_or(false)
+        // A probe that could not run proves nothing either way. Assume a
+        // writer rather than let an environment quirk unlock the swap.
+        .unwrap_or(true)
 }
 
 #[cfg(not(unix))]
@@ -222,7 +262,7 @@ fn tray_is_running() -> bool {
         .args(["/FI", "IMAGENAME eq meridian-tray.exe", "/NH"])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).contains("meridian-tray.exe"))
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 /// Rebuilds the database at `db_path` into a fresh file and swaps it in.
@@ -270,6 +310,24 @@ pub async fn repair(db_path: &Path, key_hex: Option<&str>) -> Result<RepairRepor
         }
     };
 
+    // The replacement is about to become the user's database. Refuse to
+    // install one that is not itself sound - the original is still in place
+    // here, so a bad replacement costs nothing beyond the wasted rebuild.
+    match verify_replacement(&tmp_path, key_hex).await {
+        Ok(problems) if problems.is_empty() => {}
+        Ok(problems) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            bail!(
+                "the rebuilt database is not sound ({} problem(s)) - the original is unchanged",
+                problems.len()
+            );
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e).context("verifying the replacement - the original is unchanged");
+        }
+    }
+
     let backup_path = db_path.with_extension(format!(
         "db.corrupt-backup-{}",
         chrono::Utc::now().format("%Y%m%d%H%M%S")
@@ -290,6 +348,19 @@ pub async fn repair(db_path: &Path, key_hex: Option<&str>) -> Result<RepairRepor
         "database repair complete"
     );
     Ok(report)
+}
+
+/// Opens the freshly-built replacement at `tmp_path` read-only and runs
+/// [`integrity::quick_check`] against it, so [`repair`] can refuse to install
+/// a replacement that is not itself sound.
+async fn verify_replacement(tmp_path: &Path, key_hex: Option<&str>) -> Result<Vec<String>> {
+    let uri = format!("sqlite://{}", tmp_path.display());
+    let pool = meridian_core::db_crypto::open_pool_with_key_readonly(&uri, key_hex)
+        .await
+        .context("reopening the replacement to verify it")?;
+    let problems = integrity::quick_check(&pool, 20).await;
+    pool.close().await;
+    problems
 }
 
 /// Convenience wrapper: repair the database a pool would open, given its path.
@@ -313,7 +384,7 @@ pub async fn inspect(
     let pool: SqlitePool = meridian_core::db_crypto::open_pool_with_key_readonly(&uri, key_hex)
         .await
         .context("opening the database to inspect it")?;
-    let problems = integrity::integrity_check(&pool, 50)
+    let mut problems = integrity::integrity_check(&pool, 50)
         .await
         .unwrap_or_else(|e| {
             // integrity_check itself can fail on a badly damaged header; that is a
@@ -324,7 +395,15 @@ pub async fn inspect(
     pool.close().await;
     match scan {
         Ok(scan) => Ok((problems, scan)),
-        Err(e) if is_corrupt_error(&e) => Ok((problems, integrity::Scan::default())),
+        Err(e) if is_corrupt_error(&e) => {
+            // An empty `Scan` reports `is_healthy() == true` - the CLI would
+            // then print "meridian.db is healthy (0 tables scanned)" and exit
+            // 0 on a database that just failed to scan at all. Record the
+            // failure as a problem so the damaged answer cannot degrade into
+            // a clean one.
+            problems.push(format!("the table scan could not start: {e}"));
+            Ok((problems, integrity::Scan::default()))
+        }
         Err(e) => Err(e),
     }
 }

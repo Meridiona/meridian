@@ -97,6 +97,20 @@ async fn build(damage: bool) -> (SqlitePool, PathBuf, tempfile::TempDir) {
             .execute(&pool)
             .await
             .expect("page_size");
+        // SQLite ignores `page_size` once the database header exists (which
+        // `open` above already created), unless a `VACUUM` follows - so this
+        // PRAGMA can silently no-op and leave the file on whatever the build's
+        // default happens to be. Read the effective value back rather than
+        // assume it took, so a mismatch fails loudly instead of quietly
+        // moving the byte offsets `FIRST_DAMAGED_PAGE`/`DAMAGED_PAGES` assume.
+        let (effective,): (i64,) = sqlx::query_as("PRAGMA page_size")
+            .fetch_one(&pool)
+            .await
+            .expect("read page_size");
+        assert_eq!(
+            effective as u64, PAGE_SIZE,
+            "the fixture's byte offsets assume a {PAGE_SIZE}-byte page"
+        );
         sqlx::query("CREATE TABLE keepers (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
             .execute(&pool)
             .await

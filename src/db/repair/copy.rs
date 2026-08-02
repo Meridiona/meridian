@@ -209,6 +209,32 @@ pub(super) async fn copy_table(
     }
 
     // Tier 2: row by row, skipping only what genuinely cannot be read.
+    //
+    // Deliberately NOT batched into explicit transactions, despite the
+    // autocommit-per-row cost: tried it, and a `COMMIT` after a batch that
+    // included even one `SQLITE_CORRUPT` row itself fails with "database disk
+    // image is malformed" - confirmed against the real fixture, where it took
+    // out every row in the batch, not just the damaged one. SQLite treats a
+    // corruption error inside an explicit transaction as poisoning that
+    // transaction, which is exactly backwards for a loop whose entire job is
+    // to keep going past exactly that error. Autocommit isolates each row's
+    // fate to itself, which is what tier 2 needs even though it costs a
+    // commit per row.
+    //
+    // The range is walked densely (`lo..=hi`), not from a pre-enumerated list
+    // of real rowids, for the same kind of reason: a *sequential* scan for
+    // real rowids (e.g. `SELECT rowid FROM src.t`) has to physically walk
+    // every intervening page in b-tree order and stops dead at the first
+    // damaged one, so it recovers only a prefix. Point lookups by rowid each
+    // descend independently from the root and only fail for the specific rows
+    // whose own leaf or overflow page is damaged - which is what lets this
+    // loop isolate exactly the corrupt rows instead of losing everything
+    // after the first one. Confirmed empirically: swapping this for a
+    // sequential enumeration dropped recovery on the motivating fixture from
+    // >300/400 rows to 16/400. The cost this trades away - wasted point
+    // queries on gaps left by deleted rows - is real but bounded in practice:
+    // the tables large enough to accumulate such gaps (`capture_*`) are
+    // [`integrity::DISPOSABLE_TABLES`] and never reach tier 2 at all.
     outcome.salvaged_row_by_row = true;
     let Some((lo, hi)) = rowid_bounds(conn, &q).await else {
         tracing::warn!(table = %table, "could not read the rowid range - table left empty");
@@ -269,6 +295,11 @@ async fn source_has_rows(conn: &mut sqlx::SqliteConnection, q: &str) -> bool {
 /// leaf, descending at the last, and neither has to traverse the damage in
 /// between. Each is tried separately so damage at one end still leaves the
 /// other usable.
+///
+/// The dense range this yields is walked with per-rowid point lookups rather
+/// than replaced by a pre-enumerated list of real rowids - see the comment at
+/// [`copy_table`]'s tier 2 loop for why a sequential enumeration would lose
+/// far more data than this saves in wasted queries.
 async fn rowid_bounds(conn: &mut sqlx::SqliteConnection, q: &str) -> Option<(i64, i64)> {
     async fn end(conn: &mut sqlx::SqliteConnection, q: &str, dir: &str) -> Option<i64> {
         sqlx::query_as::<_, (i64,)>(&format!(
