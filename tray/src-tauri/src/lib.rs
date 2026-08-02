@@ -513,13 +513,21 @@ pub fn run() {
                     // as it was before this span grew a wrapper): the capture
                     // feature is the only later consumer, but the clone itself is
                     // cheap and every build needs a value to return.
+                    let capture_pool = db_pool.clone();
+                    // The encryption-state notice below needs a pool handle before
+                    // db_pool is moved into managed state.
+                    let encryption_notice_pool = db_pool.clone();
+                    app.manage(db_pool);
+
                     // Report the repair now that there is a pool to write a notice
                     // with. Deliberately after `app.manage`: the notice is the
                     // only trace the user sees of an operation that happened
                     // before the window existed, but it must never be able to
-                    // cost them the pool itself.
+                    // cost them the pool itself — so this reads `capture_pool`,
+                    // never the `db_pool` that was just moved above, and the
+                    // pool is already managed by the time this block runs at all.
                     if let Some(outcome) = repair_outcome {
-                        if let Some(p) = db_pool.clone() {
+                        if let Some(p) = capture_pool.clone() {
                             // Own the strings before the task takes them: the
                             // notice borrows its fields, and `outcome` cannot
                             // outlive this scope.
@@ -555,12 +563,6 @@ pub fn run() {
                             });
                         }
                     }
-
-                    let capture_pool = db_pool.clone();
-                    // The encryption-state notice below needs a pool handle before
-                    // db_pool is moved into managed state.
-                    let encryption_notice_pool = db_pool.clone();
-                    app.manage(db_pool);
 
                     // Encryption was intended (a key was resolved) but the on-disk DB is
                     // still plaintext ⇒ encrypt_in_place didn't complete (on Windows the
