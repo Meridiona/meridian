@@ -47,6 +47,23 @@ env:
   # a restored cache and compiles once, so the incremental state is never read
   # back — only WRITTEN, inflating target/ and the cache tarball for no reuse.
   CARGO_INCREMENTAL: "0"
+  # Full debug info (the dev/test default, `debug = 2`) is the single most
+  # expensive thing these jobs do that nothing reads. It is emitted for every
+  # workspace crate and then linked into ~20 test binaries; on Windows that
+  # means generating a PDB per binary, and the `test` step there costs 19m
+  # against macOS's 8m for the same work.
+  #
+  # Nothing consumes it. CI never attaches a debugger and never opens a core
+  # dump - the only artefact anyone reads is the panic message and the test
+  # name, and `line-tables-only` keeps backtraces WITH file/line while dropping
+  # the type and variable descriptions that make up the bulk of the cost.
+  #
+  # CI-only on purpose: set here rather than as `[profile.dev]` in Cargo.toml so
+  # local builds keep full debug info for rust-analyzer and lldb. `test`
+  # inherits `dev`, but both are set explicitly - the inheritance is a cargo
+  # implementation detail and this is not the place to be clever.
+  CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+  CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
   CARGO_NET_RETRY: "3"
   # The tray pulls screenpipe-screen/-a11y from the PRIVATE Meridiona/
   # screenpipe-fork (a git dep). cargo RESOLVES it for the whole workspace, so
