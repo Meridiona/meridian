@@ -332,6 +332,7 @@ pub async fn inspect(
 // Split three ways so each file stays under the repo's 500-line ceiling.
 // `rebuild` builds the replacement file; `copy` moves one table into it.
 mod copy;
+pub mod marker;
 mod rebuild;
 
 use rebuild::build_replacement;
