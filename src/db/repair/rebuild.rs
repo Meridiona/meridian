@@ -184,7 +184,20 @@ pub(super) async fn build_replacement(
 /// original as unchanged.
 fn ensure_checkpointed(tmp_path: &Path) -> Result<()> {
     let wal = std::path::PathBuf::from(format!("{}-wal", tmp_path.display()));
-    let held = std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
+    // A missing sidecar is the only case that actually means "no WAL held" -
+    // collapsing every stat error into that (the previous `unwrap_or(0)`) let
+    // a permissions problem or another transient I/O error masquerade as a
+    // clean checkpoint on the one check standing between a corrupt swap and a
+    // sound one. Anything other than "not found" fails loud instead.
+    let held = match std::fs::metadata(&wal) {
+        Ok(m) => m.len(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(e) => {
+            return Err(e).with_context(|| {
+                format!("could not check for a write-ahead log at {}", wal.display())
+            })
+        }
+    };
     if held > 0 {
         anyhow::bail!(
             "the rebuilt database still has an un-checkpointed write-ahead log \

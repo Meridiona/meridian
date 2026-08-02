@@ -141,10 +141,18 @@ fn clear_streak(id: &str) -> bool {
 pub fn record_success(provider: LlmProvider) {
     let id = provider.as_str().to_string();
     let was_failing = clear_streak(&id);
-    let stale_failure = matches!(
-        load().get(&id).map(|o| &o.outcome),
-        Some(ProviderTestOutcome::Failed { .. }) | Some(ProviderTestOutcome::RateLimited { .. })
-    );
+    // Short-circuited on purpose: `load()` reads and parses the whole record from disk, and
+    // this function runs on EVERY successful call - the common, healthy-provider path. When
+    // the in-memory streak was already non-zero we already know a recovery must be persisted
+    // and don't need the disk to tell us so; the read is only for the one case the streak
+    // can't see - a stale ON-DISK failure/rate-limit with a clean in-memory streak (e.g. right
+    // after a daemon restart, or a rate-limit that doesn't touch the streak).
+    let stale_failure = !was_failing
+        && matches!(
+            load().get(&id).map(|o| &o.outcome),
+            Some(ProviderTestOutcome::Failed { .. })
+                | Some(ProviderTestOutcome::RateLimited { .. })
+        );
     if !was_failing && !stale_failure {
         return;
     }
@@ -254,9 +262,14 @@ pub fn most_recent_outcome(
             t_out.clone()
         }),
         (Some((_, out)), None) | (None, Some((_, out))) => Some(out.clone()),
-        // No usable timestamp anywhere: fall back to the test result's outcome if there is
-        // one at all, so a pre-existing cache with an odd timestamp still counts.
-        (None, None) => last_test.map(|t| t.outcome.clone()),
+        // No usable timestamp on either side that survived to here: fall back to whichever
+        // input actually exists, preferring the test result for consistency with the
+        // tie-break above. Falling all the way to `None` would silently drop a real runtime
+        // observation whenever it is the ONLY input and its timestamp happens to be garbage -
+        // there is no test to lose to, so it should still count.
+        (None, None) => last_test
+            .map(|t| t.outcome.clone())
+            .or_else(|| last_runtime.map(|o| o.outcome.clone())),
     }
 }
 
@@ -367,6 +380,25 @@ mod tests {
         );
         assert!(matches!(
             most_recent_outcome(Some(&test), None),
+            Some(ProviderTestOutcome::Failed { .. })
+        ));
+    }
+
+    /// The mirror of the above and its own bug: a runtime observation with an unparseable
+    /// timestamp and NO competing test result must still report its outcome, not `None`. The
+    /// `(None, None)` match arm used to only ever fall back to `last_test`, silently dropping
+    /// the one input that actually exists whenever it was the runtime side that had the bad
+    /// timestamp.
+    #[test]
+    fn an_unparseable_runtime_timestamp_falls_back_to_the_runtime_outcome() {
+        let runtime = observation(
+            ProviderTestOutcome::Failed {
+                message: "boom".into(),
+            },
+            "not-a-timestamp".into(),
+        );
+        assert!(matches!(
+            most_recent_outcome(None, Some(&runtime)),
             Some(ProviderTestOutcome::Failed { .. })
         ));
     }
