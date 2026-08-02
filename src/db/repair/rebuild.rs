@@ -80,16 +80,17 @@ pub(super) async fn build_replacement(
         .await
         .context("disabling foreign keys for the rebuild")?;
 
+    // `ATTACH` takes no bind parameter for the filename, so the path goes in
+    // as a SQL literal. Double any embedded single quote - a home directory
+    // such as `/Users/o'brien/.meridian` would otherwise break the statement,
+    // and recovery is the last resort, so it must not fail on a legal path.
+    let src_literal = src_path.display().to_string().replace('\'', "''");
     let attach = match key_hex {
         Some(k) => {
             meridian_core::db_crypto::validate_key_hex(k)?;
-            format!(
-                "ATTACH DATABASE '{}' AS src KEY \"x'{}'\"",
-                src_path.display(),
-                k
-            )
+            format!("ATTACH DATABASE '{src_literal}' AS src KEY \"x'{k}'\"")
         }
-        None => format!("ATTACH DATABASE '{}' AS src KEY ''", src_path.display()),
+        None => format!("ATTACH DATABASE '{src_literal}' AS src KEY ''"),
     };
     conn.execute(attach.as_str())
         .await
@@ -111,7 +112,18 @@ pub(super) async fn build_replacement(
         report.tables.push(outcome);
     }
 
-    carry_sqlite_sequence(&mut conn).await?;
+    // Aborting the whole repair here would throw away a salvage that already
+    // succeeded for every table, over a failure that is deterministic - a
+    // retry would hit the exact same damaged `sqlite_sequence` page and fail
+    // identically, so the user could never repair the database despite every
+    // row having been readable. Record it instead and let the CLI say so.
+    if let Err(e) = carry_sqlite_sequence(&mut conn).await {
+        tracing::error!(
+            error = %e,
+            "could not carry sqlite_sequence into the replacement - AUTOINCREMENT ids may be reused"
+        );
+        report.sequence_carried = false;
+    }
 
     // Enforcement was off for the copy, so verify rather than assume. A
     // dangling reference here means the source was already inconsistent, or a

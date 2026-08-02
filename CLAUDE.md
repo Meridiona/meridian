@@ -630,7 +630,7 @@ meridian db repair   # rebuild into a fresh file; requires the daemon AND tray s
 
 ---
 
-## Database corruption (`src/db/integrity.rs`, `src/db/repair.rs`)
+## Database corruption (`src/db/integrity.rs`, `src/db/repair/`)
 
 SQLite b-tree damage is detected and recovered explicitly; it is not something
 the daemon can shrug off.

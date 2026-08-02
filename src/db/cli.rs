@@ -114,10 +114,16 @@ pub async fn run_db_command(sub: &str) -> i32 {
                             }
                         }
                     }
+                    if !report.sequence_carried {
+                        println!(
+                            "\nWARNING: could not carry AUTOINCREMENT counters into the \
+                             replacement - some ids may be reused. Check the logs for details."
+                        );
+                    }
                     println!(
-                        "\n  before : {} MB\n  after  : {} MB",
-                        report.before_bytes / 1_000_000,
-                        report.after_bytes / 1_000_000
+                        "\n  before : {:.1} MB\n  after  : {:.1} MB",
+                        report.before_bytes as f64 / 1_000_000.0,
+                        report.after_bytes as f64 / 1_000_000.0
                     );
                     println!(
                         "\nThe damaged original is kept at:\n  {}\nDelete it once you are satisfied with the result.",

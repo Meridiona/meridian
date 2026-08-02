@@ -444,9 +444,11 @@ pub fn swap_database_file(
     if let Err(e) = rename_with_retry(path, backup_path, RENAME_ATTEMPTS_CHEAP) {
         // On Windows `rename` fails with "os error 32" while another process
         // (the running daemon) still holds `meridian.db` open. Remove the
-        // multi-GB encrypted export so it doesn't accumulate as an orphan every
-        // startup (a real disk-exhaustion risk on a large DB); `key_unless_plaintext`
-        // keeps the daemon and CLIs working against the plaintext file meanwhile.
+        // multi-GB replacement (an encrypted export for `encrypt_in_place`, a
+        // rebuilt file for `db repair`) so it doesn't accumulate as an orphan
+        // every startup - a real disk-exhaustion risk on a large DB. The
+        // original is untouched, so both callers keep working against it
+        // meanwhile.
         let _ = std::fs::remove_file(tmp_path);
         tracing::error!(
             error = %e,
@@ -489,6 +491,7 @@ pub fn swap_database_file(
                     error = %e,
                     restore_error = %restore_err,
                     stage = "restore_original",
+                    op,
                     "database swap failed AND rollback failed - the database needs restoring by hand"
                 );
                 Err(e).context(format!(
