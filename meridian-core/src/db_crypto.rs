@@ -360,22 +360,48 @@ fn sql_quoted_path(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "''"))
 }
 
-/// `std::fs::rename` with a short bounded retry (~1s of linear backoff across 5
-/// attempts) via the shared [`crate::retry::retry_transient_blocking`]. On
-/// Windows a rename fails with os error 32 ("used by another process") while
-/// *any* handle to the source or destination is briefly open — an antivirus
-/// scan, the search indexer, or a SQLite handle sqlx's worker thread hasn't
-/// finished closing yet; the retry clears those transient holders. A genuinely
-/// stuck file (e.g. the daemon holding it for real) still fails, so the caller's
-/// fallback/rollback still runs. First-attempt success is the common fast path;
-/// Unix renames don't hit this but the retry is harmless there.
+/// Attempts for a rename whose failure is cheap — the caller can simply give up
+/// and retry the whole operation later, having changed nothing. ~1s of linear
+/// backoff.
+const RENAME_ATTEMPTS_CHEAP: u32 = 5;
+
+/// Attempts for a rename whose failure is expensive: it discards work that has
+/// already been done and cannot be cheaply redone. ~10s of linear backoff.
+///
+/// The asymmetry is about cost, not platform. Moving the original aside can
+/// fail harmlessly - nothing has changed, the caller retries. Failing to move
+/// the *replacement* into place throws away a completed rebuild and forces the
+/// rollback, and on the tray's repair path (`meridian::db::repair` via
+/// `repair_boot`) costs the user another full app restart to try again. Ten
+/// seconds of patience is nothing against that.
+///
+/// This budget is defence in depth, NOT the fix for anything observed. It was
+/// added alongside the Windows CI failure in PR #659, which looked like a
+/// too-short retry and was not: the rebuilt file was still held open by a
+/// connection `pool.close()` had not actually closed. That was fixed at the
+/// source (`db::repair::rebuild`). No lock has ever been seen to outlast even
+/// the one-second budget - do not read this constant as evidence that one has.
+const RENAME_ATTEMPTS_EXPENSIVE: u32 = 15;
+
+/// `std::fs::rename` with a bounded retry via the shared
+/// [`crate::retry::retry_transient_blocking`]. On Windows a rename fails with os
+/// error 32 ("used by another process") while *any* handle to the source or
+/// destination is briefly open — an antivirus scan, the search indexer, or a
+/// SQLite handle sqlx's worker thread hasn't finished closing yet; the retry
+/// clears those transient holders. A genuinely stuck file (e.g. the daemon
+/// holding it for real) still fails, so the caller's fallback/rollback still
+/// runs. First-attempt success is the common fast path; Unix renames don't hit
+/// this but the retry is harmless there.
+///
+/// `attempts` is the caller's choice between [`RENAME_ATTEMPTS_CHEAP`] and
+/// [`RENAME_ATTEMPTS_EXPENSIVE`] — see those constants for the reasoning.
 ///
 /// The blocking variant is deliberate: the only caller is
 /// `swap_database_file`, reached from the tray's `block_on(migrate)`
 /// startup gate before any other async work is scheduled, so the worst-case
 /// backoff blocks nothing but the migration it's part of.
-fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
-    crate::retry::retry_transient_blocking(5, std::time::Duration::from_millis(100), || {
+fn rename_with_retry(from: &Path, to: &Path, attempts: u32) -> std::io::Result<()> {
+    crate::retry::retry_transient_blocking(attempts, std::time::Duration::from_millis(100), || {
         std::fs::rename(from, to)
     })
 }
@@ -392,7 +418,9 @@ fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
 /// replacement alongside, then swap it in without ever risking a window where
 /// no database exists. Every rename goes through [`rename_with_retry`], so a
 /// transient Windows lock on any of the moves (including the rollback) retries
-/// rather than failing the swap.
+/// rather than failing the swap — with a **much longer budget for the second
+/// rename and the rollback** than the first, because their failure is far more
+/// expensive (see [`RENAME_ATTEMPTS_EXPENSIVE`]).
 ///
 /// Preserves the "a failed swap never loses data" invariant across BOTH
 /// renames — each of which can fail on the same class of Windows lock (a
@@ -413,7 +441,7 @@ pub fn swap_database_file(
     backup_path: &Path,
     op: &str,
 ) -> anyhow::Result<()> {
-    if let Err(e) = rename_with_retry(path, backup_path) {
+    if let Err(e) = rename_with_retry(path, backup_path, RENAME_ATTEMPTS_CHEAP) {
         // On Windows `rename` fails with "os error 32" while another process
         // (the running daemon) still holds `meridian.db` open. Remove the
         // multi-GB encrypted export so it doesn't accumulate as an orphan every
@@ -435,10 +463,10 @@ pub fn swap_database_file(
         let sidecar = std::path::PathBuf::from(format!("{}{}", path.display(), suffix));
         let _ = std::fs::remove_file(sidecar); // checkpointed to empty; safe to drop
     }
-    if let Err(e) = rename_with_retry(tmp_path, path) {
+    if let Err(e) = rename_with_retry(tmp_path, path, RENAME_ATTEMPTS_EXPENSIVE) {
         // `path` was already moved to `backup_path` above; put it back so we
         // never leave the user with no database at all.
-        match rename_with_retry(backup_path, path) {
+        match rename_with_retry(backup_path, path, RENAME_ATTEMPTS_EXPENSIVE) {
             Ok(()) => {
                 let _ = std::fs::remove_file(tmp_path);
                 tracing::error!(
@@ -1008,12 +1036,37 @@ mod tests {
         let b = dir.path().join("b");
         std::fs::write(&a, b"x").unwrap();
         // Happy path: renames (first attempt).
-        rename_with_retry(&a, &b).unwrap();
+        rename_with_retry(&a, &b, RENAME_ATTEMPTS_CHEAP).unwrap();
         assert!(b.exists() && !a.exists());
         // A persistent failure (missing source) still surfaces an Err after the
-        // retries are exhausted, so the caller's fallback/rollback runs.
+        // retries are exhausted, so the caller's fallback/rollback runs. Uses
+        // the cheap budget deliberately: the expensive one would spend ~10s
+        // sleeping to reach the same answer.
         let missing = dir.path().join("nope");
-        assert!(rename_with_retry(&missing, &b).is_err());
+        assert!(rename_with_retry(&missing, &b, RENAME_ATTEMPTS_CHEAP).is_err());
+    }
+
+    /// The rename that can throw away a completed rebuild must be given a
+    /// materially longer budget than the one that can only fail harmlessly.
+    /// Pinned because the whole point is the asymmetry, and a later tidy-up
+    /// that collapsed both to one constant would silently reinstate the
+    /// one-second budget that failed on Windows CI.
+    #[test]
+    fn the_expensive_rename_retries_far_longer_than_the_cheap_one() {
+        // The linear schedule `retry_transient_blocking` actually sleeps, so
+        // this compares real patience in milliseconds rather than raw attempt
+        // counts - and keeps the assertion off two constants, which clippy
+        // rightly refuses.
+        fn patience_ms(attempts: u32) -> u64 {
+            (1..u64::from(attempts)).map(|n| n * 100).sum()
+        }
+        let cheap = patience_ms(RENAME_ATTEMPTS_CHEAP);
+        let expensive = patience_ms(RENAME_ATTEMPTS_EXPENSIVE);
+        assert!(
+            expensive >= cheap * 3,
+            "the expensive rename waits {expensive}ms vs the cheap one's {cheap}ms - \
+             not meaningfully longer"
+        );
     }
 
     /// The happy path: both renames succeed — plaintext original preserved under

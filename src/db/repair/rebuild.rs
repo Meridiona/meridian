@@ -134,10 +134,52 @@ pub(super) async fn build_replacement(
     conn.execute("DETACH DATABASE src")
         .await
         .context("detaching the damaged database")?;
-    drop(conn);
+
+    // Close this connection EXPLICITLY rather than dropping it.
+    //
+    // `drop` hands a pooled connection back to the pool from a spawned task,
+    // and `pool.close()` does not reliably wait for that hand-back to land - so
+    // the pool reports closed while one connection is still open on the file.
+    // On Unix that shows up as a `-wal` outliving the rebuild (caught by
+    // [`ensure_checkpointed`]); on Windows the surviving handle makes the swap's
+    // `rename(tmp, path)` fail with os error 32, which is exactly how this was
+    // found - a CI failure that looked like an antivirus race and was not.
+    //
+    // `close()` awaits the real `sqlite3_close`, so afterwards the file is
+    // provably released and the WAL provably checkpointed away.
+    conn.close()
+        .await
+        .context("closing the rebuild connection")?;
     tmp_pool.close().await;
 
+    ensure_checkpointed(tmp_path)?;
     Ok(report)
+}
+
+/// Refuses to hand back a replacement that still has a write-ahead log.
+///
+/// The pool runs in WAL mode, so rows land in `<tmp>-wal` and only reach the
+/// database file at a checkpoint. `close()` checkpoints and deletes both
+/// sidecars - verified, not assumed (`sidecars_are_gone_after_the_rebuild`) -
+/// but the swap that follows renames **only the main file**. If a `-wal` ever
+/// survived, the repair would install a database missing whatever the log still
+/// held, in the one operation whose entire purpose is not losing rows, and it
+/// would look like success.
+///
+/// So this is a cheap assertion on an invariant that currently holds, not a
+/// workaround for one that doesn't. Failing here is safe: nothing has been
+/// swapped, and [`super::repair`] deletes the scratch file and reports the
+/// original as unchanged.
+fn ensure_checkpointed(tmp_path: &Path) -> Result<()> {
+    let wal = std::path::PathBuf::from(format!("{}-wal", tmp_path.display()));
+    let held = std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
+    if held > 0 {
+        anyhow::bail!(
+            "the rebuilt database still has an un-checkpointed write-ahead log \
+             ({held} bytes) - swapping it in would silently drop the rows it holds"
+        );
+    }
+    Ok(())
 }
 
 /// Carries `sqlite_sequence` high-water marks across.
@@ -234,5 +276,48 @@ mod tests {
 
         drop(conn);
         pool.close().await;
+    }
+
+    /// Pins the invariant [`ensure_checkpointed`] guards: a closed pool leaves
+    /// no write-ahead log behind, so the swap's single-file rename carries every
+    /// row. If sqlx ever stopped checkpointing on close, this fails here rather
+    /// than as unexplained missing rows after a repair.
+    #[tokio::test]
+    async fn sidecars_are_gone_after_the_rebuild() {
+        let fx = corrupt_db_fixture().await;
+        fx.pool.close().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tmp = dir.path().join("rebuilt.db");
+
+        build_replacement(&fx.path, &tmp, None)
+            .await
+            .expect("rebuild");
+
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = std::path::PathBuf::from(format!("{}{}", tmp.display(), suffix));
+            assert!(
+                !sidecar.exists(),
+                "{} survived the rebuild - the swap renames only the main file, \
+                 so its contents would be silently lost",
+                sidecar.display()
+            );
+        }
+        ensure_checkpointed(&tmp).expect("a checkpointed rebuild must pass the guard");
+    }
+
+    /// ...and the guard actually refuses when the log is there, rather than
+    /// being an assertion that can only ever pass.
+    #[test]
+    fn a_surviving_write_ahead_log_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tmp = dir.path().join("rebuilt.db");
+        std::fs::write(&tmp, b"db").expect("db");
+        std::fs::write(format!("{}-wal", tmp.display()), b"unflushed rows").expect("wal");
+
+        let err = ensure_checkpointed(&tmp).expect_err("a non-empty WAL must stop the swap");
+        assert!(
+            err.to_string().contains("write-ahead log"),
+            "the error must name what went wrong: {err}"
+        );
     }
 }
