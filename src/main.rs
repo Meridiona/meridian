@@ -995,6 +995,29 @@ async fn main() -> Result<()> {
         "meridian daemon starting"
     );
 
+    // 4a-bis. Stand down if a repair is claimed on this database.
+    //
+    //     MUST come before `setup_db` below: the whole point is not to open a
+    //     pool on a file the tray is about to rebuild and swap out from under
+    //     us. Migrations would run against the doomed file, and any write we
+    //     made would land in the copy that gets moved aside.
+    //
+    //     Exiting cleanly (not erroring) is deliberate. launchd's KeepAlive
+    //     relaunches us after ThrottleInterval — 30 s on the shipped plist —
+    //     so this is a stand-down that repeats every half minute until the
+    //     marker clears, not a crash loop. `meridian::db::repair::marker`
+    //     explains why the alternative (having the tray hold the daemon down
+    //     via launchctl) is a trap this repo has already been bitten by, and
+    //     why the marker expires rather than trusting the tray to live.
+    if meridian::db::repair::marker::pending(std::path::Path::new(&initial_cfg.meridian_db)) {
+        tracing::info!(
+            "a database repair is in progress — standing down without opening the database"
+        );
+        obs_guard.shutdown().await;
+        meridian::telemetry_spool::shipper::drain_once().await;
+        return Ok(());
+    }
+
     // 4b. Open / create meridian pool and run migrations FIRST — before any
     //     preflight that can block or fail. The UI and MCP server read this DB
     //     directly, so it must exist even when an optional component (capture,
