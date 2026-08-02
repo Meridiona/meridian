@@ -942,3 +942,12 @@ export interface InstallOutcome {
   /** The command that was actually run, for display and debugging. */
   command: string
 }
+
+/** `preview_repair` - what a database repair would face, for the confirmation copy. */
+export interface RepairPreview {
+  damaged: boolean
+  /** Tables that cannot be read end to end. */
+  corrupt_tables: string[]
+  /** Of those, the ones holding user data rather than capture scratch. */
+  product_tables: string[]
+}
