@@ -11,6 +11,7 @@ use meridian::etl::run_etl;
 use meridian::intelligence::{run_pm_force_sync, run_pm_sync};
 use meridian::observability;
 use tokio::sync::Notify;
+use tracing::Instrument;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -1142,39 +1143,46 @@ async fn main() -> Result<()> {
     {
         let meridian = meridian.clone();
         let db_corrupt = db_corrupt.clone();
-        tokio::spawn(async move {
-            match meridian::db::integrity::quick_check(&meridian, 20).await {
-                Ok(problems) if problems.is_empty() => {}
-                Ok(problems) => {
-                    tracing::error!(
-                        problem_count = problems.len(),
-                        first = %problems.first().map(String::as_str).unwrap_or_default(),
-                        "meridian.db failed its integrity check at startup — the ETL will not run until it is repaired"
-                    );
-                    let _ = meridian::notices::raise_typed(
-                        &meridian,
-                        meridian::notices::Notice {
-                            id: DB_CORRUPT_NOTICE,
-                            severity: "error",
-                            title: "Meridian's database is damaged",
-                            detail: &problems.join("; "),
-                            remedy: Some(
-                                "Pause tracking, quit Meridian, then run 'meridian db repair' in a terminal",
-                            ),
-                            event_key: DB_CORRUPT_NOTICE,
-                            deep_link: Some("/logs"),
-                        },
-                    )
-                    .await;
-                    db_corrupt.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-                // The check itself failing is not evidence either way — carry on and
-                // let the ETL's own error path classify it.
-                Err(e) => {
-                    tracing::warn!(error = %e, "startup integrity check could not run");
+        // Wrapped in its own span rather than relying on the startup_tick span below: this
+        // task is detached (spawned, not awaited) and can still be running once that span
+        // has closed, so nesting under it would attribute the check's duration/failure to a
+        // span that may already have ended.
+        tokio::spawn(
+            async move {
+                match meridian::db::integrity::quick_check(&meridian, 20).await {
+                    Ok(problems) if problems.is_empty() => {}
+                    Ok(problems) => {
+                        tracing::error!(
+                            problem_count = problems.len(),
+                            first = %problems.first().map(String::as_str).unwrap_or_default(),
+                            "meridian.db failed its integrity check at startup — the ETL will not run until it is repaired"
+                        );
+                        let _ = meridian::notices::raise_typed(
+                            &meridian,
+                            meridian::notices::Notice {
+                                id: DB_CORRUPT_NOTICE,
+                                severity: "error",
+                                title: "Meridian's database is damaged",
+                                detail: &problems.join("; "),
+                                remedy: Some(
+                                    "Pause tracking, quit Meridian, then run 'meridian db repair' in a terminal",
+                                ),
+                                event_key: DB_CORRUPT_NOTICE,
+                                deep_link: Some("/logs"),
+                            },
+                        )
+                        .await;
+                        db_corrupt.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    // The check itself failing is not evidence either way — carry on and
+                    // let the ETL's own error path classify it.
+                    Err(e) => {
+                        tracing::warn!(error = %e, "startup integrity check could not run");
+                    }
                 }
             }
-        });
+            .instrument(tracing::info_span!("startup_db_integrity_check")),
+        );
     }
 
     // 7c. Run ETL once immediately before entering the loop.

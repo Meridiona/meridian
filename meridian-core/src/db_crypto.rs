@@ -461,9 +461,29 @@ pub fn swap_database_file(
              (is meridian.db still open by the daemon or the tray?)"
         ));
     }
-    for suffix in ["-wal", "-shm"] {
-        let sidecar = std::path::PathBuf::from(format!("{}{}", path.display(), suffix));
-        let _ = std::fs::remove_file(sidecar); // checkpointed to empty; safe to drop
+    // The original's WAL is safe to drop ONLY when it has already been checkpointed to
+    // empty - true for `encrypt_in_place` (it checkpoints before ever calling this
+    // function), but NOT for `db repair`: that caller reads a damaged source through
+    // `ATTACH` and never checkpoints it, so a non-empty WAL there still holds committed
+    // rows the main file doesn't have yet. Deleting it would make the preserved "damaged
+    // original" backup - the one copy of what a repair couldn't salvage - WORSE than the
+    // live database was. Move each sidecar to sit beside `backup_path` under the same base
+    // name instead, so opening `backup_path` later still finds - and can recover - whatever
+    // the WAL held. A missing sidecar (the common, already-checkpointed case) is not an
+    // error.
+    let sidecar_paths: Vec<(std::path::PathBuf, std::path::PathBuf)> = ["-wal", "-shm"]
+        .iter()
+        .map(|suffix| {
+            (
+                std::path::PathBuf::from(format!("{}{}", path.display(), suffix)),
+                std::path::PathBuf::from(format!("{}{}", backup_path.display(), suffix)),
+            )
+        })
+        .collect();
+    for (sidecar, kept) in &sidecar_paths {
+        if sidecar.exists() {
+            let _ = std::fs::rename(sidecar, kept);
+        }
     }
     if let Err(e) = rename_with_retry(tmp_path, path, RENAME_ATTEMPTS_EXPENSIVE) {
         // `path` was already moved to `backup_path` above; put it back so we
@@ -471,6 +491,15 @@ pub fn swap_database_file(
         match rename_with_retry(backup_path, path, RENAME_ATTEMPTS_EXPENSIVE) {
             Ok(()) => {
                 let _ = std::fs::remove_file(tmp_path);
+                // The sidecars moved beside `backup_path` above belong with the main
+                // file wherever it ends up - move them back so the restored original
+                // is exactly as it was before this swap was attempted, not just the
+                // same bytes with its WAL stranded under the backup's name.
+                for (sidecar, kept) in &sidecar_paths {
+                    if kept.exists() {
+                        let _ = std::fs::rename(kept, sidecar);
+                    }
+                }
                 tracing::error!(
                     error = %e,
                     stage = "move_replacement_into_place",
@@ -1096,6 +1125,62 @@ mod tests {
             "plaintext backup preserved"
         );
         assert!(!tmp.exists(), "tmp consumed by the rename");
+    }
+
+    /// The bug this guards: `db repair`'s source is never checkpointed (unlike
+    /// `encrypt_in_place`'s), so a non-empty `-wal` on the original can hold committed rows
+    /// the main file doesn't have yet. It must be preserved, not deleted, and it must end up
+    /// alongside `backup_path` under the SAME base name so opening the backup later still
+    /// finds it.
+    #[test]
+    fn finalize_swap_preserves_a_non_empty_wal_beside_the_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meridian.db");
+        let tmp = dir.path().join("meridian.db.rebuilding-tmp");
+        let backup = dir.path().join("meridian.db.corrupt-backup-x");
+
+        std::fs::write(&path, b"DAMAGED-ORIGINAL").unwrap();
+        std::fs::write(format!("{}-wal", path.display()), b"UNCHECKPOINTED-ROWS").unwrap();
+        std::fs::write(&tmp, b"REBUILT-REPLACEMENT").unwrap();
+
+        swap_database_file(&path, &tmp, &backup, "db repair").unwrap();
+
+        assert!(
+            !std::path::PathBuf::from(format!("{}-wal", path.display())).exists(),
+            "the replacement's own directory must not inherit the original's stale WAL"
+        );
+        assert_eq!(
+            std::fs::read(format!("{}-wal", backup.display())).unwrap(),
+            b"UNCHECKPOINTED-ROWS",
+            "the WAL must survive beside the backup, not be deleted"
+        );
+    }
+
+    /// The rollback mirror of the above: if the swap has to restore the original, its WAL
+    /// (parked beside the backup name during the swap) must move back with it - otherwise a
+    /// human who removed the "damaged" backup after a successful-looking repair would also
+    /// discard rows the rollback was supposed to have kept intact.
+    #[test]
+    fn finalize_swap_restores_the_wal_alongside_the_original_on_rollback() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meridian.db");
+        let backup = dir.path().join("meridian.db.corrupt-backup-x");
+        let tmp = dir.path().join("does-not-exist.tmp"); // rename(tmp, path) → ENOENT
+
+        std::fs::write(&path, b"DAMAGED-ORIGINAL").unwrap();
+        std::fs::write(format!("{}-wal", path.display()), b"UNCHECKPOINTED-ROWS").unwrap();
+
+        swap_database_file(&path, &tmp, &backup, "db repair").unwrap_err();
+
+        assert_eq!(
+            std::fs::read(format!("{}-wal", path.display())).unwrap(),
+            b"UNCHECKPOINTED-ROWS",
+            "the WAL must be restored alongside the rolled-back original"
+        );
+        assert!(
+            !std::path::PathBuf::from(format!("{}-wal", backup.display())).exists(),
+            "the WAL must not be left stranded under the (rolled-back) backup name"
+        );
     }
 
     #[test]
