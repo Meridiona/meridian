@@ -344,6 +344,22 @@ fn interrupted_migration_leftovers(path: &Path) -> Vec<std::path::PathBuf> {
     found
 }
 
+/// Renders `path` as a SQLite string literal, doubling any single quote.
+///
+/// `ATTACH DATABASE` takes its filename as a **literal** and sqlx cannot bind a
+/// parameter there, so the path has to be interpolated - which means a path
+/// containing `'` would otherwise close the literal early and leave the rest to
+/// be parsed as SQL. Doubling the quote is SQLite's own escape.
+///
+/// This is not a remote-attack surface: the path comes from the user's own
+/// config and install layout, never from a wire. But an apostrophe in a macOS
+/// account name is ordinary enough - `/Users/o'brien/…` - and unescaped it
+/// turns into a baffling SQL syntax error in the middle of a database
+/// migration, on the one machine whose owner cannot avoid it.
+fn sql_quoted_path(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', "''"))
+}
+
 /// Attempts for a rename whose failure is cheap — the caller can simply give up
 /// and retry the whole operation later, having changed nothing. ~1s of linear
 /// backoff.
@@ -357,8 +373,14 @@ const RENAME_ATTEMPTS_CHEAP: u32 = 5;
 /// the *replacement* into place throws away a completed rebuild and forces the
 /// rollback, and on the tray's repair path (`meridian::db::repair` via
 /// `repair_boot`) costs the user another full app restart to try again. Ten
-/// seconds of patience is nothing against that; one second demonstrably was not
-/// enough, on a loaded Windows CI runner, against the real corruption fixture.
+/// seconds of patience is nothing against that.
+///
+/// This budget is defence in depth, NOT the fix for anything observed. It was
+/// added alongside the Windows CI failure in PR #659, which looked like a
+/// too-short retry and was not: the rebuilt file was still held open by a
+/// connection `pool.close()` had not actually closed. That was fixed at the
+/// source (`db::repair::rebuild`). No lock has ever been seen to outlast even
+/// the one-second budget - do not read this constant as evidence that one has.
 const RENAME_ATTEMPTS_EXPENSIVE: u32 = 15;
 
 /// `std::fs::rename` with a bounded retry via the shared
@@ -548,8 +570,8 @@ pub async fn encrypt_in_place(path: &Path, key_hex: &str) -> anyhow::Result<()> 
     let _ = std::fs::remove_file(&tmp_path); // best-effort cleanup of a prior interrupted attempt
 
     let attach_sql = format!(
-        "ATTACH DATABASE '{}' AS encrypted_export KEY \"x'{}'\";",
-        tmp_path.display(),
+        "ATTACH DATABASE {} AS encrypted_export KEY \"x'{}'\";",
+        sql_quoted_path(&tmp_path),
         key_hex
     );
     conn.execute(attach_sql.as_str())
@@ -619,8 +641,8 @@ pub async fn export_plaintext(
 
     let _ = std::fs::remove_file(out_path);
     let attach_sql = format!(
-        "ATTACH DATABASE '{}' AS plaintext_export KEY '';",
-        out_path.display()
+        "ATTACH DATABASE {} AS plaintext_export KEY '';",
+        sql_quoted_path(out_path)
     );
     conn.execute(attach_sql.as_str())
         .await
@@ -1108,6 +1130,48 @@ mod tests {
             .unwrap();
         pool.close().await;
         assert!(!is_plaintext_sqlite(&enc_path));
+    }
+
+    /// An apostrophe in the path must survive the `ATTACH DATABASE` literal.
+    ///
+    /// Runs the real migration rather than asserting on [`sql_quoted_path`] in
+    /// isolation: the bug this guards is that an unescaped quote closes the
+    /// literal early, which only shows up once SQLite actually parses the
+    /// statement. `/Users/o'brien/…` is an ordinary macOS home directory.
+    #[tokio::test]
+    async fn encrypt_in_place_handles_an_apostrophe_in_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let odd = dir.path().join("o'brien");
+        std::fs::create_dir(&odd).unwrap();
+        let db_path = odd.join("meridian.db");
+
+        let pool = open_pool_with_key(&db_path.display().to_string(), None, true, &[])
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t (x INTEGER)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO t (x) VALUES (7)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        encrypt_in_place(&db_path, TEST_KEY)
+            .await
+            .expect("an apostrophe in the path must not break the ATTACH literal");
+        assert!(!is_plaintext_sqlite(&db_path));
+
+        let pool = open_pool_with_key(&db_path.display().to_string(), Some(TEST_KEY), false, &[])
+            .await
+            .unwrap();
+        let row = sqlx::query("SELECT x FROM t")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<i64, _>(0), 7, "data must survive the migration");
+        pool.close().await;
     }
 
     #[tokio::test]

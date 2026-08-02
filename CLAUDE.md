@@ -169,15 +169,24 @@ care.
 # Build (SQLX_OFFLINE=true is set automatically via .cargo/config.toml)
 cargo build --release
 
-# Run all tests
-cargo test
+# Run all tests — `--workspace` is REQUIRED, see the warning below
+cargo test --workspace
 
 # Lint (must pass before committing)
-cargo clippy -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 
 # Format (must pass before committing)
 cargo fmt
 ```
+
+> **Always pass `--workspace`.** `members = [".", "meridian-core",
+> "meridian-oauth", "tray/src-tauri"]` makes the repo root itself a package, so
+> a bare `cargo test` / `cargo clippy` runs against **that package alone** and
+> silently skips the other three. They still *compile* (the daemon depends on
+> them), which is what makes the omission so convincing — they are simply never
+> tested and their test code is never linted. This hid two red `db_crypto` tests
+> for days with every gate green; CI and the pre-push hook now pass
+> `--workspace` for exactly this reason.
 
 Rust toolchain is pinned to **1.93.1** via `rust-toolchain.toml`.
 
@@ -654,7 +663,7 @@ fixtures that produce genuinely corrupt files live in `src/db/test_corrupt.rs`
 - Commit message style: `type(scope): short description` — e.g. `fix(etl): detect sleep gaps that span ETL run boundaries`
 - `commit-msg` hook validates conventional commits format — fix message before retrying
 - `pre-commit` hook runs `cargo fmt --check` and `cargo clippy -- -D warnings`
-- `pre-push` hook runs the full suite: `cargo fmt` + `cargo clippy` + UI build + UI tests + security audit (claude CLI) + `cargo test`
+- `pre-push` hook runs the full suite: `cargo fmt` + `cargo clippy --workspace` + UI build + UI tests + security audit (claude CLI) + `cargo test --workspace`
 - Never skip hooks with `--no-verify`
 - Install hooks after cloning: `bash scripts/setup-hooks.sh`
 - Never amend a commit that has already been pushed to `main` or `pre-main`
