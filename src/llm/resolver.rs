@@ -358,10 +358,15 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
         // No `retry_after`: this is our own bookkeeping talking, not the provider. The
         // real reset time is already held in the backoff map, and inventing a duration
         // here would let a caller mistake it for something the endpoint actually said.
-        return Err(LlmError::rate_limited(format!(
+        let err = LlmError::rate_limited(format!(
             "{} is rate-limited; waiting for the quota to reset",
             chosen.as_str()
-        )));
+        ));
+        // Re-stamp the runtime record so the banner stays up for the whole backoff window.
+        // Without this the observation would age out mid-outage, because every call inside
+        // the window returns here and never reaches the recording site below.
+        super::runtime_health::record_failure(chosen, &err);
+        return Err(err);
     }
 
     let backend = backend_for(chosen, cfg.clone());
@@ -383,7 +388,12 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
             }
         }
         match backend.complete(req).await {
-            Ok(out) => return Ok((out, chosen)),
+            Ok(out) => {
+                // The provider answered: clear any runtime health flag it was carrying, so a
+                // recovered provider drops the banner without waiting on a manual re-test.
+                super::runtime_health::record_success(chosen);
+                return Ok((out, chosen));
+            }
             Err(LlmError::RateLimited {
                 message,
                 retry_after,
@@ -431,6 +441,10 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
         error = %last,
         "llm: provider call did not succeed — leaving the work pending for the next tick"
     );
+    // The one place every exhausted call converges, so the dashboard banner learns about a
+    // provider that is installed and tested-fine but failing every real call — the state that
+    // silently leaves worklog hours pending and the day timeline empty.
+    super::runtime_health::record_failure(chosen, &last);
     Err(last)
 }
 
