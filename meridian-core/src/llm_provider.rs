@@ -151,10 +151,17 @@ impl LlmProvider {
     /// (`crate::llm::detect::install_provider` in the daemon crate). The strings are fixed
     /// literals, never interpolated with user input, so running them through a login shell is
     /// safe. Each is the vendor's own official, non-interactive installer.
+    ///
+    /// Three of the four are PLATFORM-SPLIT constants rather than inline literals, because
+    /// the command that works on macOS is not the command that works on Windows - see
+    /// [`CLAUDE_INSTALL_CMD`], [`CODEX_INSTALL_CMD`] and [`CURSOR_INSTALL_CMD`]. Copilot is
+    /// still npm-only: it has no native installer, and it is deliberately absent from the
+    /// picker (`CHOOSER_PROVIDER_IDS` in `ui/lib/llm-providers.ts`), so nothing in the UI can
+    /// reach this arm today.
     pub fn install_command(self) -> Option<&'static str> {
         match self {
-            LlmProvider::Claude => Some("npm i -g @anthropic-ai/claude-code"),
-            LlmProvider::Codex => Some("npm i -g @openai/codex"),
+            LlmProvider::Claude => Some(CLAUDE_INSTALL_CMD),
+            LlmProvider::Codex => Some(CODEX_INSTALL_CMD),
             LlmProvider::Cursor => Some(CURSOR_INSTALL_CMD),
             LlmProvider::Copilot => Some("npm i -g @github/copilot"),
             LlmProvider::Custom => None,
@@ -243,6 +250,65 @@ pub const CURSOR_INSTALL_CMD: &str = concat!(
     "'; iex $s"
 );
 
+/// Claude Code's installer.
+///
+/// # Unix
+/// npm, unchanged - the path this has always shipped and been tested on.
+///
+/// # Windows
+/// Anthropic's own native installer, which needs NEITHER node NOR npm: it downloads a
+/// self-contained `claude.exe` and delegates placement to the binary's own `claude
+/// install`, landing it in `~/.local/bin` (already a [`crate`]-side candidate dir, so the
+/// post-install probe finds it). `https://claude.ai/install.ps1` 302s to
+/// `downloads.claude.ai/claude-code-releases/bootstrap.ps1`.
+///
+/// Switching away from npm here is not a preference - it is the only form that WORKS. Three
+/// independent reasons, each fatal on its own:
+///
+/// 1. **`@anthropic-ai/claude-code` requires node >=22.** A Windows box whose PATH node is
+///    older installs a package that cannot run. Node lands on the SYSTEM PATH (the
+///    `C:\Program Files\nodejs` MSI), which always precedes the User PATH where a newer
+///    per-user node (winget, nvm) would sit - so the stale one wins and the user cannot fix
+///    it without admin.
+/// 2. **The npm form is what trips `llm::detect::resolve_installer_binary`.** A leading token
+///    that resolves to a real binary is precisely what triggers the POSIX `export PATH=…`
+///    rewrite; `irm` is a PowerShell alias, not a file on PATH, so this form is immune the
+///    same way [`CURSOR_INSTALL_CMD`]'s `$s = …` is.
+/// 3. **It reports failure honestly.** bootstrap.ps1 `exit`s non-zero on arch, version and
+///    manifest errors and propagates the inner installer's code - so a failed install cannot
+///    present as a success (see `llm::detect::installer_command`'s exit-code handling).
+#[cfg(not(windows))]
+pub const CLAUDE_INSTALL_CMD: &str = "npm i -g @anthropic-ai/claude-code";
+
+/// See [`CLAUDE_INSTALL_CMD`]'s Windows doc above. Plain PowerShell script text with no
+/// enclosing `powershell -Command "…"` wrapper - `llm::detect::installer_command` supplies
+/// that, exactly as it does for [`CURSOR_INSTALL_CMD`].
+#[cfg(windows)]
+pub const CLAUDE_INSTALL_CMD: &str = "irm https://claude.ai/install.ps1 | iex";
+
+/// Codex's installer.
+///
+/// # Unix
+/// npm, unchanged - as with [`CLAUDE_INSTALL_CMD`].
+///
+/// # Windows
+/// OpenAI's own standalone installer, which needs neither node nor npm (it downloads a
+/// pre-compiled binary and will even remove a conflicting npm/bun-managed Codex).
+/// `https://chatgpt.com/codex/install.ps1` 302s to `releases.openai.com/codex/install.ps1`.
+///
+/// **Coupled to `llm::detect::candidate_dirs`:** this installer lands `codex.exe` in
+/// `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin` and writes the USER PATH, which does not
+/// affect the already-running tray process. So the post-install probe can only find it via
+/// a candidate dir - that entry MUST stay in `candidate_dirs` or a perfectly successful
+/// install reports itself as failed, the identical bug `%LOCALAPPDATA%\cursor-agent` was
+/// added there to prevent.
+#[cfg(not(windows))]
+pub const CODEX_INSTALL_CMD: &str = "npm i -g @openai/codex";
+
+/// See [`CODEX_INSTALL_CMD`]'s Windows doc above.
+#[cfg(windows)]
+pub const CODEX_INSTALL_CMD: &str = "irm https://chatgpt.com/codex/install.ps1 | iex";
+
 #[cfg(test)]
 mod install_pin_tests {
     use super::*;
@@ -289,6 +355,65 @@ mod install_pin_tests {
         assert!(CURSOR_INSTALL_CMD.contains("iex "));
         assert!(!CURSOR_INSTALL_CMD.contains("curl"));
         assert!(!CURSOR_INSTALL_CMD.contains("bash"));
+    }
+
+    /// Unix keeps npm for Claude and Codex - the path that has always shipped there. Pins it
+    /// so a future Windows-motivated edit can't quietly retarget the platform that works.
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_claude_and_codex_install_via_npm() {
+        assert_eq!(
+            LlmProvider::Claude.install_command(),
+            Some("npm i -g @anthropic-ai/claude-code")
+        );
+        assert_eq!(
+            LlmProvider::Codex.install_command(),
+            Some("npm i -g @openai/codex")
+        );
+    }
+
+    /// The Windows fix, pinned. `npm i -g` cannot be the Windows form for either provider:
+    /// Claude's package needs node >=22 (routinely absent, and unfixable without admin when
+    /// a stale node sits on the SYSTEM PATH), and an npm leading token is exactly what makes
+    /// `llm::detect::resolve_installer_binary` rewrite the command into POSIX `export PATH=…`
+    /// syntax that PowerShell cannot parse. Both native installers are node-free.
+    #[cfg(windows)]
+    #[test]
+    fn windows_claude_and_codex_install_natively_without_npm() {
+        for cmd in [CLAUDE_INSTALL_CMD, CODEX_INSTALL_CMD] {
+            assert!(cmd.contains("irm "), "{cmd}");
+            assert!(cmd.contains("iex"), "{cmd}");
+            assert!(!cmd.contains("npm"), "{cmd}");
+            // The leading token must NOT be a resolvable binary name - that is what keeps
+            // `resolve_installer_binary` from rewriting it. `irm` is a PowerShell alias.
+            assert!(cmd.starts_with("irm "), "{cmd}");
+        }
+        assert_eq!(
+            LlmProvider::Claude.install_command(),
+            Some(CLAUDE_INSTALL_CMD)
+        );
+        assert_eq!(
+            LlmProvider::Codex.install_command(),
+            Some(CODEX_INSTALL_CMD)
+        );
+    }
+
+    /// Every installer Meridian runs on Windows must be PowerShell-executable. `curl`/`bash`/
+    /// `sed` are absent from stock Windows, and the POSIX `export` builtin does not exist in
+    /// PowerShell at all - a command containing any of them fails with
+    /// `CommandNotFoundException` before the vendor's installer is ever reached.
+    #[cfg(windows)]
+    #[test]
+    fn no_windows_install_command_uses_posix_shell_syntax() {
+        for p in [LlmProvider::Claude, LlmProvider::Codex, LlmProvider::Cursor] {
+            let cmd = p.install_command().expect("built-in CLI has an installer");
+            for posix in ["curl ", "bash", "sed ", "export "] {
+                assert!(
+                    !cmd.contains(posix),
+                    "{p:?}'s Windows installer contains POSIX-only `{posix}`: {cmd}"
+                );
+            }
+        }
     }
 }
 

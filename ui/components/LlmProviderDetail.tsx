@@ -181,11 +181,15 @@ export default function LlmProviderDetail({
         gap: 10, padding: '14px 15px', borderRadius: 12,
         background: 'var(--t-card)', border: '1px solid var(--t-ctrl-border)',
       }}>
+        {/* installHint: the probe reports the command THIS platform actually runs. The static
+            meta hint is a single string compiled for both platforms and names the npm command,
+            which is wrong on Windows - and it doubles as the "run it yourself" fallback after a
+            failed install. Fall back to it only while the probe is still in flight. */}
         <ConnectionBody
           phase={phase}
           name={p.name}
           providerId={p.id}
-          installHint={p.installHint}
+          installHint={probed?.install_command ?? p.installHint}
           installMsg={installMsg}
           signInMsg={signInMsg}
           onInstall={install}
