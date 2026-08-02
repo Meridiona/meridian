@@ -41,8 +41,11 @@ pub(crate) const SELF_PRODUCT_NAME_LOWER: &str = "meridian";
 pub(crate) const SELF_BINARY_NAME: &str = "meridian-tray";
 pub(crate) mod format;
 mod install;
+// Runs a requested database repair during startup, before anything opens
+// meridian.db. See its header for why repair cannot happen mid-session.
 mod poll;
 mod relocate;
+mod repair_boot;
 mod state;
 mod sys;
 mod tray;
@@ -438,6 +441,18 @@ pub fn run() {
                         db_key_hex
                     };
 
+                    // A repair requested last session runs HERE and nowhere else:
+                    // the key is resolved (so an encrypted database can be
+                    // opened) but no pool exists and capture has not started, so
+                    // the tray provably holds nothing open. The daemon is
+                    // standing down on the marker meanwhile. See
+                    // `repair_boot`'s header for why an in-session repair is not
+                    // workable - a rebuilt file leaves every existing connection
+                    // bound to the inode that was moved aside, reading stale
+                    // data forever without erroring.
+                    let repair_outcome =
+                        repair_boot::run_if_requested(db_path_ref, db_key_hex.as_deref());
+
                     // Prepare the meridian.db pool ONCE at startup and share it with
                     // commands via managed state (no migrations — the daemon owns the
                     // schema). `None` only if the path/key is malformed, so reads error
@@ -498,6 +513,49 @@ pub fn run() {
                     // as it was before this span grew a wrapper): the capture
                     // feature is the only later consumer, but the clone itself is
                     // cheap and every build needs a value to return.
+                    // Report the repair now that there is a pool to write a notice
+                    // with. Deliberately after `app.manage`: the notice is the
+                    // only trace the user sees of an operation that happened
+                    // before the window existed, but it must never be able to
+                    // cost them the pool itself.
+                    if let Some(outcome) = repair_outcome {
+                        if let Some(p) = db_pool.clone() {
+                            // Own the strings before the task takes them: the
+                            // notice borrows its fields, and `outcome` cannot
+                            // outlive this scope.
+                            let (repaired, title, detail) = match outcome {
+                                repair_boot::Outcome::Repaired { summary } => {
+                                    (true, "Database repaired", summary)
+                                }
+                                repair_boot::Outcome::Failed { error } => {
+                                    (false, "Database repair failed", error)
+                                }
+                            };
+                            tauri::async_runtime::spawn(async move {
+                                if repaired {
+                                    // The fault is gone; drop the banner that
+                                    // sent the user here in the first place.
+                                    let _ = meridian::notices::clear(&p, "db.corrupt").await;
+                                }
+                                let _ = meridian::notices::raise_typed(
+                                    &p,
+                                    meridian::notices::Notice {
+                                        id: if repaired { "db.repaired" } else { "db.corrupt" },
+                                        severity: if repaired { "info" } else { "error" },
+                                        title,
+                                        detail: &detail,
+                                        remedy: (!repaired).then_some(
+                                            "Your data is unchanged. Contact support with your Support ID.",
+                                        ),
+                                        event_key: if repaired { "db.repaired" } else { "db.corrupt" },
+                                        deep_link: (!repaired).then_some("/logs"),
+                                    },
+                                )
+                                .await;
+                            });
+                        }
+                    }
+
                     let capture_pool = db_pool.clone();
                     // The encryption-state notice below needs a pool handle before
                     // db_pool is moved into managed state.
@@ -907,6 +965,8 @@ pub fn run() {
         // `commands.rs`, AND list it here — a missing entry fails the frontend
         // `invoke` at runtime ("command not found"), not at compile time.
         .invoke_handler(tauri::generate_handler![
+            commands::repair::preview_repair,
+            commands::repair::request_repair,
             // tray popover + daemon lifecycle
             commands::get_status,
             commands::open_dashboard,

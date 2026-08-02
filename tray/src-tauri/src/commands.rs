@@ -53,6 +53,7 @@ pub mod notifications;
 pub mod parents;
 pub mod pause;
 pub mod plan_tasks;
+pub mod repair;
 pub mod settings;
 pub mod setup;
 pub mod statuses;
