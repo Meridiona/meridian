@@ -47,23 +47,20 @@ env:
   # a restored cache and compiles once, so the incremental state is never read
   # back — only WRITTEN, inflating target/ and the cache tarball for no reuse.
   CARGO_INCREMENTAL: "0"
-  # Full debug info (the dev/test default, `debug = 2`) is the single most
-  # expensive thing these jobs do that nothing reads. It is emitted for every
-  # workspace crate and then linked into ~20 test binaries; on Windows that
-  # means generating a PDB per binary, and the `test` step there costs 19m
-  # against macOS's 8m for the same work.
+  # NOTE: `CARGO_PROFILE_{DEV,TEST}_DEBUG: line-tables-only` used to live here
+  # (#664). It was measured and removed - it bought NOTHING. The theory was that
+  # full debug info linked into ~20 test binaries (a PDB each on Windows) drove
+  # the `test` step. Its own CI run disproved that:
   #
-  # Nothing consumes it. CI never attaches a debugger and never opens a core
-  # dump - the only artefact anyone reads is the panic message and the test
-  # name, and `line-tables-only` keeps backtraces WITH file/line while dropping
-  # the type and variable descriptions that make up the bulk of the cost.
+  #     Windows test   1186s -> 1193s
+  #     macOS   test    517s ->  520s
   #
-  # CI-only on purpose: set here rather than as `[profile.dev]` in Cargo.toml so
-  # local builds keep full debug info for rust-analyzer and lldb. `test`
-  # inherits `dev`, but both are set explicitly - the inheritance is a cargo
-  # implementation detail and this is not the place to be clever.
-  CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
-  CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+  # Flat on both, while that run also rebuilt every dependency (the profile
+  # change invalidated the cache), i.e. it did strictly MORE work for the same
+  # time. The cost is codegen and linking of the workspace crates themselves,
+  # not the volume of debug info. Do not re-add this without a measurement
+  # showing otherwise; it is not free, since it invalidates the whole dependency
+  # cache once and degrades every backtrace.
   CARGO_NET_RETRY: "3"
   # The tray pulls screenpipe-screen/-a11y from the PRIVATE Meridiona/
   # screenpipe-fork (a git dep). cargo RESOLVES it for the whole workspace, so
@@ -117,18 +114,41 @@ jobs:
   # AND the tray (including its macOS-only Swift/objc2 layer, which no other
   # runner can build).
   #
-  # It runs fmt + clippy + test in one job so there is one Rust signal, on the
-  # arch most users actually run. Windows is a SEPARATE job below (`rust-windows`)
-  # — it used to only be exercised at release time, which meant a Windows-only
-  # regression (e.g. the vendored-OpenSSL build breaking, or a `cfg(windows)`
-  # branch with a real bug) shipped all the way to a tagged release before
-  # anyone found out. fmt is skipped there deliberately: it is platform-independent
-  # style, already checked once here — running it twice buys nothing.
-  rust:
-    name: Rust (macOS Apple Silicon)
+  # Windows is a SEPARATE job below (`rust-windows`) — it used to only be
+  # exercised at release time, which meant a Windows-only regression (e.g. the
+  # vendored-OpenSSL build breaking, or a `cfg(windows)` branch with a real bug)
+  # shipped all the way to a tagged release before anyone found out. fmt is
+  # skipped there deliberately: it is platform-independent style, already
+  # checked once here — running it twice buys nothing.
+  #
+  # ── Why clippy and test are separate jobs ─────────────────────────────────
+  #
+  # They are two full compiles of the same workspace, and running them
+  # sequentially in one job means paying the sum. Measured, with dependencies
+  # already cached:
+  #
+  #     Windows   clippy 808s + test 1186s = ~33m
+  #     macOS     clippy 297s + test  517s = ~14m
+  #
+  # As parallel jobs the wall-clock is the MAX, not the sum — ~20m and ~9m. This
+  # is arithmetic on measured numbers, not an optimisation hypothesis. (The
+  # hypothesis that WAS tried, cutting debug info, is documented in the `env:`
+  # block above as having achieved nothing.)
+  #
+  # The cost is runner minutes: four Rust jobs instead of two. That trade was
+  # made deliberately.
+  #
+  # `fail-fast: false` matters — a clippy failure must not cancel the test job.
+  # Getting one signal per push is the entire point of paying for two runners.
+  rust-macos:
+    name: Rust (macOS Apple Silicon) / ${{ matrix.task }}
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [clippy, test]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -160,9 +180,18 @@ jobs:
           # means PRs go warm as soon as the first pre-main run seeds the cache —
           # without waiting for a release to reach main. One cold run on pre-main
           # after this lands; warm for every PR after that.
-          save-if: ${{ github.ref == 'refs/heads/pre-main' }}
+          #
+          # Only the `test` leg saves, and BOTH legs share one key. rust-cache
+          # prunes workspace-member artifacts, so what is actually cached is the
+          # dependency graph plus the registry — identical for clippy and test,
+          # since clippy lints only workspace crates and builds dependencies as
+          # ordinary rlibs. One shared cache therefore serves both, and letting
+          # a single leg write it avoids two jobs racing to save the same key.
+          save-if: ${{ github.ref == 'refs/heads/pre-main' && matrix.task == 'test' }}
           # Name the cache lineage explicitly so a future job rename does not
-          # silently orphan it and force a cold rebuild.
+          # silently orphan it and force a cold rebuild. Unchanged by the
+          # clippy/test split on purpose — the existing warm cache carries over
+          # rather than restarting cold.
           add-job-id-key: false
           shared-key: ci-macos-silicon
 
@@ -177,14 +206,54 @@ jobs:
 
       # `--workspace` is load-bearing, NOT redundant — see the note above
       # `rust-windows` for the trap it closes.
+      #
+      # fmt rides on the clippy leg rather than getting a job of its own: it
+      # takes seconds and needs no compilation, so a third runner would cost
+      # more in queue time than it saves.
       - name: fmt
+        if: matrix.task == 'clippy'
         run: cargo fmt --check
 
       - name: clippy
+        if: matrix.task == 'clippy'
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: test
+        if: matrix.task == 'test'
         run: cargo test --workspace
+
+  # ── The required status check ─────────────────────────────────────────────
+  #
+  # `pre-main`'s branch protection requires the context "Rust (macOS Apple
+  # Silicon)" by that exact name. Splitting the job would have deleted that
+  # context and left every PR waiting forever on a check that no longer exists,
+  # so this job keeps the name and gates on the matrix instead.
+  #
+  # Two things here are load-bearing and easy to get wrong:
+  #
+  # - `if: always()` — without it, a FAILED dependency makes this job "skipped"
+  #   rather than failed, and GitHub counts a skipped required check as
+  #   satisfied. The branch would have been protected by a check that silently
+  #   passes whenever the thing it guards breaks.
+  # - `skipped` is accepted deliberately. Docs-only PRs skip the Rust jobs by
+  #   design (the `changes` filter), and those must stay mergeable.
+  #
+  # `needs.<job>.result` for a matrix job is `success` only if EVERY leg
+  # succeeded, so this covers clippy and test both.
+  rust:
+    name: Rust (macOS Apple Silicon)
+    needs: [changes, rust-macos]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every macOS Rust leg to have passed
+        run: |
+          result='${{ needs.rust-macos.result }}'
+          echo "macOS Rust matrix result: $result"
+          case "$result" in
+            success | skipped) ;;
+            *) exit 1 ;;
+          esac
 
   # ── Rust gate #2: Windows x86_64 ──────────────────────────────────────────
   # Windows is a shipped platform (NSIS installer, see release-build.yml) but
@@ -213,11 +282,22 @@ jobs:
   # stack already supports Windows; it ships there today) — same as the macOS
   # job. No `fmt` here: it is platform-independent style, already checked once
   # by the macOS job.
+  #
+  # Split into clippy/test legs for the same reason as the macOS job — see the
+  # measurement there. Windows is the long pole (~33m sequential), so it gains
+  # the most: ~20m. No aggregator job here, unlike macOS, because branch
+  # protection does not require a Windows context; if one is ever added, it must
+  # name the new legs (or gain an aggregator of its own) rather than the old
+  # "Rust (Windows x86_64)", which no longer exists.
   rust-windows:
-    name: Rust (Windows x86_64)
+    name: Rust (Windows x86_64) / ${{ matrix.task }}
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [clippy, test]
     defaults:
       run:
         # Every step below except the actual cargo commands is a POSIX script
@@ -254,10 +334,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           # Same reasoning as the macOS job's cache step — see there for why
-          # save-if targets pre-main. Distinct shared-key: this is a debug/test
-          # profile build, unrelated to release-build.yml's release-profile
+          # save-if targets pre-main and why only the `test` leg writes the
+          # shared key. Distinct shared-key: this is a debug/test profile build,
+          # unrelated to release-build.yml's release-profile
           # windows-release-x86_64-pc-windows-msvc cache.
-          save-if: ${{ github.ref == 'refs/heads/pre-main' }}
+          save-if: ${{ github.ref == 'refs/heads/pre-main' && matrix.task == 'test' }}
           add-job-id-key: false
           shared-key: ci-windows
 
@@ -273,10 +354,12 @@ jobs:
       # missing CPAN modules OpenSSL's Configure script needs (see
       # release-build.yml's Windows job for the full story).
       - name: clippy
+        if: matrix.task == 'clippy'
         shell: pwsh
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: test
+        if: matrix.task == 'test'
         shell: pwsh
         run: cargo test --workspace
 
