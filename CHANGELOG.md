@@ -1,5 +1,50 @@
 # Changelog
 
+## [1.83.0](https://github.com/Meridiona/meridian/compare/v1.82.3...v1.83.0) (2026-08-03)
+
+### 🚀 Features
+
+* **db:** add the repair marker the daemon stands down for ([5f14925](https://github.com/Meridiona/meridian/commit/5f1492581db19b8f2304d943b733252608daad36))
+* **db:** detect database corruption and recover from it ([62776b9](https://github.com/Meridiona/meridian/commit/62776b96fbf28bcd86221b28698ae15c7635f4c3))
+* **tray:** repair a corrupt database from the app, no terminal ([57d14db](https://github.com/Meridiona/meridian/commit/57d14dbfe9ff91eaeebd3d701cc5ff1f76231f13))
+* **ui:** offer the database repair from the corruption banner ([6001a72](https://github.com/Meridiona/meridian/commit/6001a721bf916cb0f7b50985d358021167e47107))
+
+### 🐛 Bug Fixes
+
+* address the CodeRabbit findings surfaced on the merged pre-main diff ([07308ee](https://github.com/Meridiona/meridian/commit/07308ee55d261b08dbf3f4292d2db1cbdede6958)), closes [#659](https://github.com/Meridiona/meridian/issues/659) [#662](https://github.com/Meridiona/meridian/issues/662) [#658](https://github.com/Meridiona/meridian/issues/658) [#661](https://github.com/Meridiona/meridian/issues/661)
+* address the fresh CodeRabbit review's findings on PR [#658](https://github.com/Meridiona/meridian/issues/658) ([ad57c0f](https://github.com/Meridiona/meridian/commit/ad57c0ffbaf6caa6dabcb5cdff50221e36792595)), closes [#661](https://github.com/Meridiona/meridian/issues/661) [#665](https://github.com/Meridiona/meridian/issues/665)
+* **core:** pin restamp_only_refreshes_a_today_marker to local noon ([64b9c49](https://github.com/Meridiona/meridian/commit/64b9c49c3b5532fa1ecd25b3352da57a98e7ccef))
+* **db:** address CodeRabbit review findings on the corruption-recovery PR ([9d648d1](https://github.com/Meridiona/meridian/commit/9d648d110c43b0e91734957496326fadcc29a3ec)), closes [#658](https://github.com/Meridiona/meridian/issues/658)
+* **db:** close the rebuild connection before swapping the repaired file ([1013bdf](https://github.com/Meridiona/meridian/commit/1013bdfff24662e8fbecee88cabc15059d56fc21)), closes [pre-#655](https://github.com/Meridiona/pre-/issues/655)
+* **db:** make the repair guard name a command that exists ([6bb8acd](https://github.com/Meridiona/meridian/commit/6bb8acd1a237e269eb4a4dfe676e1c9c0ecf77ed))
+* **hooks:** fail fast with instructions when the tray resource is missing ([65f0236](https://github.com/Meridiona/meridian/commit/65f02363e4c20683efb989d4a4b40bd50c2f476c)), closes [#660](https://github.com/Meridiona/meridian/issues/660)
+* **llm:** make the provider Install button work on Windows ([a376cb9](https://github.com/Meridiona/meridian/commit/a376cb93f54f0121ea5fdcb145d9fb09e05331f4))
+* **llm:** surface runtime provider failures in the dashboard banner ([4e61fca](https://github.com/Meridiona/meridian/commit/4e61fca6456ccd32208c7c57edd4e43c4a5cb67b))
+* **tray:** contain panics in setup() instead of a fatal process abort ([3b42fd0](https://github.com/Meridiona/meridian/commit/3b42fd0b380ac78ddb3cb74797c679a7481e8c73))
+* **tray:** stop a Windows CI flake in the setup-command trace tests ([ec41944](https://github.com/Meridiona/meridian/commit/ec41944efa91b73b6469c749d206f14a12076aa4)), closes [#660](https://github.com/Meridiona/meridian/issues/660)
+* **ui:** show a confirmed daily plan to solo users ([b760fbe](https://github.com/Meridiona/meridian/commit/b760fbe9202ede3813dd2c9d358e50cab10e2e5f))
+
+### 🤖 CI
+
+* **release:** back-merge main into pre-main so staging versions sort above stable ([2f98bf8](https://github.com/Meridiona/meridian/commit/2f98bf81df69c1175a3b8258e6fc74b7d4993994))
+* **release:** require the release PAT in the back-merge job ([9ab97e4](https://github.com/Meridiona/meridian/commit/9ab97e4b6c29758a7d5e6ecc69866d632dbe84a9))
+* run clippy and test as parallel jobs, and revert the debuginfo change ([17a449a](https://github.com/Meridiona/meridian/commit/17a449ae75e000981912b26985dc36f9f8bc3d7f)), closes [#664](https://github.com/Meridiona/meridian/issues/664)
+* stop emitting debug info nothing reads ([d119fa5](https://github.com/Meridiona/meridian/commit/d119fa5deb51312906a14a934f10a22bd7ac18cb)), closes [#660](https://github.com/Meridiona/meridian/issues/660)
+* test and lint the whole workspace, not just the root package ([402e383](https://github.com/Meridiona/meridian/commit/402e38392519a7d0d9ccf6865b43d7e3e73dc024)), closes [#659](https://github.com/Meridiona/meridian/issues/659) [#659](https://github.com/Meridiona/meridian/issues/659)
+
+### ✅ Tests
+
+* **tray:** compare paths by component, not by POSIX string ([c150840](https://github.com/Meridiona/meridian/commit/c15084057f908e8b5a3ecb4cf149636fdda7c70a))
+
+### 📝 Documentation
+
+* **changelog:** add the top-level heading, fix malformed issue refs ([3c1ea65](https://github.com/Meridiona/meridian/commit/3c1ea6542ce068e28c42c055e344cde10c4608fa))
+
+### 🔧 Chores
+
+* raise the forced-update floor to 1.82.3 ([7d60770](https://github.com/Meridiona/meridian/commit/7d607703ae5122d9d43d21f94cbe1564cc254a0f))
+* **release:** back-merge v1.82.3 into pre-main ([82e6fdd](https://github.com/Meridiona/meridian/commit/82e6fdd8c3ffdaece04647b667e608807e1a0126)), closes [#651](https://github.com/Meridiona/meridian/issues/651)
+
 ## [1.82.3](https://github.com/Meridiona/meridian/compare/v1.82.2...v1.82.3) (2026-08-01)
 
 ### 🐛 Bug Fixes
