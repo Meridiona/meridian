@@ -9,6 +9,7 @@
 
 import { useEffect, useState } from 'react'
 import { load, subscribe } from '@/lib/bridge'
+import ConfirmDialog from '@/components/ConfirmDialog'
 import type { Notice, RepairPreview } from '@/lib/api-types'
 
 // The one notice that can be acted on in-app rather than in a terminal.
@@ -118,59 +119,89 @@ export default function NoticeBar() {
 //     app; the rebuild happens on the way back up, when nothing holds the file
 //     open. The button says so, because an app that vanishes without warning
 //     reads as a crash.
+//
+// The consent gate is `ConfirmDialog`, NOT `window.confirm` - that global
+// returns false in the packaged tray, which made this button a no-op from the
+// day it shipped (see ConfirmDialog's header). Errors render in the dialog for
+// the same reason: `window.alert` never appeared either, so a failed repair and
+// a dismissed one looked identical.
 function RepairButton({ color, border }: { color: string; border: string }) {
-  const [busy, setBusy] = useState(false)
+  // `previewing` is the click-to-dialog gap; `starting` is request_repair in
+  // flight, which normally ends with the app restarting rather than a result.
+  const [stage, setStage] = useState<'idle' | 'previewing' | 'confirming' | 'starting'>('idle')
+  const [cost, setCost] = useState('')
+  const [error, setError] = useState('')
+
+  const busy = stage === 'previewing' || stage === 'starting'
 
   async function onClick() {
-    setBusy(true)
+    setStage('previewing')
+    setError('')
+    // Ask what is actually damaged before quoting a cost. A failed preview is
+    // not a reason to block the repair - the database is already broken - so
+    // fall back to generic wording rather than refusing to proceed.
+    let quoted = 'Some recent activity data may be lost.'
     try {
-      // Ask what is actually damaged before quoting a cost. A failed preview is
-      // not a reason to block the repair - the database is already broken - so
-      // fall back to generic wording rather than refusing to proceed.
-      let cost = 'Some recent activity data may be lost.'
-      try {
-        const p = await load<RepairPreview>('/api/db/repair/preview', 'preview_repair')
-        if (p.product_tables.length > 0) {
-          cost = `Damage reaches ${p.product_tables.length} table(s) holding your data - some records cannot be recovered.`
-        } else if (p.corrupt_tables.length > 0) {
-          cost = 'Only recent screen-activity data is damaged. Your history is intact.'
-        }
-      } catch {
-        // keep the generic wording
+      const p = await load<RepairPreview>('/api/db/repair/preview', 'preview_repair')
+      if (p.product_tables.length > 0) {
+        quoted = `Damage reaches ${p.product_tables.length} table(s) holding your data - some records cannot be recovered.`
+      } else if (p.corrupt_tables.length > 0) {
+        quoted = 'Only recent screen-activity data is damaged. Your history is intact.'
       }
+    } catch {
+      // keep the generic wording
+    }
+    setCost(quoted)
+    setStage('confirming')
+  }
 
-      const ok = window.confirm(
-        `Repair Meridian's database?\n\n${cost}\n\nEverything readable is kept, and the damaged copy is saved alongside it. Meridian will restart to do this.`,
-      )
-      if (!ok) return
+  async function onConfirm() {
+    setStage('starting')
+    setError('')
+    try {
       await load('/api/db/repair', 'request_repair')
+      // Not reached in practice - the command relaunches the app. Only a
+      // failure returns here, so leave the dialog up rather than closing it.
     } catch (e) {
-      window.alert(`Could not start the repair: ${e instanceof Error ? e.message : String(e)}`)
-    } finally {
-      setBusy(false)
+      setError(`Could not start the repair: ${e instanceof Error ? e.message : String(e)}`)
+      setStage('confirming')
     }
   }
 
   return (
-    <button
-      onClick={onClick}
-      disabled={busy}
-      style={{
-        flexShrink: 0,
-        fontSize: 11,
-        fontWeight: 600,
-        color,
-        background: 'rgba(0,0,0,0.07)',
-        border: `1px solid ${border}`,
-        borderRadius: 5,
-        padding: '3px 8px',
-        whiteSpace: 'nowrap',
-        alignSelf: 'center',
-        cursor: busy ? 'default' : 'pointer',
-        opacity: busy ? 0.6 : 1,
-      }}
-    >
-      {busy ? 'Starting…' : 'Repair Database'}
-    </button>
+    <>
+      <button
+        onClick={onClick}
+        disabled={busy}
+        style={{
+          flexShrink: 0,
+          fontSize: 11,
+          fontWeight: 600,
+          color,
+          background: 'rgba(0,0,0,0.07)',
+          border: `1px solid ${border}`,
+          borderRadius: 5,
+          padding: '3px 8px',
+          whiteSpace: 'nowrap',
+          alignSelf: 'center',
+          cursor: busy ? 'default' : 'pointer',
+          opacity: busy ? 0.6 : 1,
+        }}
+      >
+        {busy ? 'Starting…' : 'Repair Database'}
+      </button>
+      {(stage === 'confirming' || stage === 'starting') && (
+        <ConfirmDialog
+          title="Repair Meridian's database?"
+          body={`${cost}\n\nEverything readable is kept, and the damaged copy is saved alongside it. Meridian will restart to do this.`}
+          confirmLabel="Repair and restart"
+          busyLabel="Starting…"
+          busy={stage === 'starting'}
+          error={error}
+          onConfirm={onConfirm}
+          onCancel={() => { setStage('idle'); setError('') }}
+        />
+      )}
+    </>
   )
 }
