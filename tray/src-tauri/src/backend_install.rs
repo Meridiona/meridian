@@ -273,11 +273,7 @@ async fn wait_for_db_unheld(db_path: &Path) -> Result<(), String> {
             .map_err(|e| format!("run lsof: {e}"))?;
         // Exit status is non-zero when NO process holds the file, which is the
         // success case here - read stdout rather than the status.
-        let holders: Vec<u32> = String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter_map(|l| l.trim().parse::<u32>().ok())
-            .filter(|pid| *pid != std::process::id())
-            .collect();
+        let holders = parse_lsof_holders(&String::from_utf8_lossy(&out.stdout), std::process::id());
         if holders.is_empty() {
             return Ok(());
         }
@@ -285,6 +281,41 @@ async fn wait_for_db_unheld(db_path: &Path) -> Result<(), String> {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
     Err("meridian.db is still held open 10s after stopping the daemon".to_string())
+}
+
+/// The pids in `lsof -t` output, excluding our own — i.e. the processes that
+/// would still be writing if the swap went ahead now.
+///
+/// Split from the spawn in [`wait_for_db_unheld`] so the rule can be tested:
+/// that function is `cfg(target_os = "macos")` and shells out, and what counts
+/// as "held" decides whether the user's database gets corrupted.
+///
+/// Unparseable lines are skipped rather than treated as holders — `lsof` writes
+/// its diagnostics to stderr, so anything non-numeric on stdout is noise. The
+/// asymmetry that matters is handled by the caller, not here: an `lsof` that
+/// cannot be RUN is an error, never an empty holder list.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn parse_lsof_holders(stdout: &str, self_pid: u32) -> Vec<u32> {
+    stdout
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .filter(|pid| *pid != self_pid)
+        .collect()
+}
+
+/// Whether `encrypt_in_place` may swap `meridian.db`, given what
+/// [`stop_daemon_for_migration`] returned — or `None` when no stop was attempted
+/// because nothing was going to migrate anyway (already encrypted, no key, or a
+/// debug build).
+///
+/// The whole point is `Some(Err(_)) => false`. v1.80.0 logged the failed stop and
+/// migrated regardless, and on macOS that is the data-destroying path: the rename
+/// succeeds under the live daemon and the two writers then share one WAL. Staying
+/// plaintext for another launch is the cheap failure, and is what Windows has
+/// always done — its rename fails with os error 32 rather than proceeding.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn may_swap_database(stop_outcome: Option<&Result<(), String>>) -> bool {
+    matches!(stop_outcome, None | Some(Ok(())))
 }
 
 /// `launchctl bootout gui/<uid>/<label>`, then poll `launchctl print` until the
@@ -1668,6 +1699,71 @@ mod tests {
             probes.load(Ordering::SeqCst),
             1,
             "exactly one probe, never zero"
+        );
+    }
+
+    /// The swap in `encrypt_in_place` renames `meridian.db` out from under
+    /// anything holding it, and on macOS `rename(2)` SUCCEEDS while the daemon
+    /// has it open — which is how six installs got `database disk image is
+    /// malformed`. `wait_for_db_unheld` is the check that stops that, so what
+    /// counts as "held" is a data-integrity decision, not a parsing detail.
+    ///
+    /// Keyed on the DB file rather than on known daemon paths on purpose: a dev
+    /// build, a directly-spawned binary and an orphan from an overlapping
+    /// install have all been seen on one machine, and none of them is launchd's.
+    #[test]
+    fn any_process_holding_the_db_counts_as_a_writer() {
+        const SELF: u32 = 4242;
+
+        // Nothing holds it — the only state in which the swap may go ahead.
+        assert!(parse_lsof_holders("", SELF).is_empty());
+        assert!(parse_lsof_holders("\n  \n", SELF).is_empty());
+
+        // The daemon holds it. One survivor is enough to block the swap.
+        assert_eq!(parse_lsof_holders("50184\n", SELF), vec![50184]);
+        assert_eq!(
+            parse_lsof_holders("50184\n63667\n", SELF),
+            vec![50184, 63667],
+            "every holder counts, not just the first"
+        );
+
+        // Our own pid is not a reason to refuse to migrate.
+        assert!(parse_lsof_holders("4242\n", SELF).is_empty());
+        assert_eq!(parse_lsof_holders("4242\n50184\n", SELF), vec![50184]);
+
+        // Junk must not silently read as "clear" — that would green-light the
+        // swap on exactly the machines where lsof behaved unexpectedly.
+        assert!(parse_lsof_holders("lsof: WARNING: can't stat()\n", SELF).is_empty());
+        assert_eq!(parse_lsof_holders("garbage\n50184\n", SELF), vec![50184]);
+    }
+
+    /// The gate that decides whether `encrypt_in_place` may run at all.
+    ///
+    /// Warning and swapping anyway is what shipped in v1.80.0, and on macOS that
+    /// is precisely the data-destroying path: the rename succeeds under a live
+    /// writer. Leaving the database plaintext for one more launch is the cheap
+    /// failure — and is exactly what Windows has always done, where the rename
+    /// fails with os error 32 instead.
+    ///
+    /// This is the single assertion standing between a failed daemon stop and
+    /// corrupting the user's database, so it is pinned in both directions.
+    #[test]
+    fn a_failed_daemon_stop_must_block_the_database_swap() {
+        assert!(
+            !may_swap_database(Some(&Err("still loaded 15s after bootout".to_string()))),
+            "the daemon could not be stopped - swapping now corrupts the database"
+        );
+
+        // The two states in which proceeding is correct, so the guard cannot be
+        // satisfied by simply always refusing.
+        assert!(
+            may_swap_database(Some(&Ok(()))),
+            "daemon stopped cleanly - the migration must still be able to run"
+        );
+        assert!(
+            may_swap_database(None),
+            "no stop was needed (already encrypted, no key, or a debug build) - \
+             nothing is going to swap anything"
         );
     }
 

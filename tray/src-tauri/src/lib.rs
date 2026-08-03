@@ -407,32 +407,34 @@ pub fn run() {
                     // rename FAILS while the daemon holds the file (os error 32), on
                     // macOS it SUCCEEDS and corrupts the database instead. See
                     // `backend_install::stop_daemon_for_migration` for the mechanism.
-                    let safe_to_migrate = if !cfg!(debug_assertions)
+                    //
+                    // `None` when no stop was attempted, because nothing is going to
+                    // migrate anyway (already encrypted, no key, or a debug build).
+                    let stop_outcome = if !cfg!(debug_assertions)
                         && db_encryption_intended
                         && meridian_core::db_crypto::is_plaintext_sqlite(db_path_ref)
                     {
-                        match tauri::async_runtime::block_on(
+                        Some(tauri::async_runtime::block_on(
                             backend_install::stop_daemon_for_migration(db_path_ref),
-                        ) {
-                            Ok(()) => true,
-                            Err(e) => {
-                                // ERROR, and it GATES the migration below. Warning and
-                                // migrating anyway is what shipped in v1.80.0, and on
-                                // macOS that is precisely the data-destroying path: the
-                                // swap goes ahead under a live writer. Leaving the DB
-                                // plaintext for one more launch is the cheap failure.
-                                tracing::error!(
-                                    error = %e,
-                                    "could not stop the daemon before encrypting the database - skipping the migration this launch; the database stays plaintext and will be retried next launch"
-                                );
-                                false
-                            }
-                        }
+                        ))
                     } else {
-                        // No migration will attempt anyway (already encrypted, no key,
-                        // or a debug build), so there is nothing to stop or to gate.
-                        true
+                        None
                     };
+                    if let Some(Err(e)) = &stop_outcome {
+                        // ERROR, and it GATES the migration below. Warning and migrating
+                        // anyway is what shipped in v1.80.0, and on macOS that is
+                        // precisely the data-destroying path: the swap goes ahead under
+                        // a live writer. Leaving the DB plaintext for one more launch is
+                        // the cheap failure.
+                        tracing::error!(
+                            error = %e,
+                            "could not stop the daemon before encrypting the database - skipping the migration this launch; the database stays plaintext and will be retried next launch"
+                        );
+                    }
+                    // The decision itself lives in `backend_install` so it can be
+                    // unit-tested — this closure cannot be.
+                    let safe_to_migrate =
+                        backend_install::may_swap_database(stop_outcome.as_ref());
 
                     let db_key_hex = if !cfg!(debug_assertions) {
                         match &db_key_hex {
