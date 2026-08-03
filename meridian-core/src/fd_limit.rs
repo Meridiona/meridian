@@ -33,10 +33,16 @@
 /// Descriptors to aim for. Chosen to match the screenpipe fork's proven value
 /// rather than a fresh guess — it is far above anything Meridian opens, and the
 /// cost of a high soft limit is nil (it caps nothing, it only permits).
+// Compiled on every platform but only USED by the unix arm below, so the
+// Windows build sees dead code and `-D warnings` fails it. Keeping these
+// cross-platform (rather than `cfg(unix)`) is deliberate: the policy is pure
+// and its tests must run everywhere, including on the Windows CI job.
+#[cfg_attr(not(unix), allow(dead_code))]
 const DEFAULT_TARGET: u64 = 8192;
 
 /// Environment override for [`DEFAULT_TARGET`], for a machine with an unusual
 /// hard limit or for testing.
+#[cfg_attr(not(unix), allow(dead_code))]
 const TARGET_ENV: &str = "MERIDIAN_FD_LIMIT";
 
 /// The soft limit to set, or `None` when no change is needed or possible.
@@ -49,6 +55,7 @@ const TARGET_ENV: &str = "MERIDIAN_FD_LIMIT";
 ///   `setrlimit` rejects a soft limit exceeding the hard limit and the whole
 ///   call would fail rather than partially apply
 /// - already at the hard limit → `None`; there is nothing left to take
+#[cfg_attr(not(unix), allow(dead_code))]
 fn target_soft_limit(current_soft: u64, hard: u64, desired: u64) -> Option<u64> {
     if current_soft >= desired {
         return None;
@@ -61,6 +68,7 @@ fn target_soft_limit(current_soft: u64, hard: u64, desired: u64) -> Option<u64> 
 /// unparseable. A malformed value must not be fatal — this runs on the startup
 /// path of both binaries, and refusing to boot over a typo in an env var would
 /// be a worse outcome than using the default.
+#[cfg_attr(not(unix), allow(dead_code))]
 fn desired_target() -> u64 {
     std::env::var(TARGET_ENV)
         .ok()
