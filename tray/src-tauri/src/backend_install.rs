@@ -298,7 +298,12 @@ async fn wait_for_db_unheld(db_path: &Path) -> Result<(), String> {
 /// concurrent writer the bootout exists to remove. Returns `Err` if the entry is
 /// still present after the timeout, so the caller can decline to migrate rather
 /// than swap the file under a process that never went away.
-#[cfg(target_os = "macos")]
+///
+/// `cfg_attr(allow(dead_code))` rather than `cfg(target_os = "macos")`, matching
+/// [`register_agent`] and [`launchctl`]: those are COMPILED on every platform
+/// and merely allowed to be dead, so a `cfg`-gated callee vanishes underneath
+/// them and breaks the Windows build even though nothing there can call it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 async fn bootout_agent_and_wait(label: &str) -> Result<(), String> {
     let target = agent_target(label);
     let _ = launchctl(&["bootout", &target]).await; // ok if not loaded
@@ -1207,7 +1212,10 @@ async fn register_agent(label: &str, plist: &Path) -> Result<(), String> {
 /// every `launchctl` subcommand here addresses it. Split out so the shape can be
 /// unit-tested without shelling out to `launchctl` (which would act on a real
 /// agent on the developer's or CI machine).
-#[cfg(target_os = "macos")]
+///
+/// Compiled on every platform for the same reason as [`bootout_agent_and_wait`]
+/// — [`register_agent`] calls it and is itself always compiled.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn agent_target(label: &str) -> String {
     format!("gui/{}/{label}", crate::sys::uid_str())
 }
