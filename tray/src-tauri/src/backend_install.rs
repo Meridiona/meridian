@@ -298,7 +298,12 @@ async fn wait_for_db_unheld(db_path: &Path) -> Result<(), String> {
 /// concurrent writer the bootout exists to remove. Returns `Err` if the entry is
 /// still present after the timeout, so the caller can decline to migrate rather
 /// than swap the file under a process that never went away.
-#[cfg(target_os = "macos")]
+///
+/// `cfg_attr(allow(dead_code))` rather than `cfg(target_os = "macos")`, matching
+/// [`register_agent`] and [`launchctl`]: those are COMPILED on every platform
+/// and merely allowed to be dead, so a `cfg`-gated callee vanishes underneath
+/// them and breaks the Windows build even though nothing there can call it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 async fn bootout_agent_and_wait(label: &str) -> Result<(), String> {
     let target = agent_target(label);
     let _ = launchctl(&["bootout", &target]).await; // ok if not loaded
@@ -1207,7 +1212,10 @@ async fn register_agent(label: &str, plist: &Path) -> Result<(), String> {
 /// every `launchctl` subcommand here addresses it. Split out so the shape can be
 /// unit-tested without shelling out to `launchctl` (which would act on a real
 /// agent on the developer's or CI machine).
-#[cfg(target_os = "macos")]
+///
+/// Compiled on every platform for the same reason as [`bootout_agent_and_wait`]
+/// — [`register_agent`] calls it and is itself always compiled.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn agent_target(label: &str) -> String {
     format!("gui/{}/{label}", crate::sys::uid_str())
 }
@@ -1661,5 +1669,142 @@ mod tests {
             1,
             "exactly one probe, never zero"
         );
+    }
+
+    /// Two annotations in this file look interchangeable and are not:
+    ///
+    /// - `#[cfg_attr(not(target_os = "macos"), allow(dead_code))]` keeps the item
+    ///   **compiled on every platform**, merely permitting it to be unused;
+    /// - `#[cfg(target_os = "macos")]` **removes** it everywhere else.
+    ///
+    /// So a `cfg`-gated item called from a `cfg_attr` one compiles cleanly on
+    /// macOS and fails on Windows with `error[E0425]: cannot find function …`.
+    /// That shipped once (PR #671) and broke a staging release, because every
+    /// local check a macOS developer runs — `cargo clippy`, `cargo test`, the
+    /// pre-push hook — is structurally blind to it, and `cargo check --target
+    /// x86_64-pc-windows-msvc` can't stand in from macOS (it dies earlier in
+    /// `aws-lc-sys`, which needs `windows.h`).
+    ///
+    /// A unit test cannot catch this either — tests compile for one platform at
+    /// a time. So this reads the source instead, in the same spirit as
+    /// `ui/__tests__/no-native-dialogs.test.ts`. It runs on macOS, where the
+    /// mistake is made.
+    #[test]
+    fn no_macos_only_item_is_reachable_from_always_compiled_code() {
+        const SRC: &str = include_str!("backend_install.rs");
+        const MACOS_ONLY: &str = "#[cfg(target_os = \"macos\")]";
+        const ALWAYS: &str = "#[cfg_attr(not(target_os = \"macos\"), allow(dead_code))]";
+
+        /// The `fn` / `const` / `static` name declared at or just after `from`.
+        fn item_name_after(lines: &[&str], from: usize) -> Option<(String, usize)> {
+            for (offset, line) in lines.iter().enumerate().skip(from).take(6) {
+                let l = line.trim_start().trim_start_matches("pub(crate) ");
+                let l = l.trim_start_matches("pub ").trim_start_matches("async ");
+                for kw in ["fn ", "const ", "static "] {
+                    if let Some(rest) = l.strip_prefix(kw) {
+                        let name: String = rest
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric() || *c == '_')
+                            .collect();
+                        if !name.is_empty() {
+                            return Some((name, offset));
+                        }
+                    }
+                }
+            }
+            None
+        }
+
+        /// Line index one past the item's closing brace, by brace matching.
+        fn item_end(lines: &[&str], start: usize) -> usize {
+            let (mut depth, mut opened) = (0i32, false);
+            for (i, line) in lines.iter().enumerate().skip(start) {
+                depth += line.matches('{').count() as i32;
+                depth -= line.matches('}').count() as i32;
+                if line.contains('{') {
+                    opened = true;
+                }
+                if opened && depth <= 0 {
+                    return i + 1;
+                }
+            }
+            lines.len()
+        }
+
+        let lines: Vec<&str> = SRC.lines().collect();
+        let mut macos_only: Vec<String> = Vec::new();
+        let mut always_compiled: Vec<(String, usize, usize)> = Vec::new();
+
+        for (i, line) in lines.iter().enumerate() {
+            let t = line.trim();
+            if t == MACOS_ONLY {
+                if let Some((name, at)) = item_name_after(&lines, i + 1) {
+                    // Skip the test module's own items — they are `cfg`-gated on
+                    // purpose and never called from non-test code.
+                    if !lines[at].contains("fn ") || !name.starts_with("test_") {
+                        macos_only.push(name);
+                    }
+                }
+            } else if t == ALWAYS {
+                if let Some((name, at)) = item_name_after(&lines, i + 1) {
+                    always_compiled.push((name, at, item_end(&lines, at)));
+                }
+            }
+        }
+
+        assert!(
+            macos_only.len() >= 3 && always_compiled.len() >= 3,
+            "the scanner stopped recognising this file's shape \
+             ({} macos-only, {} always-compiled) - fix the scanner, \
+             do not delete the test",
+            macos_only.len(),
+            always_compiled.len()
+        );
+
+        for (fname, start, end) in &always_compiled {
+            // Drop `#[cfg(target_os = "macos")] { … }` blocks inside the body:
+            // code in those DOES compile only on macOS, so it may legitimately
+            // reference a macOS-only item.
+            let mut body = String::new();
+            let mut skip_until = 0usize;
+            for i in *start..*end {
+                if i < skip_until {
+                    continue;
+                }
+                if lines[i].trim() == MACOS_ONLY {
+                    skip_until = item_end(&lines, i + 1);
+                    continue;
+                }
+                body.push_str(lines[i]);
+                body.push('\n');
+            }
+
+            for item in &macos_only {
+                // Word-boundary match so `DAEMON_LABEL` doesn't hit
+                // `DAEMON_LABEL_X`, and a mention in a doc comment doesn't count.
+                let referenced = body
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with("//"))
+                    .any(|l| {
+                        l.match_indices(item.as_str()).any(|(idx, _)| {
+                            let before = l[..idx].chars().next_back();
+                            let after = l[idx + item.len()..].chars().next();
+                            let boundary = |c: Option<char>| {
+                                !matches!(c, Some(ch) if ch.is_alphanumeric() || ch == '_')
+                            };
+                            boundary(before) && boundary(after)
+                        })
+                    });
+                assert!(
+                    !referenced,
+                    "`{fname}` is compiled on every platform \
+                     (cfg_attr allow(dead_code)) but references `{item}`, which is \
+                     `#[cfg(target_os = \"macos\")]` and does not exist off macOS. \
+                     This builds on macOS and fails on Windows with E0425. \
+                     Give `{item}` the same cfg_attr form, or move the call into a \
+                     `#[cfg(target_os = \"macos\")]` block."
+                );
+            }
+        }
     }
 }
