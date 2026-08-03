@@ -37,6 +37,12 @@ tracing = "0.1"
 # `process` and `time` modules into scope here.
 tokio = { version = "1", features = ["process", "time"] }
 
+# `getrlimit`/`setrlimit` for `fd_limit`. Unix-only — the Windows arm of that
+# module is a no-op, so this never enters the Windows build. Already in the
+# lockfile transitively, so it adds nothing new to compile.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # `macros`/`rt-multi-thread` for #[tokio::test]; `test-util` for the paused-clock
 # (`start_paused`) tests in `retry` that verify the backoff schedule deterministically.

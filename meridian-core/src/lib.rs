@@ -60,6 +60,12 @@ pub mod proc_ext;
 /// shared by the tray's backend install and this crate's encrypt-in-place swap.
 pub mod retry;
 
+/// Raise the process file-descriptor soft limit. Lives here rather than in
+/// either binary because BOTH must call it — a `meridian.db` pool costs three
+/// descriptors per connection, and exhausting macOS's default 256 corrupts the
+/// database (`SQLITE_IOERR` 522 → `SQLITE_CORRUPT` 11).
+pub mod fd_limit;
+
 // ── Curated public API: flat module paths, stable across file moves ──────────
 pub use db::{get_active_session, open_existing, open_existing_lazy, ping, ActiveSession};
 
