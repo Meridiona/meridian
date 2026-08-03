@@ -15,6 +15,16 @@ use tracing::Instrument;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // 0. Raise the file-descriptor soft limit BEFORE any database or socket
+    //    work. The daemon shares meridian.db with the tray, and each pooled
+    //    connection holds three descriptors (db/-wal/-shm); crossing macOS's
+    //    default 256 fails a -wal/-shm open mid-write with SQLITE_IOERR (522)
+    //    and desyncs the shared WAL index into "database disk image is
+    //    malformed" (11). The tray cannot do this on the daemon's behalf — it
+    //    never runs this `main` — so both entry points call it. See
+    //    `meridian_core::fd_limit`.
+    meridian_core::fd_limit::raise_fd_limit();
+
     // 1. Load the working-directory .env. `dotenv_override` walks UP from the
     //    CWD and stops at the first `.env`, so a source/dev run picks up
     //    <repo>/.env, and on macOS — where the launchd plist sets

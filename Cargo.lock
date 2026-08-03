@@ -5219,6 +5219,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dirs 5.0.1",
+ "libc",
  "libsqlite3-sys",
  "serde",
  "serde_json",
