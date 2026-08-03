@@ -543,7 +543,22 @@ pub fn run() {
                                 if repaired {
                                     // The fault is gone; drop the banner that
                                     // sent the user here in the first place.
-                                    let _ = meridian::notices::clear(&p, "db.corrupt").await;
+                                    //
+                                    // `clear_typed`, NOT the plain `clear` (which
+                                    // hardcodes `event_key = "system.fault"`): the
+                                    // daemon raised this with `event_key:
+                                    // "db.corrupt"` (see `DB_CORRUPT_NOTICE` in
+                                    // `src/main.rs`), and `notices::raise_typed`
+                                    // dedupes its OS toast on `<event_key>:<id>`.
+                                    // Clearing with the wrong event_key deletes the
+                                    // banner row (that DELETE matches by id alone)
+                                    // but retracts the wrong toast dedup key, so a
+                                    // future corruption would silently never toast
+                                    // again — deduped against a delivery that was
+                                    // never actually retracted.
+                                    let _ =
+                                        meridian::notices::clear_typed(&p, "db.corrupt", "db.corrupt")
+                                            .await;
                                 }
                                 let _ = meridian::notices::raise_typed(
                                     &p,

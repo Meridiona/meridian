@@ -56,7 +56,7 @@ require_tray_bundle_resource() {
   case "$(uname -s)" in
     MINGW* | MSYS* | CYGWIN*) bin="target/release/meridian.exe" ;;
   esac
-  [[ -e "$REPO_ROOT/$bin" ]] && return 0
+  [[ -f "$REPO_ROOT/$bin" ]] && return 0
 
   cat >&2 <<EOF
   ✗ tray bundle resource missing: $bin

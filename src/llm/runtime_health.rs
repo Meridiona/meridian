@@ -93,12 +93,32 @@ fn record_path() -> PathBuf {
 
 /// Read the whole record. A missing/corrupt/foreign-format file degrades to "nothing
 /// observed" rather than failing the banner — the next call repopulates it.
+///
+/// ALWAYS a real disk read, deliberately: this file has exactly one writer per install (this
+/// process's own [`persist`] calls), but it has readers in TWO processes (see the module
+/// header - the daemon writes, the tray's `in_use_provider_health` reads via [`latest_for`]),
+/// and a tray-side cache with no invalidation would go stale forever after its first read,
+/// since the tray never calls `persist` to refresh one. [`record_success`]'s hot path uses
+/// [`RECORD_MIRROR`] instead of this function precisely so that a daemon-only optimisation
+/// can't leak into the cross-process reader.
 fn load() -> HashMap<String, RuntimeObservation> {
     let Ok(raw) = std::fs::read_to_string(record_path()) else {
         return HashMap::new();
     };
     serde_json::from_str(&raw).unwrap_or_default()
 }
+
+/// This process's own mirror of the record, lazily populated by [`record_success`]'s first
+/// call and kept in sync by every successful [`persist`] afterward.
+///
+/// Consulting this instead of a fresh [`load()`] is safe ONLY because this file has exactly
+/// one writer for the life of the process holding it - this process itself, via `persist`
+/// (called solely from `record_success`/`record_failure`, both daemon-only per the module
+/// header). A single-instance daemon guard (`main.rs`) rules out a second writer racing this
+/// one, so nothing outside this process can change the file between the lazy read and the
+/// next `persist`. It is deliberately NOT used by [`load()`]/[`latest_for`] - see that
+/// function's doc for why a reader shared with the tray must not cache this way.
+static RECORD_MIRROR: Mutex<Option<HashMap<String, RuntimeObservation>>> = Mutex::new(None);
 
 /// Serialises the read-modify-write below. Concurrent pipeline stages (the hourly report and
 /// the workstream fold can overlap across hours) would otherwise lose each other's entries —
@@ -111,8 +131,13 @@ fn persist(observation: RuntimeObservation) {
     let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut all = load();
     all.insert(observation.id.clone(), observation);
-    if let Err(e) = meridian_core::fs_utils::atomic_write_json(&record_path(), &all) {
-        tracing::warn!(error = %e, "failed to persist runtime provider health");
+    match meridian_core::fs_utils::atomic_write_json(&record_path(), &all) {
+        Ok(()) => {
+            *RECORD_MIRROR.lock().unwrap_or_else(|e| e.into_inner()) = Some(all);
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to persist runtime provider health");
+        }
     }
 }
 
@@ -132,6 +157,22 @@ fn clear_streak(id: &str) -> bool {
     map.insert(id.to_string(), 0).unwrap_or(0) > 0
 }
 
+/// True when `mirror` (populated via `loader` if empty) records `id` as `Failed` or
+/// `RateLimited`. Pulled out of [`record_success`] as a pure function of its inputs so the
+/// "populate once, then never call `loader` again" contract - the whole point of
+/// [`RECORD_MIRROR`] - is unit-testable without a real file or the global statics.
+fn has_unresolved_failure(
+    id: &str,
+    mirror: &mut Option<HashMap<String, RuntimeObservation>>,
+    loader: impl FnOnce() -> HashMap<String, RuntimeObservation>,
+) -> bool {
+    let map = mirror.get_or_insert_with(loader);
+    matches!(
+        map.get(id).map(|o| &o.outcome),
+        Some(ProviderTestOutcome::Failed { .. }) | Some(ProviderTestOutcome::RateLimited { .. })
+    )
+}
+
 /// Record that `provider` answered a real call.
 ///
 /// Clears the failure streak and stamps an `Ok` observation, so a recovered provider drops
@@ -141,18 +182,17 @@ fn clear_streak(id: &str) -> bool {
 pub fn record_success(provider: LlmProvider) {
     let id = provider.as_str().to_string();
     let was_failing = clear_streak(&id);
-    // Short-circuited on purpose: `load()` reads and parses the whole record from disk, and
-    // this function runs on EVERY successful call - the common, healthy-provider path. When
-    // the in-memory streak was already non-zero we already know a recovery must be persisted
-    // and don't need the disk to tell us so; the read is only for the one case the streak
-    // can't see - a stale ON-DISK failure/rate-limit with a clean in-memory streak (e.g. right
-    // after a daemon restart, or a rate-limit that doesn't touch the streak).
-    let stale_failure = !was_failing
-        && matches!(
-            load().get(&id).map(|o| &o.outcome),
-            Some(ProviderTestOutcome::Failed { .. })
-                | Some(ProviderTestOutcome::RateLimited { .. })
-        );
+    // Reads [`RECORD_MIRROR`], not a fresh `load()`: this function runs on EVERY successful
+    // call - the common, healthy-provider path - and a real disk read+parse there on every
+    // single call was the actual hot-path cost (a `was_failing`-only short circuit still hit
+    // disk every time for an already-healthy provider, which is the overwhelmingly common
+    // case). The mirror costs at most one real read per process, on whichever call happens
+    // to run first, and stays accurate afterward because `persist` is this file's only writer
+    // and updates the mirror in lockstep with the disk.
+    let stale_failure = !was_failing && {
+        let mut guard = RECORD_MIRROR.lock().unwrap_or_else(|e| e.into_inner());
+        has_unresolved_failure(&id, &mut guard, load)
+    };
     if !was_failing && !stale_failure {
         return;
     }
@@ -248,6 +288,13 @@ pub fn most_recent_outcome(
             .map(|t| t.with_timezone(&chrono::Utc))
     };
 
+    // Tracked separately from `runtime` below so the `(None, None)` fallback can tell WHY
+    // there's nothing to compare against. `runtime` collapses "garbage timestamp" and
+    // "parsed fine but past `OBSERVATION_MAX_AGE_HOURS`" into the same `None` - conflating
+    // them in the fallback would resurrect an expired observation just because no test
+    // exists to out-rank it, defeating the whole point of the expiry.
+    let runtime_timestamp_unparseable =
+        last_runtime.is_some_and(|o| parse(&o.observed_at).is_none());
     let runtime = last_runtime.and_then(|o| {
         let at = parse(&o.observed_at)?;
         let age = now.signed_duration_since(at);
@@ -262,14 +309,15 @@ pub fn most_recent_outcome(
             t_out.clone()
         }),
         (Some((_, out)), None) | (None, Some((_, out))) => Some(out.clone()),
-        // No usable timestamp on either side that survived to here: fall back to whichever
-        // input actually exists, preferring the test result for consistency with the
-        // tie-break above. Falling all the way to `None` would silently drop a real runtime
-        // observation whenever it is the ONLY input and its timestamp happens to be garbage -
-        // there is no test to lose to, so it should still count.
-        (None, None) => last_test
-            .map(|t| t.outcome.clone())
-            .or_else(|| last_runtime.map(|o| o.outcome.clone())),
+        // No usable timestamp on either side that survived to here: fall back to the test
+        // result first (consistent with the tie-break above), then to the runtime
+        // observation but ONLY when its timestamp was genuinely unparseable - never when it
+        // simply expired, which must stay dropped.
+        (None, None) => last_test.map(|t| t.outcome.clone()).or_else(|| {
+            runtime_timestamp_unparseable
+                .then(|| last_runtime.map(|o| o.outcome.clone()))
+                .flatten()
+        }),
     }
 }
 
@@ -401,6 +449,73 @@ mod tests {
             most_recent_outcome(None, Some(&runtime)),
             Some(ProviderTestOutcome::Failed { .. })
         ));
+    }
+
+    /// The regression the fix above almost introduced: an EXPIRED runtime observation (a
+    /// parseable timestamp older than `OBSERVATION_MAX_AGE_HOURS`) must stay dropped even
+    /// with no competing test - the `(None, None)` fallback must not resurrect it just
+    /// because there's nothing to lose to. Only a genuinely unparseable timestamp should
+    /// fall back to the observation's outcome.
+    #[test]
+    fn an_expired_runtime_observation_is_not_resurrected_by_the_fallback() {
+        let runtime = observation(
+            ProviderTestOutcome::Failed {
+                message: "long gone".into(),
+            },
+            ago(OBSERVATION_MAX_AGE_HOURS + 1),
+        );
+        assert!(most_recent_outcome(None, Some(&runtime)).is_none());
+    }
+
+    /// An empty mirror populates itself from the loader and reports what the loader gave it.
+    #[test]
+    fn unresolved_failure_check_populates_an_empty_mirror_from_the_loader() {
+        let mut mirror = None;
+        let loaded = HashMap::from([(
+            "claude".to_string(),
+            observation(
+                ProviderTestOutcome::Failed {
+                    message: "boom".into(),
+                },
+                "irrelevant".into(),
+            ),
+        )]);
+        assert!(has_unresolved_failure("claude", &mut mirror, || loaded.clone()));
+        assert!(mirror.is_some(), "the loader's result must be cached");
+    }
+
+    /// The whole point of the mirror: once populated, the loader must never run again, even
+    /// if what it WOULD return has since diverged (simulating the file changing on disk after
+    /// the mirror was filled - which, per the module's safety argument, cannot happen from
+    /// another process, but must also not spuriously re-trigger from this one).
+    #[test]
+    fn unresolved_failure_check_never_calls_the_loader_once_populated() {
+        let mut mirror = Some(HashMap::from([(
+            "claude".to_string(),
+            observation(ProviderTestOutcome::Ok, "irrelevant".into()),
+        )]));
+        let result = has_unresolved_failure("claude", &mut mirror, || {
+            panic!("loader must not run when the mirror is already populated")
+        });
+        assert!(!result, "a healthy cached entry must not read as a failure");
+    }
+
+    /// A rate limit counts as unresolved too - `record_success` must clear it just like a
+    /// hard failure.
+    #[test]
+    fn unresolved_failure_check_counts_a_rate_limit() {
+        let mut mirror = Some(HashMap::from([(
+            "claude".to_string(),
+            observation(
+                ProviderTestOutcome::RateLimited {
+                    message: "quota".into(),
+                },
+                "irrelevant".into(),
+            ),
+        )]));
+        assert!(has_unresolved_failure("claude", &mut mirror, || {
+            panic!("mirror already populated")
+        }));
     }
 
     /// The debounce: a transient must not raise the banner, and the streak must survive
