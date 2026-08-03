@@ -344,87 +344,172 @@ fn interrupted_migration_leftovers(path: &Path) -> Vec<std::path::PathBuf> {
     found
 }
 
-/// `std::fs::rename` with a short bounded retry (~1s of linear backoff across 5
-/// attempts) via the shared [`crate::retry::retry_transient_blocking`]. On
-/// Windows a rename fails with os error 32 ("used by another process") while
-/// *any* handle to the source or destination is briefly open — an antivirus
-/// scan, the search indexer, or a SQLite handle sqlx's worker thread hasn't
-/// finished closing yet; the retry clears those transient holders. A genuinely
-/// stuck file (e.g. the daemon holding it for real) still fails, so the caller's
-/// fallback/rollback still runs. First-attempt success is the common fast path;
-/// Unix renames don't hit this but the retry is harmless there.
+/// Renders `path` as a SQLite string literal, doubling any single quote.
+///
+/// `ATTACH DATABASE` takes its filename as a **literal** and sqlx cannot bind a
+/// parameter there, so the path has to be interpolated - which means a path
+/// containing `'` would otherwise close the literal early and leave the rest to
+/// be parsed as SQL. Doubling the quote is SQLite's own escape.
+///
+/// This is not a remote-attack surface: the path comes from the user's own
+/// config and install layout, never from a wire. But an apostrophe in a macOS
+/// account name is ordinary enough - `/Users/o'brien/…` - and unescaped it
+/// turns into a baffling SQL syntax error in the middle of a database
+/// migration, on the one machine whose owner cannot avoid it.
+fn sql_quoted_path(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', "''"))
+}
+
+/// Attempts for a rename whose failure is cheap — the caller can simply give up
+/// and retry the whole operation later, having changed nothing. ~1s of linear
+/// backoff.
+const RENAME_ATTEMPTS_CHEAP: u32 = 5;
+
+/// Attempts for a rename whose failure is expensive: it discards work that has
+/// already been done and cannot be cheaply redone. ~10s of linear backoff.
+///
+/// The asymmetry is about cost, not platform. Moving the original aside can
+/// fail harmlessly - nothing has changed, the caller retries. Failing to move
+/// the *replacement* into place throws away a completed rebuild and forces the
+/// rollback, and on the tray's repair path (`meridian::db::repair` via
+/// `repair_boot`) costs the user another full app restart to try again. Ten
+/// seconds of patience is nothing against that.
+///
+/// This budget is defence in depth, NOT the fix for anything observed. It was
+/// added alongside the Windows CI failure in PR #659, which looked like a
+/// too-short retry and was not: the rebuilt file was still held open by a
+/// connection `pool.close()` had not actually closed. That was fixed at the
+/// source (`db::repair::rebuild`). No lock has ever been seen to outlast even
+/// the one-second budget - do not read this constant as evidence that one has.
+const RENAME_ATTEMPTS_EXPENSIVE: u32 = 15;
+
+/// `std::fs::rename` with a bounded retry via the shared
+/// [`crate::retry::retry_transient_blocking`]. On Windows a rename fails with os
+/// error 32 ("used by another process") while *any* handle to the source or
+/// destination is briefly open — an antivirus scan, the search indexer, or a
+/// SQLite handle sqlx's worker thread hasn't finished closing yet; the retry
+/// clears those transient holders. A genuinely stuck file (e.g. the daemon
+/// holding it for real) still fails, so the caller's fallback/rollback still
+/// runs. First-attempt success is the common fast path; Unix renames don't hit
+/// this but the retry is harmless there.
+///
+/// `attempts` is the caller's choice between [`RENAME_ATTEMPTS_CHEAP`] and
+/// [`RENAME_ATTEMPTS_EXPENSIVE`] — see those constants for the reasoning.
 ///
 /// The blocking variant is deliberate: the only caller is
-/// `finalize_encryption_swap`, reached from the tray's `block_on(migrate)`
+/// `swap_database_file`, reached from the tray's `block_on(migrate)`
 /// startup gate before any other async work is scheduled, so the worst-case
 /// backoff blocks nothing but the migration it's part of.
-fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
-    crate::retry::retry_transient_blocking(5, std::time::Duration::from_millis(100), || {
+fn rename_with_retry(from: &Path, to: &Path, attempts: u32) -> std::io::Result<()> {
+    crate::retry::retry_transient_blocking(attempts, std::time::Duration::from_millis(100), || {
         std::fs::rename(from, to)
     })
 }
 
-/// Swap the freshly-written encrypted export at `tmp_path` into `path`, moving
-/// the plaintext original to `backup_path` first. Extracted from
-/// [`encrypt_in_place`] so the two-rename failure handling is unit-testable
-/// without a real Windows share violation (see the module tests). Every rename
-/// here goes through [`rename_with_retry`], so a transient Windows lock on any
-/// of the moves (including the rollback) retries rather than failing the swap.
+/// Swap a freshly-written replacement database at `tmp_path` into `path`,
+/// moving the original to `backup_path` first. `op` names the calling
+/// operation and appears in every error context, so a failure reads as
+/// `"encrypt_in_place: …"` or `"db repair: …"` rather than something generic.
 ///
-/// Preserves [`encrypt_in_place`]'s "a failed migration never loses data"
-/// invariant across BOTH renames — each of which can fail on the same class of
-/// Windows lock (a lingering handle / AV scan) that motivated this whole fix:
-/// - First rename (`path` → `backup_path`) fails: the encrypted export is
-///   useless without the swap, so drop it and leave the plaintext original
-///   exactly where it is ("still plaintext, retry next launch").
+/// Extracted from [`encrypt_in_place`] so the two-rename failure handling is
+/// unit-testable without a real Windows share violation (see the module
+/// tests), and shared with the daemon's corruption recovery
+/// (`meridian::db::repair`), which performs the identical dance: build a
+/// replacement alongside, then swap it in without ever risking a window where
+/// no database exists. Every rename goes through [`rename_with_retry`], so a
+/// transient Windows lock on any of the moves (including the rollback) retries
+/// rather than failing the swap — with a **much longer budget for the second
+/// rename and the rollback** than the first, because their failure is far more
+/// expensive (see [`RENAME_ATTEMPTS_EXPENSIVE`]).
+///
+/// Preserves the "a failed swap never loses data" invariant across BOTH
+/// renames — each of which can fail on the same class of Windows lock (a
+/// lingering handle / AV scan) that motivated this fix:
+/// - First rename (`path` → `backup_path`) fails: the replacement is useless
+///   without the swap, so drop it and leave the original exactly where it is
+///   ("unchanged, retry later").
 /// - Second rename (`tmp_path` → `path`) fails: `path` has ALREADY been moved to
 ///   `backup_path`, so returning here would strand the user's data under a
 ///   backup name while the caller (seeing no `meridian.db`) creates a fresh
 ///   empty one. Roll back by renaming `backup_path` → `path` first, so the state
-///   degrades to "still plaintext, data intact" rather than "no database". Only
+///   degrades to "unchanged, data intact" rather than "no database". Only
 ///   if that rollback ALSO fails do we surface a hard error naming the file to
 ///   restore by hand — strictly the last resort.
-fn finalize_encryption_swap(
+pub fn swap_database_file(
     path: &Path,
     tmp_path: &Path,
     backup_path: &Path,
+    op: &str,
 ) -> anyhow::Result<()> {
-    if let Err(e) = rename_with_retry(path, backup_path) {
+    if let Err(e) = rename_with_retry(path, backup_path, RENAME_ATTEMPTS_CHEAP) {
         // On Windows `rename` fails with "os error 32" while another process
         // (the running daemon) still holds `meridian.db` open. Remove the
-        // multi-GB encrypted export so it doesn't accumulate as an orphan every
-        // startup (a real disk-exhaustion risk on a large DB); `key_unless_plaintext`
-        // keeps the daemon and CLIs working against the plaintext file meanwhile.
+        // multi-GB replacement (an encrypted export for `encrypt_in_place`, a
+        // rebuilt file for `db repair`) so it doesn't accumulate as an orphan
+        // every startup - a real disk-exhaustion risk on a large DB. The
+        // original is untouched, so both callers keep working against it
+        // meanwhile.
         let _ = std::fs::remove_file(tmp_path);
         tracing::error!(
             error = %e,
             stage = "move_original_aside",
-            "encryption swap failed - database left plaintext, will retry next launch"
+            op,
+            "database swap failed - the original is untouched, will retry later"
         );
-        return Err(e).context(
-            "encrypt_in_place: failed to move plaintext original aside \
-             (is meridian.db still open by the daemon?)",
-        );
+        return Err(e).context(format!(
+            "{op}: failed to move the original database aside \
+             (is meridian.db still open by the daemon or the tray?)"
+        ));
     }
-    for suffix in ["-wal", "-shm"] {
-        let sidecar = std::path::PathBuf::from(format!("{}{}", path.display(), suffix));
-        let _ = std::fs::remove_file(sidecar); // checkpointed to empty; safe to drop
+    // The original's WAL is safe to drop ONLY when it has already been checkpointed to
+    // empty - true for `encrypt_in_place` (it checkpoints before ever calling this
+    // function), but NOT for `db repair`: that caller reads a damaged source through
+    // `ATTACH` and never checkpoints it, so a non-empty WAL there still holds committed
+    // rows the main file doesn't have yet. Deleting it would make the preserved "damaged
+    // original" backup - the one copy of what a repair couldn't salvage - WORSE than the
+    // live database was. Move each sidecar to sit beside `backup_path` under the same base
+    // name instead, so opening `backup_path` later still finds - and can recover - whatever
+    // the WAL held. A missing sidecar (the common, already-checkpointed case) is not an
+    // error.
+    let sidecar_paths: Vec<(std::path::PathBuf, std::path::PathBuf)> = ["-wal", "-shm"]
+        .iter()
+        .map(|suffix| {
+            (
+                std::path::PathBuf::from(format!("{}{}", path.display(), suffix)),
+                std::path::PathBuf::from(format!("{}{}", backup_path.display(), suffix)),
+            )
+        })
+        .collect();
+    for (sidecar, kept) in &sidecar_paths {
+        if sidecar.exists() {
+            let _ = std::fs::rename(sidecar, kept);
+        }
     }
-    if let Err(e) = rename_with_retry(tmp_path, path) {
+    if let Err(e) = rename_with_retry(tmp_path, path, RENAME_ATTEMPTS_EXPENSIVE) {
         // `path` was already moved to `backup_path` above; put it back so we
         // never leave the user with no database at all.
-        match rename_with_retry(backup_path, path) {
+        match rename_with_retry(backup_path, path, RENAME_ATTEMPTS_EXPENSIVE) {
             Ok(()) => {
                 let _ = std::fs::remove_file(tmp_path);
+                // The sidecars moved beside `backup_path` above belong with the main
+                // file wherever it ends up - move them back so the restored original
+                // is exactly as it was before this swap was attempted, not just the
+                // same bytes with its WAL stranded under the backup's name.
+                for (sidecar, kept) in &sidecar_paths {
+                    if kept.exists() {
+                        let _ = std::fs::rename(kept, sidecar);
+                    }
+                }
                 tracing::error!(
                     error = %e,
-                    stage = "move_encrypted_into_place",
-                    "encryption swap failed - plaintext original restored, will retry next launch"
+                    stage = "move_replacement_into_place",
+                    op,
+                    "database swap failed - the original was restored, will retry later"
                 );
-                Err(e).context(
-                    "encrypt_in_place: failed to move encrypted export into place; \
-                     restored the plaintext original (will retry next launch)",
-                )
+                Err(e).context(format!(
+                    "{op}: failed to move the replacement database into place; \
+                     restored the original (will retry later)"
+                ))
             }
             Err(restore_err) => {
                 // The only branch that needs a human. Logged at ERROR with no
@@ -435,11 +520,12 @@ fn finalize_encryption_swap(
                     error = %e,
                     restore_error = %restore_err,
                     stage = "restore_original",
-                    "encryption swap failed AND rollback failed - the database needs restoring by hand"
+                    op,
+                    "database swap failed AND rollback failed - the database needs restoring by hand"
                 );
                 Err(e).context(format!(
-                    "encrypt_in_place: failed to move encrypted export into place AND failed \
-                 to restore the plaintext original ({restore_err:#}) - the previous data \
+                    "{op}: failed to move the replacement into place AND failed \
+                 to restore the original ({restore_err:#}) - the previous data \
                  is intact at {}; restore it by hand",
                     backup_path.display(),
                 ))
@@ -516,8 +602,8 @@ pub async fn encrypt_in_place(path: &Path, key_hex: &str) -> anyhow::Result<()> 
     let _ = std::fs::remove_file(&tmp_path); // best-effort cleanup of a prior interrupted attempt
 
     let attach_sql = format!(
-        "ATTACH DATABASE '{}' AS encrypted_export KEY \"x'{}'\";",
-        tmp_path.display(),
+        "ATTACH DATABASE {} AS encrypted_export KEY \"x'{}'\";",
+        sql_quoted_path(&tmp_path),
         key_hex
     );
     conn.execute(attach_sql.as_str())
@@ -545,7 +631,7 @@ pub async fn encrypt_in_place(path: &Path, key_hex: &str) -> anyhow::Result<()> 
         "db.plaintext-backup-{}",
         chrono::Utc::now().format("%Y%m%d%H%M%S")
     ));
-    finalize_encryption_swap(path, &tmp_path, &backup_path)?;
+    swap_database_file(path, &tmp_path, &backup_path, "encrypt_in_place")?;
 
     tracing::info!(
         db = %path.display(),
@@ -587,8 +673,8 @@ pub async fn export_plaintext(
 
     let _ = std::fs::remove_file(out_path);
     let attach_sql = format!(
-        "ATTACH DATABASE '{}' AS plaintext_export KEY '';",
-        out_path.display()
+        "ATTACH DATABASE {} AS plaintext_export KEY '';",
+        sql_quoted_path(out_path)
     );
     conn.execute(attach_sql.as_str())
         .await
@@ -919,16 +1005,21 @@ mod tests {
         std::fs::write(&path, b"ORIGINAL-PLAINTEXT").unwrap();
         std::fs::write(&tmp, b"ENCRYPTED-EXPORT").unwrap();
 
-        let err = finalize_encryption_swap(&path, &tmp, &backup).unwrap_err();
+        let err = swap_database_file(&path, &tmp, &backup, "encrypt_in_place").unwrap_err();
         assert!(!tmp.exists(), "stale encrypted export must be removed");
         assert_eq!(
             std::fs::read(&path).unwrap(),
             b"ORIGINAL-PLAINTEXT",
             "plaintext original must be left intact"
         );
+        let msg = format!("{err:#}");
         assert!(
-            format!("{err:#}").contains("move plaintext original aside"),
-            "unexpected error: {err:#}"
+            msg.contains("failed to move the original database aside"),
+            "unexpected error: {msg}"
+        );
+        assert!(
+            msg.starts_with("encrypt_in_place:"),
+            "the error must name the calling operation: {msg}"
         );
     }
 
@@ -945,7 +1036,7 @@ mod tests {
 
         std::fs::write(&path, b"ORIGINAL-PLAINTEXT").unwrap();
 
-        let err = finalize_encryption_swap(&path, &tmp, &backup).unwrap_err();
+        let err = swap_database_file(&path, &tmp, &backup, "encrypt_in_place").unwrap_err();
         assert!(
             path.exists(),
             "the plaintext original must be restored, not stranded under the backup name"
@@ -959,9 +1050,14 @@ mod tests {
             !backup.exists(),
             "backup should have been renamed back to path"
         );
+        let msg = format!("{err:#}");
         assert!(
-            format!("{err:#}").contains("restored the plaintext original"),
-            "unexpected error: {err:#}"
+            msg.contains("restored the original"),
+            "unexpected error: {msg}"
+        );
+        assert!(
+            msg.starts_with("encrypt_in_place:"),
+            "the error must name the calling operation: {msg}"
         );
     }
 
@@ -972,12 +1068,37 @@ mod tests {
         let b = dir.path().join("b");
         std::fs::write(&a, b"x").unwrap();
         // Happy path: renames (first attempt).
-        rename_with_retry(&a, &b).unwrap();
+        rename_with_retry(&a, &b, RENAME_ATTEMPTS_CHEAP).unwrap();
         assert!(b.exists() && !a.exists());
         // A persistent failure (missing source) still surfaces an Err after the
-        // retries are exhausted, so the caller's fallback/rollback runs.
+        // retries are exhausted, so the caller's fallback/rollback runs. Uses
+        // the cheap budget deliberately: the expensive one would spend ~10s
+        // sleeping to reach the same answer.
         let missing = dir.path().join("nope");
-        assert!(rename_with_retry(&missing, &b).is_err());
+        assert!(rename_with_retry(&missing, &b, RENAME_ATTEMPTS_CHEAP).is_err());
+    }
+
+    /// The rename that can throw away a completed rebuild must be given a
+    /// materially longer budget than the one that can only fail harmlessly.
+    /// Pinned because the whole point is the asymmetry, and a later tidy-up
+    /// that collapsed both to one constant would silently reinstate the
+    /// one-second budget that failed on Windows CI.
+    #[test]
+    fn the_expensive_rename_retries_far_longer_than_the_cheap_one() {
+        // The linear schedule `retry_transient_blocking` actually sleeps, so
+        // this compares real patience in milliseconds rather than raw attempt
+        // counts - and keeps the assertion off two constants, which clippy
+        // rightly refuses.
+        fn patience_ms(attempts: u32) -> u64 {
+            (1..u64::from(attempts)).map(|n| n * 100).sum()
+        }
+        let cheap = patience_ms(RENAME_ATTEMPTS_CHEAP);
+        let expensive = patience_ms(RENAME_ATTEMPTS_EXPENSIVE);
+        assert!(
+            expensive >= cheap * 3,
+            "the expensive rename waits {expensive}ms vs the cheap one's {cheap}ms - \
+             not meaningfully longer"
+        );
     }
 
     /// The happy path: both renames succeed — plaintext original preserved under
@@ -992,7 +1113,7 @@ mod tests {
         std::fs::write(&path, b"PLAINTEXT").unwrap();
         std::fs::write(&tmp, b"CIPHERTEXT").unwrap();
 
-        finalize_encryption_swap(&path, &tmp, &backup).unwrap();
+        swap_database_file(&path, &tmp, &backup, "encrypt_in_place").unwrap();
         assert_eq!(
             std::fs::read(&path).unwrap(),
             b"CIPHERTEXT",
@@ -1004,6 +1125,62 @@ mod tests {
             "plaintext backup preserved"
         );
         assert!(!tmp.exists(), "tmp consumed by the rename");
+    }
+
+    /// The bug this guards: `db repair`'s source is never checkpointed (unlike
+    /// `encrypt_in_place`'s), so a non-empty `-wal` on the original can hold committed rows
+    /// the main file doesn't have yet. It must be preserved, not deleted, and it must end up
+    /// alongside `backup_path` under the SAME base name so opening the backup later still
+    /// finds it.
+    #[test]
+    fn finalize_swap_preserves_a_non_empty_wal_beside_the_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meridian.db");
+        let tmp = dir.path().join("meridian.db.rebuilding-tmp");
+        let backup = dir.path().join("meridian.db.corrupt-backup-x");
+
+        std::fs::write(&path, b"DAMAGED-ORIGINAL").unwrap();
+        std::fs::write(format!("{}-wal", path.display()), b"UNCHECKPOINTED-ROWS").unwrap();
+        std::fs::write(&tmp, b"REBUILT-REPLACEMENT").unwrap();
+
+        swap_database_file(&path, &tmp, &backup, "db repair").unwrap();
+
+        assert!(
+            !std::path::PathBuf::from(format!("{}-wal", path.display())).exists(),
+            "the replacement's own directory must not inherit the original's stale WAL"
+        );
+        assert_eq!(
+            std::fs::read(format!("{}-wal", backup.display())).unwrap(),
+            b"UNCHECKPOINTED-ROWS",
+            "the WAL must survive beside the backup, not be deleted"
+        );
+    }
+
+    /// The rollback mirror of the above: if the swap has to restore the original, its WAL
+    /// (parked beside the backup name during the swap) must move back with it - otherwise a
+    /// human who removed the "damaged" backup after a successful-looking repair would also
+    /// discard rows the rollback was supposed to have kept intact.
+    #[test]
+    fn finalize_swap_restores_the_wal_alongside_the_original_on_rollback() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meridian.db");
+        let backup = dir.path().join("meridian.db.corrupt-backup-x");
+        let tmp = dir.path().join("does-not-exist.tmp"); // rename(tmp, path) → ENOENT
+
+        std::fs::write(&path, b"DAMAGED-ORIGINAL").unwrap();
+        std::fs::write(format!("{}-wal", path.display()), b"UNCHECKPOINTED-ROWS").unwrap();
+
+        swap_database_file(&path, &tmp, &backup, "db repair").unwrap_err();
+
+        assert_eq!(
+            std::fs::read(format!("{}-wal", path.display())).unwrap(),
+            b"UNCHECKPOINTED-ROWS",
+            "the WAL must be restored alongside the rolled-back original"
+        );
+        assert!(
+            !std::path::PathBuf::from(format!("{}-wal", backup.display())).exists(),
+            "the WAL must not be left stranded under the (rolled-back) backup name"
+        );
     }
 
     #[test]
@@ -1041,6 +1218,48 @@ mod tests {
             .unwrap();
         pool.close().await;
         assert!(!is_plaintext_sqlite(&enc_path));
+    }
+
+    /// An apostrophe in the path must survive the `ATTACH DATABASE` literal.
+    ///
+    /// Runs the real migration rather than asserting on [`sql_quoted_path`] in
+    /// isolation: the bug this guards is that an unescaped quote closes the
+    /// literal early, which only shows up once SQLite actually parses the
+    /// statement. `/Users/o'brien/…` is an ordinary macOS home directory.
+    #[tokio::test]
+    async fn encrypt_in_place_handles_an_apostrophe_in_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let odd = dir.path().join("o'brien");
+        std::fs::create_dir(&odd).unwrap();
+        let db_path = odd.join("meridian.db");
+
+        let pool = open_pool_with_key(&db_path.display().to_string(), None, true, &[])
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t (x INTEGER)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO t (x) VALUES (7)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        encrypt_in_place(&db_path, TEST_KEY)
+            .await
+            .expect("an apostrophe in the path must not break the ATTACH literal");
+        assert!(!is_plaintext_sqlite(&db_path));
+
+        let pool = open_pool_with_key(&db_path.display().to_string(), Some(TEST_KEY), false, &[])
+            .await
+            .unwrap();
+        let row = sqlx::query("SELECT x FROM t")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<i64, _>(0), 7, "data must survive the migration");
+        pool.close().await;
     }
 
     #[tokio::test]

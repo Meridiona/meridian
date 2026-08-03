@@ -334,21 +334,33 @@ pub(crate) fn meridian_db_path() -> String {
 mod tests {
     use super::*;
 
+    /// Is `name` one of `p`'s path components?
+    ///
+    /// These assertions used to spell paths as string literals with `/` in
+    /// them, which quietly meant two different things per platform: a real
+    /// check on Unix, and a check that could never fail on Windows (where the
+    /// separator is `\`, so `contains("/.meridian/")` is always false). Two of
+    /// them failed outright the first time the tray was ever tested on Windows.
+    /// Comparing components is separator-agnostic and says what is meant.
+    fn has_component(p: &std::path::Path, name: &str) -> bool {
+        p.components().any(|c| c.as_os_str() == name)
+    }
+
     /// The rule itself, asserted end-to-end: these tests ARE a debug build, so
     /// every resolver must answer from the checkout and name `~/.meridian` for
     /// nothing. The DB is the one sanctioned exception, pinned separately below.
     #[test]
     fn a_dev_build_reaches_into_the_installed_package_for_nothing() {
         let repo = dev_root();
-        let installed = "/.meridian/";
 
         let bin = meridian_bin();
+        let bin_path = std::path::Path::new(&bin);
         assert!(
-            bin.starts_with(&*repo.to_string_lossy()) && bin.ends_with("target/debug/meridian"),
+            bin_path.starts_with(&repo) && bin_path.ends_with("target/debug/meridian"),
             "dev must spawn the CLI it was built beside, got: {bin}"
         );
         assert!(
-            !bin.contains(installed),
+            !has_component(bin_path, ".meridian"),
             "dev must not spawn the package CLI"
         );
 
@@ -357,9 +369,9 @@ mod tests {
             cwd, repo,
             "the cwd picks the .env - it must be the checkout"
         );
-        assert!(!cwd.to_string_lossy().contains(installed));
+        assert!(!has_component(&cwd, ".meridian"));
         assert!(
-            !cwd.to_string_lossy().contains(".."),
+            !has_component(&cwd, ".."),
             "hand the child a real path, not one with /../.. in it"
         );
 
@@ -382,9 +394,10 @@ mod tests {
         if std::env::var("MERIDIAN_DB").is_ok() {
             return;
         }
+        let db = meridian_db_path();
         assert!(
-            meridian_db_path().ends_with("/.meridian/meridian.db"),
-            "the shared DB stays in ~/.meridian"
+            std::path::Path::new(&db).ends_with(".meridian/meridian.db"),
+            "the shared DB stays in ~/.meridian, got: {db}"
         );
     }
 

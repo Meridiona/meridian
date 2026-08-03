@@ -39,6 +39,7 @@ pub mod prompts;
 pub mod rate_limit;
 pub mod reset_time;
 pub mod resolver;
+pub mod runtime_health;
 pub mod schema;
 
 use std::fmt;

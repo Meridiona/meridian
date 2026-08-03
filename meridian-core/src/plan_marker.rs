@@ -101,7 +101,17 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("meridian-restamp-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let marker = marker_path(&dir);
-        let now = Local::now();
+        // Pinned to local noon, not `Local::now()`: the "today's marker" case
+        // below subtracts 30 minutes and asserts it lands on the same day,
+        // which flakes if the test happens to run in the first 30 minutes
+        // after local midnight (real-world CI failure - not hypothetical).
+        let now = chrono::Local::now()
+            .date_naive()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_local_timezone(chrono::Local)
+            .single()
+            .expect("noon is unambiguous under any offset");
 
         // No marker (auto-open never fired today) → no re-stamp, no file.
         assert!(!restamp_if_today(&marker, &now));

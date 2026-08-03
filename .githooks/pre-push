@@ -31,6 +31,60 @@ echo ""
 echo "=== pre-push checks ==="
 echo ""
 
+# ── Preflight: the tray's bundle resource must exist ────────────────────────
+#
+# `tray/src-tauri/tauri.conf.json` declares the daemon binary under
+# `bundle.resources`, and `tauri-build` (the tray's build.rs) STATS every
+# declared resource whenever the tray compiles - including a mere `clippy` or
+# `test`, which never read the file. A missing one fails the build with
+# "resource path `../../target/release/meridian` doesn't exist".
+#
+# This only started biting locally when the hook moved to `--workspace`: before
+# that, bare cargo never compiled the tray at all, so a fresh clone could push
+# without ever producing this file.
+#
+# Checked FIRST, before any wave, because the alternative is discovering it
+# several minutes into clippy.
+#
+# Deliberately fails rather than creating the placeholder itself. CI can stub it
+# safely because CI never packages, but a stub on a developer machine is a live
+# footgun: `tauri build` bundles whatever sits at that path, so a forgotten
+# 0-byte file ships a `.app` whose daemon is an empty file. Making that an
+# explicit, informed choice keeps the real binary the default answer.
+require_tray_bundle_resource() {
+  local bin="target/release/meridian"
+  case "$(uname -s)" in
+    MINGW* | MSYS* | CYGWIN*) bin="target/release/meridian.exe" ;;
+  esac
+  [[ -f "$REPO_ROOT/$bin" ]] && return 0
+
+  cat >&2 <<EOF
+  ✗ tray bundle resource missing: $bin
+
+    The tray declares this in tauri.conf.json's bundle.resources, and
+    tauri-build stats it whenever the tray compiles - which the workspace-wide
+    clippy and test below both do. Without it they fail with:
+
+        resource path \`../../$bin\` doesn't exist
+
+    Build the real daemon (what a packaged build actually needs):
+
+        cargo build --release -p meridian --bin meridian
+
+    Or, if you only intend to lint and test, an empty placeholder is enough:
+
+        mkdir -p target/release && : > $bin
+
+    WARNING on the placeholder: \`tauri build\` bundles whatever is at that
+    path. Leave a 0-byte file there and you will package a .app whose daemon is
+    an empty file, with no error. Build the real binary before packaging.
+
+EOF
+  return 1
+}
+
+require_tray_bundle_resource || exit 1
+
 # ── Wave 1: fmt + UI build (fully independent, run in parallel) ─────────────
 echo "[wave 1/3] cargo fmt --check  +  ui build"
 
@@ -55,7 +109,10 @@ fi
 echo ""
 echo "[wave 2/3] cargo clippy  +  ui tests"
 
-run_check "cargo clippy" cargo clippy -- -D warnings &
+# `--workspace` is REQUIRED, not decorative: `members = [".", ...]` makes the
+# repo root a package, so bare cargo lints/tests that package ALONE and silently
+# skips meridian-core, meridian-oauth and the tray. See .github/workflows/ci.yml.
+run_check "cargo clippy" cargo clippy --workspace --all-targets -- -D warnings &
 W2_CLIPPY=$!
 
 run_check "ui tests" bash -c "cd '$REPO_ROOT/ui' && bun test" &
@@ -103,7 +160,7 @@ else
   echo "  - security audit skipped (claude CLI not found)"
 fi
 
-run_check "cargo test" cargo test &
+run_check "cargo test" cargo test --workspace &
 W3_TEST=$!
 
 wait $W3_TEST || FAIL=1

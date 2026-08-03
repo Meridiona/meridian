@@ -31,6 +31,7 @@ const status = (installed: boolean, path: string | null = null): ProviderStatus 
   path,
   authenticated: null,
   last_test: null,
+  install_command: 'npm i -g @openai/codex',
 })
 
 const testResult = (outcome: ProviderTestResult['outcome']): ProviderTestResult => ({
