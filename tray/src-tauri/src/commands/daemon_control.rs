@@ -176,10 +176,36 @@ pub async fn restart() -> Result<(), String> {
             // `register_service` already does for a fresh install; the daemon's
             // own single-instance guard (`daemon_already_running`) makes this
             // safe to attempt even if the task turns out to still be alive.
-            tracing::warn!(
-                error = %e,
-                "schtasks /Run failed - falling back to spawning the staged daemon directly"
-            );
+            //
+            // Which of those two situations this is decides the log level, and
+            // the difference matters more than it looks. On a policy-locked
+            // machine the task will NEVER exist, so warning here reports a
+            // permanent, already-handled configuration as if it were a fresh
+            // transient failure — once per restart attempt, forever. WARN+ is
+            // what egresses to central telemetry, and one such machine shipped
+            // ~3.9k of these in three days, burying real failures in the stream
+            // that exists to surface them.
+            //
+            // Distinguished by `/Query`'s EXIT CODE rather than by matching
+            // `/Run`'s stderr: Windows localizes those messages ("The system
+            // cannot find the file specified" is English-only), so text
+            // matching would silently classify every non-English machine as the
+            // unexpected case — the exact population most likely to be
+            // policy-locked in the first place.
+            if schtasks(&["/Query", "/TN", TASK_NAME]).await.is_ok() {
+                // The task exists but would not run — genuinely unexpected, and
+                // the direct spawn below is papering over something. Keep it at
+                // WARN so it stays visible in telemetry.
+                tracing::warn!(
+                    error = %e,
+                    "schtasks /Run failed though the task exists - falling back to spawning the staged daemon directly"
+                );
+            } else {
+                tracing::debug!(
+                    error = %e,
+                    "no scheduled task on this machine (schtasks /Create was blocked at install) - spawning the staged daemon directly"
+                );
+            }
             spawn_staged_daemon().map_err(|spawn_err| {
                 format!("schtasks /Run failed ({e}); direct spawn also failed: {spawn_err}")
             })
