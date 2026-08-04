@@ -1878,9 +1878,15 @@ mod tests {
                 provider.install_command(),
                 "{provider:?} must report the command this platform installs with"
             );
+            // Non-empty, not merely present: the UI renders this string as the
+            // "how to install" hint, so `Some("")` would pass an `is_some()`
+            // check and still show the user a blank instruction.
             assert!(
-                status.install_command.is_some(),
-                "{provider:?} is a CLI provider and must have an installer"
+                status
+                    .install_command
+                    .as_deref()
+                    .is_some_and(|c| !c.trim().is_empty()),
+                "{provider:?} is a CLI provider and must have a non-empty installer command"
             );
         }
     }
