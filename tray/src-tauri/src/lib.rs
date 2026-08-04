@@ -926,8 +926,10 @@ pub fn run() {
             });
 
             // Fast daemon supervisor, separate from the poll loop's slower,
-            // notice-owning health tick: probes every 5 s and restarts a
-            // confirmed-down daemon within ~10 s. See `poll::run_daemon_watchdog`.
+            // notice-owning health tick: probes every 5 s and *starts* a daemon
+            // that is confirmed stopped. It deliberately never signals a running
+            // process — doing so on a slow probe corrupted `meridian.db` on
+            // every macOS install. See `poll::watchdog` before changing it.
             tauri::async_runtime::spawn(async move {
                 poll::run_daemon_watchdog().await;
             });
