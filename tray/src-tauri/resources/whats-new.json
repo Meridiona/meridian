@@ -1,6 +1,22 @@
 {
   "releases": [
     {
+      "version": "1.83.1",
+      "date": "2026-08-04",
+      "highlights": [
+        "The Repair Database button now actually works. In the last version, clicking through it did nothing at all - the confirmation box it relied on is invisible in the app, so repairing a damaged database meant using a terminal.",
+        "Two causes of database damage on Mac are fixed. One could strike while Meridian upgraded your data to encrypted storage; the other on any busy day, once Meridian ran out of the file handles macOS allows it.",
+        "When a work log action fails, Meridian now tells you why. Approving, rejecting, posting and editing used to fail silently - the row simply snapped back to its old value with no explanation."
+      ],
+      "fixes": [
+        "Fixed the one-time encryption upgrade running while the background service was still writing to your data, which could leave the database damaged. Meridian now stops the service first, checks nothing else is still using the file, and leaves your data alone entirely if it cannot.",
+        "Fixed Meridian running out of file handles on Mac, which could damage the database in the middle of a write. It now asks the system for enough at startup.",
+        "On Windows machines where company policy blocks scheduled tasks, restarting no longer reports a failure every single time. The backup method was already working - only the false alarm is gone.",
+        "Error reports now say which health check failed, rather than only that one did.",
+        "Fixed the Windows build of the app, which had been broken by the database fixes above."
+      ]
+    },
+    {
       "version": "1.81.0",
       "date": "2026-07-28",
       "highlights": [
@@ -212,6 +228,11 @@
     }
   ],
   "roadmap": [
+    {
+      "title": "Finish fixing database damage on Mac",
+      "status": "in-progress",
+      "description": "This release closes two causes. A third remains: Meridian's own health check can decide the background service has stopped responding when it is merely busy, and restart it mid-write. Until that lands, a damaged database is still possible on a heavy day."
+    },
     {
       "title": "More trackers - Linear, Trello, and Azure DevOps",
       "status": "planned",
