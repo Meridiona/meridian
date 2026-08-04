@@ -1,5 +1,36 @@
 # Changelog
 
+## [1.83.1](https://github.com/Meridiona/meridian/compare/v1.83.0...v1.83.1) (2026-08-04)
+
+### 🐛 Bug Fixes
+
+* **db:** keep the fd-limit helpers alive on the Windows build ([b6582f0](https://github.com/Meridiona/meridian/commit/b6582f00183e2855eab628c6227d2df8b0237bd2))
+* **db:** raise the file-descriptor limit in both binaries ([0183939](https://github.com/Meridiona/meridian/commit/018393948df6ef9bd205d361a148bb865807aed8))
+* **telemetry:** ship the fields that say WHICH health check failed ([8bbc174](https://github.com/Meridiona/meridian/commit/8bbc1747b0ba20491530934061b3a186faf1b64f))
+* **tray:** compile the launchd migration helpers on every platform ([9086cb2](https://github.com/Meridiona/meridian/commit/9086cb26f139d1916b53cb8489c02939d2f90f0f)), closes [#671](https://github.com/Meridiona/meridian/issues/671)
+* **tray:** restore the Windows recovery fallback and close the -k TOCTOU ([9a528fd](https://github.com/Meridiona/meridian/commit/9a528fd0b78bbf2be9a4064ff6494d22ac630f2a)), closes [#677](https://github.com/Meridiona/meridian/issues/677) [678/#679](https://github.com/678/meridian/issues/679)
+* **tray:** stop bouncing a healthy daemon on every launch; close review gaps ([bc5a31d](https://github.com/Meridiona/meridian/commit/bc5a31d5d5f6e34df7c3fc3a7db636afae06579f)), closes [#677](https://github.com/Meridiona/meridian/issues/677)
+* **tray:** stop the daemon before the db encryption swap on macOS too ([f831432](https://github.com/Meridiona/meridian/commit/f831432cf12792ed4e7e60fb54fc3e6b884ec53b))
+* **tray:** stop the watchdog killing a healthy daemon and corrupting the DB ([fe0a7ab](https://github.com/Meridiona/meridian/commit/fe0a7ab0322f23e0aae428b183fcc3aeb2b17bac))
+* **tray:** stop warning on every restart when no scheduled task exists ([8b44063](https://github.com/Meridiona/meridian/commit/8b440630df2dd6929690e1dd96e15b88f1e496c8))
+* **tray:** verify the liveness read and stop reusing the watchdog span name ([58119ae](https://github.com/Meridiona/meridian/commit/58119aed53d2ea519c7a0a4d3092a7ac6d3d1ec9))
+* **ui:** replace native dialogs, inert in the packaged tray, with in-app modals ([56626f0](https://github.com/Meridiona/meridian/commit/56626f0d0b026b967b56a4aef2748f163aba1335))
+
+### ✅ Tests
+
+* **llm:** cover the reported install command on both CI platforms ([4a91047](https://github.com/Meridiona/meridian/commit/4a91047bb1e14d881faa045b60c02983e2adbdbe))
+* **tray:** catch macOS-only items called from always-compiled code ([149a2ad](https://github.com/Meridiona/meridian/commit/149a2adad7229252bd7e8c9ed0030a7bf59667be))
+* **tray:** pin that a missing scheduled task never reaches WARN ([596a948](https://github.com/Meridiona/meridian/commit/596a948eee475d922b20b330be1e63fbc591d79c))
+* **tray:** pin the two guards that stop the db swap corrupting data ([e0a8cb6](https://github.com/Meridiona/meridian/commit/e0a8cb609cb645b3aabd243755ac38d3d12911b5))
+
+### 📝 Documentation
+
+* **whats-new:** add the 1.83.1 entry and the open-corruption roadmap item ([4f28148](https://github.com/Meridiona/meridian/commit/4f281483a8ab3f5453f37e859607171cab808046))
+
+### 🔧 Chores
+
+* **release:** raise the mandatory-update floor to 1.83.1 ([a356ae0](https://github.com/Meridiona/meridian/commit/a356ae0209085dd6d621eded76f03db1bed9ed4a)), closes [671/#675](https://github.com/671/meridian/issues/675) [#676](https://github.com/Meridiona/meridian/issues/676)
+
 ## [1.83.0](https://github.com/Meridiona/meridian/compare/v1.82.3...v1.83.0) (2026-08-03)
 
 ### 🚀 Features
