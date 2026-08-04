@@ -112,18 +112,38 @@ pub async fn start_if_stopped() -> Result<(), String> {
 /// share a name.
 #[cfg(target_os = "macos")]
 pub async fn process_alive() -> Option<bool> {
+    let target = launchd_target();
     let out = tokio::process::Command::new("launchctl")
-        .args(["print", &launchd_target()])
+        .args(["print", &target])
         .output()
         .await
         .ok()?;
-    // A missing service (`print` exits non-zero) is a definite "not alive"; a
-    // failure to run launchctl at all returned `None` above.
-    if !out.status.success() {
+    if out.status.success() {
+        return Some(parse_launchctl_pid(&String::from_utf8_lossy(&out.stdout)).is_some());
+    }
+    // Not every non-zero exit means the same thing, and collapsing them all to
+    // "not alive" is how a guard against killing a live daemon quietly stops
+    // guarding. `113` (EBADARCH / "Could not find service") is launchd's answer
+    // for a label that is not loaded — a definite, actionable "not alive", and
+    // the state `stop_daemon_for_migration` deliberately leaves behind. Any
+    // other failure (launchd busy, a transient system error) tells us nothing
+    // about the daemon, so report `None` = unknown rather than inventing a
+    // negative.
+    let code = out.status.code();
+    if code == Some(LAUNCHCTL_NO_SUCH_SERVICE) {
         return Some(false);
     }
-    Some(parse_launchctl_pid(&String::from_utf8_lossy(&out.stdout)).is_some())
+    tracing::warn!(
+        target = %target,
+        exit_code = code.unwrap_or(-1),
+        "launchctl print failed for a reason other than 'no such service' - daemon liveness is unknown"
+    );
+    None
 }
+
+/// launchd's exit status for `print` against a label that is not loaded.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const LAUNCHCTL_NO_SUCH_SERVICE: i32 = 113;
 
 /// Windows: no launchd equivalent is wired, so liveness is unknown.
 ///
@@ -139,11 +159,17 @@ pub async fn process_alive() -> Option<bool> {
 
 /// Start the daemon if it is stopped, without ending a running instance.
 ///
-/// The Windows counterpart of the macOS [`start_if_stopped`]: `schtasks /Run`
-/// alone, deliberately omitting the `/End` that [`restart`] performs first.
+/// The Windows counterpart of the macOS [`start_if_stopped`]: deliberately
+/// omits the `/End` that [`restart`] performs first, but otherwise takes the
+/// identical path — including the direct-spawn fallback for machines with no
+/// scheduled task. See [`run_task_or_spawn`].
+///
+/// Re-running an already-running daemon is harmless: the daemon's own
+/// single-instance guard (`daemon_already_running`) makes the second process
+/// exit immediately.
 #[cfg(target_os = "windows")]
 pub async fn start_if_stopped() -> Result<(), String> {
-    schtasks(&["/Run", "/TN", TASK_NAME]).await
+    run_task_or_spawn().await
 }
 
 /// The `pid = N` line out of `launchctl print`'s output, if the service has one.
@@ -286,6 +312,21 @@ pub async fn restart() -> Result<(), String> {
     // Task Scheduler has no atomic restart, so end-then-run. `/End` failing is
     // fine (the task may not be running); only `/Run` failing is an error.
     let _ = schtasks(&["/End", "/TN", TASK_NAME]).await;
+    run_task_or_spawn().await
+}
+
+/// `schtasks /Run`, falling back to spawning the staged daemon directly.
+///
+/// Shared by [`restart`] and [`start_if_stopped`] so the two cannot diverge.
+/// Splitting this out fixes a real regression: when the watchdog and
+/// `refresh_health` switched from `restart()` to `start_if_stopped()` (to stop
+/// killing healthy daemons — see [`crate::poll::watchdog`]), the Windows
+/// `start_if_stopped` was a bare `schtasks /Run`. On a machine where
+/// `schtasks /Create` was blocked by policy at install time there IS no task to
+/// run, so **both** automatic recovery paths silently lost their only way back
+/// up, and a crashed daemon would have stayed dead until the next login.
+#[cfg(target_os = "windows")]
+async fn run_task_or_spawn() -> Result<(), String> {
     match schtasks(&["/Run", "/TN", TASK_NAME]).await {
         Ok(()) => Ok(()),
         Err(e) => {

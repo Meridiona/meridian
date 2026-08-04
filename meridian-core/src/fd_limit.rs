@@ -126,7 +126,13 @@ pub fn raise_fd_limit() {
     };
     // SAFETY: `getrlimit`/`setrlimit` only read/write the `rlimit` we own here.
     if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) } != 0 {
-        eprintln!("meridian: could not read the file-descriptor limit; leaving it unchanged");
+        // `last_os_error()` immediately after the failed call, before anything
+        // else can clobber errno. Without it every failure reads the same, and
+        // support cannot tell a permissions problem from a platform one.
+        eprintln!(
+            "meridian: could not read the file-descriptor limit ({}); leaving it unchanged",
+            std::io::Error::last_os_error()
+        );
         return;
     }
     let (soft, hard) = (rlim.rlim_cur as u64, rlim.rlim_max as u64);
@@ -140,9 +146,10 @@ pub fn raise_fd_limit() {
     if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) } == 0 {
         eprintln!("meridian: raised the file-descriptor limit {soft} -> {new_soft} (hard={hard})");
     } else {
+        let err = std::io::Error::last_os_error();
         eprintln!(
-            "meridian: FAILED to raise the file-descriptor limit (soft={soft}, hard={hard}, \
-             requested={new_soft}) - SQLite may hit SQLITE_IOERR under load"
+            "meridian: FAILED to raise the file-descriptor limit ({err}) (soft={soft}, \
+             hard={hard}, requested={new_soft}) - SQLite may hit SQLITE_IOERR under load"
         );
     }
 }

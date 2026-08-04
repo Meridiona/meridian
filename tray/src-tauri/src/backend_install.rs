@@ -1262,7 +1262,16 @@ async fn register_agent(label: &str, plist: &Path) -> Result<(), String> {
         return Err(format!("launchctl bootstrap {label} failed"));
     }
     let _ = launchctl(&["enable", &target]).await;
-    let _ = launchctl(&["kickstart", "-k", &target]).await;
+    // `kickstart` WITHOUT `-k`. The agent was just booted out and bootstrapped,
+    // so there is nothing running for `-k` to kill on the happy path — it only
+    // ever bit when `bootout` had NOT cleared (the "proceeding to bootstrap
+    // anyway" branch above), which is exactly when something may still be
+    // running. It also closed a TOCTOU: callers check "is the daemon alive?"
+    // first, and the daemon can start between that check and this line, so a
+    // `-k` here could kill an instance the caller had just decided not to
+    // touch. Dropping the flag makes the worst case a no-op instead of a
+    // SIGTERM mid-WAL-write. See [`crate::poll::watchdog`] for what that cost.
+    let _ = launchctl(&["kickstart", &target]).await;
     tracing::info!(label, "backend_install: launchd agent registered");
     Ok(())
 }
