@@ -121,6 +121,12 @@ pub(super) async fn refresh_health(
             // so the `notify_down` ⇒ `restart_result.is_some()` invariant
             // asserted below continues to hold.
             let r = crate::commands::daemon_control::start_if_stopped().await;
+            if r.is_err() {
+                // Span status ERROR as well as the log below - an error-only
+                // telemetry query filters on the span, and a failed automatic
+                // recovery must not be invisible to it.
+                tracing::Span::current().record("otel.status_code", "ERROR");
+            }
             match &r {
                 // ERROR (not WARN) so this line crosses the error-only central
                 // telemetry filter. The went-quiet *notice* is a local DB row
@@ -139,7 +145,7 @@ pub(super) async fn refresh_health(
                     daemon_running,
                     db_ready,
                     cold_start = !notify_down,
-                    "daemon offline and automatic restart failed — the daemon is down with no recovery this episode"
+                    "daemon offline and the automatic start failed — the daemon is down with no recovery this episode"
                 ),
                 Ok(()) => tracing::info!(
                     daemon_running,
@@ -154,7 +160,10 @@ pub(super) async fn refresh_health(
         // would have made a central-OO query for restarts silently match only
         // this span post-#678 and read as "kills stopped" whether or not they
         // had — a blind spot in the exact signal used to verify that fix.
-        .instrument(tracing::info_span!("daemon_health.start"))
+        .instrument(tracing::info_span!(
+            "daemon_health.start",
+            otel.status_code = tracing::field::Empty
+        ))
         .await
     } else {
         None
@@ -173,9 +182,9 @@ pub(super) async fn refresh_health(
         );
         let detail = match &restart_result {
             Some(Err(_)) => {
-                "Tried to restart it automatically and that failed too. Tap to check what happened."
+                "Tried to start it automatically and that failed too. Tap to check what happened."
             }
-            _ => "Tried restarting it automatically - give it a moment.",
+            _ => "Tried starting it automatically - give it a moment.",
         };
         if let Err(e) = meridian::notices::raise_typed(
             pool,
@@ -212,7 +221,7 @@ pub(super) async fn refresh_health(
                 id: "tray.daemon_quiet",
                 severity: "warning",
                 title: "Meridian went quiet.",
-                detail: "Couldn't restart it automatically. Tap to check what happened.",
+                detail: "Couldn't start it automatically. Tap to check what happened.",
                 remedy: None,
                 event_key: "system.health",
                 deep_link: Some("/logs"),

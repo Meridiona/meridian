@@ -243,12 +243,18 @@ pub async fn run_daemon_watchdog() {
                 async {
                     tracing::info!("daemon watchdog: daemon not running, starting it");
                     if let Err(e) = crate::commands::daemon_control::start_if_stopped().await {
+                        // Mark the span itself ERROR, not just the log line: a
+                        // failed automatic recovery is the case worth finding in
+                        // OpenObserve, and span status is what an error-only
+                        // query filters on.
+                        tracing::Span::current().record("otel.status_code", "ERROR");
                         tracing::warn!(error = %e, "daemon watchdog: start attempt failed");
                     }
                 }
                 .instrument(tracing::info_span!(
                     "daemon_watchdog.start",
-                    down_after_s = (consecutive_failures as u64) * TICK.as_secs()
+                    down_after_s = (consecutive_failures as u64) * TICK.as_secs(),
+                    otel.status_code = tracing::field::Empty,
                 ))
                 .await;
                 cooldown_until = Some(Instant::now() + COOLDOWN);

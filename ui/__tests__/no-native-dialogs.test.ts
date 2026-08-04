@@ -69,43 +69,96 @@ const DECLARATION = /\bfunction\s+(?:confirm|alert|prompt)\s*\(/
 // it is worth the extra dozen lines. Walking left to right also stops the
 // inverse error, where an apostrophe inside a comment ("don't") would otherwise
 // open a bogus string literal and blank the code that follows.
+// A `${…}` substitution inside a template literal is NOT string content - it is
+// executable code, so `` `${window.confirm(x)}` `` is a real call and must still
+// be scanned. That needs a context stack rather than a flat loop: `${` pushes
+// back into code mode (where a nested literal is blanked and a nested `${}`
+// recurses), and its closing `}` pops back into the template.
+//
+// Known limit: a regex literal containing a quote (`/'/`) reads as the start of
+// a string. Shipped UI source has none, and the failure would be a loud false
+// positive rather than a silent miss - the direction that is safe to leave.
 function stripCommentsAndStrings(src: string): string {
+  const blank = (c: string) => (c === '\n' ? '\n' : ' ')
+  type Ctx = { kind: 'code' | 'single' | 'double' | 'template'; depth: number }
+  const stack: Ctx[] = [{ kind: 'code', depth: 0 }]
   let out = ''
   let i = 0
-  const blank = (c: string) => (c === '\n' ? '\n' : ' ')
+
   while (i < src.length) {
-    const two = src.slice(i, i + 2)
-    if (two === '//') {
-      while (i < src.length && src[i] !== '\n') out += ' ', i++
-      continue
-    }
-    if (two === '/*') {
-      const end = src.indexOf('*/', i + 2)
-      const stop = end === -1 ? src.length : end + 2
-      for (; i < stop; i++) out += blank(src[i])
-      continue
-    }
-    const q = src[i]
-    if (q === '"' || q === "'" || q === '`') {
-      out += ' '
-      i++
-      while (i < src.length) {
-        if (src[i] === '\\') {
-          out += '  '
-          i += 2
-          continue
-        }
-        if (src[i] === q) {
+    const top = stack[stack.length - 1]
+    const c = src[i]
+
+    if (top.kind === 'code') {
+      const two = src.slice(i, i + 2)
+      if (two === '//') {
+        while (i < src.length && src[i] !== '\n') (out += ' '), i++
+        continue
+      }
+      if (two === '/*') {
+        const end = src.indexOf('*/', i + 2)
+        const stop = end === -1 ? src.length : end + 2
+        for (; i < stop; i++) out += blank(src[i])
+        continue
+      }
+      if (c === "'" || c === '"' || c === '`') {
+        stack.push({ kind: c === "'" ? 'single' : c === '"' ? 'double' : 'template', depth: 0 })
+        out += ' '
+        i++
+        continue
+      }
+      if (c === '{') {
+        top.depth++
+        out += c
+        i++
+        continue
+      }
+      if (c === '}') {
+        // Depth 0 inside a substitution means this `}` ends it.
+        if (stack.length > 1 && top.depth === 0) {
+          stack.pop()
           out += ' '
           i++
-          break
+          continue
         }
+        if (top.depth > 0) top.depth--
+        out += c
+        i++
+        continue
+      }
+      out += c
+      i++
+      continue
+    }
+
+    // Inside a string or template literal.
+    if (c === '\\') {
+      // Blank the backslash, then blank the escaped character SEPARATELY so a
+      // line continuation (`\` + newline) keeps its newline. Consuming both as
+      // spaces dropped a physical line and shifted every offender line number
+      // reported after it.
+      out += ' '
+      i++
+      if (i < src.length) {
         out += blank(src[i])
         i++
       }
       continue
     }
-    out += src[i]
+    if (top.kind === 'template' && c === '$' && src[i + 1] === '{') {
+      stack.push({ kind: 'code', depth: 0 })
+      out += '  '
+      i += 2
+      continue
+    }
+    const closer = top.kind === 'single' ? "'" : top.kind === 'double' ? '"' : '`'
+    if (c === closer) {
+      stack.pop()
+      out += ' '
+      i++
+      continue
+    }
+    out += blank(c)
     i++
   }
   return out
@@ -157,6 +210,29 @@ describe('the source stripper', () => {
     expect(BANNED.test(stripCommentsAndStrings('// never call window.confirm(x)'))).toBe(false)
     expect(BANNED.test(stripCommentsAndStrings('/* alert( is banned */'))).toBe(false)
     expect(BANNED.test(stripCommentsAndStrings("const msg = 'use confirm(…) never'"))).toBe(false)
+  })
+
+  it('scans ${…} substitutions, which are code and not string content', () => {
+    // A template substitution executes. Blanking the whole literal - which the
+    // first version of this stripper did - hid a real call.
+    expect(BANNED.test(stripCommentsAndStrings('const s = `x${window.confirm(1)}y`'))).toBe(true)
+    // Nested one level down, inside an object inside a substitution.
+    expect(BANNED.test(stripCommentsAndStrings('`${ fn({ k: alert(1) }) }`'))).toBe(true)
+    // A nested template inside a substitution still gets scanned.
+    expect(BANNED.test(stripCommentsAndStrings('`${ `${ prompt(1) }` }`'))).toBe(true)
+    // …but ordinary template TEXT is still blanked, so prose cannot trip it.
+    expect(BANNED.test(stripCommentsAndStrings('`call confirm( like this`'))).toBe(false)
+    // And the literal must close correctly, or code after it would be eaten.
+    expect(BANNED.test(stripCommentsAndStrings('`a${b}c`; window.alert(1)'))).toBe(true)
+  })
+
+  it('keeps a line continuation from shifting reported line numbers', () => {
+    // `\` + newline inside a string is a real physical line. Consuming both as
+    // spaces dropped it and shifted every offender reported afterwards.
+    const src = ['const s = "a\\', 'b"', 'window.confirm(1)'].join('\n')
+    const stripped = stripCommentsAndStrings(src)
+    expect(stripped.split('\n').length).toBe(src.split('\n').length)
+    expect(stripped.split('\n').findIndex((l) => BANNED.test(l))).toBe(2)
   })
 
   it('keeps line numbers honest so offender reports point at the real line', () => {
