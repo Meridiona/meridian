@@ -88,6 +88,87 @@ pub async fn restart() -> Result<(), String> {
     launchctl(&["kickstart", "-k", &launchd_target()], "kickstart").await
 }
 
+/// Start the daemon if it is stopped, **without ever signalling a running
+/// instance** — `launchctl kickstart` with no `-k`.
+///
+/// Per `man launchctl`, `-k` is precisely and only what "kill[s] the running
+/// instance before restarting". Dropping it is what makes this safe to call
+/// speculatively: on an already-running daemon it is a no-op instead of a
+/// SIGTERM mid-WAL-write. [`restart`] keeps `-k` because its callers are asking
+/// for a restart explicitly; the watchdog must not.
+///
+/// See [`crate::poll::watchdog`] for the corruption incident this exists to
+/// prevent.
+#[cfg(target_os = "macos")]
+pub async fn start_if_stopped() -> Result<(), String> {
+    launchctl(&["kickstart", &launchd_target()], "kickstart").await
+}
+
+/// Whether the daemon **process** exists, regardless of whether it answered its
+/// endpoint. `None` means "could not determine".
+///
+/// Asks launchd rather than scanning the process table, so this reports on the
+/// service the tray actually manages rather than any binary that happens to
+/// share a name.
+#[cfg(target_os = "macos")]
+pub async fn process_alive() -> Option<bool> {
+    let out = tokio::process::Command::new("launchctl")
+        .args(["print", &launchd_target()])
+        .output()
+        .await
+        .ok()?;
+    // A missing service (`print` exits non-zero) is a definite "not alive"; a
+    // failure to run launchctl at all returned `None` above.
+    if !out.status.success() {
+        return Some(false);
+    }
+    Some(parse_launchctl_pid(&String::from_utf8_lossy(&out.stdout)).is_some())
+}
+
+/// Windows: no launchd equivalent is wired, so liveness is unknown.
+///
+/// Returning `None` ("cannot tell") preserves the pre-existing Windows
+/// behaviour exactly rather than silently disabling the watchdog's backstop
+/// there. The corruption this guard closes is macOS-only (code 11 was 100%
+/// macOS, 0% Windows across the fleet), and the other two guards — no
+/// kill-before-start, and the storm cap — apply on both platforms.
+#[cfg(not(target_os = "macos"))]
+pub async fn process_alive() -> Option<bool> {
+    None
+}
+
+/// Start the daemon if it is stopped, without ending a running instance.
+///
+/// The Windows counterpart of the macOS [`start_if_stopped`]: `schtasks /Run`
+/// alone, deliberately omitting the `/End` that [`restart`] performs first.
+#[cfg(target_os = "windows")]
+pub async fn start_if_stopped() -> Result<(), String> {
+    schtasks(&["/Run", "/TN", TASK_NAME]).await
+}
+
+/// The `pid = N` line out of `launchctl print`'s output, if the service has one.
+///
+/// A loaded-but-stopped service prints a record with **no** `pid` field, which
+/// is exactly the case the watchdog's backstop is for — so the absence of the
+/// line is meaningful, not a parse failure.
+///
+/// Kept free of `cfg` so it compiles and tests on every target, including the
+/// Windows CI job. `cfg`-gated helpers in this tray have twice broken that
+/// build in ways invisible from macOS.
+///
+/// Only the macOS [`process_alive`] calls it, so a non-macOS build sees dead
+/// code and `-D warnings` fails it. `cfg_attr` rather than `cfg`: the latter
+/// would delete the function on Windows and take its test with it, which is the
+/// whole reason it is written portably. Same pattern as
+/// [`classify_run_failure`] below.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn parse_launchctl_pid(output: &str) -> Option<u32> {
+    output.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        (key.trim() == "pid").then(|| value.trim().parse().ok())?
+    })
+}
+
 #[cfg(target_os = "macos")]
 pub async fn set_running(running: bool) -> Result<(), String> {
     let verb = if running { "start" } else { "stop" };
@@ -323,6 +404,43 @@ async fn schtasks(args: &[&str]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The liveness signal the watchdog gates on. Getting this wrong in the
+    /// "running" direction re-enables the restart storm that corrupted
+    /// `meridian.db`, so both directions are pinned against real
+    /// `launchctl print` output.
+    #[test]
+    fn launchctl_pid_is_read_only_from_a_real_pid_line() {
+        // Shape of a real record (tab-indented `key = value`), trimmed.
+        let running =
+            "\tstate = running\n\tprogram = /usr/bin/x\n\tpid = 56397\n\tjob state = running\n";
+        assert_eq!(parse_launchctl_pid(running), Some(56397));
+
+        // A loaded-but-STOPPED service prints no `pid` line at all. That is the
+        // case the watchdog's backstop exists for, so it must read as absent
+        // rather than as a parse failure that leaves the daemon dead.
+        //
+        // Verified against real `launchctl print` output rather than assumed:
+        // four stopped services on macOS 15 (`launchctl list` entries with a
+        // `-` pid column) each printed `state = not running` and ZERO `pid =`
+        // lines. If this ever changed — a stale or `pid = 0` line on a stopped
+        // service — `process_alive` would answer `Some(true)` forever and the
+        // watchdog would silently become a no-op, including for the one case
+        // launchd's `KeepAlive` does not cover. The fallback would be to key on
+        // `state` instead of the presence of `pid`.
+        let stopped = "\tstate = not running\n\tprogram = /usr/bin/x\n\tjob state = stopped\n";
+        assert_eq!(parse_launchctl_pid(stopped), None);
+
+        // Keys that merely CONTAIN "pid" must not match - `ppid` in particular
+        // is present on some records and would report a dead service as alive,
+        // which is the direction that silently disables the backstop.
+        let ppid_only = "\tppid = 1\n\tstate = not running\n";
+        assert_eq!(parse_launchctl_pid(ppid_only), None);
+
+        // Junk must not panic or invent a pid.
+        assert_eq!(parse_launchctl_pid(""), None);
+        assert_eq!(parse_launchctl_pid("pid = not-a-number\n"), None);
+    }
 
     #[test]
     fn greeting_parses_pid_and_rejects_junk() {

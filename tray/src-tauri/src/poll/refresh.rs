@@ -109,7 +109,18 @@ pub(super) async fn refresh_health(
         // Wrap the restart attempt in a span so the health-path recovery is
         // traceable end-to-end, matching the fast watchdog's span.
         async {
-            let r = crate::commands::daemon_control::restart().await;
+            // `start_if_stopped`, never `restart`: this path fires on a health
+            // *report* (`database_ready` / `daemon_running` read from the DB),
+            // which a daemon that is alive and merely busy can fail. Restarting
+            // on that signal means SIGTERM to a live process mid-write, which is
+            // the second, slower instance of what corrupted `meridian.db` — see
+            // [`super::watchdog`]. Starting a stopped daemon still works; a
+            // running one is left alone.
+            //
+            // Deliberately still returns a `Result` from the same shape of call,
+            // so the `notify_down` ⇒ `restart_result.is_some()` invariant
+            // asserted below continues to hold.
+            let r = crate::commands::daemon_control::start_if_stopped().await;
             match &r {
                 // ERROR (not WARN) so this line crosses the error-only central
                 // telemetry filter. The went-quiet *notice* is a local DB row
@@ -133,12 +144,17 @@ pub(super) async fn refresh_health(
                 Ok(()) => tracing::info!(
                     daemon_running,
                     db_ready,
-                    "daemon offline — automatic restart attempted"
+                    "daemon offline — start attempted"
                 ),
             }
             Some(r)
         }
-        .instrument(tracing::info_span!("daemon_watchdog.restart"))
+        // Renamed from `daemon_watchdog.restart`: this is the health path, not
+        // the watchdog, and it no longer restarts anything. Sharing the old name
+        // would have made a central-OO query for restarts silently match only
+        // this span post-#678 and read as "kills stopped" whether or not they
+        // had — a blind spot in the exact signal used to verify that fix.
+        .instrument(tracing::info_span!("daemon_health.start"))
         .await
     } else {
         None
