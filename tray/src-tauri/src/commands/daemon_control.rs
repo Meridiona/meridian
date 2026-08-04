@@ -419,6 +419,15 @@ mod tests {
         // A loaded-but-STOPPED service prints no `pid` line at all. That is the
         // case the watchdog's backstop exists for, so it must read as absent
         // rather than as a parse failure that leaves the daemon dead.
+        //
+        // Verified against real `launchctl print` output rather than assumed:
+        // four stopped services on macOS 15 (`launchctl list` entries with a
+        // `-` pid column) each printed `state = not running` and ZERO `pid =`
+        // lines. If this ever changed — a stale or `pid = 0` line on a stopped
+        // service — `process_alive` would answer `Some(true)` forever and the
+        // watchdog would silently become a no-op, including for the one case
+        // launchd's `KeepAlive` does not cover. The fallback would be to key on
+        // `state` instead of the presence of `pid`.
         let stopped = "\tstate = not running\n\tprogram = /usr/bin/x\n\tjob state = stopped\n";
         assert_eq!(parse_launchctl_pid(stopped), None);
 

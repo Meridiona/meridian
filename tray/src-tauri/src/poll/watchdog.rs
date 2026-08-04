@@ -87,7 +87,11 @@ const COOLDOWN: Duration = Duration::from_secs(45);
 /// that restarting will not fix.
 const MAX_STARTS_IN_WINDOW: u32 = 5;
 
-/// The rolling window [`MAX_STARTS_IN_WINDOW`] is counted over.
+/// The window [`MAX_STARTS_IN_WINDOW`] is counted over. **Tumbling, not
+/// rolling**: the count resets wholesale once the window elapses, rather than
+/// ageing out individual attempts. Cruder, but it cannot drift, and the only
+/// consequence of the imprecision is when the cap lifts — never whether a live
+/// process gets signalled.
 const START_WINDOW: Duration = Duration::from_secs(3600);
 
 /// What the watchdog should do on this tick.
@@ -198,12 +202,21 @@ pub async fn run_daemon_watchdog() {
             consecutive_failures = consecutive_failures.saturating_add(1);
         }
 
-        // Only ask the OS about the process when the endpoint is silent — this
-        // is the rare path, and it keeps a subprocess off every 5 s tick.
-        let process_alive = if probe_ok {
-            None
-        } else {
+        let in_cooldown = cooldown_until.is_some_and(|until| Instant::now() < until);
+
+        // `daemon_process_alive` spawns a subprocess, so only ask when the
+        // answer could actually change the outcome — i.e. only when every other
+        // guard would otherwise permit [`Action::Start`]. In every case skipped
+        // here [`decide`] reaches a verdict before it reads `process_alive`
+        // (`probe_ok` → `Wait`; under [`STRIKES`] → `Wait`; in cooldown →
+        // `Wait`; past the cap → `GiveUp`), so passing `None` cannot change the
+        // result. Without this, a daemon left stopped past the storm cap would
+        // fork `launchctl` every 5 s forever.
+        let could_start = !probe_ok && consecutive_failures >= STRIKES && !in_cooldown && !gave_up;
+        let process_alive = if could_start {
             daemon_process_alive().await
+        } else {
+            None
         };
 
         let action = decide(Inputs {
@@ -211,7 +224,7 @@ pub async fn run_daemon_watchdog() {
             process_alive,
             consecutive_failures,
             starts_in_window,
-            in_cooldown: cooldown_until.is_some_and(|until| Instant::now() < until),
+            in_cooldown,
         });
 
         match action {
@@ -353,6 +366,51 @@ mod tests {
             }),
             Action::Wait,
             "a daemon mid-startup must not be started on top of itself"
+        );
+    }
+
+    /// The loop skips the (subprocess-spawning) liveness query whenever another
+    /// guard already settles the tick, and passes `None` instead. That is only
+    /// sound if `None` yields the same verdict in exactly those cases — so pin
+    /// it, because the optimisation would otherwise silently turn into a
+    /// behaviour change the first time [`decide`]'s rule order is edited.
+    #[test]
+    fn skipping_the_liveness_query_cannot_change_the_verdict() {
+        let unknown = Inputs {
+            process_alive: None,
+            ..silent_endpoint()
+        };
+        assert_eq!(
+            decide(Inputs {
+                consecutive_failures: STRIKES - 1,
+                ..unknown
+            }),
+            Action::Wait,
+            "under the strike count, liveness is not consulted"
+        );
+        assert_eq!(
+            decide(Inputs {
+                in_cooldown: true,
+                ..unknown
+            }),
+            Action::Wait,
+            "in cooldown, liveness is not consulted"
+        );
+        assert_eq!(
+            decide(Inputs {
+                starts_in_window: MAX_STARTS_IN_WINDOW,
+                ..unknown
+            }),
+            Action::GiveUp,
+            "past the cap, liveness is not consulted"
+        );
+        assert_eq!(
+            decide(Inputs {
+                probe_ok: true,
+                ..unknown
+            }),
+            Action::Wait,
+            "on a healthy endpoint, liveness is not consulted"
         );
     }
 

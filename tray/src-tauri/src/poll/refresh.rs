@@ -144,12 +144,17 @@ pub(super) async fn refresh_health(
                 Ok(()) => tracing::info!(
                     daemon_running,
                     db_ready,
-                    "daemon offline — automatic restart attempted"
+                    "daemon offline — start attempted"
                 ),
             }
             Some(r)
         }
-        .instrument(tracing::info_span!("daemon_watchdog.restart"))
+        // Renamed from `daemon_watchdog.restart`: this is the health path, not
+        // the watchdog, and it no longer restarts anything. Sharing the old name
+        // would have made a central-OO query for restarts silently match only
+        // this span post-#678 and read as "kills stopped" whether or not they
+        // had — a blind spot in the exact signal used to verify that fix.
+        .instrument(tracing::info_span!("daemon_health.start"))
         .await
     } else {
         None
