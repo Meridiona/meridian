@@ -364,8 +364,13 @@ async fn bootout_agent_and_wait(label: &str) -> Result<(), String> {
 /// resurrect one that [`stop_daemon_for_migration`] `bootout`ed, which is the
 /// whole point of using `bootout` there. Leaving this a no-op on macOS would
 /// therefore trade the corruption bug for a permanently dead daemon on every
-/// machine that ran the encryption migration. Idempotent, so the ordinary
-/// "daemon is already up" path re-bootstraps harmlessly.
+/// machine that ran the encryption migration.
+///
+/// It is **not** idempotent, which an earlier version of this comment claimed:
+/// [`register_agent`] finishes with `launchctl kickstart -k`, and `-k` is
+/// precisely what kills a running instance. Both platforms therefore return
+/// early when the daemon is already up, or an ordinary launch would SIGTERM a
+/// healthy daemon mid-write.
 async fn ensure_daemon_running(home: &Path) {
     #[cfg(target_os = "windows")]
     {
@@ -420,6 +425,29 @@ async fn ensure_daemon_running(home: &Path) {
         if !plist.is_file() {
             // Nothing staged yet (first launch); `install` renders the plist and
             // registers the agent itself, so there is nothing to restore here.
+            return;
+        }
+        // Already up — leave it alone. `register_agent` ends in
+        // `launchctl kickstart -k`, which KILLS a running instance, so calling
+        // it unconditionally bounced a healthy daemon on every ordinary tray
+        // launch. That is a fourth path to the macOS `meridian.db` corruption
+        // (see `crate::poll::watchdog` for the measured one): a SIGTERM
+        // mid-WAL-write, landing at app start when the daemon is busiest.
+        // Windows has always returned early here for exactly this reason; macOS
+        // is only now matching it.
+        //
+        // This deliberately does NOT break the case the function exists for.
+        // `stop_daemon_for_migration` `bootout`s the agent, and a booted-out
+        // label is not loaded at all: `launchctl print` exits non-zero, so
+        // `process_alive()` reports `Some(false)` and registration still runs.
+        // Verified across all three states — booted-out (exit 113), loaded but
+        // stopped (exit 0, no `pid` line), and running (exit 0, `pid` present);
+        // only the last one returns `Some(true)`.
+        if crate::commands::daemon_control::process_alive().await == Some(true) {
+            tracing::debug!(
+                label = DAEMON_LABEL,
+                "backend_install: daemon already running — not re-registering"
+            );
             return;
         }
         if let Err(e) = register_agent(DAEMON_LABEL, &plist).await {
@@ -1831,15 +1859,30 @@ mod tests {
         let mut macos_only: Vec<String> = Vec::new();
         let mut always_compiled: Vec<(String, usize, usize)> = Vec::new();
 
+        // Everything from `mod tests` onward is the test module, whose items are
+        // `cfg`-gated on purpose and never called from non-test code.
+        //
+        // Excluded by POSITION, not by a name prefix. The previous guard was
+        // `!name.starts_with("test_")`, and no test in this file carries that
+        // prefix — they read as sentences
+        // (`migration_bootout_targets_the_daemon_in_the_user_gui_domain`) — so
+        // the condition was always true, the exclusion never fired, and test
+        // items were counted toward the `macos_only` floor below. That left the
+        // floor unable to do its one job: prove the scanner still recognises the
+        // PRODUCTION items it exists to guard.
+        let tests_start = lines
+            .iter()
+            .position(|l| l.trim_start().starts_with("mod tests"))
+            .unwrap_or(lines.len());
+
         for (i, line) in lines.iter().enumerate() {
             let t = line.trim();
+            if i >= tests_start {
+                break;
+            }
             if t == MACOS_ONLY {
-                if let Some((name, at)) = item_name_after(&lines, i + 1) {
-                    // Skip the test module's own items — they are `cfg`-gated on
-                    // purpose and never called from non-test code.
-                    if !lines[at].contains("fn ") || !name.starts_with("test_") {
-                        macos_only.push(name);
-                    }
+                if let Some((name, _at)) = item_name_after(&lines, i + 1) {
+                    macos_only.push(name);
                 }
             } else if t == ALWAYS {
                 if let Some((name, at)) = item_name_after(&lines, i + 1) {

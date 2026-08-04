@@ -64,16 +64,32 @@ fn target_soft_limit(current_soft: u64, hard: u64, desired: u64) -> Option<u64> 
     (capped > current_soft).then_some(capped)
 }
 
-/// Read `MERIDIAN_FD_LIMIT`, falling back to [`DEFAULT_TARGET`] when unset or
-/// unparseable. A malformed value must not be fatal — this runs on the startup
-/// path of both binaries, and refusing to boot over a typo in an env var would
-/// be a worse outcome than using the default.
+/// Resolve the target from a raw `MERIDIAN_FD_LIMIT` value.
+///
+/// Split from the env read so it is testable without mutating the process
+/// environment, which is racy across Rust's parallel test threads (and unsafe
+/// from the 2024 edition on).
+///
+/// Falls back to [`DEFAULT_TARGET`] when the value is absent, unparseable, **or
+/// below the default**. That last case is the important one: the override is
+/// only ever meant to raise the ceiling for an unusual machine, so a smaller
+/// value has no legitimate use — while `MERIDIAN_FD_LIMIT=0` would make
+/// [`target_soft_limit`] return `None` and silently leave the process on macOS's
+/// default of 256, disabling the very mitigation this module exists to apply.
+/// A malformed value must not be fatal either: this runs on the startup path of
+/// both binaries, and refusing to boot over a typo would be worse than the
+/// default.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn effective_target(raw: Option<&str>) -> u64 {
+    raw.and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&v| v >= DEFAULT_TARGET)
+        .unwrap_or(DEFAULT_TARGET)
+}
+
+/// Read `MERIDIAN_FD_LIMIT` and resolve it through [`effective_target`].
 #[cfg_attr(not(unix), allow(dead_code))]
 fn desired_target() -> u64 {
-    std::env::var(TARGET_ENV)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_TARGET)
+    effective_target(std::env::var(TARGET_ENV).ok().as_deref())
 }
 
 /// Raise the soft `RLIMIT_NOFILE` toward [`DEFAULT_TARGET`], capped by the hard
@@ -81,9 +97,22 @@ fn desired_target() -> u64 {
 /// the tray does not run the daemon's `main()`, so one call cannot cover both.
 ///
 /// Best-effort and never fatal: a process that cannot raise its limit should
-/// still start, just with the pre-existing corruption exposure. Logs at INFO on
-/// a successful raise so the value is visible in telemetry, and at WARN when the
-/// raise fails, since that leaves the machine in the state that corrupts.
+/// still start, just with the pre-existing corruption exposure.
+///
+/// # Why `eprintln!` and not `tracing!`
+/// This is called as the FIRST statement of both binaries' `main()` — before
+/// `observability::init` installs a subscriber. `tracing` macros with no
+/// subscriber are silently discarded, so the original `info!`/`warn!` here
+/// reached neither the telemetry spool nor a terminal: the one field you would
+/// actually want when diagnosing a corrupted install ("did the limit get
+/// raised, and to what?") was structurally unobservable.
+///
+/// `eprintln!` lands in launchd's stderr redirect
+/// (`~/.meridian/logs/<service>-error.log`), which is size-capped and folded
+/// into diagnostics export bundles — so the value survives to support. Moving
+/// the call after `init` instead would defeat the point of running it before
+/// anything can open a descriptor. The screenpipe fork resolved the identical
+/// ordering problem the same way.
 // `libc::rlim_t` is `u64` on macOS and Linux, so these casts are no-ops on the
 // platforms Meridian ships — but it is NOT `u64` on every Unix target, and this
 // module is gated on `unix`, not on those two. Keeping the casts costs nothing
@@ -97,30 +126,23 @@ pub fn raise_fd_limit() {
     };
     // SAFETY: `getrlimit`/`setrlimit` only read/write the `rlimit` we own here.
     if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) } != 0 {
-        tracing::warn!("could not read the file-descriptor limit; leaving it unchanged");
+        eprintln!("meridian: could not read the file-descriptor limit; leaving it unchanged");
         return;
     }
     let (soft, hard) = (rlim.rlim_cur as u64, rlim.rlim_max as u64);
     let Some(new_soft) = target_soft_limit(soft, hard, desired_target()) else {
-        tracing::debug!(soft, hard, "file-descriptor limit already sufficient");
+        eprintln!("meridian: file-descriptor limit already sufficient (soft={soft}, hard={hard})");
         return;
     };
 
     rlim.rlim_cur = new_soft as libc::rlim_t;
     // SAFETY: as above.
     if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) } == 0 {
-        tracing::info!(
-            from = soft,
-            to = new_soft,
-            hard,
-            "raised the file-descriptor limit"
-        );
+        eprintln!("meridian: raised the file-descriptor limit {soft} -> {new_soft} (hard={hard})");
     } else {
-        tracing::warn!(
-            soft,
-            hard,
-            requested = new_soft,
-            "failed to raise the file-descriptor limit - SQLite may hit SQLITE_IOERR under load"
+        eprintln!(
+            "meridian: FAILED to raise the file-descriptor limit (soft={soft}, hard={hard}, \
+             requested={new_soft}) - SQLite may hit SQLITE_IOERR under load"
         );
     }
 }
@@ -161,6 +183,45 @@ mod tests {
     /// zero or a panic: this runs before the database opens in both binaries, so
     /// a typo in an env var must not brick startup or, worse, "successfully"
     /// lower the limit to 0.
+    /// `MERIDIAN_FD_LIMIT` must never be able to LOWER the target.
+    ///
+    /// A value below the default silently defeats the mitigation rather than
+    /// failing loudly: `target_soft_limit(256, hard, 0)` returns `None`, so the
+    /// process stays on macOS's default of 256 — the exact state that produces
+    /// `SQLITE_IOERR` (522) and then `database disk image is malformed` (11).
+    /// The override exists only to RAISE the ceiling on an unusual machine.
+    #[test]
+    fn an_undersized_env_override_cannot_disable_the_mitigation() {
+        for raw in ["0", "1", "256", "8191", "-5", "", "   ", "not-a-number"] {
+            assert_eq!(
+                effective_target(Some(raw)),
+                DEFAULT_TARGET,
+                "{raw:?} must fall back to the default, never lower the target"
+            );
+        }
+        assert_eq!(effective_target(None), DEFAULT_TARGET, "unset → default");
+
+        // A legitimate raise is still honoured, and the boundary counts as valid.
+        assert_eq!(effective_target(Some("65536")), 65_536);
+        assert_eq!(
+            effective_target(Some(" 65536 ")),
+            65_536,
+            "whitespace tolerated"
+        );
+        assert_eq!(
+            effective_target(Some("8192")),
+            DEFAULT_TARGET,
+            "equal is valid"
+        );
+
+        // End-to-end: the rejected value must not leave a macOS GUI process at 256.
+        assert_eq!(
+            target_soft_limit(256, 1_048_576, effective_target(Some("0"))),
+            Some(DEFAULT_TARGET),
+            "a rejected override must still raise the limit"
+        );
+    }
+
     #[test]
     fn a_bad_env_override_falls_back_to_the_default() {
         assert_eq!(

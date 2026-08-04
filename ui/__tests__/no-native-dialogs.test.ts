@@ -55,16 +55,60 @@ const BANNED = /(?<![.\w])(?:(?:window|globalThis|self)\.)?(?:confirm|alert|prom
 // enough that the rule is worth keeping tight rather than exhaustive.
 const DECLARATION = /\bfunction\s+(?:confirm|alert|prompt)\s*\(/
 
-// Blanks out comments so prose about the ban does not trip it - including JSX
-// `{/* … */}` blocks, whose continuation lines start with neither `//` nor `*`.
-// Newlines are preserved so reported line numbers stay honest. Naive about `//`
-// inside string literals (a URL truncates the rest of that line), which can only
-// cause a false negative on a line that also calls a banned global - not a
-// false positive, and the tighter parse is not worth a tokeniser here.
-function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-    .replace(/\/\/[^\n]*/g, '')
+// Blanks out comments AND string/template literals so prose about the ban does
+// not trip it - including JSX `{/* … */}` blocks, whose continuation lines start
+// with neither `//` nor `*`. Newlines are preserved so reported line numbers stay
+// honest.
+//
+// One left-to-right pass rather than two regex replaces, because the two
+// constructs can hide each other and a regex cannot see that: a `//` inside a
+// string literal (`'https://…'`) used to blank the rest of that real line of
+// code, so a `window.confirm(` after it on the same line would go unreported.
+// That is a false NEGATIVE in the one guard standing between us and another
+// silently-dead button - precisely the failure this file exists to prevent - so
+// it is worth the extra dozen lines. Walking left to right also stops the
+// inverse error, where an apostrophe inside a comment ("don't") would otherwise
+// open a bogus string literal and blank the code that follows.
+function stripCommentsAndStrings(src: string): string {
+  let out = ''
+  let i = 0
+  const blank = (c: string) => (c === '\n' ? '\n' : ' ')
+  while (i < src.length) {
+    const two = src.slice(i, i + 2)
+    if (two === '//') {
+      while (i < src.length && src[i] !== '\n') out += ' ', i++
+      continue
+    }
+    if (two === '/*') {
+      const end = src.indexOf('*/', i + 2)
+      const stop = end === -1 ? src.length : end + 2
+      for (; i < stop; i++) out += blank(src[i])
+      continue
+    }
+    const q = src[i]
+    if (q === '"' || q === "'" || q === '`') {
+      out += ' '
+      i++
+      while (i < src.length) {
+        if (src[i] === '\\') {
+          out += '  '
+          i += 2
+          continue
+        }
+        if (src[i] === q) {
+          out += ' '
+          i++
+          break
+        }
+        out += blank(src[i])
+        i++
+      }
+      continue
+    }
+    out += src[i]
+    i++
+  }
+  return out
 }
 
 describe('native browser dialogs are never used', () => {
@@ -77,7 +121,7 @@ describe('native browser dialogs are never used', () => {
   it('no window.confirm / alert / prompt anywhere in shipped UI source', () => {
     const offenders: string[] = []
     for (const file of files) {
-      stripComments(readFileSync(file, 'utf8'))
+      stripCommentsAndStrings(readFileSync(file, 'utf8'))
         .split('\n')
         .forEach((line, i) => {
           if (DECLARATION.test(line)) return
@@ -87,6 +131,39 @@ describe('native browser dialogs are never used', () => {
         })
     }
     expect(offenders).toEqual([])
+  })
+})
+
+// The sweep above is only as trustworthy as its stripper: every hole here is a
+// silent false negative, which is the same failure mode as the dead button this
+// file guards against. So the stripper is tested directly rather than trusted.
+describe('the source stripper', () => {
+  it('does not let a // inside a string hide a banned call on the same line', () => {
+    // The regression. The previous two-regex stripper blanked from the `//` in
+    // the URL to the end of the line, so the confirm() after it vanished and the
+    // sweep reported the file clean.
+    const src = `const help = 'https://meridiona.com/docs'; if (window.confirm('go')) run()`
+    expect(BANNED.test(stripCommentsAndStrings(src))).toBe(true)
+  })
+
+  it('does not let an apostrophe in a comment blank the code after it', () => {
+    // The inverse error: a naive string-blanking pass would treat the `'` in
+    // "don't" as opening a literal and swallow the real call below.
+    const src = ["// we don't ever want this", "window.confirm('really?')"].join('\n')
+    expect(BANNED.test(stripCommentsAndStrings(src))).toBe(true)
+  })
+
+  it('still ignores prose about the banned globals', () => {
+    expect(BANNED.test(stripCommentsAndStrings('// never call window.confirm(x)'))).toBe(false)
+    expect(BANNED.test(stripCommentsAndStrings('/* alert( is banned */'))).toBe(false)
+    expect(BANNED.test(stripCommentsAndStrings("const msg = 'use confirm(…) never'"))).toBe(false)
+  })
+
+  it('keeps line numbers honest so offender reports point at the real line', () => {
+    const src = ['/* a\n   multi\n   line */', "const s = 'x\\ny'", 'window.alert(1)'].join('\n')
+    const stripped = stripCommentsAndStrings(src)
+    expect(stripped.split('\n').length).toBe(src.split('\n').length)
+    expect(stripped.split('\n').findIndex((l) => BANNED.test(l))).toBe(4)
   })
 })
 
