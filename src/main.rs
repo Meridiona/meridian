@@ -1525,4 +1525,7 @@ async fn etl_tick(meridian: &meridian::db::SqlitePool) -> bool {
 /// already correct. That retry loop is what this whole feature replaces: the
 /// motivating incident spun a failing `get_frames_since` once a minute for
 /// over a day.
-const DB_CORRUPT_NOTICE: &str = "db.corrupt";
+///
+/// The id itself lives in the lib ([`meridian::notices::DB_CORRUPT`]) because
+/// `db::repair` must clear the very same id from a rebuilt database.
+const DB_CORRUPT_NOTICE: &str = meridian::notices::DB_CORRUPT;

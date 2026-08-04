@@ -12,6 +12,16 @@
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
 
+/// Notice id raised when `meridian.db` is structurally damaged.
+///
+/// Lives here rather than beside the raiser in `main.rs` because THREE parties
+/// must agree on it byte-for-byte: the daemon raises it (latched - see the
+/// usage-site doc in `main.rs`), the UI banners it, and `db::repair` clears it
+/// from the rebuilt file so the banner does not survive its own fix. It is
+/// also its own `event_key` (not the shared `system.fault`), so clearing must
+/// pass it for both.
+pub const DB_CORRUPT: &str = "db.corrupt";
+
 /// Raise (or refresh) a named notice. Idempotent — upserts so repeated calls
 /// from the poll loop don't accumulate duplicate rows. The paired toast is
 /// always stamped `system.fault` — use [`raise_typed`] when the caller needs
@@ -124,14 +134,37 @@ pub async fn clear_typed(pool: &SqlitePool, id: &str, event_key: &str) -> Result
 /// never observe that instance's down→up transition itself) and should only
 /// fire the "back online" toast when something was actually there.
 pub async fn clear_typed_reporting(pool: &SqlitePool, id: &str, event_key: &str) -> Result<bool> {
+    let mut conn = pool.acquire().await.context("acquiring for clear")?;
+    clear_typed_on(&mut conn, id, event_key).await
+}
+
+/// [`clear_typed_reporting`] for callers holding a single `SqliteConnection`
+/// rather than a pool.
+///
+/// Exists for `db::repair`'s rebuild, which must run EVERY write on one
+/// explicitly-closed connection: a pooled acquire there is handed back to the
+/// pool from a spawned task on drop, `pool.close()` does not reliably wait for
+/// that hand-back, and the surviving connection holds the WAL open — tripping
+/// the rebuild's "un-checkpointed write-ahead log" guard and failing the whole
+/// repair (intermittently, under load). See the closing comments in
+/// `db::repair::rebuild::build_replacement`.
+pub async fn clear_typed_on(
+    conn: &mut sqlx::SqliteConnection,
+    id: &str,
+    event_key: &str,
+) -> Result<bool> {
     let result = sqlx::query("DELETE FROM system_notices WHERE notice_id = ?")
         .bind(id)
-        .execute(pool)
+        .execute(&mut *conn)
         .await
         .context("clearing system notice")?;
     // Retract the paired toast so a future re-occurrence of this fault notifies
-    // again instead of being deduped away.
-    let _ = crate::notifications::retract(pool, &format!("{event_key}:{id}")).await;
+    // again instead of being deduped away. Best-effort, matching
+    // `notifications::retract` — same statement, same dedup-key shape.
+    let _ = sqlx::query("DELETE FROM notifications WHERE dedup_key = ?")
+        .bind(format!("{event_key}:{id}"))
+        .execute(&mut *conn)
+        .await;
     Ok(result.rows_affected() > 0)
 }
 
