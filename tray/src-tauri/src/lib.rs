@@ -396,32 +396,49 @@ pub fn run() {
                     // `!cfg!(debug_assertions)` style.
                     let db_encryption_intended = db_key_hex.is_some();
 
-                    // On Windows the daemon (autostarted at login) holds meridian.db
-                    // open, so `encrypt_in_place`'s rename fails with os error 32 and
-                    // rolls back every launch — the migration can never complete while
-                    // the daemon is up. Stop it first, but ONLY when a migration will
+                    // The daemon must not be writing while `encrypt_in_place` swaps
+                    // meridian.db. Stop it first, but ONLY when a migration will
                     // actually attempt (a key was resolved AND the DB is still
                     // plaintext); once encrypted this never runs again, so the stop is a
-                    // one-time cost on the migration launch. A no-op on non-Windows,
-                    // where rename tolerates an open handle. The daemon is brought back
+                    // one-time cost on the migration launch. The daemon is brought back
                     // up by `ensure_backend_installed` later in this same setup hook.
-                    if !cfg!(debug_assertions)
+                    //
+                    // Both platforms need this, for opposite reasons — on Windows the
+                    // rename FAILS while the daemon holds the file (os error 32), on
+                    // macOS it SUCCEEDS and corrupts the database instead. See
+                    // `backend_install::stop_daemon_for_migration` for the mechanism.
+                    //
+                    // `None` when no stop was attempted, because nothing is going to
+                    // migrate anyway (already encrypted, no key, or a debug build).
+                    let stop_outcome = if !cfg!(debug_assertions)
                         && db_encryption_intended
                         && meridian_core::db_crypto::is_plaintext_sqlite(db_path_ref)
                     {
-                        if let Err(e) = tauri::async_runtime::block_on(
-                            backend_install::stop_daemon_for_migration(),
-                        ) {
-                            tracing::warn!(
-                                error = %e,
-                                "could not stop the daemon before encrypting the database; encryption may not complete this launch"
-                            );
-                        }
+                        Some(tauri::async_runtime::block_on(
+                            backend_install::stop_daemon_for_migration(db_path_ref),
+                        ))
+                    } else {
+                        None
+                    };
+                    if let Some(Err(e)) = &stop_outcome {
+                        // ERROR, and it GATES the migration below. Warning and migrating
+                        // anyway is what shipped in v1.80.0, and on macOS that is
+                        // precisely the data-destroying path: the swap goes ahead under
+                        // a live writer. Leaving the DB plaintext for one more launch is
+                        // the cheap failure.
+                        tracing::error!(
+                            error = %e,
+                            "could not stop the daemon before encrypting the database - skipping the migration this launch; the database stays plaintext and will be retried next launch"
+                        );
                     }
+                    // The decision itself lives in `backend_install` so it can be
+                    // unit-tested — this closure cannot be.
+                    let safe_to_migrate =
+                        backend_install::may_swap_database(stop_outcome.as_ref());
 
                     let db_key_hex = if !cfg!(debug_assertions) {
                         match &db_key_hex {
-                            Some(key) => {
+                            Some(key) if safe_to_migrate => {
                                 let migrate =
                                     meridian_core::db_crypto::encrypt_in_place(db_path_ref, key);
                                 match tauri::async_runtime::block_on(migrate) {
@@ -435,6 +452,11 @@ pub fn run() {
                                     }
                                 }
                             }
+                            // Migration skipped (see above). Keep the resolved key:
+                            // `db_crypto`'s plaintext guard drops it per-connection
+                            // while the file is still in the clear, and it is needed
+                            // unchanged the moment a later launch does migrate.
+                            Some(key) => Some(key.clone()),
                             None => None,
                         }
                     } else {
@@ -904,8 +926,10 @@ pub fn run() {
             });
 
             // Fast daemon supervisor, separate from the poll loop's slower,
-            // notice-owning health tick: probes every 5 s and restarts a
-            // confirmed-down daemon within ~10 s. See `poll::run_daemon_watchdog`.
+            // notice-owning health tick: probes every 5 s and *starts* a daemon
+            // that is confirmed stopped. It deliberately never signals a running
+            // process — doing so on a slow probe corrupted `meridian.db` on
+            // every macOS install. See `poll::watchdog` before changing it.
             tauri::async_runtime::spawn(async move {
                 poll::run_daemon_watchdog().await;
             });

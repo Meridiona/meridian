@@ -130,6 +130,31 @@ const SAFE_STRING_KEYS: &[&str] = &[
     // summariser failure can't be attributed to a backend at all.
     "provider",
     "engine",
+    // ── health checks (`crate::health::Report::log`) ─────────────────────────
+    // Same failure mode the `error` note below describes, in a different place:
+    // `health check failed` is a static message whose entire diagnostic payload
+    // lives in these fields, so without them the backend received six machines
+    // reporting a CRITICAL fault with no way to tell WHICH check was failing —
+    // or even which subsystem.
+    //
+    // `group`/`layer` are `&'static str` and `check` is a `String` built only
+    // from literals at every call site (`auth`, `daemon running`, `meridian DB`,
+    // `capture.frames`, …) — verified against all of them; none interpolates.
+    // `stage` is likewise a fixed set here and at its one other emitter
+    // (`main.rs`'s `config_loaded`). None of the four can carry user data.
+    "check",
+    "group",
+    "layer",
+    "stage",
+    // `detail` is the exception and is treated accordingly: it is mostly fixed
+    // text ("401 — token expired or invalid", "Jira API unreachable") plus
+    // benign operational numbers (HTTP status, queue depths, GB free, node
+    // version), but a few sites splice an error's `Display` —
+    // `format!("OAuth token refresh failed ({e})")`. That is exactly the shape
+    // of the bare `error` key, so it gets the same answer: also on
+    // `FREE_TEXT_KEYS` below, for the full `scrub_text` + `clamp` rather than a
+    // path scrub alone.
+    "detail",
     // ── code location (paths scrubbed) ───────────────────────────────────────
     "code.function",
     "code.namespace",
@@ -168,6 +193,10 @@ const FREE_TEXT_KEYS: &[&str] = &[
     "exception.message",
     "exception.stacktrace",
     "otel.status_description",
+    // A health check's `detail` splices an error's `Display` at several sites
+    // (see the note on `SAFE_STRING_KEYS`), so it can carry an interpolated
+    // path, URL, or token just as `error` can.
+    "detail",
 ];
 
 /// Known-benign, high-frequency WARN messages dropped from the ship leg even
@@ -1321,6 +1350,52 @@ mod tests {
             "app_name",
             "window_title",
         ] {
+            let mut kv = str_attr(key, "MER-192");
+            assert!(!keep(&mut kv), "{key} leaked into the ship leg");
+        }
+    }
+
+    /// `health check failed` is a static message carrying no diagnostic payload
+    /// of its own — everything that identifies the fault rides on its fields. So
+    /// six machines reported a CRITICAL health failure to the backend with no
+    /// way to tell which check, or even which subsystem, had failed.
+    ///
+    /// Pins that the identifying fields survive, that `detail` is treated as
+    /// free text (it splices an error `Display` at several call sites, so a path
+    /// scrub alone would not be enough), and that widening the boundary for them
+    /// did not also let the user's own data through.
+    #[test]
+    fn health_check_fields_survive_but_stay_scrubbed() {
+        for (key, value) in [
+            ("check", "auth"),
+            ("group", "jira"),
+            ("layer", "L2"),
+            ("stage", "boot"),
+            ("detail", "401 - token expired or invalid"),
+        ] {
+            let mut kv = str_attr(key, value);
+            assert!(keep(&mut kv), "{key} was dropped");
+            match kv.value.unwrap().value.unwrap() {
+                Value::StringValue(s) => assert_eq!(s, value, "{key} was altered"),
+                other => panic!("expected string, got {other:?}"),
+            }
+        }
+
+        // `detail` is FREE TEXT: `format!("OAuth token refresh failed ({e})")`
+        // can splice whatever the error's `Display` carries.
+        let mut kv = str_attr(
+            "detail",
+            "refresh failed for https://id.atlassian.com/oauth (akarsh@meridiona.com)",
+        );
+        assert!(keep(&mut kv));
+        let out = match kv.value.unwrap().value.unwrap() {
+            Value::StringValue(s) => s,
+            other => panic!("expected string, got {other:?}"),
+        };
+        assert!(out.contains("<url>") && out.contains("<email>"), "{out}");
+
+        // Adding these five must not have widened the boundary generally.
+        for key in ["task_key", "path", "window_title", "app_name"] {
             let mut kv = str_attr(key, "MER-192");
             assert!(!keep(&mut kv), "{key} leaked into the ship leg");
         }

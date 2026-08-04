@@ -228,7 +228,7 @@ cargo clippy -- -D warnings
 cargo test
 ```
 
-There are no JS/TS test suites yet. When adding them, place them under `ui/__tests__/`, `packages/meridian-mcp/src/__tests__/`, or `tray/src-tauri/src/__tests__/`.
+The dashboard has a bun test suite — `ui/__tests__/` (409 tests across 29 files as of 1.83.0), run with `bun test` from `ui/`. Many are source-scanning rather than behavioural (`cursor-pointer.test.ts`, `no-native-dialogs.test.ts`): they read the `.tsx` and assert on what it contains, which is the only available guard for things a headless run cannot exercise. New JS/TS tests go under `ui/__tests__/`, `packages/meridian-mcp/src/__tests__/`, or `tray/src-tauri/src/__tests__/`.
 
 ---
 
@@ -351,6 +351,7 @@ The fold replaces every `ui/app/api/*` route with a Rust command the frontend ca
 - The MCP server uses `sql.js` (pure WASM, no native compile step) — deliberately chosen over `better-sqlite3` after native-module ABI mismatches across Node versions/platforms caused real distribution pain (see `packages/meridian-mcp/src/db-cache.ts`'s header comment). Do not swap it back.
 - UI API routes live in `ui/app/api/`; keep them thin — query, transform, return JSON
 - No `any` types unless unavoidable and justified with a comment
+- **NEVER `window.confirm` / `window.alert` / `window.prompt` — they do nothing in the packaged tray.** WKWebView routes JS dialogs through the host app's `WKUIDelegate`, and nothing in the stack installs one (`wry`, `tauri-runtime-wry`, `tauri`, `tauri-utils` were each grepped for `ConfirmPanel|AlertPanel|WKUIDelegate` — all empty), so `confirm()` always returns `false` and `alert()` is a no-op. The damage is silence: a falsy `confirm()` is indistinguishable from the user clicking Cancel, so the gated action quietly never runs while every log, gate and test still passes. That is how the `db.corrupt` **Repair Database** button shipped dead in 1.83.0 — recovery had to be driven by hand from a terminal. Use `@/components/ConfirmDialog` (`ConfirmDialog` for consent, `AlertDialog` for failures). `__tests__/no-native-dialogs.test.ts` fails the build if they come back. `tauri-plugin-dialog` would also work but is not a dependency, and adding one costs a capability grant for a box the webview can render itself.
 - **Spawning the `meridian` binary from a UI route: ALWAYS use `selectMeridianBinary(meridianCandidates())` from `@/lib/meridian-bin`.** Never spawn a bare `'meridian'` (relies on `$PATH`), and never hand-roll a candidate list. The dashboard runs under **launchd**, whose PATH lacks Homebrew's `node`, so the `#!/usr/bin/env node` wrapper at `~/.local/bin/meridian` dies with `env: node: No such file or directory`. The helper probes the **native binary first** (`~/.meridian/app/bin/meridian`, no runtime deps → works under launchd), so it behaves identically in dev and installed. This bug is invisible in `dev-start` (dev installs a bash wrapper, not a node one) — it only surfaces on bundle/npm installs. `__tests__/meridian-bin.test.ts` guards the ordering. The one sanctioned exception is launching `meridian` in a user Terminal (`open -a Terminal …`, e.g. `api/update`), where an interactive login shell *does* have node/PATH.
 
 ### SQL migrations

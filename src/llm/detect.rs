@@ -1860,6 +1860,52 @@ mod tests {
         );
     }
 
+    /// `ProviderStatus` must report the installer THIS build will actually run, for every
+    /// provider that has one. The frontend renders this instead of its own static
+    /// `installHint`, which is a single string compiled for both platforms and therefore
+    /// wrong on one of them — and which doubles as the "run it yourself" fallback after a
+    /// failed install.
+    ///
+    /// Deliberately NOT `#[cfg]`-gated: it asserts the field tracks
+    /// `LlmProvider::install_command` rather than any particular command text, so it is
+    /// meaningful on macOS and Windows alike and runs in BOTH CI Rust jobs.
+    #[tokio::test]
+    async fn provider_status_reports_this_platforms_install_command() {
+        for provider in LlmProvider::builtins() {
+            let status = detect(provider).await;
+            assert_eq!(
+                status.install_command.as_deref(),
+                provider.install_command(),
+                "{provider:?} must report the command this platform installs with"
+            );
+            // Non-empty, not merely present: the UI renders this string as the
+            // "how to install" hint, so `Some("")` would pass an `is_some()`
+            // check and still show the user a blank instruction.
+            assert!(
+                status
+                    .install_command
+                    .as_deref()
+                    .is_some_and(|c| !c.trim().is_empty()),
+                "{provider:?} is a CLI provider and must have a non-empty installer command"
+            );
+        }
+    }
+
+    /// The wire contract with `ui/lib/api-types.ts`'s `ProviderStatus`: the field must
+    /// actually reach the frontend under the name the UI reads. A `#[serde(skip)]` or a
+    /// rename would leave `probed?.install_command` permanently `undefined`, silently
+    /// reverting the UI to the platform-wrong static hint with no test failing.
+    #[tokio::test]
+    async fn provider_status_serialises_install_command_for_the_frontend() {
+        let status = detect(LlmProvider::Claude).await;
+        let json = serde_json::to_value(&status).expect("ProviderStatus must serialise");
+        assert_eq!(
+            json.get("install_command").and_then(|v| v.as_str()),
+            LlmProvider::Claude.install_command(),
+            "the frontend reads `install_command` — got {json:?}"
+        );
+    }
+
     /// The regression this exists for: an npm-based install (`npm i -g @openai/codex`, etc.)
     /// failed with "command not found: npm" on any Mac where nvm's init block lives only in
     /// `~/.zshrc` — `installer_command`'s `-l` (login, non-interactive) shell never sources
