@@ -32,7 +32,7 @@
 
 use std::{
     path::Path,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -43,11 +43,8 @@ use crate::{
     observability::{resolve_otlp_endpoint, resolve_otlp_target},
     telemetry_spool::{
         derive_base_url,
-        launchd_log_cap::cap_launchd_logs,
         redact::{redact_and_filter, Redacted},
-        retention::{
-            enforce_pending_cap, list_pending_oldest_first, prune_by_age, sweep_tmp_orphans,
-        },
+        retention::{list_pending_oldest_first, prune_due, run_housekeeping},
         ship_one,
         writer::{
             pending_dir, quarantine_dir, resolve_telemetry_dir, sent_dir, signal_from_filename,
@@ -61,6 +58,11 @@ const DEFAULT_RETENTION_DAYS: u64 = 7;
 
 /// One-time guard so "export enabled but no credentials" warns once, not every tick.
 static WARNED_NO_CREDS: AtomicBool = AtomicBool::new(false);
+
+/// Tick counter driving the prune cadence (see `retention::prune_due`).
+/// Process-lifetime only — resetting on restart just means the first tick
+/// prunes again, which is the desired catch-up behaviour.
+static TICK_COUNT: AtomicU64 = AtomicU64::new(0);
 
 fn ship_interval() -> Duration {
     let secs = std::env::var("MERIDIAN_TELEMETRY_SHIP_INTERVAL_S")
@@ -114,21 +116,28 @@ async fn run_tick() -> Result<()> {
     let sent = sent_dir(&base);
     let quarantine = quarantine_dir(&base);
 
-    // Clear crash-orphaned `.otlp.tmp` files first so they can't accumulate
-    // unbounded (they're invisible to both the cap and the lister otherwise).
-    sweep_tmp_orphans(&pending);
-
-    // Retention: age-prune BOTH dirs UNCONDITIONALLY — before any ship-target
-    // check. A Canonical/packaged install never ships (resolve_otlp_target()
-    // always returns None for it), so pending/ is the only place spooled
-    // telemetry ever lives; retention must not depend on delivery happening.
-    let retention_secs = retention_days() * 24 * 3600;
-    prune_by_age(&pending, retention_secs)?;
-    prune_by_age(&sent, retention_secs)?;
-    cap_launchd_logs();
-
-    // Enforce pending cap BEFORE trying to ship so we don't OOM on a long OO outage.
-    enforce_pending_cap(&pending)?;
+    // The whole filesystem sweep (tmp-orphan clear, age prune, launchd log
+    // cap, pending cap) runs as ONE unit on the BLOCKING pool, with the age
+    // prune rationed to every 60th tick. Both halves are load-bearing:
+    // `sent/` sits at a ~264k-file steady state and the prune `stat`s every
+    // one, so running it inline on a runtime worker twice a minute stalled
+    // the daemon's timers 30-100 s and starved its socket greeting - the
+    // probe false-negatives behind the tray's status flapping and the old
+    // watchdog storms (thread-sampled live, 2026-08-05; the whole story is on
+    // `retention::prune_due`). Retention itself stays UNCONDITIONAL relative
+    // to shipping - it must run before any ship-target check, because a
+    // Canonical/packaged install never ships and pending/ is its only spool.
+    let tick = TICK_COUNT.fetch_add(1, Ordering::Relaxed);
+    {
+        let pending = pending.clone();
+        let sent = sent.clone();
+        let retention_secs = retention_days() * 24 * 3600;
+        tokio::task::spawn_blocking(move || {
+            run_housekeeping(&pending, &sent, retention_secs, prune_due(tick))
+        })
+        .await
+        .context("telemetry housekeeping task")??;
+    }
 
     // Resolve ship target — None means OO not configured, leave files.
     let Some(target) = resolve_otlp_target() else {
@@ -311,6 +320,36 @@ mod tests {
     use super::*;
     use crate::telemetry_spool::writer::write_pending;
     use tempfile::TempDir;
+
+    /// The shipper's filesystem sweep must reach the disk ONLY through
+    /// `retention::run_housekeeping` handed to `spawn_blocking` - calling the
+    /// per-step helpers inline from this async module is exactly the ~264k
+    /// blocking `stat`s per tick that stalled the daemon's timers and starved
+    /// its socket greeting (see `retention::prune_due`). Nothing at a call
+    /// site would look wrong in review, so the split is pinned at the source
+    /// level.
+    #[test]
+    fn housekeeping_stays_off_the_async_runtime() {
+        let src = include_str!("shipper.rs");
+        assert!(
+            src.contains("spawn_blocking"),
+            "the housekeeping sweep must run on the blocking pool"
+        );
+        // Needles assembled at runtime so this test's own source (included in
+        // the scan) cannot match them.
+        for helper in [
+            format!("prune_by_{}", "age"),
+            format!("sweep_tmp_{}", "orphans"),
+            format!("enforce_pending_{}", "cap"),
+            format!("cap_launchd_{}", "logs"),
+        ] {
+            assert!(
+                !src.contains(&helper),
+                "{helper} called directly from the async shipper - route it \
+                 through retention::run_housekeeping inside spawn_blocking"
+            );
+        }
+    }
 
     /// Verifies that a pending file is moved to sent/ when the HTTP call would
     /// succeed.  We simulate a successful "ship" by calling the move logic
