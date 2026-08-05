@@ -5,14 +5,20 @@
 // Runs in a tokio background task spawned from main.rs. Every
 // `MERIDIAN_TELEMETRY_SHIP_INTERVAL_S` seconds (default 30):
 //
+// Steps 1-3 are ONE `retention::run_housekeeping` unit handed to
+// `spawn_blocking` — never inline on the runtime, because sent/ sits at a
+// ~264k-file steady state and walking it on a runtime worker stalled the
+// daemon's timers 30-100s (see `retention::prune_due` for the incident):
+//
 //   1. Sweep crash-orphaned .otlp.tmp files.
 //   2. Retention: age-prune BOTH pending/ and sent/ (files older than
-//      MERIDIAN_TELEMETRY_RETENTION_DAYS, default 7) — this runs UNCONDITIONALLY,
-//      before the ship-target check below, so a Canonical/packaged install
-//      (which never ships — see `observability::resolve_otlp_target`) still
-//      enforces retention on the local spool instead of growing it forever.
-//      Also caps the launchd-redirected raw log files (daemon.log etc. — the
-//      crash safety net, unrelated to the OTel spool) at
+//      MERIDIAN_TELEMETRY_RETENTION_DAYS, default 7) — rationed to every 60th
+//      tick (~30 min; tick 0 prunes so a long-stopped daemon catches up), and
+//      independent of the ship-target check below, so a Canonical/packaged
+//      install (which never ships — see `observability::resolve_otlp_target`)
+//      still enforces retention on the local spool instead of growing it
+//      forever. Also caps the launchd-redirected raw log files (daemon.log
+//      etc. — the crash safety net, unrelated to the OTel spool) at
 //      MERIDIAN_LAUNCHD_LOG_MAX_MB (default 10) via copytruncate, since they
 //      have no rotation of their own.
 //   3. Pending cap: drop OLDEST beyond MERIDIAN_TELEMETRY_MAX_PENDING_MB (512) with warn.
