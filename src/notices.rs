@@ -231,4 +231,82 @@ mod tests {
             .unwrap();
         assert!(!cleared_again);
     }
+
+    /// The test above only checks `system_notices` — it would pass even if
+    /// `clear_typed_on`'s second DELETE (the paired notification retract)
+    /// were broken or missing entirely. Exercises `clear_typed_on` directly,
+    /// since that is the connection-scoped API `db::repair::rebuild` actually
+    /// calls, and asserts on the `notifications` table itself: the matching
+    /// `dedup_key` row is gone, and an unrelated one is untouched — proving
+    /// the DELETE is scoped to `{event_key}:{id}`, not a blanket wipe.
+    #[tokio::test]
+    async fn clear_typed_on_retracts_only_the_matching_notification() {
+        let pool = fresh_db().await;
+
+        raise_typed(
+            &pool,
+            Notice {
+                id: "tray.daemon_quiet",
+                severity: "warning",
+                title: "Meridian went quiet.",
+                detail: "Tap to check what happened.",
+                remedy: None,
+                event_key: "system.health",
+                deep_link: Some("/logs"),
+            },
+        )
+        .await
+        .unwrap();
+
+        // Unrelated dedup key — must survive the clear below.
+        crate::notifications::enqueue(
+            &pool,
+            crate::notifications::NewNotification::event(
+                "system.fault:other.fault",
+                "system.fault",
+                "Unrelated fault",
+                "should not be touched",
+            ),
+        )
+        .await
+        .unwrap();
+
+        let matching = "system.health:tray.daemon_quiet";
+        let matching_before: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE dedup_key = ?")
+                .bind(matching)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            matching_before, 1,
+            "raise_typed must have enqueued the paired toast"
+        );
+
+        let mut conn = pool.acquire().await.unwrap();
+        let cleared = clear_typed_on(&mut conn, "tray.daemon_quiet", "system.health")
+            .await
+            .unwrap();
+        drop(conn);
+        assert!(cleared);
+
+        let matching_after: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE dedup_key = ?")
+                .bind(matching)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            matching_after, 0,
+            "clear_typed_on must retract the paired notification, not just system_notices"
+        );
+
+        let unrelated: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE dedup_key = ?")
+                .bind("system.fault:other.fault")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(unrelated, 1, "an unrelated dedup key must not be touched");
+    }
 }
