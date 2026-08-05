@@ -604,41 +604,75 @@ pub fn run() {
                                 ),
                             };
                             tauri::async_runtime::spawn(async move {
-                                if fault_cleared {
-                                    // The fault is gone; drop the banner that
-                                    // sent the user here in the first place.
-                                    //
-                                    // `clear_typed`, NOT the plain `clear` (which
-                                    // hardcodes `event_key = "system.fault"`): the
-                                    // daemon raised this with `event_key:
-                                    // "db.corrupt"` (see `DB_CORRUPT_NOTICE` in
-                                    // `src/main.rs`), and `notices::raise_typed`
-                                    // dedupes its OS toast on `<event_key>:<id>`.
-                                    // Clearing with the wrong event_key deletes the
-                                    // banner row (that DELETE matches by id alone)
-                                    // but retracts the wrong toast dedup key, so a
-                                    // future corruption would silently never toast
-                                    // again — deduped against a delivery that was
-                                    // never actually retracted.
-                                    let _ =
-                                        meridian::notices::clear_typed(&p, "db.corrupt", "db.corrupt")
-                                            .await;
+                                // RETRIED, not fire-once: this notice can outrun
+                                // its own database. After a fresh start the
+                                // canonical path is empty until the daemon
+                                // relaunches and migrates - which on a machine
+                                // leaving the watchdog's "giving up" window can
+                                // be most of an hour - so a single write through
+                                // the lazy pool fails silently, and the user who
+                                // just lost their database is exactly the user
+                                // who must see this message. The loop is idle
+                                // and bounded; it ends on the first success.
+                                // (A repair-failed notice against a still-
+                                // unopenable file can never land - the retries
+                                // then just run out, and the tracing::error!
+                                // at the failure site remains the record.)
+                                let deadline = std::time::Instant::now()
+                                    + std::time::Duration::from_secs(2 * 60 * 60);
+                                loop {
+                                    let mut ok = true;
+                                    if fault_cleared {
+                                        // The fault is gone; drop the banner that
+                                        // sent the user here in the first place.
+                                        //
+                                        // `clear_typed`, NOT the plain `clear` (which
+                                        // hardcodes `event_key = "system.fault"`): the
+                                        // daemon raised this with `event_key:
+                                        // "db.corrupt"` (see `DB_CORRUPT_NOTICE` in
+                                        // `src/main.rs`), and `notices::raise_typed`
+                                        // dedupes its OS toast on `<event_key>:<id>`.
+                                        // Clearing with the wrong event_key deletes the
+                                        // banner row (that DELETE matches by id alone)
+                                        // but retracts the wrong toast dedup key, so a
+                                        // future corruption would silently never toast
+                                        // again — deduped against a delivery that was
+                                        // never actually retracted.
+                                        ok &= meridian::notices::clear_typed(
+                                            &p,
+                                            "db.corrupt",
+                                            "db.corrupt",
+                                        )
+                                        .await
+                                        .is_ok();
+                                    }
+                                    ok &= meridian::notices::raise_typed(
+                                        &p,
+                                        meridian::notices::Notice {
+                                            id,
+                                            severity,
+                                            title,
+                                            detail: &detail,
+                                            remedy,
+                                            // event_key mirrors id so each outcome's
+                                            // OS toast dedupes independently.
+                                            event_key: id,
+                                            deep_link: (!fault_cleared).then_some("/logs"),
+                                        },
+                                    )
+                                    .await
+                                    .is_ok();
+                                    if ok || std::time::Instant::now() > deadline {
+                                        if !ok {
+                                            tracing::error!(
+                                                notice_id = id,
+                                                "gave up delivering the repair-outcome notice - the database never became writable"
+                                            );
+                                        }
+                                        break;
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                                 }
-                                let _ = meridian::notices::raise_typed(
-                                    &p,
-                                    meridian::notices::Notice {
-                                        id,
-                                        severity,
-                                        title,
-                                        detail: &detail,
-                                        remedy,
-                                        // event_key mirrors id so each outcome's
-                                        // OS toast dedupes independently.
-                                        event_key: id,
-                                        deep_link: (!fault_cleared).then_some("/logs"),
-                                    },
-                                )
-                                .await;
                             });
                         }
                     }
