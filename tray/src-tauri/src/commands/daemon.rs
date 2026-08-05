@@ -96,14 +96,19 @@ pub struct DaemonStatusResponse {
     pub pid: Option<u32>,
 }
 
-/// Probe the daemon's IPC endpoint with an 800 ms timeout (the ported
+/// Probe the daemon with the process-alive second opinion (the ported
 /// `/api/daemon/status` GET). Returns `{running: false}` on any error — no error
 /// surfaces to the caller (resolve-empty contract: stale UI stays visible rather
 /// than erroring on every health poll tick).
+///
+/// [`daemon_control::status`], NOT the bare probe: this drives the dashboard's
+/// current-hour PAUSED badge (polled every 30 s), which flapped against a
+/// healthy daemon whenever the tray's own load starved the 800 ms probe — see
+/// `status`'s doc.
 #[tauri::command]
 #[tracing::instrument]
 pub async fn get_daemon_status() -> Result<DaemonStatusResponse, String> {
-    let probe = super::daemon_control::probe().await;
+    let probe = super::daemon_control::status().await;
     tracing::info!(running = probe.running, pid = ?probe.pid, "daemon_status");
     Ok(DaemonStatusResponse {
         running: probe.running,
