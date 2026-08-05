@@ -27,6 +27,7 @@ use meridian_core::SqlitePool;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use tauri::State;
+use tracing::Instrument;
 
 /// The cached tray status (health + active session + today totals), read from
 /// the poll-loop-maintained [`AppState`]. Synchronous — just locks and snapshots.
@@ -65,14 +66,19 @@ pub async fn restart_daemon() -> Result<(), String> {
 /// installer's launch-time restore will start a daemon they believe is down.
 /// Sequencing them from the command would leave both races open.
 #[tauri::command]
+#[tracing::instrument(skip(_app, db_pool), fields(action))]
 pub async fn toggle_daemon(
     _app: tauri::AppHandle,
     is_running: bool,
     db_pool: State<'_, Option<SqlitePool>>,
 ) -> Result<(), String> {
     let pool = db_pool.inner().clone();
+    // `is_running` is the CURRENT state, so the useful field is what the user
+    // asked for, not what it already was.
+    tracing::Span::current().record("action", if is_running { "pause" } else { "resume" });
 
-    // `is_running` is the CURRENT state, so pausing means "make it not running".
+    // The OS work and its own spans live in `daemon_lifecycle`; this command
+    // owns the request boundary and the notice write.
     if is_running {
         crate::daemon_lifecycle::stop_for_pause().await?;
     } else {
@@ -93,14 +99,18 @@ pub async fn toggle_daemon(
                     deep_link: None,
                 },
             )
+            .instrument(tracing::debug_span!("daemon.toggle.write.notices"))
             .await
         } else {
-            meridian::notices::clear_typed(p, "tray.daemon_paused", "system.pause").await
+            meridian::notices::clear_typed(p, "tray.daemon_paused", "system.pause")
+                .instrument(tracing::debug_span!("daemon.toggle.write.notices"))
+                .await
         };
         if let Err(e) = result {
             tracing::warn!(error = %e, is_running, "daemon toggle notice write failed");
         }
     }
+    tracing::info!(is_running, "daemon toggled");
     Ok(())
 }
 
