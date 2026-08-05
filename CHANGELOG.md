@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.83.2](https://github.com/Meridiona/meridian/compare/v1.83.1...v1.83.2) (2026-08-05)
+
+### 🐛 Bug Fixes
+
+* **daemon:** survive transient accept errors on the health socket ([9dda5f8](https://github.com/Meridiona/meridian/commit/9dda5f8280026b24dc1eddb5b474cc18920aa649))
+* **db:** clear the db.corrupt notice when a repair succeeds ([69659de](https://github.com/Meridiona/meridian/commit/69659deea8375014c44dbe6ab7853a01589d101e))
+* **review:** address PR [#688](https://github.com/Meridiona/meridian/issues/688)'s CodeRabbit findings ([889f003](https://github.com/Meridiona/meridian/commit/889f0030644a4dd752839c418172d1d8488fbb57)), closes [#686](https://github.com/Meridiona/meridian/issues/686)
+* **telemetry:** stop the spool prune stalling the daemon's runtime ([e2e5cc4](https://github.com/Meridiona/meridian/commit/e2e5cc42fe877ba7dc91869c99e5caaa6d1c23b0)), closes [#678](https://github.com/Meridiona/meridian/issues/678)
+* **tray:** stop status surfaces flapping against a healthy daemon ([01841bd](https://github.com/Meridiona/meridian/commit/01841bd9392cbd8af05863ee727c6956425c5558)), closes [#678](https://github.com/Meridiona/meridian/issues/678)
+* **ui:** stamp each notice banner with when it was raised ([9dd85b7](https://github.com/Meridiona/meridian/commit/9dd85b7ca778bd7583401044c1228018ffa30864))
+
+### ✅ Tests
+
+* **notices:** pin clear_typed_on's notification retract, not just the row ([f7cb97e](https://github.com/Meridiona/meridian/commit/f7cb97e29ea996710351480b0e7fdbd4a61257ca))
+
+### 📝 Documentation
+
+* **telemetry:** update the shipper header for the rationed blocking sweep ([87aa8d2](https://github.com/Meridiona/meridian/commit/87aa8d2e0f570d592d865c321bb7940bb4913900))
+* **whats-new:** backfill 1.82.0 through 1.83.2 and refresh the roadmap ([47a1f0e](https://github.com/Meridiona/meridian/commit/47a1f0e3677d7649e57659d4a1ccc4e864efa662)), closes [#677](https://github.com/Meridiona/meridian/issues/677) [#678](https://github.com/Meridiona/meridian/issues/678)
+
+### 🔧 Chores
+
+* **release:** back-merge v1.83.1 into pre-main ([d103662](https://github.com/Meridiona/meridian/commit/d103662977ee2ff5be6950bc7e8844a9a388cea6))
+* **release:** lower the mandatory-update floor back to 1.82.3 ([e301588](https://github.com/Meridiona/meridian/commit/e301588d7216f5864989293aa44d74c750d423bc))
+* **release:** raise the mandatory-update floor to 1.83.2 ([ed5afa5](https://github.com/Meridiona/meridian/commit/ed5afa59c3b4109c166ff7de55347787fe82597b)), closes [#684](https://github.com/Meridiona/meridian/issues/684) [#678](https://github.com/Meridiona/meridian/issues/678) [#684](https://github.com/Meridiona/meridian/issues/684)
+
 ## [1.83.1](https://github.com/Meridiona/meridian/compare/v1.83.0...v1.83.1) (2026-08-04)
 
 ### 🐛 Bug Fixes
