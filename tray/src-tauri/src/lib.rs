@@ -473,7 +473,18 @@ pub fn run() {
                     // bound to the inode that was moved aside, reading stale
                     // data forever without erroring.
                     let repair_outcome =
-                        repair_boot::run_if_requested(db_path_ref, db_key_hex.as_deref());
+                        repair_boot::run_if_requested(db_path_ref, db_key_hex.as_deref())
+                            // No repair was requested - probe the file anyway
+                            // and heal it unattended if it is damaged. This is
+                            // the path that recovers a machine whose corrupt
+                            // database prevented the repair offer from ever
+                            // being shown (see `repair_boot`'s module header).
+                            .or_else(|| {
+                                repair_boot::run_auto_if_needed(
+                                    db_path_ref,
+                                    db_key_hex.as_deref(),
+                                )
+                            });
 
                     // Prepare the meridian.db pool ONCE at startup and share it with
                     // commands via managed state (no migrations — the daemon owns the
@@ -552,51 +563,116 @@ pub fn run() {
                         if let Some(p) = capture_pool.clone() {
                             // Own the strings before the task takes them: the
                             // notice borrows its fields, and `outcome` cannot
-                            // outlive this scope.
-                            let (repaired, title, detail) = match outcome {
-                                repair_boot::Outcome::Repaired { summary } => {
-                                    (true, "Database repaired", summary)
-                                }
-                                repair_boot::Outcome::Failed { error } => {
-                                    (false, "Database repair failed", error)
-                                }
+                            // outlive this scope. `fault_cleared` decides both
+                            // halves below: whether the db.corrupt banner is
+                            // dropped, and which notice replaces it. A fresh
+                            // start clears the fault too - the damaged file is
+                            // gone from the canonical path - but reports under
+                            // its own id/severity so data loss is never
+                            // dressed up as a clean repair.
+                            let (fault_cleared, id, severity, title, detail, remedy) = match outcome
+                            {
+                                repair_boot::Outcome::Repaired { summary } => (
+                                    true,
+                                    "db.repaired",
+                                    "info",
+                                    "Database repaired",
+                                    summary,
+                                    None,
+                                ),
+                                repair_boot::Outcome::Failed { error } => (
+                                    false,
+                                    "db.corrupt",
+                                    "error",
+                                    "Database repair failed",
+                                    error,
+                                    Some(
+                                        "Your data is unchanged. Contact support with your Support ID.",
+                                    ),
+                                ),
+                                repair_boot::Outcome::FreshStart { backup } => (
+                                    true,
+                                    "db.reset",
+                                    "warning",
+                                    "Database was reset",
+                                    format!(
+                                        "Your database could not be opened or repaired, so tracking restarted with a new one. The old file was kept at {backup}."
+                                    ),
+                                    Some(
+                                        "Contact support with your Support ID if you want to attempt recovery of the old file.",
+                                    ),
+                                ),
                             };
                             tauri::async_runtime::spawn(async move {
-                                if repaired {
-                                    // The fault is gone; drop the banner that
-                                    // sent the user here in the first place.
-                                    //
-                                    // `clear_typed`, NOT the plain `clear` (which
-                                    // hardcodes `event_key = "system.fault"`): the
-                                    // daemon raised this with `event_key:
-                                    // "db.corrupt"` (see `DB_CORRUPT_NOTICE` in
-                                    // `src/main.rs`), and `notices::raise_typed`
-                                    // dedupes its OS toast on `<event_key>:<id>`.
-                                    // Clearing with the wrong event_key deletes the
-                                    // banner row (that DELETE matches by id alone)
-                                    // but retracts the wrong toast dedup key, so a
-                                    // future corruption would silently never toast
-                                    // again — deduped against a delivery that was
-                                    // never actually retracted.
-                                    let _ =
-                                        meridian::notices::clear_typed(&p, "db.corrupt", "db.corrupt")
-                                            .await;
+                                // RETRIED, not fire-once: this notice can outrun
+                                // its own database. After a fresh start the
+                                // canonical path is empty until the daemon
+                                // relaunches and migrates - which on a machine
+                                // leaving the watchdog's "giving up" window can
+                                // be most of an hour - so a single write through
+                                // the lazy pool fails silently, and the user who
+                                // just lost their database is exactly the user
+                                // who must see this message. The loop is idle
+                                // and bounded; it ends on the first success.
+                                // (A repair-failed notice against a still-
+                                // unopenable file can never land - the retries
+                                // then just run out, and the tracing::error!
+                                // at the failure site remains the record.)
+                                let deadline = std::time::Instant::now()
+                                    + std::time::Duration::from_secs(2 * 60 * 60);
+                                loop {
+                                    let mut ok = true;
+                                    if fault_cleared {
+                                        // The fault is gone; drop the banner that
+                                        // sent the user here in the first place.
+                                        //
+                                        // `clear_typed`, NOT the plain `clear` (which
+                                        // hardcodes `event_key = "system.fault"`): the
+                                        // daemon raised this with `event_key:
+                                        // "db.corrupt"` (see `DB_CORRUPT_NOTICE` in
+                                        // `src/main.rs`), and `notices::raise_typed`
+                                        // dedupes its OS toast on `<event_key>:<id>`.
+                                        // Clearing with the wrong event_key deletes the
+                                        // banner row (that DELETE matches by id alone)
+                                        // but retracts the wrong toast dedup key, so a
+                                        // future corruption would silently never toast
+                                        // again — deduped against a delivery that was
+                                        // never actually retracted.
+                                        ok &= meridian::notices::clear_typed(
+                                            &p,
+                                            "db.corrupt",
+                                            "db.corrupt",
+                                        )
+                                        .await
+                                        .is_ok();
+                                    }
+                                    ok &= meridian::notices::raise_typed(
+                                        &p,
+                                        meridian::notices::Notice {
+                                            id,
+                                            severity,
+                                            title,
+                                            detail: &detail,
+                                            remedy,
+                                            // event_key mirrors id so each outcome's
+                                            // OS toast dedupes independently.
+                                            event_key: id,
+                                            deep_link: (!fault_cleared).then_some("/logs"),
+                                        },
+                                    )
+                                    .await
+                                    .is_ok();
+                                    if ok || std::time::Instant::now() > deadline {
+                                        if !ok {
+                                            tracing::error!(
+                                                notice_id = id,
+                                                "gave up delivering the repair-outcome notice - the database never became writable"
+                                            );
+                                        }
+                                        break;
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                                 }
-                                let _ = meridian::notices::raise_typed(
-                                    &p,
-                                    meridian::notices::Notice {
-                                        id: if repaired { "db.repaired" } else { "db.corrupt" },
-                                        severity: if repaired { "info" } else { "error" },
-                                        title,
-                                        detail: &detail,
-                                        remedy: (!repaired).then_some(
-                                            "Your data is unchanged. Contact support with your Support ID.",
-                                        ),
-                                        event_key: if repaired { "db.repaired" } else { "db.corrupt" },
-                                        deep_link: (!repaired).then_some("/logs"),
-                                    },
-                                )
-                                .await;
                             });
                         }
                     }
