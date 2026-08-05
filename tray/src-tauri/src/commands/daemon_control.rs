@@ -63,13 +63,14 @@ fn status_running(probe_ok: bool, process_alive: Option<bool>) -> bool {
 /// [`probe`] with the watchdog's second opinion, for STATUS REPORTING - the
 /// popover health panel and the dashboard's capture badge.
 ///
-/// The bare probe's 800ms budget loses a race against the tray's own starved
-/// runtime under load (the same false negative that drove the watchdog's
-/// restart storm, fixed in `poll::watchdog`), so on 1.83.2-staging.1 the
-/// popover flapped "Daemon: Not running" next to a Restart button while the
-/// daemon ran untouched - inviting exactly the mid-write SIGTERM the watchdog
-/// fix closed. A probe miss here only reads as down once `process_alive` says
-/// the process is not there.
+/// A daemon that is alive but slow to greet misses the probe's 800ms budget:
+/// measured live on 1.83.2-staging.1, both misses landed inside stretched ETL
+/// ticks (89s and 164s against the 60s cadence), when the greeting-write task
+/// starves behind the run. The popover then flapped "Daemon: Not running"
+/// next to a Restart button while capture ran fine - inviting exactly the
+/// mid-write SIGTERM the watchdog fix (#678) closed, whose storms this same
+/// alive-but-busy false negative drove. A probe miss here only reads as down
+/// once `process_alive` says the process is not there.
 ///
 /// The WATCHDOG keeps calling the bare [`probe`] on purpose: its `decide`
 /// takes `probe_ok` and `process_alive` as separate inputs, and folding the
@@ -96,14 +97,22 @@ pub async fn status() -> Probe {
 
 #[cfg(target_os = "macos")]
 pub async fn probe() -> Probe {
+    probe_path(&sock_path()).await
+}
+
+/// [`probe`] against an explicit socket path. Split out so the mechanism
+/// test can point it at its own servers -
+/// `a_busy_daemon_delaying_its_greeting_reads_as_down` reproduces the
+/// alive-but-slow-to-greet miss that is the entire premise of [`status`].
+#[cfg(target_os = "macos")]
+async fn probe_path(sock_path: &str) -> Probe {
     use std::time::Duration;
     use tokio::io::AsyncReadExt;
     use tokio::net::UnixStream;
     use tokio::time::timeout;
 
-    let sock_path = sock_path();
     let Ok(Ok(mut stream)) =
-        timeout(Duration::from_millis(800), UnixStream::connect(&sock_path)).await
+        timeout(Duration::from_millis(800), UnixStream::connect(sock_path)).await
     else {
         return Probe::down();
     };
@@ -491,8 +500,8 @@ mod tests {
 
     /// The status surfaces (popover "Daemon: Not running", the dashboard's
     /// PAUSED badge) flapped on 1.83.2-staging.1 while the daemon ran
-    /// untouched: the bare probe's 800ms budget loses a race against the
-    /// tray's own starved runtime, exactly the false negative that drove the
+    /// untouched: alive but slow to greet during stretched ETL ticks, it
+    /// missed the 800ms budget - exactly the false negative that drove the
     /// watchdog's restart storm - and the popover pairs the false "Not
     /// running" with a Restart button, inviting the user to SIGTERM a healthy
     /// daemon mid-write by hand. Status reporting must therefore apply the
@@ -510,6 +519,102 @@ mod tests {
         // A successful probe never needs the second opinion.
         assert!(status_running(true, None));
         assert!(status_running(true, Some(false)));
+    }
+
+    /// Executable proof of the failure mode behind the 1.83.2-staging.1
+    /// status flapping: a daemon that is ALIVE but slow to greet - measured
+    /// live, both probe failures landed inside stretched ETL ticks (89s and
+    /// 164s against the 60s cadence), when the daemon's greeting-write task
+    /// starves behind the run - reads as down to the bare probe, because the
+    /// greeting genuinely does not arrive within the 800ms budget.
+    ///
+    /// Why it is specifically the DAEMON's delay and not the tray's: tokio's
+    /// `Timeout` polls the inner future before the deadline on every wake, so
+    /// a greeting that has already arrived rescues an arbitrarily-late tray.
+    /// (The first version of this test starved the tray's runtime against a
+    /// prompt server and the probe SURVIVED - that disproof is why this test
+    /// models the delay server-side.) Only data that truly is not there yet
+    /// can lose the race.
+    ///
+    /// The control asserts a prompt greeting probes UP - the probe itself is
+    /// not broken - and the last assertion ties the miss to the fix: with the
+    /// OS's "process is alive" second opinion it must read as running, never
+    /// as "Not running" next to a Restart button.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_busy_daemon_delaying_its_greeting_reads_as_down() {
+        use tokio::io::AsyncWriteExt as _;
+
+        async fn serve(path: &std::path::Path, delay_ms: u64) {
+            let listener = tokio::net::UnixListener::bind(path).expect("bind");
+            tokio::spawn(async move {
+                loop {
+                    let Ok((mut s, _)) = listener.accept().await else {
+                        continue;
+                    };
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                        let _ = s.write_all(br#"{"running":true,"pid":1}"#).await;
+                    });
+                }
+            });
+        }
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+
+            // Control: a prompt greeting probes UP, so the down verdict below
+            // is the delay's doing, not the probe's.
+            let prompt = dir.path().join("prompt.sock");
+            serve(&prompt, 0).await;
+            assert!(
+                probe_path(&prompt.to_string_lossy()).await.running,
+                "a prompt daemon must probe up - the probe itself is broken"
+            );
+
+            // The live failure mode: connect succeeds instantly (the backlog
+            // accepts), but the greeting lands 900ms later - past the read
+            // budget - exactly a daemon stalled mid-ETL.
+            let busy = dir.path().join("busy.sock");
+            serve(&busy, 900).await;
+            let p = probe_path(&busy.to_string_lossy()).await;
+            assert!(
+                !p.running,
+                "the bare probe must miss a greeting that arrives after its \
+                 budget - if this passes, the budget grew and status() may be \
+                 double-guarding"
+            );
+
+            // The fix: the OS says the process exists, so the miss must not
+            // reach the user as an outage.
+            assert!(status_running(p.running, Some(true)));
+        });
+    }
+
+    /// The two status surfaces must never regress to the bare probe - that
+    /// regression IS the flapping bug, and nothing at the call sites would
+    /// look wrong in review. `include_str!` over the consumers pins it.
+    #[test]
+    fn status_surfaces_use_the_second_opinion_not_the_bare_probe() {
+        for (name, src) in [
+            ("daemon.rs", include_str!("daemon.rs")),
+            ("health.rs", include_str!("health.rs")),
+        ] {
+            assert!(
+                src.contains("daemon_control::status()"),
+                "{name}: status surfaces must call daemon_control::status()"
+            );
+            assert!(
+                !src.contains("daemon_control::probe()"),
+                "{name}: bare daemon_control::probe() reintroduces the false \
+                 'Not running' flap (and its Restart-button invitation to \
+                 SIGTERM a healthy daemon) - use status() instead"
+            );
+        }
     }
 
     /// The liveness signal the watchdog gates on. Getting this wrong in the
