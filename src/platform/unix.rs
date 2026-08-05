@@ -233,12 +233,39 @@ mod tests {
     #[test]
     fn an_accept_error_must_not_end_the_health_listener() {
         let src = include_str!("unix.rs");
-        let arm = src
+        // Brace-matched rather than a fixed byte window: a window can either
+        // truncate before `continue` (a false failure on an untouched arm) or
+        // run past this arm's closing brace into whatever follows (a `break`
+        // anywhere later in the file would then fail this test for the wrong
+        // reason). Capturing the exact `Err(e) => { ... }` body is immune to
+        // both as the arm grows or shrinks.
+        let arm_start = src
+            .find("Err(e) => {")
+            .expect("the accept-error match arm exists")
+            + "Err(e) => {".len();
+        let mut depth = 1i32;
+        let mut arm_end = None;
+        for (i, c) in src[arm_start..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        arm_end = Some(arm_start + i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let arm = &src[arm_start..arm_end.expect("the accept-error arm's closing brace")];
+        // The policy is what runs AFTER the warn log, not the arm's leading
+        // explanatory comment - which itself narrates the old `break` bug in
+        // prose and would trip a naive `contains("break")` over the whole arm.
+        let policy = arm
             .split("daemon.sock accept error")
             .nth(1)
-            .expect("the accept-error arm exists");
-        // The policy lives in the ~120 chars after the warn line.
-        let policy = &arm[..arm.len().min(120)];
+            .expect("the warn log is inside the matched arm");
         assert!(
             !policy.contains("break"),
             "the accept-error arm breaks the loop - one transient error would \

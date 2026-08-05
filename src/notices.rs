@@ -11,6 +11,7 @@
 
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
+use tracing::Instrument;
 
 /// Notice id raised when `meridian.db` is structurally damaged.
 ///
@@ -141,6 +142,12 @@ pub async fn clear_typed_reporting(pool: &SqlitePool, id: &str, event_key: &str)
 /// [`clear_typed_reporting`] for callers holding a single `SqliteConnection`
 /// rather than a pool.
 ///
+/// Deletes the `system_notices` row for `id` and best-effort retracts the
+/// paired notification keyed `{event_key}:{id}`. Returns `true` only when the
+/// `system_notices` row existed and was deleted — the paired notification
+/// delete is best-effort (logged, never propagated) and does not affect the
+/// return value.
+///
 /// Exists for `db::repair`'s rebuild, which must run EVERY write on one
 /// explicitly-closed connection: a pooled acquire there is handed back to the
 /// pool from a spawned task on drop, `pool.close()` does not reliably wait for
@@ -156,15 +163,20 @@ pub async fn clear_typed_on(
     let result = sqlx::query("DELETE FROM system_notices WHERE notice_id = ?")
         .bind(id)
         .execute(&mut *conn)
+        .instrument(tracing::debug_span!("notices.clear.system_notices"))
         .await
         .context("clearing system notice")?;
     // Retract the paired toast so a future re-occurrence of this fault notifies
     // again instead of being deduped away. Best-effort, matching
     // `notifications::retract` — same statement, same dedup-key shape.
-    let _ = sqlx::query("DELETE FROM notifications WHERE dedup_key = ?")
+    if let Err(e) = sqlx::query("DELETE FROM notifications WHERE dedup_key = ?")
         .bind(format!("{event_key}:{id}"))
         .execute(&mut *conn)
-        .await;
+        .instrument(tracing::debug_span!("notices.clear.notifications"))
+        .await
+    {
+        tracing::warn!(id, event_key, error = %e, "notices: best-effort notification retract failed");
+    }
     Ok(result.rows_affected() > 0)
 }
 
