@@ -25,8 +25,9 @@
 use crate::state::{AppState, StatusPayload};
 use meridian_core::SqlitePool;
 use serde::Serialize;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use tauri::State;
+use tauri::{Manager, State};
 
 /// The cached tray status (health + active session + today totals), read from
 /// the poll-loop-maintained [`AppState`]. Synchronous — just locks and snapshots.
@@ -50,18 +51,46 @@ pub async fn restart_daemon() -> Result<(), String> {
 /// [`crate::commands::pause`]'s capture-pause notice, so quiet-hours/master-
 /// switch policy applies identically.
 ///
-/// Start/stop goes through [`super::daemon_control`] (launchd on macOS, the
-/// scheduled task on Windows) rather than `launchctl` directly.
+/// Start/stop goes through [`crate::daemon_lifecycle`], **not**
+/// [`super::daemon_control::set_running`]. That is the fix for a toggle that
+/// never actually paused anything: `set_running(false)` runs `launchctl stop`,
+/// and the daemon's plist sets `KeepAlive=true`, so launchd restarted it after
+/// `ThrottleInterval` (30 s) while the menu went on reading "Disconnected ○".
+/// The same trap is documented from the other side in
+/// [`meridian::db::repair::marker`].
+///
+/// `AppState::daemon_paused` is set **before** the stop and cleared **before**
+/// the start, both on purpose. A paused daemon is `bootout`ed and so is
+/// indistinguishable from a crashed one, and [`crate::poll::watchdog`] probes
+/// every 5 s — flipping the flag second would leave a window in which the
+/// watchdog reads a deliberate pause as an outage and starts the daemon back up.
+/// A failed pause rolls the flag back rather than leaving the watchdog blinded
+/// to a daemon that is, in fact, still running.
 #[tauri::command]
 pub async fn toggle_daemon(
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     is_running: bool,
     db_pool: State<'_, Option<SqlitePool>>,
 ) -> Result<(), String> {
     let pool = db_pool.inner().clone();
+    let paused_flag = app
+        .state::<Arc<Mutex<AppState>>>()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .daemon_paused
+        .clone();
 
     // `is_running` is the CURRENT state, so pausing means "make it not running".
-    super::daemon_control::set_running(!is_running).await?;
+    if is_running {
+        paused_flag.store(true, Ordering::Relaxed);
+        if let Err(e) = crate::daemon_lifecycle::stop_for_pause().await {
+            paused_flag.store(false, Ordering::Relaxed);
+            return Err(e);
+        }
+    } else {
+        paused_flag.store(false, Ordering::Relaxed);
+        crate::daemon_lifecycle::resume_from_pause().await?;
+    }
 
     if let Some(p) = pool.as_ref() {
         let result = if is_running {

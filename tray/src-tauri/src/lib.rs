@@ -27,6 +27,7 @@ mod capture_ignore;
 mod commands;
 mod counter_ping;
 mod crash;
+mod daemon_lifecycle;
 mod db_key;
 mod deep_link;
 
@@ -930,8 +931,12 @@ pub fn run() {
             // that is confirmed stopped. It deliberately never signals a running
             // process — doing so on a slow probe corrupted `meridian.db` on
             // every macOS install. See `poll::watchdog` before changing it.
+            let watchdog_paused = {
+                let s = app_state.lock().expect("app state mutex poisoned");
+                s.daemon_paused.clone()
+            };
             tauri::async_runtime::spawn(async move {
-                poll::run_daemon_watchdog().await;
+                poll::run_daemon_watchdog(watchdog_paused).await;
             });
 
             // Launch-at-login: self-heal (once ever, see autostart.rs) so the
@@ -1146,7 +1151,44 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error running meridian tray")
-        .run(|_app, _event| {
+        .run(|app, event| {
+            // Quitting Meridian takes the daemon with it.
+            //
+            // It is a separate launchd/Task Scheduler process, so before this
+            // handler existed "Quit" left it polling, holding `meridian.db`
+            // open, and running the summariser's third-party LLM CLIs after the
+            // user had closed the app - and, worse, made the `db.corrupt`
+            // notice's own instructions impossible to follow, because
+            // `meridian db repair` refuses to run while the daemon is up.
+            //
+            // Handled here rather than in the menu item's "quit" arm so every
+            // way out is covered by one rule: the tray menu, the popover
+            // footer's Quit button (`commands::system::quit_app`), and macOS
+            // Cmd+Q (reachable once the dashboard has switched the activation
+            // policy to `Regular`). The first two call `AppHandle::exit`, which
+            // routes through this same event.
+            //
+            // The stop is async and the exit is not, hence `prevent_exit` +
+            // re-entry: `exit(0)` fires a second `ExitRequested`, which the
+            // latch lets through. See [`daemon_lifecycle`] for the rest,
+            // including why a restart must be exempt.
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
+                // This closure only ever runs on the event-loop thread, so the
+                // load/store pair cannot interleave with itself.
+                static STOPPING_DAEMON: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                let already = STOPPING_DAEMON.load(std::sync::atomic::Ordering::SeqCst);
+                if daemon_lifecycle::should_stop_daemon(*code, already) {
+                    STOPPING_DAEMON.store(true, std::sync::atomic::Ordering::SeqCst);
+                    api.prevent_exit();
+                    let handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        daemon_lifecycle::stop_for_quit().await;
+                        handle.exit(0);
+                    });
+                }
+            }
+
             // macOS: fires when the user re-activates the app externally
             // (Spotlight, dock click, `open -a Meridian`). The tray runs as an
             // Accessory app so there is no dock icon most of the time; without
@@ -1170,13 +1212,13 @@ pub fn run() {
             // flag would only matter if we wanted different behaviour for
             // "windows visible" vs "all minimised", which we don't.
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = _event {
+            if let tauri::RunEvent::Reopen { .. } = event {
                 let home = std::env::var("HOME").unwrap_or_default();
                 let onboarded = is_onboarded(std::path::Path::new(&home));
                 tracing::info!(onboarded, "app.reopen: routing external activation");
                 match reopen_target(onboarded) {
-                    ReopenTarget::Dashboard => tray::open_native_dashboard(_app),
-                    ReopenTarget::Wizard => tray::open_wizard_window(_app),
+                    ReopenTarget::Dashboard => tray::open_native_dashboard(app),
+                    ReopenTarget::Wizard => tray::open_wizard_window(app),
                 }
             }
         });
