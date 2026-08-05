@@ -78,8 +78,18 @@ pub fn spawn_health_listener() -> anyhow::Result<()> {
                     });
                 }
                 Err(e) => {
+                    // Log and keep serving. `break` here killed the health
+                    // endpoint for the rest of the process's life on ONE
+                    // transient error (EMFILE, ECONNABORTED): every later
+                    // probe failed, so the popover said "Not running" next to
+                    // a Restart button while capture ran fine, and only a
+                    // daemon restart healed it. Accept errors are per-attempt,
+                    // not per-listener - the next accept is independent. The
+                    // pause keeps a *persistent* error (fd exhaustion) from
+                    // spinning this loop hot while it lasts.
                     tracing::warn!(error = %e, "daemon.sock accept error");
-                    break;
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    continue;
                 }
             }
         }
@@ -204,5 +214,39 @@ pub async fn wait_for_shutdown() {
         _ = sigint.recv()  => tracing::info!("SIGINT received"),
         _ = sigterm.recv() => tracing::info!("SIGTERM received"),
         _ = sighup.recv()  => tracing::info!("SIGHUP received — reloading (graceful restart)"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// One transient `accept()` error must not kill the health endpoint for
+    /// the rest of the daemon's life. When this loop `break`s, the listener is
+    /// dropped, every later probe fails, and each UI surface tells the user
+    /// the daemon is down - next to a Restart button - while capture runs
+    /// fine. Only a daemon restart heals it, and nothing ever says why.
+    ///
+    /// A deterministic accept error cannot be provoked through a real
+    /// `UnixListener` from a test, so this pins the policy at the source
+    /// level: the error arm of the accept loop must `continue`, never `break`
+    /// (same convention as the UI's source-scanning guards, per TESTING.md's
+    /// "test what units cannot reach" rule).
+    #[test]
+    fn an_accept_error_must_not_end_the_health_listener() {
+        let src = include_str!("unix.rs");
+        let arm = src
+            .split("daemon.sock accept error")
+            .nth(1)
+            .expect("the accept-error arm exists");
+        // The policy lives in the ~120 chars after the warn line.
+        let policy = &arm[..arm.len().min(120)];
+        assert!(
+            !policy.contains("break"),
+            "the accept-error arm breaks the loop - one transient error would \
+             permanently kill the health endpoint: {policy}"
+        );
+        assert!(
+            policy.contains("continue"),
+            "the accept-error arm must continue serving: {policy}"
+        );
     }
 }
