@@ -931,12 +931,8 @@ pub fn run() {
             // that is confirmed stopped. It deliberately never signals a running
             // process — doing so on a slow probe corrupted `meridian.db` on
             // every macOS install. See `poll::watchdog` before changing it.
-            let watchdog_paused = {
-                let s = app_state.lock().expect("app state mutex poisoned");
-                s.daemon_paused.clone()
-            };
             tauri::async_runtime::spawn(async move {
-                poll::run_daemon_watchdog(watchdog_paused).await;
+                poll::run_daemon_watchdog().await;
             });
 
             // Launch-at-login: self-heal (once ever, see autostart.rs) so the
@@ -1168,24 +1164,31 @@ pub fn run() {
             // policy to `Regular`). The first two call `AppHandle::exit`, which
             // routes through this same event.
             //
-            // The stop is async and the exit is not, hence `prevent_exit` +
-            // re-entry: `exit(0)` fires a second `ExitRequested`, which the
-            // latch lets through. See [`daemon_lifecycle`] for the rest,
-            // including why a restart must be exempt.
+            // The stop is async and the exit is not, so the exit is held with
+            // `prevent_exit` and re-issued once the stop finishes. That makes
+            // "are we exiting?" three-state rather than a boolean - see
+            // [`daemon_lifecycle::ExitPhase`] for why a single latch was wrong,
+            // and why a restart must pass straight through.
             if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
-                // This closure only ever runs on the event-loop thread, so the
-                // load/store pair cannot interleave with itself.
-                static STOPPING_DAEMON: std::sync::atomic::AtomicBool =
-                    std::sync::atomic::AtomicBool::new(false);
-                let already = STOPPING_DAEMON.load(std::sync::atomic::Ordering::SeqCst);
-                if daemon_lifecycle::should_stop_daemon(*code, already) {
-                    STOPPING_DAEMON.store(true, std::sync::atomic::Ordering::SeqCst);
-                    api.prevent_exit();
-                    let handle = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        daemon_lifecycle::stop_for_quit().await;
-                        handle.exit(0);
-                    });
+                use daemon_lifecycle::{ExitAction, ExitPhase};
+                match daemon_lifecycle::decide_exit(*code, daemon_lifecycle::exit_phase()) {
+                    ExitAction::Proceed => {}
+                    // Something else is already stopping the daemon and will
+                    // issue the real exit. Just don't let this one through.
+                    ExitAction::Hold => api.prevent_exit(),
+                    ExitAction::HoldAndStop => {
+                        daemon_lifecycle::set_exit_phase(ExitPhase::Stopping);
+                        api.prevent_exit();
+                        let handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            daemon_lifecycle::stop_for_quit().await;
+                            // Immediately before the exit, so the re-entrant
+                            // `ExitRequested` this triggers is the one and only
+                            // one allowed through.
+                            daemon_lifecycle::set_exit_phase(ExitPhase::ReadyToExit);
+                            handle.exit(0);
+                        });
+                    }
                 }
             }
 

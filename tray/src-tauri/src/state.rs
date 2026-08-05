@@ -114,19 +114,6 @@ pub struct AppState {
     /// `capture_frames`. The flag is unconditional (not feature-gated) so the
     /// `pause_for_duration` command can always reference `AppState` cleanly.
     pub capture_paused: Arc<AtomicBool>,
-    /// Whether the user has paused the *daemon* from the tray's Connected /
-    /// Disconnected toggle. Distinct from [`Self::capture_paused`], which stops
-    /// the tray's own capture engine and leaves the daemon alone.
-    ///
-    /// An `Arc<AtomicBool>` rather than a plain field because the daemon
-    /// watchdog reads it every 5 s on its own task and must not contend for
-    /// (or be poisoned by) the `AppState` mutex to do it - the same reason
-    /// `capture_paused` is shaped this way for the capture consumers.
-    ///
-    /// Process-local and deliberately not persisted, matching the capture
-    /// pause: relaunching the tray resumes the daemon. See
-    /// [`crate::daemon_lifecycle`] for why.
-    pub daemon_paused: Arc<AtomicBool>,
     /// The user's capture ignore list (apps + website domains). Shared with the
     /// capture frame + UI-event consumers, which drop a matching frame before it
     /// is written to `capture_frames`/`capture_ui_events`. Unconditional (not
@@ -197,7 +184,6 @@ impl Default for AppState {
             tray_id: None,
             health: HealthStatus::Unknown,
             capture_paused: Arc::new(AtomicBool::new(false)),
-            daemon_paused: Arc::new(AtomicBool::new(false)),
             capture_ignore: Arc::new(Mutex::new(CaptureIgnore::default())),
             pause_until: None,
             pause_source: None,

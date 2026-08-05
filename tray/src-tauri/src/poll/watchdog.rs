@@ -196,12 +196,9 @@ async fn daemon_process_alive() -> Option<bool> {
 
 /// Probe every [`TICK`]; act only when [`decide`] says to.
 ///
-/// `daemon_paused` is `AppState::daemon_paused`, read fresh each tick so a
-/// pause or resume takes effect on the next one.
-///
 /// See the module docs for why this is far more conservative than it looks like
 /// it should be.
-pub async fn run_daemon_watchdog(daemon_paused: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+pub async fn run_daemon_watchdog() {
     let mut consecutive_failures: u32 = 0;
     let mut cooldown_until: Option<Instant> = None;
     let mut window_started = Instant::now();
@@ -217,7 +214,8 @@ pub async fn run_daemon_watchdog(daemon_paused: std::sync::Arc<std::sync::atomic
             gave_up = false;
         }
 
-        let paused = daemon_paused.load(std::sync::atomic::Ordering::Relaxed);
+        // Read fresh each tick, so a pause or resume takes effect on the next.
+        let paused = crate::daemon_lifecycle::is_paused();
 
         let probe_ok = crate::commands::daemon_control::probe().await.running;
         if probe_ok {

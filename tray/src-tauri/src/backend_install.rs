@@ -124,7 +124,7 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
             tracing::debug!(
                 "backend_install: no bundled backend (dev/source run) — skipping staging"
             );
-            ensure_daemon_running(&home).await;
+            crate::daemon_lifecycle::restore_unless_paused(&home).await;
             return;
         }
     };
@@ -134,7 +134,7 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
         Ok(h) => h,
         Err(e) => {
             tracing::warn!(error = %e, src = %daemon_src.display(), "backend_install: cannot hash bundled daemon");
-            ensure_daemon_running(&home).await;
+            crate::daemon_lifecycle::restore_unless_paused(&home).await;
             return;
         }
     };
@@ -145,7 +145,7 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
         // encrypt-in-place migration stops it earlier this launch (see lib.rs's
         // setup hook) to unlock meridian.db, and it can also simply crash. Bring
         // it back so a skipped *staging* never leaves a stopped *daemon*.
-        ensure_daemon_running(&home).await;
+        crate::daemon_lifecycle::restore_unless_paused(&home).await;
         return;
     }
 
@@ -190,7 +190,7 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
         // last-known-good daemon can usually still be started - and it has to
         // be, because quit boots the agent out and nothing else will bring it
         // back before the next launch (which may fail here again).
-        ensure_daemon_running(&home).await;
+        crate::daemon_lifecycle::restore_unless_paused(&home).await;
         return;
     }
     if let Some(p) = pool.as_ref() {
@@ -1325,7 +1325,7 @@ mod tests {
     use super::*;
 
     /// Every path out of [`ensure_backend_installed`] that could leave a daemon
-    /// down must call [`ensure_daemon_running`] first.
+    /// down must call [`crate::daemon_lifecycle::restore_unless_paused`] first.
     ///
     /// This is the other half of "quit stops the daemon"
     /// ([`crate::daemon_lifecycle`]) and it is the half with no natural failure
@@ -1351,7 +1351,7 @@ mod tests {
 
         // Every `return;` must be preceded by a restore. The one exception is
         // the path where `$HOME` itself could not be resolved - there is no
-        // `home` to hand `ensure_daemon_running`, and nothing it could do.
+        // `home` to hand the restore, and nothing it could do.
         let lines: Vec<&str> = body.lines().collect();
         let mut unguarded: Vec<usize> = Vec::new();
         for (i, line) in lines.iter().enumerate() {
@@ -1360,7 +1360,7 @@ mod tests {
             }
             let window = lines[i.saturating_sub(6)..i].join("\n");
             let guarded =
-                window.contains("ensure_daemon_running") || window.contains("cannot stage backend");
+                window.contains("restore_unless_paused") || window.contains("cannot stage backend");
             if !guarded {
                 unguarded.push(i);
             }
@@ -1368,9 +1368,9 @@ mod tests {
         assert!(
             unguarded.is_empty(),
             "every bail-out from ensure_backend_installed must call \
-             ensure_daemon_running first, or a quit leaves the daemon \
-             permanently down - a `bootout` survives both KeepAlive and the \
-             next login. Unguarded `return;` at body lines {unguarded:?}"
+             daemon_lifecycle::restore_unless_paused first, or a quit leaves \
+             the daemon permanently down - a `bootout` survives both KeepAlive \
+             and the next login. Unguarded `return;` at body lines {unguarded:?}"
         );
 
         // And the dev/source path specifically, since that is the one that
@@ -1381,8 +1381,19 @@ mod tests {
             .1;
         let dev_arm = dev_arm.split_once("};").map(|(a, _)| a).unwrap_or(dev_arm);
         assert!(
-            dev_arm.contains("ensure_daemon_running"),
+            dev_arm.contains("restore_unless_paused"),
             "the dev/source bail-out must restore the daemon before returning"
+        );
+
+        // ...and it must go through the pause gate, never call the raw start
+        // directly. A restore that skips the gate can start a daemon the user
+        // just paused, leaving a running daemon under a Paused label that the
+        // watchdog will not correct - because the pause flag is exactly what
+        // tells it to stand down.
+        assert!(
+            !body.contains("ensure_daemon_running(&home)"),
+            "restores must route through daemon_lifecycle::restore_unless_paused, \
+             not call ensure_daemon_running directly"
         );
     }
 

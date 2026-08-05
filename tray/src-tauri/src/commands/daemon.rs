@@ -25,9 +25,8 @@
 use crate::state::{AppState, StatusPayload};
 use meridian_core::SqlitePool;
 use serde::Serialize;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use tauri::{Manager, State};
+use tauri::State;
 
 /// The cached tray status (health + active session + today totals), read from
 /// the poll-loop-maintained [`AppState`]. Synchronous — just locks and snapshots.
@@ -59,36 +58,24 @@ pub async fn restart_daemon() -> Result<(), String> {
 /// The same trap is documented from the other side in
 /// [`meridian::db::repair::marker`].
 ///
-/// `AppState::daemon_paused` is set **before** the stop and cleared **before**
-/// the start, both on purpose. A paused daemon is `bootout`ed and so is
-/// indistinguishable from a crashed one, and [`crate::poll::watchdog`] probes
-/// every 5 s — flipping the flag second would leave a window in which the
-/// watchdog reads a deliberate pause as an outage and starts the daemon back up.
-/// A failed pause rolls the flag back rather than leaving the watchdog blinded
-/// to a daemon that is, in fact, still running.
+/// The paused flag and the OS call are sequenced inside
+/// [`crate::daemon_lifecycle`], under its lifecycle guard, rather than here.
+/// That matters: a paused daemon is `bootout`ed and so is indistinguishable
+/// from a crashed one, and both [`crate::poll::watchdog`] (every 5 s) and the
+/// installer's launch-time restore will start a daemon they believe is down.
+/// Sequencing them from the command would leave both races open.
 #[tauri::command]
 pub async fn toggle_daemon(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     is_running: bool,
     db_pool: State<'_, Option<SqlitePool>>,
 ) -> Result<(), String> {
     let pool = db_pool.inner().clone();
-    let paused_flag = app
-        .state::<Arc<Mutex<AppState>>>()
-        .lock()
-        .map_err(|e| e.to_string())?
-        .daemon_paused
-        .clone();
 
     // `is_running` is the CURRENT state, so pausing means "make it not running".
     if is_running {
-        paused_flag.store(true, Ordering::Relaxed);
-        if let Err(e) = crate::daemon_lifecycle::stop_for_pause().await {
-            paused_flag.store(false, Ordering::Relaxed);
-            return Err(e);
-        }
+        crate::daemon_lifecycle::stop_for_pause().await?;
     } else {
-        paused_flag.store(false, Ordering::Relaxed);
         crate::daemon_lifecycle::resume_from_pause().await?;
     }
 
