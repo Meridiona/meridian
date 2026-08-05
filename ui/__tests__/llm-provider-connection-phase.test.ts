@@ -282,3 +282,95 @@ describe('the chooser grid', () => {
     expect(picker).toContain("animation: 'spin 0.7s linear infinite'")
   })
 })
+
+describe('an already-working provider still releases the connect flow', () => {
+  const intel = src('components/timeline/settings/IntelligenceSection.tsx')
+  const modal = src('components/timeline/SettingsModal.tsx')
+
+  it('satisfies the lock on PROOF, not only on a fresh write', () => {
+    // `commit` used to be the only caller of `onConnected`, which assumed the user always
+    // arrives with nothing working and leaves having written a choice. When the provider in
+    // settings.json is already the right one and starts answering while they are on its
+    // screen - the auto-test passing, or a silent re-test after sign-in - `active` flips and
+    // LlmProviderDetail swaps the "Use <provider>" button for "<provider> is writing your
+    // summaries". No control is left to press, so the callback could never fire and the
+    // walkthrough waited forever on a screen that said everything was fine.
+    expect(intel).toContain("if (phase.kind !== 'ok') return")
+    expect(intel).toContain('handedBack.current = provider')
+    expect(intel).toContain('onConnected()')
+  })
+
+  it('decides "connected" with the same function the button does', () => {
+    // Restating the condition here would let this and the detail view's `active` drift, and
+    // the failure would be silent in the worst direction: a screen showing IN USE while the
+    // flow refuses to move on.
+    expect(intel).toContain("import { phaseFor } from '@/components/LlmProviderDetail'")
+  })
+
+  it('only hands back when the user was SENT here to connect', () => {
+    // `onConnected` releases the modal and drops the user into the planner. Under the gate
+    // that is the whole point; opening Settings from the toolbar to look at a provider that
+    // has worked for weeks must not do it.
+    expect(intel).toContain('if (!gate || !onConnected) return')
+  })
+
+  it('says the step is done before the screen moves', () => {
+    // Otherwise the modal just vanishes and the planner reappears - the user is never told
+    // the thing they were interrupted for is finished, or that the app is putting them back
+    // on purpose.
+    expect(modal).toContain('function ConnectedHandBack')
+    expect(modal).toContain("Great - that's your AI connected. Taking you back to your task…")
+    expect(modal).toContain('{outcome && lock && <ConnectedHandBack outcome={outcome} section={initialSection} />}')
+  })
+
+  it('holds that line long enough to read', () => {
+    expect(modal).toContain('const HAND_BACK_MS = 2200')
+    expect(modal).toContain('HAND_BACK_MS)')
+  })
+
+  it('gets out of the way faster when the answer was "I do not use one"', () => {
+    // That path owes the user a real explanation - you can still do all of this,
+    // with AI, right here - and it is given properly by the walkthrough on a
+    // full-screen card once the planner is back. Holding the modal for the full
+    // 2.2s first makes them read a cramped version and then read it again.
+    expect(modal).toContain('const DECLINE_HAND_BACK_MS = 1100')
+    expect(modal).toContain("outcome === 'declined' ? DECLINE_HAND_BACK_MS : HAND_BACK_MS")
+  })
+
+  it('uses a plain hyphen in the confirmation, like every other user-facing string', () => {
+    const line = modal.slice(modal.indexOf('Great - '), modal.indexOf('Taking you back') + 40)
+    expect(line).not.toMatch(/[—–]|--/)
+  })
+})
+
+describe('the resumed composer keeps the note and drafts it', () => {
+  const composer = src('components/plan/TaskComposer.tsx')
+  const store = src('components/plan/useTaskComposer.ts')
+
+  it('asks whether it is resuming once per MOUNT, not once per effect run', () => {
+    // `consumeResume` is one-shot, and `reactStrictMode` (next.config.ts) makes React run
+    // this effect, tear it down, and run it again on the same instance. The second run found
+    // the flag spent, took it for an ordinary open, and called `resetComposer()` - so the
+    // branch that exists to PRESERVE the note across the Settings detour was the thing that
+    // wiped it, and the draft never started. Connect a provider, land on an empty box.
+    expect(composer).toContain('const resuming = useRef<boolean | null>(null)')
+    expect(composer).toContain('if (resuming.current === null) resuming.current = consumeResume()')
+    expect(composer).toContain('if (resuming.current) {')
+  })
+
+  it('still resets on an ordinary open', () => {
+    // The guard must not turn into "never reset" - a half-typed task from an hour ago is
+    // still not what the user wants back when they open the composer fresh.
+    expect(composer).toContain('resetComposer()')
+  })
+
+  it('runs the draft the user already asked for, off the note it kept', () => {
+    expect(composer).toContain('if (s.note.trim()) draftFromNote()')
+  })
+
+  it('keeps the flag one-shot at the store, where that IS the contract', () => {
+    // The fix belongs in the consumer, not here: a flag that survived being read would
+    // re-trigger a draft on the next unrelated open.
+    expect(store).toContain('resumePending = false')
+  })
+})

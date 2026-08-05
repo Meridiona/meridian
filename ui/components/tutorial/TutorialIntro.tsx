@@ -128,7 +128,7 @@ export function TutorialIntro({ lines, onDone }: {
         }
         @keyframes mer-intro-word {
           from { opacity: 0; transform: translateY(9px); filter: blur(3px) }
-          to   { opacity: 1; transform: none;            filter: none }
+          to   { opacity: 1; transform: none;            filter: blur(0px) }
         }
       `}</style>
     </div>
@@ -153,7 +153,18 @@ function Line({ words, starts, lead }: { words?: string; starts?: number[]; lead
         <span key={i} style={{
           display: 'inline-block',
           marginRight: '0.26em',
-          animation: `mer-intro-word ${WORD_IN_MS}ms cubic-bezier(.2,.8,.25,1) ${starts[i]}ms both`,
+          // `backwards`, NOT `both`. The resting style below IS the animation's
+          // end state, so filling forwards buys nothing - and it costs the word
+          // a `filter` that stays applied for the rest of the card's life. A
+          // filtered element is its own composited layer in WebKit, rasterised
+          // once and then reused; the moment something makes the card repaint
+          // (the hold ending, the opacity dissolve, a window resize) the cached
+          // raster is scaled back up and the word goes soft. It reads as the
+          // last word blurring "after a while", because the last word is the one
+          // still on screen when the hold and the fade arrive. Filling backwards
+          // covers the delay with the blurred `from` and then releases the
+          // element entirely, so a landed word is plain text again.
+          animation: `mer-intro-word ${WORD_IN_MS}ms cubic-bezier(.2,.8,.25,1) ${starts[i]}ms backwards`,
         }}>{w}</span>
       ))}
     </p>

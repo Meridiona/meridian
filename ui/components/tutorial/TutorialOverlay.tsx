@@ -18,7 +18,25 @@
 // - `./engine.ts` — the primitives whose state this draws
 
 import { useEffect, useState } from 'react'
-import { centreOf, type StageChoice } from './engine'
+import { ProviderIcon } from '@/components/ProviderIcon'
+import { availableTrackers } from '@/lib/integrations'
+import { centreOf, tourTarget, type GhostCard, type StageChoice } from './engine'
+
+/** Where the un-anchored narration bar sits, measured from the top of the viewport.
+ *
+ *  Sized to clear a modal's own title row rather than cover it: `ModalShell` insets the
+ *  panel by `p-10` (40px) and its header is `py-5` around a single line, so the header
+ *  ends near 104px. Landing on top of that would hide the modal's title and its × - the
+ *  two things a user orients by, and the × is a control later beats actually wait on.
+ *  With no modal open there is nothing at this height either, so one constant serves
+ *  both cases. */
+const HEADER_CLEAR = 116
+
+/** Gap between the anchored bubble and its target, and a generous guess at the
+ *  bubble's own height (three lines plus a row of choices). Shared by
+ *  `AnchoredCaption` and the fits-beside test that decides whether to use it. */
+const CAPTION_GAP = 16
+const CAPTION_H = 130
 
 /** Follows `selector` across scroll/resize so the ring and cursor stay put when
  *  the page moves under them. `null` parks both offscreen without unmounting,
@@ -42,24 +60,52 @@ function useAnchor(selector: string | null) {
 }
 
 /** Box of `selector` in viewport coords, tracked the same way as `useAnchor`. */
-function useRect(selector: string | null) {
-  const [rect, setRect] = useState<DOMRect | null>(null)
+/** Track a tour target's box, and whether it is CURRENTLY the thing being rung.
+ *
+ *  Two values, not one, and that split is what makes the ring glide instead of
+ *  teleport. The script clears the spotlight between almost every pair of beats
+ *  (`spotlight(x)` … `spotlight(null)` … `spotlight(y)`), and this used to answer
+ *  `null` the instant that happened - which unmounted the ring, so the next beat
+ *  mounted a brand-new element at the new coordinates. A freshly mounted element
+ *  has nothing to transition FROM, so its `transition` was dead on arrival and
+ *  every move was a hard cut, however long the duration said.
+ *
+ *  So the last known box SURVIVES the clear; only `live` goes false. The ring
+ *  stays mounted at its old geometry, fades out, and when the next target
+ *  arrives it animates across to it. `live` is what the caption logic reads,
+ *  because "is something rung right now" is a different question from "where was
+ *  the last thing rung". */
+function useRect(selector: string | null): { rect: DOMRect | null; live: boolean } {
+  const [state, setState] = useState<{ rect: DOMRect | null; live: boolean }>({ rect: null, live: false })
   useEffect(() => {
-    if (!selector) { setRect(null); return }
+    if (!selector) { setState((s) => (s.live ? { rect: s.rect, live: false } : s)); return }
     let raf = 0
     const tick = () => {
-      const el = document.querySelector(selector)
-      setRect(el ? el.getBoundingClientRect() : null)
+      // Surface-scoped: the real dashboard is still mounted under the replica
+      // and carries the same hooks, so a bare query rings the hidden original.
+      const el = tourTarget(selector)
+      const r = el ? el.getBoundingClientRect() : null
+      setState((s) => (r ? { rect: r, live: true } : s.live ? { rect: s.rect, live: false } : s))
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
   }, [selector])
-  return rect
+  return state
 }
 
-export function TutorialOverlay({ caption, centered, cursorAt, clicking, spotlight, spotlightDim, awaiting, choices, onChoose, onSkip }: {
+export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, cursorPoint, ghost, clicking, spotlight, spotlightDim, awaiting, choices, onChoose, onSkip, onSkipToDay = null }: {
   caption: string
+  /** Render the top narration bar at headline size. Set for the whole of the day
+   *  replay, which is the one stretch of the tour the user WATCHES rather than
+   *  reads-then-acts - the ordinary bar is sized to sit quietly beside a control
+   *  and disappears next to a nine-hour animation. */
+  big: boolean
+  /** Put confetti above a centred beat. Exactly one beat uses it, and that is the
+   *  point: a tour that celebrates every step celebrates nothing. This one marks
+   *  the moment the user has finished giving Meridian anything - everything after
+   *  it is the product showing what it does back. */
+  celebrate: boolean
   /** Render the narration as a CENTRED card rather than the bottom bubble.
    *  Used for the opening and closing beats, which are addressed to the user
    *  rather than to something on screen — a small bubble tucked at the bottom
@@ -67,6 +113,12 @@ export function TutorialOverlay({ caption, centered, cursorAt, clicking, spotlig
    *  for "welcome, here is what we are about to do". */
   centered: boolean
   cursorAt: string | null
+  /** An explicit viewport point for the cursor, overriding `cursorAt`. Set only
+   *  by `Stage.demoDrag`, which has to steer it to a spot inside a drop zone
+   *  rather than to the centre of some element. */
+  cursorPoint: { x: number; y: number } | null
+  /** A clone of a real card, mid-flight across the screen. See `GhostCard`. */
+  ghost: GhostCard | null
   clicking: boolean
   spotlight: string | null
   /** Blur and darken everything except the spotlit element, and swallow clicks
@@ -75,19 +127,65 @@ export function TutorialOverlay({ caption, centered, cursorAt, clicking, spotlig
   /** True while a beat has handed control over — drives the "your turn" cue on
    *  the spotlight so a waiting user knows the app expects something of them. */
   awaiting: boolean
-  /** Answers to the question in `caption`, when a beat is asking one. Rendered
-   *  inside the caption bubble rather than as a separate dialog: the question is
-   *  the narration, and splitting them would put two competing focal points on
-   *  screen at once. */
+  /** Answers to the question in `caption`, when a beat is asking one. Always
+   *  rendered with the caption, never as a detached dialog — the question and its
+   *  answers are one thing, and separating them puts two focal points on screen.
+   *  Which surface they land on is `centered`'s call: a real question centres and
+   *  takes the screen, a one-button "carry on" stays inline. */
   choices: StageChoice[] | null
   onChoose: (value: string) => void
   onSkip: () => void
+  /** DEV ONLY: jump to part two. `null` in a packaged build, where the pill is
+   *  not rendered - see the button below. */
+  onSkipToDay?: (() => void) | null
 }) {
-  const cursor = useAnchor(cursorAt)
-  const ring = useRect(spotlight)
+  // A centred beat owns the whole screen: the scrim below hides the page, so a
+  // ring drawn around something nobody can see and a cursor gliding toward it
+  // are pure noise on top of a question. Suppressed at the source rather than
+  // per-element so the anchored caption cannot resurface either.
+  const anchored = useAnchor(centered || cursorPoint ? null : cursorAt)
+  const cursor = centered ? null : (cursorPoint ?? anchored)
+  // `ringBox` is where the ring IS (kept across a clear, so it can glide to the
+  // next target); `ring` is what is being rung right NOW, which is the question
+  // every caption decision below is asking.
+  const { rect: ringBox, live: ringLive } = useRect(centered ? null : spotlight)
+  const ring = ringLive ? ringBox : null
+  // Can the bubble actually park beside this target? For an ordinary control
+  // yes, and the anchored variant is always right. For a target that fills the
+  // window - the beat that rings the WHOLE day view - there is no room above and
+  // "below" is off the bottom of the screen, so the anchored caption renders
+  // where nobody can read it and the beat looks like it stopped narrating.
+  // Those fall back to the top bar, which is the variant for beats with nothing
+  // small to point at, and is exactly what a whole-screen ring is.
+  const ringFits = ring !== null && (ring.top - CAPTION_GAP - CAPTION_H > 0
+    || ring.bottom + CAPTION_GAP + CAPTION_H < window.innerHeight)
 
   return (
     <div className="fixed inset-0" style={{ zIndex: 9000, pointerEvents: 'none' }}>
+      {/* The card being dragged, under the cursor and over everything else.
+          A CLONE of the real row's markup rather than a drawn stand-in: the board
+          holds the user's own tickets, and a demonstration that flies a made-up
+          card across their screen is showing them someone else's data. Inert -
+          `pointer-events: none` on the wrapper - so it cannot intercept the drop
+          it is illustrating. */}
+      {ghost && (
+        <div style={{
+          position: 'absolute', left: ghost.left, top: ghost.top,
+          width: ghost.width, height: ghost.height,
+          transform: `translate(${ghost.dx}px, ${ghost.dy}px) rotate(${ghost.dx || ghost.dy ? -1.6 : 0}deg) scale(1.02)`,
+          // Matched to the cursor's transition exactly, so the card stays under
+          // the pointer for the whole trip instead of arriving before or after it.
+          transition: 'transform 1s cubic-bezier(.2,.8,.25,1)',
+          boxShadow: '0 22px 44px -14px rgba(40,30,90,0.45)',
+          borderRadius: 8, overflow: 'hidden',
+          opacity: 0.97, pointerEvents: 'none',
+        }}>
+          {/* Our own markup, one frame old - not user input, and never rendered
+              anywhere the user could have authored the HTML. */}
+          <div dangerouslySetInnerHTML={{ __html: ghost.html }} />
+        </div>
+      )}
+
       {/* The dimmed variant: four blurred panels fenced around the target,
           leaving it sharp, lit and the only clickable thing on screen.
           Rendered BEFORE the ring and cursor so those stay crisp on top. */}
@@ -96,15 +194,25 @@ export function TutorialOverlay({ caption, centered, cursorAt, clicking, spotlig
       {/* Spotlight — a ring around the real control. On its own (the default)
           it adds no scrim at all: the target stays fully interactive because
           this sits above it but takes no pointer events. */}
-      {ring && (
+      {/* MOUNTED FOR THE WHOLE RUN once the first beat has rung anything, and
+          hidden with opacity rather than removed. Unmounting was what made every
+          move a hard cut: the ring the next beat drew was a different element,
+          with no previous geometry to animate away from. Geometry moves slower
+          than the fade so a beat-to-beat hop reads as one object travelling,
+          while the fade keeps it from streaking across the screen when the next
+          target is on the other side of the window. */}
+      {ringBox && (
         <div className="absolute" style={{
-          left: ring.left - 6, top: ring.top - 6,
-          width: ring.width + 12, height: ring.height + 12,
+          left: ringBox.left - 6, top: ringBox.top - 6,
+          width: ringBox.width + 12, height: ringBox.height + 12,
           borderRadius: 18,
           border: `2px solid var(--color-state-proposal)`,
           boxShadow: '0 0 0 4px color-mix(in srgb, var(--color-state-proposal) 22%, transparent)',
-          transition: 'all .28s cubic-bezier(.2,.8,.25,1)',
-          animation: awaiting ? 'mer-tour-pulse 1.6s ease-in-out infinite' : undefined,
+          opacity: ringLive ? 1 : 0,
+          transition: 'left .5s cubic-bezier(.22,1,.32,1), top .5s cubic-bezier(.22,1,.32,1),'
+            + ' width .5s cubic-bezier(.22,1,.32,1), height .5s cubic-bezier(.22,1,.32,1),'
+            + ' opacity .3s ease',
+          animation: awaiting && ringLive ? 'mer-tour-pulse 1.6s ease-in-out infinite' : undefined,
         }} />
       )}
 
@@ -137,24 +245,63 @@ export function TutorialOverlay({ caption, centered, cursorAt, clicking, spotlig
       {/* Narration, pinned bottom-centre so it never covers the timeline column
           or the right panel the beats point at. */}
       {caption && centered && (
+        // A real scrim, not a tint. At 45%/2px the planner behind stayed legible
+        // and the card read as one more panel floating over a busy screen - so a
+        // question meant to stop the user competed with the board they were
+        // already reading. Opaque enough that there is nothing else to look at,
+        // with the blur doing the rest: the page is still THERE (this is a pause,
+        // not a navigation) but it has nothing left to say.
         <div className="absolute inset-0 flex items-center justify-center p-10"
-          style={{ background: 'rgba(20,16,40,0.45)', backdropFilter: 'blur(2px)', pointerEvents: 'auto' }}>
+          style={{
+            // A LITERAL rgba, not a token. `--win-bg` is a linear-gradient, so
+            // `color-mix(in srgb, var(--win-bg) …)` is invalid, the declaration is
+            // dropped whole, and the scrim silently disappears - leaving only the
+            // blur, which washes the page without hiding it. Same base colour as
+            // `ModalShell`'s 0.5 backdrop, taken far darker because this one has to
+            // cover an open modal rather than the page behind it.
+            background: 'rgba(20,16,40,0.88)',
+            backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)',
+            pointerEvents: 'auto',
+            animation: 'mer-tour-dim .28s ease both',
+          }}>
           <div className="mer-pop text-center" style={{
-            maxWidth: 520, padding: '30px 34px 26px', borderRadius: 20,
+            // Wider when the answers carry artwork - two illustrated cards side by
+            // side need the room, and at 520 they wrapped to a column, which read
+            // as a list of options rather than as a fork.
+            maxWidth: choices?.some(c => c.art) ? 640 : 520,
+            padding: '30px 34px 26px', borderRadius: 20,
             background: 'var(--t-card)',
             border: '0.5px solid var(--t-card-border)',
             boxShadow: 'var(--mt-modal-shadow)',
           }}>
+            {celebrate && <Confetti />}
             {/* No eyebrow label. The centred card is used for the closing beat,
                 where a "Getting started" tag contradicts the sentence under it —
                 and the opening is now the full-screen title sequence, which
                 frames the tour far better than a two-word tag ever did. */}
-            <p style={{ fontSize: 17, lineHeight: 1.45, color: 'var(--t-title)', textWrap: 'pretty' }}>
+            {/* Deliberately the SAME spec as `TutorialIntro`'s lead line, not a
+                size picked for this card: the title sequence is the last type the
+                user saw, and the tour's own voice should not change font halfway
+                through. Off-scale sizes with no tracking were what made this read
+                as a different product from the page under it. */}
+            <p style={{
+              font: '600 19px/1.4 var(--font-sans)', letterSpacing: '-.01em',
+              color: 'var(--t-title)', textWrap: 'pretty',
+            }}>
               {caption}
             </p>
             {choices && choices.length > 0 && (
-              <div className="flex gap-2 mt-5 justify-center flex-wrap">
-                {choices.map((c, i) => <ChoiceButton key={c.value} choice={c} primary={i === 0} onChoose={onChoose} />)}
+              <div className="flex gap-3 mt-6 justify-center flex-wrap">
+                {/* Illustrated answers are NEVER primary-filled. `primary` styles
+                    the first option forward, which is fine for a "carry on"
+                    button and wrong for a fork: a violet card beside a plain one
+                    makes the plain one read as the wrong answer, and the artwork
+                    would be sitting on a solid accent besides. Two equal cards is
+                    also the honest rendering - the tour has no view on which the
+                    user is. */}
+                {choices.map((c, i) => (
+                  <ChoiceButton key={c.value} choice={c} primary={i === 0 && !c.art} onChoose={onChoose} />
+                ))}
               </div>
             )}
           </div>
@@ -167,9 +314,16 @@ export function TutorialOverlay({ caption, centered, cursorAt, clicking, spotlig
           surface it is talking about entirely. Parked directly above the target,
           the sentence and the thing it names are one glance. The bottom bubble
           survives only for beats with nothing to point at. */}
-      {caption && !centered && ring && (
+      {caption && !centered && ring && ringFits && (
         <AnchoredCaption rect={ring}>
-          <p style={{ fontSize: 13.5, lineHeight: 1.45, color: 'var(--t-title)', textWrap: 'pretty' }}>
+          {/* Keyed on the text so a new sentence re-runs the fade. Without it the
+              words swapped in place between beats - the bubble stayed put and its
+              contents simply became different, which is the change the eye is
+              least likely to notice and most likely to find abrupt. */}
+          <p key={caption} className="mt-body" style={{
+            color: 'var(--t-card)', textWrap: 'pretty',
+            animation: 'mer-tour-say .3s cubic-bezier(.2,.8,.25,1) both',
+          }}>
             {caption}
           </p>
           {choices && choices.length > 0 && (
@@ -180,16 +334,44 @@ export function TutorialOverlay({ caption, centered, cursorAt, clicking, spotlig
         </AnchoredCaption>
       )}
 
-      {caption && !centered && !ring && (
-        <div className="absolute left-1/2 mer-pop" style={{
-          bottom: 26, transform: 'translateX(-50%)', pointerEvents: 'auto',
-          maxWidth: 620,
-          padding: '13px 18px', borderRadius: 15,
-          background: 'var(--t-card)',
-          border: '0.5px solid var(--t-card-border)',
-          boxShadow: 'var(--pop-shadow)',
+      {/* The un-anchored bubble — beats with nothing to point at.
+          AT THE TOP, AND DELIBERATELY NOT A CARD. Two separate problems, one
+          box. It used to sit at `bottom: 26`, which on a tall modal put the
+          instruction below everything it was talking about: the user read the
+          last thing on screen first, and on the plan modal it landed under the
+          board, well outside the reading path. And it was `--t-card` on a
+          `--t-card` modal with a hairline border - a white box on white, which
+          is what makes it hard to read rather than merely low.
+          So it moves to the top of the reading order, and it stops pretending
+          to be part of the page: an opaque, inverted surface that reads as the
+          GUIDE talking, distinct from every real card under it. `HEADER_CLEAR`
+          keeps it off the modal's own title row and × instead of covering the
+          controls the next beat may need.
+          The ANCHORED variant above is untouched: it parks beside its target on
+          purpose, and moving it up here would put the sentence and the thing it
+          names at opposite ends of the screen. */}
+      {caption && !centered && !(ring && ringFits) && (
+        // TWO divs, and they cannot be collapsed into one. `.mer-pop` animates
+        // `transform` with fill `both`, so it OVERWRITES an inline
+        // `translateX(-50%)` for the element's whole life - the bar rendered half
+        // its own width to the right of centre, overlapping the modal beside it.
+        // Centring lives on the outer div, the animation on the inner, so the two
+        // transforms stop fighting over one property.
+        <div className="absolute" style={{
+          top: HEADER_CLEAR, left: '50%', transform: 'translateX(-50%)',
+          pointerEvents: 'auto', maxWidth: big ? 760 : 620,
         }}>
-          <p style={{ fontSize: 13.5, lineHeight: 1.45, color: 'var(--t-title)', textWrap: 'pretty' }}>
+        <div className="mer-pop" style={{
+          padding: big ? '18px 28px' : '13px 18px', borderRadius: big ? 19 : 15,
+          background: 'var(--t-title)',
+          border: '0.5px solid var(--t-title)',
+          boxShadow: '0 10px 30px rgba(0,0,0,.28)',
+        }}>
+          <p key={caption} className={big ? undefined : 'mt-body'} style={{
+            color: 'var(--t-card)', textWrap: 'pretty',
+            animation: 'mer-tour-say .3s cubic-bezier(.2,.8,.25,1) both',
+            ...(big ? { font: '700 21px/1.35 var(--font-sans)', letterSpacing: '-.015em', textAlign: 'center' } : null),
+          }}>
             {caption}
           </p>
           {choices && choices.length > 0 && (
@@ -197,6 +379,7 @@ export function TutorialOverlay({ caption, centered, cursorAt, clicking, spotlig
               {choices.map((c, i) => <ChoiceButton key={c.value} choice={c} primary={i === 0} onChoose={onChoose} />)}
             </div>
           )}
+        </div>
         </div>
       )}
 
@@ -206,14 +389,34 @@ export function TutorialOverlay({ caption, centered, cursorAt, clicking, spotlig
           An escape hatch that relocates, or disappears exactly when a confused
           user reaches for it, is not an escape hatch. Fixed top-right, present
           for the entire run. */}
-      <button onClick={onSkip} className="absolute" style={{
+      <button onClick={onSkip} className="absolute mt-body-sm" style={{
         top: 14, right: 16, pointerEvents: 'auto',
-        fontSize: 12, color: 'var(--t-muted)', cursor: 'pointer',
+        color: 'var(--t-muted)', cursor: 'pointer',
         padding: '6px 13px', borderRadius: 99,
         background: 'var(--t-card)',
         border: '0.5px solid var(--t-card-border)',
         boxShadow: 'var(--pop-shadow)',
       }}>Skip tour</button>
+
+      {/* DEV ONLY - `null` in a packaged build, so this is not rendered at all.
+          Jumps straight to part two (the timeline rebuilding itself), because
+          reaching that half honestly costs a daily plan, an OAuth round-trip and
+          a provider install, which is how a walkthrough stops getting edited.
+          It is NOT shipped: it skips the compulsory AI-connect step the rest of
+          the product depends on.
+          Parked to the LEFT of Skip rather than beside it in a group: Skip is a
+          fixed landmark for the whole run (see above), and a dev control that
+          shifts it would move the real escape hatch every time the build changes. */}
+      {onSkipToDay && (
+        <button onClick={onSkipToDay} className="absolute mt-body-sm" style={{
+          top: 14, right: 116, pointerEvents: 'auto',
+          color: 'var(--color-state-proposal)', cursor: 'pointer',
+          padding: '6px 13px', borderRadius: 99,
+          background: 'var(--t-card)',
+          border: '0.5px dashed color-mix(in srgb, var(--color-state-proposal) 55%, transparent)',
+          boxShadow: 'var(--pop-shadow)',
+        }}>Skip to the day</button>
+      )}
 
       <style>{`
         @keyframes mer-tour-pulse {
@@ -221,9 +424,32 @@ export function TutorialOverlay({ caption, centered, cursorAt, clicking, spotlig
           50%     { box-shadow: 0 0 0 9px color-mix(in srgb, var(--color-state-proposal) 8%, transparent); }
         }
         @keyframes mer-tour-dim { from { opacity: 0 } to { opacity: 1 } }
+        @keyframes mer-tour-rise {
+          from { opacity: 0; transform: translateY(9px) scale(.94) }
+          to   { opacity: 1 }
+        }
+        @keyframes mer-tour-party {
+          0%   { opacity: 0; transform: scale(.4) rotate(-18deg) }
+          55%  { opacity: 1; transform: scale(1.16) rotate(6deg) }
+          100% { opacity: 1; transform: scale(1) rotate(0) }
+        }
+        @keyframes mer-tour-fleck {
+          0%   { opacity: 0; transform: translate(0,0) rotate(0) }
+          22%  { opacity: 1 }
+          100% { opacity: 0; transform: translate(var(--dx), var(--dy)) rotate(var(--rot)) }
+        }
         @keyframes mer-tour-ping {
           from { transform: scale(.6); opacity: .9 }
           to   { transform: scale(1.5); opacity: 0 }
+        }
+        /* One sentence giving way to the next. Small on purpose: the bubble does
+           not move, so anything larger reads as the bubble itself jumping. */
+        @keyframes mer-tour-say {
+          from { opacity: 0; transform: translateY(4px) }
+          to   { opacity: 1; transform: none }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          [style*="mer-tour-say"] { animation: none !important }
         }
       `}</style>
     </div>
@@ -233,18 +459,28 @@ export function TutorialOverlay({ caption, centered, cursorAt, clicking, spotlig
 /** A caption bubble parked against `rect` — ABOVE it by preference, below when
  *  there is not enough room above, and clamped so it never runs off either edge.
  *
- *  Above is the default because these captions are instructions for the thing
- *  underneath: read the line, then act on what it is sitting on. Below puts the
- *  words in the path of whatever the control opens or fills, and on a field it
- *  is where the caret and any validation text already are. */
+ *  BELOW whenever below fits; above only when it does not.
+ *
+ *  This used to prefer above, on the reasoning that a caption is an instruction
+ *  for the thing underneath it - read the line, then act on what it sits on.
+ *  That reads well for a lone button, and badly for anything with a heading,
+ *  which is most of the product: the space immediately above a labelled block is
+ *  occupied by the label, so "above" reliably covers the one word naming what the
+ *  caption is talking about. Both detail-panel beats hit this - the bubble
+ *  explaining WHEN sat on top of the words "When you did it".
+ *
+ *  Below is empty far more often, and where it is not, what it covers is content
+ *  the beat has not got to yet rather than the title of what it is discussing.
+ *  Controls near the bottom of the window still flip up, since below genuinely
+ *  does not fit there. */
 function AnchoredCaption({ rect, children }: { rect: DOMRect; children: React.ReactNode }) {
   const W = 330
-  const GAP = 16
+  const GAP = CAPTION_GAP
   const vw = typeof window === 'undefined' ? 1200 : window.innerWidth
   const vh = typeof window === 'undefined' ? 800 : window.innerHeight
-  // 130px is a generous guess at the tallest this bubble gets (three lines plus
-  // a row of choices).
-  const above = rect.top - GAP - 130 > 0
+  const fitsAbove = rect.top - GAP - CAPTION_H > 0
+  const fitsBelow = rect.bottom + GAP + CAPTION_H < vh
+  const above = fitsAbove && !fitsBelow
   const left = Math.min(Math.max(12, rect.left + rect.width / 2 - W / 2), vw - W - 12)
   return (
     <div className="absolute mer-pop" style={{
@@ -252,10 +488,18 @@ function AnchoredCaption({ rect, children }: { rect: DOMRect; children: React.Re
       ...(above ? { bottom: vh - rect.top + GAP } : { top: rect.bottom + GAP }),
       pointerEvents: 'auto',
       padding: '13px 16px', borderRadius: 15,
-      background: 'var(--t-card)',
-      border: '0.5px solid var(--t-card-border)',
-      boxShadow: 'var(--mt-modal-shadow)',
-      transition: 'top .28s cubic-bezier(.2,.8,.25,1), bottom .28s cubic-bezier(.2,.8,.25,1), left .28s cubic-bezier(.2,.8,.25,1)',
+      // THE GUIDE'S SURFACE, not the page's. This was `--t-card` on a `--t-card`
+      // page - a white box on white, with a hairline holding it apart - so the
+      // narration read as one more panel of the product rather than as the tour
+      // talking. The top bar was inverted for exactly this reason and the two
+      // variants disagreed; now the tour has one voice wherever it speaks.
+      background: 'var(--t-title)',
+      border: '0.5px solid var(--t-title)',
+      boxShadow: '0 10px 30px rgba(0,0,0,.28)',
+      // Matched to the ring's own travel, so the bubble and the thing it is
+      // parked against arrive together rather than one chasing the other.
+      transition: 'top .5s cubic-bezier(.22,1,.32,1), bottom .5s cubic-bezier(.22,1,.32,1),'
+        + ' left .5s cubic-bezier(.22,1,.32,1)',
     }}>{children}</div>
   )
 }
@@ -282,9 +526,17 @@ function DimCutout({ rect }: { rect: DOMRect }) {
   const pane: React.CSSProperties = {
     position: 'absolute',
     pointerEvents: 'auto',
-    background: 'color-mix(in srgb, var(--win-bg) 55%, transparent)',
+    // Literal rgba for the same reason as the centred scrim: `--win-bg` is a
+    // gradient, so a `color-mix` against it is invalid and drops the declaration
+    // outright. This read as "blur only, no dimming" for as long as it has
+    // existed - the panes were doing half their job silently.
+    background: 'rgba(20,16,40,0.42)',
     backdropFilter: 'blur(5px)',
     WebkitBackdropFilter: 'blur(5px)',
+    // The panes travel with the hole rather than being re-laid instantly, so a
+    // dimmed beat handing over to the next one reads as the light moving.
+    transition: 'left .5s cubic-bezier(.22,1,.32,1), top .5s cubic-bezier(.22,1,.32,1),'
+      + ' width .5s cubic-bezier(.22,1,.32,1), height .5s cubic-bezier(.22,1,.32,1)',
     animation: 'mer-tour-dim .45s ease both',
   }
   return (
@@ -305,22 +557,126 @@ function ChoiceButton({ choice, primary, onChoose }: {
   primary: boolean
   onChoose: (value: string) => void
 }) {
+  const art = choice.art
   return (
     <button onClick={() => onChoose(choice.value)}
-      className="text-left mt-card-hover"
+      className={`mt-card-hover ${art ? 'text-center' : 'text-left'}`}
       style={{
-        padding: '9px 16px', borderRadius: 11, cursor: 'pointer',
+        padding: art ? '20px 18px 16px' : '9px 16px',
+        borderRadius: art ? 16 : 11, cursor: 'pointer',
+        ...(art ? { width: 254, maxWidth: '100%' } : null),
         background: primary ? 'var(--color-state-proposal)' : 'var(--t-box)',
         color: primary ? '#fff' : 'var(--t-title)',
         border: primary ? 'none' : '1px solid var(--t-card-border)',
       }}>
-      <span style={{ display: 'block', fontSize: 13, fontWeight: 700 }}>{choice.label}</span>
+      {art && <ChoiceArt kind={art} />}
+      {/* Card-title + body-sm, the same pair every real card in the app uses for
+          a heading over its supporting line — so an answer here looks like
+          something the product offers, not like tour chrome. */}
+      <span className="mt-card-title" style={{ display: 'block' }}>{choice.label}</span>
       {choice.hint && (
-        <span style={{
-          display: 'block', fontSize: 11.5, marginTop: 1,
+        <span className="mt-body-sm" style={{
+          display: 'block', marginTop: art ? 4 : 2,
           color: primary ? 'rgba(255,255,255,.82)' : 'var(--t-muted)',
         }}>{choice.hint}</span>
       )}
     </button>
+  )
+}
+
+/** The one celebration in the tour: a 🎉 that pops in, with a scatter of flecks
+ *  thrown off it.
+ *
+ *  Flecks are plain coloured rectangles rather than more emoji - a burst of
+ *  party-poppers reads as a template, and the coloured paper reads as the app's
+ *  own. Each one's throw is derived from its index, not randomised, so the burst
+ *  is identical on every run and on a replay: a first-run screen that looks
+ *  different each time it is seen is a first-run screen that looks unfinished. */
+function Confetti() {
+  const HUES = ['var(--color-state-proposal)', 'var(--color-state-approved)', 'var(--color-state-pending)']
+  return (
+    <span className="relative block mx-auto mb-4" style={{ width: 74, height: 62 }} aria-hidden>
+      {Array.from({ length: 12 }, (_, i) => {
+        const a = (i / 12) * Math.PI * 2
+        return (
+          <span key={i} className="absolute" style={{
+            left: 35, top: 26, width: 6, height: 9, borderRadius: 1.5,
+            background: HUES[i % HUES.length],
+            // Custom properties feed the keyframes, so twelve flecks share one
+            // animation rather than needing twelve of them.
+            ['--dx' as string]: `${Math.cos(a) * 62}px`,
+            ['--dy' as string]: `${Math.sin(a) * 62 - 18}px`,
+            ['--rot' as string]: `${i * 63}deg`,
+            animation: `mer-tour-fleck 1.15s cubic-bezier(.2,.7,.3,1) ${180 + (i % 4) * 60}ms both`,
+          }} />
+        )
+      })}
+      <span className="absolute" style={{
+        left: 0, right: 0, top: 0, fontSize: 46, lineHeight: '58px',
+        animation: 'mer-tour-party .62s cubic-bezier(.2,.9,.25,1) both',
+      }}>🎉</span>
+    </span>
+  )
+}
+
+/** The illustration above an answer's label.
+ *
+ *  REAL BRAND MARKS, not a generic clipboard glyph. The whole point is that
+ *  someone who lives in Jira recognises their own tool before they have read
+ *  anything — a made-up "board" icon would be one more abstraction to decode, and
+ *  we already ship the actual logos for the ticket lists (`ProviderIcon`).
+ *
+ *  Both variants are the same construction (a floating tile, or three of them)
+ *  so the two answers read as a matched pair rather than as one illustrated
+ *  option beside a decorated one. The stagger is what makes it read as a
+ *  deliberate flourish rather than as three images loading. */
+function ChoiceArt({ kind }: { kind: NonNullable<StageChoice['art']> }) {
+  const tile: React.CSSProperties = {
+    background: 'var(--t-card)',
+    border: '1px solid var(--t-card-border)',
+    boxShadow: '0 8px 18px -10px rgba(40,30,90,.5)',
+  }
+  // DERIVED, never a hardcoded triple. This is a first-run screen showing brand
+  // marks as an offer, so a logo here for something you cannot actually connect
+  // is the worst kind of wrong - the user picks this card BECAUSE they saw their
+  // tool, then finds it greyed out as "Coming soon" two beats later. Linear is
+  // flagged exactly that way today.
+  const offered = availableTrackers()
+  return (
+    <span className="flex items-end justify-center gap-2 mb-3.5" style={{ height: 46 }}>
+      {kind === 'trackers'
+        ? offered.map((t, i) => (
+          <span key={t.id} className="inline-flex items-center justify-center rounded-xl" style={{
+            ...tile, width: 40, height: 40,
+            // The middle one sits slightly proud, so an odd row reads as a group
+            // rather than as a toolbar. An even row stays level - raising one of a
+            // pair just looks like a mistake.
+            transform: offered.length % 2 === 1 && i === (offered.length - 1) / 2 ? 'translateY(-5px)' : undefined,
+            animation: `mer-tour-rise .5s cubic-bezier(.2,.8,.25,1) ${i * 90}ms both`,
+          }}>
+            <ProviderIcon provider={t.id} size={21} />
+          </span>
+        ))
+        : (
+          <span className="rounded-xl flex flex-col justify-center gap-[5px] px-3" style={{
+            ...tile, width: 92, height: 45,
+            animation: 'mer-tour-rise .5s cubic-bezier(.2,.8,.25,1) both',
+          }}>
+            {[0, 1, 2].map(i => (
+              <span key={i} className="flex items-center gap-1.5" style={{
+                animation: `mer-tour-rise .4s cubic-bezier(.2,.8,.25,1) ${140 + i * 110}ms both`,
+              }}>
+                <svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden>
+                  {/* The last row is unticked - a list you are still working
+                      through, which is what a day's plan actually looks like. */}
+                  <path d="M1.8 6.3l2.7 2.7L10.2 3.2" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                    stroke={i === 2 ? 'var(--t-hair)' : 'var(--color-state-approved)'} />
+                </svg>
+                <span style={{ height: 3.5, borderRadius: 9, flex: 1, background: 'var(--t-hair)' }} />
+              </span>
+            ))}
+          </span>
+        )}
+    </span>
   )
 }

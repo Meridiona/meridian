@@ -105,6 +105,12 @@ function task(
 export function sampleTasks(): DayTask[] {
   const day = sampleDayString()
   return [
+    // NO "intro" TASK HERE. An attempt to give the replay an opening line put it
+    // in this list as a fake task, which made it a real card in the example day:
+    // counted in "N tasks today", added to the tracked total, clickable, and
+    // still sitting there for
+    // every beat after the replay that points at a card. The example day must
+    // contain only work.
     task('s1', 'Catching up on Slack and inbox messages',
       [[540, 575]],
       [
@@ -126,6 +132,12 @@ export function sampleTasks(): DayTask[] {
       ],
       'MER-501', null, day),
 
+    // NO TICKET, and that is the point of this card. It is the day's genuinely
+    // unplanned work - nothing on the morning's plan covers it - so it is what
+    // the summary uses to teach the OTHER worklog outcome: work that matched
+    // nothing, for which Meridian drafts a brand-new ticket rather than forcing
+    // it onto the nearest wrong one. Giving it a key here would quietly make
+    // that beat a lie (the ticket would already exist).
     task('s3', 'Fixing a bug that randomly logged people out',
       [[640, 695], [705, 755]],
       [
@@ -133,7 +145,7 @@ export function sampleTasks(): DayTask[] {
         "Fixed the underlying timing issue so it can't happen again.",
         'Opened a draft fix for a teammate to double-check before it ships.',
       ],
-      'MER-482', null, day),
+      null, null, day),
 
     task('s4', "Reviewing a teammate's code change",
       [[735, 775]],
@@ -335,12 +347,24 @@ function fmtSampleDur(min: number): string {
 
 export type SampleOverview = ReturnType<typeof sampleOverview>
 
-/** The card the walkthrough points at when it teaches multi-sitting folding.
+/** The card the walkthrough points at when it teaches multi-sitting folding AND
+ *  then drives all the way through Generate → match → approve → posted.
+ *
+ *  ONE CARD FOR BOTH ON PURPOSE. It is the only one that satisfies both: two
+ *  segments with a break between them (so the folding claim is visible), and a
+ *  ticket that is on the day's plan (so the match beat can show a strong,
+ *  honest 90% against something the user planned this morning). Splitting the
+ *  two beats across two cards meant opening a second panel mid-flow and
+ *  re-establishing what the user was looking at.
+ *
  *  Named rather than indexed so re-ordering the list above cannot silently
  *  retarget the script at the wrong card. */
-export const FOCUS_TASK_ID = 's3'
+export const FOCUS_TASK_ID = 's5'
 
-/** The card the walkthrough uses to teach the worklog draft + tracker post.
- *  Carries a ticket but is NOT yet posted, which is what makes the "post this"
- *  beat land. */
-export const DRAFT_TASK_ID = 's5'
+/** Alias kept for the summary, which draws its worklog rows from the same card. */
+export const DRAFT_TASK_ID = FOCUS_TASK_ID
+
+/** The day's unplanned work — no ticket, on no plan row. The summary uses it to
+ *  teach the second worklog outcome: nothing matched, so Meridian drafts a NEW
+ *  ticket and the user creates it (or overrides and matches an existing one). */
+export const OFFPLAN_TASK_ID = 's3'

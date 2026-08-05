@@ -33,10 +33,11 @@
 //
 // # Related
 // - `./engine.ts` — the `Stage` contract every beat is written against
-// - `./sampleDay.ts` — `FOCUS_TASK_ID` / `DRAFT_TASK_ID`, the cards beats target
+// - `./scriptDay.ts` — part two, which this hands off to at the seam
 
-import type { Stage } from './engine'
-import { DRAFT_TASK_ID, FOCUS_TASK_ID } from './sampleDay'
+import { availableTrackerNames } from '@/lib/integrations'
+import { consumeLockOutcome, type Stage } from './engine'
+import { runDayHalf } from './scriptDay'
 
 /** Human "2m 14s" / "47s" from whole seconds.
  *
@@ -57,34 +58,116 @@ export function fmtSetupElapsed(secs: number): string {
  *  the component that animates it — the tour's whole script should be readable
  *  in one file, and the wording is reviewed far more often than the animation.
  *
- *  Two facts, no more: that this is a tour, and how long it takes. What
- *  Meridian actually does is the first narration beat's job, said over the
- *  user's own screen where it means something; stacking it here turned the open
- *  into a four-card slideshow in front of someone who has not seen the product
- *  yet. */
+ *  Two facts, no more: that this is a tour, and that it is short. What Meridian
+ *  actually does is the first narration beat's job, said over the user's own
+ *  screen where it means something; stacking it here turned the open into a
+ *  four-card slideshow in front of someone who has not seen the product yet.
+ *
+ *  NO MINUTE COUNT. It said "about 2 minutes", which was true of the old flow
+ *  and stopped being true once the tour took over connecting a tracker and an AI
+ *  CLI: an OAuth round-trip through a browser, a board to pick, an install that
+ *  may or may not already be there. Most of that time is spent outside our
+ *  window, on someone else's site, so no number we print can be right for both
+ *  the user who has Jira open in the next tab and the one chasing an admin for
+ *  approval. A promise a first-run screen visibly breaks costs more trust than
+ *  the number ever bought. */
 export const INTRO_LINES = [
   "Let's get started.",
-  "We'll take you around - it takes about 2 minutes.",
+  "We'll take you around - it's quick.",
 ]
 
-/** Selector for a day-task card, matching the `data-task-id` DayTaskColumn
- *  stamps on each `TaskBand`. Centralised so a markup change breaks one line
- *  rather than every beat. */
-const card = (id: string) => `[data-task-id="${id}"]`
+/** A card in the board column. The tour cannot name a ticket - the board is
+ *  whatever the user's own tracker returned - so every beat that needs one
+ *  addresses it structurally. */
+const BOARD_CARD = '[data-tour="plan-board"] [data-plan-card]'
+
+/**
+ * Wait for the user's tickets to land in the planner, narrating the wait.
+ *
+ * NOT a probe. `available` is read from the local DB, and a tracker connected
+ * thirty seconds ago has not populated it yet - `PlanView` fires one catch-up
+ * `sync_tasks` when it opens onto an empty board, and that call goes out to Jira
+ * or Linear over the network. The first version of this beat gave it 2.5s, which
+ * is roughly a tenth of what a first Jira sync takes, so the tour concluded there
+ * were no tickets and walked a user who had just imported a board through writing
+ * a task by hand - while their tickets arrived behind the modal it had moved on
+ * to. Falling through is the right behaviour for a genuinely empty project and
+ * the wrong behaviour for a slow one, and only the clock tells them apart.
+ *
+ * The line is there because 25 seconds of a still screen after a connect reads as
+ * the connect having hung. Cleared either way, so nothing stale survives into the
+ * next beat.
+ */
+async function waitForTickets(s: Stage): Promise<boolean> {
+  s.say('Pulling your tickets in - the first sync takes a moment.')
+  const got = await s.appeared(BOARD_CARD, 25000)
+  s.say('')
+  return got
+}
+
+/**
+ * DEV ONLY: skip part one and open straight into the example day.
+ *
+ * Part two is the half that gets iterated on - the replay, the worklog flow, the
+ * summary - and reaching it honestly costs a plan, a tracker connect (an OAuth
+ * round-trip through a browser) and a provider install. Sitting through that on
+ * every edit is how a walkthrough stops being edited.
+ *
+ * Triggered by `?tour=day` (the shell already treats any `tour` param as "run
+ * the walkthrough", so the one flag both starts it and places it) or by setting
+ * `localStorage['meridian.walkthrough.dev-from'] = 'day'`, which survives the
+ * reload that a `?tour=day` URL forces on you.
+ *
+ * Hard-gated on a non-production build. It bypasses two REQUIRED steps - the
+ * plan and the AI-provider connect - so an installed user who landed on this
+ * would finish the tour with a Meridian that cannot write anything.
+ */
+function devDayHalfOnly(): boolean {
+  if (process.env.NODE_ENV === 'production') return false
+  if (typeof window === 'undefined') return false
+  try {
+    if (new URLSearchParams(window.location.search).get('tour') === 'day') return true
+    return window.localStorage.getItem('meridian.walkthrough.dev-from') === 'day'
+  } catch {
+    return false
+  }
+}
 
 /**
  * Run the walkthrough. Resolves when the last beat finishes; throws `Aborted`
  * (from `engine.ts`) if the user skips, which the caller treats as a normal
  * outcome rather than an error.
- *
- * `hasRealTasks` is whether the user's OWN day already has folded tasks. Only
- * the opening beat reads it, and only to avoid telling someone with a populated
- * timeline that their timeline is empty.
  */
-export async function runScript(s: Stage, hasRealTasks = false): Promise<void> {
-  // Set by the draft beat's no-provider detour. Beat 6 reads it and drops its own
-  // provider ask, so nobody is walked through the picker twice in one tour.
-  let connectedAi = false
+export async function runScript(s: Stage): Promise<void> {
+  // Dev shortcut: straight into the example-day half. The context it is handed is
+  // the "everything already set up" one, because the point is to land on the
+  // replay in one step, not to exercise a branch.
+  if (devDayHalfOnly()) {
+    await runDayHalf(s, { ai: 'already-working', usesTracker: 'tracker' })
+    return
+  }
+
+  // WHAT WE KNOW ABOUT THE USER'S AI, and how we learned it. Beat 6 reads this to
+  // decide whether to run the picker at all, and which sentence is true.
+  //
+  // This used to be one boolean set only by the no-provider detour, which got the
+  // ALREADY-CONNECTED user badly wrong: their draft just works, the connect card
+  // never appears, the flag stays false, and beat 6 tells someone with a working
+  // provider "Last thing: pick which one" and opens a picker they do not need.
+  // A successful draft IS evidence - it cannot happen without a provider - so it
+  // counts here too.
+  //
+  // `null` means no evidence either way: they never typed, so nothing ever asked
+  // the model for anything, and beat 6 must still run.
+  let ai: 'connected-in-tour' | 'already-working' | null = null
+
+  // Answered in beat 1b, read again in beat 7 — which is why it is declared out
+  // here rather than inside the planner block that sets it. The closing worklog
+  // line promises a post to the user's board, and promising that to someone who
+  // told us they have no board would be a lie the product contradicts within the
+  // hour. Null means the question was never reached (they never opened the
+  // planner), which the `!== 'tracker'` branch handles correctly by default.
+  let usesTracker: string | null = null
 
   // ══ PART ONE — on the user's OWN, empty day ═══════════════════════════════
   // Everything up to `showExample(true)` runs against their real timeline,
@@ -105,6 +188,13 @@ export async function runScript(s: Stage, hasRealTasks = false): Promise<void> {
   // because a voiceover plays over them and cannot be synced to hardcoded
   // millisecond guesses. `pause` survives only for mechanical gaps (a modal
   // finishing its open transition).
+  //
+  // It survives while the REPLAY's opening line did not, and the difference is
+  // what is behind them. That one sat in front of a deliberately blank timeline
+  // explaining what was about to happen there - a step between the user and the
+  // only thing that half exists to show. This one runs before there is any
+  // product on screen at all, so it stands in front of nothing, and it is what
+  // says "this is a tour" before the tour takes the window.
   await s.intro(INTRO_LINES)
 
   // ── 2. The daily plan — the first thing it needs ────────────────────────
@@ -130,6 +220,179 @@ export async function runScript(s: Stage, hasRealTasks = false): Promise<void> {
   const openedPlan = await s.waitForClick('[data-tour="plan-open"]', 120000)
   s.spotlight(null)
   if (openedPlan) {
+    // ── 1b. Team or solo — asked HERE, before the composer ─────────────────
+    //
+    // This question used to sit at the very end of the tour, after the plan and
+    // the example day. It moved to the front because the answer decides what the
+    // NEXT five minutes look like, and asking it last meant every beat before it
+    // was written for a user we had not identified yet: someone on a Jira board
+    // was walked through hand-writing a task while their real tickets sat
+    // unimported two clicks away.
+    //
+    // It is also the moment the ask is cheapest. The planner is open and visibly
+    // empty; "where should these come from?" is a question the user is already
+    // asking. The same words upfront, in a setup wizard, read as a data grab -
+    // which is exactly why the wizard no longer has an Integrations step (see
+    // `app/setup/steps.tsx`, where INTEGRATIONS_STEP sits unused and says so).
+    // The click above deliberately opened NOTHING - see `useTutorial`'s no-op
+    // `onOpenPlan`. The question comes first, on a clear screen: a task board
+    // behind the dialog is the biggest thing on it and pulls at a user who has
+    // just been handed a decision, and it is not evidence for either answer
+    // anyway, being empty. What fills it is precisely what is being asked. The
+    // planner opens below, either straight after a solo answer or when the
+    // connect flow hands back.
+    // ILLUSTRATED, and the question shortened to match. It used to name the
+    // trackers in the question itself, which made the one real decision in the
+    // tour a list a user has to parse before they can recognise themselves in it.
+    // The logos say the same thing faster and without reading: someone who lives
+    // in Jira knows which card is theirs before they reach the label. See
+    // `StageChoice.art`.
+    //
+    // The names come from `availableTrackerNames()`, never a written-out list.
+    // Promising a tracker that is flagged `comingSoon` (Linear, today) on the one
+    // screen where the user is choosing whether they HAVE one is how someone
+    // picks this branch for a tool they then cannot connect.
+    usesTracker = await s.ask(
+      'Where do your tasks come from?',
+      [
+        { label: 'A team board', value: 'tracker', hint: `${availableTrackerNames()} - pull my real tickets in`, art: 'trackers' },
+        { label: 'My own list', value: 'solo', hint: 'I keep track of my own work', art: 'solo' },
+      ],
+    )
+
+    if (usesTracker === 'tracker') {
+      // Straight in. There used to be a "Let's connect it" beat with a Connect it
+      // button here, which made the user confirm the thing they had just chosen -
+      // "I'm on a team board" IS the consent, and asking again reads as the tour
+      // not having heard them. The sentence survives as narration over the modal
+      // opening, where it explains rather than gates.
+      s.say('Meridian pulls your open tickets straight in, so your plan comes from your real board.')
+      // Locked. Same contract as the AI step: no exit until the step is answered
+      // one way or the other, and SettingsModal hands the flow back by itself.
+      // Defensible only because the tour's Skip still floats above the modal, and
+      // because "I don't use a project tool" is on screen from the first frame -
+      // see IntegrationsSection's gate block for why that is not a footnote.
+      s.openSettings('integrations', { lock: true })
+      // Long enough to READ the line above, not just the modal's open transition -
+      // it is now the only place the "why" is said, since the Connect it beat that
+      // used to hold it is gone. 1400 is the ceiling: the pause budget in
+      // tutorial-sample-day.test.ts caps mechanical gaps at 1500ms.
+      await s.pause(1400)
+      s.say('Pick your tool and sign in. If yours is not here, say so at the bottom - nothing later depends on it.')
+
+      // WAIT FOR THE RELEASE, NOT FOR THE PLANNER. The lock resolves the moment
+      // the user connects or declines; the planner returns a second and a half
+      // later. Waiting on the planner meant that in between - the exact seconds
+      // after someone pressed "I don't use a project tool" - the tour was still
+      // telling them to pick a tool and sign in. Instruction contradicting the
+      // decision they just made, while the app was busy agreeing with it.
+      //
+      // Very generous: a real OAuth round-trip through a browser, and on Jira and
+      // GitHub a project picker after it.
+      await s.appeared('[data-tour="lock-handback"]', 600000)
+      // Which branch they took. Read ONCE - the flag is consumed - so it goes into
+      // a local that the beats below can read as many times as they need.
+      const declined = consumeLockOutcome() === 'declined'
+      // AND THE ANSWER CHANGES. `usesTracker` was set to 'tracker' by the question,
+      // but the question asked what they use, not what they connected - and beat 7
+      // reads this to decide whether to promise "Meridian posts these to your
+      // board". Left as 'tracker', someone who just told us they have no project
+      // tool would be promised a post to it, which the product contradicts within
+      // the hour. What they have NOW is a personal list, so say so.
+      if (declined) usesTracker = 'solo'
+      // Clear the stale instruction immediately. Not replaced with a new sentence
+      // here: the modal's own confirmation is on screen saying the right thing,
+      // and a second line over the top of it is two voices at once.
+      s.say('')
+      // EITHER selector, because the planner has two layouts and which one comes
+      // back depends on the answer just given. With a tracker connected the board
+      // has tickets, so it renders the two columns and `plan-today` exists. With
+      // none it renders the hero composer instead (`PlanView`'s `boardEmpty`) and
+      // `plan-today` never mounts - so waiting on it alone left a declined user
+      // staring at nothing for the full ten-minute fallback.
+      await s.appeared('[data-tour="plan-today"], [data-tour="task-note"]', 600000)
+      await s.pause(700)
+
+      if (declined) {
+        // THE FULL EXPLANATION, on a card that takes the screen. This is the one
+        // moment in the tour where the product just lost the feature the user was
+        // being sold, and "let's write this one by hand instead" made that sound
+        // like the consolation prize it is not: writing a task here IS the flow,
+        // AI does the shaping, and the tracker only ever added import and posting.
+        // Said small and in passing, a user reasonably concludes they picked the
+        // broken path and starts looking for how to undo it.
+        await s.next(
+          "No problem at all. You can create tasks right here in seconds - write a line, and Meridian's AI turns it into a proper task on your board. Connect a tool later and it will sync both ways.",
+          "Show me",
+          { center: true },
+        )
+      } else if (await waitForTickets(s)) {
+        // 1c. The drag - ONLY if a ticket actually came in. Connecting a tracker
+        // does not guarantee any: a brand-new Jira project, a filter that matches
+        // nothing, or a sync that has not finished all leave the board empty, and
+        // `PlanView` then renders its hero composer with no board column at all.
+        // Told to "drag the ones you are doing today" in front of that, the user
+        // looks for tickets that do not exist and concludes the connect failed.
+        // Falling through to the composer beats is both true and useful, so the
+        // guard costs nothing when it fires. Anchored on a CARD rather than on the
+        // Today column, because the column renders whether or not anything landed
+        // in the other one - which is exactly the case this is guarding against.
+        //
+        // Named as the payoff of the thing they just did. The connect finished a
+        // few seconds ago in a different modal, and the tickets appearing here is
+        // the only visible evidence it worked - saying so out loud closes that
+        // loop, and this is the last chance to.
+        await s.next('Your tickets came straight in - they are on the right. Anything you are working on today goes in the left column.', 'Show me')
+
+        // SHOWN, NOT ASKED. This used to be "drag the ones you are doing today"
+        // followed by a Done button, and it was the worst beat in the tour: a
+        // first-time user does not know a card can be picked up until they have
+        // seen one move, so the tour was blocking - inside a modal - on the one
+        // gesture it had given them no reason to believe in. Some never tried it
+        // and pressed Done on an empty plan. Watching it happen teaches the same
+        // thing in two seconds, cannot be failed, and leaves them a whole board of
+        // cards to try it on themselves. The move is real and saved - see
+        // `Stage.demoDrag`.
+        s.say('')
+        await s.demoDrag(BOARD_CARD, '[data-tour="plan-today"]')
+        await s.pause(600)
+        s.spotlight('[data-tour="plan-today"]')
+        await s.next('Like that. Drag across as many as you want - every change saves itself.', 'Got it')
+        s.spotlight(null)
+
+        // 1d. The bridge to the composer. Someone who just imported a board does
+        // not assume they can also WRITE here - they assume tasks come from Jira
+        // and this is a viewer. Saying otherwise is worth one beat, because it is
+        // the difference between Meridian being a mirror and being where they work.
+        //
+        // Said as WHY, not as a capability. The old line was "You can also write
+        // a task here, without opening your board at all", which named a
+        // permission the user had no reason to want yet and quietly raised the
+        // wrong question - does this create a ticket, or not? The real case is
+        // the work that never had a ticket, which every day has, and the answer
+        // to where it goes comes with it.
+        s.say('Not everything you do has a ticket. Add that work here too - Meridian tracks it the same way.')
+        s.spotlight('[data-tour="plan-new-task"]')
+        await s.point('[data-tour="plan-new-task"]')
+        // THIS one they press themselves. The drag above is a demonstration
+        // because the gesture is unfamiliar; a button is not, and the composer
+        // beats that follow are about to ask them to type - so the hand has to be
+        // on the wheel by the time they get there.
+        await s.waitForClick('[data-tour="plan-new-task"]', 120000)
+        s.spotlight(null)
+        await s.pause(600)
+      }
+    }
+    // NOW the planner opens - the only place it does on the solo path, since the
+    // nudge the user clicked is a no-op during the tour. Idempotent on the tracker
+    // branch, where SettingsModal's hand-back already opened it, so both answers
+    // land on the same screen for the composer beats below.
+    s.openModal('plan')
+    await s.pause(500)
+    // The solo branch says nothing and adds no beat. "Nothing here needs a
+    // tracker" is a reassurance about a worry the user has not voiced, and it
+    // spends a beat defending a choice they just made confidently. The composer
+    // below is the answer to their answer.
     // They are now in the REAL planner, and the next four beats walk one task
     // all the way in. This used to be a single "add a few tasks" line and a wait
     // on the close button, which left a first-time user alone in front of a form
@@ -154,10 +417,24 @@ export async function runScript(s: Stage, hasRealTasks = false): Promise<void> {
 
     if (typed) {
       // 2b. The AI draft — the first time they see the model do anything.
-      s.say('Now let Meridian shape it into a task - your own AI, on your machine.')
-      s.spotlight('[data-tour="task-draft"]')
-      await s.point('[data-tour="task-draft"]')
-      await s.waitForClick('[data-tour="task-draft"]', 60000)
+      //
+      // …unless the connect card is ALREADY on screen, which it is whenever the
+      // composer was left holding it: the notice is component state that
+      // survives the modal being closed and reopened, and the tour reaches this
+      // line again on a replay. Ringing "Draft with AI" in front of a card that
+      // says "Meridian needs an AI engine" points the user at the one button
+      // that cannot do the thing being described - it will only re-raise the
+      // same card. The ring belongs on whatever is actually asking for a click.
+      //
+      // Zero-ish timeout: this is a "is it there right now" probe, not a wait.
+      const askingAlready = await s.appeared('[data-tour="ai-connect"]', 250)
+
+      if (!askingAlready) {
+        s.say('Now let Meridian shape it into a task - your own AI, on your machine.')
+        s.spotlight('[data-tour="task-draft"]')
+        await s.point('[data-tour="task-draft"]')
+        await s.waitForClick('[data-tour="task-draft"]', 60000)
+      }
 
       // 2b-i. …except on a machine with no AI connected, which is MOST first
       // runs. The press then produces a connect card instead of a draft, and a
@@ -168,13 +445,16 @@ export async function runScript(s: Stage, hasRealTasks = false): Promise<void> {
       // Timed generously: the composer holds a "Checking your AI…" beat and the
       // card fades in over ~600ms, both deliberate (see AiEngineNotice). This
       // waits out that whole arrival rather than racing it.
-      if (await s.appeared('[data-tour="ai-connect"]', 4000)) {
-        connectedAi = true
+      if (askingAlready || await s.appeared('[data-tour="ai-connect"]', 4000)) {
+        ai = 'connected-in-tour'
         // Let it finish arriving and be read before anything else moves. The
         // user pressed a button and got an unexpected answer; a spotlight
         // landing on top of that in the same second is a second surprise.
         await s.pause(1200)
-        s.say('Meridian does that with an AI engine of your own - you pick which. Connect one and we will come straight back.')
+        // "Drafting needs", not "Meridian does that" - "that" pointed back at a
+        // draft they had just watched fail, and reads as nothing at all when the
+        // card was already up and no draft was ever attempted.
+        s.say('Drafting needs an AI engine of your own - you pick which. Connect one and we will come straight back.')
         s.spotlight('[data-tour="ai-connect"]')
         await s.point('[data-tour="ai-connect"]')
         await s.waitForClick('[data-tour="ai-connect"]', 120000)
@@ -221,164 +501,133 @@ export async function runScript(s: Stage, hasRealTasks = false): Promise<void> {
         // for a click that has effectively already happened.
         s.say('Connected. Meridian is drafting your task now.')
         await s.pause(1400)
+      } else {
+        // No connect card means the draft ran, which means a provider is already
+        // set up and working. Recorded so beat 6 congratulates them instead of
+        // marching them into a picker for something they have already done.
+        ai = 'already-working'
       }
 
       // 2c. The draft landing. `settled` because the fields fill progressively —
       // reacting to the first character would put the next line on screen
       // mid-write, while the thing it describes is still appearing.
+      //
+      // NARRATED AFTER, NOT DURING, and it no longer invites an edit. The line
+      // used to be "A title and a description, from one line. Edit anything you
+      // like." on screen while the model was still writing - so the tour was
+      // asking the user to correct a sentence that had not finished appearing,
+      // about work the model had in fact got right. "Edit anything you like" is a
+      // true statement about the form and the wrong thing to say the second after
+      // the AI has done the job it was just sold on: it plants a doubt, and it
+      // stalls a user who now feels they are supposed to find something to fix.
+      // The fields are plainly editable - they are two text boxes with a cursor in
+      // them - and nothing later depends on the user knowing it here.
       s.spotlight('[data-tour="task-title"]')
-      s.say('A title and a description, from one line. Edit anything you like.')
       await s.waitForValue('[data-tour="task-title"]', { fallbackMs: 90000, settled: true })
+      // AND the description, because Add to today needs BOTH - `canCreate` in
+      // useTaskComposer.ts requires a title of MIN_TITLE_WORDS *and* a
+      // non-empty description. Waiting on the title alone rang a button that
+      // was still disabled: the model fills the fields in order, so there is a
+      // real window where the title has landed and the description has not, and
+      // "Happy with it? Add it to today" over a greyed-out button reads as the
+      // app having stalled. Same fallback, so a model that never writes a
+      // description still lets the user through to type one themselves.
+      await s.waitForValue('[data-tour="task-desc"]', { fallbackMs: 90000, settled: true })
       await s.pause(500)
+      s.spotlight(null)
 
-      // 2d. Commit it.
-      s.say('Happy with it? Add it to today.')
+      // 2d. WHERE IT GOES - the one decision on this form with a consequence
+      // outside Meridian, and the only one the tour stops for.
+      //
+      // Renders only with a tracker connected (TaskComposer's `boardProvider`), so
+      // it is probed rather than assumed - a solo user has no choice to make and
+      // gets no beat. Left undiscovered, this is how someone files a real ticket
+      // onto a shared board by accident, or writes three days of personal notes
+      // wondering why their team never sees them. Both are cheap to prevent here
+      // and expensive to explain afterwards.
+      //
+      // No spotlight on either option and no recommendation: which one is right
+      // depends entirely on what they just wrote, and the tour has no view on it.
+      if (await s.appeared('[data-tour="task-where"]', 1200)) {
+        s.say('One choice: keep it to yourself, or file it as a real ticket your team can see. Pick either - you can change it per task.')
+        s.spotlight('[data-tour="task-where"]')
+        await s.point('[data-tour="task-where"]')
+        await s.waitForClick('[data-tour="task-where"] [role="radio"]', 120000)
+        s.spotlight(null)
+        await s.pause(600)
+      }
+
+      // 2e. Commit it.
+      s.say('That is the task. Add it to today.')
       s.spotlight('[data-tour="task-add"]')
       await s.point('[data-tour="task-add"]')
       await s.waitForClick('[data-tour="task-add"]', 90000)
       s.spotlight(null)
       await s.pause(700)
-      s.say('That is one. Add as many as you like - then close this when you are done.')
+      s.say('Saved. Add as many as you like - each one saves itself - then close this when you are done.')
     } else {
       // They never typed. Say what the form was for and let them close it;
       // pressing on with "now click Draft" would point at a disabled button.
       s.spotlight(null)
       s.say('You can add tasks here whenever you like - type a note and Meridian drafts the rest. Close this when you are ready.')
     }
-    s.spotlight(null)
+    // RING THE CLOSE BUTTON. Both lines above end by telling the user to close the
+    // modal, and then pointed at nothing - leaving them to hunt the one control the
+    // tour is actually blocked on, in the corner, at the end of a beat where every
+    // other instruction came with a ring. The cursor goes there too: this is the
+    // last thing asked of them in the planner, and it should be as findable as the
+    // first.
+    s.spotlight('[data-tour="modal-close"]')
+    await s.point('[data-tour="modal-close"]')
     await s.waitForClick('[data-tour="modal-close"]', 180000)
+    s.spotlight(null)
     s.openModal(null)
     await s.pause(600)
-    await s.next("That's your plan for the day - you can change it whenever you like.")
-    // The empty timeline, named only NOW. It used to be explained before the
-    // plan beat, which meant the first thing the tour did was apologise for a
-    // blank screen. Here it answers a question the user is actually asking
-    // ("I entered my tasks - why is the left side still empty?"), and it is the
-    // natural place to say the fold is hourly. Anyone REPLAYING on a working
-    // day sees a full timeline, and telling them it is empty would be the first
-    // thing the tour got visibly wrong — so the line adapts.
-    await s.next(hasRealTasks
-      ? 'On the left is your day so far. Meridian builds that itself, an hour at a time, from what you actually work on.'
-      : "Your timeline on the left is still empty - that's expected. Meridian fills it in as you work, an hour at a time.")
+    // ── 2f. THE ONE CELEBRATION ─────────────────────────────────────────────
+    // Placed here and nowhere else because this is the seam of the whole tour:
+    // everything before it was the user giving Meridian something, and
+    // everything after it is Meridian showing what it does back. Marking that
+    // hands them a finish line for the work half - and a tour that congratulates
+    // every step congratulates nothing.
+    //
+    // AND IT SAYS THE PLAN IS OPTIONAL. The line here used to be "that is the
+    // only thing Meridian ever needs from you", which is flatly untrue in the
+    // direction that matters: Meridian tracks the day whether or not anyone
+    // plans it - the timeline the very next beat demonstrates is built from
+    // capture, not from this list. Told the plan is required, a user who skips
+    // it one morning reasonably assumes the product stopped working, and a user
+    // who does not want a planner at all concludes the product is not for them.
+    // What the plan actually buys is sharper matching, so say that instead.
+    await s.next(
+      "Nice - today's tasks are in. This part is optional, by the way: Meridian tracks your day either way. A plan just helps it match your work to the right thing.",
+      'What happens now?',
+      { center: true, celebrate: true },
+    )
   } else {
     // The nudge never rendered or they ignored it — say what it was for and
     // move on rather than stalling on a control they are not going to press.
     await s.next("You can set that up any time from the panel on the right - Meridian works better when it knows what you are aiming at.")
   }
 
-  // ── 3. Solo or on a board — the branch ──────────────────────────────────
-  // This used to be a late, unconditional "connect your tracker" beat. It moved
-  // here and became a question for one reason: the two answers need genuinely
-  // different products. Someone on a Jira board wants their real tickets pulled
-  // in so drafts can post back to them; someone keeping their own list needs to
-  // hear, early and plainly, that nothing here depends on a tracker. Asking
-  // costs one click and removes the chance of pitching the wrong one.
-  const usesTracker = await s.ask(
-    'Do you track your work on a team board - Jira, Linear, GitHub Issues - or keep your own list?',
-    [
-      { label: 'I use a team board', value: 'tracker', hint: 'Pull my real tickets in' },
-      { label: 'I keep my own list', value: 'solo', hint: 'Just my own tasks' },
-    ],
-  )
-
-  if (usesTracker === 'tracker') {
-    await s.next("Let's connect it. Meridian pulls your open tickets in, so your plan comes from your real board - and it can post your updates back there later.", 'Connect it')
-    s.openSettings('integrations')
-    await s.pause(1000)
-    s.say('Pick your tracker and sign in. Close this when you are done - you can always add or change it later in Settings.')
-    // Generous, because this is a real OAuth round-trip through a browser.
-    await s.waitForClick('[data-tour="modal-close"]', 300000)
-    s.openModal(null)
-    await s.pause(600)
-  } else if (usesTracker === 'solo') {
-    await s.next("Perfect - nothing here needs a tracker. Your timeline, your daily tasks and your summaries all work exactly the same. You can connect one later from Settings if that ever changes.")
-  }
-
-  // ══ PART TWO — on a pre-built example day ═════════════════════════════════
-  // Now that the two asks are done, show what the payoff actually looks like.
-  // This needs a full day of folded work, which no fresh install can have, so
-  // the timeline swaps to the example — labelled as one for its whole duration
-  // by the badge the overlay renders.
-  s.showExample(true)
-  await s.pause(700)
-  await s.next("Now here's what your day will look like once Meridian has been running. This is an example, not your data.")
-
-  // ── 4. Multi-sitting folding — the first real "how did it know that" ────
-  // FOCUS_TASK_ID is the two-segment card. Handing the click to the user in the
-  // very first beat sets the tone that this is something they operate.
-  s.say('This one was worked in two sittings across the morning. Click it.')
-  s.spotlight(card(FOCUS_TASK_ID))
-  await s.point(card(FOCUS_TASK_ID))
-  await s.waitForClick(card(FOCUS_TASK_ID), 6000)
-  s.spotlight(null)
-  s.selectTask(FOCUS_TASK_ID)
-  await s.pause(600)
-  await s.next('Meridian pieced it together from what was actually on screen - and wrote up what got done. That write-up is on the right.')
-
-  // ── 5. The daily summary ────────────────────────────────────────────────
-  s.selectTask(null)
-  await s.next('At the end of each day, all of it rolls up into a summary you can actually hand to someone.', 'Show me')
-  await s.point('[data-tour="summary-pill"]')
-  s.click()
-  s.demoSummary(true)
-  await s.pause(900)
-  await s.next('It says what you finished, what slipped, and what pulled you off plan - in language you can paste into a standup.')
-  s.demoSummary(false)
-  await s.pause(500)
-
-  // ── 6. AI ask — motivated by what they just read ────────────────────────
-  // They have now read two things a model wrote. THAT is what makes this ask
-  // land, and why it cannot be moved earlier. The privacy framing is the same
-  // one the marketing demo closes on, because it is the actual objection:
-  // the model runs on the user's own CLI and subscription.
+  // ── 3. (was: solo or on a board) ────────────────────────────────────────
+  // GONE, deliberately. This used to be where the tour asked "team board or your
+  // own list?" and, on `tracker`, opened Settings → Integrations unlocked.
   //
-  // SKIPPED ENTIRELY if the draft beat already took them through it. Sending
-  // someone back to a provider screen they finished four beats ago reads as the
-  // tour having lost track of them - and worse, as the connection they just made
-  // not having counted. They still get the privacy line, which is the part of
-  // this beat that was never about the picker.
-  if (connectedAi) {
-    await s.next('That writing is done by an AI model running on your own machine, through the provider you just connected - your work never sits on our servers.')
-  } else {
-    await s.next('That writing is done by an AI model running on your own machine, through your own CLI - your work never sits on our servers. Last thing: pick which one.', 'Pick a model')
-    s.openSettings('intelligence')
-    await s.pause(1000)
-    s.say('Choose a provider - Meridian installs and signs you in right here. Close this when you are done, and you can change it any time.')
-    await s.waitForClick('[data-tour="modal-close"]', 300000)
-    s.openModal(null)
-    await s.pause(500)
-  }
+  // It moved to beat 1b, inside the planner, and grew teeth: the answer now
+  // decides the shape of everything after it, so asking it here meant every
+  // earlier beat was written for a user we had not identified. Asking twice
+  // would be worse than either position - the second ask reads as the app
+  // having forgotten, on the one screen whose job is to look attentive.
+  //
+  // Nothing replaces it. Both branches are fully resolved by the time the tour
+  // reaches this point.
 
-  // ── 7. The worklog draft — the payoff ───────────────────────────────────
-  // The money feature. The closing line splits on the answer given back in beat
-  // 3: for a board user this is the thing they connected their tracker FOR, and
-  // saying so closes that loop. For a solo user the same card is still useful
-  // (the write-up is real), but promising them a post to a tracker they do not
-  // have would be a lie the product contradicts an hour later.
-  s.say('For work that maps to a ticket, Meridian drafts the update for you. Click this one.')
-  s.spotlight(card(DRAFT_TASK_ID))
-  await s.point(card(DRAFT_TASK_ID))
-  await s.waitForClick(card(DRAFT_TASK_ID), 6000)
-  s.spotlight(null)
-  s.selectTask(DRAFT_TASK_ID)
-  await s.pause(700)
-  await s.next(usesTracker === 'tracker'
-    ? 'Meridian posts these to your board for you - no ticket-hunting at the end of the day. Nothing goes out without your say-so.'
-    : 'You get the write-up either way. Connect a tracker later and Meridian will post these for you too.')
-
-  // ── 8. Handoff ──────────────────────────────────────────────────────────
-  // The dangerous moment: the example day disappears and the real one is
-  // empty except for the setup card. Naming that plainly is the whole job
-  // here — an unexplained empty screen after a polished demo reads as the
-  // product being broken. The promise made is deliberately event-shaped
-  // ("as you work") rather than clock-shaped: the hourly fold only runs for
-  // hours clearing its activity gate, so no specific time can be promised
-  // without risking a broken one.
-  s.selectTask(null)
-  s.showExample(false)
-  await s.pause(400)
-  await s.next(
-    "That is the whole product. Meridian is running in your menu bar from now on, and your own timeline fills in as you work. You can replay this any time from Settings.",
-    'Finish', { center: true })
-  s.say('')
+  // ══ PART TWO — the timeline, BUILT rather than shown ══════════════════════
+  // Everything from here lives in `./scriptDay.ts`. The split is the tour's own
+  // seam, not an arbitrary line drawn to shorten a file: part one collects what
+  // Meridian needs FROM the user and runs on their real, empty timeline; part two
+  // demonstrates what it gives BACK, on a pre-built example day. Both halves grew
+  // past the point where one file could be read top to bottom, which is the whole
+  // reason the script is written as narrative in the first place.
+  await runDayHalf(s, { ai, usesTracker })
 }

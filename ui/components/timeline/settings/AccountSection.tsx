@@ -27,10 +27,12 @@ const CHANNEL_COLOR: Record<AppInfo['channel'], string> = {
   prod: 'var(--t-faint)',
 }
 
-export function AccountSection({ onReplayTour }: {
+export function AccountSection({ onReplayTour, onReplayTourFromDay }: {
   /** Restart the first-run walkthrough. Supplied by the shell (which owns the
    *  walkthrough) and threaded through SettingsModal. */
   onReplayTour: () => void
+  /** DEV ONLY, and null in a packaged build - see `TutorialHandle.replayFromDay`. */
+  onReplayTourFromDay: (() => void) | null
 }) {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [copied, setCopied] = useState(false)
@@ -94,6 +96,22 @@ export function AccountSection({ onReplayTour }: {
             Show me around
           </SettingsButton>
         </FieldRow>
+        {/* DEV ONLY. Part one asks for a daily plan, a tracker connect (an OAuth
+            round-trip through a browser) and possibly a CLI install before it
+            reaches the example day - three or four minutes, most of it spent
+            outside this window. Sitting through that on every edit is how the
+            back half of the walkthrough stops getting edited, so there is a door
+            straight into it. Absent entirely in a packaged build: it skips two
+            REQUIRED steps, and a real user who took it would finish the tour
+            with a Meridian that cannot write anything. */}
+        {onReplayTourFromDay && (
+          <FieldRow label="Skip to the example day"
+            description="Dev only. Jumps past the plan and the connect steps, straight to the day rebuilding itself.">
+            <SettingsButton onClick={onReplayTourFromDay}>
+              Skip ahead
+            </SettingsButton>
+          </FieldRow>
+        )}
       </SectionCard>
 
       <SectionCard>

@@ -546,15 +546,43 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
             <>
               <p className="text-[12px]" style={{ color: 'var(--t-muted)' }}>Your browser should have opened. Authorize the app, then come back here.</p>
               <p className="text-[11px]" style={{ color: 'var(--t-faint-2)' }}>Waiting for authorization…</p>
-              {/* jira/trello only — a rejection Atlassian/Trello shows on THEIR
-                  consent screen (e.g. "no Jira site access") never redirects
-                  back here, so there's no automatic error to catch; without
-                  this the user is stuck watching "Waiting…" for up to 5 min. */}
-              {(tracker.id === 'jira' || tracker.id === 'trello') && (
-                <button onClick={() => cancelOAuth(tracker)} className="text-[11px]" style={{ color: 'var(--t-faint)', cursor: 'pointer' }}>
-                  Not going through? Cancel
+              {/* THE STUCK-USER EXITS, and there are two of them because there are
+                  two ways this stalls. A rejection the provider shows on THEIR
+                  consent screen ("no Jira site access") never redirects back, so
+                  no error arrives to catch - but far more often the browser tab
+                  simply never opened, or was closed, or landed on the wrong
+                  account, and what that user wants is another go rather than a
+                  way out.
+
+                  Real buttons, not the 11px faint pseudo-link this used to be.
+                  That link sat below a line reading "Waiting for authorization…"
+                  and was styled like the caption above it, on the one screen
+                  where the user is already unsure whether anything is happening -
+                  which is exactly where an escape hatch has to look pressable.
+
+                  No longer gated on jira/trello: this branch is only reached by
+                  browser-OAuth trackers in the first place, and being stuck is
+                  not provider-specific. `cancelOAuth` already does the
+                  provider-specific server-side teardown internally. */}
+              <div className="flex items-center gap-2 pt-0.5">
+                <button onClick={() => { cancelOAuth(tracker); void startOAuth(tracker) }}
+                  className={`text-[12px] px-3 py-1.5 rounded-md transition-opacity hover:opacity-80`}
+                  style={{
+                    fontWeight: 700, color: 'var(--color-state-proposal)', cursor: 'pointer',
+                    background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)',
+                    border: '1px solid color-mix(in srgb, var(--color-state-proposal) 30%, transparent)',
+                  }}>
+                  Open it again
                 </button>
-              )}
+                <button onClick={() => cancelOAuth(tracker)}
+                  className={`text-[12px] px-3 py-1.5 rounded-md transition-opacity hover:opacity-80`}
+                  style={{
+                    color: 'var(--t-muted)', cursor: 'pointer',
+                    background: 'var(--t-ctrl)', border: '1px solid var(--t-ctrl-border)',
+                  }}>
+                  Cancel
+                </button>
+              </div>
             </>
           )}
         </div>

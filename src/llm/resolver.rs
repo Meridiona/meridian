@@ -335,6 +335,28 @@ pub async fn complete(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider), L
     .await
 }
 
+/// Whether the recorded provider health should stop a call before it is made, and
+/// what to say if so. Pure, so the decision is unit-testable without a settings
+/// file, a `MERIDIAN_HOME`, or a CLI on the machine.
+///
+/// `Failed`, never `RateLimited`: the caller must leave its work pending and retry
+/// on a later tick, not sit in a quota backoff for a problem that was never a
+/// quota. And the message names the fix — "something went wrong" on a signed-out
+/// CLI is the least actionable sentence this product can produce, and it is the
+/// one the user reads at exactly the moment they can still do something about it.
+fn health_refusal(health: &super::detect::InUseProviderHealth) -> Option<LlmError> {
+    // A rate limit is a wait, not a refusal — the backoff below already handles it,
+    // and blocking here would turn a self-clearing pause into a dead product.
+    if health.ok {
+        return None;
+    }
+    let detail = health.detail.as_deref().unwrap_or("not available");
+    Some(LlmError::Failed(format!(
+        "{} is not available ({detail}). Open Settings → Intelligence to sign in or pick another provider.",
+        health.name,
+    )))
+}
+
 /// The resolution + retry body, wrapped by [`complete`]'s per-call span.
 ///
 /// No on-device fallback: a backing-off or failing provider returns an error and the
@@ -343,6 +365,39 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
     let s = load_runtime_settings();
     let cfg = LlmConfig::from_settings(&s);
     let chosen = LlmProvider::from_wire(&s.llm_provider).unwrap_or_default();
+
+    // ── The provider is known to be unavailable ──────────────────────────────
+    //
+    // THE GATE THAT WAS MISSING. Until this existed, `in_use_provider_health` had
+    // exactly one consumer in the entire codebase - the dashboard banner - so the
+    // app could tell the user "Claude Code isn't available. Hourly summaries are
+    // paused." across the top of the screen while, four inches below it, Generate
+    // Worklog spawned that same provider and drafted an update. The two statements
+    // were produced by code paths that had never been introduced to each other,
+    // and the user is entitled to conclude one of them is lying.
+    //
+    // Putting it HERE and nowhere else is the whole point. This function is the
+    // single funnel every prose call passes through - hourly folds, day summaries,
+    // worklog drafts, classification - so one check covers all of them and cannot
+    // be forgotten by the next feature that needs a model. A check bolted onto the
+    // worklog command instead would have left the other four callers lying.
+    //
+    // ONLY on `ok == false`, never on `rate_limited`: a rate limit clears on its
+    // own and is already handled below by the backoff, which is a wait rather than
+    // a refusal. And "paused" is the truthful word for what happens next - the
+    // caller leaves its unit of work pending and retries on the following tick, so
+    // nothing is lost by refusing early; the same work is drafted the moment the
+    // provider is working again.
+    let health = super::detect::in_use_provider_health(&s).await;
+    if let Some(refusal) = health_refusal(&health) {
+        tracing::warn!(
+            provider = chosen.as_str(),
+            label = %req.label,
+            error = %refusal,
+            "llm: refusing the call - the chosen provider is not available"
+        );
+        return Err(refusal);
+    }
 
     // Still inside an earlier rate limit's window. Refuse without dialling out: the quota
     // has not refilled, so the call would spend a round-trip to earn the same 429 and, on a
@@ -383,7 +438,18 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
             }
         }
         match backend.complete(req).await {
-            Ok(out) => return Ok((out, chosen)),
+            Ok(out) => {
+                // THE ONE PLACE THAT KNOWS. Provider health is otherwise decided
+                // entirely by the last Test Connection the user pressed, which
+                // meant a single old failure kept "<provider> isn't available"
+                // across the dashboard indefinitely while calls like this one
+                // kept succeeding underneath it — the banner and the work on
+                // screen flatly contradicting each other. A success reported
+                // here clears that. Cheap: it reads a small JSON file and only
+                // writes when there is a bad verdict to correct.
+                super::detect::note_live_call_success(chosen.as_str());
+                return Ok((out, chosen));
+            }
             Err(LlmError::RateLimited {
                 message,
                 retry_after,
@@ -465,6 +531,53 @@ mod tests {
 
         settings.rewrite(r#"{"llm_provider":"cursor"}"#);
         assert_eq!(resolve().provider(), LlmProvider::Cursor);
+    }
+
+    /// THE bug this gate exists for.
+    ///
+    /// Before it, `in_use_provider_health` had exactly one consumer in the whole
+    /// codebase - the dashboard banner - so the app displayed "Claude Code isn't
+    /// available. Hourly summaries are paused." across the top of the screen while
+    /// Generate Worklog, four inches below it, cheerfully spawned that same
+    /// provider and drafted an update. Two code paths that had never been
+    /// introduced to each other, each confidently contradicting the other.
+    ///
+    /// The check lives in `complete` and nowhere else on purpose: it is the single
+    /// funnel every prose call goes through, so one gate covers hourly folds, day
+    /// summaries, worklog drafts and classification alike, and the next feature
+    /// that needs a model inherits it without having to know it exists.
+    #[test]
+    fn an_unavailable_provider_refuses_the_call_and_says_how_to_fix_it() {
+        let health =
+            |ok, rate_limited, detail: Option<&str>| crate::llm::detect::InUseProviderHealth {
+                ok,
+                rate_limited,
+                name: "Claude Code".to_string(),
+                detail: detail.map(str::to_string),
+            };
+
+        // Unavailable → refuse, carrying the reason AND the fix.
+        let err = health_refusal(&health(false, false, Some("not signed in")))
+            .expect("an unavailable provider must not reach the backend");
+        assert!(matches!(err, LlmError::Failed(_)), "got {err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("not signed in"), "keeps the reason: {msg}");
+        assert!(
+            msg.contains("Settings") && msg.contains("Intelligence"),
+            "points at the fix: {msg}"
+        );
+
+        // Unavailable with no recorded detail still refuses — a missing message is
+        // not evidence that the provider works.
+        assert!(health_refusal(&health(false, false, None)).is_some());
+
+        // RATE-LIMITED IS NOT A REFUSAL. It clears on its own and the backoff below
+        // already handles it as a wait; gating here would turn a self-healing pause
+        // into a product that stops working until someone intervenes.
+        assert!(health_refusal(&health(true, true, Some("usage limit"))).is_none());
+
+        // Healthy → nothing in the way.
+        assert!(health_refusal(&health(true, false, None)).is_none());
     }
 
     #[test]

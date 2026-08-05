@@ -214,13 +214,28 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
           past. On a past date the section is read-only: it shows that day's
           committed focus (or a quiet empty note), with no Edit/Add
           affordances. `focusLabel` relabels the heading off "Today's".
-          The empty-TODAY case is shown to every user, including solo/
-          no-tracker (PlanView's composer already supports a personal,
-          tracker-free task, see PlanView.tsx's `boardEmpty` path) — everything
-          else (the populated checklist, and a past day's read-only note)
-          stays tracker-only, unchanged. `plan` gates the empty branch so it
-          never flashes before the first `get_plan` resolves. */}
-      {((isToday && plan && focusItems.length === 0) || (!isSolo && (focusItems.length > 0 || !isToday))) && (
+
+          NOT GATED ON A TRACKER, in either branch. It used to be: only the
+          empty-today nudge was shown to everyone and the populated checklist
+          required `!isSolo`, on the assumption that a solo user would never
+          have a confirmed plan. Two things made that false — PlanView's
+          composer has always written personal, tracker-free tasks
+          (`boardEmpty`), and adding one now confirms the plan immediately
+          (the Confirm button is gone, see PlanView's `commit`). So the moment
+          a solo user added their first task the whole section DISAPPEARED:
+          the nudge stopped qualifying (no longer empty) and the checklist was
+          barred (isSolo), leaving them with no plan surface and no way back
+          into the planner from this panel. A personal task is exactly as real
+          as an imported ticket; nothing in here reads a tracker.
+
+          The one place `isSolo` still counts is a PAST day with nothing
+          planned: "No focus was planned for Tuesday" is a useful absence to a
+          board user reviewing a week and pure noise to someone who has never
+          used the planner, so that branch is left exactly as it was.
+
+          `plan` gates the empty branch so it never flashes before the first
+          `get_plan` resolves. */}
+      {((isToday && plan) || focusItems.length > 0 || (!isSolo && !isToday)) && (
         <div>
           {focusItems.length === 0 && isToday ? (
             <div>

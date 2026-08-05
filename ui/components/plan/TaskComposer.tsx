@@ -81,8 +81,20 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
   // is the same flow continuing, not a new open — so the note is kept and the draft they
   // already asked for runs on its own. Without this the reset below wiped the note and the
   // user was returned to an empty box having been promised otherwise.
+  // ASKED ONCE PER MOUNT, not once per effect RUN. `consumeResume` is one-shot by design,
+  // and under `reactStrictMode` (next.config.ts) React deliberately runs this effect, tears
+  // it down, and runs it AGAIN on the same instance. The second run found the flag already
+  // spent, read that as "an ordinary open", and fell through to `resetComposer()` - so the
+  // exact flow this branch exists to protect wiped the note it was protecting and never
+  // started the draft. The user connected a provider and landed on an empty composer.
+  //
+  // The ref caches the answer for the life of the instance (it survives the StrictMode
+  // remount, which is the whole point), so both runs take the same branch and the second
+  // one re-arms the draft timer the first one's cleanup cancelled.
+  const resuming = useRef<boolean | null>(null)
   useEffect(() => {
-    if (consumeResume()) {
+    if (resuming.current === null) resuming.current = consumeResume()
+    if (resuming.current) {
       // Whatever the health probe last thought is stale by definition - they just
       // connected one. Clear the notice so it cannot flash back over the fields.
       setNoProvider(false)
@@ -295,6 +307,7 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
           <div className="mt-3">
             <FieldLabel drafted={s.descriptionDrafted}>Description</FieldLabel>
             <textarea
+              data-tour="task-desc"
               rows={3} value={s.description} onChange={e => setDescription(e.target.value)}
               placeholder="Briefly, what the task is - name the thing you're working on."
               className={`${INPUT} ${FOCUS}`} style={{ ...inputStyle, resize: 'vertical' }}
@@ -325,7 +338,11 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
              that choice - so it lives inside the option as a picker rather than
              fanning the row out into N cards that all say the same sentence. */}
         {boardProvider && (
-          <div className="mt-4">
+          // data-tour: the walkthrough stops here and makes the user choose. It is
+          // the only decision on this form with a consequence outside Meridian -
+          // one option files a real ticket their team can see - so it is the one
+          // thing here they should not discover by accident later.
+          <div className="mt-4" data-tour="task-where">
             <FieldLabel>Where</FieldLabel>
             <div role="radiogroup" aria-label="Where to create this task"
               className="grid gap-2 grid-cols-1 sm:grid-cols-2">

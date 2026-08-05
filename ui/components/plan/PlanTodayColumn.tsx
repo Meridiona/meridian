@@ -7,57 +7,56 @@
 // Props-only and stateless on purpose — PlanView owns `today` because onDragEnd
 // mutates it across BOTH columns, so the list can't live in either one of them.
 //
-// The footer's four states (proposed / skipped / editing / confirmed-locked) are the
-// mode algebra rendered: PlanView decides which one is live, this file only draws it.
+// The footer used to render a four-state mode algebra (proposed / editing /
+// confirmed-locked / skipped) around a Confirm button. There is no such algebra
+// any more: every change to the list saves itself in `PlanView.commit`, so the
+// only distinction left is skipped vs not, and the footer's job shrank to the one
+// control that still represents a decision - opting out of planning today.
 
 import { Droppable } from '@hello-pangea/dnd'
 import { DraggableCard } from '@/components/plan/DraggableCard'
 import type { CardTask } from '@/components/plan/TaskCard'
-import { FOCUS, PRIMARY_BTN, GHOST_BTN } from '@/components/plan/planStyles'
+import { FOCUS, PRIMARY_BTN } from '@/components/plan/planStyles'
 import { MAX_PLAN_TASKS } from '@/lib/api-types'
 
 export function PlanTodayColumn({
-  today, editable, proposed, editing, confirmedMode, skipped,
-  onRemove, onOpen, onConfirm, onSkip, onReopen, onEdit, onSave, onCancel,
+  today, editable, skipped, onRemove, onOpen, onSkip, onReopen,
 }: {
   today: CardTask[]
-  /** The dev can drag / add / remove right now. */
+  /** The dev can drag / add / remove right now - true unless the day is skipped. */
   editable: boolean
-  /** The pre-confirm draft. */
-  proposed: boolean
-  /** An unlocked "Edit plan" session over a confirmed plan. */
-  editing: boolean
-  confirmedMode: boolean
   skipped: boolean
   onRemove: (key: string) => void
   onOpen: (task: CardTask) => void
-  onConfirm: () => void
   onSkip: () => void
   onReopen: () => void
-  onEdit: () => void
-  onSave: () => void
-  onCancel: () => void
 }) {
   return (
     <div className="rounded-xl flex flex-col min-h-0 bg-card" style={{ border: '1px solid var(--t-card-border)' }}>
       <div className="shrink-0 px-4 pt-4">
         <div className="flex items-center justify-between mb-1">
-          <p className="mt-label" style={{ color: 'var(--t-faint)' }}>Today · {today.length}</p>
-          {proposed && today.length > 0 && (
+          {/* A real column heading, matching PlanBoardColumn's. "Today" and "Your
+              tasks" are the only structural labels on this screen - they say which
+              half is your day and which half is your board - and as `.mt-label`
+              micro-caps they read as field labels for the controls under them. */}
+          <p style={{ font: '800 16px var(--font-sans)', letterSpacing: '-.012em', color: 'var(--t-title)' }}>
+            Today
+            <span className="mt-body-sm" style={{ color: 'var(--t-faint)', fontWeight: 500, marginLeft: 7 }}>{today.length}</span>
+          </p>
+          {/* The "Suggested" chip is gone with the draft state it labelled. Every
+              card in this column is now something the user put there and the app
+              has saved; calling that a suggestion would be untrue of all of it. */}
+          {!skipped && today.length > 0 && (
             <span className="mt-chip px-1.5 py-0.5 rounded"
-              style={{ color: 'var(--color-state-proposal)', background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)' }}>
-              Suggested
+              style={{ color: 'var(--color-state-approved)', background: 'color-mix(in srgb, var(--color-state-approved) 12%, transparent)' }}>
+              Saved
             </span>
           )}
         </div>
         <p className="mt-body-sm mb-2" style={{ color: 'var(--t-faint)' }}>
-          {proposed
-            ? 'We pre-filled what looks active. Drag to reorder, drag a card out to remove, or add from your board — then confirm.'
-            : editing
-              ? 'Reorder, add, or remove — then Save to update today’s plan, or Cancel to discard.'
-              : confirmedMode
-                ? 'Your plan is locked in. Hit Edit plan to make changes.'
-                : 'Plan your day below.'}
+          {skipped
+            ? 'You skipped planning today.'
+            : 'Drag to reorder, drag a card out to remove, or add from your board - every change saves itself.'}
         </p>
         {/* Two rungs: a nag at 5, a wall at MAX_PLAN_TASKS. The wall is mirrored in
             Rust (plan::check_plan_size) - this is just the faster of the two. */}
@@ -76,6 +75,10 @@ export function PlanTodayColumn({
       <Droppable droppableId="today">
         {(provided, snapshot) => (
           <div ref={provided.innerRef} {...provided.droppableProps}
+            // data-tour: the walkthrough spotlights this as the drop TARGET while it
+            // asks the user to drag today's work across. It is the drop zone itself,
+            // not the header, so the ring lands on the area the cursor must reach.
+            data-tour="plan-today"
             className="rounded-xl transition-colors flex-1 min-h-0 overflow-y-auto nice-scroll mx-4 mb-2 p-2 space-y-2"
             style={{
               background: snapshot.isDraggingOver ? 'color-mix(in srgb, var(--color-state-proposal) 10%, transparent)' : 'var(--t-box)',
@@ -111,38 +114,23 @@ export function PlanTodayColumn({
         )}
       </Droppable>
 
+      {/* One control, because one decision is left. Confirm / Save changes /
+          Cancel / Edit plan all existed to gate a write that now happens as the
+          user acts, and a button that agrees with something you already did is a
+          step whose only real effect is letting you lose the work by not pressing
+          it. Skipping the day is genuinely a choice, so it stays. */}
       <div className="shrink-0 px-4 py-3.5 border-t flex items-center gap-3" style={{ borderColor: 'var(--t-hair)' }}>
-        {proposed ? (
-          <>
-            <button onClick={onConfirm}
-              className={`${PRIMARY_BTN} ${FOCUS}`} style={{ background: 'var(--color-state-approved)', color: '#fff' }}>
-              Confirm {today.length > 0 ? `${today.length} task${today.length === 1 ? '' : 's'}` : 'plan'} →
-            </button>
-            <button onClick={onSkip} className={`mt-body-sm px-2 py-1.5 rounded-md ml-auto ${FOCUS}`} style={{ color: 'var(--t-faint-2)' }}>
-              Skip today
-            </button>
-          </>
-        ) : skipped ? (
+        {skipped ? (
           <button onClick={onReopen}
             className={`${PRIMARY_BTN} ${FOCUS}`} style={{ background: 'var(--color-state-approved)', color: '#fff' }}>
             Plan today →
           </button>
-        ) : editing ? (
-          <>
-            <button onClick={onSave} className={`${PRIMARY_BTN} ${FOCUS}`} style={{ background: 'var(--color-state-approved)', color: '#fff' }}>
-              Save changes
-            </button>
-            <button onClick={onCancel} className={`mt-body-sm px-2 py-1.5 rounded-md ${FOCUS}`} style={{ color: 'var(--t-faint-2)' }}>
-              Cancel
-            </button>
-          </>
         ) : (
           <>
-            <button onClick={onEdit} className={`${GHOST_BTN} ${FOCUS}`}
-              style={{ border: '1px solid var(--t-ctrl-border)', color: 'var(--t-muted)' }}>
-              Edit plan
+            <span className="mt-body-sm" style={{ color: 'var(--t-faint-2)' }}>These lead today’s task matching.</span>
+            <button onClick={onSkip} className={`mt-body-sm px-2 py-1.5 rounded-md ml-auto ${FOCUS}`} style={{ color: 'var(--t-faint-2)' }}>
+              Skip today
             </button>
-            <span className="mt-body-sm ml-auto" style={{ color: 'var(--t-faint-2)' }}>These lead today’s task matching.</span>
           </>
         )}
       </div>

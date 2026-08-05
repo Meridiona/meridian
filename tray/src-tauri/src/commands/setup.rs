@@ -335,6 +335,13 @@ pub async fn disconnect_llm_provider(id: String) -> Result<(), String> {
         },
         elapsed_ms: 0,
         tested_at: chrono::Utc::now().to_rfc3339(),
+        // ASSERTED, not measured — so nothing automatic may undo it. Both of the
+        // health layer's self-corrections would otherwise erase this within
+        // minutes: a successful background call clears a recorded failure, and a
+        // day-old failure ages out. Neither is wrong in general; both are wrong
+        // for a state the developer is deliberately holding in order to work on
+        // it. Only an explicit Test Connection or Rescan replaces this row.
+        sticky: true,
     });
     tracing::info!(provider = %id, "llm: provider disconnected (dev)");
     Ok(())

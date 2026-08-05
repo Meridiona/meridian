@@ -176,7 +176,7 @@ describe('the required lock', () => {
     // that is not done.
     expect(settingsModal).toContain("const required = lock === 'required' && !connected")
     expect(settingsModal).toContain("connected ? 'Done'")
-    expect(settingsModal).toContain('onConnected={() => setConnected(true)}')
+    expect(settingsModal).toContain("onConnected={() => release('connected')}")
     expect(intelligence).toContain("if (s === 'saved') { onConnected?.(); resolve() }")
   })
 

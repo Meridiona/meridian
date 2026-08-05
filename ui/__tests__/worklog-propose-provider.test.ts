@@ -22,6 +22,9 @@ const src = (p: string) => readFileSync(join(import.meta.dir, '..', p), 'utf8')
 const targets = src('components/timeline/WorklogTargets.tsx')
 const worklog = src('components/timeline/useWorklog.ts')
 const panel = src('components/timeline/DayTaskDetailPanel.tsx')
+// The worklog surfaces moved out of the panel into a dialog of their own; the
+// confirm step lives with the other phase controls.
+const actions = src('components/timeline/WorklogActions.tsx')
 const column = src('components/timeline/DayTaskColumn.tsx')
 
 const PROPOSE = { issue_type: 'Task', title: 'Ship it', description: 'do the thing' }
@@ -85,7 +88,10 @@ describe('trackerName', () => {
 
   it('falls back to the raw id rather than rendering an empty gap', () => {
     expect(trackerName('some_new_tracker')).toBe('some_new_tracker')
-    expect(trackerName('')).toBe('')
+    // An unresolved provider is the one id that has no readable fallback of its
+    // own - returning it verbatim put a hole in every sentence built on this
+    // ("Will be created in ").
+    expect(trackerName('')).toBe('your tracker')
   })
 })
 
@@ -125,7 +131,44 @@ describe('the write goes through the store, never straight from the component', 
 
 describe('the confirm names the board before an irreversible create', () => {
   it('says which tracker the new ticket lands in', () => {
-    expect(panel).toContain('Create a new ${draft.propose.issue_type} in ${providerName(draft.provider)}')
+    expect(actions).toContain('Create a new ${draft.propose.issue_type} in ${providerName(draft.provider)}')
+  })
+})
+
+describe('the draft names the ticket, not the delivery mechanism', () => {
+  const targets = src('components/timeline/WorklogTargets.tsx')
+
+  it('leads with the ticket title, and demotes key + tracker + match to meta', () => {
+    // The row opened "Comment on MER-475 · 90% match" in bold with the ticket's
+    // actual name underneath it, smaller and dimmer - so the largest text
+    // described HOW the update is delivered, while the one thing the user has to
+    // judge ("is this the right ticket?") was the quietest thing in the box.
+    expect(targets).not.toContain("'Comment on'")
+    expect(targets).toContain('{task_title || task_key}')
+    // The tracker is a mark, not a word: recognised faster than it is read.
+    expect(targets).toContain('<ProviderIcon provider={provider}')
+  })
+})
+
+describe('a posted update is stated once', () => {
+  const actions = src('components/timeline/WorklogActions.tsx')
+
+  it('does not print "Posted to X" beside "Linked to X"', () => {
+    // The same fact in two shapes with two verbs reads as two different things
+    // having happened, and leaves the user working out which one to click. The
+    // outcome is said once and the ticket itself is the link.
+    // Code lines only - the comment above the fix quotes the old string.
+    const code = actions.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+    expect(code).not.toContain('Linked to')
+    expect(code).toContain('function TicketLink(')
+    expect(actions).toContain('openExternal(url)')
+  })
+
+  it('drops the chip it replaced rather than leaving it behind', () => {
+    // LinkChip existed only for that duplicate row; left exported it is dead code
+    // that reads like the sanctioned way to render a ticket link.
+    const kit = src('components/timeline/dayTaskKit.tsx')
+    expect(kit).not.toContain('LinkChip')
   })
 })
 
@@ -138,5 +181,112 @@ describe('the card corner icon follows the provider, and is never hardcoded', ()
   it('renders no pill at all when nothing has been posted yet', () => {
     // Better a missing pill than one claiming a board the work never reached.
     expect(column).toContain('laid.task.posted_provider &&')
+  })
+})
+
+describe('the update is a document with edges and a name', () => {
+  const dialog = src('components/timeline/WorklogDraftDialog.tsx')
+  const summary = src('components/tutorial/TutorialSummaryTask.tsx')
+
+  it('puts the target and the update in ONE card, for both callers', () => {
+    // They were two stacked panels in two tints - an amber proposal above a
+    // lilac update box - which said, in the only language a layout has, that
+    // they were separate things to weigh. They are one object: a ticket and the
+    // text that goes on it. Both top-level surfaces render the same component,
+    // so the walkthrough teaches the screen that actually ships.
+    expect(dialog).toContain('<DraftDocument draft={draft}')
+    expect(summary).toContain('<DraftDocument draft={draft}')
+    expect(targets).toContain('export function DraftDocument')
+    // Nested inside that card, the parts carry no frame of their own.
+    expect(targets).toContain('<UpdateBody update={draft.update} boxed unframed />')
+    expect(targets).toContain('trackers={trackers} flat')
+  })
+
+  it('names the block once, without a second grey line under it', () => {
+    // "Posted on the ticket exactly as written here" sat under the title as a
+    // third grey size stacked above the prose, which is what made this corner
+    // read as blurred. The framed, titled card answers what it is on its own.
+    expect(targets).toContain('THE UPDATE')
+    expect(targets).not.toContain('Posted on the ticket exactly as written here.')
+  })
+
+  it('sets the update as body copy, not as metadata', () => {
+    // The `Field`/`Bullets` kit is tuned for labels beside a card - an 11px
+    // uppercase kicker in `--t-faint` over 12px `--t-muted` lines. This is the
+    // text that gets posted on someone's ticket, and at those sizes and
+    // contrasts a paragraph of real prose reads as blurred rather than quiet.
+    const body = targets.slice(targets.indexOf('export function UpdateBody'), targets.indexOf('export function updateToText'))
+    expect(body).toContain("color: 'var(--t-title)', fontSize: 13, lineHeight: 1.6")
+    // Only the compact in-row variant still uses the kit.
+    expect(body).toContain('sections.map((sec, i) => boxed ? (')
+  })
+
+  it('does not frame it inside a target row, which is already the frame', () => {
+    // Per-ticket bodies render inside the row's own tinted surface; a second
+    // card in there nests one box inside another.
+    const row = targets.slice(targets.indexOf('function TargetRow'))
+    expect(row).toContain('{body && <UpdateBody update={body} />}')
+    expect(row).not.toContain('boxed')
+  })
+
+  it('renders the status as a verdict, not another bulleted section', () => {
+    // It used to be a third `Field` identical to Decisions and Verification, so
+    // "Shipped" read as one more heading with one more thing under it.
+    const body = targets.slice(targets.indexOf('export function UpdateBody'))
+    expect(body).toContain('>STATUS</span>')
+    expect(body).not.toContain("<Field label=\"Status\">")
+  })
+})
+
+describe('the update can leave the app', () => {
+  it('flattens to text that survives being pasted anywhere', async () => {
+    const { updateToText } = await import('../components/timeline/WorklogTargets')
+    const text = updateToText({
+      summary: 'Feed loads instantly now.',
+      sections: [
+        { heading: 'Decisions', points: ['Dropped offset pagination.', 'Keyed on (created_at, id).'] },
+        { heading: 'Empty', points: ['  '] },
+        { heading: '', points: ['orphan'] },
+      ],
+      status: 'Shipped',
+    })
+    expect(text).toBe(
+      'Feed loads instantly now.\n\n'
+      + '## Decisions\n- Dropped offset pagination.\n- Keyed on (created_at, id).\n\n'
+      + 'Status: Shipped',
+    )
+  })
+
+  it('offers the copy on the update itself', () => {
+    // The draft is often wanted where the tracker is not - a standup, a PR body.
+    // Hand-selecting prose that spans headings picks the labels up as body text.
+    expect(targets).toContain('navigator.clipboard.writeText(updateToText(update))')
+    expect(targets).toContain('<CopyUpdate update={update} />')
+  })
+})
+
+describe('the action row is one decision, not three options', () => {
+  it('keeps only the two controls that answer "where does this go"', () => {
+    // Three identically-bordered buttons read as three options of the same kind.
+    // Two of these answer where the update lands; Regenerate answers whether the
+    // TEXT is right, which is a question about the document.
+    // Comments stripped: the fix left one explaining the bug, and it names the
+    // control it removed.
+    const row = actions.slice(actions.indexOf('export function DraftActions'),
+      actions.indexOf('export function RegenerateDraft'))
+      .split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+    expect(row).toContain('data-tour="wl-rematch"')
+    expect(row).toContain('data-tour="wl-approve"')
+    expect(row).not.toContain('Regenerate')
+    expect(row).not.toContain('onRegenerate')
+  })
+
+  it('moves rewriting onto the document, beside when it was written', () => {
+    const dialog = src('components/timeline/WorklogDraftDialog.tsx')
+    expect(actions).toContain('export function RegenerateDraft')
+    expect(dialog).toContain('<RegenerateDraft busy={busy} onRegenerate={generate} />')
+    // Only while there is a draft to rewrite and it has not gone out yet - a
+    // posted update is followed up, not overwritten (that is `PostedBar`'s job).
+    expect(dialog).toContain('{draft && !posted && <RegenerateDraft')
   })
 })

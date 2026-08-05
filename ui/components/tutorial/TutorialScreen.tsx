@@ -26,12 +26,19 @@
 //
 // # Related
 // - `./TutorialPanel.tsx` — the right panel
+// - `./TutorialSummaryCard.tsx` — the end-of-day summary a beat opens
+// - `./TutorialTray.tsx` — the menu-bar replica the pause beat drives
 // - `./sampleDay.ts` — the example day
 // - `./script.ts` — the beats that drive `phase` / `summaryOpen`
 
 import { DayTaskColumn } from '@/components/timeline/DayTaskColumn'
 import { DayTaskDetailPanel, type DayTaskDetail } from '@/components/timeline/DayTaskDetailPanel'
+import { TOUR_SURFACE_ATTR } from './engine'
 import { TutorialPanel } from './TutorialPanel'
+import { ReplayAside } from './ReplayAside'
+import { demoBoardTickets, useDemoWorklog } from './demoWorklog'
+import { TutorialSummaryCard } from './TutorialSummaryCard'
+import { TutorialTray } from './TutorialTray'
 import { sampleDayString, type SampleOverview } from './sampleDay'
 import type { DayTask } from '@/lib/api-types'
 
@@ -43,22 +50,66 @@ function todayString(): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
 
-export function TutorialScreen({ phase, tasks, sample, selected, onSelect, summaryOpen, onOpenPlan }: {
+export function TutorialScreen({ phase, tasks, replayMinute, replayNote = null, sample, selected, onSelect, summaryOpen, trayOpen, provider, onOpenPlan }: {
   phase: 'empty' | 'example'
   /** The cards to draw — empty in the first phase. */
   tasks: DayTask[]
+  /** Minutes past 9 AM while `Stage.replayDay` runs, else null. Two jobs: it
+   *  drives the timeline's own now-line and lit hour rail (`replayNowMin`), and
+   *  it swaps the right panel out - during the replay the panel's own stats would
+   *  be a finished day's totals sitting beside a timeline still filling, i.e. the
+   *  answer printed next to the question. */
+  replayMinute: number | null
+  /** The replay's current narration line, shown in the right panel (not the
+   *  overlay bar, which sits on top of the timeline). */
+  replayNote?: string | null
   sample: SampleOverview
   selected: DayTaskDetail | null
   onSelect: (d: DayTaskDetail | null) => void
   summaryOpen: boolean
+  /** The menu-bar replica, for the beat that teaches the off switch. */
+  trayOpen: boolean
+  /** The tracker the user connected during the tour, so the summary's post flow
+   *  names their board instead of promising Jira to a GitHub user. */
+  provider: { id: string; name: string } | null
   onOpenPlan: () => void
 }) {
   const isExample = phase === 'example'
+  // The scripted worklog machine behind the REAL detail panel. Built here (rather
+  // than inside the panel) because it must survive the panel unmounting when the
+  // user clicks away from the card and back - the same reason the live hook keeps
+  // its state in a module store.
+  const demoWl = useDemoWorklog(provider?.id ?? 'jira')
+  const demoTickets = demoBoardTickets(provider?.id ?? 'jira')
   return (
-    <div className="absolute inset-0 flex flex-col" style={{ zIndex: 30, background: 'var(--win-bg)' }}>
+    // `data-tour-surface`: this is a REPLICA drawn OVER the live dashboard, not
+    // a replacement for it - the real shell is still mounted underneath with the
+    // same `data-tour` hooks on its own toolbar and cards, and it renders first,
+    // so an unscoped `querySelector` finds the hidden original every time. The
+    // marker lets `tourTarget` prefer what is actually on screen. Without it the
+    // summary beat rang a spot beside the pill and could only ever end on its
+    // fallback timer, because the button the user could press was never measured.
+    <div {...{ [TOUR_SURFACE_ATTR]: '' }}
+      className="absolute inset-0 flex flex-col" style={{ zIndex: 30, background: 'var(--win-bg)' }}>
       <TutorialToolbar isExample={isExample} />
 
-      <div className="flex flex-1 min-h-0">
+      {/* data-tour: the beat right after the replay rings the WHOLE view at once -
+          the timeline and the glance panel together - because the point being made
+          there is about the day as a finished thing, not about any one card. */}
+      <div data-tour="day-view" className="flex flex-1 min-h-0">
+        {/* No replay class here any more. This used to carry `mer-replay`, whose
+            rule animated every `.dt-card` on MOUNT - which worked only because
+            the walkthrough was feeding the column a task list that grew, so each
+            reveal was a fresh mount. That list is exactly what made the replay
+            look wrong (the column re-scaled itself around each new card), and
+            with the whole day handed over up front nothing mounts mid-replay, so
+            the mount hook has nothing to fire on. The reveal now lives on the
+            card, driven by `replayNowMin` - see `revealed` in DayTaskColumn.
+
+            The old keyframe also scaled the card up from .96, which read as the
+            view zooming on every card. The replacement only fades and rises: at
+            replay speed a scale change on a card that is already in its final
+            position is indistinguishable from the layout moving. */}
         <div className="relative flex-1 min-w-0 min-h-0 flex flex-col">
           <DayTaskColumn
             day={isExample ? sampleDayString() : todayString()}
@@ -70,83 +121,74 @@ export function TutorialScreen({ phase, tasks, sample, selected, onSelect, summa
             tasks={tasks}
             selectedId={selected?.id ?? null}
             onSelect={onSelect}
+            // The replay's clock, on the rail where the work is - see ReplayAside
+            // for why it is not a dial in the panel any more. Absolute minutes
+            // from midnight; `replayMinute` counts from 9 AM.
+            replayNowMin={replayMinute !== null ? 540 + replayMinute : null}
           />
         </div>
-        <div className="shrink-0 border-l min-h-0"
+        {/* Keyed on WHICH view is in the slot, so React remounts on a change and
+            the pane fades up instead of being swapped out from under the user.
+            Three unrelated things share this column across the run - the replay
+            clock, a task write-up, the standing panel - and every handover
+            between them was a hard cut, which is what made the tour feel like a
+            slideshow rather than one screen being operated. Not keyed on the
+            task id: re-selecting a card must not re-animate a panel that is
+            already there.
+
+            The rise is safe here ONLY because the worklog draft dialog portals
+            to `document.body`. It is `fixed inset-0` so it can centre on the
+            window from in here, and while it was a DOM descendant of this
+            column both halves of this animation broke it - the transform made
+            this div the containing block for `fixed` (dialog fenced into 388px),
+            and the opacity opened a stacking context (timeline painting over
+            it). Anything else `fixed` rendered into this slot needs the same
+            treatment; see the header of `WorklogDraftDialog`. */}
+        <div key={replayMinute !== null ? 'replay' : selected ? 'task' : 'panel'}
+          className="shrink-0 border-l min-h-0 mer-tour-pane"
           style={{ width: 388, borderColor: 'var(--t-hair)', background: 'var(--t-panel)' }}>
-          {selected
-            ? <DayTaskDetailPanel detail={selected} onClose={() => onSelect(null)}
-                onCorrected={() => onSelect(null)} onOpenSettings={() => {}} onOpenTask={() => {}} />
-            : <TutorialPanel sample={sample} phase={phase} onOpenPlan={onOpenPlan} />}
+          {replayMinute !== null
+            ? <ReplayAside minute={replayMinute} note={replayNote} />
+            : selected
+              ? <DayTaskDetailPanel detail={selected} onClose={() => onSelect(null)}
+                  onCorrected={() => onSelect(null)} onOpenSettings={() => {}} onOpenTask={() => {}}
+                  worklog={demoWl} boardTickets={demoTickets} />
+              : <TutorialPanel sample={sample} phase={phase} onOpenPlan={onOpenPlan} />}
         </div>
       </div>
 
-      {summaryOpen && <TutorialSummary sample={sample} />}
+      {summaryOpen && <TutorialSummaryCard sample={sample} provider={provider} />}
+      {trayOpen && <TutorialTray />}
     </div>
   )
 }
 
 /** A stand-in for the real Toolbar. Deliberately inert: every control up there
  *  (day arrows, nav pills, Settings) would take the user somewhere the script is
- *  not expecting. The one thing it carries is the Daily-summary pill, which a
- *  beat points at. */
+ *  not expecting. The one thing it carries is the Daily-summary button, which a
+ *  beat points at, opens, and spends the whole back half of the tour inside.
+ *
+ *  IT SITS WHERE THE REAL ONE SITS - left, immediately after the day label - and
+ *  wears the real one's treatment (see `Toolbar.tsx`). It used to be a faint
+ *  `<span>` pushed to the far right of an otherwise empty strip, which failed
+ *  twice over: it did not read as a control at all, so the beat that flies a
+ *  cursor into it and clicks looked like the summary opening by itself; and it
+ *  taught the wrong place, so the first thing the user does in the real app after
+ *  the tour is hunt the top-right corner for a button that is on the left. */
 function TutorialToolbar({ isExample }: { isExample: boolean }) {
   return (
-    <div className="flex items-center gap-3 px-5 py-3.5 border-b shrink-0"
-      style={{ borderColor: 'var(--t-hair)' }}>
-      <p className="mt-greeting text-title" style={{ fontSize: 17 }}>
+    <div className="flex items-center gap-4 px-5 border-b shrink-0"
+      style={{ height: 60, borderColor: 'var(--t-hair)' }}>
+      <p className="mt-toolbar-date" style={{ color: 'var(--t-title)' }}>
         {isExample ? 'An example day' : 'Today'}
       </p>
-      <span className="flex-1" />
-      <span data-tour="summary-pill"
-        className="inline-flex items-center gap-2 rounded-full px-3.5 py-1.5"
-        style={{ background: 'var(--t-card)', border: '1px solid var(--t-card-border)' }}>
-        <span className="rounded-full" style={{ width: 6, height: 6, background: 'var(--color-state-proposal)' }} />
-        <span className="mt-body-sm" style={{ color: 'var(--t-title)' }}>Daily summary</span>
-      </span>
+      <button data-tour="summary-pill"
+        className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 bg-ctrl shrink-0"
+        style={{ border: '1px solid var(--t-ctrl-border)', cursor: 'pointer' }}>
+        <span aria-hidden="true" className="inline-block rounded-full"
+          style={{ width: 6, height: 6, background: 'var(--accent)' }} />
+        <span className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>Daily summary</span>
+      </button>
     </div>
   )
-}
-
-/** The end-of-day summary, as the marketing demo renders it (`renderSummary` in
- *  demo.js). Its own component rather than the real `DaySummaryOverlay`, which
- *  reads the user's actual day — on a fresh install that is empty, and on a
- *  working one it is their real work, which is the thing this whole screen
- *  exists to stop showing. Copy is carried over verbatim. */
-function TutorialSummary({ sample }: { sample: SampleOverview }) {
-  const done = sample.focusItems.filter(t => t.is_terminal).length
-  return (
-    <div className="absolute inset-0 flex items-center justify-center p-10"
-      style={{ zIndex: 5, background: 'color-mix(in srgb, var(--win-bg) 82%, transparent)', backdropFilter: 'blur(3px)' }}>
-      <div className="w-full rounded-2xl p-8 bg-card mer-pop"
-        style={{ maxWidth: 620, border: '1px solid var(--t-card-border)', boxShadow: 'var(--mt-modal-shadow)' }}>
-        <p className="mt-label" style={{ color: 'var(--color-state-proposal)' }}>Daily summary</p>
-        <p className="mt-greeting text-title mt-2" style={{ fontSize: 24 }}>Here&apos;s your day</p>
-        <p className="mt-body mt-3" style={{ color: 'var(--t-muted)', lineHeight: 1.55 }}>
-          You wrapped <b style={{ color: 'var(--t-title)' }}>{done} of {sample.focusItems.length}</b> planned
-          tasks. An urgent logout bug pulled you off the third - it rolls to tomorrow, already noted.
-        </p>
-        <div className="grid grid-cols-3 gap-3 mt-6">
-          <SummaryStat n={`${done} / ${sample.focusItems.length}`} l="Planned done" />
-          <SummaryStat n={fmtHrs(sample.engagedSeconds)} l="Time logged" />
-          <SummaryStat n="+1" l="Urgent pickup" accent />
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function SummaryStat({ n, l, accent }: { n: string; l: string; accent?: boolean }) {
-  return (
-    <div className="rounded-xl p-3.5 bg-box text-center">
-      <p className="mt-stat" style={{ color: accent ? 'var(--color-state-proposal)' : 'var(--t-title)' }}>{n}</p>
-      <p className="mt-label mt-1" style={{ color: 'var(--t-faint)' }}>{l}</p>
-    </div>
-  )
-}
-
-function fmtHrs(secs: number): string {
-  const m = Math.round(secs / 60)
-  const h = Math.floor(m / 60)
-  return h > 0 ? `${h}h ${m % 60}m` : `${m}m`
 }

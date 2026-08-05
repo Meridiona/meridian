@@ -419,6 +419,32 @@ body, .font-sans {
 @keyframes mer-pop { from { opacity: 0; transform: scale(.82); } to { opacity: 1; transform: scale(1); } }
 .mer-pop { animation: mer-pop .32s cubic-bezier(.2,.7,.2,1) both; }
 
+/* One pane of the walkthrough giving way to another in the same slot — the
+   right column swapping between the replay clock, a task write-up and the
+   standing panel, and the summary card swapping between its two views. Every
+   one of those handovers used to be a hard cut, which is what made the tour
+   read as a slideshow rather than as one screen being operated. Lives here
+   rather than in the overlay's scoped <style> because the panes it animates are
+   nowhere near that component. */
+@keyframes mer-tour-pane {
+  from { opacity: 0; transform: translateY(7px); }
+  to   { opacity: 1; transform: none; }
+}
+.mer-tour-pane { animation: mer-tour-pane .34s cubic-bezier(.2,.8,.25,1) both; }
+
+/* There WAS a transform-free variant of this (`mer-tour-fade`), for the slot
+   that can open the worklog dialog: a transform on an ancestor becomes the
+   containing block for `fixed`, so the dialog got fenced into that 388px
+   column. Dropping the transform then hit the other half of the same problem -
+   the animated opacity opens a stacking context, so the timeline painted over
+   the dialog. Both are fixed at the source now: the dialog portals to
+   `document.body`, so nothing in this file can reach it. Any other `fixed`
+   descendant of an animated pane needs that same treatment - a fade is not a
+   safe substitute. */
+@media (prefers-reduced-motion: reduce) {
+  .mer-tour-pane { animation: none; }
+}
+
 /* "Connect a tracker" CTA curved connector (CurvedArrow.tsx) — a flowing
    marching-ants dash along the curve plus a gentle float on the whole glyph,
    so it reads as pointing FROM the content above INTO the CTA below rather
@@ -660,6 +686,21 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
 .dt-card:hover {
   transform: translateY(-1px);
   filter: brightness(1.02);
+}
+
+/* The worklog entry row in the task-detail panel — the whole row is the control,
+   so it needs to answer a hover like one. Same restrained treatment as .dt-card
+   (transform + brightness only) rather than a colour change, because its tint
+   already encodes the draft's state and must not shift when a cursor passes. */
+.dt-wl-entry {
+  transition: transform 140ms cubic-bezier(0.22, 1, 0.36, 1), filter 140ms ease;
+}
+.dt-wl-entry:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.03);
+}
+.dt-wl-entry:active {
+  transform: translateY(0);
 }
 
 /* Day-task detail: a gentle fade+rise as it takes over the right panel from the

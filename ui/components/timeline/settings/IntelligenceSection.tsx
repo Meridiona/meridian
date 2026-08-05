@@ -15,12 +15,13 @@
 
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { load } from '@/lib/bridge'
 import type { RuntimeSettings } from '@/lib/settings'
 import { LLM_INTRO_TITLE, providerChoiceFields, type LlmProviderId } from '@/lib/llm-providers'
 import LlmProviderPicker, { useLlmProviderDetection } from '@/components/LlmProviderPicker'
+import { phaseFor } from '@/components/LlmProviderDetail'
 import type { SaveStatus } from './fields'
 
 export function IntelligenceSection({ settings, save, gate = false, onConnected }: {
@@ -63,6 +64,43 @@ export function IntelligenceSection({ settings, save, gate = false, onConnected 
     (id: LlmProviderId, customId?: string) => commit(providerChoiceFields(id, customId)),
     [commit],
   )
+
+  // ALREADY CONNECTED COUNTS AS CONNECTED.
+  //
+  // `commit` was the only thing that could satisfy the lock, which quietly assumed the user
+  // always arrives here with nothing working and leaves having written a choice. The other
+  // route is just as common and had no exit at all: the provider in settings.json is the one
+  // they want, and it starts answering while they are on its screen - the detail view's
+  // auto-test passes, or they sign back in and the silent re-test lands. `active` flips, the
+  // panel replaces the "Use <provider>" button with "<provider> is writing your summaries",
+  // and now there is no control left to press. The screen says everything is fine and offers
+  // nothing to do, while the walkthrough waits on a callback that can no longer fire.
+  //
+  // So the lock hangs off PROOF rather than off a write: `phaseFor(...).kind === 'ok'` for the
+  // provider settings.json already names - the identical test `LlmProviderDetail` uses for
+  // `active`, imported rather than restated so the button and this cannot disagree about what
+  // "connected" means.
+  //
+  // Gated on `gate` because firing it is not free: `onConnected` releases the modal and hands
+  // the user back to whatever pulled them here. Under the gate that is the point. Opening
+  // Settings from the toolbar to look at a provider that has been working for weeks would
+  // otherwise throw the user into the planner for no reason they asked for.
+  const handedBack = useRef<string | null>(null)
+  useEffect(() => {
+    if (!gate || !onConnected) return
+    if (handedBack.current === provider) return
+    const probed = status[provider]
+    const phase = phaseFor(
+      installingIds.has(provider),
+      signingIds.has(provider),
+      testingIds.has(provider),
+      probed,
+      probed?.last_test ?? null,
+    )
+    if (phase.kind !== 'ok') return
+    handedBack.current = provider
+    onConnected()
+  }, [gate, onConnected, provider, status, installingIds, signingIds, testingIds])
 
   return (
     <div className="max-w-[760px] flex flex-col gap-5">

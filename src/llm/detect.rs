@@ -295,6 +295,7 @@ async fn compute_in_use_provider_health(settings: &RuntimeSettings) -> InUseProv
     let name = provider_display_name(provider).to_string();
     let last_outcome = load_test_cache()
         .get(provider.as_str())
+        .filter(|r| !failure_has_expired(r))
         .map(|r| r.outcome.clone());
     // A cloud endpoint (`Custom`, `cli_name() == None`) has no binary to probe, so it's treated
     // as "installed" here — only its last test can tell us anything.
@@ -314,6 +315,97 @@ async fn compute_in_use_provider_health(settings: &RuntimeSettings) -> InUseProv
         "resolved provider install state"
     );
     classify_provider_health(name, installed, last_outcome.as_ref())
+}
+
+/// How long a recorded FAILURE is allowed to keep the banner up without anything
+/// re-confirming it.
+///
+/// This exists because a `Failed` entry used to be permanent. `tested_at` was
+/// written on every result and read by nothing, so a provider that failed once -
+/// signed out for an afternoon, a flaky spawn, a CLI mid-upgrade - was reported
+/// "isn't available" until the user happened to press Test Connection again.
+/// Meanwhile real calls kept succeeding, because they run down a completely
+/// separate path ([`crate::llm::complete`] → `resolve()` → the backend's own
+/// spawn) that never consults this verdict. The observable bug was a permanent
+/// red banner over a dashboard full of freshly AI-written work.
+///
+/// A day, because the failure this most needs to forget is "signed out
+/// yesterday, signed back in this morning". Anything genuinely still broken
+/// re-fails the moment work is attempted, and [`note_live_call_outcome`] records
+/// that within the hour - so the cost of forgetting too early is one hour of a
+/// missing warning, and the cost of forgetting too late was a warning nobody
+/// could clear.
+const FAILURE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Whether a cached result is a FAILURE old enough to stop being evidence.
+///
+/// Only failures expire. An `Ok` never needs to - it is the don't-alarm state
+/// either way - and a `RateLimited` that ages out lands on the same non-alarming
+/// verdict, so expiring it would change nothing. An unparseable `tested_at`
+/// (hand-edited file, a format change) is treated as expired rather than
+/// eternal: between silently keeping a warning up forever and dropping one we
+/// cannot date, the recoverable failure is dropping it.
+fn failure_has_expired(result: &ProviderTestResult) -> bool {
+    if !matches!(result.outcome, ProviderTestOutcome::Failed { .. }) {
+        return false;
+    }
+    // Asserted, not measured — the age of a state someone is deliberately holding
+    // says nothing about whether it still applies. Only an explicit test clears it.
+    if result.sticky {
+        return false;
+    }
+    match chrono::DateTime::parse_from_rfc3339(&result.tested_at) {
+        Ok(at) => {
+            let age = chrono::Utc::now().signed_duration_since(at.with_timezone(&chrono::Utc));
+            age.to_std().map(|a| a > FAILURE_TTL).unwrap_or(false)
+        }
+        Err(_) => true,
+    }
+}
+
+/// Record what a REAL call just proved, so the health verdict stops being able to
+/// contradict work the user can see on screen.
+///
+/// The gap this closes: [`persist_test_result`] was the only writer of the cache,
+/// and its only callers are the explicit Test Connection / Rescan paths. So the
+/// one thing that actually knows whether a provider works - a live
+/// [`crate::llm::complete`] call - reported nothing, and a stale `Failed` had no
+/// way to be cleared except by hand.
+///
+/// Deliberately ONE-DIRECTIONAL: a success clears, a failure is not recorded
+/// here. A real call carries a large prompt and a long timeout and can fail for
+/// reasons a provider is not guilty of (an oversized hour, a transient network
+/// blip mid-summary), and promoting those to a dashboard-wide "isn't available"
+/// would trade a banner that never clears for one that flaps. Failures still
+/// reach the cache the way they always did - through a test the user asked for.
+pub fn note_live_call_success(provider: &str) {
+    let cached = load_test_cache();
+    // Nothing on record, or the record is already good - no verdict to correct,
+    // so skip the disk write. This runs after every successful LLM call.
+    match cached.get(provider) {
+        // Asserted by the dev Disconnect button, which exists precisely to HOLD
+        // this state. Clearing it here made that button appear to do nothing: the
+        // next background call (an hourly fold, a coding-agent summary) undid it
+        // within minutes, on the very machine most likely to be running them.
+        Some(r) if r.sticky => return,
+        Some(r) if matches!(r.outcome, ProviderTestOutcome::Failed { .. }) => {}
+        Some(r) if matches!(r.outcome, ProviderTestOutcome::RateLimited { .. }) => {}
+        _ => return,
+    }
+    tracing::info!(
+        provider,
+        "clearing stale provider failure - a live call just succeeded"
+    );
+    persist_test_result(&ProviderTestResult {
+        id: provider.to_string(),
+        outcome: ProviderTestOutcome::Ok,
+        // Not a probe: there is no probe latency to report, and reporting the
+        // real call's duration here would show up in the panel as a wildly slow
+        // "Verified in 94s" for a test nobody ran.
+        elapsed_ms: 0,
+        tested_at: chrono::Utc::now().to_rfc3339(),
+        sticky: false,
+    });
 }
 
 /// The pure unavailable → rate-limited → fine decision, split out so the ladder can be unit-tested
@@ -396,6 +488,21 @@ pub struct ProviderTestResult {
     pub elapsed_ms: u64,
     /// RFC3339. When this test was run — the UI reads this back as "Verified 3m ago".
     pub tested_at: String,
+    /// This verdict was ASSERTED, not measured, and must not be second-guessed by
+    /// anything except an explicit test.
+    ///
+    /// Exactly one thing sets it: the dev-only Disconnect button, whose entire job
+    /// is to hold the app in the signed-out state so that state can be worked on.
+    /// Without this flag the two automatic corrections below immediately undo it -
+    /// [`note_live_call_success`] clears the failure the moment any background call
+    /// succeeds (which, on a machine that is being used, is within the hour), and
+    /// [`failure_has_expired`] would age it out - so pressing Disconnect appeared
+    /// to do nothing at all. A `Test Connection` or a Rescan replaces the whole row
+    /// and therefore clears this, which is right: the user asked for a real answer.
+    ///
+    /// `#[serde(default)]` so caches written before this field existed still load.
+    #[serde(default)]
+    pub sticky: bool,
 }
 
 /// Run one real, trivial call against `provider` and report what happened. Does NOT touch
@@ -406,6 +513,14 @@ pub struct ProviderTestResult {
 /// currently CHOSEN one: `llm_provider_model` is scoped to "within the chosen provider"
 /// (see [`LlmConfig`]), so applying it while testing a provider the user has NOT selected
 /// would pass one provider's model string to a different CLI's `--model` flag.
+///
+/// **Calls the backend DIRECTLY, and must keep doing so.** [`crate::llm::complete`] now
+/// refuses outright when this provider's last recorded verdict is unavailable — which is
+/// the correct behaviour for real work, and fatal here: this function's whole job is to
+/// find out whether that verdict is still true. Routed through the funnel, a provider that
+/// failed once could never be re-tested, so the failure that closed the gate would also be
+/// the thing preventing it from ever reopening. It would look like a provider that can
+/// never be reconnected, with a Test button that fails instantly for no visible reason.
 pub async fn test_provider(
     provider: LlmProvider,
     settings: &RuntimeSettings,
@@ -444,6 +559,8 @@ fn finish_test(id: String, outcome: ProviderTestOutcome, t0: Instant) -> Provide
         outcome,
         elapsed_ms: t0.elapsed().as_millis() as u64,
         tested_at: chrono::Utc::now().to_rfc3339(),
+        // A measured result, so it is open to correction like any other.
+        sticky: false,
     }
 }
 
@@ -1589,6 +1706,120 @@ mod tests {
         }
     }
 
+    /// A recorded FAILURE has to stop being evidence eventually.
+    ///
+    /// The shipped bug: `tested_at` was written on every result and read by
+    /// nothing, so one failure — signed out for an afternoon, a CLI mid-upgrade —
+    /// pinned "<provider> isn't available" across the dashboard permanently. The
+    /// only way to clear it was to press Test Connection, which nobody does when
+    /// the product is visibly working: real calls go down a completely separate
+    /// path that never consults this verdict, so they kept succeeding underneath
+    /// the banner. Observably, a dashboard full of freshly AI-written worklogs
+    /// under a red "AI isn't available".
+    #[test]
+    fn only_failures_expire_and_an_undateable_one_is_not_eternal() {
+        let stamp = |ago: chrono::Duration| (chrono::Utc::now() - ago).to_rfc3339();
+        let res = |outcome, tested_at: String| ProviderTestResult {
+            sticky: false,
+            id: "claude".into(),
+            outcome,
+            elapsed_ms: 10,
+            tested_at,
+        };
+        let failed = || ProviderTestOutcome::Failed {
+            message: "not signed in".into(),
+        };
+
+        // Fresh failure: still evidence, banner stays up.
+        assert!(!failure_has_expired(&res(
+            failed(),
+            stamp(chrono::Duration::hours(1))
+        )));
+        // Day-old failure with nothing re-confirming it: no longer evidence.
+        assert!(failure_has_expired(&res(
+            failed(),
+            stamp(chrono::Duration::hours(30))
+        )));
+
+        // ONLY failures. An old `Ok` must not expire into "unknown" — that is the
+        // same non-alarming verdict either way, but expiring it would throw away
+        // the "Verified 3m ago" the panel reads off the very same row.
+        assert!(!failure_has_expired(&res(
+            ProviderTestOutcome::Ok,
+            stamp(chrono::Duration::days(90))
+        )));
+        assert!(!failure_has_expired(&res(
+            ProviderTestOutcome::RateLimited {
+                message: "usage limit".into()
+            },
+            stamp(chrono::Duration::days(90))
+        )));
+
+        // Undateable failure (hand-edited file, a format change) counts as
+        // expired. Between silently keeping a warning up forever and dropping one
+        // we cannot date, the recoverable mistake is dropping it.
+        assert!(failure_has_expired(&res(failed(), "not a date".into())));
+
+        // A STICKY failure is asserted rather than measured, so its age says
+        // nothing and it never expires. This is what makes the dev Disconnect
+        // button hold: without it, the state it exists to create evaporated on
+        // its own, and the button looked broken.
+        let mut held = res(failed(), stamp(chrono::Duration::days(30)));
+        held.sticky = true;
+        assert!(!failure_has_expired(&held));
+    }
+
+    /// The dev Disconnect button asserts a signed-out provider so that state can
+    /// be worked on. Two automatic corrections in this module would otherwise
+    /// erase it within minutes on the very machine most likely to trigger them -
+    /// a developer's, where background folds and coding-agent summaries run
+    /// constantly. `sticky` is the flag that stops both, and a REAL test still
+    /// clears it, because the user asked for a real answer.
+    #[test]
+    fn a_live_success_clears_a_stale_failure_but_never_an_asserted_one() {
+        // Same isolation contract as the other cache tests: MERIDIAN_HOME is
+        // process-global and cargo runs these in parallel threads.
+        let _guard = ENV_LOCK.blocking_lock();
+        with_temp_meridian_home();
+        std::fs::remove_file(test_cache_path()).ok();
+
+        let seed = |sticky: bool| {
+            persist_test_result(&ProviderTestResult {
+                id: "claude".into(),
+                outcome: ProviderTestOutcome::Failed {
+                    message: "not signed in".into(),
+                },
+                elapsed_ms: 0,
+                tested_at: chrono::Utc::now().to_rfc3339(),
+                sticky,
+            });
+        };
+        let outcome_now = || load_test_cache().get("claude").map(|r| r.outcome.clone());
+
+        // An ordinary recorded failure yields to evidence: a call just worked.
+        seed(false);
+        note_live_call_success("claude");
+        assert_eq!(outcome_now(), Some(ProviderTestOutcome::Ok));
+
+        // An asserted one does not - it is being held on purpose.
+        seed(true);
+        note_live_call_success("claude");
+        assert!(matches!(
+            outcome_now(),
+            Some(ProviderTestOutcome::Failed { .. })
+        ));
+
+        // …but an explicit test replaces the whole row, flag included, so the
+        // developer is never stuck with a verdict they cannot get rid of.
+        persist_test_result(&finish_test(
+            "claude".into(),
+            ProviderTestOutcome::Ok,
+            Instant::now(),
+        ));
+        assert_eq!(outcome_now(), Some(ProviderTestOutcome::Ok));
+        assert!(!load_test_cache().get("claude").unwrap().sticky);
+    }
+
     /// The health verdict is memoised for 5 minutes, and recording a test result is
     /// the only thing that can change it. When the two were not wired together, the
     /// banner disagreed with the Intelligence panel for up to that long IN BOTH
@@ -2167,6 +2398,7 @@ mod tests {
             outcome: ProviderTestOutcome::Ok,
             elapsed_ms: 842,
             tested_at: "2026-07-16T10:00:00+00:00".into(),
+            sticky: false,
         };
         persist_test_result(&result);
 
@@ -2181,6 +2413,7 @@ mod tests {
             },
             elapsed_ms: 12,
             tested_at: "2026-07-16T10:05:00+00:00".into(),
+            sticky: false,
         };
         persist_test_result(&rate_limited);
         let cache = load_test_cache();
@@ -2207,6 +2440,7 @@ mod tests {
                         outcome: ProviderTestOutcome::Ok,
                         elapsed_ms: i as u64,
                         tested_at: "2026-07-17T10:00:00+00:00".into(),
+                        sticky: false,
                     });
                 });
             }

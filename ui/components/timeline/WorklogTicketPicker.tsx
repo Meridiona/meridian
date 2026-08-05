@@ -40,7 +40,7 @@ function filterTickets(all: BoardTicket[], q: string): BoardTicket[] {
 /** A searchable list of every open ticket, for retargeting a draft by hand.
  *  `current` is the draft's existing target, shown as already-selected so the
  *  user can see what they're changing away from. */
-export function WorklogTicketPicker({ current, busy, onPick, onCancel, title, excludeLocal = false }: {
+export function WorklogTicketPicker({ current, busy, onPick, onCancel, title, excludeLocal = false, tickets }: {
   current: string | null
   busy: boolean
   onPick: (taskKey: string) => void
@@ -50,18 +50,25 @@ export function WorklogTicketPicker({ current, busy, onPick, onCancel, title, ex
   // Drop personal (provider 'local') tasks from the list. Escalating a personal
   // task is onto a REAL tracker ticket, so its own kind must not appear.
   excludeLocal?: boolean
+  /** Render THESE tickets instead of reading the board. Set only by the first-run
+   *  walkthrough, whose draft points at an example day's issue keys - listing the
+   *  user's genuine board beside them would invite them to file an invented
+   *  update onto a real ticket. */
+  tickets?: BoardTicket[]
 }) {
-  const [all, setAll] = useState<BoardTicket[] | null>(null)
+  const [fetched, setFetched] = useState<BoardTicket[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [q, setQ] = useState('')
+  const all = tickets ?? fetched
 
   useEffect(() => {
+    if (tickets) return
     let alive = true
     load<BoardTicket[]>('/api/board-tickets', 'get_board_tickets')
-      .then(r => { if (alive) setAll(excludeLocal ? r.filter(t => t.provider !== 'local') : r) })
+      .then(r => { if (alive) setFetched(excludeLocal ? r.filter(t => t.provider !== 'local') : r) })
       .catch(() => { if (alive) setError('Could not load your board - try again in a moment.') })
     return () => { alive = false }
-  }, [excludeLocal])
+  }, [excludeLocal, tickets])
 
   const shown = useMemo(() => filterTickets(all ?? [], q), [all, q])
 
@@ -113,12 +120,14 @@ export function WorklogTicketPicker({ current, busy, onPick, onCancel, title, ex
       )}
 
       {shown.length > 0 && (
-        <div className="nice-scroll space-y-1" style={{ maxHeight: 220, overflowY: 'auto' }}>
+        // data-tour: the walkthrough rings the list, and waits for a row.
+        <div data-tour="wl-picker" className="nice-scroll space-y-1" style={{ maxHeight: 220, overflowY: 'auto' }}>
           {shown.map(t => {
             const isCurrent = t.task_key === current
             return (
               <button
                 key={t.task_key}
+                data-tour="wl-pick"
                 disabled={busy || isCurrent}
                 onClick={() => onPick(t.task_key)}
                 className="w-full text-left rounded-lg px-2.5 py-2"
