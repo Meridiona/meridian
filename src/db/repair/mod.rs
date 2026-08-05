@@ -558,6 +558,89 @@ mod tests {
         pool.close().await;
     }
 
+    /// A repair fixes exactly the condition the `db.corrupt` notice reports,
+    /// but the table copy carries the notice row into the replacement - so the
+    /// app kept telling the user their database was damaged after it had been
+    /// fixed (observed surviving two real repairs on 2026-08-04, still
+    /// bannering a 05:15 notice at 17:23 over a healthy database). The paired
+    /// toast's dedup row must go with it, or the NEXT corruption is deduped
+    /// away and never notifies. Other notices report faults a repair knows
+    /// nothing about, so they must survive untouched.
+    #[tokio::test]
+    async fn repair_clears_the_corrupt_notice_and_its_toast_but_keeps_others() {
+        let fx = corrupt_db_fixture().await;
+        // Give the damaged source the two tables the scrub touches, shaped
+        // like migrations 037/042 (only the defaultless NOT NULL columns -
+        // the copy intersects column lists, and the rest have defaults).
+        sqlx::query(
+            "CREATE TABLE system_notices (
+                notice_id TEXT PRIMARY KEY, severity TEXT NOT NULL,
+                title TEXT NOT NULL, detail TEXT NOT NULL)",
+        )
+        .execute(&fx.pool)
+        .await
+        .expect("create system_notices");
+        for id in ["db.corrupt", "pm.jira"] {
+            sqlx::query(
+                "INSERT INTO system_notices (notice_id, severity, title, detail)
+                 VALUES (?, 'error', 't', 'd')",
+            )
+            .bind(id)
+            .execute(&fx.pool)
+            .await
+            .expect("insert notice");
+        }
+        sqlx::query(
+            "CREATE TABLE notifications (
+                dedup_key TEXT NOT NULL UNIQUE, event_key TEXT NOT NULL,
+                title TEXT NOT NULL)",
+        )
+        .execute(&fx.pool)
+        .await
+        .expect("create notifications");
+        // `{event_key}:{id}` per notices::clear_typed - db.corrupt is raised
+        // with its own id as the event_key, not the shared system.fault.
+        for key in ["db.corrupt:db.corrupt", "system.fault:pm.jira"] {
+            sqlx::query(
+                "INSERT INTO notifications (dedup_key, event_key, title) VALUES (?, 'e', 't')",
+            )
+            .bind(key)
+            .execute(&fx.pool)
+            .await
+            .expect("insert toast");
+        }
+        fx.pool.close().await;
+        let path = fx.path.clone();
+
+        repair(&path, None).await.expect("repair must succeed");
+
+        let uri = format!("sqlite://{}", path.display());
+        let pool = meridian_core::db_crypto::open_pool_with_key(&uri, None, false, &[])
+            .await
+            .expect("reopen repaired db");
+        let notices: Vec<(String,)> =
+            sqlx::query_as("SELECT notice_id FROM system_notices ORDER BY notice_id")
+                .fetch_all(&pool)
+                .await
+                .expect("read notices");
+        let toasts: Vec<(String,)> =
+            sqlx::query_as("SELECT dedup_key FROM notifications ORDER BY dedup_key")
+                .fetch_all(&pool)
+                .await
+                .expect("read toasts");
+        pool.close().await;
+        assert_eq!(
+            notices,
+            vec![("pm.jira".to_string(),)],
+            "db.corrupt must not survive its own fix; unrelated notices must"
+        );
+        assert_eq!(
+            toasts,
+            vec![("system.fault:pm.jira".to_string(),)],
+            "the stale toast dedup row must go too, or the next corruption never notifies"
+        );
+    }
+
     /// A repair that cannot even build a replacement must leave the original
     /// exactly where it was - the "never lose data" invariant.
     #[tokio::test]

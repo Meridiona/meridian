@@ -49,6 +49,49 @@ fn parse_greeting(buf: &[u8]) -> Probe {
     }
 }
 
+/// The status verdict: does a probe result plus the OS's process view add up
+/// to "running"? Pure and cfg-free so the semantics are pinned by a unit test
+/// on every platform (`a_probe_miss_with_a_live_process_still_reports_running`).
+///
+/// `process_alive = None` (the OS query itself failed) deliberately does NOT
+/// rescue a probe miss - inventing an up daemon nothing confirmed would hide a
+/// real outage. Only a positive "the process is there" overrides.
+fn status_running(probe_ok: bool, process_alive: Option<bool>) -> bool {
+    probe_ok || process_alive == Some(true)
+}
+
+/// [`probe`] with the watchdog's second opinion, for STATUS REPORTING - the
+/// popover health panel and the dashboard's capture badge.
+///
+/// The bare probe's 800ms budget loses a race against the tray's own starved
+/// runtime under load (the same false negative that drove the watchdog's
+/// restart storm, fixed in `poll::watchdog`), so on 1.83.2-staging.1 the
+/// popover flapped "Daemon: Not running" next to a Restart button while the
+/// daemon ran untouched - inviting exactly the mid-write SIGTERM the watchdog
+/// fix closed. A probe miss here only reads as down once `process_alive` says
+/// the process is not there.
+///
+/// The WATCHDOG keeps calling the bare [`probe`] on purpose: its `decide`
+/// takes `probe_ok` and `process_alive` as separate inputs, and folding the
+/// second opinion into the probe would silently double-apply it there.
+pub async fn status() -> Probe {
+    let p = probe().await;
+    if p.running {
+        return p;
+    }
+    if status_running(false, process_alive().await) {
+        tracing::debug!(
+            "daemon status: probe missed but the process is alive - reporting running (probe race, not an outage)"
+        );
+        // The greeting never arrived, so the pid is unknown from this path.
+        return Probe {
+            running: true,
+            pid: None,
+        };
+    }
+    p
+}
+
 // ── macOS: Unix domain socket + launchd ─────────────────────────────────────
 
 #[cfg(target_os = "macos")]
@@ -445,6 +488,29 @@ async fn schtasks(args: &[&str]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The status surfaces (popover "Daemon: Not running", the dashboard's
+    /// PAUSED badge) flapped on 1.83.2-staging.1 while the daemon ran
+    /// untouched: the bare probe's 800ms budget loses a race against the
+    /// tray's own starved runtime, exactly the false negative that drove the
+    /// watchdog's restart storm - and the popover pairs the false "Not
+    /// running" with a Restart button, inviting the user to SIGTERM a healthy
+    /// daemon mid-write by hand. Status reporting must therefore apply the
+    /// watchdog's same second opinion: a probe miss only reads as down once
+    /// the OS says the process is not there.
+    #[test]
+    fn a_probe_miss_with_a_live_process_still_reports_running() {
+        // THE regression: probe timed out, launchctl says the pid exists.
+        assert!(status_running(false, Some(true)));
+        // A probe miss with the process confirmed gone is genuinely down.
+        assert!(!status_running(false, Some(false)));
+        // No second opinion available - stay with the probe's answer rather
+        // than invent an up daemon nothing confirmed.
+        assert!(!status_running(false, None));
+        // A successful probe never needs the second opinion.
+        assert!(status_running(true, None));
+        assert!(status_running(true, Some(false)));
+    }
 
     /// The liveness signal the watchdog gates on. Getting this wrong in the
     /// "running" direction re-enables the restart storm that corrupted

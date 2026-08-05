@@ -10,6 +10,7 @@
 import { useEffect, useState } from 'react'
 import { load, subscribe } from '@/lib/bridge'
 import ConfirmDialog from '@/components/ConfirmDialog'
+import { formatSince } from '@/lib/notice-time'
 import type { Notice, RepairPreview } from '@/lib/api-types'
 
 // The one notice that can be acted on in-app rather than in a terminal.
@@ -45,6 +46,10 @@ export default function NoticeBar() {
     <div style={{ position: 'sticky', top: 0, zIndex: 50 }}>
       {notices.map((n) => {
         const s = SEVERITY_STYLES[n.severity] ?? SEVERITY_STYLES.error
+        // When the fault was raised. A notice can outlive its cause (the
+        // db.corrupt banner once survived its own repair), and the stamp is
+        // what lets a user tell a stale alarm from a live one.
+        const since = formatSince(n.raised_at)
         return (
           <div
             key={n.notice_id}
@@ -75,6 +80,11 @@ export default function NoticeBar() {
               <span style={{ fontSize: 12, color: s.text, marginLeft: 8, opacity: 0.85 }}>
                 {n.detail}
               </span>
+              {since && (
+                <span style={{ fontSize: 11, color: s.text, marginLeft: 8, opacity: 0.6, whiteSpace: 'nowrap' }}>
+                  {since}
+                </span>
+              )}
               {n.remedy && n.notice_id !== DB_CORRUPT && (
                 <div style={{ marginTop: 2, fontSize: 11, color: s.text, opacity: 0.7 }}>
                   Fix: <code style={{ fontFamily: 'var(--font-mono)', background: 'rgba(0,0,0,0.06)', padding: '1px 4px', borderRadius: 3 }}>{n.remedy}</code>

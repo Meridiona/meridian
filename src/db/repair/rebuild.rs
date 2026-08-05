@@ -143,6 +143,31 @@ pub(super) async fn build_replacement(
         Err(e) => tracing::warn!(error = %e, "foreign_key_check could not run"),
     }
 
+    // The copy above has just carried any `db.corrupt` notice row into the
+    // replacement - the exact condition this rebuild fixes - so installing it
+    // unscrubbed keeps the "database is damaged" banner up after its own fix
+    // (observed surviving two real repairs on 2026-08-04, still bannering a
+    // 05:15 notice over a healthy database twelve hours later). Cleared the
+    // same way the daemon would (row + paired toast dedup row, so the NEXT
+    // corruption notifies instead of deduping away); other notices report
+    // faults a repair knows nothing about and are left as copied. On THIS
+    // connection, not the pool - see `clear_typed_on`'s doc and the close
+    // comment below. Never fails the repair: the salvage already succeeded,
+    // and `verify_replacement` judges soundness - precedent in
+    // `carry_sqlite_sequence` above.
+    if let Err(e) = crate::notices::clear_typed_on(
+        &mut conn,
+        crate::notices::DB_CORRUPT,
+        crate::notices::DB_CORRUPT,
+    )
+    .await
+    {
+        tracing::warn!(
+            error = %e,
+            "could not clear the stale db.corrupt notice from the replacement - the banner may outlive the repair"
+        );
+    }
+
     conn.execute("DETACH DATABASE src")
         .await
         .context("detaching the damaged database")?;
