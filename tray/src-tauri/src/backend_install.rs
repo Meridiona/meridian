@@ -134,6 +134,7 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
         Ok(h) => h,
         Err(e) => {
             tracing::warn!(error = %e, src = %daemon_src.display(), "backend_install: cannot hash bundled daemon");
+            ensure_daemon_running(&home).await;
             return;
         }
     };
@@ -184,6 +185,12 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
                 tracing::warn!(error = %notice_err, "backend-install-failure notice raise failed");
             }
         }
+        // A failed *staging* must not also mean a stopped *daemon*. The
+        // previously staged binary and its plist are still on disk, so the
+        // last-known-good daemon can usually still be started - and it has to
+        // be, because quit boots the agent out and nothing else will bring it
+        // back before the next launch (which may fail here again).
+        ensure_daemon_running(&home).await;
         return;
     }
     if let Some(p) = pool.as_ref() {
@@ -1342,12 +1349,28 @@ mod tests {
         // column 0 starts the following item.
         let body = body.split("\nasync fn").next().unwrap_or(body);
 
-        let restores = body.matches("ensure_daemon_running(&home).await").count();
+        // Every `return;` must be preceded by a restore. The one exception is
+        // the path where `$HOME` itself could not be resolved - there is no
+        // `home` to hand `ensure_daemon_running`, and nothing it could do.
+        let lines: Vec<&str> = body.lines().collect();
+        let mut unguarded: Vec<usize> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if line.trim() != "return;" {
+                continue;
+            }
+            let window = lines[i.saturating_sub(6)..i].join("\n");
+            let guarded =
+                window.contains("ensure_daemon_running") || window.contains("cannot stage backend");
+            if !guarded {
+                unguarded.push(i);
+            }
+        }
         assert!(
-            restores >= 2,
-            "ensure_backend_installed must restore the daemon on BOTH bail-out \
-             paths - the up-to-date one and the dev/source one - or a quit \
-             leaves the daemon permanently down; found {restores}"
+            unguarded.is_empty(),
+            "every bail-out from ensure_backend_installed must call \
+             ensure_daemon_running first, or a quit leaves the daemon \
+             permanently down - a `bootout` survives both KeepAlive and the \
+             next login. Unguarded `return;` at body lines {unguarded:?}"
         );
 
         // And the dev/source path specifically, since that is the one that
