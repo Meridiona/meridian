@@ -27,6 +27,7 @@ mod capture_ignore;
 mod commands;
 mod counter_ping;
 mod crash;
+mod daemon_lifecycle;
 mod db_key;
 mod deep_link;
 
@@ -1222,7 +1223,51 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error running meridian tray")
-        .run(|_app, _event| {
+        .run(|app, event| {
+            // Quitting Meridian takes the daemon with it.
+            //
+            // It is a separate launchd/Task Scheduler process, so before this
+            // handler existed "Quit" left it polling, holding `meridian.db`
+            // open, and running the summariser's third-party LLM CLIs after the
+            // user had closed the app - and, worse, made the `db.corrupt`
+            // notice's own instructions impossible to follow, because
+            // `meridian db repair` refuses to run while the daemon is up.
+            //
+            // Handled here rather than in the menu item's "quit" arm so every
+            // way out is covered by one rule: the tray menu, the popover
+            // footer's Quit button (`commands::system::quit_app`), and macOS
+            // Cmd+Q (reachable once the dashboard has switched the activation
+            // policy to `Regular`). The first two call `AppHandle::exit`, which
+            // routes through this same event.
+            //
+            // The stop is async and the exit is not, so the exit is held with
+            // `prevent_exit` and re-issued once the stop finishes. That makes
+            // "are we exiting?" three-state rather than a boolean - see
+            // [`daemon_lifecycle::ExitPhase`] for why a single latch was wrong,
+            // and why a restart must pass straight through.
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
+                use daemon_lifecycle::{ExitAction, ExitPhase};
+                match daemon_lifecycle::decide_exit(*code, daemon_lifecycle::exit_phase()) {
+                    ExitAction::Proceed => {}
+                    // Something else is already stopping the daemon and will
+                    // issue the real exit. Just don't let this one through.
+                    ExitAction::Hold => api.prevent_exit(),
+                    ExitAction::HoldAndStop => {
+                        daemon_lifecycle::set_exit_phase(ExitPhase::Stopping);
+                        api.prevent_exit();
+                        let handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            daemon_lifecycle::stop_for_quit().await;
+                            // Immediately before the exit, so the re-entrant
+                            // `ExitRequested` this triggers is the one and only
+                            // one allowed through.
+                            daemon_lifecycle::set_exit_phase(ExitPhase::ReadyToExit);
+                            handle.exit(0);
+                        });
+                    }
+                }
+            }
+
             // macOS: fires when the user re-activates the app externally
             // (Spotlight, dock click, `open -a Meridian`). The tray runs as an
             // Accessory app so there is no dock icon most of the time; without
@@ -1233,11 +1278,13 @@ pub fn run() {
             // cold start, so this only matters for warm activation.
             //
             // `RunEvent::Reopen` is a macOS-only enum variant (it doesn't exist
-            // on other targets), so the whole arm is cfg-gated — on Linux/Windows
-            // the closure is a no-op and the params stay underscore-prefixed to
-            // avoid unused warnings. The routing decision lives in the
-            // platform-independent [`reopen_target`] / [`is_onboarded`] so it is
-            // unit-testable without a live Tauri app (see the tests below).
+            // on other targets), so this arm alone is cfg-gated. The closure
+            // itself is no longer a no-op off macOS — the `ExitRequested` arm
+            // above runs on every platform, which is why `app` and `event` are
+            // plain names rather than underscore-prefixed. The routing decision
+            // lives in the platform-independent [`reopen_target`] /
+            // [`is_onboarded`] so it is unit-testable without a live Tauri app
+            // (see the tests below).
             //
             // `has_visible_windows` is intentionally ignored (`{ .. }`): both
             // openers already reuse an existing dashboard/wizard window via
@@ -1246,13 +1293,13 @@ pub fn run() {
             // flag would only matter if we wanted different behaviour for
             // "windows visible" vs "all minimised", which we don't.
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = _event {
+            if let tauri::RunEvent::Reopen { .. } = event {
                 let home = std::env::var("HOME").unwrap_or_default();
                 let onboarded = is_onboarded(std::path::Path::new(&home));
                 tracing::info!(onboarded, "app.reopen: routing external activation");
                 match reopen_target(onboarded) {
-                    ReopenTarget::Dashboard => tray::open_native_dashboard(_app),
-                    ReopenTarget::Wizard => tray::open_wizard_window(_app),
+                    ReopenTarget::Dashboard => tray::open_native_dashboard(app),
+                    ReopenTarget::Wizard => tray::open_wizard_window(app),
                 }
             }
         });

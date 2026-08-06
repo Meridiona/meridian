@@ -1175,7 +1175,7 @@ async fn main() -> Result<()> {
                                 title: "Meridian's database is damaged",
                                 detail: &problems.join("; "),
                                 remedy: Some(
-                                    "Pause tracking, quit Meridian, then run 'meridian db repair' in a terminal",
+                                    "Quit Meridian, then run 'meridian db repair' in a terminal",
                                 ),
                                 event_key: DB_CORRUPT_NOTICE,
                                 deep_link: Some("/logs"),
@@ -1491,7 +1491,7 @@ async fn etl_tick(meridian: &meridian::db::SqlitePool) -> bool {
                     severity: "error",
                     title: "Meridian's database is damaged",
                     detail: &e.to_string(),
-                    remedy: Some("Pause tracking, quit Meridian, then run 'meridian db repair' in a terminal"),
+                    remedy: Some("Quit Meridian, then run 'meridian db repair' in a terminal"),
                     event_key: DB_CORRUPT_NOTICE,
                     deep_link: Some("/logs"),
                 },

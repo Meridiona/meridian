@@ -21,6 +21,24 @@
 //!   hand. Recovery tooling must not be able to brick the thing it is
 //!   recovering.
 //!
+//! The tray *does* now automate a bootout, for quit and for the pause toggle
+//! (`tray/src-tauri/src/daemon_lifecycle.rs`). That is not a reversal of the
+//! paragraph above, and repair still does not use it, for two reasons worth
+//! keeping straight:
+//!
+//! - What wedged the plist was `launchctl disable`, an override that persists
+//!   across boots. The tray never calls it, and its bootout goes through a
+//!   helper that waits for the launchd entry to clear before anything tries to
+//!   bootstrap again - which is the specific sequencing that produced the EIO.
+//! - More importantly, the two have different requirements. A quit or a pause
+//!   needs the daemon down *until the tray comes back*, and the tray is the
+//!   thing that brings it back. A repair needs it down across an unbounded
+//!   number of `KeepAlive` relaunches, driven by a tray that may itself be
+//!   crash-looping - which is exactly the case where "the tray will undo this"
+//!   is the assumption that fails. Hence a marker the daemon honours on its own,
+//!   with an expiry, rather than launchd state something has to survive to
+//!   restore.
+//!
 //! So neither side fights launchd. The tray writes a marker; the daemon checks
 //! for it before touching the database and exits cleanly if it is there. A
 //! KeepAlive relaunch is then harmless - the daemon simply stands down again,
