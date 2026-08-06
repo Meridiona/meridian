@@ -1202,11 +1202,13 @@ pub fn run() {
             // cold start, so this only matters for warm activation.
             //
             // `RunEvent::Reopen` is a macOS-only enum variant (it doesn't exist
-            // on other targets), so the whole arm is cfg-gated — on Linux/Windows
-            // the closure is a no-op and the params stay underscore-prefixed to
-            // avoid unused warnings. The routing decision lives in the
-            // platform-independent [`reopen_target`] / [`is_onboarded`] so it is
-            // unit-testable without a live Tauri app (see the tests below).
+            // on other targets), so this arm alone is cfg-gated. The closure
+            // itself is no longer a no-op off macOS — the `ExitRequested` arm
+            // above runs on every platform, which is why `app` and `event` are
+            // plain names rather than underscore-prefixed. The routing decision
+            // lives in the platform-independent [`reopen_target`] /
+            // [`is_onboarded`] so it is unit-testable without a live Tauri app
+            // (see the tests below).
             //
             // `has_visible_windows` is intentionally ignored (`{ .. }`): both
             // openers already reuse an existing dashboard/wizard window via
