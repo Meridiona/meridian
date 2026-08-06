@@ -294,14 +294,33 @@ pub(crate) async fn stop_for_pause() -> Result<(), String> {
 /// already up, so a double-click cannot `kickstart -k` a healthy daemon
 /// mid-write.
 pub(crate) async fn resume_from_pause() -> Result<(), String> {
-    let span = tracing::info_span!("daemon_lifecycle.resume", outcome = tracing::field::Empty);
+    // Both fields must be declared here, even though only one is ever set on a
+    // given run: `Span::record` on a field the macro did not declare is a
+    // silent no-op, so an `otel.status_code` recorded later would never reach
+    // the exporter and the failure would look like a success that stopped
+    // logging.
+    let span = tracing::info_span!(
+        "daemon_lifecycle.resume",
+        outcome = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty,
+    );
     async {
-        let home = meridian_core::paths::home_dir()
-            .ok_or_else(|| "home directory could not be resolved".to_string())?;
+        let s = tracing::Span::current();
+        // Handled long-hand rather than with `?`: this is the failure boundary,
+        // and a bare `?` would return an error the span never records - leaving
+        // a resume that silently did nothing indistinguishable, in telemetry,
+        // from one that never ran.
+        let Some(home) = meridian_core::paths::home_dir() else {
+            let e = "home directory could not be resolved".to_string();
+            s.record("outcome", "failed");
+            s.record("otel.status_code", "ERROR");
+            tracing::warn!(error = %e, "could not resume the daemon");
+            return Err(e);
+        };
         let _guard = LIFECYCLE.lock().await;
         DAEMON_PAUSED.store(false, Ordering::Relaxed);
         crate::backend_install::ensure_daemon_running(&home).await;
-        tracing::Span::current().record("outcome", "resumed");
+        s.record("outcome", "resumed");
         tracing::info!("daemon resumed from pause");
         Ok(())
     }
@@ -323,12 +342,20 @@ pub(crate) async fn resume_from_pause() -> Result<(), String> {
 ///   narrow that race, not close it - the pause could land between the check and
 ///   the `launchctl` call.
 pub(crate) async fn restore_unless_paused(home: &std::path::Path) {
-    let _guard = LIFECYCLE.lock().await;
-    if DAEMON_PAUSED.load(Ordering::Relaxed) {
-        tracing::info!("skipping the launch-time daemon restore - the user paused it");
-        return;
+    let span = tracing::info_span!("daemon_lifecycle.restore", outcome = tracing::field::Empty);
+    async {
+        let s = tracing::Span::current();
+        let _guard = LIFECYCLE.lock().await;
+        if DAEMON_PAUSED.load(Ordering::Relaxed) {
+            s.record("outcome", "skipped_paused");
+            tracing::info!("skipping the launch-time daemon restore - the user paused it");
+            return;
+        }
+        s.record("outcome", "restored");
+        crate::backend_install::ensure_daemon_running(home).await;
     }
-    crate::backend_install::ensure_daemon_running(home).await;
+    .instrument(span)
+    .await
 }
 
 /// The OS mechanics, shared by quit and pause.
