@@ -119,6 +119,11 @@ function demoDraft(provider: string, taskKey: string, manual: boolean, posted: b
     // draft the user just watched appear), so it is stamped when the demo
     // generate resolves - see `generate` below.
     updated_at: new Date().toISOString(),
+    // The walkthrough's day is a finished example - its drafts are written
+    // from work that has already stopped, so nothing can have gone stale
+    // behind them.
+    stale_minutes: 0,
+    stale: false,
   }
 }
 

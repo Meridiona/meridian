@@ -1768,6 +1768,17 @@ async fn make_worklog_pool() -> SqlitePool {
             reasoning TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT 'drafted',
             target_key TEXT, created_task_key TEXT, posted_comment_id TEXT, browse_url TEXT,
             last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            -- Migration 077: the task's measured minutes when the draft was
+            -- written, which is what staleness compares against.
+            drafted_minutes INTEGER,
+            PRIMARY KEY (day_local, task_id)
+        );
+        -- Migration 058. Every real DB carrying day_task_worklogs has this
+        -- (058 predates 060), and the draft read LEFT JOINs it for staleness -
+        -- so its absence here was a fixture gap, not a case to defend against.
+        CREATE TABLE day_tasks (
+            day_local TEXT NOT NULL, task_id TEXT NOT NULL, title TEXT NOT NULL,
+            minutes INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (day_local, task_id)
         );
         "#,

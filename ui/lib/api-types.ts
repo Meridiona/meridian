@@ -372,6 +372,19 @@ export interface DayTaskWorklogDraft {
   /** When this draft was last written (generated OR regenerated) — RFC-3339, UTC.
    *  "As of", not "first generated at" — a Regenerate click bumps it. */
   updated_at: string
+  /** Measured minutes worked on this task SINCE the draft was written, or null
+   *  when that cannot be known (drafted before migration 077, or the task has
+   *  since gone). Deterministic — measured spans, no model. */
+  stale_minutes: number | null
+  /** Whether that growth is worth acting on, by the single definition
+   *  (`WORKLOG_STALE_MINUTES`, 15) the daemon's notifier and this UI both read.
+   *  Never true once the draft leaves `drafted`: a posted update is a record of
+   *  what went out, and offering to rewrite it offers to lose it.
+   *
+   *  Read this rather than thresholding `stale_minutes` here — a second
+   *  definition in TypeScript is a second definition that can disagree with the
+   *  notification the user already received. */
+  stale: boolean
 }
 
 /** The tray's escalate-command reply (`escalate_personal_task_create` /

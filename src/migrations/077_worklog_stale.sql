@@ -1,0 +1,22 @@
+-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+--
+-- Draft staleness: the task's measured minutes AT THE MOMENT the draft was written.
+--
+-- A worklog is written from the work that existed when it was generated. Keep
+-- working the same task afterwards and the draft silently stops describing it —
+-- and nothing on screen said so, so the user either posted an update missing
+-- half their afternoon or learned not to trust the drafts. Comparing this
+-- against `day_tasks.minutes` (which the hourly fold recomputes) gives the one
+-- thing needed to say "there are 40 more minutes on this than the draft knows
+-- about", deterministically and with no model involved.
+--
+-- MINUTES, NOT A TIMESTAMP. `updated_at` moving is not evidence of work — the
+-- fold rewrites the day's rows every hour whether or not the task grew, so a
+-- timestamp comparison would mark every draft stale within the hour. Measured
+-- minutes only move when there is measured work.
+--
+-- NULLABLE ON PURPOSE. A row written before this migration has no baseline, and
+-- NULL reads as "cannot know" — which surfaces as never-stale. A `DEFAULT 0`
+-- would instead declare every existing draft stale by its task's entire
+-- duration, on the first read after upgrade.
+ALTER TABLE day_task_worklogs ADD COLUMN drafted_minutes INTEGER;

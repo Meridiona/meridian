@@ -190,6 +190,12 @@ pub async fn run(pool: &SqlitePool, day_local: &str, hour_label: &str, report: &
             tracing::warn!(day = day_local, error = %e, "worklog: day-task correction reconcile failed after fold");
         }
 
+        // The ONLY moment measured minutes can have changed, so the only moment
+        // a draft can newly have fallen behind its task. Best-effort by
+        // contract - see `stale::notify_stale_drafts`: failing to warn about a
+        // stale draft must never fail the fold that produced the day's tasks.
+        super::stale::notify_stale_drafts(pool, day_local).await;
+
         tracing::info!(
             hour = hour_label,
             n_tasks = rows.len(),

@@ -85,6 +85,11 @@ function summaryDraft(
     reasoning: '',
     error: null,
     updated_at: new Date().toISOString(),
+    // The walkthrough's day is a finished example - its drafts are written
+    // from work that has already stopped, so nothing can have gone stale
+    // behind them.
+    stale_minutes: 0,
+    stale: false,
   }
   const at = (task_key: string, title: string | null, manual: boolean) => ({
     task_key,

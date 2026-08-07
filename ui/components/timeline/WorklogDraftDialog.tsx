@@ -92,6 +92,21 @@ export function WorklogEntry({ wl, hue, linkedTicket, noTracker, onOpen, onConne
     )
   }
 
+  // OUT OF DATE BEFORE READY. A draft is written from the work that existed when
+  // it was generated, and the user kept working - which is the normal case, not
+  // the edge one, since drafts are generated mid-afternoon and the afternoon
+  // carries on. Saying "ready for review" over an update that is missing the
+  // last hour is the one failure this row must not have: it is confidently
+  // wrong, and the user finds out only after it is live on a ticket.
+  if (draft?.stale) {
+    return (
+      <EntryRow hue={hue} tone="stale" onClick={onOpen}
+        label={`${staleAmount(draft.stale_minutes)} of work missing from this draft`}
+        detail="You have kept working on this since it was written. Rewrite it before you post."
+        cta="Rewrite" />
+    )
+  }
+
   if (draft) {
     return (
       <EntryRow hue={hue} tone="ready" onClick={onOpen}
@@ -111,6 +126,26 @@ export function WorklogEntry({ wl, hue, linkedTicket, noTracker, onOpen, onConne
   )
 }
 
+/** How much work the draft is behind by, in words.
+ *
+ *  Named rather than reduced to "out of date" because the amount is what decides
+ *  whether the user rewrites it now or at the end of the day, and because a user
+ *  with several drafts open needs to know which one is worth the click. Mirrors
+ *  the daemon's notification body (`src/worklog_pipeline/stale.rs`) so the toast
+ *  and the row that follows it do not describe the same fact two different ways.
+ *
+ *  Exported for its unit test - this repo has no React render harness, and "60
+ *  minutes" where it should read "1 hour" is exactly the kind of slip that
+ *  survives review and then looks broken to everyone at once. */
+export function staleAmount(minutes: number | null): string {
+  const m = Math.max(0, minutes ?? 0)
+  if (m < 60) return `${m} minutes`
+  const h = Math.floor(m / 60)
+  const rem = m % 60
+  const hours = h === 1 ? '1 hour' : `${h} hours`
+  return rem === 0 ? hours : `${hours} ${rem} min`
+}
+
 /** One row: a state dot, a headline, a supporting line, and the way in.
  *
  *  Deliberately a single control rather than a card containing a button. The
@@ -118,12 +153,12 @@ export function WorklogEntry({ wl, hue, linkedTicket, noTracker, onOpen, onConne
  *  paragraph with a small button somewhere in it. */
 function EntryRow({ hue, tone, label, detail, cta, onClick }: {
   hue: string
-  tone: 'idle' | 'busy' | 'ready' | 'done' | 'quiet'
+  tone: 'idle' | 'busy' | 'ready' | 'done' | 'quiet' | 'stale'
   label: string; detail: string; cta: string
   onClick: () => void
 }) {
   const accent = tone === 'done' ? 'var(--color-state-approved)'
-    : tone === 'busy' ? 'var(--color-state-pending)'
+    : tone === 'busy' || tone === 'stale' ? 'var(--color-state-pending)'
       : tone === 'quiet' ? 'var(--t-muted)'
         : hue
   return (
@@ -311,6 +346,9 @@ export function WorklogDraftDialog({
         <div className="flex-1 min-h-0 overflow-y-auto nice-scroll px-6 py-5">
           {draft ? (
             <>
+              {draft.stale && (
+                <StaleBanner minutes={draft.stale_minutes} busy={busy} onRegenerate={generate} />
+              )}
               <DraftDocument draft={draft} busy={busy} trackers={connected} onOpenTask={onOpenTask}
                 onDismiss={wl.dismiss} onSetProvider={wl.setProvider} />
               <Provenance draft={draft} />
@@ -367,6 +405,52 @@ export function WorklogDraftDialog({
       </div>
     </div>,
     host,
+  )
+}
+
+/** The draft has fallen behind the work it describes.
+ *
+ *  ABOVE THE DOCUMENT, not beside the buttons. Everything under this is text the
+ *  user is about to read and judge, and the one thing they need before reading a
+ *  word is that it is incomplete — put at the bottom it would be found after the
+ *  decision it should have informed.
+ *
+ *  IT CARRIES ITS OWN FIX. The action here is not "understand this", it is
+ *  "rewrite it", and a warning that leaves the user to go and find the control
+ *  is a warning that mostly gets dismissed. Same `generate` the action row's
+ *  Rewrite calls, so there is one path and one behaviour. */
+function StaleBanner({ minutes, busy, onRegenerate }: {
+  minutes: number | null
+  busy: boolean
+  onRegenerate: () => void
+}) {
+  const hue = 'var(--color-state-pending)'
+  return (
+    <div data-tour="wl-stale" className="mb-5 rounded-xl px-4 py-3.5 flex items-start gap-3"
+      style={{
+        background: `color-mix(in srgb, ${hue} 10%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${hue} 28%, transparent)`,
+      }}>
+      <span aria-hidden className="shrink-0 rounded-full"
+        style={{ width: 7, height: 7, marginTop: 6, background: hue }} />
+      <div className="min-w-0 flex-1">
+        <p style={{ color: 'var(--t-title)', fontSize: 13, fontWeight: 700, lineHeight: 1.4 }}>
+          {staleAmount(minutes)} of work is missing from this
+        </p>
+        <p className="mt-1" style={{ color: 'var(--t-muted)', fontSize: 12.5, lineHeight: 1.5 }}>
+          You have kept working on this task since the draft was written, so it no longer
+          describes everything you did.
+        </p>
+      </div>
+      <button onClick={onRegenerate} disabled={busy}
+        className="shrink-0 rounded-lg px-3 py-1.5"
+        style={{
+          fontSize: 12.5, fontWeight: 700, color: '#fff', background: hue, border: 'none',
+          opacity: busy ? 0.5 : 1, cursor: busy ? 'default' : 'pointer',
+        }}>
+        Rewrite
+      </button>
+    </div>
   )
 }
 

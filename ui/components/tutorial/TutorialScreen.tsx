@@ -177,9 +177,16 @@ export function TutorialScreen({ phase, tasks, replayMinute, replayNote = null, 
  *  the tour is hunt the top-right corner for a button that is on the left. */
 function TutorialToolbar({ isExample }: { isExample: boolean }) {
   return (
-    <div className="flex items-center gap-4 px-5 border-b shrink-0"
+    <div className="relative flex items-center gap-4 px-5 border-b shrink-0"
       style={{ height: 60, borderColor: 'var(--t-hair)' }}>
-      <p className="mt-toolbar-date" style={{ color: 'var(--t-title)' }}>
+      {/* CENTRED, and absolutely so. Which day is on screen is the one fact that
+          orients everything else in the tour - it is what tells the user the
+          populated day is an EXAMPLE and not their own - and in the left slot it
+          read as one more label in a row of controls. Taken out of the flow so
+          it centres on the WINDOW rather than on whatever is left over after the
+          pill, which would move it every time the pill's label changed. */}
+      <p className="mt-toolbar-date absolute left-1/2 -translate-x-1/2 pointer-events-none"
+        style={{ color: 'var(--t-title)' }}>
         {isExample ? 'An example day' : 'Today'}
       </p>
       <button data-tour="summary-pill"
