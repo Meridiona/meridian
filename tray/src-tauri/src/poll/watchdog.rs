@@ -125,6 +125,15 @@ pub(crate) struct Inputs {
     pub starts_in_window: u32,
     /// Whether the post-start quiet window is still open.
     pub in_cooldown: bool,
+    /// Whether the user has deliberately paused the daemon from the tray menu.
+    ///
+    /// A paused daemon is `bootout`ed, so it looks exactly like a dead one to
+    /// every other input here: the endpoint is silent and the process is gone.
+    /// Without this flag the watchdog would spend its whole start budget
+    /// `kickstart`ing a label launchd no longer has loaded, then report a
+    /// daemon that "will not come back" - about a daemon the user switched off
+    /// on purpose.
+    pub daemon_paused: bool,
 }
 
 /// The whole watchdog policy, as one pure function.
@@ -142,7 +151,18 @@ pub(crate) struct Inputs {
 /// 4. still inside the post-start cooldown → let it finish starting
 /// 5. storm cap reached → [`Action::GiveUp`]
 /// 6. otherwise → [`Action::Start`]
+///
+/// Rule 0 sits above all of them: a daemon the user paused is off *by
+/// instruction*, and no evidence this loop can gather outranks that.
 pub(crate) fn decide(i: Inputs) -> Action {
+    // Ahead of the endpoint check, and ahead of the storm cap, on purpose.
+    // Pause `bootout`s the agent, so a paused daemon presents exactly as a
+    // crashed one; every rule below would read it as an outage to recover
+    // from, and rule 5 would eventually escalate it to a user-visible "gave
+    // up" notice. Returning here is what keeps `Pause` meaning something.
+    if i.daemon_paused {
+        return Action::Wait;
+    }
     if i.probe_ok {
         return Action::Wait;
     }
@@ -194,6 +214,9 @@ pub async fn run_daemon_watchdog() {
             gave_up = false;
         }
 
+        // Read fresh each tick, so a pause or resume takes effect on the next.
+        let paused = crate::daemon_lifecycle::is_paused();
+
         let probe_ok = crate::commands::daemon_control::probe().await.running;
         if probe_ok {
             consecutive_failures = 0;
@@ -212,7 +235,12 @@ pub async fn run_daemon_watchdog() {
         // `Wait`; past the cap → `GiveUp`), so passing `None` cannot change the
         // result. Without this, a daemon left stopped past the storm cap would
         // fork `launchctl` every 5 s forever.
-        let could_start = !probe_ok && consecutive_failures >= STRIKES && !in_cooldown && !gave_up;
+        // `!paused` belongs in this set for the same reason as the rest: while
+        // paused [`decide`] returns before it reads `process_alive`, so asking
+        // would only fork `launchctl` every 5 s for an answer that cannot
+        // change the verdict.
+        let could_start =
+            !paused && !probe_ok && consecutive_failures >= STRIKES && !in_cooldown && !gave_up;
         let process_alive = if could_start {
             daemon_process_alive().await
         } else {
@@ -225,6 +253,7 @@ pub async fn run_daemon_watchdog() {
             consecutive_failures,
             starts_in_window,
             in_cooldown,
+            daemon_paused: paused,
         });
 
         match action {
@@ -286,6 +315,7 @@ mod tests {
             consecutive_failures: STRIKES,
             starts_in_window: 0,
             in_cooldown: false,
+            daemon_paused: false,
         }
     }
 
@@ -347,8 +377,54 @@ mod tests {
                 consecutive_failures: 99,
                 starts_in_window: MAX_STARTS_IN_WINDOW + 1,
                 in_cooldown: false,
+                daemon_paused: false,
             }),
             Action::Wait
+        );
+    }
+
+    /// A paused daemon must be left alone, however dead it looks.
+    ///
+    /// Pause `bootout`s the agent, which is indistinguishable from a crash on
+    /// every other input: silent endpoint, no process, and (unlike a crash)
+    /// nothing that will ever bring it back on its own. So this is the one
+    /// state where the backstop is exactly wrong - it would undo the user's
+    /// explicit "stop working" the moment [`STRIKES`] elapsed, and `Pause`
+    /// would go back to being the no-op it was when it ran `launchctl stop`.
+    #[test]
+    fn a_paused_daemon_is_never_started() {
+        let paused = Inputs {
+            process_alive: Some(false),
+            daemon_paused: true,
+            ..silent_endpoint()
+        };
+        assert_eq!(
+            decide(paused),
+            Action::Wait,
+            "the watchdog must not resurrect a daemon the user paused"
+        );
+
+        // And it must not merely delay: no amount of elapsed outage turns a
+        // deliberate pause into something to recover from.
+        for failures in [STRIKES, STRIKES + 10, 1_000] {
+            assert_eq!(
+                decide(Inputs {
+                    consecutive_failures: failures,
+                    ..paused
+                }),
+                Action::Wait
+            );
+        }
+
+        // Nor may it burn the start budget and then report the pause as a
+        // failure to come back - `GiveUp` is a notice-raising state.
+        assert_eq!(
+            decide(Inputs {
+                starts_in_window: MAX_STARTS_IN_WINDOW + 1,
+                ..paused
+            }),
+            Action::Wait,
+            "a pause must not surface as the watchdog giving up"
         );
     }
 
@@ -417,6 +493,19 @@ mod tests {
             }),
             Action::Wait,
             "on a healthy endpoint, liveness is not consulted"
+        );
+        // The combination the loop actually produces while paused. `!paused`
+        // is part of `could_start`, so a paused tick never queries liveness
+        // and always reaches `decide` with `process_alive: None` - the one
+        // skip condition the paused-daemon test above cannot cover, because it
+        // pins `Some(false)` to isolate the pause rule itself.
+        assert_eq!(
+            decide(Inputs {
+                daemon_paused: true,
+                ..unknown
+            }),
+            Action::Wait,
+            "while paused, liveness is not consulted"
         );
     }
 

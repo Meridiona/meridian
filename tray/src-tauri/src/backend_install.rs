@@ -71,7 +71,7 @@ fn sha256_hex_of(path: &Path) -> std::io::Result<String> {
 /// [`AGENTS`] because [`stop_daemon_for_migration`] and [`ensure_daemon_running`]
 /// address this one agent directly rather than iterating the table.
 #[cfg(target_os = "macos")]
-const DAEMON_LABEL: &str = "com.meridiona.daemon";
+pub(crate) const DAEMON_LABEL: &str = "com.meridiona.daemon";
 #[cfg(target_os = "macos")]
 const DAEMON_PLIST: &str = "com.meridiona.daemon.plist";
 
@@ -83,9 +83,9 @@ const AGENTS: &[(&str, &str)] = &[(DAEMON_LABEL, DAEMON_PLIST)];
 /// staged destination. Windows needs the `.exe` suffix to be runnable at all;
 /// `tauri.windows.conf.json`'s resource map bundles it under that name.
 #[cfg(target_os = "windows")]
-const DAEMON_FILE: &str = "meridian.exe";
+pub(crate) const DAEMON_FILE: &str = "meridian.exe";
 #[cfg(not(target_os = "windows"))]
-const DAEMON_FILE: &str = "meridian";
+pub(crate) const DAEMON_FILE: &str = "meridian";
 
 /// Stage the bundled backend and register its launchd agent — idempotent and
 /// non-fatal.
@@ -99,13 +99,6 @@ const DAEMON_FILE: &str = "meridian";
 /// **only after** the agent bootstraps, so a partial failure retries next launch.
 #[tracing::instrument(skip(app))]
 pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
-    let backend = match bundled_backend_dir(app) {
-        Some(d) => d,
-        None => {
-            tracing::debug!("backend_install: no bundled backend (dev/source run) — skipping");
-            return;
-        }
-    };
     let home = match meridian_core::paths::home_dir() {
         Some(h) => h,
         None => {
@@ -115,12 +108,33 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
             return;
         }
     };
+    let backend = match bundled_backend_dir(app) {
+        Some(d) => d,
+        None => {
+            // Nothing to STAGE on a dev/source run - but the daemon may still
+            // need STARTING, and this is the only place that does it. Quit now
+            // stops the daemon (`crate::daemon_lifecycle`), and a `bootout`
+            // cannot be undone by `KeepAlive` or by `RunAtLoad` at the next
+            // login: the job is no longer loaded for either to act on. Bailing
+            // here without this call is what would turn one dev quit into a
+            // permanently dead daemon.
+            //
+            // Safe on every path: the macOS arm no-ops when no plist is
+            // installed (a fresh clone) and when the daemon is already up.
+            tracing::debug!(
+                "backend_install: no bundled backend (dev/source run) — skipping staging"
+            );
+            crate::daemon_lifecycle::restore_unless_paused(&home).await;
+            return;
+        }
+    };
 
     let daemon_src = backend.join(DAEMON_FILE);
     let bundled_hash = match sha256_hex_of(&daemon_src) {
         Ok(h) => h,
         Err(e) => {
             tracing::warn!(error = %e, src = %daemon_src.display(), "backend_install: cannot hash bundled daemon");
+            crate::daemon_lifecycle::restore_unless_paused(&home).await;
             return;
         }
     };
@@ -131,7 +145,7 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
         // encrypt-in-place migration stops it earlier this launch (see lib.rs's
         // setup hook) to unlock meridian.db, and it can also simply crash. Bring
         // it back so a skipped *staging* never leaves a stopped *daemon*.
-        ensure_daemon_running(&home).await;
+        crate::daemon_lifecycle::restore_unless_paused(&home).await;
         return;
     }
 
@@ -171,6 +185,12 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
                 tracing::warn!(error = %notice_err, "backend-install-failure notice raise failed");
             }
         }
+        // A failed *staging* must not also mean a stopped *daemon*. The
+        // previously staged binary and its plist are still on disk, so the
+        // last-known-good daemon can usually still be started - and it has to
+        // be, because quit boots the agent out and nothing else will bring it
+        // back before the next launch (which may fail here again).
+        crate::daemon_lifecycle::restore_unless_paused(&home).await;
         return;
     }
     if let Some(p) = pool.as_ref() {
@@ -335,7 +355,7 @@ pub(crate) fn may_swap_database(stop_outcome: Option<&Result<(), String>>) -> bo
 /// and merely allowed to be dead, so a `cfg`-gated callee vanishes underneath
 /// them and breaks the Windows build even though nothing there can call it.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-async fn bootout_agent_and_wait(label: &str) -> Result<(), String> {
+pub(crate) async fn bootout_agent_and_wait(label: &str) -> Result<(), String> {
     let target = agent_target(label);
     let _ = launchctl(&["bootout", &target]).await; // ok if not loaded
     for _ in 0..15 {
@@ -371,7 +391,7 @@ async fn bootout_agent_and_wait(label: &str) -> Result<(), String> {
 /// precisely what kills a running instance. Both platforms therefore return
 /// early when the daemon is already up, or an ordinary launch would SIGTERM a
 /// healthy daemon mid-write.
-async fn ensure_daemon_running(home: &Path) {
+pub(crate) async fn ensure_daemon_running(home: &Path) {
     #[cfg(target_os = "windows")]
     {
         let daemon_bin = home.join(".meridian").join("bin").join(DAEMON_FILE);
@@ -696,7 +716,7 @@ where
 /// still holds open would fail with os error 32, and the caller must surface
 /// that as an install failure rather than silently continuing.
 #[cfg(target_os = "windows")]
-async fn stop_running_daemon_before_stage(daemon_bin: &Path) -> Result<(), String> {
+pub(crate) async fn stop_running_daemon_before_stage(daemon_bin: &Path) -> Result<(), String> {
     // Targets our task by name — safe regardless of what else is named meridian.exe.
     let _ = tokio::process::Command::new("schtasks")
         .args(["/End", "/TN", WINDOWS_TASK_NAME])
@@ -1303,6 +1323,101 @@ async fn launchctl(args: &[&str]) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every path out of [`ensure_backend_installed`] that could leave a daemon
+    /// down must call [`crate::daemon_lifecycle::restore_unless_paused`] first.
+    ///
+    /// This is the other half of "quit stops the daemon"
+    /// ([`crate::daemon_lifecycle`]) and it is the half with no natural failure
+    /// signal. A `bootout` is not reversed by `KeepAlive`, and not by
+    /// `RunAtLoad` at the next login either — the job is no longer loaded for
+    /// either to act on — so dropping this call does not break a test or raise
+    /// a notice. It just means the daemon never comes back, and the symptom
+    /// (no sessions, ever) surfaces hours later somewhere else entirely.
+    ///
+    /// Scanned from source rather than executed: the function needs a live
+    /// `AppHandle` and would shell out to `launchctl` against the developer's
+    /// own daemon. Same tactic as the `cfg` audit further down this module.
+    #[test]
+    fn every_early_return_still_restores_the_daemon() {
+        const SRC: &str = include_str!("backend_install.rs");
+        let body = SRC
+            .split_once("pub async fn ensure_backend_installed")
+            .expect("ensure_backend_installed must exist")
+            .1;
+        // Bound the scan to the function: whichever item marker at column 0
+        // comes FIRST ends it. Splitting on `"\nasync fn"` alone was wrong -
+        // the next item is `pub(crate) async fn stop_daemon_for_migration`,
+        // which that pattern does not match, so the scan ran on to
+        // `wait_for_db_unheld` and swept a second function into the range.
+        // Harmless only by luck: `stop_daemon_for_migration` returns a
+        // `Result` and so cannot hold a bare `return;`. The next `pub(crate)
+        // fn` added between them would have failed this test with a message
+        // naming `ensure_backend_installed`, which is the worst kind of
+        // red - a true failure pointing at the wrong function.
+        let end = ["\npub ", "\npub(crate) ", "\nasync fn", "\nfn "]
+            .iter()
+            .filter_map(|m| body.find(m))
+            .min()
+            .unwrap_or(body.len());
+        let body = &body[..end];
+
+        // Pins the bound itself. Without it the two assertions below silently
+        // widen as the module grows, and a guard that scans the wrong lines
+        // reports on a function nobody edited.
+        assert!(
+            !body.contains("stop_daemon_for_migration"),
+            "the scan must stop at the end of ensure_backend_installed - it \
+             has run on into the following item"
+        );
+
+        // Every `return;` must be preceded by a restore. The one exception is
+        // the path where `$HOME` itself could not be resolved - there is no
+        // `home` to hand the restore, and nothing it could do.
+        let lines: Vec<&str> = body.lines().collect();
+        let mut unguarded: Vec<usize> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if line.trim() != "return;" {
+                continue;
+            }
+            let window = lines[i.saturating_sub(6)..i].join("\n");
+            let guarded =
+                window.contains("restore_unless_paused") || window.contains("cannot stage backend");
+            if !guarded {
+                unguarded.push(i);
+            }
+        }
+        assert!(
+            unguarded.is_empty(),
+            "every bail-out from ensure_backend_installed must call \
+             daemon_lifecycle::restore_unless_paused first, or a quit leaves \
+             the daemon permanently down - a `bootout` survives both KeepAlive \
+             and the next login. Unguarded `return;` at body lines {unguarded:?}"
+        );
+
+        // And the dev/source path specifically, since that is the one that
+        // returned without ever reaching the restore before this change.
+        let dev_arm = body
+            .split_once("no bundled backend")
+            .expect("the dev/source bail-out must still be identifiable")
+            .1;
+        let dev_arm = dev_arm.split_once("};").map(|(a, _)| a).unwrap_or(dev_arm);
+        assert!(
+            dev_arm.contains("restore_unless_paused"),
+            "the dev/source bail-out must restore the daemon before returning"
+        );
+
+        // ...and it must go through the pause gate, never call the raw start
+        // directly. A restore that skips the gate can start a daemon the user
+        // just paused, leaving a running daemon under a Paused label that the
+        // watchdog will not correct - because the pause flag is exactly what
+        // tells it to stand down.
+        assert!(
+            !body.contains("ensure_daemon_running(&home)"),
+            "restores must route through daemon_lifecycle::restore_unless_paused, \
+             not call ensure_daemon_running directly"
+        );
+    }
 
     /// The launchd target `stop_daemon_for_migration` boots out must address the
     /// daemon in the CURRENT user's GUI domain. A malformed target makes

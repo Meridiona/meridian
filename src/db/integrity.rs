@@ -145,6 +145,55 @@ pub fn is_corrupt_sqlx(err: &sqlx::Error) -> bool {
     }
 }
 
+/// SQLite's `SQLITE_NOTADB` primary result code - "file is not a database".
+///
+/// This is what a keyed open reports when page 1 itself is unreadable: SQLCipher
+/// decrypts the first page and looks for the `SQLite format 3` magic, so a
+/// damaged first page and a wrong key are indistinguishable at this layer -
+/// both surface as code 26. [`is_unopenable_error`]'s callers own that
+/// disambiguation (e.g. only trusting the "corrupt" reading when the key is
+/// known-good from the OS keychain).
+const SQLITE_NOTADB: u32 = 26;
+
+/// True when `err` - or anything in its `anyhow` chain - is SQLite refusing to
+/// open the file at all (code 26, "file is not a database"), the failure mode
+/// of a database whose first page is damaged. Also true for the plain-corrupt
+/// family ([`is_corrupt_error`]), which an open can report instead when page 1
+/// reads but the schema walk hits a bad page.
+///
+/// Distinct from [`is_corrupt_error`] on purpose: a *query* failing with code
+/// 26 mid-session would be bizarre, but an *open* failing with it is the
+/// signature the fleet's hard-down machines crash-loop with, and the startup
+/// probe (`tray/src-tauri/src/repair_boot.rs`) routes the two cases very
+/// differently - code-11 damage is repairable in place, code-26 damage means
+/// nothing can even ATTACH the file.
+pub fn is_unopenable_error(err: &anyhow::Error) -> bool {
+    if is_corrupt_error(err) {
+        return true;
+    }
+    if err
+        .chain()
+        .filter_map(|c| c.downcast_ref::<sqlx::Error>())
+        .any(is_notadb_sqlx)
+    {
+        return true;
+    }
+    // Fallback: the structured error did not survive to here.
+    err.chain()
+        .any(|c| c.to_string().contains("file is not a database"))
+}
+
+/// [`is_unopenable_error`]'s code-26 half for a bare `sqlx::Error`.
+fn is_notadb_sqlx(err: &sqlx::Error) -> bool {
+    let sqlx::Error::Database(db) = err else {
+        return false;
+    };
+    match db.code().and_then(|c| c.parse::<u32>().ok()) {
+        Some(code) => code & 0xFF == SQLITE_NOTADB,
+        None => db.message().contains("file is not a database"),
+    }
+}
+
 /// Runs `PRAGMA quick_check(max_errors)` and returns the reported problems -
 /// empty means structurally sound.
 ///
@@ -334,6 +383,28 @@ mod tests {
     fn unrelated_errors_are_not_corruption() {
         let err = anyhow::anyhow!("database is locked").context("failed to read first frame batch");
         assert!(!is_corrupt_error(&err));
+    }
+
+    /// The open-failure signature the hard-down fleet crash-loops with: code 26
+    /// wrapped in whatever context the open path added. Both the stringified
+    /// form and the plain-corrupt family must classify as unopenable, and a
+    /// merely locked file must not - repair on a lock would be repair on a
+    /// healthy database.
+    #[test]
+    fn unopenable_covers_notadb_and_corrupt_but_not_locks() {
+        let notadb =
+            anyhow::anyhow!("error returned from database: (code: 26) file is not a database")
+                .context("failed to open SQLite");
+        assert!(is_unopenable_error(&notadb));
+
+        let malformed = anyhow::anyhow!(
+            "error returned from database: (code: 11) database disk image is malformed"
+        )
+        .context("failed to open SQLite");
+        assert!(is_unopenable_error(&malformed));
+
+        let locked = anyhow::anyhow!("database is locked").context("failed to open SQLite");
+        assert!(!is_unopenable_error(&locked));
     }
 
     #[test]

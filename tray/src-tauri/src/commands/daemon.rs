@@ -27,6 +27,7 @@ use meridian_core::SqlitePool;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use tauri::State;
+use tracing::Instrument;
 
 /// The cached tray status (health + active session + today totals), read from
 /// the poll-loop-maintained [`AppState`]. Synchronous — just locks and snapshots.
@@ -50,18 +51,39 @@ pub async fn restart_daemon() -> Result<(), String> {
 /// [`crate::commands::pause`]'s capture-pause notice, so quiet-hours/master-
 /// switch policy applies identically.
 ///
-/// Start/stop goes through [`super::daemon_control`] (launchd on macOS, the
-/// scheduled task on Windows) rather than `launchctl` directly.
+/// Start/stop goes through [`crate::daemon_lifecycle`], **not**
+/// [`super::daemon_control::set_running`]. That is the fix for a toggle that
+/// never actually paused anything: `set_running(false)` runs `launchctl stop`,
+/// and the daemon's plist sets `KeepAlive=true`, so launchd restarted it after
+/// `ThrottleInterval` (30 s) while the menu went on reading "Disconnected ○".
+/// The same trap is documented from the other side in
+/// [`meridian::db::repair::marker`].
+///
+/// The paused flag and the OS call are sequenced inside
+/// [`crate::daemon_lifecycle`], under its lifecycle guard, rather than here.
+/// That matters: a paused daemon is `bootout`ed and so is indistinguishable
+/// from a crashed one, and both [`crate::poll::watchdog`] (every 5 s) and the
+/// installer's launch-time restore will start a daemon they believe is down.
+/// Sequencing them from the command would leave both races open.
 #[tauri::command]
+#[tracing::instrument(skip(_app, db_pool), fields(action))]
 pub async fn toggle_daemon(
     _app: tauri::AppHandle,
     is_running: bool,
     db_pool: State<'_, Option<SqlitePool>>,
 ) -> Result<(), String> {
     let pool = db_pool.inner().clone();
+    // `is_running` is the CURRENT state, so the useful field is what the user
+    // asked for, not what it already was.
+    tracing::Span::current().record("action", if is_running { "pause" } else { "resume" });
 
-    // `is_running` is the CURRENT state, so pausing means "make it not running".
-    super::daemon_control::set_running(!is_running).await?;
+    // The OS work and its own spans live in `daemon_lifecycle`; this command
+    // owns the request boundary and the notice write.
+    if is_running {
+        crate::daemon_lifecycle::stop_for_pause().await?;
+    } else {
+        crate::daemon_lifecycle::resume_from_pause().await?;
+    }
 
     if let Some(p) = pool.as_ref() {
         let result = if is_running {
@@ -77,14 +99,18 @@ pub async fn toggle_daemon(
                     deep_link: None,
                 },
             )
+            .instrument(tracing::debug_span!("daemon.toggle.write.notices"))
             .await
         } else {
-            meridian::notices::clear_typed(p, "tray.daemon_paused", "system.pause").await
+            meridian::notices::clear_typed(p, "tray.daemon_paused", "system.pause")
+                .instrument(tracing::debug_span!("daemon.toggle.write.notices"))
+                .await
         };
         if let Err(e) = result {
             tracing::warn!(error = %e, is_running, "daemon toggle notice write failed");
         }
     }
+    tracing::info!(is_running, "daemon toggled");
     Ok(())
 }
 

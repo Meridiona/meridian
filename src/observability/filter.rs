@@ -198,6 +198,46 @@ mod tests {
         );
     }
 
+    /// A throttled site's "quieter repeat" must be INFO, not DEBUG.
+    ///
+    /// This pins a coupling nothing else expresses, and getting it wrong is
+    /// invisible at the call site. `pm_worklog::post` throttles a permanent
+    /// warning and emits the suppressed repeats at a lower level so the
+    /// condition stays readable in `meridian logs` without egressing (only
+    /// WARN+ ships). That was first written as `debug!` — and at the production
+    /// default this filter grants debug ONLY to `etl`, `intelligence` and
+    /// `embedder`, so `meridian::pm_worklog::post` fell under `meridian=info`
+    /// and the repeats were dropped **before the spool**. Not quieter: gone.
+    ///
+    /// So: INFO from that target must survive the default filter, and DEBUG
+    /// must not. If someone adds a debug directive covering `pm_worklog` this
+    /// fails and they can drop the `debug!`-is-invisible workaround; if someone
+    /// removes `meridian=info` it fails too.
+    #[test]
+    fn a_throttled_repeat_at_info_survives_the_default_filter_but_debug_does_not() {
+        const TARGET: &str = "meridian::pm_worklog::post";
+        let filter = build_default_filter("INFO");
+
+        let passed = targets_passing(&filter, || {
+            tracing::info!(target: "meridian::pm_worklog::post", "throttled repeat");
+        });
+        assert!(
+            passed.iter().any(|t| t == TARGET),
+            "INFO from {TARGET} was dropped by the default filter, so a throttled \
+             repeat would be invisible even locally: {passed:?}"
+        );
+
+        let passed = targets_passing(&filter, || {
+            tracing::debug!(target: "meridian::pm_worklog::post", "throttled repeat");
+        });
+        assert!(
+            !passed.iter().any(|t| t == TARGET),
+            "DEBUG from {TARGET} now passes the default filter. That is fine, but \
+             `post.rs` emits throttled repeats at INFO specifically BECAUSE debug \
+             was being dropped here — revisit that comment: {passed:?}"
+        );
+    }
+
     /// EVERY entry in `CAPTURE_TARGETS` must be covered at EVERY log level.
     ///
     /// Deliberately iterates the constant rather than naming crates: an earlier

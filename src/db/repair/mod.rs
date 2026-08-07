@@ -206,32 +206,44 @@ pub async fn ensure_no_writers() -> Result<()> {
 /// exact failure this whole feature exists to remove, reintroduced in its own
 /// error path.
 ///
-/// Two things make the real answer non-obvious, which is why it is spelled out
-/// rather than left to the reader:
-/// - **Quitting the tray does not stop the daemon.** They are separate
-///   processes; the daemon is its own launchd agent (`com.meridiona.daemon`) /
-///   scheduled task.
-/// - **Killing the process does not stop it either.** The launchd plist sets
-///   `KeepAlive=true`, so it is relaunched within seconds - and a daemon that
-///   respawns mid-rebuild writes to the file being copied.
+/// **Quitting Meridian is now the answer**, and it did not used to be. The tray
+/// and the daemon are separate processes, and quitting the tray left the daemon
+/// running - so a user who followed the `db.corrupt` notice ("quit Meridian,
+/// then run `meridian db repair`") hit this very error, from the check directly
+/// above. The tray now takes the daemon down with it on quit
+/// (`tray/src-tauri/src/daemon_lifecycle.rs`), which also satisfies
+/// [`tray_is_running`] in one action instead of two.
 ///
-/// Pausing from the tray menu is offered first because it is the supported
-/// control (`tray/src-tauri/src/commands/daemon.rs`'s `toggle_daemon` ->
-/// `daemon_control::set_running`) and it is the same on every platform.
+/// The manual routes stay, because this message is also read on a machine where
+/// the tray is not installed or will not start, and because one thing about the
+/// old text remains true and non-obvious: **killing the process does not stop
+/// it**. The launchd plist sets `KeepAlive=true`, so it is relaunched within
+/// seconds, and a daemon that respawns mid-rebuild writes to the file being
+/// copied. `bootout` is the verb that holds; `stop` is not.
 fn stop_daemon_hint() -> &'static str {
     #[cfg(target_os = "macos")]
     {
-        "pause tracking from the Meridian tray menu, or run: \
-         launchctl bootout gui/$(id -u)/com.meridiona.daemon"
+        "quit Meridian from the tray menu, which now stops the daemon too, \
+         or run: launchctl bootout gui/$(id -u)/com.meridiona.daemon"
     }
+    // Both Windows launchers are named, because the machines most likely to
+    // read this message are the ones running the fallback. `register_service`
+    // drops a Startup-folder `MeridianDaemon.vbs` whenever `schtasks /Create`
+    // is blocked - the locked-down profiles and antivirus-quarantined installs
+    // where things go wrong in the first place - and on those there is no
+    // scheduled task to end, so the one instruction given would be another
+    // dead end. The tray's own stop path already covers both (it ends matched
+    // PIDs with `taskkill /F /PID`, precisely so the fallback is not missed).
     #[cfg(target_os = "windows")]
     {
-        "pause tracking from the Meridian tray menu, or disable the Meridian \
-         scheduled task"
+        "quit Meridian from the tray menu, which now stops the daemon too, \
+         or end the Meridian scheduled task - and if this install starts the \
+         daemon from the Startup folder instead, end the meridian.exe process \
+         in Task Manager"
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        "pause tracking from the Meridian tray menu"
+        "quit Meridian from the tray menu, which now stops the daemon too"
     }
 }
 
@@ -442,8 +454,14 @@ mod tests {
             "hint names a `meridian <verb>` that may not exist: {hint}"
         );
         // ...and it must still tell the user something concrete to do.
+        //
+        // The supported control used to be "pause tracking", which was doubly
+        // wrong: the toggle ran `launchctl stop` and `KeepAlive` undid it, and
+        // the user then had to quit the tray as a second step anyway to get
+        // past `tray_is_running`. Quitting now does both, so that is what the
+        // hint names.
         assert!(
-            hint.contains("pause tracking"),
+            hint.contains("quit Meridian"),
             "hint must name the supported control: {hint}"
         );
     }
