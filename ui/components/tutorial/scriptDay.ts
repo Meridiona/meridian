@@ -323,13 +323,12 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   // introduce the duplication before the next beat could explain it away. Its
   // one real claim - written from the work, not from a timer - has moved onto
   // the update, which is the part a new user has any reason to doubt.
-  // IN READING ORDER, which is now update first. The draft used to open with the
-  // proposed ticket, so both the layout and these beats made the user judge a
-  // model-written ticket body before seeing the thing it was written from.
-  s.spotlight('[data-tour="sum-update"]')
-  await s.next('The update itself, written from the work - not from a timer, and not from a note you had to remember to keep.')
+  // IN READING ORDER, which is destination first - the beats follow the layout
+  // rather than setting their own sequence, so the ring always moves downward.
   s.spotlight('[data-tour="sum-where"]')
-  await s.next('And nothing on your plan covered this, so rather than guess, Meridian has written the ticket it should go on: title, description, the lot. Approve it and it gets created.')
+  await s.next('Nothing on your plan covered this, so rather than guess, Meridian has written the ticket it should go on: title, description, the lot. Approve it and it gets created.')
+  s.spotlight('[data-tour="sum-update"]')
+  await s.next('And the update that goes on it, written from the work - not from a timer, and not from a note you had to remember to keep.')
   s.spotlight(null)
 
   // 7a. THE PROPOSAL IS A SUGGESTION TOO. Shown as a control the user operates,

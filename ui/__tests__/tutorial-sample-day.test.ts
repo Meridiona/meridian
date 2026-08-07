@@ -1435,13 +1435,12 @@ describe('the daily summary the tour teaches', () => {
     expect(samplePlanItems().some((p) => p.task_key === offPlan!.linked_ticket)).toBe(false)
   })
 
-  it('rings the draft in reading order - what it says, then where it goes', () => {
-    // The dialog used to open with the proposed ticket, and these beats followed
-    // it: the user was asked to judge a model-written ticket body before seeing
-    // the work it was written from. Both the layout and the narration lead with
-    // the update now, so "where does it go" is asked once "it" means something.
+  it('rings the draft in the order it is laid out, so the ring moves downward', () => {
+    // The beats must follow the layout rather than setting their own sequence:
+    // a ring that jumps down the card and back up reads as the tour having lost
+    // its place. Destination band first, then the update beneath it.
     const flow = src.slice(src.indexOf('── 7. The work that was NOT on the plan'))
-    expect(flow.indexOf('sum-update')).toBeLessThan(flow.indexOf('sum-where'))
+    expect(flow.indexOf('sum-where')).toBeLessThan(flow.indexOf('sum-update'))
   })
 
   it('proposes a NEW ticket, and still offers an existing one', () => {

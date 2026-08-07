@@ -200,10 +200,12 @@ describe('the update is a document with edges and a name', () => {
     const doc = targets.slice(targets.indexOf('export function DraftDocument'))
     expect(doc).not.toContain("border: '1px solid var(--t-card-border)'")
     expect(doc).not.toContain('THE UPDATE')
-    // The update leads and the destination follows - "where does it go" is a
-    // question you ask once you know what "it" says, and putting it last also
-    // puts it directly above the button that acts on it.
-    expect(doc.indexOf('sum-update')).toBeLessThan(doc.indexOf('sum-where'))
+    // The destination leads, which is why the ticket description folds after
+    // three lines: whatever is at the top sets what the reader thinks the
+    // screen is about, and that has to be a destination in a sentence rather
+    // than a hundred words of model-written ticket body.
+    expect(doc.indexOf('sum-where')).toBeLessThan(doc.indexOf('sum-update'))
+    expect(targets).toContain('const DESCRIPTION_PEEK = 190')
   })
 
   it('lays out both surfaces from the same component', () => {

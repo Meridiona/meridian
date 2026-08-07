@@ -140,19 +140,11 @@ export function DraftDocument({ draft, busy, trackers, onOpenTask, onDismiss, on
 }) {
   return (
     <div>
-      {/* The document itself, starting immediately - no label, because the
-          dialog's own title already says what this is. */}
-      {!hasPerTicketUpdates(draft) && (
-        <div data-tour="sum-update">
-          <UpdateBody update={draft.update} boxed unframed />
-        </div>
-      )}
-
-      {/* Where it lands. A single tinted band rather than a card: it is a
-          different KIND of thing from the prose above it (a destination, not a
+      {/* Where it lands, FIRST. A single tinted band rather than a card: it is a
+          different KIND of thing from the prose below it (a destination, not a
           document), and one change of surface says that more quietly than a
           border, a header row and a heading all saying it at once. */}
-      <div data-tour="sum-where" className="mt-6 rounded-xl px-4 py-3.5" style={{
+      <div data-tour="sum-where" className="rounded-xl px-4 py-3.5" style={{
         background: 'var(--t-box)',
       }}>
         <p className="mt-label mb-2.5" style={{ color: 'var(--t-faint-2)' }}>
@@ -161,6 +153,20 @@ export function DraftDocument({ draft, busy, trackers, onOpenTask, onDismiss, on
         <DraftTargets draft={draft} busy={busy} trackers={trackers} flat
           onOpenTask={onOpenTask} onDismiss={onDismiss} onSetProvider={onSetProvider} />
       </div>
+
+      {/* Then the document itself - no label of its own, because the dialog's
+          title already says what it is, and the band above is the only thing
+          that needs naming.
+          THE BAND IS COMPACT ON PURPOSE. It leads, which is why the ticket
+          description folds after three lines rather than running to a hundred
+          words: whatever is at the top sets what the reader thinks the screen
+          is about, and that has to be the destination in a sentence, not a
+          model-written ticket body. */}
+      {!hasPerTicketUpdates(draft) && (
+        <div data-tour="sum-update" className="mt-6">
+          <UpdateBody update={draft.update} boxed unframed />
+        </div>
+      )}
     </div>
   )
 }
