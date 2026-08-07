@@ -27,6 +27,7 @@
 
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
+use std::time::Duration;
 use tokio::sync::watch;
 
 use crate::config::{
@@ -346,15 +347,88 @@ async fn post_one(
     Ok(true)
 }
 
+/// How long before the "provider is not configured" warning repeats for the
+/// SAME row.
+///
+/// The row is deliberately left `approved` (see [`missing_provider`]), so
+/// nothing ever clears it and the sweep re-encounters it every
+/// [`POST_SWEEP_INTERVAL_SECS`]. Unthrottled that is 1440 identical WARNs per
+/// day, per row, forever — measured on a real install, where a single worklog
+/// drafted against an unconnected provider was the ONLY warning the daemon
+/// emitted, 224 times in the last 3000 log lines. That drowns the local spool
+/// (the sole log sink) and, because WARN+ is exactly what egresses, the central
+/// error pipeline too. Six hours still surfaces the condition several times a
+/// day without burying anything else.
+const PERMANENT_CONDITION_WARN_INTERVAL: Duration = Duration::from_secs(6 * 3600);
+
+type SharedThrottle = std::sync::LazyLock<std::sync::Mutex<super::warn_throttle::WarnThrottle>>;
+
+/// An approved worklog whose provider is not configured here (keyed on the
+/// `pm_worklogs` row id).
+static MISSING_PROVIDER_WARNED: SharedThrottle =
+    std::sync::LazyLock::new(std::sync::Mutex::default);
+
+/// A pending unpost naming a provider we have no `delete_worklog` for (keyed on
+/// the pending-unpost row id). Its own map, not shared with the one above: the
+/// two id spaces are unrelated, and colliding them would silence one site
+/// because the other happened to warn first.
+static UNKNOWN_UNPOST_PROVIDER_WARNED: SharedThrottle =
+    std::sync::LazyLock::new(std::sync::Mutex::default);
+
+/// Approved proposals with no tracker connected at all. Not per row — the
+/// condition is daemon-wide — so it uses the single sentinel key below.
+static NO_PROVIDER_PROPOSALS_WARNED: SharedThrottle =
+    std::sync::LazyLock::new(std::sync::Mutex::default);
+
+/// Key for a condition that is daemon-wide rather than per row.
+const GLOBAL_CONDITION_KEY: i64 = 0;
+
+/// Whether `key` should warn now, per [`PERMANENT_CONDITION_WARN_INTERVAL`].
+///
+/// A poisoned lock takes the inner value rather than falling back to "always
+/// warn": poisoning is permanent, so that fallback would silently revert to the
+/// unthrottled flood this exists to prevent, for the life of the process. The
+/// guarded section is a `HashMap` insert and cannot realistically panic.
+fn should_warn_now(
+    throttle: &std::sync::Mutex<super::warn_throttle::WarnThrottle>,
+    key: i64,
+) -> bool {
+    throttle
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .should_warn(
+            key,
+            std::time::Instant::now(),
+            PERMANENT_CONDITION_WARN_INTERVAL,
+        )
+}
+
 /// The worklog's provider is not configured on this daemon: leave it approved
-/// (nothing to post to) and warn once. Returns `Ok(false)` (not posted, not a
-/// hard error — it will post when the provider is configured).
+/// (nothing to post to) and warn. Returns `Ok(false)` (not posted, not a hard
+/// error — it will post when the provider is configured).
+///
+/// The warning is throttled per row to [`PERMANENT_CONDITION_WARN_INTERVAL`].
+/// Suppressed repeats are emitted at INFO — deliberately not DEBUG: the default
+/// `EnvFilter` is `meridian=info` with debug overrides only for `etl`,
+/// `intelligence` and `embedder`, so a `debug!` here would be dropped **before
+/// the spool** and the breadcrumb would exist only for someone who had already
+/// raised the log level. INFO reaches a local `meridian logs` sweep, and INFO
+/// does not egress (only WARN+ does), so the central pipeline sees the condition
+/// once and then stays quiet. The span still records `waiting` on every pass, so
+/// the per-sweep trace is unaffected.
 fn missing_provider(provider: &str, w: &db::ApprovedWorklog) -> Result<bool> {
     tracing::Span::current().record("state", "waiting");
-    tracing::warn!(
-        pm_worklog_id = w.id, task = %w.task_key, %provider,
-        "approved worklog waiting but its provider is not configured — not posting"
-    );
+    if should_warn_now(&MISSING_PROVIDER_WARNED, w.id) {
+        tracing::warn!(
+            pm_worklog_id = w.id, task = %w.task_key, %provider,
+            "approved worklog waiting but its provider is not configured — not posting"
+        );
+    } else {
+        tracing::info!(
+            pm_worklog_id = w.id, task = %w.task_key, %provider,
+            "approved worklog still waiting on an unconfigured provider (warning throttled)"
+        );
+    }
     Ok(false)
 }
 
@@ -405,7 +479,16 @@ pub async fn process_approved_proposals(pool: &SqlitePool, config: &Config) -> R
         return Ok(());
     }
     let Some(provider) = config.pm_providers.first().map(|p| p.provider_name()) else {
-        tracing::warn!("approved proposals waiting but no PM provider configured — skipping");
+        // Permanent until the user connects a tracker, and re-checked every
+        // sweep. Daemon-wide rather than per row, so it throttles on the
+        // sentinel key.
+        if should_warn_now(&NO_PROVIDER_PROPOSALS_WARNED, GLOBAL_CONDITION_KEY) {
+            tracing::warn!("approved proposals waiting but no PM provider configured — skipping");
+        } else {
+            tracing::info!(
+                "approved proposals still waiting on a connected tracker (warning throttled)"
+            );
+        }
         return Ok(());
     };
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
@@ -528,11 +611,22 @@ async fn unpost_stale(pool: &SqlitePool, config: &Config) -> Result<()> {
                 None => continue,
             },
             other => {
-                tracing::warn!(
-                    pm_worklog_id = p.id,
-                    provider = other,
-                    "unpost skipped — unknown provider, leaving stale entry in place"
-                );
+                // Same permanent shape as `missing_provider`: an unknown
+                // provider string never becomes known and the pending marker is
+                // never cleared, so this row would warn every sweep forever.
+                if should_warn_now(&UNKNOWN_UNPOST_PROVIDER_WARNED, p.id) {
+                    tracing::warn!(
+                        pm_worklog_id = p.id,
+                        provider = other,
+                        "unpost skipped — unknown provider, leaving stale entry in place"
+                    );
+                } else {
+                    tracing::info!(
+                        pm_worklog_id = p.id,
+                        provider = other,
+                        "unpost still skipped — unknown provider (warning throttled)"
+                    );
+                }
                 continue;
             }
         };
@@ -615,5 +709,259 @@ pub async fn cli_post_approved(pool: &SqlitePool) {
             s.approved_seen, s.posted, s.failed, providers,
         ),
         Err(e) => eprintln!("worklog-post-approved: sweep failed: {e:#}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex as StdMutex};
+    use tracing::Level;
+    use tracing_subscriber::layer::{Context, Layer};
+    use tracing_subscriber::prelude::*;
+
+    /// Minimal capture layer: records the level of every event emitted from
+    /// THIS module while it is the active subscriber.
+    ///
+    /// Target-scoped deliberately. Tests that build an in-memory pool run
+    /// `sqlx::migrate!` inside the capture window, and sqlx emits its own
+    /// DEBUG/INFO events — which would otherwise land in the assertion and make
+    /// it read as a throttle failure when nothing is wrong.
+    #[derive(Clone, Default)]
+    struct Captured(Arc<StdMutex<Vec<Level>>>);
+
+    impl<S: tracing::Subscriber> Layer<S> for Captured {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            if event
+                .metadata()
+                .target()
+                .starts_with("meridian::pm_worklog::post")
+            {
+                self.0.lock().unwrap().push(*event.metadata().level());
+            }
+        }
+    }
+
+    /// Levels captured while `f` runs, with the capture layer installed.
+    fn levels_during(f: impl FnOnce()) -> Vec<Level> {
+        let cap = Captured::default();
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), f);
+        let out = cap.0.lock().unwrap().clone();
+        out
+    }
+
+    /// Same, for async bodies. `with_default` is sync, so the future is driven
+    /// to completion inside the guard on a current-thread runtime.
+    fn levels_during_async<F: std::future::Future<Output = ()>>(
+        f: impl FnOnce() -> F,
+    ) -> Vec<Level> {
+        let cap = Captured::default();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
+            rt.block_on(f());
+        });
+        let out = cap.0.lock().unwrap().clone();
+        out
+    }
+
+    async fn fresh_db() -> SqlitePool {
+        use sqlx::sqlite::SqliteConnectOptions;
+        use std::str::FromStr;
+        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(opts).await.unwrap();
+        sqlx::migrate!("src/migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    fn empty_config() -> Config {
+        let mut cfg = Config::from_env();
+        cfg.pm_providers = vec![];
+        cfg
+    }
+
+    fn worklog(id: i64) -> db::ApprovedWorklog {
+        db::ApprovedWorklog {
+            id,
+            task_key: "MER-192".into(),
+            window_start: "2026-08-07T09:00:00Z".into(),
+            window_end: "2026-08-07T10:00:00Z".into(),
+            time_spent_seconds: 3600,
+            comment: "work".into(),
+            provider: "linear".into(),
+            created_at: None,
+            approved_at: None,
+            post_attempt_count: 0,
+        }
+    }
+
+    /// Pins the wiring, which the `WarnThrottle` unit tests cannot reach: delete
+    /// the `should_warn_now` branch and restore the original unconditional
+    /// `warn!`, and those five tests all stay green while this one fails.
+    ///
+    /// It also pins the LEVEL of the suppressed repeat. That matters more than
+    /// it looks: the first version used `debug!`, and the default `EnvFilter`
+    /// (`meridian=info`, with debug overrides only for etl/intelligence/embedder)
+    /// drops `meridian::pm_worklog::post` debug events **before the spool** — so
+    /// the "still visible locally" rationale was false. INFO passes that filter
+    /// and does not egress, which is exactly the property claimed.
+    #[test]
+    fn missing_provider_warns_once_then_throttles_to_info() {
+        // A row id no other test touches — the throttle is a process-global
+        // static and the suite runs in parallel.
+        let w = worklog(987_654_321);
+        let cap = Captured::default();
+
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
+            for _ in 0..5 {
+                missing_provider(&w.provider, &w).unwrap();
+            }
+        });
+
+        let levels = cap.0.lock().unwrap().clone();
+        assert_eq!(
+            levels,
+            vec![
+                Level::WARN,
+                Level::INFO,
+                Level::INFO,
+                Level::INFO,
+                Level::INFO
+            ],
+            "expected one WARN then INFO repeats; got {levels:?}"
+        );
+    }
+
+    /// Sibling site #1: an unpost naming a provider we have no `delete_worklog`
+    /// for. The provider string never becomes known and the pending marker is
+    /// never cleared, so pre-throttle this warned on every 60 s sweep forever -
+    /// the identical shape to `missing_provider`.
+    #[test]
+    fn unpost_stale_throttles_the_unknown_provider_warning() {
+        let levels = levels_during_async(|| async {
+            let pool = fresh_db().await;
+            sqlx::query(
+                "INSERT INTO pm_worklogs (id, task_key, day_utc, window_start, window_end, \
+                 state, payload_json, unpost_provider, unpost_worklog_id) \
+                 VALUES (4242, 'MER-1', '2026-08-07', 'a', 'b', 'posted', '{}', 'mystery', 'w1')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let cfg = empty_config();
+            for _ in 0..4 {
+                unpost_stale(&pool, &cfg).await.unwrap();
+            }
+        });
+
+        // The tracing::instrument span on unpost_stale emits no events, so only
+        // the warn/info pairs land here.
+        assert_eq!(
+            levels,
+            vec![Level::WARN, Level::INFO, Level::INFO, Level::INFO],
+            "expected one WARN then INFO repeats; got {levels:?}"
+        );
+    }
+
+    /// Sibling site #2: approved proposals with no tracker connected at all.
+    /// Permanent until the user connects one, and re-checked every sweep.
+    /// Daemon-wide rather than per row, so it throttles on the sentinel key.
+    #[test]
+    fn process_approved_proposals_throttles_the_no_tracker_warning() {
+        let levels = levels_during_async(|| async {
+            let pool = fresh_db().await;
+            sqlx::query(
+                "INSERT INTO pm_proposed_tasks (day_utc, source_hour, title, state) \
+                 VALUES ('2026-08-07', '2026-08-07T09', 'something', 'approved')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let cfg = empty_config();
+            for _ in 0..4 {
+                process_approved_proposals(&pool, &cfg).await.unwrap();
+            }
+        });
+
+        assert_eq!(
+            levels,
+            vec![Level::WARN, Level::INFO, Level::INFO, Level::INFO],
+            "expected one WARN then INFO repeats; got {levels:?}"
+        );
+    }
+
+    /// The three throttles must NOT share one map.
+    ///
+    /// This pins the one place the implementation deliberately departs from the
+    /// review's suggestion. The id spaces are unrelated - a `pm_worklogs` id and
+    /// a pending-unpost id can collide numerically - so a single shared map
+    /// would let one site silence the other purely because it warned first. The
+    /// resulting bug is invisible: a missing warning looks exactly like the
+    /// throttle working as intended.
+    #[test]
+    fn the_per_site_throttles_do_not_share_a_map() {
+        const SHARED_ID: i64 = 555_001;
+
+        // Burn the id on the worklog throttle.
+        let first = levels_during(|| {
+            missing_provider("linear", &worklog(SHARED_ID)).unwrap();
+        });
+        assert_eq!(first, vec![Level::WARN], "first warn should be WARN");
+
+        // The SAME id on the unpost throttle must still warn.
+        let second = levels_during_async(|| async {
+            let pool = fresh_db().await;
+            sqlx::query(&format!(
+                "INSERT INTO pm_worklogs (id, task_key, day_utc, window_start, window_end, \
+                 state, payload_json, unpost_provider, unpost_worklog_id) \
+                 VALUES ({SHARED_ID}, 'MER-2', '2026-08-07', 'a', 'b', 'posted', '{{}}', 'mystery', 'w1')"
+            ))
+            .execute(&pool)
+            .await
+            .unwrap();
+            unpost_stale(&pool, &empty_config()).await.unwrap();
+        });
+        assert_eq!(
+            second,
+            vec![Level::WARN],
+            "the unpost site was silenced by the worklog site sharing its id — \
+             the throttles must keep separate maps; got {second:?}"
+        );
+    }
+
+    /// A poisoned throttle must keep throttling.
+    ///
+    /// The first implementation fell back to `.unwrap_or(true)` — always warn.
+    /// Poisoning is permanent, so that reverted every later sweep to the exact
+    /// unthrottled flood this exists to prevent, silently and for the life of
+    /// the process. `into_inner` keeps the map usable.
+    #[test]
+    fn a_poisoned_throttle_still_throttles() {
+        const ID: i64 = 555_002;
+
+        // Poison the mutex: panic while holding the lock.
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = MISSING_PROVIDER_WARNED.lock().unwrap();
+            panic!("poison it");
+        });
+        assert!(
+            MISSING_PROVIDER_WARNED.is_poisoned(),
+            "test precondition: the lock should now be poisoned"
+        );
+
+        let levels = levels_during(|| {
+            for _ in 0..3 {
+                missing_provider("linear", &worklog(ID)).unwrap();
+            }
+        });
+        assert_eq!(
+            levels,
+            vec![Level::WARN, Level::INFO, Level::INFO],
+            "a poisoned lock reverted to the unthrottled flood; got {levels:?}"
+        );
     }
 }
