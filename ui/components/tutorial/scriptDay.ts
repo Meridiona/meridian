@@ -401,15 +401,22 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   await s.point('[data-tour="wl-confirm"]')
   await s.waitForClick('[data-tour="wl-confirm"]', 120000)
   s.spotlight(null)
+  // STRAIGHT ON THE POSTED STATE. `appeared` returns the frame the posted bar
+  // renders, and the pause after it was 600ms of nothing on a screen the user
+  // has already read - they pressed the button, they are waiting to be told it
+  // worked. The scripted post itself was the other half of the wait; see
+  // `TutorialSummaryCard`.
   await s.appeared('[data-tour="wl-posted"]', 6000)
-  await s.pause(600)
+  await s.pause(200)
   await s.next('Filed and written up, from work that was never on a ticket. Example day - nothing went out.')
 
   // ── 8. Out of the summary, and WHEN it arrives ──────────────────────────
-  // The summary has been read section by section, and the obvious question it
-  // leaves ("do I have to come here and do that every evening?") is answered
-  // before it is asked - and answered by the ask that follows it.
-  await s.next('None of that is yours to build. Each evening Meridian writes it and tells you it is ready.')
+  // NO BEAT SAYING "you do not have to build any of this". The question it
+  // answered - "do I come here and do that every evening?" - is answered better
+  // by the ask two beats later, which sets the time this arrives: a sentence
+  // promising it and a control scheduling it, back to back, is the promise said
+  // twice. Cut rather than reworded, because by this point the user has read a
+  // whole summary and is counting the beats left.
   // CLOSED FOR THEM, straight back to the timeline. It used to ring the × and
   // wait for a click, which taught nothing - they opened this surface two beats
   // ago, so its way out is not news - and it put an errand between the summary

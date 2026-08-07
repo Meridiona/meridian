@@ -143,7 +143,11 @@ export function TutorialSummaryCard({ sample, provider }: {
                 onPost={() => {
                   if (phase !== 'idle') return
                   setPhase('posting')
-                  setTimeout(() => setPhase('posted'), 1300)
+                  // Long enough to read as a round-trip, short enough not to be
+                  // a wait. It was 1300ms, which on top of the beat's own pause
+                  // put well over a second between the press and being told it
+                  // worked - on a post that is not even real.
+                  setTimeout(() => setPhase('posted'), 550)
                 }}
               />
             : <HomeView
