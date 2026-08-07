@@ -702,5 +702,48 @@ mod tests {
             hold_arm.contains("prevent_exit"),
             "the ExitAction::Hold arm must call prevent_exit; found: {hold_arm:?}"
         );
+
+        // And the stop task must take the guard that releases a held exit if
+        // it dies. `a_dead_stop_task_releases_the_held_exit` drops the guard
+        // itself, so it proves the guard WORKS but not that anything HOLDS one
+        // - deleting the binding in `lib.rs` leaves every test green and the
+        // tray permanently unquittable after a panic. This is the only place
+        // that can catch it, for the same reason the assertions above live
+        // here: no unit test can reach `RunEvent::ExitRequested`.
+        //
+        // Bounded to the HoldAndStop arm rather than the whole file, on the
+        // same reasoning as the Hold arm above: a file-wide check would pass
+        // on the `use` line or a doc reference and never notice the binding
+        // itself had gone.
+        let stop_arm = LIB_SRC
+            .split_once("ExitAction::HoldAndStop =>")
+            .expect("the handler must have an ExitAction::HoldAndStop arm")
+            .1;
+        let stop_arm = stop_arm
+            .split_once("\n            }")
+            .map(|(arm, _)| arm)
+            .unwrap_or(stop_arm);
+        // Narrowed twice more, both times because a looser check was verified
+        // to stay green against a real regression:
+        //
+        // 1. Match the BINDING, not the bare type name - the arm carries a
+        //    comment naming the guard, so `contains("HeldExitGuard")` passes
+        //    on the prose after the binding is deleted.
+        // 2. Scan the SPAWNED TASK's body, not the whole arm. A guard bound in
+        //    the arm but outside the task is not a weaker version of this, it
+        //    is a broken one: it would drop when the synchronous handler
+        //    returns - immediately, while the stop is still in flight -
+        //    releasing the hold it exists to maintain and letting the process
+        //    tear down mid-stop. That is the original bug, restored.
+        let spawn_body = stop_arm
+            .split_once("spawn(async move {")
+            .expect("the HoldAndStop arm must spawn the stop task")
+            .1;
+        assert!(
+            spawn_body.contains("= daemon_lifecycle::HeldExitGuard;"),
+            "the spawned stop task must BIND a daemon_lifecycle::HeldExitGuard \
+             INSIDE the task, or a panic mid-stop leaves the exit held forever \
+             and the app cannot be quit at all; found: {spawn_body:?}"
+        );
     }
 }

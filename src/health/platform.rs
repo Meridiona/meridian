@@ -218,21 +218,6 @@ pub fn mcp_service() -> Vec<Check> {
     vec![mcp_verdict(built)]
 }
 
-/// The decision half of [`mcp_service`], split out so every branch is testable
-/// without a real filesystem. `None` = no source checkout found at all.
-///
-/// The MCP server is built from the repo, so this question only has an answer in
-/// a source checkout. `repo_root()` is None on a packaged install and the old
-/// code folded that into `false` — reporting "not built" with a remedy
-/// (`cd packages/meridian-mcp && …`) naming a directory the user does not have.
-/// A check that asserts a problem it has not looked for trains people to ignore
-/// the whole report.
-///
-/// The Info wording reports what was OBSERVED, not an inferred install type:
-/// "no Cargo.toml above `current_exe()`" is also true of a `cargo install`ed
-/// binary, a release binary copied into `~/bin`, or an `.app`-embedded one.
-/// Claiming "packaged install" would be the same conflation this module
-/// deliberately avoids for `daemon binary`.
 /// The four-way `.env` truth table, split out so each case is testable without
 /// a real `$HOME` or repo.
 ///
@@ -260,6 +245,21 @@ fn env_verdict(repo_env: bool, home_env: bool) -> Check {
     }
 }
 
+/// The decision half of [`mcp_service`], split out so every branch is testable
+/// without a real filesystem. `None` = no source checkout found at all.
+///
+/// The MCP server is built from the repo, so this question only has an answer in
+/// a source checkout. `repo_root()` is None on a packaged install and the old
+/// code folded that into `false` — reporting "not built" with a remedy
+/// (`cd packages/meridian-mcp && …`) naming a directory the user does not have.
+/// A check that asserts a problem it has not looked for trains people to ignore
+/// the whole report.
+///
+/// The Info wording reports what was OBSERVED, not an inferred install type:
+/// "no Cargo.toml above `current_exe()`" is also true of a `cargo install`ed
+/// binary, a release binary copied into `~/bin`, or an `.app`-embedded one.
+/// Claiming "packaged install" would be the same conflation this module
+/// deliberately avoids for `daemon binary`.
 fn mcp_verdict(built: Option<bool>) -> Check {
     match built {
         None => Check::info(

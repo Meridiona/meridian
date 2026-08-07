@@ -44,11 +44,43 @@ pub fn is_canonical_install() -> bool {
         return false;
     };
     match std::env::current_exe() {
-        Ok(exe) => Some(exe) == staged_daemon_path(),
+        Ok(exe) => paths_are_same(&exe, staged_daemon_path().as_deref()),
         // `current_exe()` failing is rare (permissions, exotic sandboxing) —
         // fall back to the machine-wide marker file rather than guessing.
         Err(_) => meridian_dir.join(".env").exists(),
     }
+}
+
+/// Do these two paths name the same file, allowing for symlinks?
+///
+/// A plain `==` was wrong in one direction that matters: `current_exe()`
+/// resolves symlinks on macOS and Linux, while [`staged_daemon_path`] is
+/// assembled textually from [`meridian_core::paths::meridian_dir`] and is not
+/// resolved. A `$HOME` containing a symlink anywhere in it — a relocated home
+/// directory, `/tmp` → `/private/tmp` on macOS, an admin-managed mount — makes
+/// the two strings differ for a genuinely packaged install.
+///
+/// The consequence is silent and precisely the one [`is_canonical_install`]
+/// exists to prevent: the install reads as non-canonical, so central error
+/// reporting never ships and `health::observability::offline_verdict` reports
+/// the dev branch. A machine in that state is invisible to exactly the fleet
+/// telemetry it should be feeding.
+///
+/// Canonicalisation is attempted on both sides and falls back to the raw path
+/// when it fails — the staged path legitimately may not exist yet on a source
+/// build, and a missing file must read as "not canonical", not as an error.
+/// `health::platform::repo_root` canonicalises `current_exe()` for the same
+/// reason.
+fn paths_are_same(exe: &std::path::Path, staged: Option<&std::path::Path>) -> bool {
+    let Some(staged) = staged else {
+        return false;
+    };
+    if exe == staged {
+        return true;
+    }
+    let resolve =
+        |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    resolve(exe) == resolve(staged)
 }
 
 /// Absolute path the tray stages the daemon binary at
@@ -158,5 +190,59 @@ mod tests {
         } else {
             assert_eq!(name, "meridian");
         }
+    }
+
+    /// A symlinked `$HOME` must not read as a non-canonical install.
+    ///
+    /// `current_exe()` resolves symlinks; the staged path does not. Comparing
+    /// them raw made a genuinely packaged install look like a dev build
+    /// whenever anything in the path was a link - which silently disables
+    /// central error reporting, so the machines most worth hearing from go
+    /// quiet. This is the one failure mode with no visible symptom on the
+    /// affected machine at all.
+    #[test]
+    #[cfg(unix)]
+    fn a_symlinked_path_still_matches_the_staged_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let exe = real.join("meridian");
+        std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
+
+        // The shape of a relocated or symlinked home: same file, different
+        // spelling. `current_exe()` would hand us the resolved side.
+        let link = dir.path().join("linked");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let staged_via_link = link.join("meridian");
+
+        assert_ne!(
+            exe, staged_via_link,
+            "the test is meaningless unless the two spellings differ"
+        );
+        assert!(
+            paths_are_same(&exe, Some(&staged_via_link)),
+            "a symlinked staged path must still match the running executable - \
+             treating it as a mismatch silently disables error reporting on a \
+             packaged install"
+        );
+    }
+
+    /// The other direction: genuinely different binaries must stay different,
+    /// and a missing staged path must read as "not canonical" rather than
+    /// erroring or matching.
+    #[test]
+    fn unrelated_or_absent_paths_do_not_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        assert!(!paths_are_same(&a, Some(&b)));
+        assert!(!paths_are_same(&a, None));
+        assert!(
+            !paths_are_same(&a, Some(&dir.path().join("never-existed"))),
+            "an unresolvable staged path must not match - a source build has \
+             no staged binary, and that is exactly the non-canonical case"
+        );
     }
 }
