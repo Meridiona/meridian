@@ -720,15 +720,68 @@ mod tests {
     use tracing_subscriber::layer::{Context, Layer};
     use tracing_subscriber::prelude::*;
 
-    /// Minimal capture layer: records the level of every event emitted while it
-    /// is the active subscriber.
+    /// Minimal capture layer: records the level of every event emitted from
+    /// THIS module while it is the active subscriber.
+    ///
+    /// Target-scoped deliberately. Tests that build an in-memory pool run
+    /// `sqlx::migrate!` inside the capture window, and sqlx emits its own
+    /// DEBUG/INFO events — which would otherwise land in the assertion and make
+    /// it read as a throttle failure when nothing is wrong.
     #[derive(Clone, Default)]
     struct Captured(Arc<StdMutex<Vec<Level>>>);
 
     impl<S: tracing::Subscriber> Layer<S> for Captured {
         fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-            self.0.lock().unwrap().push(*event.metadata().level());
+            if event
+                .metadata()
+                .target()
+                .starts_with("meridian::pm_worklog::post")
+            {
+                self.0.lock().unwrap().push(*event.metadata().level());
+            }
         }
+    }
+
+    /// Levels captured while `f` runs, with the capture layer installed.
+    fn levels_during(f: impl FnOnce()) -> Vec<Level> {
+        let cap = Captured::default();
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), f);
+        let out = cap.0.lock().unwrap().clone();
+        out
+    }
+
+    /// Same, for async bodies. `with_default` is sync, so the future is driven
+    /// to completion inside the guard on a current-thread runtime.
+    fn levels_during_async<F: std::future::Future<Output = ()>>(
+        f: impl FnOnce() -> F,
+    ) -> Vec<Level> {
+        let cap = Captured::default();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
+            rt.block_on(f());
+        });
+        let out = cap.0.lock().unwrap().clone();
+        out
+    }
+
+    async fn fresh_db() -> SqlitePool {
+        use sqlx::sqlite::SqliteConnectOptions;
+        use std::str::FromStr;
+        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(opts).await.unwrap();
+        sqlx::migrate!("src/migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    fn empty_config() -> Config {
+        let mut cfg = Config::from_env();
+        cfg.pm_providers = vec![];
+        cfg
     }
 
     fn worklog(id: i64) -> db::ApprovedWorklog {
@@ -780,6 +833,135 @@ mod tests {
                 Level::INFO
             ],
             "expected one WARN then INFO repeats; got {levels:?}"
+        );
+    }
+
+    /// Sibling site #1: an unpost naming a provider we have no `delete_worklog`
+    /// for. The provider string never becomes known and the pending marker is
+    /// never cleared, so pre-throttle this warned on every 60 s sweep forever -
+    /// the identical shape to `missing_provider`.
+    #[test]
+    fn unpost_stale_throttles_the_unknown_provider_warning() {
+        let levels = levels_during_async(|| async {
+            let pool = fresh_db().await;
+            sqlx::query(
+                "INSERT INTO pm_worklogs (id, task_key, day_utc, window_start, window_end, \
+                 state, payload_json, unpost_provider, unpost_worklog_id) \
+                 VALUES (4242, 'MER-1', '2026-08-07', 'a', 'b', 'posted', '{}', 'mystery', 'w1')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let cfg = empty_config();
+            for _ in 0..4 {
+                unpost_stale(&pool, &cfg).await.unwrap();
+            }
+        });
+
+        // The tracing::instrument span on unpost_stale emits no events, so only
+        // the warn/info pairs land here.
+        assert_eq!(
+            levels,
+            vec![Level::WARN, Level::INFO, Level::INFO, Level::INFO],
+            "expected one WARN then INFO repeats; got {levels:?}"
+        );
+    }
+
+    /// Sibling site #2: approved proposals with no tracker connected at all.
+    /// Permanent until the user connects one, and re-checked every sweep.
+    /// Daemon-wide rather than per row, so it throttles on the sentinel key.
+    #[test]
+    fn process_approved_proposals_throttles_the_no_tracker_warning() {
+        let levels = levels_during_async(|| async {
+            let pool = fresh_db().await;
+            sqlx::query(
+                "INSERT INTO pm_proposed_tasks (day_utc, source_hour, title, state) \
+                 VALUES ('2026-08-07', '2026-08-07T09', 'something', 'approved')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let cfg = empty_config();
+            for _ in 0..4 {
+                process_approved_proposals(&pool, &cfg).await.unwrap();
+            }
+        });
+
+        assert_eq!(
+            levels,
+            vec![Level::WARN, Level::INFO, Level::INFO, Level::INFO],
+            "expected one WARN then INFO repeats; got {levels:?}"
+        );
+    }
+
+    /// The three throttles must NOT share one map.
+    ///
+    /// This pins the one place the implementation deliberately departs from the
+    /// review's suggestion. The id spaces are unrelated - a `pm_worklogs` id and
+    /// a pending-unpost id can collide numerically - so a single shared map
+    /// would let one site silence the other purely because it warned first. The
+    /// resulting bug is invisible: a missing warning looks exactly like the
+    /// throttle working as intended.
+    #[test]
+    fn the_per_site_throttles_do_not_share_a_map() {
+        const SHARED_ID: i64 = 555_001;
+
+        // Burn the id on the worklog throttle.
+        let first = levels_during(|| {
+            missing_provider("linear", &worklog(SHARED_ID)).unwrap();
+        });
+        assert_eq!(first, vec![Level::WARN], "first warn should be WARN");
+
+        // The SAME id on the unpost throttle must still warn.
+        let second = levels_during_async(|| async {
+            let pool = fresh_db().await;
+            sqlx::query(&format!(
+                "INSERT INTO pm_worklogs (id, task_key, day_utc, window_start, window_end, \
+                 state, payload_json, unpost_provider, unpost_worklog_id) \
+                 VALUES ({SHARED_ID}, 'MER-2', '2026-08-07', 'a', 'b', 'posted', '{{}}', 'mystery', 'w1')"
+            ))
+            .execute(&pool)
+            .await
+            .unwrap();
+            unpost_stale(&pool, &empty_config()).await.unwrap();
+        });
+        assert_eq!(
+            second,
+            vec![Level::WARN],
+            "the unpost site was silenced by the worklog site sharing its id — \
+             the throttles must keep separate maps; got {second:?}"
+        );
+    }
+
+    /// A poisoned throttle must keep throttling.
+    ///
+    /// The first implementation fell back to `.unwrap_or(true)` — always warn.
+    /// Poisoning is permanent, so that reverted every later sweep to the exact
+    /// unthrottled flood this exists to prevent, silently and for the life of
+    /// the process. `into_inner` keeps the map usable.
+    #[test]
+    fn a_poisoned_throttle_still_throttles() {
+        const ID: i64 = 555_002;
+
+        // Poison the mutex: panic while holding the lock.
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = MISSING_PROVIDER_WARNED.lock().unwrap();
+            panic!("poison it");
+        });
+        assert!(
+            MISSING_PROVIDER_WARNED.is_poisoned(),
+            "test precondition: the lock should now be poisoned"
+        );
+
+        let levels = levels_during(|| {
+            for _ in 0..3 {
+                missing_provider("linear", &worklog(ID)).unwrap();
+            }
+        });
+        assert_eq!(
+            levels,
+            vec![Level::WARN, Level::INFO, Level::INFO],
+            "a poisoned lock reverted to the unthrottled flood; got {levels:?}"
         );
     }
 }
