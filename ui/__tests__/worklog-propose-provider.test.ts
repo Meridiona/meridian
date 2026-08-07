@@ -191,12 +191,26 @@ describe('the update is a document with edges and a name', () => {
   // one answers WHERE the worklog goes, this one WHAT goes there.
   const body = src('components/timeline/WorklogUpdateBody.tsx')
 
-  it('puts the target and the update in ONE card, for both callers', () => {
-    // They were two stacked panels in two tints - an amber proposal above a
-    // lilac update box - which said, in the only language a layout has, that
-    // they were separate things to weigh. They are one object: a ticket and the
-    // text that goes on it. Both top-level surfaces render the same component,
-    // so the walkthrough teaches the screen that actually ships.
+  it('draws no card inside the dialog, which is already a card', () => {
+    // This was a card, then two cards, then one card with internal header rows -
+    // every version a framed surface drawn inside a dialog that already has a
+    // frame, a title bar and a footer. Two chromes nested, the inner one
+    // repeating the outer one's job: a header saying "THE UPDATE" directly under
+    // a title bar saying "Worklog draft". The dialog IS the document.
+    const doc = targets.slice(targets.indexOf('export function DraftDocument'))
+    expect(doc).not.toContain("border: '1px solid var(--t-card-border)'")
+    expect(doc).not.toContain('THE UPDATE')
+    // The update leads and the destination follows - "where does it go" is a
+    // question you ask once you know what "it" says, and putting it last also
+    // puts it directly above the button that acts on it.
+    expect(doc.indexOf('sum-update')).toBeLessThan(doc.indexOf('sum-where'))
+  })
+
+  it('lays out both surfaces from the same component', () => {
+    // The update and its destination are one object - a ticket and the text
+    // that goes on it - and both top-level surfaces render the same component,
+    // so the walkthrough teaches the screen that actually ships rather than a
+    // tutorial-shaped copy of it that drifts.
     expect(dialog).toContain('<DraftDocument draft={draft}')
     expect(summary).toContain('<DraftDocument draft={draft}')
     expect(targets).toContain('export function DraftDocument')
@@ -229,7 +243,7 @@ describe('the update is a document with edges and a name', () => {
     // inside it - three unrelated levels of the hierarchy in identical clothes,
     // so the whole card read as one flat slab with no way in.
     // Chrome is now the quietest thing on the card...
-    expect(targets).toContain("<p className=\"mt-label\" style={{ color: 'var(--t-faint-2)' }}>THE UPDATE</p>")
+    expect(targets).toContain("<p className=\"mt-label mb-2.5\" style={{ color: 'var(--t-faint-2)' }}>")
     // ...the summary is the loudest...
     expect(body).toContain('fontSize: boxed ? 14 : 13')
     // ...and a section heading is a heading rather than a shout.
@@ -263,7 +277,7 @@ describe('the update is a document with edges and a name', () => {
     expect(body).toContain('function CopyIcon')
     // Pulled back out of the gutter, since a borderless button's padding would
     // otherwise inset the icon past the margin the label sits on.
-    expect(targets).toContain('<span className="-mr-1.5"><CopyUpdate update={draft.update} /></span>')
+    expect(src('components/timeline/WorklogDraftDialog.tsx')).toContain('<CopyUpdate update={draft.update} />')
   })
 
   it('folds a long proposed-ticket description instead of leading with it', () => {
@@ -350,7 +364,7 @@ describe('the update can leave the app', () => {
     // Hand-selecting prose that spans headings picks the labels up as body text.
     expect(src('components/timeline/WorklogUpdateBody.tsx'))
       .toContain('navigator.clipboard.writeText(updateToText(update))')
-    expect(targets).toContain('<CopyUpdate update={draft.update} />')
+    expect(src('components/timeline/WorklogDraftDialog.tsx')).toContain('<CopyUpdate update={draft.update} />')
   })
 })
 
@@ -370,12 +384,20 @@ describe('the action row is one decision, not three options', () => {
     expect(row).not.toContain('onRegenerate')
   })
 
-  it('moves rewriting onto the document, beside when it was written', () => {
+  it('sorts the action row by kind: utilities left, the decision right', () => {
+    // Rewrite used to sit in the title bar beside the × - a control that
+    // REPLACES the document, one target away from the one that dismisses it.
+    // It belongs with the other things you can do TO the draft. Both are quiet
+    // text on the left; the only loud thing in the row is the one that commits.
     const dialog = src('components/timeline/WorklogDraftDialog.tsx')
     expect(actions).toContain('export function RegenerateDraft')
     expect(dialog).toContain('<RegenerateDraft busy={busy} onRegenerate={generate} />')
-    // Only while there is a draft to rewrite and it has not gone out yet - a
+    expect(dialog).toContain('<CopyUpdate update={draft.update} />')
+    // Only while there is a draft to act on and it has not gone out yet - a
     // posted update is followed up, not overwritten (that is `PostedBar`'s job).
-    expect(dialog).toContain('{draft && !posted && <RegenerateDraft')
+    expect(dialog).toContain('{draft && !posted && !picking && !confirming')
+    // And the title bar is a bar again: one control, and it only closes.
+    const titleBar = dialog.slice(dialog.indexOf('Worklog draft'), dialog.indexOf('Body — the document surface'))
+    expect(titleBar).not.toContain('RegenerateDraft')
   })
 })

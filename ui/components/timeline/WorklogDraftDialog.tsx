@@ -35,6 +35,7 @@ import type { SettingsSection } from './settings/types'
 import type { WorklogState } from './useWorklog'
 import { WorklogTicketPicker } from './WorklogTicketPicker'
 import { DraftDocument } from './WorklogTargets'
+import { CopyUpdate } from './WorklogUpdateBody'
 import {
   ConfirmPost, ConnectTrackerCta, DraftActions, GenerateCta, PostedBar, RegenerateDraft,
   type PostedLink,
@@ -276,44 +277,44 @@ export function WorklogDraftDialog({
         style={{ maxWidth: 640, maxHeight: '86%', border: '1px solid var(--t-card-border)', boxShadow: 'var(--mt-modal-shadow)' }}
         onClick={(e) => e.stopPropagation()}>
 
-        {/* Header: what this document is, then what it is ABOUT. The task title is
-            the subtitle rather than the title - the user got here from that task
-            and does not need reminding what they clicked; they need telling what
-            the surface is. */}
-        <div className="flex items-start justify-between gap-4 px-7 pt-6 pb-5 border-b shrink-0"
+        {/* TITLE BAR, and it stays a bar. It used to be a 6-unit-tall block with
+            a stacked title, a subtitle, and two controls of different shapes -
+            chrome competing with the document below it for the top of the
+            screen. What it has to say is small: what this is, what it is about,
+            when it was written. The task title is the subtitle rather than the
+            title because the user arrived from that task; what they need told is
+            what the SURFACE is.
+            NOTHING BUT CLOSE lives up here now. Rewrite sat beside the × - a
+            control that replaces the document, one target away from the control
+            that dismisses it - and it belongs with the other things you can do
+            to the draft, in the action row. */}
+        <div className="flex items-center justify-between gap-4 px-6 py-4 border-b shrink-0"
           style={{ borderColor: 'var(--t-hair)' }}>
           <div className="min-w-0">
-            <p className="mt-modal-title text-title">Worklog draft</p>
-            <p className="mt-1 truncate" style={{ color: 'var(--t-muted)', fontSize: 12.5 }}>
+            <p style={{ font: '700 14px var(--font-sans)', color: 'var(--t-title)', letterSpacing: '-0.01em' }}>
+              Worklog draft
+            </p>
+            <p className="mt-0.5 truncate" style={{ color: 'var(--t-faint)', fontSize: 12 }}>
               {taskTitle}
-              {generatedAt && <span style={{ color: 'var(--t-faint)' }}> · written at {generatedAt}</span>}
+              {generatedAt && <span> · written at {generatedAt}</span>}
             </p>
           </div>
-          <div className="flex items-center gap-1 shrink-0">
-          {/* Rewrite lives WITH the document, next to when it was written - that
-              is the fact it acts on. It used to be the first of three bordered
-              buttons in the action row, where it read as a third answer to
-              "where does this go" rather than a question about the text. */}
-          {draft && !posted && <RegenerateDraft busy={busy} onRegenerate={generate} />}
           <button onClick={onClose} aria-label="Close" data-tour="wl-close"
             className="inline-flex items-center justify-center rounded-full bg-wrap shrink-0"
-            style={{ width: 30, height: 30, color: 'var(--t-muted)' }}>
-            <span className="text-[17px] leading-none">×</span>
+            style={{ width: 28, height: 28, color: 'var(--t-muted)' }}>
+            <span className="text-[16px] leading-none">×</span>
           </button>
-          </div>
         </div>
 
-        {/* Body */}
-        <div className="flex-1 min-h-0 overflow-y-auto nice-scroll px-7 py-6">
+        {/* Body — the document surface. No inner card: `DraftDocument` lays the
+            update out directly on it, with the destination below. */}
+        <div className="flex-1 min-h-0 overflow-y-auto nice-scroll px-6 py-5">
           {draft ? (
-            <div className="space-y-4">
-              {/* ONE CARD. `DraftDocument` holds both the target and the update -
-                  when the model split the work per ticket, each body renders in
-                  its own row instead and the shared block is dropped. */}
+            <>
               <DraftDocument draft={draft} busy={busy} trackers={connected} onOpenTask={onOpenTask}
                 onDismiss={wl.dismiss} onSetProvider={wl.setProvider} />
               <Provenance draft={draft} />
-            </div>
+            </>
           ) : phase === 'generating' ? (
             <GeneratingBar hue={hue} label="Generating your worklog…"
               detail="Reading your work, comparing it against today's tasks and drafting the update - you can keep using Meridian while this runs." />
@@ -322,14 +323,25 @@ export function WorklogDraftDialog({
           )}
         </div>
 
-        {/* Footer: exactly one row, whichever phase we are in. */}
-        <div className="shrink-0 px-7 py-5 space-y-3"
+        {/* ACTION ROW. Two kinds of control, and they are sorted by kind rather
+            than by importance: on the left, things you do TO the draft (rewrite
+            it, take a copy of it) as quiet text; on the right, the decision
+            about where it goes. Everything the user might want to do with this
+            document is in one place, and the only loud thing in it is the thing
+            that commits. */}
+        <div className="shrink-0 px-6 py-4 space-y-3"
           style={{ background: 'var(--t-card)', borderTop: '1px solid var(--t-card-border)' }}>
           {error && (
             <p className="mt-body-sm rounded-lg px-3 py-2"
               style={{ color: 'var(--color-state-pending)', background: 'color-mix(in srgb, var(--color-state-pending) 12%, transparent)', fontSize: 12 }}>
               {error}
             </p>
+          )}
+          {draft && !posted && !picking && !confirming && phase !== 'generating' && (
+            <div className="flex items-center gap-1 -ml-1.5">
+              <RegenerateDraft busy={busy} onRegenerate={generate} />
+              <CopyUpdate update={draft.update} />
+            </div>
           )}
           {phase === 'generating' ? null
             : posted ? (
@@ -389,7 +401,7 @@ function Provenance({ draft }: { draft: DayTaskWorklogDraft }) {
   if (draft.propose) return null
   const text = 'Matched against today\'s tasks only, not your whole board. Remove any that don\'t fit, or pick a different ticket below.'
   return (
-    <p className="mt-body-sm" style={{ color: 'var(--t-faint)', fontSize: 11.5, lineHeight: 1.5 }}>
+    <p className="mt-body-sm mt-3" style={{ color: 'var(--t-faint)', fontSize: 11.5, lineHeight: 1.5 }}>
       {text}
     </p>
   )

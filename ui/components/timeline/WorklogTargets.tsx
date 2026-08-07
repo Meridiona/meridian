@@ -110,18 +110,22 @@ export function DraftTargets({ draft, busy, trackers, flat = false, onOpenTask, 
   )
 }
 
-/** The whole draft as ONE document: where it lands, then what lands there.
+/** The whole draft, laid out as the document it is.
  *
- *  These used to be two cards stacked with a gap - an amber-tinted proposal panel
- *  above a lilac update box - which said, in the only language a layout has, that
- *  they were two separate things to consider. They are not: the ticket and the
- *  text that goes on it are one object, and the user's decision is about the pair.
- *  Two frames in two colours also meant two competing surfaces in a 640px dialog,
- *  and the eye had nowhere to start.
+ *  NO CARD. Successive versions of this were a card, then two cards, then one
+ *  card with internal header rows - and every one of them was a framed surface
+ *  drawn inside a dialog that is already a framed surface with its own title bar
+ *  and its own footer. Two chromes nested, the inner one repeating the outer
+ *  one's job: a header saying "THE UPDATE" directly beneath a title bar saying
+ *  "Worklog draft", a border inside a border, a tinted panel on a tinted panel.
+ *  The dialog IS the document. This is its contents, and nothing else.
  *
- *  One card, one background, one border, with hairlines between its parts. The
- *  parts keep their own labels, because "where" and "what" are still different
- *  questions - they are just being asked on the same page.
+ *  THE UPDATE LEADS, the destination follows. The proposal used to open the
+ *  dialog, so the reader met a model-written ticket body before the thing they
+ *  are being asked to judge - and "where does it go" is a question you ask AFTER
+ *  you know what "it" says. Putting the destination last also puts it directly
+ *  above the button that acts on it, which is where proximity should have had it
+ *  all along.
  *
  *  # Who calls this
  *  [`WorklogDraftDialog`]'s body, and the walkthrough's `TutorialSummaryTask`,
@@ -134,35 +138,30 @@ export function DraftDocument({ draft, busy, trackers, onOpenTask, onDismiss, on
   onDismiss: (taskKey: string) => void
   onSetProvider: (provider: string) => void
 }) {
-  const hair = { borderColor: 'var(--t-hair)' }
   return (
-    <section className="rounded-xl overflow-hidden" style={{
-      background: 'var(--t-box)', border: '1px solid var(--t-card-border)',
-    }}>
-      <div data-tour="sum-where" className="px-4 pt-3.5 pb-4 border-b" style={hair}>
-        {/* Chrome, and it reads as chrome: the quietest thing on the card, above
-            the loudest. It used to be `--t-muted` at the same weight as the
-            section headings inside the update, so the eye had no way to tell a
-            label from a heading from a title. */}
-        <p className="mt-label mb-2" style={{ color: 'var(--t-faint-2)' }}>
-          {draft.propose ? 'NEW TICKET - NOTHING ON YOUR PLAN MATCHED' : 'WHERE THIS GOES'}
+    <div>
+      {/* The document itself, starting immediately - no label, because the
+          dialog's own title already says what this is. */}
+      {!hasPerTicketUpdates(draft) && (
+        <div data-tour="sum-update">
+          <UpdateBody update={draft.update} boxed unframed />
+        </div>
+      )}
+
+      {/* Where it lands. A single tinted band rather than a card: it is a
+          different KIND of thing from the prose above it (a destination, not a
+          document), and one change of surface says that more quietly than a
+          border, a header row and a heading all saying it at once. */}
+      <div data-tour="sum-where" className="mt-6 rounded-xl px-4 py-3.5" style={{
+        background: 'var(--t-box)',
+      }}>
+        <p className="mt-label mb-2.5" style={{ color: 'var(--t-faint-2)' }}>
+          {draft.propose ? 'CREATES A NEW TICKET' : 'GOES TO'}
         </p>
         <DraftTargets draft={draft} busy={busy} trackers={trackers} flat
           onOpenTask={onOpenTask} onDismiss={onDismiss} onSetProvider={onSetProvider} />
       </div>
-      {!hasPerTicketUpdates(draft) && (
-        <div data-tour="sum-update">
-          <header className="flex items-center justify-between gap-3 px-4 py-3 border-b" style={hair}>
-            <p className="mt-label" style={{ color: 'var(--t-faint-2)' }}>THE UPDATE</p>
-            {/* Pulled back out of the gutter: the button is borderless now,
-                so its padding would otherwise inset the icon well past the
-                16px margin the label sits on. */}
-            <span className="-mr-1.5"><CopyUpdate update={draft.update} /></span>
-          </header>
-          <div className="px-4 py-3.5"><UpdateBody update={draft.update} boxed unframed /></div>
-        </div>
-      )}
-    </section>
+    </div>
   )
 }
 

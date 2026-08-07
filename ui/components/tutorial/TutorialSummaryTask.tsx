@@ -52,6 +52,7 @@ import {
   ConfirmPost, DraftActions, PostedBar, type PostedLink,
 } from '@/components/timeline/WorklogActions'
 import { DraftDocument } from '@/components/timeline/WorklogTargets'
+import { CopyUpdate } from '@/components/timeline/WorklogUpdateBody'
 import { WorklogTicketPicker } from '@/components/timeline/WorklogTicketPicker'
 import { PROPOSED_TICKET, clock, dur } from './TutorialSummaryCard'
 import { demoBoardTickets } from './demoWorklog'
@@ -172,17 +173,16 @@ export function TaskView({ task, provider, mode, target, picking, phase, onBack,
         </div>
       </div>
 
-      {/* ── ONE CARD: where it goes, and the update that lands there ──────────
-          It was three blocks, then two, and it is now the single `DraftDocument`
-          the draft dialog renders. The count kept coming down for the same
-          reason each time - every extra frame claimed these were separate things
-          to weigh, and they are one object: a ticket and the text that goes on
-          it. A "WHAT YOU DID" card led the original and bulleted the same work
-          the update describes in prose (the exact duplication that got the draft
-          moved out of the task panel); then the remaining two carried different
-          tints, so the eye had two competing surfaces and nowhere to start.
-          The `sum-where` / `sum-update` anchors the script rings live inside
-          `DraftDocument` now, on its two halves. */}
+      {/* ── The draft, laid out exactly as the dialog lays it out ─────────────
+          It was three blocks, then two, then one card, and it is now the same
+          frameless `DraftDocument` the draft dialog renders. The count kept
+          coming down for the same reason each time: every frame claimed these
+          were separate things to weigh, and they are one object - a ticket and
+          the text that goes on it. A "WHAT YOU DID" card led the original and
+          bulleted the same work the update describes in prose (the exact
+          duplication that got the draft moved out of the task panel).
+          The `sum-update` / `sum-where` anchors the script rings live inside
+          `DraftDocument` now, on the update and the destination. */}
       <div className="mt-6">
         <DraftDocument draft={draft} busy={busy} trackers={[]}
           onOpenTask={() => {}} onDismiss={() => {}} onSetProvider={() => {}} />
@@ -194,8 +194,14 @@ export function TaskView({ task, provider, mode, target, picking, phase, onBack,
           and post" - the two halves of one decision - were a whole screen apart,
           and the user met the choice before they had read what they were
           choosing about. They are one row now, and it is the same row the draft
-          dialog shows. */}
-      <div className="mt-4">
+          dialog shows: quiet things you can do TO the draft above, the decision
+          about where it goes below. */}
+      {!posted && !picking && !confirming && (
+        <div className="mt-5 -ml-1.5">
+          <CopyUpdate update={draft.update} />
+        </div>
+      )}
+      <div className="mt-3">
         {posted ? (
           <PostedBar done={done} linkedTicket={null} provider={providerId}
             hue={hue} busy={busy}

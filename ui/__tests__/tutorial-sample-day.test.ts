@@ -1435,6 +1435,15 @@ describe('the daily summary the tour teaches', () => {
     expect(samplePlanItems().some((p) => p.task_key === offPlan!.linked_ticket)).toBe(false)
   })
 
+  it('rings the draft in reading order - what it says, then where it goes', () => {
+    // The dialog used to open with the proposed ticket, and these beats followed
+    // it: the user was asked to judge a model-written ticket body before seeing
+    // the work it was written from. Both the layout and the narration lead with
+    // the update now, so "where does it go" is asked once "it" means something.
+    const flow = src.slice(src.indexOf('── 7. The work that was NOT on the plan'))
+    expect(flow.indexOf('sum-update')).toBeLessThan(flow.indexOf('sum-where'))
+  })
+
   it('proposes a NEW ticket, and still offers an existing one', () => {
     // The proposal is a suggestion the user owns. A create-only flow teaches that
     // a wrong draft is final, which is how people quietly stop using drafts.
