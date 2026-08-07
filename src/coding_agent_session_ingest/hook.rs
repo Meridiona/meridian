@@ -12,12 +12,9 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 
 use chrono::Utc;
 use serde_json::Value;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::SqlitePool;
 
 use super::indexer::register_session;
 
@@ -58,23 +55,16 @@ pub async fn run_hook() {
         }
     };
 
-    let db_path = meridian_db_path();
-    let uri = format!("sqlite://{}", db_path.display());
-    let opts = match SqliteConnectOptions::from_str(&uri) {
-        Ok(o) => o.create_if_missing(false),
-        Err(e) => {
-            tracing::error!(uri, error = %e, "coding-agent-hook: bad db uri");
-            return;
-        }
-    };
-    let pool = match SqlitePool::connect_with(opts).await {
+    // The shared keyed opener, NOT a hand-built pool. This used to be a raw
+    // `SqlitePool::connect_with`, which never applies the SQLCipher key, so on a
+    // packaged (encrypted) install every query failed with "file is not a
+    // database". The hook exits 0 on every path by design (it must never block
+    // Claude), so that failure was completely silent: SessionEnd sealed nothing
+    // and sessions fell through to the indexer's 1 h idle backstop instead.
+    let pool = match super::open_meridian_pool().await {
         Ok(p) => p,
         Err(e) => {
-            tracing::error!(
-                db_path = %db_path.display(),
-                error = %e,
-                "coding-agent-hook: failed to open db"
-            );
+            tracing::error!(error = %e, "coding-agent-hook: failed to open db");
             return;
         }
     };
@@ -131,12 +121,6 @@ fn within_accepted_roots(resolved: &Path) -> bool {
             .map(|r| resolved.starts_with(r))
             .unwrap_or(false)
     })
-}
-
-fn meridian_db_path() -> PathBuf {
-    let raw =
-        std::env::var("MERIDIAN_DB").unwrap_or_else(|_| "~/.meridian/meridian.db".to_string());
-    expand(&raw)
 }
 
 fn expand(p: &str) -> PathBuf {
