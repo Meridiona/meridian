@@ -1,5 +1,43 @@
 # Changelog
 
+## [1.84.0](https://github.com/Meridiona/meridian/compare/v1.83.2...v1.84.0) (2026-08-07)
+
+### 🚀 Features
+
+* **tray:** probe meridian.db at boot and repair or set aside a damaged one unattended ([3143f84](https://github.com/Meridiona/meridian/commit/3143f84d6201f74c90f62c418bc1815c1aafb4f1))
+
+### 🐛 Bug Fixes
+
+* address round 2 of the CodeRabbit review on [#698](https://github.com/Meridiona/meridian/issues/698) ([8daeaf5](https://github.com/Meridiona/meridian/commit/8daeaf5bd84734bd837edbfcd2c475b7d540c4aa)), closes [696/#697](https://github.com/696/meridian/issues/697)
+* **coding-agent:** apply the SQLCipher key in the one-shot CLI pools ([c00499a](https://github.com/Meridiona/meridian/commit/c00499a04b67ea99026db1d7b17775624dfca777))
+* **coding-agent:** close the guard-test holes and the silent CLI error path ([8542989](https://github.com/Meridiona/meridian/commit/8542989d62a14aaeac7809b80e88bf0305ba09ae))
+* **doctor:** stop reporting false faults on packaged installs ([ef1d226](https://github.com/Meridiona/meridian/commit/ef1d2269aba80d5c4ef355c114e58a278114fd4c))
+* **doctor:** verify the packaged telemetry claim, and share the staged path ([29eef60](https://github.com/Meridiona/meridian/commit/29eef60369a7c277e42cb69a7e2f86c64400fce0))
+* **tray:** address PR [#693](https://github.com/Meridiona/meridian/issues/693) review - gate the probe on daemon reachability, retry the outcome notice, protect the set-aside ([7d0bbb6](https://github.com/Meridiona/meridian/commit/7d0bbb659d348179353887a384deb29ef77beea1))
+* **tray:** address the CodeRabbit review on [#698](https://github.com/Meridiona/meridian/issues/698) ([25e9a3c](https://github.com/Meridiona/meridian/commit/25e9a3ca316c096bb22fb24dad6608301b539630))
+* **tray:** hold every exit while the daemon stop is in flight, and serialize pause against the installer ([bd9d6fa](https://github.com/Meridiona/meridian/commit/bd9d6fa191b018f9834a16f022921babd46fb8fe))
+* **tray:** instrument toggle_daemon and its notice write ([6939315](https://github.com/Meridiona/meridian/commit/693931538ae4d42a7d644753a4997d9c089eb816)), closes [#694](https://github.com/Meridiona/meridian/issues/694)
+* **tray:** record the resume failure boundary, and declare the fields it records ([b25a205](https://github.com/Meridiona/meridian/commit/b25a20511f21a916329f26699d5f272e8162e7b4)), closes [#694](https://github.com/Meridiona/meridian/issues/694)
+* **tray:** restore the daemon on every ensure_backend_installed bail-out ([8eb19e3](https://github.com/Meridiona/meridian/commit/8eb19e3474bbf11c1226a838cd41cc85394b873c))
+* **tray:** stop the daemon when Meridian quits, and make Pause actually pause ([da4d61c](https://github.com/Meridiona/meridian/commit/da4d61c80440e6788556629301f89969915b0670))
+* **worklog:** make the throttle claim true, and cover its two siblings ([a83f7dd](https://github.com/Meridiona/meridian/commit/a83f7ddf7aa491be8b28ca0beca88937bd004c22))
+* **worklog:** throttle the unconfigured-provider warning ([0423c00](https://github.com/Meridiona/meridian/commit/0423c00b12939b99e374ccdd50ea2dc73c59489a))
+
+### ✅ Tests
+
+* **doctor:** extract decision seams and cover every changed check ([c87e441](https://github.com/Meridiona/meridian/commit/c87e4412b26092ef9555e5ef8ca4988490603ad5))
+* **worklog:** cover the throttle end to end, not just the helper ([19716e3](https://github.com/Meridiona/meridian/commit/19716e38a485df28e1b158f11c24ac9c4e43a9fa))
+
+### 📝 Documentation
+
+* **tray:** add the What's New entry for 1.84.0 ([5c2bf7f](https://github.com/Meridiona/meridian/commit/5c2bf7f06b96dab076703a05d85b21b0add81119))
+* **tray:** correct the run-closure comment my own change invalidated ([e578b57](https://github.com/Meridiona/meridian/commit/e578b57096085b32e2d591e262f289aee63f9757)), closes [#694](https://github.com/Meridiona/meridian/issues/694)
+
+### 🔧 Chores
+
+* **changelog:** restore the 1.83.2 entry from main ([a035f76](https://github.com/Meridiona/meridian/commit/a035f76f99d74616ecfe4e1478cc906a9b35a84b)), closes [#698](https://github.com/Meridiona/meridian/issues/698)
+* **release:** raise the update floor to 1.84.0 ([2085dfb](https://github.com/Meridiona/meridian/commit/2085dfbbbe48101ddd8be1f06c140e3710b0c711)), closes [#694](https://github.com/Meridiona/meridian/issues/694)
+
 ## [1.83.2](https://github.com/Meridiona/meridian/compare/v1.83.1...v1.83.2) (2026-08-05)
 
 ### 🐛 Bug Fixes
