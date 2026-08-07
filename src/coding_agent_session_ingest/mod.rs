@@ -79,7 +79,9 @@ mod tests {
     async fn opens_an_encrypted_db() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("meridian.db");
-        let uri = db_path.display().to_string();
+        // The `sqlite://` form `open_meridian_pool` actually builds, so the test
+        // exercises the production string shape rather than a bare path.
+        let uri = format!("sqlite://{}", db_path.display());
 
         // Seed an encrypted DB the way the daemon would.
         let seed = meridian_core::db_crypto::open_pool_with_key(&uri, Some(TEST_KEY), true, &[])
@@ -119,23 +121,84 @@ mod tests {
     /// path it failed in total silence. A unit test cannot reach it (it reads
     /// stdin and the real `MERIDIAN_DB`), so scan the source — the same tactic as
     /// the tray's cfg audit and the UI's `no-native-dialogs` test.
+    /// The other half of the compatibility claim: a dev/source install must be
+    /// unchanged by this fix.
+    ///
+    /// That claim rests entirely on `open_pool_with_key`'s `key_unless_plaintext`
+    /// guard, and nothing else here exercises it. This is a real configuration,
+    /// not a contrived one: a dev machine with `MERIDIAN_DB_KEY` still set in a
+    /// leftover `.env` while `meridian.db` on disk is not encrypted (also the
+    /// state a half-finished `encrypt_in_place` leaves behind). Without the
+    /// guard, SQLCipher stalls on the first pragma until the acquire timeout
+    /// rather than failing fast — so this asserts a bounded, successful read.
+    #[tokio::test]
+    async fn opens_a_plaintext_db_even_with_a_key_configured() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("meridian.db");
+        let uri = format!("sqlite://{}", db_path.display());
+
+        // Seed WITHOUT a key — a plaintext file.
+        let seed = meridian_core::db_crypto::open_pool_with_key(&uri, None, true, &[])
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE app_sessions (id INTEGER PRIMARY KEY, summary_source TEXT)")
+            .execute(&seed)
+            .await
+            .unwrap();
+        seed.close().await;
+
+        // Open it WITH a key configured. Must drop the key and succeed.
+        let pool = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            open_meridian_pool_at(&uri, Some(TEST_KEY)),
+        )
+        .await
+        .expect("a plaintext file with a key set must not stall")
+        .expect("the key must be dropped for a plaintext file");
+
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('app_sessions') WHERE name = 'summary_source'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("dev/source installs must keep working");
+        assert_eq!(n, 1);
+        pool.close().await;
+    }
+
+    /// Production half of a source file — everything before its test module.
+    ///
+    /// Both checks below must scan ONLY this. The test module names the very
+    /// patterns being banned (and calls the keyed opener itself, to seed a
+    /// fixture), so a whole-file scan either matches itself and fails for the
+    /// wrong reason, or passes on its own text no matter what production code
+    /// does. `split` always yields at least one item, hence the bare `next()`.
+    fn production_half(src: &str) -> &str {
+        src.split("#[cfg(test)]").next().expect("split yields one")
+    }
+
     #[test]
     fn one_shot_clis_do_not_hand_build_a_pool() {
         for (name, src) in [
             ("hook.rs", include_str!("hook.rs")),
             ("mod.rs", include_str!("mod.rs")),
         ] {
-            // Scan production code only — this test's own assertion strings
-            // contain the very pattern being banned, so a whole-file scan would
-            // match itself and fail for the wrong reason.
-            let src = src.split("#[cfg(test)]").next().unwrap_or(src);
+            let src = production_half(src);
+            // Bare-substring bans, deliberately. The first version of this test
+            // matched only `SqlitePool::connect_with`, which let the MOST likely
+            // regression straight through: `SqlitePoolOptions::new()…
+            // .connect_with(opts)` — the shape you land on by copying the
+            // daemon's own pool construction (`db_crypto`, `db/meridian.rs`) and
+            // forgetting the key. Verified: with such a pool live in hook.rs the
+            // old assertions still passed. Post-fix neither file legitimately
+            // calls any of these, so banning the bare method names is safe.
             let offenders = src
                 .lines()
                 .filter(|l| !l.trim_start().starts_with("//"))
                 .filter(|l| {
-                    l.contains("SqlitePool::connect_with")
+                    l.contains("connect_with(")
+                        || l.contains("connect_lazy_with(")
                         || l.contains("SqlitePool::connect(")
-                        || l.contains("connect_lazy_with")
                 })
                 .collect::<Vec<_>>();
             assert!(
@@ -145,9 +208,13 @@ mod tests {
                  Offending lines: {offenders:?}"
             );
         }
-        // And the seam really does delegate to the keyed opener.
+        // And the seam really does delegate to the keyed opener. Scanned against
+        // the production half for the same reason: `opens_an_encrypted_db` calls
+        // `db_crypto::open_pool_with_key` to seed its fixture, so a whole-file
+        // read finds this substring even if `open_meridian_pool_at` stops
+        // delegating entirely.
         assert!(
-            include_str!("mod.rs").contains("db_crypto::open_pool_with_key("),
+            production_half(include_str!("mod.rs")).contains("db_crypto::open_pool_with_key("),
             "open_meridian_pool_at must go through meridian_core::db_crypto::open_pool_with_key"
         );
     }

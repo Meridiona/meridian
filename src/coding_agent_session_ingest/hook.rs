@@ -64,7 +64,16 @@ pub async fn run_hook() {
     let pool = match super::open_meridian_pool().await {
         Ok(p) => p,
         Err(e) => {
-            tracing::error!(error = %e, "coding-agent-hook: failed to open db");
+            // `{e:#}` (the full anyhow context chain), not `%e` — plain Display
+            // renders only the outermost context ("failed to open SQLite at
+            // …"), dropping the cause that actually identifies the fault
+            // (`code: 26, file is not a database`). This hook has no terminal
+            // and exits 0 regardless, so the shipped record is the ONLY evidence
+            // it ever ran; stripping the cause from it defeats the purpose.
+            // `error` is on both SAFE_STRING_KEYS and FREE_TEXT_KEYS, so the
+            // chain is path/URL/token-scrubbed on the ship leg.
+            let detail = format!("{e:#}");
+            tracing::error!(error = %detail, "coding-agent-hook: failed to open db");
             return;
         }
     };
