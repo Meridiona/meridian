@@ -27,6 +27,7 @@
 
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
+use std::time::Duration;
 use tokio::sync::watch;
 
 use crate::config::{
@@ -346,15 +347,58 @@ async fn post_one(
     Ok(true)
 }
 
+/// How long before the "provider is not configured" warning repeats for the
+/// SAME row.
+///
+/// The row is deliberately left `approved` (see [`missing_provider`]), so
+/// nothing ever clears it and the sweep re-encounters it every
+/// [`POST_SWEEP_INTERVAL_SECS`]. Unthrottled that is 1440 identical WARNs per
+/// day, per row, forever — measured on a real install, where a single worklog
+/// drafted against an unconnected provider was the ONLY warning the daemon
+/// emitted, 224 times in the last 3000 log lines. That drowns the local spool
+/// (the sole log sink) and, because WARN+ is exactly what egresses, the central
+/// error pipeline too. Six hours still surfaces the condition several times a
+/// day without burying anything else.
+const MISSING_PROVIDER_WARN_INTERVAL: Duration = Duration::from_secs(6 * 3600);
+
+static MISSING_PROVIDER_WARNED: std::sync::LazyLock<
+    std::sync::Mutex<super::warn_throttle::WarnThrottle>,
+> = std::sync::LazyLock::new(std::sync::Mutex::default);
+
 /// The worklog's provider is not configured on this daemon: leave it approved
-/// (nothing to post to) and warn once. Returns `Ok(false)` (not posted, not a
-/// hard error — it will post when the provider is configured).
+/// (nothing to post to) and warn. Returns `Ok(false)` (not posted, not a hard
+/// error — it will post when the provider is configured).
+///
+/// The warning is throttled per row to [`MISSING_PROVIDER_WARN_INTERVAL`];
+/// suppressed repeats drop to DEBUG so the condition is still visible in a local
+/// `meridian logs` sweep without dominating it. The span still records `waiting`
+/// on every pass, so the per-sweep trace is unaffected.
 fn missing_provider(provider: &str, w: &db::ApprovedWorklog) -> Result<bool> {
     tracing::Span::current().record("state", "waiting");
-    tracing::warn!(
-        pm_worklog_id = w.id, task = %w.task_key, %provider,
-        "approved worklog waiting but its provider is not configured — not posting"
-    );
+    // A poisoned lock means another thread panicked mid-update; warn rather than
+    // stay silent — losing the throttle is far better than losing the signal.
+    let should_warn = MISSING_PROVIDER_WARNED
+        .lock()
+        .map(|mut t| {
+            t.should_warn(
+                w.id,
+                std::time::Instant::now(),
+                MISSING_PROVIDER_WARN_INTERVAL,
+            )
+        })
+        .unwrap_or(true);
+
+    if should_warn {
+        tracing::warn!(
+            pm_worklog_id = w.id, task = %w.task_key, %provider,
+            "approved worklog waiting but its provider is not configured — not posting"
+        );
+    } else {
+        tracing::debug!(
+            pm_worklog_id = w.id, task = %w.task_key, %provider,
+            "approved worklog still waiting on an unconfigured provider (warning throttled)"
+        );
+    }
     Ok(false)
 }
 
