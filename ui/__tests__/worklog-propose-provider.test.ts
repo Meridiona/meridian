@@ -187,6 +187,9 @@ describe('the card corner icon follows the provider, and is never hardcoded', ()
 describe('the update is a document with edges and a name', () => {
   const dialog = src('components/timeline/WorklogDraftDialog.tsx')
   const summary = src('components/tutorial/TutorialSummaryTask.tsx')
+  // Split out of WorklogTargets when that file crossed the 500-line rule: that
+  // one answers WHERE the worklog goes, this one WHAT goes there.
+  const body = src('components/timeline/WorklogUpdateBody.tsx')
 
   it('puts the target and the update in ONE card, for both callers', () => {
     // They were two stacked panels in two tints - an amber proposal above a
@@ -215,10 +218,44 @@ describe('the update is a document with edges and a name', () => {
     // uppercase kicker in `--t-faint` over 12px `--t-muted` lines. This is the
     // text that gets posted on someone's ticket, and at those sizes and
     // contrasts a paragraph of real prose reads as blurred rather than quiet.
-    const body = targets.slice(targets.indexOf('export function UpdateBody'), targets.indexOf('export function updateToText'))
     expect(body).toContain("color: 'var(--t-title)', fontSize: 13, lineHeight: 1.6")
     // Only the compact in-row variant still uses the kit.
     expect(body).toContain('sections.map((sec, i) => boxed ? (')
+  })
+
+  it('gives the card three levels, not one uppercase label three times', () => {
+    // THE defect in the screenshot. The same 11px uppercase kicker was the
+    // card's destination header, the update's title AND every section heading
+    // inside it - three unrelated levels of the hierarchy in identical clothes,
+    // so the whole card read as one flat slab with no way in.
+    // Chrome is now the quietest thing on the card...
+    expect(targets).toContain("<p className=\"mt-label\" style={{ color: 'var(--t-faint-2)' }}>THE UPDATE</p>")
+    // ...the summary is the loudest...
+    expect(body).toContain('fontSize: boxed ? 14 : 13')
+    // ...and a section heading is a heading rather than a shout.
+    expect(body).toContain('{sentenceCase(sec.heading)}')
+    expect(body).not.toContain('<p className="mt-label mb-1.5"')
+  })
+
+  it('folds a long proposed-ticket description instead of leading with it', () => {
+    // The model writes a full ticket body, and at a hundred words it was the
+    // tallest block in the dialog - sitting ABOVE the update, pushing the thing
+    // being judged below the fold, and restating it in a different register.
+    expect(targets).toContain('const DESCRIPTION_PEEK = 190')
+    expect(targets).toContain('function TicketDescription')
+    expect(targets).toContain('Read the full description')
+    // And the title leads, rather than being buried mid-sentence behind "New
+    // Task:" boilerplate.
+    expect(targets).toContain('fontSize: flat ? 15 : 12, fontWeight: 700')
+  })
+
+  it('says where the work landed once, not twice', () => {
+    // The card header already says "new ticket, nothing on your plan matched".
+    // The provenance line then said the same thing again in two sentences
+    // directly beneath it, ending in an instruction to use a button six inches
+    // further down that is already named for itself.
+    expect(dialog).toContain('if (draft.propose) return null')
+    expect(dialog).not.toContain('so Meridian drafted a new one')
   })
 
   it('does not frame it inside a target row, which is already the frame', () => {
@@ -232,15 +269,37 @@ describe('the update is a document with edges and a name', () => {
   it('renders the status as a verdict, not another bulleted section', () => {
     // It used to be a third `Field` identical to Decisions and Verification, so
     // "Shipped" read as one more heading with one more thing under it.
-    const body = targets.slice(targets.indexOf('export function UpdateBody'))
     expect(body).toContain('>STATUS</span>')
     expect(body).not.toContain("<Field label=\"Status\">")
   })
 })
 
+describe('the status line', () => {
+  it('only wears the chip when it is chip-sized', async () => {
+    // The pill was built for "Shipped" and the model does not always oblige.
+    // "Antler application submitted and awaiting decision - other accelerator
+    // options still being evaluated" arrived as a full sentence inside a green
+    // lozenge, which reads as a badge that has burst.
+    const { statusIsChipSized } = await import('../components/timeline/WorklogUpdateBody')
+    expect(statusIsChipSized('Shipped')).toBe(true)
+    expect(statusIsChipSized('Fix open for review')).toBe(true)
+    expect(statusIsChipSized('Antler application submitted and awaiting decision')).toBe(false)
+    // A sentence is a sentence however short it is.
+    expect(statusIsChipSized('Done.')).toBe(false)
+  })
+
+  it('leaves a heading the model already wrote as prose alone', async () => {
+    const { sentenceCase } = await import('../components/timeline/WorklogUpdateBody')
+    expect(sentenceCase('APPLICATION SUBMITTED')).toBe('Application submitted')
+    expect(sentenceCase('Selection process')).toBe('Selection process')
+    // Not lowercased into nonsense: mixed case means the model meant it.
+    expect(sentenceCase('Work on the API layer')).toBe('Work on the API layer')
+  })
+})
+
 describe('the update can leave the app', () => {
   it('flattens to text that survives being pasted anywhere', async () => {
-    const { updateToText } = await import('../components/timeline/WorklogTargets')
+    const { updateToText } = await import('../components/timeline/WorklogUpdateBody')
     const text = updateToText({
       summary: 'Feed loads instantly now.',
       sections: [
@@ -260,8 +319,9 @@ describe('the update can leave the app', () => {
   it('offers the copy on the update itself', () => {
     // The draft is often wanted where the tracker is not - a standup, a PR body.
     // Hand-selecting prose that spans headings picks the labels up as body text.
-    expect(targets).toContain('navigator.clipboard.writeText(updateToText(update))')
-    expect(targets).toContain('<CopyUpdate update={update} />')
+    expect(src('components/timeline/WorklogUpdateBody.tsx'))
+      .toContain('navigator.clipboard.writeText(updateToText(update))')
+    expect(targets).toContain('<CopyUpdate update={draft.update} />')
   })
 })
 

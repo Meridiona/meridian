@@ -382,9 +382,12 @@ function EmptyDraft() {
  *  quiet once the user has taken over the choice - they know what they picked. */
 function Provenance({ draft }: { draft: DayTaskWorklogDraft }) {
   if (draft.targets.length > 0 && draft.targets.every((t) => t.manual)) return null
-  const text = draft.propose
-    ? 'This work didn\'t match any of today\'s tasks, so Meridian drafted a new one. Only today\'s tasks are compared - if it belongs to another ticket, pick it below.'
-    : 'Matched against today\'s tasks only, not your whole board. Remove any that don\'t fit, or pick a different ticket below.'
+  // SILENT ON A PROPOSAL. The card's own header already says it in four words -
+  // "new ticket, nothing on your plan matched" - and this then said the same
+  // thing again in two sentences directly under it, ending with an instruction
+  // to use a button that is six inches further down and named for itself.
+  if (draft.propose) return null
+  const text = 'Matched against today\'s tasks only, not your whole board. Remove any that don\'t fit, or pick a different ticket below.'
   return (
     <p className="mt-body-sm" style={{ color: 'var(--t-faint)', fontSize: 11.5, lineHeight: 1.5 }}>
       {text}
