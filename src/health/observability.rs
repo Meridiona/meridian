@@ -20,11 +20,32 @@ pub async fn checks(_cfg: &Config) -> Vec<Check> {
     // switch is MERIDIAN_TELEMETRY_DISABLED), which is what `meridian logs` and
     // Export Diagnostics read, so no install is ever truly dark.
     if crate::observability::is_canonical_install() {
-        return vec![Check::info(
-            "openobserve",
-            "obs",
-            "packaged install — telemetry captured locally; errors ship to the central gateway",
-        )];
+        // Ask, do not assume. A fixed "errors ship to the central gateway"
+        // string would assert a good state nobody checked — the same fault as
+        // asserting a bad one, and harder to catch because nobody investigates
+        // a green line. Two real machines it would lie to: a user who opted OUT
+        // of error reporting (opt-out, default on, so this is a deliberate
+        // choice), and a locally-built binary staged into ~/.meridian/bin, which
+        // `is_canonical_install()` classifies as canonical but whose
+        // release-injected `option_env!` endpoint/token are unset, so it can
+        // never ship anything.
+        //
+        // `resolve_otlp_target()` already answers this and costs one
+        // settings.json read — the same file the `is_otlp_configured()` call
+        // below would have loaded anyway.
+        return vec![match crate::observability::resolve_otlp_target() {
+            Some(_) => Check::info(
+                "openobserve",
+                "obs",
+                "packaged install — captured locally; errors ship to the central gateway",
+            ),
+            None => Check::info(
+                "openobserve",
+                "obs",
+                "packaged install — captured locally; error reporting is off \
+                 (or this build has no baked endpoint)",
+            ),
+        }];
     }
     // Use the cheap helpers — the health check never needs the auth credential.
     if !crate::observability::is_otlp_configured() {

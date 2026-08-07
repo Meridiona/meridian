@@ -44,11 +44,27 @@ pub fn is_canonical_install() -> bool {
         return false;
     };
     match std::env::current_exe() {
-        Ok(exe) => exe == meridian_dir.join("bin").join(staged_daemon_file_name()),
+        Ok(exe) => Some(exe) == staged_daemon_path(),
         // `current_exe()` failing is rare (permissions, exotic sandboxing) —
         // fall back to the machine-wide marker file rather than guessing.
         Err(_) => meridian_dir.join(".env").exists(),
     }
+}
+
+/// Absolute path the tray stages the daemon binary at
+/// (`~/.meridian/bin/meridian{EXE_SUFFIX}`).
+///
+/// The single source of this path. [`is_canonical_install`] compares
+/// `current_exe()` against it, and `health::platform::daemon_binary_candidates`
+/// probes it — those two MUST agree, and before this existed they were assembled
+/// independently, from different roots (`paths::meridian_dir()` vs
+/// `paths::home_dir_or_cwd()`). Drift between them means either a false CRITICAL
+/// in doctor or silently-inert error reporting, which is exactly the failure
+/// [`staged_daemon_file_name`] already documents having shipped once.
+///
+/// `None` only when the home directory cannot be resolved.
+pub fn staged_daemon_path() -> Option<std::path::PathBuf> {
+    meridian_core::paths::meridian_dir().map(|d| d.join("bin").join(staged_daemon_file_name()))
 }
 
 /// File name the tray stages the daemon under in `~/.meridian/bin/`.
@@ -79,11 +95,56 @@ pub(super) fn capture_disabled() -> bool {
 mod tests {
     use super::*;
 
-    /// The daemon and the tray agree on the staged file name only by
-    /// convention — they are separate crates with no shared constant, and a
-    /// mismatch disables central error reporting on that platform silently
-    /// (nothing errors; the shipper simply resolves no target). Pins the name
-    /// to the platform's executable suffix on whichever OS the suite runs.
+    /// The real cross-crate pin.
+    ///
+    /// `staged_daemon_file_name` is a hand-maintained mirror of the tray's
+    /// `backend_install::DAEMON_FILE`, and the daemon crate cannot depend on the
+    /// tray crate to compare them. Every test that recomputes the name from
+    /// `EXE_SUFFIX` therefore drifts along with the production copy and stays
+    /// green — which is worthless against the one failure this mirror has
+    /// already suffered (hardcoded `"meridian"`, so Windows packaged installs
+    /// silently shipped no telemetry at all).
+    ///
+    /// So read the tray's source and assert on the constant itself. Source
+    /// scanning is the repo's sanctioned tactic where a unit test cannot reach
+    /// (the tray cfg audit, the UI's `no-native-dialogs` test).
+    #[test]
+    fn staged_daemon_file_name_matches_the_trays_daemon_file_constant() {
+        const TRAY_SRC: &str = include_str!("../../tray/src-tauri/src/backend_install.rs");
+
+        // Both cfg arms, so this fails on whichever platform the suite runs.
+        let declared: Vec<&str> = TRAY_SRC
+            .lines()
+            .filter_map(|l| {
+                l.trim()
+                    .strip_prefix("pub(crate) const DAEMON_FILE: &str = ")
+            })
+            .map(|v| v.trim().trim_end_matches(';').trim_matches('"'))
+            .collect();
+
+        assert_eq!(
+            declared.len(),
+            2,
+            "expected both cfg arms of DAEMON_FILE in the tray source; found {declared:?} \
+             — if the tray changed shape, update this scan rather than deleting it"
+        );
+        assert!(
+            declared.contains(&"meridian") && declared.contains(&"meridian.exe"),
+            "the tray's DAEMON_FILE values changed to {declared:?}; \
+             staged_daemon_file_name() must be updated to match"
+        );
+        assert!(
+            declared.contains(&staged_daemon_file_name().as_str()),
+            "staged_daemon_file_name() produced {:?}, which is not one of the tray's \
+             DAEMON_FILE values {declared:?} — central error reporting and doctor's \
+             daemon-binary probe both break silently when these drift",
+            staged_daemon_file_name()
+        );
+    }
+
+    /// Complements the cross-crate pin above: that one proves the name matches
+    /// one of the tray's two constants, this one proves it is the RIGHT one for
+    /// the platform the suite is running on.
     #[test]
     fn staged_daemon_file_name_carries_the_platform_exe_suffix() {
         let name = staged_daemon_file_name();

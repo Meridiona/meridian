@@ -62,6 +62,17 @@ fn settings_contract() -> Check {
     let ui_settings = home().join(".meridian/settings.json");
     let resolved = meridian_core::settings::settings_json_path();
     let ui_exists = ui_settings.is_file();
+
+    // Two spellings of the same file (a symlinked home, a doubled separator, a
+    // `/./`) are not a split-brain — warning there would tell the user to unset
+    // a variable that is causing no harm. Only meaningful when both resolve on
+    // disk; `canonicalize` fails on a path that does not exist, in which case
+    // fall through to the textual comparison below.
+    if let (Ok(a), Ok(b)) = (resolved.canonicalize(), ui_settings.canonicalize()) {
+        if a == b {
+            return Check::ok("settings file", "config", "daemon + dashboard agree");
+        }
+    }
     settings_verdict(&resolved, &ui_settings, ui_exists)
 }
 

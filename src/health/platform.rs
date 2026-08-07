@@ -155,14 +155,20 @@ fn service_manifest_check(label: &str, name: &'static str) -> Check {
 /// installed on this system". `cargo run -- doctor` on a machine that also has
 /// the DMG installed must still find the staged binary — which is the one
 /// launchd is actually running.
+///
+/// The staged path comes from [`crate::observability::staged_daemon_path`], the
+/// single source shared with `is_canonical_install()`. Assembling it here
+/// independently (as this first did, from a different root — `home()` rather
+/// than `paths::meridian_dir()`) is how the two silently disagree, and a
+/// disagreement means a false CRITICAL.
 fn daemon_binary_candidates() -> Vec<PathBuf> {
-    vec![
-        home()
-            .join(".meridian/bin")
-            .join(format!("meridian{}", std::env::consts::EXE_SUFFIX)),
-        PathBuf::from("/usr/local/bin/meridian-daemon"),
-        home().join(".local/bin/meridian-daemon"),
-    ]
+    crate::observability::staged_daemon_path()
+        .into_iter()
+        .chain([
+            PathBuf::from("/usr/local/bin/meridian-daemon"),
+            home().join(".local/bin/meridian-daemon"),
+        ])
+        .collect()
 }
 
 pub fn daemon_service() -> Vec<Check> {
@@ -212,10 +218,15 @@ pub fn mcp_service() -> Vec<Check> {
     // have. A check that asserts a problem it has not looked for trains people
     // to ignore the whole report, so say so instead.
     let Some(repo) = repo_root() else {
+        // Report what was OBSERVED, not an inferred install type. What we
+        // actually know is "no Cargo.toml above current_exe()" — also true of a
+        // `cargo install`ed binary, a release binary copied into ~/bin, or an
+        // .app-embedded one. Claiming "packaged install" here would be the same
+        // conflation this module deliberately avoids for `daemon binary`.
         return vec![Check::info(
             "mcp built",
             "system",
-            "not applicable on a packaged install (built from a source checkout)",
+            "no source checkout found — the MCP server is built from one",
         )];
     };
     vec![
@@ -252,12 +263,21 @@ pub fn system_checks(_cfg: &Config) -> Vec<Check> {
     // writes the DB key and tracker credentials into. Checking only the repo
     // copy reported "missing" on every packaged install, where no repo exists
     // and the canonical file is the one actually in use.
-    let repo_env = repo_root().map(|r| r.join(".env").is_file());
+    let repo_env = repo_root().is_some_and(|r| r.join(".env").is_file());
     let home_env = home().join(".meridian/.env").is_file();
     let env_check = match (repo_env, home_env) {
-        (_, true) => Check::ok("config (.env)", "system", "~/.meridian/.env present"),
-        (Some(true), false) => Check::ok("config (.env)", "system", "<repo>/.env present"),
-        _ => Check::warn("config (.env)", "system", "missing")
+        // Name BOTH when both exist. Step 1 loads the repo copy and step 1a's
+        // `from_path` does NOT override, so for any overlapping key the repo
+        // file is the one that wins — reporting only the canonical path would
+        // send a dev chasing a stale value to the wrong file.
+        (true, true) => Check::ok(
+            "config (.env)",
+            "system",
+            "<repo>/.env and ~/.meridian/.env present (repo wins for overlapping keys)",
+        ),
+        (false, true) => Check::ok("config (.env)", "system", "~/.meridian/.env present"),
+        (true, false) => Check::ok("config (.env)", "system", "<repo>/.env present"),
+        (false, false) => Check::warn("config (.env)", "system", "missing")
             .with_remedy("install the app, or run ./install.sh from a source checkout"),
     };
     vec![
@@ -353,15 +373,24 @@ mod tests {
     fn daemon_binary_candidates_cover_both_install_types() {
         let candidates = daemon_binary_candidates();
 
-        // The DMG/tray staged path — must track `backend_install::DAEMON_FILE`,
-        // hence the platform executable suffix rather than a bare "meridian".
-        let staged = home()
-            .join(".meridian/bin")
-            .join(format!("meridian{}", std::env::consts::EXE_SUFFIX));
+        // Assert against the SHARED source, not a recomputed copy of the same
+        // expression: the first version of this test rebuilt the path from
+        // `home()` + `format!("meridian{EXE_SUFFIX}")`, so if production drifted
+        // the test drifted with it and stayed green. Whether that shared value
+        // still matches the tray's `DAEMON_FILE` is pinned separately, by
+        // `observability::install_mode`'s cross-crate source scan.
+        let staged =
+            crate::observability::staged_daemon_path().expect("home dir resolves under test");
         assert!(
             candidates.contains(&staged),
             "packaged install path {} missing from {candidates:?}",
             staged.display()
+        );
+        assert_eq!(
+            candidates.first(),
+            Some(&staged),
+            "the staged binary must be probed FIRST — it is the one launchd runs \
+             on a machine that also has source-install symlinks lying around"
         );
 
         // The source-install symlinks `install.sh` creates must survive.

@@ -80,7 +80,7 @@ mod otlp_target;
 pub use filter::reload_log_level;
 use filter::{build_default_filter, FILTER_HANDLE};
 use install_mode::capture_disabled;
-pub use install_mode::is_canonical_install;
+pub use install_mode::{is_canonical_install, staged_daemon_path};
 use otlp_target::DEFAULT_OTLP_ENDPOINT;
 pub use otlp_target::{
     is_otlp_configured, resolve_otlp_endpoint, resolve_otlp_target, AuthCredential, OtlpTarget,
