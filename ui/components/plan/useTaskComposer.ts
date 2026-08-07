@@ -57,6 +57,14 @@ export interface ComposerState {
   descriptionDrafted: boolean
   /** A hard failure that stopped a create. */
   error: string | null
+  /** WHICH step produced `error`. The composer reacts to the two very differently:
+   *  a failed DRAFT is usually "there is no AI to draft with", which has a fix the
+   *  user can be walked to, while a failed CREATE is about the task or the tracker
+   *  and has nothing to do with the model. Without this the composer had to guess
+   *  from the error text, and guessed wrong in both directions - offering to connect
+   *  a provider after a Jira permissions failure, and offering nothing at all after
+   *  a draft died on a signed-out CLI. */
+  errorSource: 'draft' | 'create' | null
   /** A soft caveat from a successful create (e.g. filed but not yet on your board). */
   note_after: string | null
   /** Set when a create succeeded - the caller closes the composer and refreshes. */
@@ -77,6 +85,7 @@ const EMPTY: ComposerState = Object.freeze({
   titleDrafted: false,
   descriptionDrafted: false,
   error: null,
+  errorSource: null,
   note_after: null,
   created: null,
 })
@@ -201,12 +210,12 @@ export function draftFromNote() {
   if (state.phase !== 'idle') return
   const note = state.note.trim()
   if (!note) return
-  patch({ phase: 'drafting', error: null })
+  patch({ phase: 'drafting', error: null, errorSource: null })
   invoke<PlanTaskDraft>('draft_plan_task', { note })
     .then((d) => {
       if (d.error) {
         // A soft failure: no fields, but the user is not blocked.
-        patch({ phase: 'idle', error: d.error })
+        patch({ phase: 'idle', error: d.error, errorSource: 'draft' })
         return
       }
       patch({
@@ -217,9 +226,10 @@ export function draftFromNote() {
         titleDrafted: !!d.title,
         descriptionDrafted: !!d.description,
         error: null,
+        errorSource: null,
       })
     })
-    .catch((e) => patch({ phase: 'idle', error: errMsg(e) }))
+    .catch((e) => patch({ phase: 'idle', error: errMsg(e), errorSource: 'draft' }))
 }
 
 /** Create the task and add it to `day`'s plan, then refresh the shared plan store so
@@ -230,7 +240,7 @@ export function draftFromNote() {
  *  retyping. */
 export function createTask(day: string) {
   if (!canCreate(state)) return
-  patch({ phase: 'creating', error: null })
+  patch({ phase: 'creating', error: null, errorSource: null })
   mutate<CreatedTask>(API, 'create_plan_task', {
     title: state.title.trim(),
     description: state.description.trim(),
@@ -242,7 +252,7 @@ export function createTask(day: string) {
       patch({ phase: 'idle', created, note_after: created.note })
       refreshPlan(day)
     })
-    .catch((e) => patch({ phase: 'idle', error: errMsg(e) }))
+    .catch((e) => patch({ phase: 'idle', error: errMsg(e), errorSource: 'create' }))
 }
 
 /** Rewrite a task's title/description, wherever it lives (a personal task is written

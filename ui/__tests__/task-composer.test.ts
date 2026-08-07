@@ -75,9 +75,52 @@ describe('the composer never blocks on the AI', () => {
   it('a failed draft sets an error and leaves the fields alone', () => {
     // The draft path's failure arms must never touch title/description — that is
     // what makes a dead model a slow suggestion rather than a lost task.
+    //
+    // Checked by what the arms CONTAIN rather than by their exact text: they carry
+    // an `errorSource` now (so the composer can tell a dead engine from a failed
+    // create), and pinning the literal string made adding that look like a
+    // regression when the invariant it guards was untouched.
     const fn = store.slice(store.indexOf('export function draftFromNote'), store.indexOf('export function createTask'))
-    expect(fn.includes("patch({ phase: 'idle', error: d.error })")).toBe(true)
-    expect(fn.includes("patch({ phase: 'idle', error: errMsg(e) })")).toBe(true)
+    for (const arm of ['error: d.error', 'error: errMsg(e)']) {
+      const at = fn.indexOf(arm)
+      expect(at).toBeGreaterThan(-1)
+      // The whole `patch({...})` the arm sits in, and nothing of the field-setting
+      // success path above it.
+      const call = fn.slice(fn.lastIndexOf('patch({', at), fn.indexOf('}', at) + 1)
+      expect(call).toContain("phase: 'idle'")
+      for (const field of ['title', 'description', 'issueType']) {
+        expect(call.includes(field)).toBe(false)
+      }
+    }
+  })
+
+  // A draft can fail for two completely different reasons, and until now the
+  // composer treated them the same: a red line of text with no way forward. The
+  // pre-flight only ran on the hero (first-run) surface, so on the board column a
+  // missing engine produced "Couldn't draft that - write it below." and nothing
+  // else. These pin the two halves of the fix.
+  it('probes for an AI engine on every mount, not just the first-run one', () => {
+    // `if (hero)` here is the bug: the board column's composer is the same form for
+    // the same person, and it is where a signed-out engine actually gets hit.
+    expect(composer).toContain('useEffect(() => { void probeProviders() }, [probeProviders])')
+    expect(/if\s*\(hero\)\s*void probeProviders/.test(composer)).toBe(false)
+  })
+
+  it('a draft that fails on a dead engine offers the connect route, not just text', () => {
+    // The pre-flight cannot catch an engine that is configured but signed out - that
+    // only surfaces when the call is made. So a draft failure re-asks health, and a
+    // bad answer raises the same notice the pre-flight does.
+    expect(composer).toContain("s.errorSource !== 'draft'")
+    expect(composer).toContain('setShowAiNotice(true)')
+    // And the raw failure is not printed underneath the notice that supersedes it.
+    expect(composer).toContain('s.error && !showAiNotice')
+  })
+
+  it('only a DRAFT failure is treated as an AI problem', () => {
+    // A create that fails on tracker permissions has nothing to do with the model;
+    // offering to connect a provider there sends the user to the wrong screen.
+    expect(store).toContain("errorSource: 'create'")
+    expect(store).toContain("errorSource: 'draft'")
   })
 
   it('the title/description fields are not rendered behind a draft conditional', () => {

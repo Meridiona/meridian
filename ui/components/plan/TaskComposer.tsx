@@ -155,7 +155,16 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
       return true
     }
   }, [])
-  useEffect(() => { if (hero) void probeProviders() }, [hero, probeProviders])
+  // ON EVERY MOUNT, not just the hero one. This used to be `if (hero)`, on the
+  // theory that only a first-run user could be missing a provider - but the board
+  // column's composer is the same form for the same person, and someone who never
+  // connected an engine (or signed out of the one they had) reaches it far more
+  // often than they reach the empty state. There, `noProvider` stayed false, so
+  // `draftOrConnect` went straight to the call, the call failed, and the user got
+  // "Couldn't draft that - write it below." with no hint that the cause was fixable
+  // and no way to fix it. That is the exact dead end this probe exists to prevent;
+  // gating it on `hero` meant it only prevented it on one of the two surfaces.
+  useEffect(() => { void probeProviders() }, [probeProviders])
 
   /** Draft, or explain why it cannot run yet.
    *
@@ -174,6 +183,11 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
   const [showAiNotice, setShowAiNotice] = useState(false)
   const [checking, setChecking] = useState(false)
   const draftOrConnect = useCallback(async () => {
+    // Any fresh attempt retires the last answer. Without this the notice outlived
+    // the problem: connect a provider in Settings by some other route, come back,
+    // draft successfully, and the "Meridian needs an AI engine" card was still
+    // sitting there over a draft that had plainly just worked.
+    setShowAiNotice(false)
     if (!noProvider) { draftFromNote(); return }
     setChecking(true)
     const [ok] = await Promise.all([probeProviders(), wait(CHECK_MIN_MS)])
@@ -181,6 +195,32 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
     if (ok) { draftFromNote(); return }
     setShowAiNotice(true)
   }, [noProvider, probeProviders])
+
+  /** A draft came back failed - work out whether that is fixable and say so.
+   *
+   *  The pre-flight above catches the common case (no provider configured at all),
+   *  but it cannot catch the ones that only show up when the call is actually made:
+   *  a CLI that is installed but signed out, an expired token, a provider that has
+   *  started refusing. Those arrive here as a red line of text, and until now that
+   *  was the end of the road - the message named a symptom the user had no way to
+   *  act on.
+   *
+   *  So: re-ask health on every draft failure. If the engine is genuinely down, the
+   *  answer is the same one the pre-flight gives - the notice, with its route to the
+   *  provider picker - rather than an error. If health says the engine is FINE, the
+   *  failure was transient (a timeout, a rate limit, a bad answer) and the honest
+   *  response is the message plus a Retry, not an invitation to reconfigure
+   *  something that is not broken.
+   *
+   *  Only ever reacts to a DRAFT failure. A create that fails on tracker
+   *  permissions has nothing to do with the model, and offering to connect an AI
+   *  provider there is a non-sequitur that sends the user to the wrong screen. */
+  useEffect(() => {
+    if (s.errorSource !== 'draft' || s.phase !== 'idle') return
+    let alive = true
+    void probeProviders().then(ok => { if (alive && !ok) setShowAiNotice(true) })
+    return () => { alive = false }
+  }, [s.error, s.errorSource, s.phase, probeProviders])
 
   const drafting = s.phase === 'drafting'
   const creating = s.phase === 'creating'
@@ -269,11 +309,32 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
           </div>
         )}
 
-        {s.error && (
-          <p className="mt-body-sm mt-2 rounded-lg px-3 py-2"
+        {/* SUPPRESSED WHILE THE NOTICE IS UP. When the cause is "there is no engine",
+            the notice above already says so and carries the fix; printing the raw
+            failure underneath it would restate the symptom in worse words and put a
+            dead end directly below the way out. Every other error still shows -
+            including a draft failure on a healthy provider, which is a real thing
+            the user should see rather than a configuration problem. */}
+        {s.error && !showAiNotice && (
+          <div className="mt-2 rounded-lg px-3 py-2 flex items-start gap-3"
             style={{ color: 'var(--color-state-pending)', background: 'color-mix(in srgb, var(--color-state-pending) 12%, transparent)' }}>
-            {s.error}
-          </p>
+            <p className="mt-body-sm flex-1 min-w-0">{s.error}</p>
+            {/* Only on a DRAFT failure, and only once the fields are still empty
+                enough for a retry to be what the user wants. A create failure is
+                retried with the Add button that is already on screen. */}
+            {s.errorSource === 'draft' && s.note.trim() && !busy && (
+              <button onClick={draftOrConnect}
+                className={`mt-body-sm shrink-0 rounded-md px-2 py-1 ${FOCUS}`}
+                style={{
+                  fontWeight: 700,
+                  color: 'var(--color-state-proposal)',
+                  background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)',
+                  border: '1px solid color-mix(in srgb, var(--color-state-proposal) 30%, transparent)',
+                }}>
+                Try again
+              </button>
+            )}
+          </div>
         )}
 
         {/* The rule between the two halves, with the choice written ON it. A
