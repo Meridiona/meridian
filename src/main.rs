@@ -91,6 +91,7 @@ async fn main() -> Result<()> {
         let day = flag("--day");
         let limit: i64 = flag("--limit").and_then(|v| v.parse().ok()).unwrap_or(8);
         let obs_guard = observability::init("meridian-rust").ok();
+        let mut open_failed = false;
         match meridian::coding_agent_session_ingest::open_meridian_pool().await {
             Ok(pool) => {
                 meridian::coding_agent_session_ingest::summariser::cli_summarise(
@@ -102,10 +103,33 @@ async fn main() -> Result<()> {
                 .await;
                 pool.close().await;
             }
-            Err(e) => tracing::error!(error = %e, "coding-agent-summarise: failed to open db"),
+            Err(e) => {
+                // `eprintln!`, not just `tracing`. Both `fmt` layers in
+                // `observability::init` are `cfg!(debug_assertions)`-gated and
+                // the spool is the only persisted sink, so in a RELEASE build —
+                // the only place the unkeyed pool ever failed — the tracing line
+                // below reaches no terminal at all, and this arm then returned
+                // `Ok(())`. An operator running the documented backlog-drain
+                // command against a bad or missing key saw an empty screen and
+                // exit 0: the same silent-failure class this commit fixes, one
+                // frame further out, and the frame the operator stands in.
+                //
+                // `{e:#}` is anyhow's alternate form (the full context chain);
+                // plain `%e` renders only the outermost context and would drop
+                // the actual SQLite cause from the shipped record too.
+                let detail = format!("{e:#}");
+                eprintln!("summarise: open db: {detail}");
+                tracing::error!(error = %detail, "coding-agent-summarise: failed to open db");
+                open_failed = true;
+            }
         }
         if let Some(g) = obs_guard {
             g.shutdown().await;
+        }
+        // Non-zero so `meridian doctor --fix` — which runs this as a guided fix
+        // and checks `.success()` — reports the failure instead of a false pass.
+        if open_failed {
+            std::process::exit(1);
         }
         return Ok(());
     }
