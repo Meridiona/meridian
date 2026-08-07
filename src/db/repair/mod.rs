@@ -226,10 +226,20 @@ fn stop_daemon_hint() -> &'static str {
         "quit Meridian from the tray menu, which now stops the daemon too, \
          or run: launchctl bootout gui/$(id -u)/com.meridiona.daemon"
     }
+    // Both Windows launchers are named, because the machines most likely to
+    // read this message are the ones running the fallback. `register_service`
+    // drops a Startup-folder `MeridianDaemon.vbs` whenever `schtasks /Create`
+    // is blocked - the locked-down profiles and antivirus-quarantined installs
+    // where things go wrong in the first place - and on those there is no
+    // scheduled task to end, so the one instruction given would be another
+    // dead end. The tray's own stop path already covers both (it ends matched
+    // PIDs with `taskkill /F /PID`, precisely so the fallback is not missed).
     #[cfg(target_os = "windows")]
     {
         "quit Meridian from the tray menu, which now stops the daemon too, \
-         or end the Meridian scheduled task"
+         or end the Meridian scheduled task - and if this install starts the \
+         daemon from the Startup folder instead, end the meridian.exe process \
+         in Task Manager"
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {

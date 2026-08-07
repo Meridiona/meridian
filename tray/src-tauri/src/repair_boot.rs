@@ -103,9 +103,15 @@ enum Probe {
     /// place - page 1 is readable, so the salvage can ATTACH it.
     Damaged { problems: Vec<String> },
     /// The keyed open (or first read) fails with SQLITE_NOTADB (code 26) -
-    /// page 1 itself is unreadable. Nothing can read this file, under any
-    /// tool; a plain-corrupt failure (code 11) classifies [`Probe::Damaged`]
-    /// instead, because a file that ATTACHes is still salvageable.
+    /// page 1 is unreadable **under the key that was used**. A plain-corrupt
+    /// failure (code 11) classifies [`Probe::Damaged`] instead, because a file
+    /// that ATTACHes is still salvageable.
+    ///
+    /// This verdict is deliberately NOT "the file is destroyed". SQLCipher
+    /// returns code 26 both for a damaged page 1 and for a perfectly healthy
+    /// database opened with the wrong key, and nothing at this layer can tell
+    /// them apart. That is why acting on it requires [`KeyTrust`] - the
+    /// verdict describes the *pairing* of file and key, not the file.
     Unopenable { error: String },
 }
 
@@ -157,15 +163,80 @@ pub fn run_auto_if_needed(db_path: &Path, key_hex: Option<&str>) -> Option<Outco
         );
         return None;
     }
-    probe_and_heal(db_path, key_hex)
+    probe_and_heal(db_path, key_hex, KeyTrust::of(key_hex))
+}
+
+/// Whether the key in hand is provably this machine's own database key.
+///
+/// The fresh-start branch discards a database, and it fires on a SQLCipher
+/// verdict (code 26) that means *either* "page 1 is damaged" *or* "this is the
+/// wrong key" - SQLCipher cannot tell them apart, and neither can this module.
+/// So the destructive branch is gated on provenance instead: only a key the OS
+/// keychain confirms is allowed to condemn a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyTrust {
+    /// The OS keychain holds exactly this key for `meridian.db`, so an
+    /// unopenable verdict is about the file, not about the key.
+    KeychainVerified,
+    /// A key resolved, but nothing proves it owns this database - typically
+    /// read from `.env`, which a stale mirror, a hand-edit or a copy from
+    /// another machine can populate with a key that opens nothing. An
+    /// unopenable verdict here is indistinguishable from a healthy encrypted
+    /// file being read with the wrong key.
+    Unverified,
+}
+
+impl KeyTrust {
+    /// Classify the key the tray resolved this launch.
+    ///
+    /// Split from [`probe_and_heal`] for the same reason the daemon gate is:
+    /// so tests can drive the destructive path without the developer's real
+    /// keychain deciding the outcome.
+    fn of(key_hex: Option<&str>) -> Self {
+        match key_hex {
+            Some(k) if crate::db_key::key_matches_keychain(k) => Self::KeychainVerified,
+            _ => Self::Unverified,
+        }
+    }
 }
 
 /// The probe + heal body behind [`run_auto_if_needed`]'s daemon gate. Split
 /// out so tests can exercise it without the gate consulting the development
 /// machine's real daemon.
-fn probe_and_heal(db_path: &Path, key_hex: Option<&str>) -> Option<Outcome> {
-    match tauri::async_runtime::block_on(probe_database(db_path, key_hex)) {
-        Probe::Healthy => None,
+/// # Observability
+///
+/// This is the least observable path in the tray and the one with the largest
+/// consequence - it can move a user's database aside and start an empty one -
+/// so the verdict, the trust decision and the outcome are span attributes
+/// rather than log lines to be grepped back together, and every failure
+/// boundary marks the span `ERROR`. All fields are declared up front:
+/// `Span::record` on an undeclared field is a silent no-op, so a status
+/// recorded later would never reach the exporter.
+fn probe_and_heal(db_path: &Path, key_hex: Option<&str>, key_trust: KeyTrust) -> Option<Outcome> {
+    let span = tracing::info_span!(
+        "repair_boot.probe_and_heal",
+        verdict = tracing::field::Empty,
+        key_trust = ?key_trust,
+        outcome = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty,
+    );
+    let _enter = span.enter();
+
+    let probe = tauri::async_runtime::block_on(probe_database(db_path, key_hex));
+    span.record(
+        "verdict",
+        match &probe {
+            Probe::Healthy => "healthy",
+            Probe::Damaged { .. } => "damaged",
+            Probe::Unopenable { .. } => "unopenable",
+        },
+    );
+
+    match probe {
+        Probe::Healthy => {
+            span.record("outcome", "none");
+            None
+        }
         Probe::Damaged { problems } => {
             tracing::warn!(
                 problems = ?problems,
@@ -179,22 +250,41 @@ fn probe_and_heal(db_path: &Path, key_hex: Option<&str>) -> Option<Outcome> {
             // race such a relaunch - skip, and let the daemon's own latch
             // report the corruption.
             if let Err(e) = meridian::db::repair::marker::request(db_path) {
+                span.record("outcome", "marker_write_failed");
+                span.record("otel.status_code", "ERROR");
                 tracing::error!(error = %e, "could not write the repair marker - skipping the automatic repair");
                 return None;
             }
-            Some(execute_pending_repair(db_path, key_hex))
+            let outcome = execute_pending_repair(db_path, key_hex);
+            span.record(
+                "outcome",
+                match &outcome {
+                    Outcome::Repaired { .. } => "repaired",
+                    Outcome::Failed { .. } => "repair_failed",
+                    Outcome::FreshStart { .. } => "fresh_start",
+                },
+            );
+            if matches!(outcome, Outcome::Failed { .. }) {
+                span.record("otel.status_code", "ERROR");
+            }
+            Some(outcome)
         }
         Probe::Unopenable { error } => {
-            if key_hex.is_none() {
-                // Without a keychain-verified key, "file is not a database"
-                // is exactly what a healthy encrypted file looks like. This is
-                // a key-resolution problem, not corruption - moving the file
-                // aside here would discard data a recovered key could still
-                // open.
+            // Both arms of one rule: only a key the keychain vouches for may
+            // condemn a file. `key_hex.is_none()` alone was never enough -
+            // the key usually comes from `.env`, so "a key resolved" can mean
+            // a stale mirror that opens nothing, and every healthy encrypted
+            // database reads as `file is not a database` under the wrong key.
+            // Acting on that would discard exactly the data this path exists
+            // to protect. See [`KeyTrust`].
+            if key_hex.is_none() || key_trust != KeyTrust::KeychainVerified {
                 tracing::error!(
                     error = %error,
-                    "meridian.db cannot be opened and no encryption key was resolved - leaving the file alone (a key problem, not corruption)"
+                    key_resolved = key_hex.is_some(),
+                    "meridian.db cannot be opened and the key in hand is not confirmed by the OS keychain - leaving the file alone (a key problem is indistinguishable from corruption here, and only one of the two is safe to act on)"
                 );
+                span.record("outcome", "left_alone_key_unverified");
+                span.record("otel.status_code", "ERROR");
                 return None;
             }
             if let Some(previous) = recent_unopenable_backup(db_path) {
@@ -203,6 +293,8 @@ fn probe_and_heal(db_path: &Path, key_hex: Option<&str>) -> Option<Outcome> {
                     previous_backup = %previous.display(),
                     "meridian.db is unopenable again within a day of being replaced - refusing a second fresh start; something is damaging databases faster than they can be replaced"
                 );
+                span.record("outcome", "refused_repeat_fresh_start");
+                span.record("otel.status_code", "ERROR");
                 return Some(Outcome::Failed { error });
             }
             tracing::error!(
@@ -214,6 +306,8 @@ fn probe_and_heal(db_path: &Path, key_hex: Option<&str>) -> Option<Outcome> {
             // KeepAlive relaunch out of the window while the file moves.
             // (No `set_running` call - there is provably nothing to stop.)
             if let Err(e) = meridian::db::repair::marker::request(db_path) {
+                span.record("outcome", "marker_write_failed");
+                span.record("otel.status_code", "ERROR");
                 tracing::error!(error = %e, "could not write the repair marker - leaving the unopenable database in place");
                 return Some(Outcome::Failed { error });
             }
@@ -222,10 +316,15 @@ fn probe_and_heal(db_path: &Path, key_hex: Option<&str>) -> Option<Outcome> {
                 tracing::error!(error = %e, "could not clear the repair marker - the daemon will stay down until it expires");
             }
             match result {
-                Ok(backup) => Some(Outcome::FreshStart {
-                    backup: backup.display().to_string(),
-                }),
+                Ok(backup) => {
+                    span.record("outcome", "fresh_start");
+                    Some(Outcome::FreshStart {
+                        backup: backup.display().to_string(),
+                    })
+                }
                 Err(e) => {
+                    span.record("outcome", "set_aside_failed");
+                    span.record("otel.status_code", "ERROR");
                     tracing::error!(error = %e, "could not move the unopenable database aside - leaving it in place");
                     Some(Outcome::Failed {
                         error: format!("{e:#}"),
@@ -283,6 +382,13 @@ fn execute_pending_repair(db_path: &Path, key_hex: Option<&str>) -> Outcome {
 /// on uncertainty would stop the daemon and rebuild a database over an error
 /// that may have been a transient lock. Only the two positively-identified
 /// corruption signatures trigger action.
+#[tracing::instrument(
+    name = "repair_boot.probe_database",
+    // `skip_all`, not a field list: `key_hex` IS the database encryption key
+    // and must never reach a span, and `db_path` carries the user's home
+    // directory. The verdict is recorded by the caller's span instead.
+    skip_all
+)]
 async fn probe_database(db_path: &Path, key_hex: Option<&str>) -> Probe {
     if !db_path.exists() {
         return Probe::Healthy; // fresh install - the daemon will create it
@@ -349,6 +455,7 @@ async fn probe_database(db_path: &Path, key_hex: Option<&str>) -> Probe {
 /// timestamped name, so a fresh one can be created at the canonical path. The
 /// file is preserved, never deleted - it is the only copy of whatever a future
 /// offline-salvage attempt might still extract.
+#[tracing::instrument(name = "repair_boot.set_aside_unopenable", skip_all)]
 fn set_aside_unopenable(db_path: &Path) -> anyhow::Result<PathBuf> {
     use anyhow::Context;
     let backup = db_path.with_extension(format!(
@@ -562,7 +669,7 @@ mod probe_tests {
         std::fs::write(&db, vec![0xABu8; 8192]).unwrap();
         std::fs::write(format!("{}-wal", db.display()), b"stale wal").unwrap();
 
-        let outcome = probe_and_heal(&db, Some(TEST_KEY));
+        let outcome = probe_and_heal(&db, Some(TEST_KEY), KeyTrust::KeychainVerified);
         let Some(Outcome::FreshStart { backup }) = outcome else {
             panic!("an unopenable file with a key must produce a fresh start");
         };
@@ -581,7 +688,7 @@ mod probe_tests {
         std::fs::write(&db, vec![0xCDu8; 8192]).unwrap();
         assert!(
             matches!(
-                probe_and_heal(&db, Some(TEST_KEY)),
+                probe_and_heal(&db, Some(TEST_KEY), KeyTrust::KeychainVerified),
                 Some(Outcome::Failed { .. })
             ),
             "a second unopenable verdict inside the guard window must not mint another database"
@@ -599,10 +706,47 @@ mod probe_tests {
         let db = dir.path().join("meridian.db");
         std::fs::write(&db, vec![0xABu8; 8192]).unwrap();
 
-        assert!(probe_and_heal(&db, None).is_none());
+        assert!(probe_and_heal(&db, None, KeyTrust::Unverified).is_none());
         assert!(
             db.exists(),
             "a possibly-just-locked-out file must never be moved"
+        );
+    }
+
+    /// The same protection, for the case that actually reaches users: a key
+    /// that resolved but is not the one this machine's keychain holds.
+    ///
+    /// This is not hypothetical. The key normally comes from `.env`, and the
+    /// keychain is consulted only when `.env` has none - so a stale mirror, a
+    /// hand-edited file, or a `.env` copied between machines all produce a key
+    /// that resolves and opens nothing. SQLCipher then reports the healthy
+    /// encrypted database as `file is not a database`, identically to real
+    /// page-1 damage.
+    ///
+    /// Before [`KeyTrust`], the gate was `key_hex.is_none()` - which this case
+    /// passes - so a wrong `.env` key was enough to move a perfectly good
+    /// database aside and start an empty one in its place. It also takes the
+    /// daemon down with it (same wrong key, same failure), so the
+    /// daemon-unreachable gate does not catch it either.
+    #[test] // sync for the same block_on reason as the set-aside test above
+    fn unopenable_under_an_unverified_key_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("meridian.db");
+        std::fs::write(&db, vec![0xABu8; 8192]).unwrap();
+
+        assert!(
+            probe_and_heal(&db, Some(TEST_KEY), KeyTrust::Unverified).is_none(),
+            "an unopenable verdict under an unconfirmed key must not condemn \
+             the file - it is what a healthy encrypted database looks like \
+             through the wrong key"
+        );
+        assert!(
+            db.exists(),
+            "the database must still be there for a recovered key to open"
+        );
+        assert!(
+            !meridian::db::repair::marker::pending(&db),
+            "and no repair marker may be left behind holding the daemon down"
         );
     }
 
