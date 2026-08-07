@@ -11,12 +11,27 @@ use crate::health::Check;
 use std::time::Duration;
 
 pub async fn checks(_cfg: &Config) -> Vec<Check> {
+    // `is_otlp_configured()` is false for two unrelated reasons, and reporting
+    // them with one message was actively misleading. On a packaged install it is
+    // false BY DESIGN — that path is scoped to the engineer's own OpenObserve,
+    // and a packaged install ships error-only redacted telemetry to the central
+    // gateway instead — so "telemetry not collected" was simply wrong there.
+    // Capture to the local spool is unconditional either way (the only kill
+    // switch is MERIDIAN_TELEMETRY_DISABLED), which is what `meridian logs` and
+    // Export Diagnostics read, so no install is ever truly dark.
+    if crate::observability::is_canonical_install() {
+        return vec![Check::info(
+            "openobserve",
+            "obs",
+            "packaged install — telemetry captured locally; errors ship to the central gateway",
+        )];
+    }
     // Use the cheap helpers — the health check never needs the auth credential.
     if !crate::observability::is_otlp_configured() {
         return vec![Check::info(
             "openobserve",
             "obs",
-            "OTLP export disabled (no credentials in Settings) — telemetry not collected",
+            "local OTLP export off (no credentials in Settings) — capture still runs; read it with `meridian logs`",
         )];
     }
     let endpoint = crate::observability::resolve_otlp_endpoint()

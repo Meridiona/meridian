@@ -39,7 +39,7 @@
 /// uses (independently — the daemon has no dependency on the tray crate).
 /// Falls back to the old marker-file check only if `current_exe()` itself
 /// fails (should not happen in practice).
-pub(super) fn is_canonical_install() -> bool {
+pub fn is_canonical_install() -> bool {
     let Some(meridian_dir) = meridian_core::paths::meridian_dir() else {
         return false;
     };

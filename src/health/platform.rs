@@ -140,17 +140,37 @@ fn service_manifest_check(label: &str, name: &'static str) -> Check {
 
 // ── per-daemon service checks ───────────────────────────────────────────────
 
-pub fn daemon_service() -> Vec<Check> {
-    let bin = [
+/// Every location a daemon binary is installed to, across install types.
+///
+/// `install.sh` symlinks `meridian-daemon` into `/usr/local/bin` or
+/// `~/.local/bin` (source installs). The DMG's tray stages the real binary at
+/// `~/.meridian/bin/meridian{EXE_SUFFIX}` — see `backend_install::DAEMON_FILE`
+/// in the tray crate, and `observability::install_mode` which derives the same
+/// path. Probing only the first pair reported a CRITICAL "not installed" on
+/// every packaged install, while that very binary was the one answering the
+/// check.
+///
+/// Deliberately probes ALL candidates rather than branching on install mode:
+/// "is THIS PROCESS packaged" is a different question from "is a daemon
+/// installed on this system". `cargo run -- doctor` on a machine that also has
+/// the DMG installed must still find the staged binary — which is the one
+/// launchd is actually running.
+fn daemon_binary_candidates() -> Vec<PathBuf> {
+    vec![
+        home()
+            .join(".meridian/bin")
+            .join(format!("meridian{}", std::env::consts::EXE_SUFFIX)),
         PathBuf::from("/usr/local/bin/meridian-daemon"),
         home().join(".local/bin/meridian-daemon"),
     ]
-    .into_iter()
-    .find(|p| is_exec(p));
+}
+
+pub fn daemon_service() -> Vec<Check> {
+    let bin = daemon_binary_candidates().into_iter().find(|p| is_exec(p));
     let bin_check = match bin {
         Some(p) => Check::ok("daemon binary", "system", p.display().to_string()),
         None => Check::critical("daemon binary", "system", "not installed")
-            .with_remedy("run ./install.sh"),
+            .with_remedy("install the app, or run ./install.sh from a source checkout"),
     };
     use crate::platform::ServiceStatus;
     let run_check = match crate::platform::service_status(LABEL_DAEMON) {
@@ -185,15 +205,27 @@ pub fn ui_service() -> Vec<Check> {
 }
 
 pub fn mcp_service() -> Vec<Check> {
-    let built = repo_root()
-        .map(|r| r.join("packages/meridian-mcp/dist/index.js").is_file())
-        .unwrap_or(false);
-    vec![if built {
-        Check::ok("mcp built", "system", "dist/index.js present")
-    } else {
-        Check::warn("mcp built", "system", "not built")
-            .with_remedy("cd packages/meridian-mcp && npm run build")
-    }]
+    // The MCP server is built from the repo, so this question only has an answer
+    // in a source checkout. On a packaged install `repo_root()` is None and the
+    // old code folded that into `false` — reporting "not built" with a remedy
+    // (`cd packages/meridian-mcp && ...`) naming a directory the user does not
+    // have. A check that asserts a problem it has not looked for trains people
+    // to ignore the whole report, so say so instead.
+    let Some(repo) = repo_root() else {
+        return vec![Check::info(
+            "mcp built",
+            "system",
+            "not applicable on a packaged install (built from a source checkout)",
+        )];
+    };
+    vec![
+        if repo.join("packages/meridian-mcp/dist/index.js").is_file() {
+            Check::ok("mcp built", "system", "dist/index.js present")
+        } else {
+            Check::warn("mcp built", "system", "not built")
+                .with_remedy("cd packages/meridian-mcp && npm run build")
+        },
+    ]
 }
 
 // ── system / toolchain ──────────────────────────────────────────────────────
@@ -214,13 +246,19 @@ pub fn system_checks(_cfg: &Config) -> Vec<Check> {
     } else {
         Check::warn("os", "system", "unsupported OS — capture is not available")
     };
-    let env_ok = repo_root()
-        .map(|r| r.join(".env").is_file())
-        .unwrap_or(false);
-    let env_check = if env_ok {
-        Check::ok("config (.env)", "system", "present")
-    } else {
-        Check::warn("config (.env)", "system", "missing").with_remedy("run ./install.sh")
+    // BOTH locations count, because `main.rs` loads both: step 1 walks up from
+    // the working directory (a source run finds `<repo>/.env`), and step 1a then
+    // unconditionally loads `~/.meridian/.env` — the canonical file the tray
+    // writes the DB key and tracker credentials into. Checking only the repo
+    // copy reported "missing" on every packaged install, where no repo exists
+    // and the canonical file is the one actually in use.
+    let repo_env = repo_root().map(|r| r.join(".env").is_file());
+    let home_env = home().join(".meridian/.env").is_file();
+    let env_check = match (repo_env, home_env) {
+        (_, true) => Check::ok("config (.env)", "system", "~/.meridian/.env present"),
+        (Some(true), false) => Check::ok("config (.env)", "system", "<repo>/.env present"),
+        _ => Check::warn("config (.env)", "system", "missing")
+            .with_remedy("install the app, or run ./install.sh from a source checkout"),
     };
     vec![
         os,
@@ -303,6 +341,38 @@ mod tests {
     #[test]
     fn which_returns_none_for_a_binary_that_does_not_exist() {
         assert!(which("meridian-definitely-not-a-real-binary-xyz").is_none());
+    }
+
+    /// Regression guard: the candidate list probed ONLY the two `install.sh`
+    /// symlink paths, so on every packaged install doctor reported a CRITICAL
+    /// "daemon binary — not installed" while the staged binary at
+    /// `~/.meridian/bin/meridian` was the very process answering the check.
+    /// A false CRITICAL on a healthy machine is worse than no check: it trains
+    /// users to ignore the report, and the two real faults sit in the same output.
+    #[test]
+    fn daemon_binary_candidates_cover_both_install_types() {
+        let candidates = daemon_binary_candidates();
+
+        // The DMG/tray staged path — must track `backend_install::DAEMON_FILE`,
+        // hence the platform executable suffix rather than a bare "meridian".
+        let staged = home()
+            .join(".meridian/bin")
+            .join(format!("meridian{}", std::env::consts::EXE_SUFFIX));
+        assert!(
+            candidates.contains(&staged),
+            "packaged install path {} missing from {candidates:?}",
+            staged.display()
+        );
+
+        // The source-install symlinks `install.sh` creates must survive.
+        assert!(
+            candidates.contains(&PathBuf::from("/usr/local/bin/meridian-daemon")),
+            "source-install path missing from {candidates:?}"
+        );
+        assert!(
+            candidates.contains(&home().join(".local/bin/meridian-daemon")),
+            "per-user source-install path missing from {candidates:?}"
+        );
     }
 
     /// Regression guard for the bug where `which` probed only the bare name:

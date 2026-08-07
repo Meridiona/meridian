@@ -94,7 +94,7 @@ pub fn fix_for(c: &Check) -> Option<FixAction> {
             manual("regenerate the Jira API token and update JIRA_API_TOKEN in .env")
         }
         ("config", name) if name.contains("settings") => {
-            manual("align <repo>/settings.json with ~/.meridian/settings.json")
+            manual("unset MERIDIAN_SETTINGS_PATH so the daemon reads ~/.meridian/settings.json")
         }
         _ => None,
     }

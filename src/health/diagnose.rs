@@ -134,9 +134,9 @@ pub fn root_causes(report: &Report) -> Vec<Diagnosis> {
     if bad("config", "settings file") {
         out.push(Diagnosis {
             title: "UI settings aren't reaching the daemon".into(),
-            cause: "The dashboard writes ~/.meridian/settings.json but the daemon reads <repo>/settings.json, so toggles made in the UI have no effect.".into(),
+            cause: "MERIDIAN_SETTINGS_PATH points the daemon at a different file from the one the dashboard writes (~/.meridian/settings.json), so toggles made in the UI have no effect.".into(),
             contributing: contributing(&[("config", "settings file")]),
-            action: "Align the two files — `meridian doctor --fix` can link them.".into(),
+            action: "Unset MERIDIAN_SETTINGS_PATH so both read ~/.meridian/settings.json.".into(),
         });
     }
 

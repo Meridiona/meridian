@@ -2,11 +2,11 @@
 //
 // Cross-process config contracts: values multiple processes must agree on, where
 // a silent mismatch masquerades as an AI/runtime fault. Verified against the
-// code: the UI reads MERIDIAN_DB_PATH (not MERIDIAN_DB), and the daemon reads
-// <repo>/settings.json (not the UI's ~/.meridian/settings.json).
+// code: the UI reads MERIDIAN_DB_PATH (not MERIDIAN_DB), and the daemon and the
+// dashboard must resolve the same settings.json (canonically
+// ~/.meridian/settings.json, overridable via MERIDIAN_SETTINGS_PATH).
 
 use crate::config::Config;
-use crate::health::platform::repo_root;
 use crate::health::Check;
 use std::path::PathBuf;
 
@@ -44,23 +44,63 @@ fn db_path_contract(cfg: &Config) -> Check {
     }
 }
 
-/// C7 — the daemon reads `<repo>/settings.json`; the dashboard writes
-/// `~/.meridian/settings.json`. If only the latter exists, toggles in the UI
-/// never reach the daemon.
+/// C7 — the daemon and the dashboard must read the SAME `settings.json`, or
+/// toggles in the UI never take effect.
+///
+/// The old form of this check asserted the daemon reads `<repo>/settings.json`
+/// and warned whenever only `~/.meridian/settings.json` existed. That premise is
+/// **obsolete**, not mis-implemented: `settings_json_path()` resolves the
+/// canonical `~/.meridian/settings.json` FIRST (a repo/cwd copy is only a
+/// fallback when the canonical is absent), so the configuration it flagged as
+/// broken is the correct one. On every packaged install — where no repo exists
+/// at all — it fired permanently, and the summary escalated it to "UI settings
+/// aren't reaching the daemon" on machines where they demonstrably were.
+///
+/// The one real split-brain left is `MERIDIAN_SETTINGS_PATH` pointing somewhere
+/// other than the file the dashboard writes, so that is what this now checks.
 fn settings_contract() -> Check {
-    let daemon_exists = repo_root()
-        .map(|r| r.join("settings.json").is_file())
-        .unwrap_or(false);
     let ui_settings = home().join(".meridian/settings.json");
-    if ui_settings.is_file() && !daemon_exists {
+    let resolved = meridian_core::settings::settings_json_path();
+    let ui_exists = ui_settings.is_file();
+    settings_verdict(&resolved, &ui_settings, ui_exists)
+}
+
+/// The decision half of [`settings_contract`], split out so every branch is
+/// testable without touching `$HOME`, the real filesystem, or the
+/// process-global `MERIDIAN_SETTINGS_PATH`.
+fn settings_verdict(
+    resolved: &std::path::Path,
+    ui_settings: &std::path::Path,
+    ui_exists: bool,
+) -> Check {
+    if resolved == ui_settings {
+        return Check::ok("settings file", "config", "daemon + dashboard agree");
+    }
+    // Resolution order falls back to `<cwd>/settings.json` when the canonical
+    // file does not exist — and doctor's cwd is not the daemon's cwd, so the
+    // path resolved HERE is not necessarily the one the daemon resolved. Only
+    // claim disagreement when the dashboard's file actually exists (in which
+    // case the canonical rule would have selected it, so something is
+    // overriding); otherwise report what was resolved without asserting a fault.
+    if ui_exists {
         Check::warn(
             "settings file",
             "config",
-            "~/.meridian/settings.json is not read by the daemon",
+            format!(
+                "the daemon resolves {} instead of the dashboard's file",
+                resolved.display()
+            ),
         )
-        .with_remedy("the daemon reads <repo>/settings.json — align them")
+        .with_remedy("unset MERIDIAN_SETTINGS_PATH so both read ~/.meridian/settings.json")
     } else {
-        Check::ok("settings file", "config", "no split-brain")
+        Check::info(
+            "settings file",
+            "config",
+            format!(
+                "no settings.json yet — would resolve {}",
+                resolved.display()
+            ),
+        )
     }
 }
 
@@ -80,7 +120,48 @@ fn dead_poll_env() -> Check {
 
 #[cfg(test)]
 mod tests {
-    use super::expand;
+    use super::{expand, settings_verdict};
+    use std::path::Path;
+
+    /// The canonical, correct configuration: the daemon resolves exactly the
+    /// file the dashboard writes.
+    ///
+    /// This is the case the OLD check flagged as broken. It warned whenever
+    /// `~/.meridian/settings.json` existed without a `<repo>/settings.json`
+    /// beside it — which is every packaged install, and the summary escalated
+    /// it to "UI settings aren't reaching the daemon" on machines where the
+    /// settings were demonstrably being applied.
+    #[test]
+    fn agreeing_paths_are_ok() {
+        let p = Path::new("/home/u/.meridian/settings.json");
+        let c = settings_verdict(p, p, true);
+        assert_eq!(c.severity, crate::health::Severity::Ok, "{c:?}");
+    }
+
+    /// A real split-brain: something (MERIDIAN_SETTINGS_PATH) points the daemon
+    /// elsewhere while the dashboard's file exists, so UI toggles are ignored.
+    #[test]
+    fn an_override_that_shadows_the_dashboard_warns() {
+        let c = settings_verdict(
+            Path::new("/elsewhere/settings.json"),
+            Path::new("/home/u/.meridian/settings.json"),
+            true,
+        );
+        assert_eq!(c.severity, crate::health::Severity::Warn, "{c:?}");
+    }
+
+    /// Nothing written yet. `settings_json_path` falls back to
+    /// `<cwd>/settings.json`, and doctor's cwd is NOT the daemon's cwd, so the
+    /// two can legitimately differ here. Report, do not assert a fault.
+    #[test]
+    fn no_settings_file_yet_is_not_a_fault() {
+        let c = settings_verdict(
+            Path::new("/tmp/settings.json"),
+            Path::new("/home/u/.meridian/settings.json"),
+            false,
+        );
+        assert_eq!(c.severity, crate::health::Severity::Info, "{c:?}");
+    }
 
     #[test]
     fn expand_handles_tilde_and_absolute() {
