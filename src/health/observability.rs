@@ -61,6 +61,26 @@ fn offline_verdict(
     None
 }
 
+/// The `openobserve` health check.
+///
+/// Always returns exactly one [`Check`], so callers can splice it into a report
+/// without length handling. [`offline_verdict`] answers everything decidable
+/// from configuration alone; only a **non-canonical** install with OTLP
+/// credentials configured falls through to the live `/healthz` probe below.
+///
+/// That asymmetry is the non-obvious part and it is deliberate: a packaged
+/// install ships to the release-baked central gateway, whose reachability is
+/// not the user's problem and must never be reported to them as a fault. A dev
+/// checkout ships to the engineer's own OpenObserve, where "is it up?" is
+/// exactly the question worth asking.
+///
+/// `_cfg` is unused - the answer comes from `settings.json` and the install
+/// mode, not the daemon config - and is kept for signature parity with the
+/// other `checks` functions in this module's siblings.
+///
+/// Never fails: every error path (client build, request, non-2xx) is folded
+/// into an Info or Warn [`Check`], because a health probe that errors out
+/// takes the whole report down with it.
 pub async fn checks(_cfg: &Config) -> Vec<Check> {
     let canonical = crate::observability::is_canonical_install();
     // `resolve_otlp_target()` costs one settings.json read — the same file the
