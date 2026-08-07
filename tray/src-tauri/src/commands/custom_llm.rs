@@ -313,10 +313,8 @@ pub async fn add_custom_llm_provider(
 
     rows.push(row.clone());
     write_rows(&mut settings_v, &rows)?;
-    settings::write_settings_value(&settings_v).map_err(|e| {
-        tracing::warn!(error = %e, "custom_llm: write failed");
-        e.to_string()
-    })?;
+    settings::write_settings_value(&settings_v)
+        .map_err(|e| crate::cmd_err!(e, "custom_llm: write failed"))?;
 
     Ok(ProbeOutcome {
         provider: CustomProviderView::of(&row, selected_custom_id(&settings_v).as_deref()),
@@ -491,10 +489,7 @@ pub async fn list_custom_llm_provider_models(
 
     meridian::llm::openai_compat::list_models(&url, &key, &log_id)
         .await
-        .map_err(|e| {
-            tracing::warn!(endpoint_id = %log_id, error = %e, "custom_llm: model listing failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, endpoint_id = %log_id, "custom_llm: model listing failed"))
 }
 
 /// Every configured endpoint, keyless — what the picker and the Lab's variant list render.

@@ -39,10 +39,7 @@ pub async fn get_worklogs(
     let day = day.unwrap_or_else(meridian_core::date::today_string);
     meridian_core::worklogs::get_worklogs(pool, &day)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_worklogs failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "get_worklogs failed"))
 }
 
 /// The distilled activity text for one hour (new backend work — migration 053).
@@ -61,10 +58,7 @@ pub async fn get_hour_text(
     let day = day.unwrap_or_else(meridian_core::date::today_string);
     meridian_core::hour_text::get_hour_text(pool, &day, &hour)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_hour_text failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "get_hour_text failed"))
 }
 
 /// Every local hour's activity report for a day, in one call (new backend
@@ -82,10 +76,7 @@ pub async fn get_hour_reports(
     let day = day.unwrap_or_else(meridian_core::date::today_string);
     meridian_core::hour_text::get_hour_reports(pool, &day)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_hour_reports failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "get_hour_reports failed"))
 }
 
 /// Per-hour generating/paused badge state for the timeline (new work — no
@@ -102,10 +93,7 @@ pub async fn get_hour_status(
     let day = day.unwrap_or_else(meridian_core::date::today_string);
     meridian_core::hour_status::get_hour_status(pool, &day)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_hour_status failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "get_hour_status failed"))
 }
 
 /// Ack for the worklog writes — mirrors the routes' `{ ok, id, state }`.
@@ -149,10 +137,7 @@ pub async fn edit_worklog(
     };
     let state = meridian_core::worklogs::edit_worklog(pool, body.id, &body.summary, &now_iso())
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, id = body.id, "edit_worklog failed");
-            e.to_string()
-        })?;
+        .map_err(|e| crate::cmd_err!(e, id = body.id, "edit_worklog failed"))?;
     Ok(WorklogWriteAck {
         ok: true,
         id: body.id,
@@ -186,10 +171,7 @@ pub async fn rematch_worklog(
     }
     let outcome = meridian_core::worklogs::rematch_worklog(pool, body.id, task_key, &now_iso())
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, id = body.id, "rematch_worklog failed");
-            e.to_string()
-        })?;
+        .map_err(|e| crate::cmd_err!(e, id = body.id, "rematch_worklog failed"))?;
     Ok(RematchAck {
         ok: true,
         id: body.id,
@@ -227,10 +209,7 @@ pub async fn edit_proposed_title(
     }
     let ok = meridian_core::proposed::edit_proposed_title(pool, body.id, title, &now_iso())
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, id = body.id, "edit_proposed_title failed");
-            e.to_string()
-        })?;
+        .map_err(|e| crate::cmd_err!(e, id = body.id, "edit_proposed_title failed"))?;
     Ok(WorklogWriteAck {
         ok,
         id: body.id,
@@ -251,10 +230,7 @@ pub async fn edit_proposed_worklog(
     };
     let ok = meridian_core::proposed::edit_proposed_worklog(pool, body.id, &body.summary)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, id = body.id, "edit_proposed_worklog failed");
-            e.to_string()
-        })?;
+        .map_err(|e| crate::cmd_err!(e, id = body.id, "edit_proposed_worklog failed"))?;
     Ok(WorklogWriteAck {
         ok,
         id: body.id,
@@ -285,10 +261,7 @@ pub async fn proposed_action(
         .ok_or("action must be approve|dismiss")?;
     let state = meridian_core::proposed::proposed_action(pool, body.id, action, &now_iso())
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, id = body.id, "proposed_action failed");
-            e.to_string()
-        })?
+        .map_err(|e| crate::cmd_err!(e, id = body.id, "proposed_action failed"))?
         .ok_or("proposal is missing or already resolved")?;
     Ok(WorklogWriteAck {
         ok: true,
@@ -346,10 +319,7 @@ pub async fn worklog_action(
         &now_iso(),
     )
     .await
-    .map_err(|e| {
-        tracing::warn!(error = %e, id = body.id, "worklog_action failed");
-        e.to_string()
-    })?;
+    .map_err(|e| crate::cmd_err!(e, id = body.id, "worklog_action failed"))?;
     Ok(WorklogWriteAck {
         ok: true,
         id: body.id,

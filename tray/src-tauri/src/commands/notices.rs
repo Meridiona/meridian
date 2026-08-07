@@ -48,8 +48,5 @@ pub async fn delete_notice(
     };
     meridian_core::notices::delete_notice(pool, &notice_id)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, notice_id, "delete_notice failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, notice_id, "delete_notice failed"))
 }
