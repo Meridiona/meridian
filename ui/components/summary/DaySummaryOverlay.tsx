@@ -25,27 +25,37 @@
 // ONE SCREEN, NO PAGE SCROLL at the top level: min-h-0 all the way down, and the
 // body scrolls internally when a long plan needs it.
 //
-// Clicking a workstream opens the SAME DayTaskDetailPanel the timeline uses, in a
-// dialog - so generate/approve/retarget/dismiss all work here with no new worklog
-// code (useWorklog is keyed by (day, taskId) in a module store, so a generate
-// started here survives closing the dialog).
+// THE BOTTOM HALF IS TWO COLUMNS: the plan (and what came up that was not on it) on
+// the left, the standup on the right. They are side by side because they are the two
+// OUTPUTS of the day - what happened, and what you will say about it - and reading
+// one immediately after the other is what makes the second believable. This is the
+// arrangement the first-run walkthrough teaches (`TutorialSummaryCard`), and the two
+// are kept in step deliberately: a tour that teaches a screen the product does not
+// have has taught nothing.
+//
+// TWO VIEWS, one card. This is the DAY; `SummaryTaskView` is one strand of it,
+// opened by clicking a row. It replaced a right-anchored `DayTaskDetailPanel`
+// drawer - see that file for why the document leads here and the evidence does not.
+// `useWorklog` is keyed by (day, taskId) in a module store, so a generate started
+// here survives going back to the day and returning.
 
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import { motion, useReducedMotion } from 'framer-motion'
 import { load, invoke } from '@/lib/bridge'
 import type { DaySummary, DaySummaryData, DayTask, DayTasksResponse } from '@/lib/api-types'
-import { DayTaskDetailPanel, type DayTaskDetail } from '@/components/timeline/DayTaskDetailPanel'
+import { type DayTaskDetail } from '@/components/timeline/DayTaskDetailPanel'
 import { taskHue } from '@/components/timeline/dayTaskKit'
 import { hhmmToMin } from '@/components/timeline/dayTaskLayout'
 import { formatDayLabel } from '@/components/timeline/types'
-import { fmtDur } from '@/components/atoms'
 import type { SettingsSection } from '@/components/timeline/settings/types'
 import type { RuntimeSettings } from '@/lib/settings'
 import { Composing } from './Composing'
 import { DayScore } from './DayScore'
 import { Insights } from './Insights'
+import { Standup } from './Standup'
+import { SummaryTaskView } from './SummaryTaskView'
 import { WorkList } from './WorkList'
 
 const API = '/api/day-summary' // vestigial route label the bridge wants (Tauri-only now)
@@ -84,39 +94,38 @@ function NavBtn({ glyph, label, onClick, disabled }: {
   )
 }
 
-/** One labelled block of the summary.
+/** "DAILY SUMMARY · WED 22 JUL" - the eyebrow over the headline.
  *
- *  `boxed` sets the content on its own quiet panel, and is for the two LISTS - a
- *  row of small type with a bar and a time on it needs an edge to sit against, or
- *  it floats in the middle of the page with nothing holding it. The hero and the
- *  insights are deliberately NOT boxed: they are prose, and prose in a box reads
- *  as a callout, which is the wrong emphasis on a screen whose whole point is
- *  that the writing comes first.
+ *  Parsed into a local `Date` from the parts rather than `new Date(day)`, which
+ *  reads a bare "YYYY-MM-DD" as UTC midnight and therefore prints the PREVIOUS day
+ *  for anyone west of Greenwich. */
+function eyebrowDate(day: string): string {
+  const [y, m, d] = day.split('-').map(Number)
+  if (!y || !m || !d) return ''
+  return new Date(y, m - 1, d)
+    .toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })
+    .toUpperCase()
+}
+
+/** The one deterministic sentence on the screen, under the headline.
  *
- *  The label lives here rather than inside the list components so one thing owns
- *  the section's heading, its spacing, and its frame together. */
-function Section({ label, boxed = false, children }: {
-  label?: string
-  boxed?: boolean
-  children: React.ReactNode
-}) {
-  return (
-    <section className="mt-7 first:mt-0">
-      {label && (
-        <p className="mt-label mb-2.5" style={{ color: 'var(--t-faint-2)' }}>{label}</p>
-      )}
-      {boxed ? (
-        <div
-          className="rounded-xl px-2 py-1.5"
-          style={{ background: 'var(--t-box)', border: '1px solid var(--t-card-border)' }}
-        >
-          {children}
-        </div>
-      ) : (
-        children
-      )}
-    </section>
-  )
+ *  Every figure in it is measured (`day_evidence::adherence`), which is why it can
+ *  sit above the model's cards without the fallback path having to hide it. It says
+ *  what the numbers beside it mean and nothing more - the reading of the day is the
+ *  insight cards' job, not this line's. */
+function heroLine(planned: boolean, done: number, total: number, bonusCount: number): string {
+  if (!planned) {
+    return bonusCount > 0
+      ? 'No plan was set for this day, so here is what it actually went on.'
+      : 'No plan was set for this day - here is what it actually went on.'
+  }
+  const wrapped = `You wrapped ${done} of ${total} planned ${total === 1 ? 'task' : 'tasks'}.`
+  if (bonusCount === 0) return wrapped
+  const extra =
+    bonusCount === 1
+      ? 'One more thing came up that was not on the plan - it is below, with a draft ready.'
+      : `${bonusCount} more things came up that were not on the plan - they are below, with drafts ready.`
+  return `${wrapped} ${extra}`
 }
 
 export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSettings, onOpenTask }: {
@@ -295,8 +304,9 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
       onClick={onClose}
     >
       <div
-        // `relative` so the workstream detail dialog's `absolute inset-0` lands on
-        // the card rather than on the backdrop behind it.
+        // `relative` so anything absolutely positioned inside the card lands on IT
+        // rather than on the backdrop behind it, which is the nearest positioned
+        // ancestor otherwise.
         className="relative w-full flex flex-col rounded-2xl overflow-hidden bg-panel"
         style={{
           maxWidth: 1000,
@@ -362,41 +372,62 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
           // The one scroll on this screen. A ten-ticket plan plus a long day of
           // workstreams genuinely does not fit, and clipping it would be worse
           // than letting the body scroll under a pinned header.
-          <div className="flex-1 min-h-0 overflow-y-auto nice-scroll px-7 py-7">
-            {/* ── The hero ──────────────────────────────────────────────────── */}
-            {summary.headline && (
-              <motion.h2
-                style={{
-                  font: '800 27px var(--font-sans)',
-                  letterSpacing: '-0.032em',
-                  lineHeight: 1.14,
-                  color: 'var(--t-title)',
-                  maxWidth: '26ch',
-                }}
-                initial={reduce ? false : { opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: reduce ? 0 : 0.35, delay: reduce ? 0 : 0.04 }}
-              >
-                {summary.headline}
-              </motion.h2>
-            )}
-
-            {/* The numbers under the headline, then the sentence under them. The
-                figures are what the eye lands on; the prose is what makes them
-                mean something, and it reads better as a caption to them than as a
-                paragraph they interrupt. */}
-            <div className="mt-6">
-              <DayScore
-                plan={summary.plan}
-                adherence={summary.adherence}
-                planned={planned}
-                loggedMinutes={loggedMinutes}
-                bonusCount={bonusCount}
-                workstreamCount={sc?.task_count ?? 0}
-                focusSeconds={sc?.focus_s ?? 0}
+          //
+          // Keyed on which view is in the card, so opening a row and coming back
+          // fades rather than cuts. The two views share nothing visually - the whole
+          // day, then one strand of it - so a hard swap reads as a different window
+          // appearing in the same frame.
+          <div key={selected ? 'task' : 'home'}
+            className="flex-1 min-h-0 overflow-y-auto nice-scroll px-7 py-7 rise">
+            {selected ? (
+              <SummaryTaskView
+                detail={selected}
+                onBack={() => setSelected(null)}
+                onOpenSettings={onOpenSettings}
+                onOpenTask={onOpenTask}
               />
-            </div>
+            ) : (
+              <>
+            {/* ── Hero: the day in a sentence, and the numbers behind it ─────── */}
+            <div className="flex items-start gap-8">
+              <div className="min-w-0 flex-1">
+                <p className="mt-label" style={{ color: 'var(--accent)' }}>
+                  DAILY SUMMARY · {eyebrowDate(day)}
+                </p>
+                {summary.headline && (
+                  <motion.h2
+                    className="mt-2"
+                    style={{
+                      font: '800 25px var(--font-sans)',
+                      letterSpacing: '-0.03em',
+                      lineHeight: 1.15,
+                      color: 'var(--t-title)',
+                      maxWidth: '26ch',
+                    }}
+                    initial={reduce ? false : { opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: reduce ? 0 : 0.35, delay: reduce ? 0 : 0.04 }}
+                  >
+                    {summary.headline}
+                  </motion.h2>
+                )}
+                <p className="mt-body mt-3" style={{ color: 'var(--t-muted)', lineHeight: 1.55, maxWidth: '46ch' }}>
+                  {heroLine(planned, summary.adherence.done, summary.adherence.planned, bonusCount)}
+                </p>
+              </div>
 
+              <div className="shrink-0">
+                <DayScore
+                  plan={summary.plan}
+                  adherence={summary.adherence}
+                  planned={planned}
+                  loggedMinutes={loggedMinutes}
+                  bonusCount={bonusCount}
+                  workstreamCount={sc?.task_count ?? 0}
+                  focusSeconds={sc?.focus_s ?? 0}
+                />
+              </div>
+            </div>
 
             {summary.fallback && (
               <p className="mt-body-sm mt-4" style={{ color: 'var(--t-faint-2)' }}>
@@ -408,69 +439,40 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
               <p className="mt-body-sm mt-4" style={{ color: 'var(--severity-must)' }}>{error}</p>
             )}
 
+            {/* ── The two or three things worth remembering ──────────────────── */}
             {summary.insights.length > 0 && (
-              <Section>
+              <div className="mt-6">
                 <Insights insights={summary.insights} delay={0.3} />
-              </Section>
+              </div>
             )}
 
-            {/* No-plan days get exactly this minus the ring: title, the three cards
-                above, and the checklist below. A day without a plan did not fail an
-                exercise, so there is no themed hero standing in for one. */}
-            {/* ── One list of the day, and the way into a worklog for any of it ── */}
-            <Section label="What you worked on">
+            {/* ── The plan, ticked off, and the standup it wrote ───────────────
+                Side by side because they are the two OUTPUTS of the day - what
+                happened, and what you will say about it tomorrow - and reading one
+                straight after the other is what makes the second believable.
+                The standup renders nothing when the model gave no lines (the
+                fallback path, or a pre-078 row), so the grid collapses to the list
+                alone rather than leaving an empty captioned box beside it. */}
+            <div
+              className="grid gap-3 mt-6"
+              style={{ gridTemplateColumns: summary.standup.length > 0 ? '1.15fr 1fr' : '1fr' }}
+            >
               <WorkList
                 tasks={tasks}
                 plan={planned ? summary.plan : []}
                 planned={planned}
-                allPlanDone={
-                  planned &&
-                  summary.adherence.planned > 0 &&
-                  summary.adherence.done === summary.adherence.planned
-                }
                 delay={0.36}
                 onSelect={(t, i) => setSelected(detailOf(t, i, day))}
                 onOpenTask={onOpenTask}
               />
-            </Section>
+              <Standup lines={summary.standup} />
+            </div>
+              </>
+            )}
           </div>
         )}
       </div>
 
-      {/* The reused timeline detail panel, as a dialog. Generate worklog / approve /
-          retarget / dismiss all come with it. Inside the card, not over the whole
-          screen: it is a detail OF this summary, and stacking a second full-screen
-          scrim over the first would bury the card it belongs to. */}
-      <AnimatePresence>
-        {selected && (
-          <motion.div className="absolute inset-0 z-10 flex items-center justify-end p-4"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
-            style={{ background: 'rgba(20,16,40,0.45)', backdropFilter: 'blur(2px)' }}
-            onClick={() => setSelected(null)}>
-            <motion.div onClick={e => e.stopPropagation()}
-              initial={{ x: 24 }} animate={{ x: 0 }} exit={{ x: 24 }}
-              transition={{ duration: 0.18 }}
-              className="h-full rounded-2xl overflow-hidden shrink-0"
-              style={{ width: 388, background: 'var(--t-panel)', border: '1px solid var(--t-card-border)' }}>
-              <DayTaskDetailPanel
-                detail={selected}
-                onClose={() => setSelected(null)}
-                onCorrected={() => {
-                  // A dismiss/merge removed this task — close the detail and
-                  // re-read the day's tasks so the checklist below reflects it.
-                  setSelected(null)
-                  load<DayTasksResponse>('/api/day-tasks', 'get_day_tasks', { day })
-                    .then(r => setTasks(r.tasks))
-                    .catch(() => {})
-                }}
-                onOpenSettings={onOpenSettings}
-                onOpenTask={onOpenTask}
-              />
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
       </div>
     </div>
   )

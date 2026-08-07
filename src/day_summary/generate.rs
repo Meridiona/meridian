@@ -63,6 +63,10 @@ const MAX_PLAN_DESCRIPTION_CHARS: usize = 240;
 struct Answer {
     headline: String,
     insights: Vec<DaySummaryInsight>,
+    /// The standup lines, one per bullet. Empty is a legitimate answer (a provider
+    /// that ignored the field, or a day with nothing worth saying out loud) and
+    /// costs the block, not the screen.
+    standup: Vec<String>,
 }
 
 /// Parse the model's answer, tolerantly.
@@ -113,7 +117,40 @@ fn parse_answer(text: &str) -> Option<Answer> {
         })
         .unwrap_or_default();
 
-    Some(Answer { headline, insights })
+    // Tolerated two ways, matching how `insights` is read: an array of strings is
+    // the contract, but a provider that ignores the schema and returns one blob of
+    // text is split on newlines rather than thrown away - the lines are in there,
+    // and the only thing lost is the model's own choice of where they break. Any
+    // leading bullet character it added is stripped, because the screen draws those.
+    let standup = match v.get("standup") {
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|l| l.as_str())
+            .map(clean_standup_line)
+            .filter(|l| !l.is_empty())
+            .collect(),
+        Some(Value::String(s)) => s
+            .lines()
+            .map(clean_standup_line)
+            .filter(|l| !l.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    Some(Answer {
+        headline,
+        insights,
+        standup,
+    })
+}
+
+/// Strip the list markers a model adds when it forgets the screen draws them, and
+/// trim. Leaves the line's own punctuation alone.
+fn clean_standup_line(line: &str) -> String {
+    line.trim()
+        .trim_start_matches(['-', '*', '•', '·'])
+        .trim()
+        .to_string()
 }
 
 /// Render the day's evidence as the user message.
@@ -234,6 +271,7 @@ fn build_user_prompt(ev: &day_evidence::Evidence) -> String {
     achievement_pct = Empty,
     unplanned_minutes = Empty,
     insights = Empty,
+    standup_lines = Empty,
     fallback = Empty,
     prompt_chars = Empty,
 ))]
@@ -306,6 +344,7 @@ pub async fn generate(pool: &SqlitePool, day_local: &str) -> Result<DaySummary> 
     span.record("achievement_pct", adherence.achievement_pct);
     span.record("unplanned_minutes", adherence.unplanned_minutes);
     span.record("insights", a.insights.len());
+    span.record("standup_lines", a.standup.len());
     span.record("fallback", fallback);
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -320,6 +359,7 @@ pub async fn generate(pool: &SqlitePool, day_local: &str) -> Result<DaySummary> 
         plan: verdicts,
         adherence,
         themes: Vec::new(),
+        standup: a.standup,
         provider,
         model,
         fallback,
@@ -336,6 +376,7 @@ pub async fn generate(pool: &SqlitePool, day_local: &str) -> Result<DaySummary> 
         done = up.adherence.done,
         achievement_pct = up.adherence.achievement_pct,
         insights = up.insights.len(),
+        standup_lines = up.standup.len(),
         fallback,
         "daily summary composed"
     );
@@ -348,6 +389,7 @@ pub async fn generate(pool: &SqlitePool, day_local: &str) -> Result<DaySummary> 
         plan: up.plan,
         adherence: up.adherence,
         themes: up.themes,
+        standup: up.standup,
         provider: up.provider,
         model: up.model,
         fallback: up.fallback,
@@ -443,5 +485,43 @@ mod tests {
         let a = parse_answer(r#"{"headline": "just a line"}"#).unwrap();
         assert_eq!(a.headline, "just a line");
         assert!(a.insights.is_empty());
+        // A provider that ignores the standup field costs the block, not the screen.
+        assert!(a.standup.is_empty());
+    }
+
+    #[test]
+    fn parses_the_standup_lines() {
+        let a = parse_answer(
+            r#"{"headline": "h",
+                "standup": ["Shipped the feed (MER-475).",
+                            "Fixed the logout bug - ticket to file.",
+                            "Next up: onboarding polish."]}"#,
+        )
+        .unwrap();
+        assert_eq!(a.standup.len(), 3);
+        assert_eq!(a.standup[0], "Shipped the feed (MER-475).");
+        assert!(a.standup[2].starts_with("Next up:"));
+    }
+
+    /// The screen draws the bullets, so a model that adds its own must not end up
+    /// rendering "• - Shipped…".
+    #[test]
+    fn strips_bullet_characters_the_model_added_itself() {
+        let a = parse_answer(r#"{"standup": ["- Shipped the feed.", "• Fixed a bug.", "  "]}"#)
+            .unwrap();
+        assert_eq!(a.standup, vec!["Shipped the feed.", "Fixed a bug."]);
+    }
+
+    /// A provider with no schema mechanism may answer with one blob instead of an
+    /// array. The lines are still in there - split them rather than dropping the
+    /// whole block.
+    #[test]
+    fn tolerates_a_standup_returned_as_one_string() {
+        let a = parse_answer(
+            "{\"standup\": \"- Shipped the feed.\\n- Fixed a bug.\\n\\n- Next up: polish.\"}",
+        )
+        .unwrap();
+        assert_eq!(a.standup.len(), 3);
+        assert_eq!(a.standup[1], "Fixed a bug.");
     }
 }

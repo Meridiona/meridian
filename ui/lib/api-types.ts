@@ -830,13 +830,20 @@ export interface Adherence {
  *
  *  The plan side (`plan`, `adherence`) is resolved deterministically in Rust from
  *  the worklog matches - never from the model - so it holds even on the fallback
- *  path. The model only writes `headline` and `insights`. */
+ *  path. The model only writes `headline`, `insights` and `standup`. */
 export interface DaySummary {
   day: string
   /** A short warm line above everything. Empty on the fallback path. */
   headline: string
   /** The three insight cards. Empty on the fallback path. */
   insights: DaySummaryInsight[]
+  /** The day as three to five lines you could read out at standup - one string per
+   *  bullet, so the Copy button joins them with newlines rather than the screen
+   *  guessing where the model meant to break a paragraph.
+   *
+   *  Empty on the fallback path and on rows written before migration 078; the block
+   *  simply does not render. */
+  standup: string[]
   /** One verdict per planned ticket; empty when the day had no plan. */
   plan: PlanVerdict[]
   adherence: Adherence

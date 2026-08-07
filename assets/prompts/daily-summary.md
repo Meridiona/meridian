@@ -32,7 +32,7 @@ WORK THAT WAS NOT PLANNED IS STILL WORK, and it is usually the most interesting 
 
 ## What you return
 
-A JSON object with `headline` and `insights` - nothing else.
+A JSON object with `headline`, `insights` and `standup` - nothing else.
 
 `headline` - at most eight words. The one line above everything, in the register of a friend summing up your day in a breath. "A good day, one detour". "One problem, all the way down". Not a title, not a label, not a percentage.
 
@@ -48,5 +48,14 @@ For each card:
 - `text` - one or two short sentences of real substance. Say the thing itself with specifics: what got pulled sideways, what unblocked what, what turned out to be the root cause. A line that could sit under any day's summary is a wasted card.
 
 Return 2 cards only if the day genuinely gives you nothing for the third - a thin day is better served by two real cards than three with one padded out. Insights must NOT be a schedule.
+
+`standup` - 3 to 5 lines, the day as it would be SAID OUT LOUD at standup tomorrow morning. This is the one part of the answer written for other people rather than for the person themselves, and it is meant to be pasted into Slack unedited.
+
+- One line per thing worth reporting, ordered by what a team would care about most. Not one line per hour and not one line per workstream - several small related pieces belong on one line.
+- Past tense, first person implied, no "I" to start every line. "Shipped the activity-feed pagination - the feed now loads instantly."
+- **Name the ticket in parentheses when the work has one**, from the PLAN OUTCOME block: "(MER-475)". Work with no ticket gets NO key - never invent one, and never attach the nearest plausible key. If it matters that something has no ticket yet, say so plainly: "ticket to file".
+- The LAST line is what is next: "Next up: onboarding empty-state polish rolls to tomorrow." Take it from what the plan outcome shows as not done, or from what the day was clearly mid-way through. If nothing is genuinely outstanding, drop the line rather than inventing one.
+- Blockers get a line only if the DATA shows one. Never write "no blockers" - a line saying nothing is worse than no line.
+- Plain sentences. No bullet characters (the screen adds those), no markdown, no emoji, no clock times. Use a plain hyphen `-` where you need a dash, never an em-dash.
 
 Read the DATA once. Work out what the day was actually about, describe the plan outcome fairly if there was one, and stop. Keep your thinking short.
