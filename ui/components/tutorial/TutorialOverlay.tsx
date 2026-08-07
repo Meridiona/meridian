@@ -40,38 +40,41 @@ const CAPTION_H = 130
 
 /** The tour's speaking voice, wherever it speaks.
  *
- *  BIGGER AND HEAVIER THAN `mt-body`, which is what both bubbles used to render.
- *  That class is 13px/500 - the app's SUPPORTING size, correct under a heading
- *  and wrong for the only text on screen a user is being asked to stop and read.
- *  At 13px a narration line is quieter than the card it is pointing at, so the
- *  beat that matters most looks like a caption on the beat before it, and a
- *  sentence of any length arrives as a grey slab nobody finishes.
+ *  `mt-body`'s spec, written out rather than worn as a class. It was briefly set
+ *  larger and heavier on the reasoning that narration is the thing being read,
+ *  and that was wrong on screen: at 15px/600 the bubble stops reading as the
+ *  tour speaking beside the product and starts competing with the headings it
+ *  is pointing at. The app's body size is the right register for a voice that
+ *  has to sit next to real content without shouting over it.
+ *
+ *  What actually fixed the legibility complaint was the SURFACE, not the size -
+ *  see `CAPTION_SURFACE`.
  *
  *  Held in one constant because the two variants (anchored beside a target, or
  *  parked at the top) are the same voice and drifted apart once already - one
  *  inverted, one not, at different sizes. */
 const CAPTION_FONT: React.CSSProperties = {
-  font: '600 15px/1.5 var(--font-sans)',
-  letterSpacing: '-.008em',
-  color: 'var(--t-title)',
+  font: '500 13px/1.5 var(--font-sans)',
+  color: 'var(--t-card)',
 }
 
 /** The surface the tour speaks from, shared by both bubbles.
  *
- *  DARK TEXT ON A LIGHT CARD, and that is the whole of it. Both bubbles used to
- *  invert - white text on `--t-title` - which was picked to stop the narration
- *  reading as one more panel of the product. It solved that and bought a worse
- *  problem: light type on a dark fill blooms under macOS's font smoothing, so
- *  every caption in the tour looked faintly out of focus, and the heavier the
- *  weight the softer it got. The sentence the user is being asked to stop and
- *  read was the least legible text on screen.
+ *  INVERTED, so the narration reads as the GUIDE talking rather than as one more
+ *  panel of the product. A light card here is a white box on a white page held
+ *  apart by a hairline, which is what made the bar hard to pick out at all - and
+ *  inside a modal, which is `--t-card` itself, it disappears outright.
  *
- *  It is held apart from the page by a real border and a lifted shadow instead,
- *  which is how every other floating surface in the app does it. */
+ *  It is not a light surface with a border instead. That was tried, on the
+ *  reasoning that light type on a dark fill blooms under macOS font smoothing;
+ *  the bloom is real but the cost was worse, because the bubble stopped looking
+ *  like the tour and started looking like content. Kept at body weight (500)
+ *  rather than something heavier, which is what actually makes inverted type
+ *  soften. */
 const CAPTION_SURFACE: React.CSSProperties = {
-  background: 'var(--t-card)',
-  border: '1px solid var(--t-card-border)',
-  boxShadow: '0 14px 34px -12px rgba(40,30,90,.42)',
+  background: 'var(--t-title)',
+  border: '0.5px solid var(--t-title)',
+  boxShadow: '0 10px 30px rgba(0,0,0,.28)',
 }
 
 /** Follows `selector` across scroll/resize so the ring and cursor stay put when
@@ -394,15 +397,15 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
         // Centring lives on the outer div, the animation on the inner, so the two
         // transforms stop fighting over one property.
         <div className="absolute" style={{
-          // NARROWER THAN IT WAS (620). A line of narration set to the full
-          // width ran to ~95 characters, well past the ~65 the eye tracks
-          // without losing its place - so a two-sentence beat read as a
-          // paragraph even after the sentences themselves were cut back.
+          // NARROWER THAN IT WAS (620). At body size a full-width line ran to
+          // ~95 characters, well past the ~65 the eye tracks without losing its
+          // place - so a two-sentence beat read as a paragraph even after the
+          // sentences themselves were cut back.
           top: HEADER_CLEAR, left: '50%', transform: 'translateX(-50%)',
-          pointerEvents: 'auto', maxWidth: big ? 760 : 500,
+          pointerEvents: 'auto', maxWidth: big ? 760 : 540,
         }}>
         <div className="mer-pop" style={{
-          padding: big ? '18px 28px' : '14px 20px', borderRadius: big ? 19 : 16,
+          padding: big ? '18px 28px' : '13px 18px', borderRadius: big ? 19 : 15,
           ...CAPTION_SURFACE,
         }}>
           <p key={caption} style={{
@@ -525,7 +528,7 @@ function AnchoredCaption({ rect, children }: { rect: DOMRect; children: React.Re
       left, width: W,
       ...(above ? { bottom: vh - rect.top + GAP } : { top: rect.bottom + GAP }),
       pointerEvents: 'auto',
-      padding: '14px 17px', borderRadius: 16,
+      padding: '13px 16px', borderRadius: 15,
       // One surface for both bubbles - see CAPTION_SURFACE for why it is a light
       // card rather than the inverted slab this used to be.
       ...CAPTION_SURFACE,

@@ -690,16 +690,20 @@ describe('the tour overlay draws what it means to', () => {
     expect(overlay.match(/\.\.\.CAPTION_SURFACE/g)?.length).toBe(2)
   })
 
-  it('sets the narration in dark type on a light card, not inverted', () => {
-    // Both bubbles used to be white-on-`--t-title`. Light type on a dark fill
-    // blooms under macOS font smoothing, so the one sentence the user is being
-    // asked to stop and read was the softest text on screen - and the heavier
-    // the weight, the worse it got.
-    expect(overlay).toContain("background: 'var(--t-card)'")
-    expect(overlay).toContain("color: 'var(--t-title)'")
-    // And it is bigger than `mt-body` (13px/500), which is the app's SUPPORTING
-    // size - correct under a heading, wrong for the only thing being read.
-    expect(overlay).toContain("font: '600 15px/1.5 var(--font-sans)'")
+  it('keeps the narration inverted, at body size', () => {
+    // The tour speaks on its OWN surface: a light card here is a white box on a
+    // white page, and inside a modal - which is `--t-card` itself - it vanishes.
+    // Tried the other way round once, on the reasoning that light type on a dark
+    // fill blooms under macOS font smoothing. It does, but the bubble stopped
+    // reading as the guide and started reading as content, which is worse.
+    expect(overlay).toContain("background: 'var(--t-title)'")
+    expect(overlay).toContain("color: 'var(--t-card)'")
+    // Body weight and size, not something larger. At 15px/600 the bubble
+    // competes with the headings it is pointing at - and heavier inverted type
+    // is exactly what softens.
+    expect(overlay).toContain("font: '500 13px/1.5 var(--font-sans)'")
+    // Set once, on the shared constant - never per bubble, which is how the two
+    // variants ended up disagreeing.
     const bubbles = overlay.slice(overlay.indexOf('Narration, pinned bottom-centre'))
     expect(bubbles).not.toContain("className=\"mt-body\"")
   })
