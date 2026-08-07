@@ -1257,6 +1257,13 @@ pub fn run() {
                         api.prevent_exit();
                         let handle = app.clone();
                         tauri::async_runtime::spawn(async move {
+                            // Held on the unwind path too. `Stopping` blocks
+                            // every later `ExitRequested`, and this task is the
+                            // only thing that advances past it - so a panic
+                            // anywhere below would leave the tray permanently
+                            // unquittable, with no path left to reset the
+                            // phase. See [`daemon_lifecycle::HeldExitGuard`].
+                            let _released = daemon_lifecycle::HeldExitGuard;
                             daemon_lifecycle::stop_for_quit().await;
                             // Immediately before the exit, so the re-entrant
                             // `ExitRequested` this triggers is the one and only

@@ -1345,9 +1345,31 @@ mod tests {
             .split_once("pub async fn ensure_backend_installed")
             .expect("ensure_backend_installed must exist")
             .1;
-        // Bound the scan to the function: the next `\npub ` / `\nasync fn` at
-        // column 0 starts the following item.
-        let body = body.split("\nasync fn").next().unwrap_or(body);
+        // Bound the scan to the function: whichever item marker at column 0
+        // comes FIRST ends it. Splitting on `"\nasync fn"` alone was wrong -
+        // the next item is `pub(crate) async fn stop_daemon_for_migration`,
+        // which that pattern does not match, so the scan ran on to
+        // `wait_for_db_unheld` and swept a second function into the range.
+        // Harmless only by luck: `stop_daemon_for_migration` returns a
+        // `Result` and so cannot hold a bare `return;`. The next `pub(crate)
+        // fn` added between them would have failed this test with a message
+        // naming `ensure_backend_installed`, which is the worst kind of
+        // red - a true failure pointing at the wrong function.
+        let end = ["\npub ", "\npub(crate) ", "\nasync fn", "\nfn "]
+            .iter()
+            .filter_map(|m| body.find(m))
+            .min()
+            .unwrap_or(body.len());
+        let body = &body[..end];
+
+        // Pins the bound itself. Without it the two assertions below silently
+        // widen as the module grows, and a guard that scans the wrong lines
+        // reports on a function nobody edited.
+        assert!(
+            !body.contains("stop_daemon_for_migration"),
+            "the scan must stop at the end of ensure_backend_installed - it \
+             has run on into the following item"
+        );
 
         // Every `return;` must be preceded by a restore. The one exception is
         // the path where `$HOME` itself could not be resolved - there is no

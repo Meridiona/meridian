@@ -172,6 +172,71 @@ pub(crate) fn set_exit_phase(phase: ExitPhase) {
     EXIT_PHASE.store(v, Ordering::SeqCst);
 }
 
+/// Did the daemon actually come back after a resume?
+///
+/// `Some(true)`/`Some(false)` are verified answers; `None` means the platform
+/// has no liveness check wired (Windows - see
+/// [`crate::commands::daemon_control::process_alive`]) and must never be read
+/// as a failure.
+///
+/// Polled rather than asked once: on macOS the restore ends in `launchctl
+/// kickstart`, and the process takes a moment to appear. A single immediate
+/// query would report a healthy resume as failed on a slow machine, which is
+/// the same false-signal problem in the opposite direction.
+async fn verify_daemon_came_back() -> Option<bool> {
+    for attempt in 0..RESUME_VERIFY_ATTEMPTS {
+        match crate::commands::daemon_control::process_alive().await {
+            Some(true) => return Some(true),
+            // Unknown is terminal: it is a property of the platform, not a
+            // timing artefact, so retrying cannot change it.
+            None => return None,
+            Some(false) => {
+                if attempt + 1 < RESUME_VERIFY_ATTEMPTS {
+                    tokio::time::sleep(RESUME_VERIFY_INTERVAL).await;
+                }
+            }
+        }
+    }
+    Some(false)
+}
+
+/// How many times [`verify_daemon_came_back`] asks before calling a resume
+/// failed.
+const RESUME_VERIFY_ATTEMPTS: u32 = 4;
+
+/// Gap between those attempts - ~1.5 s total, comfortably inside the tray's
+/// menu-click responsiveness budget and well under the watchdog's first
+/// opportunity to act.
+const RESUME_VERIFY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Releases a held exit if the stop task dies without finishing.
+///
+/// [`ExitPhase::Stopping`] holds **every** subsequent `ExitRequested` via
+/// [`ExitAction::Hold`], and only the stop task advances past it. So a panic in
+/// that task - anywhere before its `set_exit_phase(ReadyToExit)` - leaves the
+/// phase at `Stopping` with nothing left alive to move it, and the tray becomes
+/// permanently unquittable: every later quit is held, and no path resets the
+/// phase. The user's only way out is killing the process.
+///
+/// [`stop_for_quit`] is documented as infallible and is bounded by
+/// `QUIT_STOP_BUDGET`, so this needs a panic in the platform stop path to
+/// trigger. It is guarded anyway because the failure is unrecoverable from
+/// inside the app, and the guard costs one `compare_exchange` on the way out.
+///
+/// Deliberately a **conditional** advance: the normal path sets `ReadyToExit`
+/// explicitly right before `exit(0)`, and this must not disturb that (nor
+/// promote a phase that has since been reset to `Running`). Only `Stopping`
+/// - the stuck state - is advanced.
+pub(crate) struct HeldExitGuard;
+
+impl Drop for HeldExitGuard {
+    fn drop(&mut self) {
+        // 1 -> 2, and only 1 -> 2. Fails harmlessly on the normal path, where
+        // the explicit `set_exit_phase(ReadyToExit)` has already stored 2.
+        let _ = EXIT_PHASE.compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst);
+    }
+}
+
 /// Whether the user has paused the daemon from the tray menu.
 ///
 /// A process-global rather than a field on [`crate::state::AppState`] because
@@ -320,8 +385,45 @@ pub(crate) async fn resume_from_pause() -> Result<(), String> {
         let _guard = LIFECYCLE.lock().await;
         DAEMON_PAUSED.store(false, Ordering::Relaxed);
         crate::backend_install::ensure_daemon_running(&home).await;
-        s.record("outcome", "resumed");
-        tracing::info!("daemon resumed from pause");
+
+        // `ensure_daemon_running` returns `()` and swallows its own failures
+        // with `tracing::warn!` - deliberately, because its other callers (the
+        // installer bail-outs, the launch restore) cannot act on one. This
+        // caller can: recording "resumed" on its say-so would report a success
+        // nothing verified, and `toggle_daemon` clears the Paused notice
+        // straight after, so the menu would read Connected over a daemon that
+        // is down.
+        //
+        // The runtime state self-heals - the pause flag is clear, so the
+        // watchdog starts it within STRIKES ticks - but telemetry does not. A
+        // failed resume must not be indistinguishable from a working one in
+        // the exporter.
+        match verify_daemon_came_back().await {
+            Some(true) => {
+                s.record("outcome", "resumed");
+                tracing::info!("daemon resumed from pause");
+            }
+            Some(false) => {
+                // Not an `Err`: the resume itself did what it could, the pause
+                // flag is genuinely clear, and failing the command would tell
+                // the user to retry something the watchdog is already fixing.
+                // The span carries the truth for whoever reads it later.
+                s.record("outcome", "resume_unconfirmed");
+                s.record("otel.status_code", "ERROR");
+                tracing::warn!(
+                    "resumed the daemon but it is not running - leaving it to the watchdog"
+                );
+            }
+            None => {
+                // Windows has no liveness check wired (`process_alive` is
+                // `None` there by design), so this is "cannot tell", not a
+                // failure - and must not be reported as one.
+                s.record("outcome", "resumed_unverified");
+                tracing::info!(
+                    "daemon resume requested - liveness not verifiable on this platform"
+                );
+            }
+        }
         Ok(())
     }
     .instrument(span)
@@ -483,11 +585,17 @@ mod tests {
         );
     }
 
+    /// `EXIT_PHASE` is one process-global, and `cargo test` runs these in
+    /// parallel threads of one process - so the tests that write it must not
+    /// interleave. Without this they pass alone and flake together.
+    static PHASE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// The phase round-trips through its atomic encoding. Cheap, but the
     /// encoding is hand-rolled and a wrong default would silently mean
     /// "Running" forever - i.e. every exit held and then re-stopped.
     #[test]
     fn the_exit_phase_round_trips() {
+        let _serial = PHASE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         for phase in [
             ExitPhase::Stopping,
             ExitPhase::ReadyToExit,
@@ -496,6 +604,49 @@ mod tests {
             set_exit_phase(phase);
             assert_eq!(exit_phase(), phase);
         }
+        set_exit_phase(ExitPhase::Running);
+    }
+
+    /// A panic in the stop task must not leave the app unquittable.
+    ///
+    /// `Stopping` holds every subsequent `ExitRequested`, and only the stop
+    /// task advances past it - so if that task dies mid-stop, nothing else
+    /// ever will, and the tray can no longer be quit at all. The guard runs on
+    /// the unwind path and releases the hold.
+    ///
+    /// Asserted on the guard's drop rather than by panicking a real stop task:
+    /// no unit test can drive a Tauri event loop, and the phase transition IS
+    /// the behaviour that matters.
+    #[test]
+    fn a_dead_stop_task_releases_the_held_exit() {
+        let _serial = PHASE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        set_exit_phase(ExitPhase::Stopping);
+        drop(HeldExitGuard);
+        assert_eq!(
+            exit_phase(),
+            ExitPhase::ReadyToExit,
+            "a stop task that dies while holding the exit must release it, or \
+             every later quit is held forever and the tray cannot be closed"
+        );
+        assert_eq!(
+            decide_exit(None, exit_phase()),
+            ExitAction::Proceed,
+            "and the next quit must actually get through"
+        );
+
+        // Conditional, not unconditional: the normal path has already stored
+        // `ReadyToExit` before this drops, and a phase reset to `Running` must
+        // not be promoted to an exit nobody asked for.
+        set_exit_phase(ExitPhase::Running);
+        drop(HeldExitGuard);
+        assert_eq!(
+            exit_phase(),
+            ExitPhase::Running,
+            "the guard must only ever advance the stuck Stopping phase"
+        );
+
+        set_exit_phase(ExitPhase::Running);
     }
 
     /// The policy above is worth nothing unless something consults it, and no

@@ -116,6 +116,49 @@ pub(crate) fn would_orphan_existing_db(db_path: &std::path::Path) -> bool {
 /// encrypted under the old, now-unreachable one: every future open then fails
 /// with SQLCipher "wrong key" errors (`file is not a database` / `database
 /// disk image is malformed`) instead of a clear, actionable one.
+/// Is `key_hex` the key this machine's OS keychain holds for `meridian.db`?
+///
+/// Read-only and non-minting - deliberately NOT [`resolve_or_create_key`],
+/// which generates and stores a key when the entry is missing. The one caller
+/// ([`crate::repair_boot`]) is deciding whether it may move a database aside;
+/// minting a key there would manufacture the very confidence it is asking
+/// about.
+///
+/// # Why anything needs this
+///
+/// The key that reaches the tray is usually read straight out of `.env`
+/// ([`crate::install::env_key_from_path`]), and the keychain is consulted only
+/// when `.env` has none. So "a key resolved" says nothing about whether that
+/// key *owns* the database - a stale or hand-edited `.env` resolves perfectly
+/// and opens nothing.
+///
+/// That distinction is invisible at the point it matters, because SQLCipher
+/// reports a wrong key and a damaged page 1 identically (code 26, `file is not
+/// a database`). Treating the two the same means a wrong `.env` key can be
+/// read as unrecoverable corruption and a *healthy encrypted database* moved
+/// aside for a fresh one.
+///
+/// Returns `false` when the keychain has no entry or cannot be reached: this
+/// gates a destructive action, so "cannot prove it" must read the same as
+/// "no".
+pub(crate) fn key_matches_keychain(key_hex: &str) -> bool {
+    let entry = match keyring::Entry::new(SERVICE, ACCOUNT) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(error = %e, "db_key: could not reach the OS keychain to verify the database key");
+            return false;
+        }
+    };
+    match entry.get_password() {
+        Ok(stored) => stored == key_hex,
+        Err(keyring::Error::NoEntry) => false,
+        Err(e) => {
+            tracing::warn!(error = %e, "db_key: could not read the stored database key for verification");
+            false
+        }
+    }
+}
+
 pub fn resolve_or_create_key(
     env_path: &std::path::Path,
     db_path: &std::path::Path,

@@ -494,6 +494,19 @@ mod tests {
             Action::Wait,
             "on a healthy endpoint, liveness is not consulted"
         );
+        // The combination the loop actually produces while paused. `!paused`
+        // is part of `could_start`, so a paused tick never queries liveness
+        // and always reaches `decide` with `process_alive: None` - the one
+        // skip condition the paused-daemon test above cannot cover, because it
+        // pins `Some(false)` to isolate the pause rule itself.
+        assert_eq!(
+            decide(Inputs {
+                daemon_paused: true,
+                ..unknown
+            }),
+            Action::Wait,
+            "while paused, liveness is not consulted"
+        );
     }
 
     /// The blast-radius cap. Independent of whether any single decision above
