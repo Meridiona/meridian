@@ -187,7 +187,7 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   // block, the times look like a label and the bullets look like something the
   // user might have typed. Ringed separately, they are two different proofs.
   s.spotlight('[data-tour="detail-when"]')
-  await s.next('When you did it, worked out from your screen.')
+  await s.next('The real times you worked on it - no timer, no notes.')
   s.spotlight('[data-tour="detail-done"]')
   await s.next('What you did, written from the work itself.')
   s.spotlight(null)

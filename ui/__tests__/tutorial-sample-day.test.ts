@@ -708,6 +708,17 @@ describe('the tour overlay draws what it means to', () => {
     expect(bubbles).not.toContain("className=\"mt-body\"")
   })
 
+  it('puts the advance button at the end of the sentence, not under its first word', () => {
+    // The forward action is what you reach for AFTER reading, so it belongs
+    // where the reading finishes - the same place every dialog in the app puts
+    // it. Left-aligned, the eye crossed the bubble twice. Both inline bubbles,
+    // since they are one voice.
+    expect(overlay.match(/flex justify-end gap-2 mt-3 flex-wrap/g)?.length).toBe(2)
+    // The centred card is deliberately NOT this: it carries a real fork of two
+    // equal answers, and pushing those right would rank them.
+    expect(overlay).toContain('flex gap-3 mt-6 justify-center flex-wrap')
+  })
+
   it('names the button it is pointing at, not the mechanism behind it', () => {
     // "Every day rolls up into one screen" describes a mechanism and leaves the
     // reader to work out what they are about to see. The pill under the cursor

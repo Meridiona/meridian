@@ -366,7 +366,12 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
             {caption}
           </p>
           {choices && choices.length > 0 && (
-            <div className="flex gap-2 mt-3 flex-wrap">
+            // AT THE END OF THE READING PATH, not under the first word. The
+            // button that advances is what you reach for AFTER the sentence, so
+            // it belongs where the sentence finishes - the same place every
+            // dialog in the app puts its forward action. Left-aligned it sat
+            // back at the start, so the eye crossed the bubble twice.
+            <div className="flex justify-end gap-2 mt-3 flex-wrap">
               {choices.map((c, i) => <ChoiceButton key={c.value} choice={c} primary={i === 0} onChoose={onChoose} />)}
             </div>
           )}
@@ -416,7 +421,12 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
             {caption}
           </p>
           {choices && choices.length > 0 && (
-            <div className="flex gap-2 mt-3 flex-wrap">
+            // AT THE END OF THE READING PATH, not under the first word. The
+            // button that advances is what you reach for AFTER the sentence, so
+            // it belongs where the sentence finishes - the same place every
+            // dialog in the app puts its forward action. Left-aligned it sat
+            // back at the start, so the eye crossed the bubble twice.
+            <div className="flex justify-end gap-2 mt-3 flex-wrap">
               {choices.map((c, i) => <ChoiceButton key={c.value} choice={c} primary={i === 0} onChoose={onChoose} />)}
             </div>
           )}
