@@ -34,8 +34,13 @@ import { MeridianMark } from '@/components/timeline/Toolbar'
 /** Where the OS actually puts the tray icon - and this beat is ABOUT where it
  *  is, so getting it wrong is not a cosmetic slip. macOS hangs it off the menu
  *  bar along the top; Windows puts it in the notification area at the bottom
- *  right, next to the clock. A Windows user told to look up at their menu bar is
- *  being sent to a place their machine does not have.
+ *  right, next to the clock. A Windows user told to look DOWN when the replica is
+ *  drawn at the top is being sent to a place their machine does not have.
+ *
+ *  It decides the CORNER only. Both platforms call it "the tray" in the copy -
+ *  the app's own word for it everywhere else - because a user handed "menu bar"
+ *  or "notification area" has to translate the OS's term back into the product's
+ *  before they can act on it.
  *
  *  Read from the user agent rather than a Tauri call: this renders in the plain
  *  browser during `?tour=day` too, and the answer is only ever used to decide
@@ -89,10 +94,10 @@ export function TutorialTray() {
       <div className="flex items-center gap-2 rounded-lg px-2.5 py-1.5"
         style={{ background: 'rgba(20,16,40,0.86)', border: '1px solid rgba(255,255,255,.14)' }}>
         <span style={{ fontSize: 10.5, color: 'rgba(255,255,255,.6)' }}>
-          {top ? 'your menu bar' : 'your system tray'}
+          your tray
         </span>
         <button data-tour="tray-icon" onClick={() => setOpen(true)}
-          aria-label={top ? 'Meridian in the menu bar' : 'Meridian in the system tray'}
+          aria-label="Meridian in your tray"
           className="inline-flex items-center justify-center rounded-md"
           style={{
             width: 24, height: 24, cursor: 'pointer', border: 'none',

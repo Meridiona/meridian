@@ -41,6 +41,9 @@
 // - `./TutorialTray.tsx` — the menu-bar replica the pause beats drive
 // - `./sampleDay.ts` — `FOCUS_TASK_ID`, the card the fold beat targets
 
+import { load } from '@/lib/bridge'
+import { connectedTrackers } from '@/lib/integrations'
+import type { IntegrationsResponse } from '@/lib/api-types'
 import type { Stage } from './engine'
 import { FOCUS_TASK_ID, OFFPLAN_TASK_ID } from './sampleDay'
 import { trayIsAtTheTop } from './TutorialTray'
@@ -55,13 +58,38 @@ export interface DayHalfContext {
    *  no evidence either way, which is the only case that still runs the picker. */
   ai: 'connected-in-tour' | 'already-working' | null
   /** `'tracker'` only if they both said they use a board AND did not decline the
-   *  connect. The post beat reads it: promising "this goes to your board" to
-   *  someone who has none is a lie the product contradicts within the hour. */
+   *  connect. A FALLBACK now, not the gate - see [`hasBoard`], which asks the
+   *  integrations directly. It is still what answers when that read fails, since
+   *  promising "this goes to your board" to someone who has none is a lie the
+   *  product contradicts within the hour. */
   usesTracker: string | null
+}
+
+/** Is a tracker connected RIGHT NOW - asked of the integrations themselves.
+ *
+ *  The worklog stretch used to gate on `ctx.usesTracker`, a flag carried down
+ *  from a question asked in part one and then rewritten by the connect flow's
+ *  outcome. Three links, and any one of them breaking sends a user who HAS a
+ *  board to the one-line "connect one some day" consolation instead of the beat
+ *  that drives Generate, Approve and Posted - the single stretch the whole tour
+ *  exists to land. It fails silently and looks like the tour simply skipping its
+ *  best part, which is exactly how it was found.
+ *
+ *  So the branch asks the thing it actually depends on. `usesTracker` stays as
+ *  the fallback for the one case the read cannot answer - it errored - where the
+ *  answer the user gave is better than assuming either way. */
+async function hasBoard(usesTracker: string | null): Promise<boolean> {
+  try {
+    const res = await load<IntegrationsResponse>('/api/integrations', 'get_integrations')
+    return connectedTrackers(res).length > 0
+  } catch {
+    return usesTracker === 'tracker'
+  }
 }
 
 export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   const { ai, usesTracker } = ctx
+  const board = await hasBoard(usesTracker)
 
   // ── 3. The timeline, BUILT rather than shown ────────────────────────────
   // The half of the product that happens while the user is not looking, which is
@@ -118,7 +146,7 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   // ring this large falls back to the top narration bar; see `ringFits` in
   // TutorialOverlay.
   s.spotlight('[data-tour="day-view"]')
-  await s.next('That is a full day, built while you worked. Where the time went, what each stretch was actually about, and what you have to show for it - none of it written down by you.')
+  await s.next('A whole day, written up while you worked - and you typed none of it.')
   s.spotlight(null)
 
   // ── 4. One task, opened — the first real "how did it know that" ─────────
@@ -159,9 +187,9 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   // block, the times look like a label and the bullets look like something the
   // user might have typed. Ringed separately, they are two different proofs.
   s.spotlight('[data-tour="detail-when"]')
-  await s.next('WHEN you did it. Two sittings with a break between them - Meridian worked out both from what was on screen, and kept the break out of the total.')
+  await s.next('When you did it, worked out from your screen.')
   s.spotlight('[data-tour="detail-done"]')
-  await s.next('WHAT WAS DONE, written from the work itself. Nobody typed a word of it, and it is already in the language you would use in a standup.')
+  await s.next('What you did, written from the work itself.')
   s.spotlight(null)
 
   // ── 5. The worklog, end to end, on the card they just opened ────────────
@@ -185,7 +213,7 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   // and a beat that waited for one would sit on a dead spotlight until it timed
   // out. They get the promise in a sentence, honestly tensed as something that
   // starts working when they connect something.
-  if (usesTracker === 'tracker') {
+  if (board) {
     // TWO CLICKS, because the draft is its own surface now. The panel carries a
     // one-line status and a way in; the document, its matched tickets and its
     // controls live in a dialog (see WorklogDraftDialog for why they left the
@@ -209,7 +237,7 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
     // it says the model made a judgement rather than looked something up, which
     // is what makes the override in the next line make sense.
     s.spotlight('[data-tour="draft-targets"]')
-    await s.next('It matched this to a ticket on today\'s plan - 90%, and it shows you the number rather than quietly deciding for you.')
+    await s.next('It matched this to a ticket on today\'s plan - 90%')
     s.spotlight(null)
     // NO BEAT ON THE RE-MATCH CONTROL. It used to ring it here and explain that
     // the call is always yours - a good sentence about the wrong moment. The
@@ -238,9 +266,9 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
     // AND IT SAYS THE POST WAS FAKE. Left unsaid, the tick is a lie the user
     // finds out about by opening their board - exactly the moment the product
     // most needs to have been straight with them.
-    await s.next('Posted - the write-up on the ticket, without you opening your board. That was an example day, so nothing actually went out.')
+    await s.next('Posted to the ticket, without opening your board. Example day, so nothing really went out.')
   } else {
-    await s.next('From a task like this, Meridian writes the ticket update too, matches it to the right ticket and posts it once you approve. Connect a board whenever you want that.')
+    await s.next('Connect a board and it writes the ticket update too - matched, and posted once you approve.')
   }
   s.selectTask(null)
   await s.pause(500)
@@ -310,7 +338,7 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   // it. Taught here rather than in the detail panel because this is where the
   // day's unplanned work is actually visible as a category.
   s.spotlight('[data-tour="sum-offplan"]')
-  await s.next('And this is the honest bit. Work that came up today and matched nothing you planned - the part you can never account for later. Meridian keeps it separately.')
+  await s.next('Work that came up and matched nothing you planned - kept separately, not quietly dropped.')
   s.say('Open it.')
   s.spotlight('[data-tour="sum-offplan-row"]')
   await s.point('[data-tour="sum-offplan-row"]')
@@ -326,9 +354,9 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   // IN READING ORDER, which is destination first - the beats follow the layout
   // rather than setting their own sequence, so the ring always moves downward.
   s.spotlight('[data-tour="sum-where"]')
-  await s.next('Nothing on your plan covered this, so rather than guess, Meridian has written the ticket it should go on: title, description, the lot. Approve it and it gets created.')
+  await s.next('Nothing on your plan covered this, so Meridian wrote the ticket for it. Approve, and it is created.')
   s.spotlight('[data-tour="sum-update"]')
-  await s.next('And the update that goes on it, written from the work - not from a timer, and not from a note you had to remember to keep.')
+  await s.next('And the update that goes on it, written from the work - not from a timer or a note.')
   s.spotlight(null)
 
   // 7a. THE PROPOSAL IS A SUGGESTION TOO. Shown as a control the user operates,
@@ -375,13 +403,13 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   s.spotlight(null)
   await s.appeared('[data-tour="wl-posted"]', 6000)
   await s.pause(600)
-  await s.next('Filed, written up, and off your plate - for work that was never on a ticket to begin with. Still the example day, so nothing actually went out.')
+  await s.next('Filed and written up, from work that was never on a ticket. Example day - nothing went out.')
 
   // ── 8. Out of the summary, and WHEN it arrives ──────────────────────────
   // The summary has been read section by section, and the obvious question it
   // leaves ("do I have to come here and do that every evening?") is answered
   // before it is asked - and answered by the ask that follows it.
-  await s.next('You do not have to build any of that. At the end of each day Meridian writes the summary and drafts every worklog waiting in it, then tells you it is ready.')
+  await s.next('None of that is yours to build. Each evening Meridian writes it and tells you it is ready.')
   // CLOSED FOR THEM, straight back to the timeline. It used to ring the × and
   // wait for a click, which taught nothing - they opened this surface two beats
   // ago, so its way out is not news - and it put an errand between the summary
@@ -403,7 +431,7 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
     await s.next('Last thing: pick the AI that does the writing. It runs through your own CLI.', 'Pick a model')
     s.openSettings('intelligence')
     await s.pause(1000)
-    s.say('Choose a provider - Meridian installs and signs you in right here. Close this when you are done, and you can change it any time.')
+    s.say('Pick a provider - Meridian installs it and signs you in here. Change it any time.')
     await s.waitForClick('[data-tour="modal-close"]', 300000)
     s.openModal(null)
     await s.pause(500)
@@ -442,7 +470,7 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   // notification promise attached, because the alternative reading of an ambient
   // tool is that it needs minding.
   await s.next(
-    "You are set up. Meridian runs in the background from here - you do not need to keep this window open, and there is nothing to remember. Open it any hour of any day and the work will already be written up, and it will let you know when a summary and its drafts are ready for you.",
+    "You are set up. Close this window - Meridian keeps going, and tells you when something is ready.",
     'One last thing', { center: true })
 
   // ── 12. The off switch ──────────────────────────────────────────────────
@@ -454,14 +482,15 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   // user with a product that does not work.
   s.demoTray(true)
   await s.pause(600)
-  // NAMED FOR THE MACHINE IT IS ON. The tray hangs off the menu bar at the top
-  // on macOS and sits in the notification area at the bottom on Windows, and
-  // this beat is entirely about where to find it - so "up here in your menu bar"
-  // sent every Windows user to a place their machine does not have. The replica
-  // draws itself in the matching corner (`TutorialTray`), and the line follows.
+  // ONE NAME, TWO DIRECTIONS. It is "the tray" on both platforms - that is what
+  // the app calls it everywhere else, and a user who has just been told about
+  // their "menu bar" has to translate before they can look. What DOES change is
+  // where to look: top-right on macOS, bottom-right on Windows, so the direction
+  // word is platform-driven and the noun is not. The replica draws itself in the
+  // matching corner (`TutorialTray`), and the line follows it.
   s.say(trayIsAtTheTop()
-    ? 'Meridian sits up here in your menu bar, always. Click it.'
-    : 'Meridian sits down here in your system tray, always. Click it.')
+    ? 'Meridian is up here in your tray, always. Click it.'
+    : 'Meridian is down here in your tray, always. Click it.')
   s.spotlight('[data-tour="tray-icon"]')
   await s.point('[data-tour="tray-icon"]')
   await s.waitForClick('[data-tour="tray-icon"]', 90000)
@@ -481,7 +510,7 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   await s.waitForClick('[data-tour="tray-15m"]', 90000)
   s.spotlight(null)
   await s.pause(800)
-  await s.next('Capture stops there and then, and starts again by itself when the time is up. That one was part of the tour - nothing was really paused.')
+  await s.next('Capture stops at once, and restarts itself when the time is up. Nothing was really paused.')
   s.demoTray(false)
   await s.pause(400)
 
@@ -494,8 +523,18 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   // gate, so no specific time can be promised without risking a broken one.
   s.showExample(false)
   await s.pause(400)
+  // THE ONE CELEBRATION, and it lives here. It used to fire mid-tour, at the seam
+  // where the user stops giving Meridian things and starts being shown what it
+  // does back (see `script.ts`, beat 2f) - a real milestone, but not the finish
+  // line, and a tour that throws confetti twice has thrown it at nothing. This is
+  // the last screen of a first run, and the only moment where "you are done" is
+  // literally true.
+  //
+  // AND THE LINE IS ADDRESSED TO THEM, not to the product. Every other beat in
+  // the tour describes what Meridian does; this one is the only place it says why
+  // it was built, and "your work stops going unnoticed" is the whole of it.
   await s.next(
-    `That is the whole product. Meridian is running in your ${trayIsAtTheTop() ? 'menu bar' : 'system tray'} from now on, and your own timeline fills in as you work. You can replay this any time from Settings.`,
-    'Finish', { center: true })
+    'That is everything. Meridian runs from your tray now - here is hoping it makes a difference, and that your work stops going unnoticed.',
+    'Finish', { center: true, celebrate: true })
   s.say('')
 }

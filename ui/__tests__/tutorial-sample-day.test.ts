@@ -204,11 +204,21 @@ describe('walkthrough structure', () => {
     expect(at('s.spotlight(null)')).toBeGreaterThan(at('dim: true'))
   })
 
-  it('branches the closing worklog line on the tracker answer', () => {
+  it('branches the worklog stretch on a board that is CONNECTED, not on the answer', () => {
     // A solo user must not be told Meridian posts to a board they never
-    // connected — the product would contradict it within the hour.
+    // connected - the product would contradict it within the hour. But the flag
+    // that used to decide it was carried down from a question in part one and
+    // then rewritten by the connect flow's outcome, and any break in that chain
+    // sent a user WITH a board to the one-line consolation instead of the
+    // Generate/Approve/Posted stretch the whole tour exists to land. Silent, and
+    // it looks like the tour simply skipping its best part.
     const draft = src.slice(at('── 5. The worklog, end to end'))
-    expect(draft).toContain("usesTracker === 'tracker'")
+    expect(draft).toContain('if (board) {')
+    expect(src).toContain('async function hasBoard(')
+    expect(src).toContain("connectedTrackers(res).length > 0")
+    // The answer survives as the fallback for the one case the read cannot
+    // settle - it threw - where what the user told us beats guessing.
+    expect(src).toContain("return usesTracker === 'tracker'")
   })
 
   it('keeps the title sequence, and nothing standing in front of the replay', () => {
@@ -670,14 +680,28 @@ describe('the tour overlay draws what it means to', () => {
   const screen = code(readFileSync(new URL('../components/tutorial/TutorialScreen.tsx', import.meta.url), 'utf8'))
 
   it('speaks in one voice, on its own surface, wherever it speaks', () => {
-    // The anchored bubble was `--t-card` on a `--t-card` page - a white box on
-    // white held apart by a hairline - so the narration read as one more panel
-    // of the product. The top bar was already inverted for exactly that reason,
-    // and the two variants disagreed.
+    // Both bubbles take the SAME surface constant, and neither styles its own.
+    // They drifted apart once already - one inverted, one not, at different
+    // sizes - which is how the tour ended up with two voices.
     const anchored = overlay.slice(overlay.indexOf('function AnchoredCaption'),
       overlay.indexOf('function DimCutout'))
-    expect(anchored).toContain("background: 'var(--t-title)'")
-    expect(anchored).not.toContain("background: 'var(--t-card)'")
+    expect(anchored).toContain('...CAPTION_SURFACE')
+    expect(anchored).not.toContain('background:')
+    expect(overlay.match(/\.\.\.CAPTION_SURFACE/g)?.length).toBe(2)
+  })
+
+  it('sets the narration in dark type on a light card, not inverted', () => {
+    // Both bubbles used to be white-on-`--t-title`. Light type on a dark fill
+    // blooms under macOS font smoothing, so the one sentence the user is being
+    // asked to stop and read was the softest text on screen - and the heavier
+    // the weight, the worse it got.
+    expect(overlay).toContain("background: 'var(--t-card)'")
+    expect(overlay).toContain("color: 'var(--t-title)'")
+    // And it is bigger than `mt-body` (13px/500), which is the app's SUPPORTING
+    // size - correct under a heading, wrong for the only thing being read.
+    expect(overlay).toContain("font: '600 15px/1.5 var(--font-sans)'")
+    const bubbles = overlay.slice(overlay.indexOf('Narration, pinned bottom-centre'))
+    expect(bubbles).not.toContain("className=\"mt-body\"")
   })
 
   it('names the button it is pointing at, not the mechanism behind it', () => {
@@ -1143,12 +1167,19 @@ describe('the day replay - the timeline taught by building it', () => {
     expect(column).toContain("transform: pre ? 'translateY(7px)' : undefined,")
   })
 
-  it('celebrates exactly once, at the seam between the two halves', () => {
-    // Before it, everything was the user giving Meridian something; after it,
-    // everything is Meridian showing what it does back. A tour that congratulates
-    // every step congratulates nothing.
-    expect(src.match(/celebrate: true/g)?.length).toBe(1)
-    expect(src.indexOf('celebrate: true')).toBeLessThan(src.indexOf('await s.replayDay(['))
+  it('celebrates exactly once, on the last screen', () => {
+    // A tour that congratulates every step congratulates nothing. It used to
+    // fire mid-tour, at the seam where the user stops giving Meridian things -
+    // a real milestone, but not the finish line. The last beat is the only
+    // moment in a first run where "you are done" is literally true.
+    const day = readFileSync(new URL('../components/tutorial/scriptDay.ts', import.meta.url), 'utf8')
+    const partOne = readFileSync(new URL('../components/tutorial/script.ts', import.meta.url), 'utf8')
+    expect(partOne.match(/celebrate: true/g) ?? []).toHaveLength(0)
+    expect(day.match(/celebrate: true/g)?.length).toBe(1)
+    expect(day.indexOf('celebrate: true')).toBeGreaterThan(day.indexOf('── 13. Handoff'))
+    // And it is addressed to the user rather than to the product - the one place
+    // the tour says why any of it was built.
+    expect(day).toContain('your work stops going unnoticed')
     const overlay = readFileSync(new URL('../components/tutorial/TutorialOverlay.tsx', import.meta.url), 'utf8')
     // Deterministic burst - a first-run screen that looks different every time it
     // is seen is a first-run screen that looks unfinished.
@@ -1413,7 +1444,7 @@ describe('the daily summary the tour teaches', () => {
     // happened - so it does not, and the beat says so rather than letting the
     // tick be found out later by checking the board.
     const flow = src.slice(src.indexOf('── 5. The worklog, end to end'))
-    expect(flow).toContain('nothing actually went out')
+    expect(flow).toContain('nothing really went out')
   })
 
   it('teaches the OFF-PLAN outcome too, and on work that genuinely has no ticket', () => {
@@ -1511,7 +1542,7 @@ describe('the closing asks: a delivery time, and the off switch', () => {
     // shrug, and the link between it and the feature being switched on is left
     // for the reader to make. What is being set is a delivery time.
     expect(code(dialog)).not.toContain('When does your day end')
-    expect(dialog).toContain('When do you want these ready?')
+    expect(dialog).toContain('When do you want these auto ready?')
     expect(code(src)).not.toContain('does your day')
   })
 
@@ -1582,7 +1613,7 @@ describe('the closing asks: a delivery time, and the off switch', () => {
     expect(beat).toContain('tray-icon')
     expect(beat).toContain('tray-pause')
     expect(beat).toContain('tray-15m')
-    expect(beat).toContain('nothing was really paused')
+    expect(beat).toContain('Nothing was really paused')
     expect(tray).not.toContain('invoke')
     expect(tray).not.toContain('mutate')
   })
@@ -1594,11 +1625,15 @@ describe('the closing asks: a delivery time, and the off switch', () => {
     // Windows user was being sent to a place their machine does not have.
     expect(trayIsAtTheTop('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)')).toBe(true)
     expect(trayIsAtTheTop('Mozilla/5.0 (Windows NT 10.0; Win64; x64)')).toBe(false)
-    // Both the drawing and the line follow the same answer.
-    expect(tray).toContain("{top ? 'your menu bar' : 'your system tray'}")
+    // The CORNER follows that answer. The NOUN does not: it is "the tray" on
+    // both platforms, which is what the app calls it everywhere else - a user
+    // handed "menu bar" or "notification area" has to translate the OS's term
+    // back into the product's before they can act on it.
     expect(tray).toContain('...(top ? { top: 44 } : { bottom: 0 })')
-    expect(src).toContain('Meridian sits down here in your system tray, always. Click it.')
-    expect(src).toContain("trayIsAtTheTop() ? 'menu bar' : 'system tray'")
+    expect(tray).toContain('your tray')
+    expect(tray).not.toContain("'your menu bar'")
+    expect(src).toContain('Meridian is down here in your tray, always. Click it.')
+    expect(src).toContain('Meridian is up here in your tray, always. Click it.')
   })
 
   it('parks the tray strip clear of the overlay\'s skip pills', () => {
@@ -1625,8 +1660,9 @@ describe('the closing asks: a delivery time, and the off switch', () => {
   it('ends by saying nothing more is required', () => {
     // The reassurance the whole product depends on and the one a demo cannot
     // show: the alternative reading of an ambient tool is that it needs minding.
+    // Short on purpose. This is the last thing said before the off switch, and
+    // a paragraph here is a paragraph nobody finishes.
     const close = src.slice(src.indexOf('── 11. Running'))
-    expect(close).toContain('background')
-    expect(close).toContain('nothing to remember')
+    expect(close).toContain('Close this window - Meridian keeps going')
   })
 })

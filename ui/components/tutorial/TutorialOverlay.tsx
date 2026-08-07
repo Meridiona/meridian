@@ -38,6 +38,42 @@ const HEADER_CLEAR = 116
 const CAPTION_GAP = 16
 const CAPTION_H = 130
 
+/** The tour's speaking voice, wherever it speaks.
+ *
+ *  BIGGER AND HEAVIER THAN `mt-body`, which is what both bubbles used to render.
+ *  That class is 13px/500 - the app's SUPPORTING size, correct under a heading
+ *  and wrong for the only text on screen a user is being asked to stop and read.
+ *  At 13px a narration line is quieter than the card it is pointing at, so the
+ *  beat that matters most looks like a caption on the beat before it, and a
+ *  sentence of any length arrives as a grey slab nobody finishes.
+ *
+ *  Held in one constant because the two variants (anchored beside a target, or
+ *  parked at the top) are the same voice and drifted apart once already - one
+ *  inverted, one not, at different sizes. */
+const CAPTION_FONT: React.CSSProperties = {
+  font: '600 15px/1.5 var(--font-sans)',
+  letterSpacing: '-.008em',
+  color: 'var(--t-title)',
+}
+
+/** The surface the tour speaks from, shared by both bubbles.
+ *
+ *  DARK TEXT ON A LIGHT CARD, and that is the whole of it. Both bubbles used to
+ *  invert - white text on `--t-title` - which was picked to stop the narration
+ *  reading as one more panel of the product. It solved that and bought a worse
+ *  problem: light type on a dark fill blooms under macOS's font smoothing, so
+ *  every caption in the tour looked faintly out of focus, and the heavier the
+ *  weight the softer it got. The sentence the user is being asked to stop and
+ *  read was the least legible text on screen.
+ *
+ *  It is held apart from the page by a real border and a lifted shadow instead,
+ *  which is how every other floating surface in the app does it. */
+const CAPTION_SURFACE: React.CSSProperties = {
+  background: 'var(--t-card)',
+  border: '1px solid var(--t-card-border)',
+  boxShadow: '0 14px 34px -12px rgba(40,30,90,.42)',
+}
+
 /** Follows `selector` across scroll/resize so the ring and cursor stay put when
  *  the page moves under them. `null` parks both offscreen without unmounting,
  *  so the cursor keeps its transition and glides to its next target rather than
@@ -102,9 +138,9 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
    *  and disappears next to a nine-hour animation. */
   big: boolean
   /** Put confetti above a centred beat. Exactly one beat uses it, and that is the
-   *  point: a tour that celebrates every step celebrates nothing. This one marks
-   *  the moment the user has finished giving Meridian anything - everything after
-   *  it is the product showing what it does back. */
+   *  point: a tour that celebrates every step celebrates nothing. It is the LAST
+   *  one - the only moment in a first run where "you are done" is literally true.
+   *  See the closing beat of `scriptDay.ts`. */
   celebrate: boolean
   /** Render the narration as a CENTRED card rather than the bottom bubble.
    *  Used for the opening and closing beats, which are addressed to the user
@@ -320,8 +356,8 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
               words swapped in place between beats - the bubble stayed put and its
               contents simply became different, which is the change the eye is
               least likely to notice and most likely to find abrupt. */}
-          <p key={caption} className="mt-body" style={{
-            color: 'var(--t-card)', textWrap: 'pretty',
+          <p key={caption} style={{
+            ...CAPTION_FONT, textWrap: 'pretty',
             animation: 'mer-tour-say .3s cubic-bezier(.2,.8,.25,1) both',
           }}>
             {caption}
@@ -358,17 +394,19 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
         // Centring lives on the outer div, the animation on the inner, so the two
         // transforms stop fighting over one property.
         <div className="absolute" style={{
+          // NARROWER THAN IT WAS (620). A line of narration set to the full
+          // width ran to ~95 characters, well past the ~65 the eye tracks
+          // without losing its place - so a two-sentence beat read as a
+          // paragraph even after the sentences themselves were cut back.
           top: HEADER_CLEAR, left: '50%', transform: 'translateX(-50%)',
-          pointerEvents: 'auto', maxWidth: big ? 760 : 620,
+          pointerEvents: 'auto', maxWidth: big ? 760 : 500,
         }}>
         <div className="mer-pop" style={{
-          padding: big ? '18px 28px' : '13px 18px', borderRadius: big ? 19 : 15,
-          background: 'var(--t-title)',
-          border: '0.5px solid var(--t-title)',
-          boxShadow: '0 10px 30px rgba(0,0,0,.28)',
+          padding: big ? '18px 28px' : '14px 20px', borderRadius: big ? 19 : 16,
+          ...CAPTION_SURFACE,
         }}>
-          <p key={caption} className={big ? undefined : 'mt-body'} style={{
-            color: 'var(--t-card)', textWrap: 'pretty',
+          <p key={caption} style={{
+            ...CAPTION_FONT, textWrap: 'pretty',
             animation: 'mer-tour-say .3s cubic-bezier(.2,.8,.25,1) both',
             ...(big ? { font: '700 21px/1.35 var(--font-sans)', letterSpacing: '-.015em', textAlign: 'center' } : null),
           }}>
@@ -487,15 +525,10 @@ function AnchoredCaption({ rect, children }: { rect: DOMRect; children: React.Re
       left, width: W,
       ...(above ? { bottom: vh - rect.top + GAP } : { top: rect.bottom + GAP }),
       pointerEvents: 'auto',
-      padding: '13px 16px', borderRadius: 15,
-      // THE GUIDE'S SURFACE, not the page's. This was `--t-card` on a `--t-card`
-      // page - a white box on white, with a hairline holding it apart - so the
-      // narration read as one more panel of the product rather than as the tour
-      // talking. The top bar was inverted for exactly this reason and the two
-      // variants disagreed; now the tour has one voice wherever it speaks.
-      background: 'var(--t-title)',
-      border: '0.5px solid var(--t-title)',
-      boxShadow: '0 10px 30px rgba(0,0,0,.28)',
+      padding: '14px 17px', borderRadius: 16,
+      // One surface for both bubbles - see CAPTION_SURFACE for why it is a light
+      // card rather than the inverted slab this used to be.
+      ...CAPTION_SURFACE,
       // Matched to the ring's own travel, so the bubble and the thing it is
       // parked against arrive together rather than one chasing the other.
       transition: 'top .5s cubic-bezier(.22,1,.32,1), bottom .5s cubic-bezier(.22,1,.32,1),'

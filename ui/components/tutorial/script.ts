@@ -583,12 +583,15 @@ export async function runScript(s: Stage): Promise<void> {
     s.spotlight(null)
     s.openModal(null)
     await s.pause(600)
-    // ── 2f. THE ONE CELEBRATION ─────────────────────────────────────────────
-    // Placed here and nowhere else because this is the seam of the whole tour:
-    // everything before it was the user giving Meridian something, and
-    // everything after it is Meridian showing what it does back. Marking that
-    // hands them a finish line for the work half - and a tour that congratulates
-    // every step congratulates nothing.
+    // ── 2f. The seam ────────────────────────────────────────────────────────
+    // Everything before this beat was the user giving Meridian something, and
+    // everything after it is Meridian showing what it does back.
+    //
+    // NO CONFETTI HERE ANY MORE. This used to be the tour's one celebration, on
+    // the reasoning that the seam deserved marking. It does, but it is not the
+    // finish line - the last beat of `scriptDay.ts` is - and a tour that throws
+    // confetti twice has thrown it at nothing. The flourish moved there; the
+    // milestone is still marked, by the sentence and the full-screen card.
     //
     // AND IT SAYS THE PLAN IS OPTIONAL. The line here used to be "that is the
     // only thing Meridian ever needs from you", which is flatly untrue in the
@@ -601,7 +604,7 @@ export async function runScript(s: Stage): Promise<void> {
     await s.next(
       "Nice - today's tasks are in. This part is optional, by the way: Meridian tracks your day either way. A plan just helps it match your work to the right thing.",
       'What happens now?',
-      { center: true, celebrate: true },
+      { center: true },
     )
   } else {
     // The nudge never rendered or they ignored it — say what it was for and
