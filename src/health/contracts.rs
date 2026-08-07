@@ -63,17 +63,24 @@ fn settings_contract() -> Check {
     let resolved = meridian_core::settings::settings_json_path();
     let ui_exists = ui_settings.is_file();
 
-    // Two spellings of the same file (a symlinked home, a doubled separator, a
-    // `/./`) are not a split-brain — warning there would tell the user to unset
-    // a variable that is causing no harm. Only meaningful when both resolve on
-    // disk; `canonicalize` fails on a path that does not exist, in which case
-    // fall through to the textual comparison below.
-    if let (Ok(a), Ok(b)) = (resolved.canonicalize(), ui_settings.canonicalize()) {
-        if a == b {
-            return Check::ok("settings file", "config", "daemon + dashboard agree");
-        }
+    if same_resolved_file(&resolved, &ui_settings) {
+        return Check::ok("settings file", "config", "daemon + dashboard agree");
     }
     settings_verdict(&resolved, &ui_settings, ui_exists)
+}
+
+/// Whether two paths name the same file on disk.
+///
+/// Two spellings of the same file (a symlinked home, a doubled separator, a
+/// `/./`) are not a split-brain — warning there would tell the user to unset a
+/// variable that is causing no harm. Only answerable when both resolve on disk;
+/// `canonicalize` fails on a path that does not exist, and `false` then lets the
+/// caller fall through to the textual comparison.
+fn same_resolved_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// The decision half of [`settings_contract`], split out so every branch is
@@ -131,7 +138,7 @@ fn dead_poll_env() -> Check {
 
 #[cfg(test)]
 mod tests {
-    use super::{expand, settings_verdict};
+    use super::{expand, same_resolved_file, settings_verdict};
     use std::path::Path;
 
     /// The canonical, correct configuration: the daemon resolves exactly the
@@ -172,6 +179,63 @@ mod tests {
             false,
         );
         assert_eq!(c.severity, crate::health::Severity::Info, "{c:?}");
+    }
+
+    /// Two spellings of the SAME file must not read as a split-brain.
+    ///
+    /// `settings_verdict` compares paths textually, so a symlinked home (common
+    /// on macOS with `/tmp` → `/private/tmp`, and on any setup that symlinks the
+    /// home directory) would warn falsely and tell the user to unset a variable
+    /// that is causing no harm. The wrapper canonicalizes when both paths exist;
+    /// this exercises that with a real symlink, which is the only way to reach it.
+    #[cfg(unix)]
+    #[test]
+    fn two_spellings_of_the_same_settings_file_are_not_a_split_brain() {
+        use crate::health::Severity;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("settings.json");
+        std::fs::write(&real, "{}").unwrap();
+
+        let link_dir = dir.path().join("linked");
+        std::os::unix::fs::symlink(dir.path(), &link_dir).unwrap();
+        let via_link = link_dir.join("settings.json");
+
+        // Textually different, same inode.
+        assert_ne!(real, via_link);
+        assert_eq!(
+            real.canonicalize().unwrap(),
+            via_link.canonicalize().unwrap()
+        );
+
+        // The raw verdict cannot tell — that is exactly why the wrapper
+        // canonicalizes first.
+        assert_eq!(
+            settings_verdict(&real, &via_link, true).severity,
+            Severity::Warn,
+            "precondition: the textual comparison should disagree here"
+        );
+
+        // The canonicalizing path must agree.
+        assert!(
+            same_resolved_file(&real, &via_link),
+            "a symlinked spelling of the same file was treated as a split-brain"
+        );
+    }
+
+    /// ...and genuinely different files must still be distinguishable, so the
+    /// canonicalize step cannot be "simplified" into always-equal.
+    #[test]
+    fn genuinely_different_settings_files_are_not_collapsed() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.json");
+        let b = dir.path().join("b.json");
+        std::fs::write(&a, "{}").unwrap();
+        std::fs::write(&b, "{}").unwrap();
+        assert!(
+            !same_resolved_file(&a, &b),
+            "two distinct files were reported as the same"
+        );
     }
 
     #[test]

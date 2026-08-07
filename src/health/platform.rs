@@ -211,32 +211,66 @@ pub fn ui_service() -> Vec<Check> {
 }
 
 pub fn mcp_service() -> Vec<Check> {
-    // The MCP server is built from the repo, so this question only has an answer
-    // in a source checkout. On a packaged install `repo_root()` is None and the
-    // old code folded that into `false` — reporting "not built" with a remedy
-    // (`cd packages/meridian-mcp && ...`) naming a directory the user does not
-    // have. A check that asserts a problem it has not looked for trains people
-    // to ignore the whole report, so say so instead.
-    let Some(repo) = repo_root() else {
-        // Report what was OBSERVED, not an inferred install type. What we
-        // actually know is "no Cargo.toml above current_exe()" — also true of a
-        // `cargo install`ed binary, a release binary copied into ~/bin, or an
-        // .app-embedded one. Claiming "packaged install" here would be the same
-        // conflation this module deliberately avoids for `daemon binary`.
-        return vec![Check::info(
+    let repo = repo_root();
+    let built = repo
+        .as_ref()
+        .map(|r| r.join("packages/meridian-mcp/dist/index.js").is_file());
+    vec![mcp_verdict(built)]
+}
+
+/// The decision half of [`mcp_service`], split out so every branch is testable
+/// without a real filesystem. `None` = no source checkout found at all.
+///
+/// The MCP server is built from the repo, so this question only has an answer in
+/// a source checkout. `repo_root()` is None on a packaged install and the old
+/// code folded that into `false` — reporting "not built" with a remedy
+/// (`cd packages/meridian-mcp && …`) naming a directory the user does not have.
+/// A check that asserts a problem it has not looked for trains people to ignore
+/// the whole report.
+///
+/// The Info wording reports what was OBSERVED, not an inferred install type:
+/// "no Cargo.toml above `current_exe()`" is also true of a `cargo install`ed
+/// binary, a release binary copied into `~/bin`, or an `.app`-embedded one.
+/// Claiming "packaged install" would be the same conflation this module
+/// deliberately avoids for `daemon binary`.
+/// The four-way `.env` truth table, split out so each case is testable without
+/// a real `$HOME` or repo.
+///
+/// BOTH locations count, because `main.rs` loads both: step 1 walks up from the
+/// working directory (a source run finds `<repo>/.env`), and step 1a then
+/// unconditionally loads `~/.meridian/.env` — the canonical file the tray writes
+/// the DB key and tracker credentials into. Checking only the repo copy reported
+/// "missing" on every packaged install, where no repo exists and the canonical
+/// file is the one actually in use.
+///
+/// When both exist, BOTH are named: step 1a's `from_path` does not override, so
+/// for any overlapping key the repo file is the one that wins — reporting only
+/// the canonical path would send a dev chasing a stale value to the wrong file.
+fn env_verdict(repo_env: bool, home_env: bool) -> Check {
+    match (repo_env, home_env) {
+        (true, true) => Check::ok(
+            "config (.env)",
+            "system",
+            "<repo>/.env and ~/.meridian/.env present (repo wins for overlapping keys)",
+        ),
+        (false, true) => Check::ok("config (.env)", "system", "~/.meridian/.env present"),
+        (true, false) => Check::ok("config (.env)", "system", "<repo>/.env present"),
+        (false, false) => Check::warn("config (.env)", "system", "missing")
+            .with_remedy("install the app, or run ./install.sh from a source checkout"),
+    }
+}
+
+fn mcp_verdict(built: Option<bool>) -> Check {
+    match built {
+        None => Check::info(
             "mcp built",
             "system",
             "no source checkout found — the MCP server is built from one",
-        )];
-    };
-    vec![
-        if repo.join("packages/meridian-mcp/dist/index.js").is_file() {
-            Check::ok("mcp built", "system", "dist/index.js present")
-        } else {
-            Check::warn("mcp built", "system", "not built")
-                .with_remedy("cd packages/meridian-mcp && npm run build")
-        },
-    ]
+        ),
+        Some(true) => Check::ok("mcp built", "system", "dist/index.js present"),
+        Some(false) => Check::warn("mcp built", "system", "not built")
+            .with_remedy("cd packages/meridian-mcp && npm run build"),
+    }
 }
 
 // ── system / toolchain ──────────────────────────────────────────────────────
@@ -257,29 +291,9 @@ pub fn system_checks(_cfg: &Config) -> Vec<Check> {
     } else {
         Check::warn("os", "system", "unsupported OS — capture is not available")
     };
-    // BOTH locations count, because `main.rs` loads both: step 1 walks up from
-    // the working directory (a source run finds `<repo>/.env`), and step 1a then
-    // unconditionally loads `~/.meridian/.env` — the canonical file the tray
-    // writes the DB key and tracker credentials into. Checking only the repo
-    // copy reported "missing" on every packaged install, where no repo exists
-    // and the canonical file is the one actually in use.
     let repo_env = repo_root().is_some_and(|r| r.join(".env").is_file());
     let home_env = home().join(".meridian/.env").is_file();
-    let env_check = match (repo_env, home_env) {
-        // Name BOTH when both exist. Step 1 loads the repo copy and step 1a's
-        // `from_path` does NOT override, so for any overlapping key the repo
-        // file is the one that wins — reporting only the canonical path would
-        // send a dev chasing a stale value to the wrong file.
-        (true, true) => Check::ok(
-            "config (.env)",
-            "system",
-            "<repo>/.env and ~/.meridian/.env present (repo wins for overlapping keys)",
-        ),
-        (false, true) => Check::ok("config (.env)", "system", "~/.meridian/.env present"),
-        (true, false) => Check::ok("config (.env)", "system", "<repo>/.env present"),
-        (false, false) => Check::warn("config (.env)", "system", "missing")
-            .with_remedy("install the app, or run ./install.sh from a source checkout"),
-    };
+    let env_check = env_verdict(repo_env, home_env);
     vec![
         os,
         env_check,
@@ -361,6 +375,91 @@ mod tests {
     #[test]
     fn which_returns_none_for_a_binary_that_does_not_exist() {
         assert!(which("meridian-definitely-not-a-real-binary-xyz").is_none());
+    }
+
+    /// The `.env` truth table, all four cases.
+    ///
+    /// The bug: only `<repo>/.env` was checked, so every packaged install — where
+    /// no repo exists and `~/.meridian/.env` is the file actually in use —
+    /// reported "missing". `main.rs` loads BOTH (step 1 walks up from cwd, step
+    /// 1a loads the canonical path unconditionally), so either one satisfies it.
+    #[test]
+    fn env_verdict_covers_every_combination() {
+        use crate::health::Severity;
+
+        // Packaged install: no repo, canonical file present. The regression.
+        let c = env_verdict(false, true);
+        assert_eq!(c.severity, Severity::Ok, "{c:?}");
+        assert!(c.detail.contains("~/.meridian/.env"), "{c:?}");
+
+        // Source checkout with only a repo .env.
+        let c = env_verdict(true, false);
+        assert_eq!(c.severity, Severity::Ok, "{c:?}");
+        assert!(c.detail.contains("<repo>/.env"), "{c:?}");
+
+        // Both present: BOTH must be named, and the precedence stated. Step 1a's
+        // `from_path` does not override, so the repo copy wins for overlapping
+        // keys — naming only the canonical one sends a dev to the wrong file.
+        let c = env_verdict(true, true);
+        assert_eq!(c.severity, Severity::Ok, "{c:?}");
+        assert!(
+            c.detail.contains("<repo>/.env"),
+            "both files must be named: {c:?}"
+        );
+        assert!(
+            c.detail.contains("~/.meridian/.env"),
+            "both files must be named: {c:?}"
+        );
+        assert!(
+            c.detail.contains("repo wins"),
+            "precedence must be stated or a stale key is chased in the wrong file: {c:?}"
+        );
+
+        // Genuinely absent — the only case that should warn.
+        let c = env_verdict(false, false);
+        assert_eq!(c.severity, Severity::Warn, "{c:?}");
+        assert!(
+            c.remedy.is_some(),
+            "a warn without a remedy is not actionable: {c:?}"
+        );
+    }
+
+    /// `mcp built` must not assert a problem it has not looked for.
+    ///
+    /// `repo_root() == None` used to fold into `false`, producing a warn whose
+    /// remedy (`cd packages/meridian-mcp && …`) names a directory a packaged
+    /// user does not have. Info, and worded as what was OBSERVED — "no source
+    /// checkout" is also true of a `cargo install`ed or copied binary, so
+    /// claiming "packaged install" would be the conflation this module rejects
+    /// for `daemon binary`.
+    #[test]
+    fn mcp_verdict_is_info_without_a_checkout_and_never_claims_an_install_type() {
+        use crate::health::Severity;
+
+        let c = mcp_verdict(None);
+        assert_eq!(
+            c.severity,
+            Severity::Info,
+            "no checkout must not be a fault: {c:?}"
+        );
+        assert!(
+            c.remedy.is_none(),
+            "an unanswerable check must not hand out a remedy: {c:?}"
+        );
+        assert!(
+            !c.detail.contains("packaged"),
+            "reports an inferred install type rather than what was observed: {c:?}"
+        );
+
+        assert_eq!(mcp_verdict(Some(true)).severity, Severity::Ok);
+
+        let c = mcp_verdict(Some(false));
+        assert_eq!(
+            c.severity,
+            Severity::Warn,
+            "a real checkout without a build should warn"
+        );
+        assert!(c.remedy.is_some(), "{c:?}");
     }
 
     /// Regression guard: the candidate list probed ONLY the two `install.sh`

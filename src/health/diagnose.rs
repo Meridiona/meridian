@@ -7,6 +7,7 @@
 
 use crate::health::{Report, Severity};
 
+#[derive(Debug)]
 pub struct Diagnosis {
     /// The root cause, one line.
     pub title: String,
@@ -256,5 +257,57 @@ mod tests {
     fn healthy_report_has_no_diagnosis() {
         let report = Report::new(vec![Check::ok("x", "L1", "fine").in_group("system")]);
         assert!(root_causes(&report).is_empty());
+    }
+
+    /// An Info-severity `settings file` check must NOT raise the "UI settings
+    /// aren't reaching the daemon" diagnosis.
+    ///
+    /// This was half the damage on a healthy packaged machine: the check fired
+    /// permanently, and the summary escalated it into a fabricated root cause
+    /// telling the user their toggles had no effect — on machines where the
+    /// settings were demonstrably being applied.
+    ///
+    /// The coupling is `bad`'s `severity >= Severity::Warn` with `Info < Warn`,
+    /// which is exactly the kind of thing that gets "tidied" into `!= Ok` by
+    /// someone who does not know an Info branch depends on it.
+    #[test]
+    fn an_info_settings_check_raises_no_diagnosis() {
+        let report = Report::new(vec![Check::info(
+            "settings file",
+            "config",
+            "no settings.json yet — would resolve /tmp/settings.json",
+        )
+        .in_group("config")]);
+        assert!(
+            root_causes(&report).is_empty(),
+            "an Info check fabricated a root cause: {:?}",
+            root_causes(&report)
+        );
+    }
+
+    /// ...but a genuine split-brain still must. Pins that the fix above is a
+    /// severity change, not a deletion of the diagnosis.
+    #[test]
+    fn a_warning_settings_check_still_raises_the_diagnosis() {
+        let report = Report::new(vec![Check::warn(
+            "settings file",
+            "config",
+            "the daemon resolves /elsewhere/settings.json instead of the dashboard's file",
+        )
+        .in_group("config")]);
+        let dx = root_causes(&report);
+        assert_eq!(
+            dx.len(),
+            1,
+            "real split-brain must still be diagnosed: {dx:?}"
+        );
+        assert!(
+            dx[0].title.contains("UI settings"),
+            "unexpected diagnosis: {dx:?}"
+        );
+        assert!(
+            dx[0].cause.contains("MERIDIAN_SETTINGS_PATH"),
+            "the cause text still describes the obsolete <repo>/settings.json premise: {dx:?}"
+        );
     }
 }
