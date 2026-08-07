@@ -12,7 +12,7 @@
 //         entire visible lifetime here: the DB only flips to `generating` for
 //         the few seconds the `/worklog_hour` HTTP call is actually in flight
 //         (a quiet hour skips that call entirely, going straight from
-//         `pending` to `done`). Steady icon, no dot row, "● Tracking" badge.
+//         `pending` to `done`). Steady icon, no dot row.
 //       * `generating` — the real live-generation window. Pulsing icon + ring,
 //         staggered 3-dot "typing" row, "◷ In progress" badge.
 //     Rendered by DayTaskColumn, once, at the foot of the day's timeline when
@@ -37,16 +37,28 @@ import { MeridianMark } from './Toolbar'
 type TakeoverMode = 'queued' | 'generating'
 
 /** Rotating copy per mode so it doesn't feel canned — picked deterministically
- *  from the hour so it doesn't flicker between re-renders. The `generating`
- *  copy matches the Claude Design mock (Meridian Timeline.dc.html) verbatim. */
+ *  from the hour so it doesn't flicker between re-renders.
+ *
+ *  EVERY QUEUED LINE NAMES THE CLOCK TIME (`{NEXT}`, filled from the caller's
+ *  `nextHourLabel`). The placeholder and the prop behind it already existed and
+ *  nothing used them, so the card spent its whole life saying "the top of the
+ *  hour" / "once the hour wraps" — true, and useless. The user reading it is
+ *  deciding whether to sit and wait, and "at 3 PM" answers that where "shortly"
+ *  does not. A named time is also checkable: if 3 PM comes and nothing arrives,
+ *  that is a bug the user can report, which is worth more than copy that can
+ *  never be wrong because it never said anything.
+ *
+ *  Each one ends on the notification, because that is the actual instruction -
+ *  you do not have to come back and look. Kept to one short clause since the
+ *  sub line is `truncate`d to a single row; the old one ran past the end of it. */
 const COPY: Record<TakeoverMode, [string, string][]> = {
   generating: [
-    ['Generating this hour’s work log', 'Analyzing your captures — we’ll notify you the moment it’s ready.'],
+    ['Generating this hour’s work log', 'Reading your captures now - we’ll notify you the moment it’s ready.'],
   ],
   queued: [
-    ['Cooking up this hour’s recap…', 'Analyzing your captures — we’ll notify you the moment it’s ready, once the hour wraps up.'],
-    ['Meridian is watching this hour…', 'Keep working — nothing to do. We’ll let you know when the draft lands at the top of the hour.'],
-    ['Logging this hour as you go…', 'It turns into a worklog the moment this hour wraps, and you’ll be notified when it does.'],
+    ['Meridian is watching this hour', 'Your tasks for it land at {NEXT}, and we’ll notify you.'],
+    ['Meridian is on this hour', 'Nothing to do - tasks arrive at {NEXT}, and we’ll notify you.'],
+    ['Logging this hour as you go', 'It becomes tasks at {NEXT}. We’ll notify you then.'],
   ],
 }
 
