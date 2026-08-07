@@ -27,7 +27,6 @@
 // # Related
 // - `./TutorialPanel.tsx` — the right panel
 // - `./TutorialSummaryCard.tsx` — the end-of-day summary a beat opens
-// - `./TutorialTray.tsx` — the menu-bar replica the pause beat drives
 // - `./sampleDay.ts` — the example day
 // - `./script.ts` — the beats that drive `phase` / `summaryOpen`
 
@@ -38,7 +37,6 @@ import { TutorialPanel } from './TutorialPanel'
 import { ReplayAside } from './ReplayAside'
 import { demoBoardTickets, useDemoWorklog } from './demoWorklog'
 import { TutorialSummaryCard } from './TutorialSummaryCard'
-import { TutorialTray } from './TutorialTray'
 import { sampleDayString, type SampleOverview } from './sampleDay'
 import type { DayTask } from '@/lib/api-types'
 
@@ -50,7 +48,7 @@ function todayString(): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
 
-export function TutorialScreen({ phase, tasks, replayMinute, replayNote = null, sample, selected, onSelect, summaryOpen, trayOpen, provider, onOpenPlan }: {
+export function TutorialScreen({ phase, tasks, replayMinute, replayNote = null, sample, selected, onSelect, summaryOpen, provider, onOpenPlan }: {
   phase: 'empty' | 'example'
   /** The cards to draw — empty in the first phase. */
   tasks: DayTask[]
@@ -67,8 +65,6 @@ export function TutorialScreen({ phase, tasks, replayMinute, replayNote = null, 
   selected: DayTaskDetail | null
   onSelect: (d: DayTaskDetail | null) => void
   summaryOpen: boolean
-  /** The menu-bar replica, for the beat that teaches the off switch. */
-  trayOpen: boolean
   /** The tracker the user connected during the tour, so the summary's post flow
    *  names their board instead of promising Jira to a GitHub user. */
   provider: { id: string; name: string } | null
@@ -158,7 +154,6 @@ export function TutorialScreen({ phase, tasks, replayMinute, replayNote = null, 
       </div>
 
       {summaryOpen && <TutorialSummaryCard sample={sample} provider={provider} />}
-      {trayOpen && <TutorialTray />}
     </div>
   )
 }

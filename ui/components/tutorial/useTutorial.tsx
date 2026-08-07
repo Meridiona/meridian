@@ -125,7 +125,6 @@ export function useTutorial(opts: {
   const [celebrate, setCelebrate] = useState(false)
   const [selected, setSelected] = useState<DayTaskDetail | null>(null)
   const [summaryOpen, setSummaryOpen] = useState(false)
-  const [trayOpen, setTrayOpen] = useState(false)
   // Which tracker the user actually connected. Read once when the summary beats
   // are about to run rather than passed down from the shell: the connect happens
   // DURING the tour, so a value threaded in at mount would still be null by the
@@ -172,7 +171,6 @@ export function useTutorial(opts: {
     setCelebrate(false)
     setSelected(null)
     setSummaryOpen(false)
-    setTrayOpen(false)
     setActiveModal(null)
     setShowWorklogSchedule(false)
     try { localStorage.setItem(SEEN_KEY, new Date().toISOString()) } catch { /* private mode */ }
@@ -282,7 +280,6 @@ export function useTutorial(opts: {
         }
         setSummaryOpen(on)
       },
-      demoTray: (on) => { parkCursor(); setTrayOpen(on) },
       showWorklogSchedule: (on) => { parkCursor(); setShowWorklogSchedule(on) },
       showExample: (on) => setExample(on),
       selectTask: (id) => {
@@ -655,7 +652,6 @@ export function useTutorial(opts: {
         selected={selected}
         onSelect={setSelected}
         summaryOpen={summaryOpen}
-        trayOpen={trayOpen}
         provider={provider}
         // A NO-OP during the tour, deliberately. This is the real product's
         // handler - click the plan nudge, the planner opens - but while the

@@ -17,7 +17,6 @@
 //   the summary         (section beats)  - all of it rolls up
 //   the OFF-PLAN work   (propose flow)   - and what didn't match gets a ticket written
 //   the end-of-day time (real dialog)    - the one setting, asked once it means something
-//   the off switch      (tray replica)   - and it is yours to stop
 //
 // The worklog appears TWICE on purpose, and they are not the same beat. The
 // first is the easy case - planned work, matched to the ticket it was planned
@@ -38,7 +37,6 @@
 //
 // # Related
 // - `./TutorialSummaryCard.tsx` — the summary the section beats name, part by part
-// - `./TutorialTray.tsx` — the menu-bar replica the pause beats drive
 // - `./sampleDay.ts` — `FOCUS_TASK_ID`, the card the fold beat targets
 
 import { load } from '@/lib/bridge'
@@ -46,7 +44,6 @@ import { connectedTrackers } from '@/lib/integrations'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import type { Stage } from './engine'
 import { FOCUS_TASK_ID, OFFPLAN_TASK_ID } from './sampleDay'
-import { trayIsAtTheTop } from './TutorialTray'
 
 /** Selector for a day-task card, matching the `data-task-id` DayTaskColumn
  *  stamps on each `TaskBand`. */
@@ -480,46 +477,20 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
     "You are set up. Close this window - Meridian keeps going, and tells you when something is ready.",
     'One last thing', { center: true })
 
-  // ── 12. The off switch ──────────────────────────────────────────────────
-  // Taught last and taught deliberately. An ambient recorder that never shows
-  // you how to stop it is a thing you switch off at the operating system, and
-  // the tray is where that lives - outside this window, so the tour draws it (see
-  // `TutorialTray`). Nothing here pauses anything, and the closing line says so:
-  // a walkthrough that quietly stopped capture on its way past would leave a new
-  // user with a product that does not work.
-  s.demoTray(true)
-  await s.pause(600)
-  // ONE NAME, TWO DIRECTIONS. It is "the tray" on both platforms - that is what
-  // the app calls it everywhere else, and a user who has just been told about
-  // their "menu bar" has to translate before they can look. What DOES change is
-  // where to look: top-right on macOS, bottom-right on Windows, so the direction
-  // word is platform-driven and the noun is not. The replica draws itself in the
-  // matching corner (`TutorialTray`), and the line follows it.
-  s.say(trayIsAtTheTop()
-    ? 'Meridian is up here in your tray, always. Click it.'
-    : 'Meridian is down here in your tray, always. Click it.')
-  s.spotlight('[data-tour="tray-icon"]')
-  await s.point('[data-tour="tray-icon"]')
-  await s.waitForClick('[data-tour="tray-icon"]', 90000)
-  s.spotlight(null)
-  await s.pause(700)
-
-  s.say('This is where you stop it - any time, for any reason, no explanation needed.')
-  s.spotlight('[data-tour="tray-pause"]')
-  await s.point('[data-tour="tray-pause"]')
-  await s.waitForClick('[data-tour="tray-pause"]', 90000)
-  s.spotlight(null)
-  await s.pause(600)
-
-  s.say('Fifteen minutes, an hour, until tomorrow, or until you turn it back on. Take the first one.')
-  s.spotlight('[data-tour="tray-15m"]')
-  await s.point('[data-tour="tray-15m"]')
-  await s.waitForClick('[data-tour="tray-15m"]', 90000)
-  s.spotlight(null)
-  await s.pause(800)
-  await s.next('Capture stops at once, and restarts itself when the time is up. Nothing was really paused.')
-  s.demoTray(false)
-  await s.pause(400)
+  // ── 12. (was: the off switch, on a drawn tray) ──────────────────────────
+  // GONE. Three beats used to drive a REPLICA of the tray popover - click the
+  // icon, click Pause capture, take fifteen minutes - because the real one is a
+  // separate window hanging off the OS's own bar, outside this webview, where
+  // the tour can neither draw a ring nor learn that anything was clicked.
+  //
+  // A drawing is the only thing that could have been pointed at, and a drawing
+  // is the problem: the user practises a gesture on a picture, in a corner of
+  // the app window that is not where the control is, and nothing they pressed
+  // did anything. Teaching the wrong location is worse than teaching none - they
+  // will look in the app window for it.
+  //
+  // The fact survives, in one sentence on the closing card. Where the off switch
+  // lives is worth knowing; a rehearsal against a picture of it is not.
 
   // ── 13. Handoff ─────────────────────────────────────────────────────────
   // The dangerous moment: the example day disappears and the real one is empty
@@ -541,7 +512,7 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   // the tour describes what Meridian does; this one is the only place it says why
   // it was built, and "your work stops going unnoticed" is the whole of it.
   await s.next(
-    'That is everything. Meridian runs from your tray now - here is hoping it makes a difference, and that your work stops going unnoticed.',
+    'That is everything. Meridian runs from your tray - pause it there any time. Here is hoping your work stops going unnoticed.',
     'Finish', { center: true, celebrate: true })
   s.say('')
 }
