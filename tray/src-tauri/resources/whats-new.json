@@ -1,6 +1,23 @@
 {
   "releases": [
     {
+      "version": "1.84.0",
+      "date": "2026-08-07",
+      "highlights": [
+        "Meridian now checks its database when it starts and repairs a damaged one on its own. Until now the offer to repair lived inside the database itself, so the worst damage took the offer down with it - the app simply sat there doing nothing, with no warning and no button to press, and the only way back was a support ticket. That case now heals itself before the app finishes opening.",
+        "Quit now really does stop Meridian. The background service used to keep running after you closed the app: still watching, still holding your data file open, still making network calls. Quitting stops it, and opening Meridian starts it again.",
+        "Pause now actually pauses. The menu switched to 'Disconnected' but the background service was put straight back a few seconds later, so it kept working while the menu said it had stopped."
+      ],
+      "fixes": [
+        "The 'Repair Database' button in the damaged-database banner works again. It had been doing nothing at all since it shipped - the confirmation box it asked for never appeared, and a box nobody answered counted as 'no', so the repair was silently cancelled every time.",
+        "Repairing by hand used to be impossible for the same reason Quit was: the instructions said to close Meridian first, and closing it did not stop the part that had to stop.",
+        "Meridian can no longer get stuck refusing to quit. If something went wrong while shutting down, every later attempt to close the app was ignored and the only way out was to force it.",
+        "If a damaged database cannot be opened at all, Meridian now leaves it alone unless it can confirm the file is genuinely damaged rather than locked. A file it cannot unlock looks identical to a broken one, and the safe assumption is that your data is fine and something else is wrong.",
+        "On Windows, the instructions shown when a database needs repairing now cover installs that start Meridian from the Startup folder, not only those using a scheduled task.",
+        "Pausing while Meridian was still setting itself up no longer leaves it running behind a paused label."
+      ]
+    },
+    {
       "version": "1.83.2",
       "date": "2026-08-05",
       "highlights": [
@@ -303,7 +320,7 @@
     {
       "title": "Track down the last cause of database damage on Mac",
       "status": "in-progress",
-      "description": "Three causes are now fixed: a risky one-time encryption step, running out of file handles, and Meridian restarting its own background service when it was only busy. Damage has still been seen after all three, so at least one cause remains unidentified and we are still looking. In the meantime Meridian detects the damage and can repair it from inside the app."
+      "description": "Four causes are now fixed: a risky one-time encryption step, running out of file handles, Meridian restarting its own background service when it was only busy, and this release closing the gaps where the app and the background service could both write to your data at the same time. Damage has still been seen after the first three, so we are not calling this solved until the machines we are watching stay clean. What has changed is the recovery: Meridian now repairs a damaged database by itself at startup, so a bad one no longer means a dead app."
     },
     {
       "title": "More trackers - Linear, Trello, and Azure DevOps",
