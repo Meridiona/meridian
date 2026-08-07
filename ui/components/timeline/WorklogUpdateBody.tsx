@@ -78,32 +78,42 @@ export function UpdateBody({ update, boxed = false, unframed = false }: {
         </p>
       )}
       {sections.length > 0 && (
-        <div className={boxed ? 'space-y-3.5 mt-3.5 pt-3.5 border-t' : 'space-y-2.5 mt-2.5'}
+        <div className={boxed ? 'mt-4 pt-4 border-t' : 'space-y-2.5 mt-2.5'}
           style={boxed ? { borderColor: 'var(--t-hair)' } : undefined}>
           {/* BOXED IS READ, NOT SCANNED, so it does not use the `Field`/`Bullets`
               kit the rest of the panel does. That kit is tuned for metadata beside
               a card - an 11px uppercase kicker in `--t-faint` over 12px `--t-muted`
               lines - and at those sizes and contrasts a paragraph of real prose
-              reads as blurred rather than quiet. This is the text that gets posted
-              on someone's ticket, so it is set as body copy: solid `--t-title` at
-              13px, and headings that are legible without being louder than the
-              sentences under them.
-              SENTENCE CASE, NOT A KICKER. The uppercase micro-label was doing
-              three unrelated jobs on one card - the card's own title, the
-              destination header, and every section heading inside the update -
-              so three different levels of the hierarchy wore the same clothes
-              and the card read as one flat slab. The kicker is now reserved for
-              the card's chrome; a section heading is a heading. */}
+              reads as blurred rather than quiet.
+              WHAT SEPARATES ONE SECTION FROM THE NEXT IS A RULE, not a gap. With
+              only vertical space between them, three sections of two bullets each
+              read as one seven-item list with stray bold lines in it - the reader
+              has to reconstruct the grouping from spacing alone, which is exactly
+              the work a document is supposed to have done for them.
+              AND A HEADING OUTRANKS ITS OWN CONTENT. It was set SMALLER and
+              LIGHTER than the bullets beneath it (12px `--t-muted` over 13px
+              `--t-title`), so it read as a caption trailing off the section
+              above rather than the title of the one below. Same size as the body
+              now, and heavier: weight is the whole distinction, which keeps the
+              block quiet while making its structure unambiguous. */}
           {sections.map((sec, i) => boxed ? (
-            <div key={`${sec.heading}-${i}`}>
-              <p className="mb-1.5" style={{
-                color: 'var(--t-muted)', fontSize: 12, fontWeight: 700, letterSpacing: '-0.005em',
+            <div key={`${sec.heading}-${i}`}
+              className={i === 0 ? '' : 'mt-4 pt-4 border-t'}
+              style={i === 0 ? undefined : { borderColor: 'var(--t-hair)' }}>
+              <p className="mb-2" style={{
+                color: 'var(--t-title)', fontSize: 13, fontWeight: 700,
+                letterSpacing: '-0.01em', lineHeight: 1.4,
               }}>{sentenceCase(sec.heading)}</p>
-              <ul className="space-y-1.5">
+              <ul className="space-y-2">
                 {sec.points.filter((p) => p.trim()).map((p, j) => (
                   <li key={j} className="flex gap-2.5"
                     style={{ color: 'var(--t-title)', fontSize: 13, lineHeight: 1.6, fontWeight: 400 }}>
-                    <span aria-hidden className="shrink-0" style={{ color: 'var(--t-faint-2)' }}>·</span>
+                    {/* A drawn dot, not a `·`. The middot sits on the text
+                        baseline at a size that vanishes next to 13px prose, so
+                        the bullets did not read as a list at all. */}
+                    <span aria-hidden className="shrink-0 rounded-full" style={{
+                      width: 4, height: 4, marginTop: 8, background: 'var(--t-faint)',
+                    }} />
                     <span className="flex-1 min-w-0">{p}</span>
                   </li>
                 ))}
@@ -170,7 +180,7 @@ export function UpdateBody({ update, boxed = false, unframed = false }: {
       <header className="flex items-center justify-between gap-3 px-4 py-3 border-b"
         style={{ borderColor: 'var(--t-hair)' }}>
         <p className="mt-label" style={{ color: 'var(--t-muted)' }}>THE UPDATE</p>
-        <CopyUpdate update={update} />
+        <span className="-mr-1.5"><CopyUpdate update={update} /></span>
       </header>
       <div className="px-4 py-3.5">{body}</div>
     </section>
@@ -202,7 +212,18 @@ export function updateToText(update: GeneratedWorklogUpdate): string {
  *  The draft is often wanted somewhere the tracker is not - pasted into a
  *  standup, a PR description, a message to whoever asked. Without this the only
  *  way out of the box was to select prose that spans headings and bullets by
- *  hand, which picks up the labels as body text. */
+ *  hand, which picks up the labels as body text.
+ *
+ *  A QUIET ICON, NOT A BORDERED BUTTON. It sat on the header line as an outlined
+ *  pill at the same weight as "THE UPDATE" itself, so a title bar with one
+ *  affordance read as a row of two controls - and the louder-looking of the two
+ *  was the one that matters least. A secondary action on a document header is
+ *  conventionally a ghost icon: present when looked for, invisible when not.
+ *
+ *  AND A DRAWN ICON, NOT `⧉`. U+29C9 is absent from most UI font stacks, so it
+ *  fell back to whatever the system had - a different size and baseline from the
+ *  label beside it, which is the specific reason it looked wrong rather than
+ *  merely plain. */
 export function CopyUpdate({ update }: { update: GeneratedWorklogUpdate }) {
   const [done, setDone] = useState(false)
   const copy = () => {
@@ -217,15 +238,35 @@ export function CopyUpdate({ update }: { update: GeneratedWorklogUpdate }) {
       .catch(() => {})
   }
   return (
-    <button onClick={copy} title="Copy this update"
-      className="mt-body-sm inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 shrink-0"
+    <button onClick={copy} title="Copy this update" aria-label="Copy this update"
+      className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 shrink-0 transition-colors"
       style={{
-        fontSize: 11.5, fontWeight: 700, cursor: 'pointer',
-        color: done ? 'var(--color-state-approved)' : 'var(--t-muted)',
-        border: `1px solid ${done ? 'color-mix(in srgb, var(--color-state-approved) 38%, transparent)' : 'var(--t-hair)'}`,
-        background: 'transparent',
+        fontSize: 11, fontWeight: 600, cursor: 'pointer', letterSpacing: '0.01em',
+        color: done ? 'var(--color-state-approved)' : 'var(--t-faint)',
+        border: 'none', background: 'transparent',
       }}>
-      <span aria-hidden>{done ? '✓' : '⧉'}</span> {done ? 'Copied' : 'Copy'}
+      {done ? <TickIcon /> : <CopyIcon />}
+      {done ? 'Copied' : 'Copy'}
     </button>
+  )
+}
+
+function CopyIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <rect x="5.6" y="5.6" width="8.4" height="8.4" rx="2"
+        stroke="currentColor" strokeWidth="1.4" />
+      <path d="M10.8 3.4A1.8 1.8 0 0 0 9 2H3.8A1.8 1.8 0 0 0 2 3.8V9a1.8 1.8 0 0 0 1.4 1.76"
+        stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function TickIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M3 8.5 6.3 11.8 13 5" stroke="currentColor" strokeWidth="1.8"
+        strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   )
 }

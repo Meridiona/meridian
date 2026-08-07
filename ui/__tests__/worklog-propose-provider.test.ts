@@ -237,6 +237,35 @@ describe('the update is a document with edges and a name', () => {
     expect(body).not.toContain('<p className="mt-label mb-1.5"')
   })
 
+  it('separates sections with a rule, and lets a heading outrank its bullets', () => {
+    // With only vertical space between them, three sections of two bullets read
+    // as one seven-item list with stray bold lines in it - the reader has to
+    // reconstruct the grouping from spacing, which is the work a document is
+    // meant to have already done. And the heading was set SMALLER and LIGHTER
+    // than the bullets under it, so it read as a caption trailing off the
+    // section above rather than the title of the one below.
+    expect(body).toContain("className={i === 0 ? '' : 'mt-4 pt-4 border-t'}")
+    expect(body).toContain("color: 'var(--t-title)', fontSize: 13, fontWeight: 700,")
+    // A drawn dot: `·` sits on the baseline at a size that vanishes beside 13px
+    // prose, so the bullets did not read as a list at all.
+    expect(body).toContain('width: 4, height: 4, marginTop: 8')
+  })
+
+  it('keeps copy as a ghost affordance on the header, not a second control', () => {
+    // An outlined pill at the weight of the title itself made a one-affordance
+    // header read as a row of two controls - the louder of which mattered less.
+    // And `⧉` (U+29C9) is absent from most UI font stacks, so it fell back to a
+    // different size and baseline from the label beside it.
+    expect(body).toContain("border: 'none', background: 'transparent',")
+    // (The glyph survives in the comment explaining why it went; the render
+    // path is what must not carry it.)
+    expect(body).not.toContain("<span aria-hidden>{done ? '✓' : '⧉'}</span>")
+    expect(body).toContain('function CopyIcon')
+    // Pulled back out of the gutter, since a borderless button's padding would
+    // otherwise inset the icon past the margin the label sits on.
+    expect(targets).toContain('<span className="-mr-1.5"><CopyUpdate update={draft.update} /></span>')
+  })
+
   it('folds a long proposed-ticket description instead of leading with it', () => {
     // The model writes a full ticket body, and at a hundred words it was the
     // tallest block in the dialog - sitting ABOVE the update, pushing the thing

@@ -154,7 +154,10 @@ export function DraftDocument({ draft, busy, trackers, onOpenTask, onDismiss, on
         <div data-tour="sum-update">
           <header className="flex items-center justify-between gap-3 px-4 py-3 border-b" style={hair}>
             <p className="mt-label" style={{ color: 'var(--t-faint-2)' }}>THE UPDATE</p>
-            <CopyUpdate update={draft.update} />
+            {/* Pulled back out of the gutter: the button is borderless now,
+                so its padding would otherwise inset the icon well past the
+                16px margin the label sits on. */}
+            <span className="-mr-1.5"><CopyUpdate update={draft.update} /></span>
           </header>
           <div className="px-4 py-3.5"><UpdateBody update={draft.update} boxed unframed /></div>
         </div>
