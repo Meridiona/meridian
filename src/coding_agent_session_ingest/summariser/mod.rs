@@ -751,8 +751,13 @@ fn record_attempt(attempts: &mut HashMap<i64, u32>, row_id: i64, written: bool) 
 /// Summarise (or dry-run) the pending queue for a day — manual backfill / eval.
 pub async fn cli_summarise(pool: &SqlitePool, dry_run: bool, day: Option<&str>, limit: i64) {
     let cfg = SummariserConfig::from_env();
+    // `{e:#}` — anyhow's alternate form, which prints the whole context chain.
+    // Plain `{e}` renders only the outermost `.context(...)`, which is how this
+    // reported an unkeyed-pool failure as the bare, unactionable
+    // "ensure column: check summary_source column" while the real cause
+    // (SQLite code 26, "file is not a database") was thrown away.
     if let Err(e) = db::ensure_summary_source_column(pool).await {
-        eprintln!("summarise: ensure column: {e}");
+        eprintln!("summarise: ensure column: {e:#}");
         return;
     }
     let day = day
@@ -761,7 +766,7 @@ pub async fn cli_summarise(pool: &SqlitePool, dry_run: bool, day: Option<&str>, 
     let rows = match db::fetch_pending(pool, &cfg, limit, std::slice::from_ref(&day)).await {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("summarise: fetch_pending: {e}");
+            eprintln!("summarise: fetch_pending: {e:#}");
             return;
         }
     };
