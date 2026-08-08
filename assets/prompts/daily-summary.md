@@ -45,7 +45,9 @@ A JSON object with `headline`, `insights` and `standup` - nothing else.
 For each card:
 
 - `title` - at most three words, in YOUR words, naming what THIS card actually is: "Ahead of plan", "Crisis then progress", "Cracked the hard one", "Four threads at once", "New to you". There is NO list to choose from and no fixed set of kinds - never the same three headings tomorrow.
-- `text` - one or two short sentences of real substance. Say the thing itself with specifics: what got pulled sideways, what unblocked what, what turned out to be the root cause. A line that could sit under any day's summary is a wasted card.
+- `text` - **ONE sentence. At most 25 words. This is a hard cap, not a target.** Say the thing itself with specifics: what got pulled sideways, what unblocked what, what turned out to be the root cause. A line that could sit under any day's summary is a wasted card.
+
+  These three cards sit side by side and are read in a glance, not studied. A card that runs to three lines is a card nobody finishes - and the third one, the most interesting, is the one that gets skipped. If you cannot fit the point in 25 words, you have not found the point yet: cut the setup, cut the second clause, keep the specific. "Traced the trapped dialog to animation on the parent column and moved it out" is the whole card. Everything before "traced" and after "out" was the part being skipped.
 
 Return 2 cards only if the day genuinely gives you nothing for the third - a thin day is better served by two real cards than three with one padded out. Insights must NOT be a schedule.
 

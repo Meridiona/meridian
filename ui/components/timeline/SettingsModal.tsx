@@ -14,6 +14,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { load } from '@/lib/bridge'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import { TRACKERS } from '@/lib/integrations'
+import { pendingTaskSync } from '@/lib/taskSync'
 import { setLockOutcome, type LockOutcome } from '@/components/tutorial/engine'
 import { ModalShell } from './ModalShell'
 import { SettingsSidebar } from './settings/SettingsSidebar'
@@ -41,6 +42,14 @@ const HAND_BACK_MS = 2200
  *  the user read a cramped version of the same reassurance and then read it again,
  *  so this one only has to register as "heard you" before getting out of the way. */
 const DECLINE_HAND_BACK_MS = 1100
+
+/** Ceiling on holding the hand-back open for a first ticket sync.
+ *
+ *  Generous, because covering a real first Jira import here is the entire point - but
+ *  finite, because this modal is LOCKED while it waits, and a tracker that never
+ *  answers must not be able to strand someone in it. Past this we hand back and the
+ *  planner's own wait (`waitForTickets`, 25s) picks up whatever is left. */
+const SYNC_HOLD_MAX_MS = 15000
 
 export function SettingsModal({ onClose, initialSection, onReplayTour, onReplayTourFromDay, lock, onLockSatisfied }: {
   onClose: () => void
@@ -88,16 +97,41 @@ export function SettingsModal({ onClose, initialSection, onReplayTour, onReplayT
       }
     : undefined
 
+  /** True while the hand-back is being held open for a first ticket sync. Drives the
+   *  confirmation's wording, so the extra seconds are explained rather than felt. */
+  const [pullingTickets, setPullingTickets] = useState(false)
+
   // Hand the flow back on its own. Making the user press Done here would be asking for a
   // click that carries no decision - they just made the only one this screen exists for,
   // and the thing they were doing when it interrupted them is still waiting. The delay is
   // so the confirmation below is READ as an outcome rather than glimpsed as a flicker -
   // long enough for a sentence now, where it used to only have to cover the word "Done".
+  //
+  // AND, ON A TRACKER CONNECT, IT ALSO ABSORBS THE FIRST SYNC. Connecting a board starts
+  // a real round trip to Jira or Linear that can run for tens of seconds. That wait used
+  // to be paid on the PLANNER - the user arrived at the screen whose whole purpose is to
+  // show their tickets, found it empty, and read "pulling your tickets in" there. The
+  // wait is the same length either way; what changes is where it is spent. Here, the
+  // screen already says something true and finished, so the seconds read as the last step
+  // completing rather than as the destination being broken.
+  //
+  // Capped, because a stalled sync must never trap someone in a locked modal - past the
+  // ceiling we hand back anyway and the planner's own wait covers the remainder.
   useEffect(() => {
     if (!connected || !onLockSatisfied) return
-    const t = setTimeout(onLockSatisfied, outcome === 'declined' ? DECLINE_HAND_BACK_MS : HAND_BACK_MS)
-    return () => clearTimeout(t)
-  }, [connected, outcome, onLockSatisfied])
+    if (outcome === 'declined') {
+      const t = setTimeout(onLockSatisfied, DECLINE_HAND_BACK_MS)
+      return () => clearTimeout(t)
+    }
+    let alive = true
+    const after = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+    // Only integrations pulls tickets; the AI lock has nothing to wait for.
+    const pending = section === 'integrations' ? pendingTaskSync() : null
+    if (pending) setPullingTickets(true)
+    const sync = pending ? Promise.race([pending, after(SYNC_HOLD_MAX_MS)]) : Promise.resolve()
+    void Promise.all([after(HAND_BACK_MS), sync]).then(() => { if (alive) onLockSatisfied() })
+    return () => { alive = false }
+  }, [connected, outcome, section, onLockSatisfied])
   const [integrations, setIntegrations] = useState<IntegrationsResponse | null>(null)
   const [integrationsError, setIntegrationsError] = useState(false)
   const { settings, patch, save } = useRuntimeSettings()
@@ -132,7 +166,7 @@ export function SettingsModal({ onClose, initialSection, onReplayTour, onReplayT
               the modal simply vanishes and the planner reappears, which reads as a glitch -
               the user never learns that the thing they were sent here to do is done, or that
               the app is deliberately putting them back where they were. */}
-          {outcome && lock && <ConnectedHandBack outcome={outcome} section={initialSection} />}
+          {outcome && lock && <ConnectedHandBack outcome={outcome} section={initialSection} pulling={pullingTickets} />}
           {!settings ? (
             <div className="flex flex-col gap-3 max-w-[640px]">
               {[1, 2, 3].map(i => (
@@ -206,9 +240,13 @@ function lockTitle(lock: 'soft' | 'required' | undefined, section?: SettingsSect
  *
  *  Green only on a real connection: it is Meridian's colour for "connected and
  *  working", so a declined step gets the neutral surface instead. */
-function ConnectedHandBack({ outcome, section }: {
+function ConnectedHandBack({ outcome, section, pulling }: {
   outcome: LockOutcome
   section?: SettingsSection
+  /** The hand-back is being held while the first ticket sync finishes. Names what the
+   *  extra seconds are for - the alternative is a confirmation that says "taking you
+   *  back" and then visibly does not, which reads as a hang. */
+  pulling?: boolean
 }) {
   const declined = outcome === 'declined'
   const tracker = section === 'integrations'
@@ -218,7 +256,9 @@ function ConnectedHandBack({ outcome, section }: {
   const message = declined
     ? 'No problem - taking you back to your tasks…'
     : tracker
-      ? "Great - that's your board connected. Taking you back to your tasks…"
+      ? pulling
+        ? "Great - that's your board connected. Pulling your tickets in…"
+        : "Great - that's your board connected. Taking you back to your tasks…"
       : "Great - that's your AI connected. Taking you back to your task…"
   const tone = declined ? 'var(--t-ctrl-border)' : 'var(--color-state-approved)'
   return (

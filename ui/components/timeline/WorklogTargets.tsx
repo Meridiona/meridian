@@ -204,7 +204,7 @@ function TicketDescription({ text }: { text: string }) {
         <button onClick={() => setOpen(!open)}
           className="mt-1.5"
           style={{
-            fontSize: 11.5, fontWeight: 700, color: 'var(--color-state-proposal)',
+            fontSize: 11.5, fontWeight: 700, color: 'var(--t-accent)',
             background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
           }}>
           {open ? 'Show less' : 'Read the full description'}
@@ -314,12 +314,19 @@ function TargetRow({ target, busy, canDismiss, body, flat = false, onOpen, onDis
   // the title, and they now read that way.
   const tone = posted ? 'var(--color-state-approved)'
     : outcome_unknown ? 'var(--color-state-pending)'
-      : 'var(--color-state-proposal)'
+      : 'var(--t-accent)'
+  // A PERSONAL TASK ROW IS NOT A DOOR. Every other row opens the ticket it names,
+  // which is the useful thing to do with a ticket. A personal task has no ticket -
+  // "opening" it raised the task dialog UNDERNEATH this one, so the click read as
+  // nothing happening and the thing it revealed was found only after closing the
+  // draft. What the user actually wants from that row (put this on a real ticket)
+  // now lives in the footer, next to the outcome it acts on.
+  const Row = isPersonal ? 'div' : 'button'
   return (
     <div className="flex items-stretch gap-1.5">
-      <button onClick={onOpen}
+      <Row onClick={isPersonal ? undefined : onOpen}
         className={`flex-1 min-w-0 text-left rounded-lg ${flat ? '' : 'px-3 py-2.5'}`}
-        style={{ background: flat ? 'transparent' : `color-mix(in srgb, ${tone} 10%, transparent)`, cursor: 'pointer' }}>
+        style={{ background: flat ? 'transparent' : `color-mix(in srgb, ${tone} 10%, transparent)`, cursor: isPersonal ? 'default' : 'pointer' }}>
         <p className="mt-body-sm" style={{ color: 'var(--t-title)', fontSize: 13.5, fontWeight: 700, lineHeight: 1.35 }}>
           {task_title || task_key}
         </p>
@@ -338,7 +345,10 @@ function TargetRow({ target, busy, canDismiss, body, flat = false, onOpen, onDis
         </span>
         {isPersonal && (
           <p className="mt-body-sm mt-0.5" style={{ color: 'var(--t-faint)', fontSize: 11, lineHeight: 1.4 }}>
-            Personal task - not logged to your PM provider. Open it to create a ticket and post, or match it to an existing one.
+            {/* No instruction here. This used to say "open it to create a ticket
+                and post" - an instruction pointing at a surface behind this one,
+                for an action that is now a button below. */}
+            Personal task - this update stays in Meridian, not on your board.
           </p>
         )}
         {outcome_unknown && (
@@ -353,7 +363,7 @@ function TargetRow({ target, busy, canDismiss, body, flat = false, onOpen, onDis
           </p>
         )}
         {body && <UpdateBody update={body} />}
-      </button>
+      </Row>
       {canDismiss && !posted && (
         <button onClick={onDismiss} disabled={busy}
           title={`Don't post to ${task_key}`}

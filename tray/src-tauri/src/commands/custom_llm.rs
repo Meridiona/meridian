@@ -432,6 +432,75 @@ pub async fn remove_custom_llm_provider(id: String) -> Result<Vec<CustomProvider
         .collect())
 }
 
+/// Swap the API key on an existing endpoint, then re-measure it.
+///
+/// The one thing a user genuinely needs to do to a configured endpoint and previously could
+/// not: a Groq key gets rotated, revoked, or pasted from the wrong account, and the only
+/// route back was Remove-then-add — which [`remove_custom_llm_provider`] refuses while the
+/// endpoint is the selected provider, i.e. exactly when the key matters. The alternative,
+/// adding a second endpoint, is rejected too ("an endpoint named X already exists").
+///
+/// # Why the measurements are cleared
+///
+/// A different key can be a different account on a different tier, so what the endpoint
+/// supports is no longer known — keeping the old rungs would let a key that has never
+/// answered a schema inherit a passing grade and be selected as the production provider.
+/// Clearing and re-probing is the same path [`probe_custom_llm_provider`] takes with
+/// `refresh: true`, for the same reason, and it is a handful of metered requests on the NEW
+/// key.
+///
+/// The row is written even when the probe stops early: the key is the user's, they pasted it
+/// deliberately, and losing it because a free tier 429'd mid-measurement would be worse than
+/// a row they can finish measuring with Test.
+#[tauri::command]
+#[tracing::instrument(skip(api_key), fields(has_key = !api_key.is_empty()))]
+pub async fn replace_custom_llm_provider_key(
+    id: String,
+    api_key: String,
+) -> Result<ProbeOutcome, String> {
+    let key = api_key.trim().to_string();
+    if key.is_empty() {
+        return Err("paste a key first".into());
+    }
+
+    // Held across the whole read-probe-write so a concurrent add/probe/remove can't
+    // lose this update. See [`REGISTRY_LOCK`].
+    let _guard = REGISTRY_LOCK.lock().await;
+    let mut settings_v = settings::read_settings_value();
+    let mut rows = read_rows(&settings_v);
+    let idx = rows
+        .iter()
+        .position(|r| r.id == id)
+        .ok_or_else(|| format!("no custom endpoint with id {id}"))?;
+
+    rows[idx].api_key = key;
+    rows[idx].rungs = Default::default();
+
+    let report = meridian::llm::probe::probe_endpoint(&rows[idx]).await;
+    rows[idx].rungs = report.rungs;
+
+    tracing::info!(
+        endpoint_id = %id,
+        requests = report.requests,
+        effective = ?rows[idx].effective_rung(),
+        eligible = rows[idx].is_production_eligible(),
+        incomplete = ?report.incomplete,
+        "custom_llm: endpoint key replaced and re-measured"
+    );
+
+    write_rows(&mut settings_v, &rows)?;
+    settings::write_settings_value(&settings_v).map_err(|e| {
+        tracing::warn!(error = %e, "custom_llm: write failed");
+        e.to_string()
+    })?;
+
+    Ok(ProbeOutcome {
+        provider: CustomProviderView::of(&rows[idx], selected_custom_id(&settings_v).as_deref()),
+        requests: report.requests,
+        incomplete: report.incomplete,
+    })
+}
+
 /// Ask an endpoint which models it serves, for the model picker.
 ///
 /// Two callers, two shapes:

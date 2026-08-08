@@ -192,6 +192,37 @@ async fn launchctl_a11y_trusted() -> Option<bool> {
     }
 }
 
+/// Re-run the health check and push it to the webview as `health-update`, out of band
+/// with the poll loop.
+///
+/// The banner is push-only: `HealthBanner` primes once on mount and then updates solely
+/// from this event, which [`crate::poll::refresh_health`] emits every **60 s** (every 2nd
+/// 30 s tick). So anything that changes provider health *right now* - connecting,
+/// disconnecting, swapping a key, switching provider - would otherwise leave the banner
+/// telling the user the opposite of what the screen they just clicked says, for up to a
+/// minute. Every command that moves `llm_provider_ok` calls this so the two agree
+/// immediately.
+///
+/// Fire-and-forget: a failed emit is a stale banner for one tick, never a failed command.
+/// It is still LOGGED, though - "the banner is briefly stale" is a claim about the failure,
+/// and discarding the error outright is what would make it unfalsifiable. A repeated emit
+/// failure means the banner has stopped updating entirely, which is indistinguishable from
+/// "health never changed" on screen and impossible to diagnose from a bug report without
+/// this line.
+#[tracing::instrument(skip(app))]
+pub async fn push_health_update(app: &tauri::AppHandle) {
+    use tauri::Emitter;
+    let health = check_health().await;
+    let llm_provider_ok = health.llm_provider_ok;
+    match app.emit("health-update", &health) {
+        Ok(()) => tracing::debug!(llm_provider_ok = ?llm_provider_ok, "health update pushed"),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "health update emit failed - banner stays stale until the next poll tick"
+        ),
+    }
+}
+
 /// The health check command (the ported `/api/health` GET).
 ///
 /// Runs all three checks in parallel and returns the combined result.

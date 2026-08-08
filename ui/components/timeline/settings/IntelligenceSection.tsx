@@ -114,7 +114,7 @@ export function IntelligenceSection({ settings, save, gate = false, onConnected 
       ) : (
         <div>
           <div className="flex items-start justify-between gap-4">
-            <p className="mt-label" style={{ color: 'var(--color-state-proposal)' }}>Your AI</p>
+            <p className="mt-label" style={{ color: 'var(--t-accent)' }}>Your AI</p>
             <DevDisconnect provider={provider} onDone={rescan} />
           </div>
           {/* Title only. The sub-heading under it explained what an AI provider is for and

@@ -37,7 +37,7 @@ import { GeneratingBar } from '@/components/GeneratingBar'
 import { fmtDur } from '@/components/atoms'
 import { load } from '@/lib/bridge'
 import { connectedTrackers } from '@/lib/integrations'
-import type { IntegrationsResponse } from '@/lib/api-types'
+import type { HealthStatus, IntegrationsResponse } from '@/lib/api-types'
 import type { DayTaskDetail } from '@/components/timeline/DayTaskDetailPanel'
 import { clockLabel } from '@/components/timeline/dayTaskLayout'
 import type { SettingsSection } from '@/components/timeline/settings/types'
@@ -96,7 +96,7 @@ export function SummaryTaskView({ detail, onBack, onOpenSettings, onOpenTask }: 
   const attemptGenerate = async () => {
     setChecking(true)
     try {
-      const h = await load<{ llm_provider_ok?: boolean }>('/api/health', 'get_health')
+      const h = await load<HealthStatus>('/api/health', 'get_health')
       if (h?.llm_provider_ok === false) { setProviderDown(true); return }
       setProviderDown(false)
       generate()
@@ -110,12 +110,24 @@ export function SummaryTaskView({ detail, onBack, onOpenSettings, onOpenTask }: 
 
   return (
     <>
+      {/* THE ONLY WAY OUT OF THIS VIEW, so it has to look like a control.
+          It was muted body text with no shape, no border and no padding, sitting
+          above a heading set at 20px/800 - which is to say the one thing the user
+          needs when they are done reading was the quietest thing on the screen
+          and, at 15px tall, the smallest thing to aim at. Now: a chip with a real
+          hit area, on the control surface everything else clickable uses, in
+          title ink. Pulled left by its own padding so the LABEL still aligns with
+          the column, which is what the eye reads the margin from. */}
       <button
         onClick={onBack}
-        className="mt-body-sm hover:opacity-70"
-        style={{ color: 'var(--t-muted)', cursor: 'pointer' }}
+        className="mt-body-sm inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 -ml-2.5 bg-ctrl"
+        style={{
+          color: 'var(--t-title)', border: '1px solid var(--t-ctrl-border)',
+          fontWeight: 600, cursor: 'pointer',
+        }}
       >
-        ‹ Back to summary
+        <span aria-hidden style={{ fontSize: 15, lineHeight: 1, marginTop: -1 }}>‹</span>
+        Back to summary
       </button>
 
       <div className="flex items-start gap-3 mt-4">

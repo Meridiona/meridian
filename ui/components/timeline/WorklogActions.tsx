@@ -31,6 +31,90 @@ export function joinNames(names: string[]): string {
 /** The slice of a posted target [`PostedBar`] links to. */
 export interface PostedLink { task_key: string; browse_url: string | null; provider: string }
 
+/** The update went onto a PERSONAL task, so nothing left Meridian.
+ *
+ *  A DIFFERENT OUTCOME NEEDS A DIFFERENT FOOTER. This used to render the ordinary
+ *  posted bar - "✓ Posted to LOCAL-9", a link chip for a ticket that does not
+ *  exist on any board, and one control offering to draft a FOLLOW-UP. All three
+ *  were wrong in the same direction: they said the work had been filed somewhere
+ *  and left the only thing worth doing next (putting it on a real ticket) on
+ *  another surface entirely, behind this dialog.
+ *
+ *  So the outcome is stated for what it is - logged here, not on your board - and
+ *  the two escalations sit under it. With no tracker connected there is nothing to
+ *  escalate ONTO, and the honest thing is to say what connecting one would buy
+ *  rather than offer two buttons that can only fail.
+ *
+ *  # Who calls this
+ *  [`WorklogDraftDialog`]'s footer, when every posted target is `local`. */
+/** The green tick that marks "this update went somewhere". Shared by both posted
+ *  bars - they state different outcomes (a real ticket vs a personal task) but the
+ *  mark itself is the same claim, and it was written out twice with the colour,
+ *  size and weight repeated verbatim in each. */
+function CheckDot() {
+  return (
+    <span aria-hidden className="inline-flex items-center justify-center rounded-full shrink-0"
+      style={{
+        width: 17, height: 17, background: 'var(--color-state-approved)',
+        color: '#fff', fontSize: 10.5, fontWeight: 700,
+      }}>✓</span>
+  )
+}
+
+export function PersonalPostedBar({ trackers, busy, hue, onCreate, onMatch, onConnect }: {
+  /** Connected tracker display names. Empty means nowhere to escalate to. */
+  trackers: string[]
+  busy: boolean
+  hue: string
+  onCreate: () => void
+  onMatch: () => void
+  onConnect: () => void
+}) {
+  const ok = 'var(--color-state-approved)'
+  const connected = trackers.length > 0
+  return (
+    <div data-tour="wl-posted" className="space-y-2.5">
+      <div className="flex items-center gap-2">
+        <CheckDot />
+        <span className="mt-body-sm" style={{ color: ok, fontSize: 12.5, fontWeight: 700 }}>
+          Logged on this task
+        </span>
+        <span className="mt-body-sm" style={{ color: 'var(--t-faint)', fontSize: 12 }}>
+          {connected
+            ? '- kept in Meridian, not on your board'
+            : '- Meridian has nowhere to post it yet'}
+        </span>
+      </div>
+      {connected ? (
+        <div className="flex items-center gap-2">
+          <button onClick={onCreate} disabled={busy}
+            className="mt-body-sm flex-1 rounded-xl px-4 py-2.5"
+            style={{ fontWeight: 700, color: '#fff', background: hue, opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer', boxShadow: `0 8px 22px -10px ${hue}` }}>
+            Create a ticket &amp; post it
+          </button>
+          <button onClick={onMatch} disabled={busy}
+            className="mt-body-sm rounded-xl px-4 py-2.5 shrink-0"
+            style={{ color: 'var(--t-title)', border: '1px solid var(--t-ctrl-border)', fontSize: 12.5, fontWeight: 600, opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer' }}>
+            Match to existing ticket
+          </button>
+        </div>
+      ) : (
+        <div>
+          <button onClick={onConnect}
+            className="mt-body-sm w-full rounded-xl px-4 py-2.5"
+            style={{ fontWeight: 700, color: '#fff', background: hue, cursor: 'pointer', boxShadow: `0 8px 22px -10px ${hue}` }}>
+            Connect a tracker to put this on a ticket
+          </button>
+          <p className="mt-2 text-center" style={{ color: 'var(--t-muted)', fontSize: 12.5, lineHeight: 1.5 }}>
+            Connect {availableTrackerNames()} and this update can go onto a real ticket -
+            a new one, or one you already have. It stays logged here either way.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Everything posted — the outcome, then one clickable ticket per post.
  *
  *  Lists every ticket rather than the day-task's `linked_ticket`: that column holds
@@ -53,8 +137,7 @@ export function PostedBar({ done, linkedTicket, provider, hue, busy, onRegenerat
     <div data-tour="wl-posted" className="flex items-center justify-between gap-4">
       <div className="flex items-center gap-2 min-w-0 flex-wrap">
         <span className="inline-flex items-center gap-1.5 shrink-0">
-          <span aria-hidden className="inline-flex items-center justify-center rounded-full"
-            style={{ width: 17, height: 17, background: ok, color: '#fff', fontSize: 10.5, fontWeight: 700 }}>✓</span>
+          <CheckDot />
           <span className="mt-body-sm" style={{ color: ok, fontSize: 12.5, fontWeight: 700 }}>
             Posted{links.length === 0 ? '' : links.length > 1 ? ` to ${links.length} tickets` : ' to'}
           </span>
@@ -212,7 +295,7 @@ export function DraftActions({ draft, hue, busy, onApprove, onPick }: {
         className="mt-body-sm rounded-xl px-4 py-2.5 shrink-0"
         style={{ color: 'var(--t-title)', border: '1px solid var(--t-ctrl-border)', fontSize: 12.5, fontWeight: 600, opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer' }}>
         {draft.propose || draft.targets.length === 0
-          ? 'Match to my ticket'
+          ? 'Match to existing ticket'
           : draft.targets.length > 1
             ? 'Post to one only'
             : 'Change ticket'}

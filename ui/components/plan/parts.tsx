@@ -16,8 +16,8 @@ export function DuePill({ days }: { days: number | null }) {
   let color: string
   if (days < 0) { label = `Overdue ${-days}d`; color = 'var(--color-state-pending)' }
   else if (days === 0) { label = 'Due today'; color = 'var(--color-state-pending)' }
-  else if (days === 1) { label = 'Due tomorrow'; color = 'var(--color-state-proposal)' }
-  else if (days <= 14) { label = `Due ${days}d`; color = 'var(--color-state-proposal)' }
+  else if (days === 1) { label = 'Due tomorrow'; color = 'var(--t-accent)' }
+  else if (days <= 14) { label = `Due ${days}d`; color = 'var(--t-accent)' }
   else if (days <= 30) { label = `Due ${days}d`; color = 'var(--t-muted)' }
   else { label = `Due ${Math.round(days / 7)}w`; color = 'var(--t-faint)' }
 
@@ -39,8 +39,8 @@ export function OriginChip({ reason, origin }: { reason: string; origin: string 
   return (
     <span className="mt-chip px-1.5 py-0.5 rounded whitespace-nowrap"
       style={{
-        color: strong ? 'var(--color-state-proposal)' : 'var(--t-faint)',
-        background: strong ? 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)' : 'var(--t-box)',
+        color: strong ? 'var(--t-accent)' : 'var(--t-faint)',
+        background: strong ? 'color-mix(in srgb, var(--t-accent) 12%, transparent)' : 'var(--t-box)',
       }}>
       {reason}
     </span>
@@ -55,8 +55,8 @@ export function StatusChip({ status }: { status?: string }) {
   return (
     <span className="mt-chip px-1.5 py-0.5 rounded whitespace-nowrap"
       style={{
-        color: active ? 'var(--color-state-proposal)' : 'var(--t-faint)',
-        background: active ? 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)' : 'var(--t-box)',
+        color: active ? 'var(--t-accent)' : 'var(--t-faint)',
+        background: active ? 'color-mix(in srgb, var(--t-accent) 12%, transparent)' : 'var(--t-box)',
       }}>
       {s}
     </span>
@@ -81,7 +81,7 @@ export function PriorityTag({ priority }: { priority?: string | null }) {
   if (!priority) return null
   const p = priority.toLowerCase()
   const color = /highest|critical|blocker|p1|urgent/.test(p) ? 'var(--color-state-pending)'
-    : /high|p2/.test(p) ? 'var(--color-state-proposal)'
+    : /high|p2/.test(p) ? 'var(--t-accent)'
       : /low|minor|p4|p5|trivial/.test(p) ? 'var(--t-faint-2)'
         : 'var(--t-faint)'
   return (

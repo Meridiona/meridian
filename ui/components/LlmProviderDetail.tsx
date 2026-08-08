@@ -27,6 +27,7 @@
 // Reading it as "working" put a green "is writing your summaries" banner directly beneath a
 // panel saying the CLI was not signed in.
 
+import { BackLink } from '@/components/ui/BackLink'
 import { useEffect, useRef, useState } from 'react'
 import { openExternal } from '@/lib/bridge'
 import { ProviderLogo } from '@/components/LlmProviderLogos'
@@ -125,7 +126,7 @@ function StepIcon({ phase }: { phase: Phase }) {
       <span style={col} className="flex justify-center">
         <span className="inline-block shrink-0" style={{
           width: 15, height: 15, borderRadius: 99,
-          border: '2px solid var(--t-ctrl-border)', borderTopColor: 'var(--color-state-proposal)',
+          border: '2px solid var(--t-ctrl-border)', borderTopColor: 'var(--t-accent)',
           animation: 'spin 0.7s linear infinite',
         }} />
       </span>
@@ -252,11 +253,7 @@ export default function LlmProviderDetail({
   return (
     <div className="flex flex-col" style={{ gap: 18, maxWidth: 560 }}>
       {/* Back to the chooser */}
-      <button onClick={onBack} className="self-start flex items-center"
-        style={{ gap: 6, fontSize: 12, color: 'var(--t-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6"
-          strokeLinecap="round" strokeLinejoin="round"><path d="M10 4 6 8l4 4" /></svg>{' '}All providers
-      </button>
+      <BackLink onClick={onBack}>All providers</BackLink>
 
       {/* 1 — IDENTITY. No RECOMMENDED badge: every tile in the chooser carries it, so on the
           screen you reach BY clicking one it says nothing and only crowds the pill that does. */}
@@ -314,7 +311,7 @@ export default function LlmProviderDetail({
             Meridian turns off usage telemetry on every call. To also keep your prompts out of
             model training, switch on {p.name}&apos;s privacy setting once:{' '}
             <button onClick={() => p.privacyUrl && openExternal(p.privacyUrl)}
-              style={{ color: 'var(--color-state-proposal)', background: 'none', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit', fontWeight: 600, textDecoration: 'underline' }}>
+              style={{ color: 'var(--t-accent)', background: 'none', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit', fontWeight: 600, textDecoration: 'underline' }}>
               {p.privacyLabel ?? 'open settings'} ↗
             </button>
           </Foot>

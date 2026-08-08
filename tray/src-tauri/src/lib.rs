@@ -720,6 +720,7 @@ pub fn run() {
             // dashboard DB reads (ported /api/* GETs)
             commands::get_active,
             commands::get_today,
+            commands::get_day_draft_states,
             commands::get_day_tasks,
             commands::dismiss_day_task,
             commands::merge_day_task,
@@ -840,6 +841,7 @@ pub fn run() {
             commands::assess_llm_capacity,
             commands::probe_custom_llm_provider,
             commands::remove_custom_llm_provider,
+            commands::replace_custom_llm_provider_key,
             commands::list_custom_llm_providers,
             commands::list_custom_llm_provider_models,
             // Uninstall wizard (plan + execute; see src/uninstall.rs for the CLI it drives)

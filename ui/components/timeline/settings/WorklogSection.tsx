@@ -45,77 +45,83 @@ export function WorklogSection({ settings, patch, save, integrations }: {
   const [status, setStatus] = useState<SaveStatus>('idle')
   const enabled = settings.worklog_auto_generate_time != null
   const time = settings.worklog_auto_generate_time ?? '18:00'
-  // Nothing to draft against without a tracker connected - there's no ticket to
-  // match or propose against, so offering the toggle would just be a dead end.
+  // A tracker is NOT required, and gating on one was a real bug: this whole tab
+  // rendered as a single dead-end sentence for anyone without Jira or GitHub, with
+  // no toggle, no time picker and nothing to click. Meridian drafts against the
+  // day's tasks, and a personal task is drafted exactly like a real ticket - the
+  // draft lands on the task's own row. See `src/pm_worklog/auto_generate.rs`, which
+  // carried the same wrong gate and has had it removed too.
+  //
+  // `integrations` is still read, for the one line that IS tracker-dependent below.
   const hasTracker = !!integrations && TRACKERS.some((t) => integrations[t.id])
 
   return (
     <div className="max-w-[640px] flex flex-col gap-5">
       <div>
-        <p className="mt-label" style={{ color: 'var(--color-state-proposal)' }}>Drafts</p>
+        <p className="mt-label" style={{ color: 'var(--t-accent)' }}>Drafts</p>
         <h1 className="mt-title-lg mt-1.5" style={{ color: 'var(--t-title)' }}>Worklogs</h1>
         <p className="mt-body-sm mt-2 max-w-[520px]" style={{ color: 'var(--t-muted)' }}>
           Meridian drafts worklogs from your day&apos;s work, ready to review at a time you pick.
         </p>
       </div>
 
-      {!hasTracker ? (
-        <SectionCard>
-          <SectionHeader>Auto-generate</SectionHeader>
-          <p className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>
-            {availableTrackers().length
-              ? `Connect a tracker first - ${availableTrackerNames()}.`
-              : 'Tracker connections are coming soon.'}
-          </p>
-        </SectionCard>
-      ) : (
-        <SectionCard>
-          <SectionHeader>Auto-generate</SectionHeader>
-          <FieldRow
-            label="Auto-draft worklogs"
-            description={enabled ? `Drafts ready by ${timeLabel(time)}.` : 'Off - generate each one yourself.'}
-          >
-            <Switch
-              checked={enabled}
-              onCheckedChange={(v) => patch({ worklog_auto_generate_time: v ? '18:00' : null, worklog_auto_generate_prompted: true })}
-            />
-          </FieldRow>
-
-          {enabled && (
-            <>
-              <FieldRow label="Check time" description="Once a day.">
-                <div className="flex items-center gap-1.5 p-1 rounded-xl bg-wrap flex-wrap">
-                  {PRESETS.map((p) => (
-                    <button key={p.time} type="button" onClick={() => patch({ worklog_auto_generate_time: p.time })}
-                      className="rounded-lg transition-colors"
-                      style={{
-                        padding: '6px 12px', fontSize: 12, fontWeight: 600,
-                        color: time === p.time ? '#fff' : 'var(--t-muted)',
-                        background: time === p.time ? 'var(--color-state-proposal)' : 'transparent',
-                        border: 'none', cursor: 'pointer',
-                      }}>
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-              </FieldRow>
-              <FieldRow label="Custom time" description="">
-                <TextInput type="time" width={110} value={time} onChange={(v) => patch({ worklog_auto_generate_time: v })} />
-              </FieldRow>
-              <p className="text-[11px]" style={{ color: 'var(--t-faint)' }}>
-                Still working on a task? Regenerate anytime from its detail panel.
-              </p>
-            </>
-          )}
-
-          <SaveButton
-            status={status}
-            onClick={() => save({
-              worklog_auto_generate_time: settings.worklog_auto_generate_time,
-              worklog_auto_generate_prompted: settings.worklog_auto_generate_prompted,
-            }, setStatus)}
+      <SectionCard>
+        <SectionHeader>Auto-generate</SectionHeader>
+        <FieldRow
+          label="Auto-draft worklogs"
+          description={enabled ? `Drafts ready by ${timeLabel(time)}.` : 'Off - generate each one yourself.'}
+        >
+          <Switch
+            checked={enabled}
+            onCheckedChange={(v) => patch({ worklog_auto_generate_time: v ? '18:00' : null, worklog_auto_generate_prompted: true })}
           />
-        </SectionCard>
+        </FieldRow>
+
+        {enabled && (
+          <>
+            <FieldRow label="Check time" description="Once a day.">
+              <div className="flex items-center gap-1.5 p-1 rounded-xl bg-wrap flex-wrap">
+                {PRESETS.map((p) => (
+                  <button key={p.time} type="button" onClick={() => patch({ worklog_auto_generate_time: p.time })}
+                    className="rounded-lg transition-colors"
+                    style={{
+                      padding: '6px 12px', fontSize: 12, fontWeight: 600,
+                      color: time === p.time ? '#fff' : 'var(--t-muted)',
+                      background: time === p.time ? 'var(--btn-primary-bg)' : 'transparent',
+                      border: 'none', cursor: 'pointer',
+                    }}>
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </FieldRow>
+            <FieldRow label="Custom time" description="">
+              <TextInput type="time" width={110} value={time} onChange={(v) => patch({ worklog_auto_generate_time: v })} />
+            </FieldRow>
+            <p className="text-[11px]" style={{ color: 'var(--t-faint)' }}>
+              Still working on a task? Regenerate anytime from its detail panel.
+            </p>
+          </>
+        )}
+
+        <SaveButton
+          status={status}
+          onClick={() => save({
+            worklog_auto_generate_time: settings.worklog_auto_generate_time,
+            worklog_auto_generate_prompted: settings.worklog_auto_generate_prompted,
+          }, setStatus)}
+        />
+      </SectionCard>
+
+      {/* The one thing that genuinely does need a tracker. Drafting doesn't - a draft
+          for a personal task lands on that task - but posting a comment onto a real
+          ticket obviously does. Said as an offer at the bottom rather than as a wall
+          at the top, which is what it used to be. */}
+      {!hasTracker && availableTrackers().length > 0 && (
+        <p className="mt-body-sm" style={{ color: 'var(--t-faint)' }}>
+          Drafts land on your own tasks. Connect {availableTrackerNames()} in Integrations
+          to post them onto real tickets too.
+        </p>
       )}
     </div>
   )

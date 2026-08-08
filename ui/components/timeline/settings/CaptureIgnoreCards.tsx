@@ -75,8 +75,8 @@ function Chip({ label, icon, onRemove, onClick, readOnly }: {
       style={{
         padding: icon ? '3px 10px 3px 5px' : '4px 10px',
         color: readOnly ? 'var(--t-faint)' : 'var(--t-title)',
-        background: accent ? 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)' : 'transparent',
-        border: `1px solid ${accent ? 'color-mix(in srgb, var(--color-state-proposal) 28%, transparent)' : 'var(--t-card-border)'}`,
+        background: accent ? 'color-mix(in srgb, var(--t-accent) 12%, transparent)' : 'transparent',
+        border: `1px solid ${accent ? 'color-mix(in srgb, var(--t-accent) 28%, transparent)' : 'var(--t-card-border)'}`,
         cursor: onClick ? 'pointer' : 'default',
       }}
       onClick={onClick}

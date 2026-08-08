@@ -607,8 +607,8 @@ export function DayTaskColumn({ day, isToday, selectedId, onSelect, tasks, refre
               card's visible edge doesn't shift from where it sat before. */}
           <span className="shrink-0 rounded-full live-dot" style={{
             width: 9, height: 9, marginLeft: 4,
-            background: 'var(--color-state-proposal)',
-            boxShadow: '0 0 0 3px color-mix(in srgb, var(--color-state-proposal) 18%, transparent)',
+            background: 'var(--t-accent)',
+            boxShadow: '0 0 0 3px color-mix(in srgb, var(--t-accent) 18%, transparent)',
           }} />
           {/* 12px carries the label's GUTTER - 12 width up to GUTTER, then
               CARD_GUTTER_GAP up to where the task cards actually start —

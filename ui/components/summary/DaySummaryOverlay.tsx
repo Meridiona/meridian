@@ -44,7 +44,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { load, invoke } from '@/lib/bridge'
-import type { DaySummary, DaySummaryData, DayTask, DayTasksResponse } from '@/lib/api-types'
+import type { DaySummary, DaySummaryData, DayDraftState, DayTask, DayTasksResponse } from '@/lib/api-types'
 import { type DayTaskDetail } from '@/components/timeline/DayTaskDetailPanel'
 import { taskHue } from '@/components/timeline/dayTaskKit'
 import { hhmmToMin } from '@/components/timeline/dayTaskLayout'
@@ -140,6 +140,9 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
   const [summary, setSummary] = useState<DaySummary | null>(null)
   const [data, setData] = useState<DaySummaryData | null>(null)
   const [tasks, setTasks] = useState<DayTask[]>([])
+  /** Worklog state per task id. `undefined` until the read lands (or if it failed) -
+   *  which renders the rows badgeless rather than guessing at a state. */
+  const [drafts, setDrafts] = useState<Map<string, DayDraftState> | undefined>(undefined)
   const [loading, setLoading] = useState(true)
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -248,13 +251,23 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
       load<DaySummary | null>(API, 'get_day_summary', { day }),
       load<DaySummaryData>(API, 'get_day_summary_data', { day }),
       load<DayTasksResponse>('/api/day-tasks', 'get_day_tasks', { day }),
-    ]).then(([s, d, t]) => {
+      // Which of the day's rows have a worklog waiting on the user. A local DB read,
+      // fetched alongside the rest rather than after, so the badges are on the rows in
+      // the first paint - arriving late would move the list under someone reading it.
+      // Failure is not fatal: no map means no badges, and the rows are still correct.
+      load<DayDraftState[]>(API, 'get_day_draft_states', { day }),
+    ]).then(([s, d, t, w]) => {
       if (cancelled) return
       const existing = s.status === 'fulfilled' ? s.value : null
       const live = d.status === 'fulfilled' ? d.value : null
       setSummary(existing)
       setData(live)
       setTasks(t.status === 'fulfilled' ? (t.value?.tasks ?? []) : [])
+      setDrafts(
+        w.status === 'fulfilled' && Array.isArray(w.value)
+          ? new Map(w.value.map((r) => [r.task_id, r]))
+          : undefined,
+      )
       setLoading(false)
 
       // The day has moved on since this was written - recompose quietly, once.
@@ -461,6 +474,7 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
                 tasks={tasks}
                 plan={planned ? summary.plan : []}
                 planned={planned}
+                drafts={drafts}
                 delay={0.36}
                 onSelect={(t, i) => setSelected(detailOf(t, i, day))}
                 onOpenTask={onOpenTask}

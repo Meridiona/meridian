@@ -81,8 +81,8 @@ export function PlanTodayColumn({
             data-tour="plan-today"
             className="rounded-xl transition-colors flex-1 min-h-0 overflow-y-auto nice-scroll mx-4 mb-2 p-2 space-y-2"
             style={{
-              background: snapshot.isDraggingOver ? 'color-mix(in srgb, var(--color-state-proposal) 10%, transparent)' : 'var(--t-box)',
-              outline: snapshot.isDraggingOver ? '1.5px dashed var(--color-state-proposal)' : '1.5px dashed transparent', outlineOffset: 2,
+              background: snapshot.isDraggingOver ? 'color-mix(in srgb, var(--t-accent) 10%, transparent)' : 'var(--t-box)',
+              outline: snapshot.isDraggingOver ? '1.5px dashed var(--t-accent)' : '1.5px dashed transparent', outlineOffset: 2,
             }}>
             {today.map((t, i) => (
               <DraggableCard key={t.key} task={t} index={i} draggable={editable} onOpen={() => onOpen(t)}
@@ -105,7 +105,7 @@ export function PlanTodayColumn({
               <div className="py-9 text-center">
                 <p className="mt-body-sm" style={{ color: 'var(--t-faint-2)' }}>
                   {editable
-                    ? <>Drag tasks here, or tap <span style={{ color: 'var(--color-state-proposal)' }}>+ Add</span> from your board.</>
+                    ? <>Drag tasks here, or tap <span style={{ color: 'var(--t-accent)' }}>+ Add</span> from your board.</>
                     : 'No tasks in today’s plan.'}
                 </p>
               </div>

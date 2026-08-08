@@ -104,7 +104,6 @@ export default function MeridianTimelineShell() {
   const data = useTimelineData(day)
   const { items, isSolo, connectedProviderName, connectedProviderIds, isToday, integrations } = data
   const pendingCount = items.filter(isPending).length
-  const hasTracker = !!integrations && !isSolo
 
   // Apply the persisted theme on mount (before any round-trip resolves elsewhere).
   useEffect(() => {
@@ -119,14 +118,21 @@ export default function MeridianTimelineShell() {
       .catch(() => {})
   }, [])
 
-  // Arm the worklog auto-generate nudge as soon as we know BOTH that it's never
-  // been answered and that there's actually a tracker to draft against — fires
-  // right away (subject to the "no other modal open" render gate below), not on
-  // a delay.
+  // Arm the worklog auto-generate nudge as soon as we know it has never been
+  // answered — fires right away (subject to the "no other modal open" render gate
+  // below), not on a delay.
+  //
+  // NOT gated on a tracker any more. It used to also require `hasTracker`, which
+  // meant a solo user was never offered the feature at all — and Settings → Worklogs
+  // showed them a dead-end card instead, so there was no second way to find it
+  // either. Drafting doesn't need a tracker: a personal day-task is drafted exactly
+  // like a real ticket and the draft lands on that task's own row. Only POSTING to a
+  // real ticket needs one. See `src/pm_worklog/auto_generate.rs`, which carried the
+  // same wrong gate at the backend end.
   useEffect(() => {
-    if (worklogPrompted !== false || !hasTracker) return
+    if (worklogPrompted !== false) return
     setShowWorklogPrompt(true)
-  }, [worklogPrompted, hasTracker])
+  }, [worklogPrompted])
 
   // NoticeBar lives at the root layout, outside this tree, so its
   // "Fix in Tasks" CTA reaches the Tasks modal via a window event instead of

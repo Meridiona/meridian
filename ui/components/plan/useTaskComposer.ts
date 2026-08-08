@@ -65,6 +65,14 @@ export interface ComposerState {
    *  a provider after a Jira permissions failure, and offering nothing at all after
    *  a draft died on a signed-out CLI. */
   errorSource: 'draft' | 'create' | null
+  /** The draft failed because the ENGINE failed, straight from the draft call.
+   *
+   *  This exists because health cannot answer it. `llm_provider_ok` scores the last
+   *  RECORDED test, so a provider that connected fine a minute ago still reads healthy
+   *  while every real call is failing - and the composer, which asked health, offered a
+   *  Try again that failed identically every time with no route to the picker. The call
+   *  that just failed is the only witness to that, so it is the one that says so. */
+  providerDown: boolean
   /** A soft caveat from a successful create (e.g. filed but not yet on your board). */
   note_after: string | null
   /** Set when a create succeeded - the caller closes the composer and refreshes. */
@@ -86,6 +94,7 @@ const EMPTY: ComposerState = Object.freeze({
   descriptionDrafted: false,
   error: null,
   errorSource: null,
+  providerDown: false,
   note_after: null,
   created: null,
 })
@@ -210,12 +219,12 @@ export function draftFromNote() {
   if (state.phase !== 'idle') return
   const note = state.note.trim()
   if (!note) return
-  patch({ phase: 'drafting', error: null, errorSource: null })
+  patch({ phase: 'drafting', error: null, errorSource: null, providerDown: false })
   invoke<PlanTaskDraft>('draft_plan_task', { note })
     .then((d) => {
       if (d.error) {
         // A soft failure: no fields, but the user is not blocked.
-        patch({ phase: 'idle', error: d.error, errorSource: 'draft' })
+        patch({ phase: 'idle', error: d.error, errorSource: 'draft', providerDown: !!d.provider_down })
         return
       }
       patch({
@@ -227,9 +236,13 @@ export function draftFromNote() {
         descriptionDrafted: !!d.description,
         error: null,
         errorSource: null,
+        providerDown: false,
       })
     })
-    .catch((e) => patch({ phase: 'idle', error: errMsg(e), errorSource: 'draft' }))
+    // The command itself threw - the CLI could not be run or its answer was not JSON.
+    // Not attributable to the engine, so it stays a retryable error rather than sending
+    // the user to reconfigure a provider that was never reached.
+    .catch((e) => patch({ phase: 'idle', error: errMsg(e), errorSource: 'draft', providerDown: false }))
 }
 
 /** Create the task and add it to `day`'s plan, then refresh the shared plan store so

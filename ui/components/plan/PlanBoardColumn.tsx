@@ -95,8 +95,8 @@ export function PlanBoardColumn({
                 title={planFull ? `Today already has ${MAX_PLAN_TASKS} tasks - remove one to add another` : undefined}
                 className={`shrink-0 mt-body-sm inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg transition-opacity hover:opacity-90 ${FOCUS}`}
                 style={{
-                  background: 'var(--color-state-proposal)', color: '#fff', fontWeight: 700,
-                  boxShadow: planFull ? 'none' : '0 8px 22px -10px var(--color-state-proposal)',
+                  background: 'var(--btn-primary-bg)', color: '#fff', fontWeight: 700,
+                  boxShadow: planFull ? 'none' : '0 8px 22px -10px var(--t-accent)',
                   opacity: planFull ? 0.45 : 1, cursor: planFull ? 'default' : 'pointer',
                 }}>
                 <span aria-hidden style={{ fontSize: 15, lineHeight: 1, marginTop: -1 }}>＋</span> New task

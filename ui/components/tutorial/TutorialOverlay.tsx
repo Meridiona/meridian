@@ -245,8 +245,8 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
           left: ringBox.left - 6, top: ringBox.top - 6,
           width: ringBox.width + 12, height: ringBox.height + 12,
           borderRadius: 18,
-          border: `2px solid var(--color-state-proposal)`,
-          boxShadow: '0 0 0 4px color-mix(in srgb, var(--color-state-proposal) 22%, transparent)',
+          border: `2px solid var(--t-accent)`,
+          boxShadow: '0 0 0 4px color-mix(in srgb, var(--t-accent) 22%, transparent)',
           opacity: ringLive ? 1 : 0,
           transition: 'left .5s cubic-bezier(.22,1,.32,1), top .5s cubic-bezier(.22,1,.32,1),'
             + ' width .5s cubic-bezier(.22,1,.32,1), height .5s cubic-bezier(.22,1,.32,1),'
@@ -275,7 +275,7 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
         {clicking && (
           <span className="absolute" style={{
             left: -6, top: -6, width: 34, height: 34, borderRadius: 99,
-            border: '2px solid var(--color-state-proposal)',
+            border: '2px solid var(--t-accent)',
             animation: 'mer-tour-ping .5s ease-out',
           }} />
         )}
@@ -461,18 +461,18 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
       {onSkipToDay && (
         <button onClick={onSkipToDay} className="absolute mt-body-sm" style={{
           top: 14, right: 116, pointerEvents: 'auto',
-          color: 'var(--color-state-proposal)', cursor: 'pointer',
+          color: 'var(--t-accent)', cursor: 'pointer',
           padding: '6px 13px', borderRadius: 99,
           background: 'var(--t-card)',
-          border: '0.5px dashed color-mix(in srgb, var(--color-state-proposal) 55%, transparent)',
+          border: '0.5px dashed color-mix(in srgb, var(--t-accent) 55%, transparent)',
           boxShadow: 'var(--pop-shadow)',
         }}>Skip to the day</button>
       )}
 
       <style>{`
         @keyframes mer-tour-pulse {
-          0%,100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-state-proposal) 22%, transparent); }
-          50%     { box-shadow: 0 0 0 9px color-mix(in srgb, var(--color-state-proposal) 8%, transparent); }
+          0%,100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--t-accent) 22%, transparent); }
+          50%     { box-shadow: 0 0 0 9px color-mix(in srgb, var(--t-accent) 8%, transparent); }
         }
         @keyframes mer-tour-dim { from { opacity: 0 } to { opacity: 1 } }
         @keyframes mer-tour-rise {
@@ -611,7 +611,7 @@ function ChoiceButton({ choice, primary, onChoose }: {
         padding: art ? '20px 18px 16px' : '9px 16px',
         borderRadius: art ? 16 : 11, cursor: 'pointer',
         ...(art ? { width: 254, maxWidth: '100%' } : null),
-        background: primary ? 'var(--color-state-proposal)' : 'var(--t-box)',
+        background: primary ? 'var(--btn-primary-bg)' : 'var(--t-box)',
         color: primary ? '#fff' : 'var(--t-title)',
         border: primary ? 'none' : '1px solid var(--t-card-border)',
       }}>
@@ -639,7 +639,7 @@ function ChoiceButton({ choice, primary, onChoose }: {
  *  is identical on every run and on a replay: a first-run screen that looks
  *  different each time it is seen is a first-run screen that looks unfinished. */
 function Confetti() {
-  const HUES = ['var(--color-state-proposal)', 'var(--color-state-approved)', 'var(--color-state-pending)']
+  const HUES = ['var(--t-accent)', 'var(--color-state-approved)', 'var(--color-state-pending)']
   return (
     <span className="relative block mx-auto mb-4" style={{ width: 74, height: 62 }} aria-hidden>
       {Array.from({ length: 12 }, (_, i) => {

@@ -18,7 +18,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Tracker } from '@/lib/integrations'
-import { LOCAL_PROVIDER } from '@/lib/api-types'
+import { LOCAL_PROVIDER, type HealthStatus } from '@/lib/api-types'
 import { load } from '@/lib/bridge'
 import {
   useTaskComposer, setNote, setTitle, setDescription, setIssueType, setTarget,
@@ -50,7 +50,7 @@ function FieldLabel({ children, drafted }: { children: React.ReactNode; drafted?
       <label className="mt-label" style={{ color: 'var(--t-faint)' }}>{children}</label>
       {drafted && (
         <span className="mt-chip px-1.5 py-0.5 rounded"
-          style={{ color: 'var(--color-state-proposal)', background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)' }}>
+          style={{ color: 'var(--t-accent)', background: 'color-mix(in srgb, var(--t-accent) 12%, transparent)' }}>
           Drafted
         </span>
       )}
@@ -144,7 +144,7 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
   const [noProvider, setNoProvider] = useState(false)
   const probeProviders = useCallback(async () => {
     try {
-      const h = await load<{ llm_provider_ok?: boolean }>('/api/health', 'get_health')
+      const h = await load<HealthStatus>('/api/health', 'get_health')
       const bad = h?.llm_provider_ok === false
       setNoProvider(bad)
       return !bad
@@ -217,10 +217,17 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
    *  provider there is a non-sequitur that sends the user to the wrong screen. */
   useEffect(() => {
     if (s.errorSource !== 'draft' || s.phase !== 'idle') return
+    // The call that just failed said the ENGINE failed. Believe it over health, and
+    // don't spend a round trip asking: health scores the last RECORDED test, so a
+    // provider that connected a minute ago reads `ok` while every real call fails -
+    // which left this branch showing a Try again, on a button that could only fail the
+    // same way, with no route to the picker. A live failure is better evidence than a
+    // remembered success.
+    if (s.providerDown) { setShowAiNotice(true); setNoProvider(true); return }
     let alive = true
     void probeProviders().then(ok => { if (alive && !ok) setShowAiNotice(true) })
     return () => { alive = false }
-  }, [s.error, s.errorSource, s.phase, probeProviders])
+  }, [s.error, s.errorSource, s.phase, s.providerDown, probeProviders])
 
   const drafting = s.phase === 'drafting'
   const creating = s.phase === 'creating'
@@ -277,10 +284,10 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
             title={noProvider ? 'Connect an AI provider to draft this for you' : undefined}
             className={`mt-body-sm inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg ${FOCUS}`}
             style={{
-              fontWeight: 700, color: '#fff', background: 'var(--color-state-proposal)',
+              fontWeight: 700, color: '#fff', background: 'var(--btn-primary-bg)',
               opacity: busy || !s.note.trim() ? 0.5 : 1,
               cursor: busy || !s.note.trim() ? 'default' : 'pointer',
-              boxShadow: '0 8px 22px -10px var(--color-state-proposal)',
+              boxShadow: '0 8px 22px -10px var(--t-accent)',
             }}>
             {/* "Draft with AI", not "Draft it" - the old label never said WHO
                 was drafting, so the one button on this form that spends a model
@@ -289,8 +296,12 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
           </button>
         </div>
 
+        {/* `reason` only when the ENGINE reported the failure. The pre-flight path
+            (nothing configured at all) has no reason to show - no call was made - and
+            the notice's own generic headline is the right words there. */}
         {showAiNotice && (
           <AiEngineNotice
+            reason={s.providerDown ? s.error ?? undefined : undefined}
             onConnect={() => {
               setShowAiNotice(false)
               window.dispatchEvent(new Event('meridian:connect-ai'))
@@ -301,7 +312,7 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
         {drafting && (
           <div className="mt-3">
             <GeneratingBar
-              hue="var(--color-state-proposal)"
+              hue="var(--t-accent)"
               label="Drafting your task…"
               detail="Shaping your note into a title and description - they land in the fields below, yours to edit."
               note="this usually takes a few seconds"
@@ -327,9 +338,9 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
                 className={`mt-body-sm shrink-0 rounded-md px-2 py-1 ${FOCUS}`}
                 style={{
                   fontWeight: 700,
-                  color: 'var(--color-state-proposal)',
-                  background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)',
-                  border: '1px solid color-mix(in srgb, var(--color-state-proposal) 30%, transparent)',
+                  color: 'var(--t-accent)',
+                  background: 'color-mix(in srgb, var(--t-accent) 12%, transparent)',
+                  border: '1px solid color-mix(in srgb, var(--t-accent) 30%, transparent)',
                 }}>
                 Try again
               </button>

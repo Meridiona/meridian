@@ -27,9 +27,17 @@
 // and scrolls itself into view, so the eye is carried to it instead of having to
 // find it — the same reason the button above holds a "Checking…" state first.
 //
+// IT ALSO COVERS "connected, but not working", which is why `reason` exists. The
+// headline used to be a fixed "Meridian needs an AI engine" — true on a fresh
+// install and false in the case that actually strands people: a provider that is
+// configured, whose key tested fine, and whose every real call is failing. Telling
+// that user they need an engine points them at a screen where the engine is already
+// there and looks correct. So when the draft call reported WHY it failed, that
+// sentence is the headline, and the button says check rather than connect.
+//
 // # Who calls this
 // [`TaskComposer`], under the note field, when `get_health`'s `llm_provider_ok`
-// is false.
+// is false, or when a draft came back with `provider_down`.
 
 import { useEffect, useRef, useState } from 'react'
 
@@ -37,8 +45,11 @@ import { useEffect, useRef, useState } from 'react'
  *  covering a change of subject, not decorating a hover. */
 const REVEAL_MS = 620
 
-/** @param onConnect Open the provider picker (Settings → Intelligence). */
-export function AiEngineNotice({ onConnect }: { onConnect: () => void }) {
+/** @param onConnect Open the provider picker (Settings → Intelligence).
+ *  @param reason  What the engine said when it failed, already phrased for a user
+ *                 (`TaskDraft::error`). Omitted when nothing was ever configured,
+ *                 which has no reason to report - there was no call to fail. */
+export function AiEngineNotice({ onConnect, reason }: { onConnect: () => void; reason?: string }) {
   const ref = useRef<HTMLDivElement>(null)
   const [shown, setShown] = useState(false)
   useEffect(() => {
@@ -51,8 +62,8 @@ export function AiEngineNotice({ onConnect }: { onConnect: () => void }) {
 
   return (
     <div ref={ref} className="rounded-xl p-4 mt-2 flex items-center gap-3" style={{
-      background: 'color-mix(in srgb, var(--color-state-proposal) 8%, transparent)',
-      border: '1px solid color-mix(in srgb, var(--color-state-proposal) 28%, transparent)',
+      background: 'color-mix(in srgb, var(--t-accent) 8%, transparent)',
+      border: '1px solid color-mix(in srgb, var(--t-accent) 28%, transparent)',
       opacity: shown ? 1 : 0,
       transform: shown ? 'none' : 'translateY(10px)',
       transition: `opacity ${REVEAL_MS}ms ease, transform ${REVEAL_MS}ms cubic-bezier(.2,.7,.3,1)`,
@@ -60,10 +71,10 @@ export function AiEngineNotice({ onConnect }: { onConnect: () => void }) {
       <span className="inline-flex items-center justify-center rounded-full shrink-0 text-[13px]"
         style={{
           width: 26, height: 26,
-          background: 'color-mix(in srgb, var(--color-state-proposal) 20%, transparent)',
+          background: 'color-mix(in srgb, var(--t-accent) 20%, transparent)',
         }}>✨</span>
       <p className="mt-card-title flex-1 min-w-0" style={{ color: 'var(--t-title)' }}>
-        Meridian needs an AI engine
+        {reason ?? 'Meridian needs an AI engine'}
       </p>
       {/* data-tour: the first-run walkthrough points here when the draft beat
           lands on a machine with no provider. See ui/components/tutorial/script.ts. */}
@@ -71,10 +82,10 @@ export function AiEngineNotice({ onConnect }: { onConnect: () => void }) {
         className="mt-body-sm px-3.5 py-2 rounded-lg shrink-0"
         style={{
           fontWeight: 700, color: '#fff',
-          background: 'var(--color-state-proposal)',
-          boxShadow: '0 8px 22px -10px var(--color-state-proposal)',
+          background: 'var(--btn-primary-bg)',
+          boxShadow: '0 8px 22px -10px var(--t-accent)',
         }}>
-        Connect a provider
+        {reason ? 'Check your provider' : 'Connect a provider'}
       </button>
     </div>
   )

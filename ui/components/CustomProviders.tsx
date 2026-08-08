@@ -1,9 +1,15 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 'use client'
 
-// The custom-endpoint half of the AI-provider choice: the registry hook, the add form, and
-// the per-endpoint cards. Split out of <LlmProviderPicker> purely for size - the picker owns
-// the grid and the selection, this owns everything specific to a user-configured endpoint.
+// The custom-endpoint half of the AI-provider choice: the registry hook and the per-endpoint
+// card. Split out of <LlmProviderPicker> purely for size - the picker owns the grid and the
+// selection, this owns everything specific to a user-configured endpoint.
+//
+// THERE IS NO ADD FORM HERE ANY MORE. <GroqSetup> is the one way an endpoint gets created,
+// from a single pasted key; the old form asked for a vendor with one option, a URL it filled
+// in itself, a model from an unrankable list and two rate limits we now know. The vendor-preset
+// machinery it stood on is gone too - see the note where it used to live in
+// `@/lib/llm-providers`. `add` stays on the hook, because GroqSetup calls it.
 //
 // Two rules run through the whole file, and both come from Rust:
 //
@@ -15,27 +21,22 @@
 //     selects an ineligible endpoint, so the UI must not offer one as selectable - a
 //     rejected save would silently roll the choice back with nothing to explain it.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { invoke, openExternal } from '@/lib/bridge'
+import { useCallback, useEffect, useState } from 'react'
+import { invoke } from '@/lib/bridge'
 import {
-  CUSTOM_PROVIDER_COST_NOTE,
-  CUSTOM_VENDOR_PRESETS,
-  customVendorPreset,
   rungLabel,
   capacityNotice,
-  type CapacityAssessment,
   type CustomProviderView,
-  type LlmModelOption,
   type ProbeOutcome,
 } from '@/lib/llm-providers'
-import { ModelSelect } from '@/components/ModelPicker'
+import { GroqLogo } from '@/components/LlmProviderLogos'
 
 /**
  * The configured endpoints, plus the writes that change them.
  *
  * `list` is free (a settings.json read). `add` and `probe` are NOT: they spend real metered
  * requests against the user's own key, which is why neither ever runs on mount - only on an
- * explicit click. See CUSTOM_PROVIDER_COST_NOTE.
+ * explicit click.
  */
 export function useCustomProviders() {
   const [providers, setProviders] = useState<CustomProviderView[]>([])
@@ -95,349 +96,99 @@ export function useCustomProviders() {
     }
   }, [refresh])
 
-  const remove = useCallback(async (id: string) => {
-    // Refused by the tray while the endpoint is the selected provider - let that message
-    // through rather than pre-judging it here, so the rule lives in one place.
-    const rows = await invoke<CustomProviderView[]>('remove_custom_llm_provider', { id })
-    setProviders(rows)
-  }, [])
-
-  return { providers, loading, probingIds, refresh, add, probe, remove }
-}
-
-function Field({ label, value, onChange, placeholder, type = 'text', mono }: {
-  label: string; value: string; onChange: (v: string) => void
-  placeholder?: string; type?: string; mono?: boolean
-}) {
-  return (
-    <label className="flex flex-col" style={{ gap: 4 }}>
-      <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t-faint)' }}>
-        {label}
-      </span>
-      <input
-        type={type}
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        spellCheck={false}
-        autoComplete="off"
-        style={{
-          fontSize: 11.5, padding: '6px 8px', borderRadius: 7,
-          border: '1px solid var(--t-ctrl-border)', background: 'var(--t-ctrl)',
-          color: 'var(--t-title)', fontFamily: mono ? 'var(--font-mono, ui-monospace)' : 'inherit',
-        }}
-      />
-    </label>
-  )
-}
-
-/**
- * The add form. Adding MEASURES the endpoint (up to a handful of real requests), so the
- * button says so and the cost note sits directly above the key field - where the decision is
- * actually made, not buried in docs read after a billing-enabled key is already pasted.
- */
-function AddForm({ onAdd, onCancel }: {
-  onAdd: (fields: { vendor: string; name: string; base_url: string; model: string; api_key: string; rpm: number; rpd: number }) => Promise<ProbeOutcome>
-  onCancel: () => void
-}) {
-  const [vendor, setVendor] = useState(CUSTOM_VENDOR_PRESETS[0].id)
-  const [name, setName] = useState('')
-  const [baseUrl, setBaseUrl] = useState(CUSTOM_VENDOR_PRESETS[0].baseUrl)
-  const [model, setModel] = useState('')
-  const [apiKey, setApiKey] = useState('')
-  // Held as a string because the number input reports one; coerced at submit. Empty or
-  // unparseable means 0, i.e. unpaced - the same as the field never being touched.
-  const [rpm, setRpm] = useState('0')
-  const [rpd, setRpd] = useState('0')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  /** A probe that stopped early - the endpoint IS saved, so this is a "resume it" notice,
-   *  not a failure. Keeping the form open to say so beats making the user infer it from a
-   *  card that merely isn't fully tested. */
-  const [incomplete, setIncomplete] = useState<string | null>(null)
-
-  // The quota verdict for what is CURRENTLY typed. Asked of Rust rather than computed
-  // here so the form and the saved card can never disagree - see `assess_llm_capacity`.
-  const [capacity, setCapacity] = useState<CapacityAssessment | null>(null)
-  useEffect(() => {
-    let live = true
-    invoke<CapacityAssessment>('assess_llm_capacity', {
-      rpm: Number(rpm) || 0,
-      rpd: Number(rpd) || 0,
-    })
-      .then(c => { if (live) setCapacity(c) })
-      .catch(() => { if (live) setCapacity(null) })
-    // Guards against a slow answer for old input overwriting a newer one.
-    return () => { live = false }
-  }, [rpm, rpd])
-  const addNotice = capacity ? capacityNotice(capacity) : null
-
-  // Models as reported by the endpoint itself. null = never asked (or the ask failed), which
-  // is NOT an error state: many OpenAI-compatible servers don't implement /models, so the
-  // field stays hand-typeable throughout and this only ever adds convenience.
-  const [models, setModels] = useState<LlmModelOption[] | null>(null)
-  const [listing, setListing] = useState(false)
-  const [listError, setListError] = useState<string | null>(null)
-  // Bumped whenever the endpoint being described changes. A listing carries the generation
-  // it started in and is DISCARDED if that no longer matches, so a slow answer for the old
-  // URL/key can't repopulate the picker after the user has retargeted the form - which would
-  // otherwise let a model that doesn't exist on the new endpoint be selected and saved.
-  const listGen = useRef(0)
-
-  /** Drop everything discovered about the previous endpoint. */
-  const resetModelDiscovery = useCallback(() => {
-    listGen.current += 1
-    setModels(null)
-    setListError(null)
-    setListing(false)
-    // The chosen model belonged to the old endpoint; keeping it would submit a model the
-    // new one may not serve.
-    setModel('')
-  }, [])
-
-  // Both are needed for the call: the key authenticates it, the URL addresses it.
-  const canList = baseUrl.trim() !== '' && apiKey.trim() !== ''
-
-  async function listModels() {
-    const gen = listGen.current
-    setListing(true)
-    setListError(null)
+  /** Swap the key on an existing endpoint and re-measure it.
+   *
+   *  This, not remove-then-add, is how a rotated or mistyped key is fixed: `remove` is
+   *  refused by the tray while the endpoint is the selected provider - which is precisely
+   *  when a broken key matters - and re-adding hits the duplicate-name check. Shares the
+   *  probing spinner because it re-probes on the new key. */
+  const replaceKey = useCallback(async (id: string, apiKey: string): Promise<ProbeOutcome> => {
+    setProbingIds((prev) => new Set(prev).add(id))
     try {
-      // No `id` - this endpoint isn't saved yet, so the tray takes the typed URL and key
-      // directly. camelCase per the note in `add` above.
-      const ids = await invoke<string[]>('list_custom_llm_provider_models', {
-        baseUrl,
-        apiKey,
+      // camelCase per the note in `add`.
+      const outcome = await invoke<ProbeOutcome>('replace_custom_llm_provider_key', { id, apiKey })
+      await refresh()
+      return outcome
+    } finally {
+      setProbingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
       })
-      if (gen !== listGen.current) return
-      setModels(ids.map((m) => ({ id: m, label: m })))
-      if (ids.length === 0) setListError('This endpoint listed no models - type one instead.')
-    } catch (e) {
-      if (gen !== listGen.current) return
-      // Degrade, never block: the model field is still a text box.
-      setModels(null)
-      setListError(String(e))
-    } finally {
-      if (gen === listGen.current) setListing(false)
     }
-  }
+  }, [refresh])
 
-  const preset = customVendorPreset(vendor)
-  // Only the escape hatch types its own URL; a preset's URL is fixed so a typo can't turn
-  // "Gemini" into an endpoint that isn't Gemini.
-  const urlEditable = vendor === 'other'
-
-  function pickVendor(id: string) {
-    setVendor(id)
-    const p = customVendorPreset(id)
-    setBaseUrl(p?.baseUrl ?? '')
-    if (!name.trim() && p && id !== 'other') setName(p.name)
-    // A different vendor is a different endpoint - anything discovered about the last one
-    // is now wrong.
-    resetModelDiscovery()
-  }
-
-  async function submit() {
-    setBusy(true)
-    setError(null)
-    setIncomplete(null)
-    try {
-      const outcome = await onAdd({ vendor, name, base_url: baseUrl, model, api_key: apiKey, rpm: Number(rpm) || 0, rpd: Number(rpd) || 0 })
-      setApiKey('')  // the key is stored daemon-side now and never comes back - don't keep it here
-      // The endpoint is saved either way; only a COMPLETE measurement closes the form, since
-      // an incomplete one has something the user needs to act on.
-      if (outcome.incomplete) setIncomplete(outcome.incomplete)
-      else onCancel()
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className="flex flex-col" style={{
-      gap: 10, padding: '13px 14px', borderRadius: 13,
-      background: 'var(--t-box)', border: '1px solid var(--t-card-border)',
-    }}>
-      {/* A one-option dropdown is a control that cannot be used - since the preset list was
-          cut to Groq alone (see CUSTOM_VENDOR_PRESETS), the vendor is simply stated. The
-          select comes back on its own the day a second preset is added. */}
-      {CUSTOM_VENDOR_PRESETS.length > 1 ? (
-        <label className="flex flex-col" style={{ gap: 4 }}>
-          <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t-faint)' }}>
-            Provider
-          </span>
-          <select value={vendor} onChange={(e) => pickVendor(e.target.value)}
-            style={{
-              fontSize: 11.5, padding: '6px 8px', borderRadius: 7,
-              border: '1px solid var(--t-ctrl-border)', background: 'var(--t-ctrl)', color: 'var(--t-title)',
-            }}>
-            {CUSTOM_VENDOR_PRESETS.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-        </label>
-      ) : (
-        <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t-faint)' }}>
-          {preset?.name}
-        </span>
-      )}
-      {preset?.hint && (
-        <p style={{ fontSize: 10.5, lineHeight: 1.4, color: 'var(--t-faint)', marginTop: -4 }}>{preset.hint}</p>
-      )}
-
-      <Field label="Name" value={name} onChange={setName} placeholder="Groq" />
-      {urlEditable && (
-        <Field label="Base URL" value={baseUrl} onChange={(v) => { setBaseUrl(v); resetModelDiscovery() }} mono
-          placeholder="https://host/v1" />
-      )}
-      {/* The cost warning sits with the key field, because that is where the money decision
-          is made - see CUSTOM_PROVIDER_COST_NOTE. */}
-      <div className="flex items-start" style={{
-        gap: 8, padding: '9px 10px', borderRadius: 9,
-        background: 'color-mix(in srgb, var(--color-state-pending) 8%, transparent)',
-        border: '0.5px solid var(--color-state-pending)',
-      }}>
-        <span className="shrink-0" style={{ marginTop: 1, color: 'var(--color-state-pending)' }} aria-hidden="true">△</span>
-        <p style={{ fontSize: 10.5, lineHeight: 1.45, color: 'var(--t-muted)' }}>{CUSTOM_PROVIDER_COST_NOTE}</p>
-      </div>
-
-      {/* A different key can address a different account, and therefore a different set of
-          models - so it invalidates a listing just as the URL does. */}
-      <Field label="API key" value={apiKey} onChange={(v) => { setApiKey(v); resetModelDiscovery() }} type="password" mono
-        placeholder="pasted once - never shown again" />
-      {preset?.keyUrl && (
-        <button onClick={() => preset.keyUrl && openExternal(preset.keyUrl)}
-          className="self-start"
-          style={{ fontSize: 10.5, color: 'var(--color-state-proposal)', background: 'none', border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'underline' }}>
-          Get a {preset.name} key ↗
-        </button>
-      )}
-
-      {/* Model sits AFTER the key on purpose: listing what an endpoint serves needs the key,
-          so asking for the model first would mean typing it blind. This is the one provider
-          whose models can be enumerated live - every other one is a CLI with no such
-          endpoint. Required here because, unlike a CLI, a custom endpoint has no default. */}
-      <label className="flex flex-col" style={{ gap: 4 }}>
-        <span className="font-mono" style={{ fontSize: 9, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t-faint)' }}>
-          Model
-        </span>
-        <ModelSelect
-          value={model}
-          onChange={setModel}
-          models={models ?? []}
-          required
-          action={
-            <button
-              type="button"
-              onClick={listModels}
-              disabled={!canList || listing}
-              style={{
-                fontSize: 10.5, padding: '5px 9px', borderRadius: 7, whiteSpace: 'nowrap',
-                border: '1px solid var(--t-ctrl-border)', background: 'var(--t-ctrl)',
-                color: canList ? 'var(--t-title)' : 'var(--t-faint)',
-                cursor: canList && !listing ? 'pointer' : 'not-allowed',
-              }}
-              title={canList ? 'Ask this endpoint which models it serves' : 'Enter the base URL and API key first'}
-            >
-              {listing ? 'Listing…' : models ? 'Refresh' : 'List models'}
-            </button>
-          }
-        />
-      </label>
-      {listError && (
-        <p style={{ fontSize: 10.5, lineHeight: 1.45, color: 'var(--t-faint)', marginTop: -4 }}>
-          {listError} You can still type the model name yourself.
-        </p>
-      )}
-
-      <Field label="Requests per minute" value={rpm} onChange={setRpm} type="number" mono
-        placeholder="0 - no limit" />
-      <p style={{ fontSize: 10.5, lineHeight: 1.45, color: 'var(--t-muted)' }}>
-        Free plans usually cap this - Gemini and Groq publish it on their pricing page. Set it
-        and Meridian spaces its requests to stay under the cap, including the burst it sends
-        when measuring this endpoint. Leave 0 if your plan has no limit.
-      </p>
-
-      <Field label="Requests per day" value={rpd} onChange={setRpd} type="number" mono
-        placeholder="0 - not sure" />
-      <p style={{ fontSize: 10.5, lineHeight: 1.45, color: 'var(--t-muted)' }}>
-        The one that usually bites. Nothing can pace around a daily cap, so Meridian uses this
-        only to tell you up front whether the plan covers a working day. Leave 0 if you
-        don&apos;t know it.
-      </p>
-
-      {/* The verdict BEFORE the key is spent. Adding an endpoint costs real requests from the
-          very quota being judged, so someone with a 20-a-day key should learn it is hopeless
-          while they can still choose a different model. */}
-      {addNotice && (
-        <p style={{
-          fontSize: 10.5, lineHeight: 1.45,
-          color: addNotice.tone === 'error' ? 'var(--status-error-dot)'
-            : addNotice.tone === 'warn' ? 'var(--color-state-pending)' : 'var(--t-muted)',
-        }}>
-          {addNotice.text}
-        </p>
-      )}
-
-      {error && <p style={{ fontSize: 10.5, lineHeight: 1.4, color: 'var(--status-error-dot)' }}>{error}</p>}
-
-      {/* Saved, but not fully measured - say so plainly, because the card alone would only
-          show the symptom (not selectable) and not the reason. */}
-      {incomplete && (
-        <p style={{ fontSize: 10.5, lineHeight: 1.45, color: 'var(--color-state-pending)' }}>
-          Added, but testing stopped early: {incomplete}. It’s saved and usable in the LLM Lab -
-          press Test on its card when the limit clears to finish measuring it, and it can then be
-          selected here.
-        </p>
-      )}
-
-      <div className="flex items-center" style={{ gap: 8 }}>
-        <button onClick={submit} disabled={busy}
-          style={{
-            fontSize: 11, fontWeight: 600, padding: '5px 11px', borderRadius: 7, border: 'none',
-            background: busy ? 'var(--t-ctrl)' : 'var(--btn-primary-bg)',
-            color: busy ? 'var(--t-faint)' : '#fff', cursor: busy ? 'default' : 'pointer',
-          }}>
-          {busy ? 'Testing…' : 'Add and test'}
-        </button>
-        <button onClick={onCancel} disabled={busy}
-          style={{ fontSize: 11, color: 'var(--t-faint)', background: 'none', border: 'none', cursor: 'pointer' }}>
-          Cancel
-        </button>
-        <span style={{ fontSize: 10, color: 'var(--t-faint)' }}>
-          Adding sends a few real requests to check what this endpoint supports.
-        </span>
-      </div>
-    </div>
-  )
+  return { providers, loading, probingIds, refresh, add, probe, replaceKey }
 }
 
 /**
- * One configured endpoint.
+ * One configured endpoint, as a single row.
+ *
+ * Rewritten from a dense tile that showed everything it knew at once - a status pill, the
+ * model, a rung label, a quota notice and two filled buttons, all at 10px in a 232px column.
+ * Every fact was true and none of them was ranked, so the card read as diagnostics rather
+ * than as a thing you own. What a person needs here is: which endpoint, is it live, and the
+ * two ways to act on it. The rest appears only when it is a PROBLEM.
  *
  * `selectable` is FALSE until meridian-core says the endpoint is production-eligible, and the
- * card then explains why rather than going quietly dead - an endpoint that was rate-limited
+ * row then explains why rather than going quietly dead - an endpoint that was rate-limited
  * mid-probe is a Test click away from working, not broken.
  */
-export function CustomProviderCard({ p, picked, probing, onPick, onProbe, onRemove }: {
+export function CustomProviderCard({ p, picked, live, statusDetail, probing, onPick, onProbe, onReplaceKey }: {
   p: CustomProviderView
+  /** Selected in settings. A fact about settings.json, NOT about whether it works. */
   picked: boolean
+  /** WHY it is not live, verbatim from the recorded test - "Disconnected from the dev panel",
+   *  a 401 from the vendor, a spawn error. Passed in rather than guessed at: the card knows
+   *  only that something is wrong, and a card that guesses writes sentences like "this key is
+   *  not answering" over a key that was never asked. Undefined when `live`. */
+  statusDetail?: string
+  /** Selected AND the shared phase ladder says it is answering.
+   *
+   *  These are two different questions and this card used to ask only the first, so it said a
+   *  confident green "In use" for an endpoint the chooser one screen back was calling NOT
+   *  CONNECTED - the app disagreeing with itself about the same provider, one click apart.
+   *  Computed by the caller from `phaseFor`, the same function the chooser tile, the detail
+   *  screen and the Settings lock use. */
+  live: boolean
   probing: boolean
   onPick: () => void
   onProbe: (hard: boolean) => void
-  onRemove: () => Promise<void>
+  onReplaceKey: (apiKey: string) => Promise<unknown>
 }) {
-  const [removeError, setRemoveError] = useState<string | null>(null)
+  // The inline key field, or null when closed. Empty string = open and untyped.
+  const [newKey, setNewKey] = useState<string | null>(null)
+  const [keyError, setKeyError] = useState<string | null>(null)
   const selectable = p.production_eligible
   const cardNotice = capacityNotice(p.capacity)
+  // Only a PROBLEM is worth a line of prose. "JSON enforced (strict)" is the expected
+  // outcome of a successful setup, and stating the expected outcome on every render is how
+  // a settings screen turns into a status console.
+  const problem = !selectable
+    ? (!p.fully_probed
+        ? 'Not fully tested yet - press Finish testing.'
+        : 'This endpoint cannot hold Meridian to a JSON shape, so the pipeline cannot rely on it.')
+    // Selected, measured, and not live. This state had NO route out: the card said "Not
+    // connected" and offered two controls, neither of which named itself as the fix.
+    //
+    // The reason is REPORTED, not inferred. The key here may be perfectly good - the most
+    // common way to reach this state is the dev Disconnect button, which asserts a failure
+    // against a provider that was working seconds earlier. Telling that user their key "is
+    // not answering" is simply false, and it points them at the one fix (a new key) that
+    // cannot help.
+    : picked && !live
+      ? statusDetail ?? 'Not connected. Press Connect to check it again.'
+      : null
 
-  async function remove(e: React.MouseEvent) {
+  async function saveKey(e: React.MouseEvent) {
     e.stopPropagation()
-    setRemoveError(null)
+    if (!newKey?.trim()) return
+    setKeyError(null)
     try {
-      await onRemove()
+      await onReplaceKey(newKey.trim())
+      setNewKey(null)  // the key is stored daemon-side now and never comes back
     } catch (err) {
-      setRemoveError(String(err))
+      setKeyError(String(err).replace(/^Error:\s*/, ''))
     }
   }
 
@@ -446,147 +197,151 @@ export function CustomProviderCard({ p, picked, probing, onPick, onProbe, onRemo
       role="button"
       tabIndex={selectable ? 0 : -1}
       aria-disabled={!selectable}
-      onClick={() => selectable && onPick()}
+      onClick={() => selectable && !picked && onPick()}
       onKeyDown={(e) => { if (selectable && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onPick() } }}
-      className="flex flex-col text-left h-full"
+      className="flex flex-col text-left"
       style={{
-        gap: 8, padding: '13px 14px', borderRadius: 13,
-        cursor: selectable ? 'pointer' : 'default',
-        // Surfaces match <ProviderCard> exactly - these tiles share its grid, so any
-        // divergence reads as one of the two being broken. See the layering note there
-        // (card on --t-card, inner elements on --t-box).
-        background: picked
-          ? 'color-mix(in srgb, var(--color-state-proposal) 12%, var(--t-card))'
-          : 'var(--t-card)',
-        border: `1px solid ${picked ? 'var(--color-state-proposal)' : 'var(--t-ctrl-border)'}`,
-        boxShadow: picked
-          ? 'inset 0 0 0 1px color-mix(in srgb, var(--color-state-proposal) 30%, transparent)'
-          : '0 1px 2px rgba(0,0,0,.04)',
-        opacity: selectable ? 1 : 0.72,
+        gap: 10, padding: '14px 16px', borderRadius: 12,
+        cursor: selectable && !picked ? 'pointer' : 'default',
+        background: 'var(--t-card)',
+        // The live row is marked by ONE hairline in the connected colour, not a tinted fill
+        // and an inset ring. At this size a filled card competes with the page for attention
+        // and there is nothing on the page for it to compete with.
+        border: `1px solid ${live ? 'var(--color-state-approved)' : 'var(--t-ctrl-border)'}`,
+        opacity: selectable ? 1 : 0.7,
       }}>
-      <div className="flex items-start" style={{ gap: 10 }}>
+      <div className="flex items-center" style={{ gap: 11 }}>
         <span className="flex items-center justify-center shrink-0" style={{
-          width: 30, height: 30, borderRadius: 9,
-          background: picked ? 'color-mix(in srgb, var(--color-state-proposal) 16%, transparent)' : 'var(--t-box)',
-          border: '1px solid var(--t-ctrl-border)',
-          color: picked ? 'var(--color-state-proposal)' : 'var(--t-muted)',
+          width: 30, height: 30, borderRadius: 8,
+          background: 'var(--t-box)', border: '1px solid var(--t-ctrl-border)',
         }}>
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6 6 0 0 0 6.1 9.4 4.5 4.5 0 0 0 6.5 19z" />
-          </svg>
+          <GroqLogo size={15} />
         </span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>{p.name}</span>
-          <div className="flex items-center flex-wrap" style={{ gap: 5, marginTop: 4 }}>
-            {/* Sizing/weight kept in step with <Badge> in LlmProviderPicker. */}
-            <span className="font-mono" style={{
-              fontSize: 9.5, letterSpacing: '.09em',
-              color: p.production_eligible ? 'var(--color-state-approved)' : 'var(--color-state-pending)',
-              border: `1px solid ${p.production_eligible ? 'var(--color-state-approved)' : 'var(--color-state-pending)'}`,
-              background: `color-mix(in srgb, ${p.production_eligible ? 'var(--color-state-approved)' : 'var(--color-state-pending)'} 10%, transparent)`,
-              borderRadius: 4, padding: '1.5px 5px', whiteSpace: 'nowrap', textTransform: 'uppercase',
-            }}>
-              {probing ? 'TESTING…' : rungLabel(p.effective_rung)}
-            </span>
-          </div>
-        </div>
-        {selectable && (
-          <span className="flex items-center justify-center shrink-0" style={{
-            width: 17, height: 17, borderRadius: 99, marginTop: 1,
-            border: `1.5px solid ${picked ? 'var(--color-state-proposal)' : 'var(--t-card-border)'}`,
-            background: picked ? 'var(--color-state-proposal)' : 'transparent',
-          }}>
-            {picked && <span style={{ width: 6, height: 6, borderRadius: 99, background: '#fff' }} />}
+        <div className="flex flex-col min-w-0" style={{ flex: 1, gap: 2 }}>
+          <span style={{ fontSize: 14.5, fontWeight: 600, color: 'var(--t-title)', letterSpacing: '-.01em' }}>
+            {p.name}
           </span>
-        )}
+          {/* Model and capability on ONE line. The model is the only identifying detail worth
+              carrying, and the rung qualifies it rather than shouting.
+              --t-muted, not --t-faint, and 12px rather than 10.5: this is the line that says
+              WHICH model is writing your summaries. At the faint token it was decoration -
+              legible in a screenshot, greyed out on a real display. Sentence case, not
+              lowercased: forcing "JSON" to "json" made a proper noun look like a typo. */}
+          <span className="font-mono truncate" style={{ fontSize: 12, color: 'var(--t-muted)' }}>
+            {p.model}{selectable ? ` · ${rungLabel(p.effective_rung)}` : ''}
+          </span>
+        </div>
+        {probing ? (
+          <span className="font-mono shrink-0" style={{ fontSize: 10.5, letterSpacing: '.08em', color: 'var(--t-muted)' }}>
+            TESTING…
+          </span>
+        ) : picked ? (
+          <span className="flex items-center shrink-0" style={{
+            gap: 6, fontSize: 12.5, fontWeight: 600,
+            color: live ? 'var(--color-state-approved)' : 'var(--t-muted)',
+          }}>
+            <span style={{
+              width: 7, height: 7, borderRadius: 99,
+              background: live ? 'currentColor' : 'transparent',
+              border: live ? 'none' : '1.5px solid currentColor',
+            }} />
+            {live ? 'In use' : 'Not connected'}
+          </span>
+        ) : selectable ? (
+          <span className="shrink-0" style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--t-accent)' }}>
+            Use this
+          </span>
+        ) : null}
       </div>
 
-      <p className="font-mono" style={{ fontSize: 10, lineHeight: 1.4, color: 'var(--t-muted)', wordBreak: 'break-all' }}>
-        {p.model}
-      </p>
-
-      {/* Why it can't be selected - never a dead card with no explanation. */}
-      {!selectable && (
-        <p style={{ fontSize: 10.5, lineHeight: 1.4, color: 'var(--t-title)' }}>
-          {!p.fully_probed
-            ? 'Not fully tested yet - press Test to finish measuring it. Until then it can only be used in the LLM Lab.'
-            : 'This endpoint can’t hold Meridian to a JSON shape, so the pipeline can’t rely on it. It stays available in the LLM Lab.'}
-        </p>
+      {problem && (
+        <p style={{ fontSize: 12, lineHeight: 1.45, color: 'var(--color-state-pending)' }}>{problem}</p>
       )}
-
-      {/* Quota verdict. Kept on the card, not just the add form, because a plan's limits
-          can change under a key that was fine when it was added - and because a user who
-          skipped the daily limit at add time still gets one chance to fill it in. */}
-      {cardNotice && (
+      {/* Quota verdict. Kept because a plan's limits can change under a key that was fine
+          when it was added - but it is silent when there is nothing wrong. */}
+      {cardNotice && cardNotice.tone !== 'info' && (
         <p style={{
-          fontSize: 10.5, lineHeight: 1.4,
-          color: cardNotice.tone === 'error' ? 'var(--status-error-dot)'
-            : cardNotice.tone === 'warn' ? 'var(--color-state-pending)' : 'var(--t-faint)',
+          fontSize: 12, lineHeight: 1.45,
+          color: cardNotice.tone === 'error' ? 'var(--status-error-dot)' : 'var(--color-state-pending)',
         }}>
           {cardNotice.text}
         </p>
       )}
+      {keyError && <p style={{ fontSize: 12, lineHeight: 1.45, color: 'var(--status-error-dot)' }}>{keyError}</p>}
 
-      {removeError && <p style={{ fontSize: 10.5, lineHeight: 1.4, color: 'var(--status-error-dot)' }}>{removeError}</p>}
-
-      <div className="flex items-center" style={{ gap: 6 }}>
-        {/* Half-measured → resume (buys only the schemas still missing). Fully measured →
-            a real re-measure, since what the endpoint supports can change under us. */}
-        <button onClick={(e) => { e.stopPropagation(); onProbe(p.fully_probed) }}
-          disabled={probing}
-          className="font-mono"
-          style={{
-            // Filled controls, matching the Test button in <ProviderCard>.
-            fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase',
-            color: 'var(--t-title)', border: '1px solid var(--t-ctrl-border)',
-            borderRadius: 5, padding: '4px 8px', background: 'var(--t-box)',
-            cursor: probing ? 'default' : 'pointer', opacity: probing ? 0.55 : 1,
-          }}>
-          {probing ? 'Testing…' : p.fully_probed ? 'Re-test' : 'Test'}
-        </button>
-        <button onClick={remove} disabled={probing}
-          className="font-mono"
-          style={{
-            fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase',
-            color: 'var(--t-muted)', border: '1px solid var(--t-ctrl-border)',
-            borderRadius: 5, padding: '4px 8px', background: 'var(--t-box)', cursor: 'pointer',
-          }}>
-          Remove
-        </button>
-      </div>
+      {/* Quiet text actions. They were filled mono buttons shouting RE-TEST / REMOVE at the
+          same weight as the endpoint's own name - two rarely-used maintenance controls
+          outranking the thing they maintain. */}
+      {/* NO REMOVE. It was refused by the tray whenever it was worth pressing - an endpoint
+          cannot be removed while it is the selected provider, and this screen is reached
+          through the tile that IS the selected provider - so the button's only reachable
+          outcome was the red line "switch to another provider first". Changing the key is
+          what people actually come here to do, and it used to be impossible: remove-then-add
+          was blocked at the remove, and re-adding hit the duplicate-name check. */}
+      {newKey === null ? (
+        <div className="flex items-center" style={{ gap: 10 }}>
+          {/* Filled while it is the way out of a dead card, quiet otherwise - the same
+              control either way, weighted by whether anything needs doing. */}
+          <button onClick={(e) => { e.stopPropagation(); onProbe(p.fully_probed) }}
+            disabled={probing}
+            style={problem && !probing
+              ? {
+                  fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 8,
+                  border: 'none', background: 'var(--btn-primary-bg)', color: '#fff',
+                  cursor: 'pointer',
+                }
+              : {
+                  fontSize: 12, fontWeight: 500, color: 'var(--t-muted)', background: 'none',
+                  border: 'none', padding: 0, cursor: probing ? 'default' : 'pointer',
+                  opacity: probing ? 0.5 : 1,
+                }}>
+            {!p.fully_probed ? 'Finish testing' : picked && !live ? 'Connect' : 'Test connection'}
+          </button>
+          <span aria-hidden style={{ width: 1, height: 11, background: 'var(--t-ctrl-border)' }} />
+          <button onClick={(e) => { e.stopPropagation(); setKeyError(null); setNewKey('') }}
+            disabled={probing}
+            style={{
+              fontSize: 12, fontWeight: 500, color: 'var(--t-muted)', background: 'none',
+              border: 'none', padding: 0, cursor: 'pointer',
+            }}>
+            Change key
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center" style={{ gap: 8 }} onClick={(e) => e.stopPropagation()}>
+          <input
+            type="password"
+            value={newKey}
+            autoFocus
+            onChange={(e) => setNewKey(e.target.value)}
+            placeholder="Paste a new key"
+            spellCheck={false}
+            autoComplete="off"
+            style={{
+              flex: 1, minWidth: 0, fontSize: 12, padding: '7px 10px', borderRadius: 8,
+              border: '1px solid var(--t-ctrl-border)', background: 'var(--t-ctrl)',
+              color: 'var(--t-title)', fontFamily: 'var(--font-mono, ui-monospace)',
+            }}
+          />
+          <button onClick={saveKey} disabled={probing || !newKey.trim()}
+            style={{
+              fontSize: 12, fontWeight: 600, padding: '7px 13px', borderRadius: 8, border: 'none',
+              background: probing || !newKey.trim() ? 'var(--t-ctrl)' : 'var(--btn-primary-bg)',
+              color: probing || !newKey.trim() ? 'var(--t-faint)' : '#fff',
+              cursor: probing || !newKey.trim() ? 'default' : 'pointer', whiteSpace: 'nowrap',
+            }}>
+            {probing ? 'Checking…' : 'Save'}
+          </button>
+          <button onClick={(e) => { e.stopPropagation(); setNewKey(null); setKeyError(null) }}
+            disabled={probing}
+            style={{
+              fontSize: 12, color: 'var(--t-muted)', background: 'none', border: 'none',
+              padding: 0, cursor: 'pointer',
+            }}>
+            Cancel
+          </button>
+        </div>
+      )}
     </div>
-  )
-}
-
-/** The "+ Add custom endpoint" tile, and the form it opens in place. */
-export function AddCustomProvider({ onAdd }: {
-  onAdd: (fields: { vendor: string; name: string; base_url: string; model: string; api_key: string; rpm: number; rpd: number }) => Promise<ProbeOutcome>
-}) {
-  const [open, setOpen] = useState(false)
-  // The form is wide (URL, model, key), so it takes the whole grid row; the closed tile
-  // is just one more cell. The span lives here because only this component knows which
-  // of the two is showing.
-  if (open) {
-    return (
-      <div style={{ gridColumn: '1 / -1' }}>
-        <AddForm onAdd={onAdd} onCancel={() => setOpen(false)} />
-      </div>
-    )
-  }
-  return (
-    <button onClick={() => setOpen(true)}
-      className="flex items-center justify-center h-full"
-      style={{
-        // Same wrap as <ProviderCard>/<CustomProviderCard> - padding, radius, surface and
-        // border weight all match, so it sits in the grid as a peer rather than an
-        // afterthought. Only the border stays DASHED, which is what still reads it as an
-        // "add" affordance instead of a selectable option.
-        gap: 7, padding: '13px 14px', borderRadius: 13, minHeight: 76,
-        background: 'var(--t-card)', border: '1px dashed var(--t-ctrl-border)',
-        boxShadow: '0 1px 2px rgba(0,0,0,.04)',
-        color: 'var(--t-muted)', cursor: 'pointer', fontSize: 12,
-      }}>
-      + Add a custom endpoint
-    </button>
   )
 }

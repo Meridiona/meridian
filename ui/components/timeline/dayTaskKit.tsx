@@ -14,7 +14,7 @@
 // accent rail and as the detail panel's accent. Threaded as a prop from the card
 // (which owns task order) into the panel, so a given task is always the same hue.
 export const TASK_HUES = [
-  'var(--color-state-proposal)',
+  'var(--t-accent)',
   '#3B82F6',
   '#D946EF',
   '#8b7cf6',

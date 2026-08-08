@@ -320,7 +320,7 @@ describe('an already-working provider still releases the connect flow', () => {
     // on purpose.
     expect(modal).toContain('function ConnectedHandBack')
     expect(modal).toContain("Great - that's your AI connected. Taking you back to your task…")
-    expect(modal).toContain('{outcome && lock && <ConnectedHandBack outcome={outcome} section={initialSection} />}')
+    expect(modal).toMatch(/\{outcome && lock && <ConnectedHandBack outcome=\{outcome\} section=\{initialSection\}/)
   })
 
   it('holds that line long enough to read', () => {
@@ -334,7 +334,23 @@ describe('an already-working provider still releases the connect flow', () => {
     // full-screen card once the planner is back. Holding the modal for the full
     // 2.2s first makes them read a cramped version and then read it again.
     expect(modal).toContain('const DECLINE_HAND_BACK_MS = 1100')
-    expect(modal).toContain("outcome === 'declined' ? DECLINE_HAND_BACK_MS : HAND_BACK_MS")
+    // Asserted as the BRANCH rather than as one ternary: the connected path now also
+    // waits on the first ticket sync, so the two holds are no longer a single
+    // expression. What must stay true is that declining takes the short one.
+    expect(modal).toMatch(/if \(outcome === 'declined'\) \{[\s\S]{0,160}setTimeout\(onLockSatisfied, DECLINE_HAND_BACK_MS\)/)
+  })
+
+  it('the connected path absorbs the first ticket sync instead of the planner doing it', () => {
+    // The wait is the same length either way; where it is spent is the whole point.
+    // Paid on the planner, the user reaches the screen that exists to show their
+    // tickets and finds it empty. Paid here, the screen already says something true
+    // and finished, and the planner opens onto a full board.
+    expect(modal).toContain('pendingTaskSync()')
+    expect(modal).toContain("section === 'integrations' ? pendingTaskSync() : null")
+    // Capped - this modal is LOCKED while it waits, so a stalled tracker must never
+    // be able to strand someone in it.
+    expect(modal).toMatch(/const SYNC_HOLD_MAX_MS = \d+/)
+    expect(modal).toContain('Promise.race([pending, after(SYNC_HOLD_MAX_MS)])')
   })
 
   it('uses a plain hyphen in the confirmation, like every other user-facing string', () => {
@@ -372,5 +388,49 @@ describe('the resumed composer keeps the note and drafts it', () => {
     // The fix belongs in the consumer, not here: a flag that survived being read would
     // re-trigger a draft on the next unrelated open.
     expect(store).toContain('resumePending = false')
+  })
+})
+
+// ── ONE ladder, one implementation ───────────────────────────────────────────────────────
+//
+// "Is the AI provider connected" had four separate answers in this codebase, and they
+// disagreed on screen:
+//
+//   1. Rust `classify_provider_health` → `get_health.llm_provider_ok` — the banner, the task
+//      composer, the worklog dialog, the day-summary view, and the resolver's own gate.
+//   2. `phaseFor` here — the provider detail screen and the Settings lock.
+//   3. An inline ternary in <ChooserTile>'s call site — the grid. Had no notion of
+//      `rate_limited`, so a throttled provider showed a confident green tile while the banner
+//      said it was catching up.
+//   4. Nothing at all for the cloud endpoint: the Groq tile and the endpoint card both read
+//      `value === 'custom'`, i.e. a fact about settings.json, and rendered a green IN USE for
+//      a provider the app had just been told was down.
+//
+// (2) is now the single TypeScript decider and (3)/(4) are gone. These guard that.
+describe('every surface reads the same ladder', () => {
+  const picker = readFileSync(`${new URL('..', import.meta.url).pathname}/components/LlmProviderPicker.tsx`, 'utf8')
+  const providers = readFileSync(`${new URL('..', import.meta.url).pathname}/components/CustomProviders.tsx`, 'utf8')
+
+  it('the chooser derives its tiles from phaseFor, never from its own ternary', () => {
+    expect(picker).toContain('phaseFor(')
+    // The shapes of the old local implementation. Any of them coming back is a second answer.
+    expect(picker).not.toContain('last_test?.outcome.status ===')
+    expect(picker).not.toContain("label: 'NOT DETECTED'")
+    expect(picker).not.toContain("label: 'ERROR'")
+  })
+
+  it('the cloud endpoint is judged like every other provider, not by being selected', () => {
+    // `value === 'custom'` may decide what is SELECTED. It may never decide what is LIVE.
+    expect(picker).toContain('const customPhase = phaseFor(')
+    expect(picker).toContain('live={!TILE_NOT_LIVE.includes(customPhase.kind)}')
+    // …and the endpoint card takes that verdict rather than re-deriving one.
+    expect(providers).toContain('live: boolean')
+    expect(providers).toContain("{live ? 'In use' : 'Not connected'}")
+  })
+
+  it('a throttled provider stays live - the same call Rust makes', () => {
+    // `classify_provider_health` keeps ok: true and sets rate_limited. A tile that went grey
+    // here would contradict the banner about the same provider at the same moment.
+    expect(picker).toContain("const TILE_NOT_LIVE: Phase['kind'][] = ['not_installed', 'failed']")
   })
 })

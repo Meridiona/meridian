@@ -3,20 +3,9 @@
 
 import { useEffect, useState } from 'react'
 import { subscribe } from '@/lib/bridge'
-
-interface HealthStatus {
-  a11y_helper_trusted?: boolean
-  database_ready?: boolean
-  error?: string
-  /** Whether the in-use LLM provider is usable. `false` → the provider is missing or failing,
-   *  so summaries are paused/degraded. `llm_provider_name`/`_detail` fill the banner copy. */
-  llm_provider_ok?: boolean
-  /** `true` → the provider is usable but rate-limited: a softer "catching up" notice, not the
-   *  "unavailable" alarm (it clears on its own). Only meaningful when `llm_provider_ok !== false`. */
-  llm_provider_rate_limited?: boolean
-  llm_provider_name?: string
-  llm_provider_detail?: string
-}
+// Shared, not private to this file: three other call sites read the same command
+// and each had grown its own inline shape. See the type's own note in api-types.
+import type { HealthStatus } from '@/lib/api-types'
 
 export default function HealthBanner() {
   const [health, setHealth] = useState<HealthStatus | null>(null)

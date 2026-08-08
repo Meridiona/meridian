@@ -133,7 +133,7 @@ export function WorklogTicketPicker({ current, busy, onPick, onCancel, title, ex
                 className="w-full text-left rounded-lg px-2.5 py-2"
                 style={{
                   border: '1px solid var(--t-hair)',
-                  background: isCurrent ? 'color-mix(in srgb, var(--color-state-proposal) 10%, transparent)' : 'transparent',
+                  background: isCurrent ? 'color-mix(in srgb, var(--t-accent) 10%, transparent)' : 'transparent',
                   opacity: busy && !isCurrent ? 0.55 : 1,
                   cursor: busy || isCurrent ? 'default' : 'pointer',
                 }}>
@@ -147,7 +147,7 @@ export function WorklogTicketPicker({ current, busy, onPick, onCancel, title, ex
                       <span className="mt-chip" style={{ color: 'var(--t-muted)', fontSize: 10.5 }}>Personal</span>
                     )}
                     {isCurrent && (
-                      <span className="mt-chip" style={{ color: 'var(--color-state-proposal)', fontSize: 10.5 }}>Current</span>
+                      <span className="mt-chip" style={{ color: 'var(--t-accent)', fontSize: 10.5 }}>Current</span>
                     )}
                   </span>
                 </div>

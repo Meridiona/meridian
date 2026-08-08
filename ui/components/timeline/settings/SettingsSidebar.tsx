@@ -67,22 +67,22 @@ export function SettingsSidebar({ section, onSelect, integrations, disabled = fa
               border: 'none',
               cursor: 'pointer',
               font: "700 12.5px var(--font-sans)",
-              color: active ? 'var(--color-state-proposal)' : 'var(--t-muted)',
-              background: active ? 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)' : 'transparent',
-              boxShadow: active ? 'inset 0 0 0 1px color-mix(in srgb, var(--color-state-proposal) 24%, transparent)' : 'none',
+              color: active ? 'var(--t-accent)' : 'var(--t-muted)',
+              background: active ? 'color-mix(in srgb, var(--t-accent) 12%, transparent)' : 'transparent',
+              boxShadow: active ? 'inset 0 0 0 1px color-mix(in srgb, var(--t-accent) 24%, transparent)' : 'none',
             }}>
             <span className="inline-flex items-center justify-center rounded-md shrink-0"
               style={{
                 width: 24, height: 24, fontSize: 12,
                 background: active ? 'var(--t-card)' : 'var(--t-box)',
-                color: active ? 'var(--color-state-proposal)' : 'var(--t-faint-2)',
+                color: active ? 'var(--t-accent)' : 'var(--t-faint-2)',
               }} aria-hidden="true">
               {n.glyph}
             </span>
             <span className="flex-1">{n.label}</span>
             {showBadge && (
               <span className="rounded-full shrink-0"
-                style={{ width: 6, height: 6, background: 'var(--color-state-proposal)' }}
+                style={{ width: 6, height: 6, background: 'var(--t-accent)' }}
                 aria-label="No trackers connected" />
             )}
           </button>

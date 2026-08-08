@@ -16,13 +16,14 @@ import { useEffect, useState } from 'react'
 import { invoke, load, mutate } from '@/lib/bridge'
 import type { AppInfo } from '@/lib/api-types'
 import { AccountAuthControl } from '@/app/setup/signin'
+import { TOUR_DEV_TOOLS } from '@/components/tutorial/useTutorial'
 import { SectionCard, SectionHeader, FieldRow, SettingsButton } from './fields'
 import { useExportDiagnostics } from './useExportDiagnostics'
 
 // Colored only for a non-prod build — a prod dashboard shouldn't draw the eye
 // to its own version line; dev/staging should be unmistakable.
 const CHANNEL_COLOR: Record<AppInfo['channel'], string> = {
-  dev: 'var(--color-state-proposal)',
+  dev: 'var(--t-accent)',
   staging: 'var(--color-state-pending)',
   prod: 'var(--t-faint)',
 }
@@ -59,7 +60,7 @@ export function AccountSection({ onReplayTour, onReplayTourFromDay }: {
   return (
     <div className="max-w-[640px] flex flex-col gap-5">
       <div>
-        <p className="mt-label" style={{ color: 'var(--color-state-proposal)' }}>Account</p>
+        <p className="mt-label" style={{ color: 'var(--t-accent)' }}>Account</p>
         <h1 className="mt-title-lg mt-1.5" style={{ color: 'var(--t-title)' }}>Account</h1>
         <p className="mt-body-sm mt-2 max-w-[520px]" style={{ color: 'var(--t-muted)' }}>
           Re-run onboarding to reconfigure permissions, integrations, or the local model.
@@ -90,12 +91,22 @@ export function AccountSection({ onReplayTour, onReplayTourFromDay }: {
         {/* The walkthrough is a once-ever surface, so without this the only way
             back to it is clearing a localStorage marker by hand. Closes Settings
             first — the walkthrough drives this very modal in two of its beats,
-            so leaving it open would have it opening a modal already open. */}
-        <FieldRow label="Replay the walkthrough" description="Take the guided tour of the timeline, daily summary, and worklog drafts again - shown over an example day, not your own.">
-          <SettingsButton onClick={onReplayTour}>
-            Show me around
-          </SettingsButton>
-        </FieldRow>
+            so leaving it open would have it opening a modal already open.
+
+            DEV ONLY, same gate as the shortcut below. Replaying is an authoring
+            tool: it exists so the tour can be watched again while it is being
+            edited. For a real user it is a door back into a first-run experience
+            they have finished, over an example day that is not theirs - and it
+            drives their live Settings modal and their real integrations screen
+            on the way through. `window.__meridianTour()` remains for anyone who
+            genuinely needs it in a packaged build (see `useTutorial`). */}
+        {TOUR_DEV_TOOLS && (
+          <FieldRow label="Replay the walkthrough" description="Dev only. Take the guided tour of the timeline, daily summary, and worklog drafts again - shown over an example day, not your own.">
+            <SettingsButton onClick={onReplayTour}>
+              Show me around
+            </SettingsButton>
+          </FieldRow>
+        )}
         {/* DEV ONLY. Part one asks for a daily plan, a tracker connect (an OAuth
             round-trip through a browser) and possibly a CLI install before it
             reaches the example day - three or four minutes, most of it spent

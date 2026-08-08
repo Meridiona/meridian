@@ -264,7 +264,31 @@ pub async fn request_notifications(app: tauri::AppHandle) -> String {
 #[tauri::command]
 #[tracing::instrument]
 pub async fn detect_llm_providers() -> Result<Vec<meridian::llm::detect::ProviderStatus>, String> {
-    let found = meridian::llm::detect::detect_all_with_cache().await;
+    let mut found = meridian::llm::detect::detect_all_with_cache().await;
+
+    // `detect_all` enumerates BUILT-INS only, on purpose: a custom endpoint is a registry row
+    // with no CLI to probe, so it has no install state. But the test cache is keyed by wire id
+    // and DOES hold a row for `custom` - written by `test_llm_provider` and by the dev
+    // Disconnect button - and dropping it here meant nothing on the chooser could ever see it.
+    // The Groq tile therefore rendered IN USE off `value === 'custom'` alone: a green,
+    // confident "connected" for a provider the app had just been told is not.
+    //
+    // So the cached verdict is carried through as its own status row. `installed: true` is the
+    // honest answer for a cloud endpoint (there is nothing to install), and the row appears
+    // only when there is a cached test to report, so a never-tested endpoint stays absent
+    // rather than arriving as a bare green tick.
+    if let Some(last) =
+        meridian::llm::detect::cached_test_result(meridian_core::LlmProvider::Custom.as_str())
+    {
+        found.push(meridian::llm::detect::ProviderStatus {
+            id: meridian_core::LlmProvider::Custom.as_str().to_string(),
+            installed: true,
+            path: None,
+            authenticated: None,
+            last_test: Some(last),
+        });
+    }
+
     tracing::info!(
         installed = found.iter().filter(|p| p.installed).count(),
         verified = found
@@ -285,6 +309,7 @@ pub async fn detect_llm_providers() -> Result<Vec<meridian::llm::detect::Provide
 #[tauri::command]
 #[tracing::instrument]
 pub async fn test_llm_provider(
+    app: tauri::AppHandle,
     id: String,
 ) -> Result<meridian::llm::detect::ProviderTestResult, String> {
     let provider = meridian_core::LlmProvider::from_wire(&id)
@@ -298,6 +323,9 @@ pub async fn test_llm_provider(
         elapsed_ms = result.elapsed_ms,
         "llm: provider test complete"
     );
+    // A test is the one moment provider health provably changed - don't make the banner
+    // wait out the poll loop's 60 s cadence to agree with the card the user just pressed.
+    crate::commands::health::push_health_update(&app).await;
     Ok(result)
 }
 
@@ -322,7 +350,7 @@ pub async fn test_llm_provider(
 /// can be talked into disconnecting a user's provider.
 #[tauri::command]
 #[tracing::instrument]
-pub async fn disconnect_llm_provider(id: String) -> Result<(), String> {
+pub async fn disconnect_llm_provider(app: tauri::AppHandle, id: String) -> Result<(), String> {
     if !cfg!(debug_assertions) {
         return Err("disconnecting a provider is a dev-only surface".to_string());
     }
@@ -344,6 +372,9 @@ pub async fn disconnect_llm_provider(id: String) -> Result<(), String> {
         sticky: true,
     });
     tracing::info!(provider = %id, "llm: provider disconnected (dev)");
+    // The whole point of this button is to reach the not-connected state - which IS the
+    // banner. Push it now rather than at the next 60 s health tick.
+    crate::commands::health::push_health_update(&app).await;
     Ok(())
 }
 
@@ -550,7 +581,14 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let subscriber = registry().with(Recorder(Arc::clone(&seen)));
         tracing::subscriber::with_default(subscriber, f);
-        Arc::try_unwrap(seen).unwrap().into_inner().unwrap()
+        // Take the events THROUGH the Arc rather than unwrapping it. `with_default` restores
+        // the previous dispatcher on return but tracing does not promise the old one is
+        // dropped by then - it keeps a thread-local cache - so a second strong reference to
+        // the recorder can still be alive here. `Arc::try_unwrap` then fails, which showed up
+        // as this test failing roughly one run in three with the events it was asserting on
+        // printed in the panic message.
+        let events = std::mem::take(&mut *seen.lock().unwrap());
+        events
     }
 
     fn field<'a>(event: &'a CapturedEvent, name: &str) -> Option<&'a str> {

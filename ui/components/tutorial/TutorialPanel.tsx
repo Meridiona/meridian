@@ -76,7 +76,7 @@ export function TutorialPanel({ sample, phase, onOpenPlan }: {
                 <span className="inline-flex items-center justify-center rounded-md shrink-0"
                   style={{
                     width: 18, height: 18,
-                    background: t.is_terminal ? 'var(--color-state-proposal)' : 'transparent',
+                    background: t.is_terminal ? 'var(--btn-primary-bg)' : 'transparent',
                     border: t.is_terminal ? 'none' : '1.5px solid var(--t-hair)',
                   }}>
                   {t.is_terminal && <span style={{ color: '#fff', fontSize: 11, lineHeight: 1 }}>✓</span>}
@@ -99,16 +99,16 @@ export function TutorialPanel({ sample, phase, onOpenPlan }: {
               data-tour={PLAN_TOUR_ATTR}
               className="w-full text-left rounded-xl px-4 py-3.5 flex items-center gap-2.5 mt-card-hover"
               style={{
-                background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)',
-                border: '1px solid color-mix(in srgb, var(--color-state-proposal) 30%, transparent)',
+                background: 'color-mix(in srgb, var(--t-accent) 12%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--t-accent) 30%, transparent)',
               }}>
               <span className="inline-flex items-center justify-center rounded-full shrink-0 text-[13px]"
-                style={{ width: 26, height: 26, background: 'color-mix(in srgb, var(--color-state-proposal) 20%, transparent)' }}>✨</span>
+                style={{ width: 26, height: 26, background: 'color-mix(in srgb, var(--t-accent) 20%, transparent)' }}>✨</span>
               <span className="flex-1 min-w-0">
-                <p className="mt-card-title" style={{ color: 'var(--color-state-proposal)' }}>What are you working on today?</p>
+                <p className="mt-card-title" style={{ color: 'var(--t-accent)' }}>What are you working on today?</p>
                 <p className="mt-body-sm mt-0.5" style={{ color: 'var(--t-muted)' }}>Add a few tasks so Meridian can help you stay on track</p>
               </span>
-              <span style={{ color: 'var(--color-state-proposal)' }}>→</span>
+              <span style={{ color: 'var(--t-accent)' }}>→</span>
             </button>
           </>
         )}
@@ -136,7 +136,7 @@ function FocusProgress({ items }: { items: SampleOverview['focusItems'] }) {
   return (
     <div className="flex items-center gap-2 px-4 py-3">
       <span className="flex-1 h-1 rounded-full overflow-hidden bg-track">
-        <span className="block h-full rounded-full" style={{ width: `${pct}%`, background: 'var(--color-state-proposal)' }} />
+        <span className="block h-full rounded-full" style={{ width: `${pct}%`, background: 'var(--t-accent)' }} />
       </span>
       <span className="mt-mono-sm text-[10.5px] shrink-0" style={{ color: 'var(--t-faint)' }}>{pct}%</span>
     </div>

@@ -22,6 +22,7 @@ import { readFileSync } from 'fs'
 const uiRoot = import.meta.dir + '/..'
 const composer = readFileSync(`${uiRoot}/components/plan/TaskComposer.tsx`, 'utf8')
 const store = readFileSync(`${uiRoot}/components/plan/useTaskComposer.ts`, 'utf8')
+const notice = readFileSync(`${uiRoot}/components/plan/AiEngineNotice.tsx`, 'utf8')
 
 /** The real predicate, mirrored (the source is the contract; this pins its shape). */
 const MIN_TITLE_WORDS = 4
@@ -114,6 +115,31 @@ describe('the composer never blocks on the AI', () => {
     expect(composer).toContain('setShowAiNotice(true)')
     // And the raw failure is not printed underneath the notice that supersedes it.
     expect(composer).toContain('s.error && !showAiNotice')
+  })
+
+  it('a live engine failure beats what health remembers', () => {
+    // The dead end this closes: health scores the LAST RECORDED TEST, so a provider
+    // whose key tested fine reads `llm_provider_ok: true` while every real call fails.
+    // The failure branch asked health, health said fine, no notice was raised, and the
+    // user got "Try again" on a button that could only fail identically - with no route
+    // to the picker from anywhere on the screen.
+    //
+    // So the draft call reports whether the ENGINE failed, and that answer wins outright
+    // rather than being second-guessed by a remembered success.
+    expect(store).toContain('providerDown: !!d.provider_down')
+    expect(composer).toContain('if (s.providerDown) { setShowAiNotice(true)')
+    // Ahead of the health probe, not after it - the whole point is not to ask.
+    expect(composer.indexOf('if (s.providerDown)')).toBeLessThan(composer.indexOf('void probeProviders().then(ok =>'))
+  })
+
+  it('the engine says WHY, and the user sees it', () => {
+    // Every model failure used to collapse to one fixed sentence, so an expired key, a
+    // wrong model name and an exhausted quota were indistinguishable - three different
+    // fixes behind identical words. The reason now rides the notice's headline.
+    expect(composer).toContain('reason={s.providerDown ? s.error ?? undefined : undefined}')
+    expect(notice).toContain("{reason ?? 'Meridian needs an AI engine'}")
+    // …and the button stops telling someone who HAS a provider to connect one.
+    expect(notice).toContain("reason ? 'Check your provider' : 'Connect a provider'")
   })
 
   it('only a DRAFT failure is treated as an AI problem', () => {

@@ -274,6 +274,20 @@ export interface DayTask {
   posted_browse_url: string | null
 }
 
+/** Where one day-task's worklog stands, from `get_day_draft_states`.
+ *
+ *  Deliberately not the whole `DayTaskWorklogDraft`: this renders a badge on a row in
+ *  a list, and the full shape carries the update text, the reasoning and every target.
+ *  A task with NO draft has no entry at all, so a caller can tell "nothing generated"
+ *  from "ready and waiting" - which the old fixed "draft ready" sub-line could not. */
+export interface DayDraftState {
+  task_id: string
+  /** `drafted` | `approved` | `posted` | `error`. */
+  state: string
+  /** Measured minutes worked since the draft was written. Null on a pre-077 row. */
+  stale_minutes: number | null
+}
+
 export interface DayTasksResponse {
   day: string
   tasks: DayTask[]
@@ -578,6 +592,10 @@ export interface PlanTaskDraft {
   description: string
   issue_type: string        // 'Task' | 'Bug'
   error: string | null      // soft: "couldn't draft - write it yourself"
+  /** The ENGINE failed, not the answer - unreachable, refused, or empty. The composer
+   *  routes this to the AI picker instead of offering a retry that would fail the same
+   *  way. Absent from an older CLI, which reads as false. */
+  provider_down?: boolean
 }
 
 export interface CreatePlanTaskBody {
@@ -961,4 +979,37 @@ export interface InstallOutcome {
   path: string | null
   /** The command that was actually run, for display and debugging. */
   command: string
+}
+
+/** `get_health` (Rust `HealthResponse`, `tray/src-tauri/src/commands/health.rs`) - the
+ *  daemon/provider status behind the global banner.
+ *
+ *  Lives here because FOUR copies of this shape had grown in components: a private
+ *  `interface HealthStatus` in `HealthBanner.tsx` plus three inline
+ *  `{ llm_provider_ok?: boolean }` literals at the call sites that only care about the
+ *  provider. Inline literals are the drift risk this file exists to prevent - each one
+ *  silently decides its own optionality, and none of them changes when the Rust struct
+ *  does.
+ *
+ *  Every field is optional: the command resolves an empty response on error rather than
+ *  rejecting (its "silent-resolve contract"), so a consumer can never assume presence.
+ *
+ *  # Who reads this
+ *  `HealthBanner` (all of it), and `TaskComposer` / `SummaryTaskView` /
+ *  `WorklogDraftDialog` (the `llm_provider_ok` gate only). */
+export interface HealthStatus {
+  a11y_helper_trusted?: boolean
+  database_ready?: boolean
+  daemon_running?: boolean
+  error?: string
+  /** Whether the in-use LLM provider is usable. `false` → the provider is missing or
+   *  failing, so summaries are paused/degraded. `llm_provider_name`/`_detail` fill the
+   *  banner copy. */
+  llm_provider_ok?: boolean
+  /** `true` → the provider is usable but rate-limited: a softer "catching up" notice,
+   *  not the "unavailable" alarm (it clears on its own). Only meaningful when
+   *  `llm_provider_ok !== false`. */
+  llm_provider_rate_limited?: boolean
+  llm_provider_name?: string
+  llm_provider_detail?: string
 }

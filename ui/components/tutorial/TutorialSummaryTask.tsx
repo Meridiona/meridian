@@ -152,19 +152,26 @@ export function TaskView({ task, provider, mode, target, picking, phase, onBack,
   const busy = phase === 'posting'
   const draft = summaryDraft(task, providerId, mode, target, posted)
   const done: PostedLink[] = draft.targets.filter(t => t.posted)
-  const hue = 'var(--color-state-proposal)'
+  const hue = 'var(--t-accent)'
 
   return (
     <>
+      {/* Same chip as the real view's - see `SummaryTaskView` for why it stopped
+          being bare muted text. The tour rings this one, so a beat pointing at it
+          now points at something the user can see. */}
       <button data-tour="sum-back" onClick={onBack}
-        className="mt-body-sm hover:opacity-70"
-        style={{ color: 'var(--t-muted)', cursor: 'pointer' }}>
-        ‹ Back to summary
+        className="mt-body-sm inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 -ml-2.5 bg-ctrl"
+        style={{
+          color: 'var(--t-title)', border: '1px solid var(--t-ctrl-border)',
+          fontWeight: 600, cursor: 'pointer',
+        }}>
+        <span aria-hidden style={{ fontSize: 15, lineHeight: 1, marginTop: -1 }}>‹</span>
+        Back to summary
       </button>
 
       <div className="flex items-start gap-3 mt-4">
         <span className="rounded-full shrink-0 mt-1.5"
-          style={{ width: 9, height: 9, background: 'var(--color-state-proposal)' }} />
+          style={{ width: 9, height: 9, background: 'var(--t-accent)' }} />
         <div className="min-w-0">
           <p className="mt-label" style={{ color: 'var(--t-faint-2)' }}>
             WORKLOG UPDATE · {dur(task.minutes)} · {clock(lo)} - {clock(hi)}

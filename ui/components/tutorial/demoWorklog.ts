@@ -182,5 +182,8 @@ export function useDemoWorklog(provider: string): WorklogState {
     // trap.
     dismiss: () => {},
     setProvider: () => {},
+    // Nothing outside this hook writes the scripted draft, so there is nothing to
+    // re-read - and a real read here would replace the demo with the user's own.
+    refresh: () => {},
   }), [draft, phase, confirming, generate, approve, retarget])
 }

@@ -28,6 +28,7 @@
 // - `@/lib/llm-providers` — GROQ (copy + urls), pickGroqModel
 // - `@/components/CustomProviders` — the registry hook this writes through
 
+import { BackLink } from '@/components/ui/BackLink'
 import { useState } from 'react'
 import { invoke, openExternal } from '@/lib/bridge'
 import { GROQ, pickGroqModel, type ProbeOutcome } from '@/lib/llm-providers'
@@ -80,9 +81,10 @@ export default function GroqSetup({ onBack, onAdd, onPick }: {
       const outcome = await onAdd({
         vendor: GROQ.vendor, name: GROQ.name, base_url: GROQ.baseUrl,
         model: chosen, api_key: key,
-        // Unknown rather than guessed. Groq's free limits differ per model and change; a
-        // made-up number here would drive a capacity verdict the user would read as fact.
-        rpm: 0, rpd: 0,
+        // Groq's published free-tier limits for the model we just pinned - not a guess, and
+        // not left at 0 either: unknown limits mean unpaced requests and a standing notice on
+        // the endpoint card asking for a number we already know. See GROQ.freeRpm/freeRpd.
+        rpm: GROQ.freeRpm, rpd: GROQ.freeRpd,
       })
       setApiKey('')  // stored daemon-side now, and it never comes back
 
@@ -107,7 +109,7 @@ export default function GroqSetup({ onBack, onAdd, onPick }: {
   if (phase === 'done') {
     return (
       <div className="flex flex-col mer-pop" style={{ gap: 10, alignItems: 'flex-start' }}>
-        <Badge hue="var(--color-state-approved)">CONNECTED</Badge>
+        <HueBadge hue="var(--color-state-approved)">CONNECTED</HueBadge>
         <span style={{ fontSize: 17, fontWeight: 600, color: 'var(--t-title)' }}>
           You&apos;re set up
         </span>
@@ -121,16 +123,18 @@ export default function GroqSetup({ onBack, onAdd, onPick }: {
 
   return (
     <div className="flex flex-col" style={{ gap: 14 }}>
-      <button onClick={onBack} className="self-start flex items-center"
-        style={{ gap: 6, fontSize: 12, color: 'var(--t-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10 4 6 8l4 4" /></svg>
-        Back
-      </button>
+      <BackLink onClick={onBack}>Back</BackLink>
 
-      {/* The free badge leads. It is the single fact that makes this the right screen for
-          someone who just said they have no subscription. */}
+      {/* The two badges lead, together. FREE is what makes this the right screen for
+          someone who just said they have no subscription; ZERO RETENTION is the other
+          half of the same decision, and it used to sit below the fold in a block that
+          reads as boilerplate. Both are one-word answers to the two questions actually
+          being asked, so both are stated before anything else. */}
       <div className="flex flex-col" style={{ gap: 7 }}>
-        <Badge hue="var(--color-state-approved)">{GROQ.freeBadge}</Badge>
+        <div className="flex items-center" style={{ gap: 6 }}>
+          <HueBadge hue="var(--color-state-approved)">{GROQ.freeBadge}</HueBadge>
+          <HueBadge hue="var(--t-accent)">{GROQ.privacyBadge}</HueBadge>
+        </div>
         <span className="flex items-center" style={{ gap: 9, fontSize: 19, fontWeight: 600, color: 'var(--t-title)' }}>
           <span className="flex items-center justify-center shrink-0" style={{
             width: 32, height: 32, borderRadius: 9,
@@ -166,17 +170,17 @@ export default function GroqSetup({ onBack, onAdd, onPick }: {
         </div>
       </div>
 
-      <Step n={1} title="Create a free Groq account"
-        body="Sign up with Google or an email address. No card is asked for.">
-        <ActionLink href={GROQ.signUpUrl}>Open console.groq.com</ActionLink>
+      {/* ONE link, to the keys page - not a sign-up step and then a key step.
+          console.groq.com/keys already handles both: signed out it asks you to sign up
+          (Google or email, no card), then lands you on the very page the step is asking
+          for. Splitting that into two numbered steps described the same click twice and
+          made a two-minute setup look like a three-part chore. */}
+      <Step n={1} title="Create a free Groq API key"
+        body="Sign up with Google or an email address if you have not already - no card is asked for. Then press Create API key and copy it, Groq shows it once.">
+        <ActionLink href={GROQ.keyUrl}>Open Groq API keys</ActionLink>
       </Step>
 
-      <Step n={2} title="Create an API key"
-        body="On the API Keys page, press Create API key. Copy it - Groq shows it once.">
-        <ActionLink href={GROQ.keyUrl}>Open API keys</ActionLink>
-      </Step>
-
-      <Step n={3} title="Paste it here"
+      <Step n={2} title="Paste it here"
         body="Meridian picks the model, checks the key works, and sets everything else up.">
         <div className="flex flex-col" style={{ gap: 8 }}>
           <input
@@ -203,7 +207,7 @@ export default function GroqSetup({ onBack, onAdd, onPick }: {
             style={{
               fontSize: 12, fontWeight: 700, color: '#fff', padding: '8px 14px',
               borderRadius: 9, border: 'none',
-              background: 'var(--color-state-proposal)',
+              background: 'var(--btn-primary-bg)',
               opacity: busy || !apiKey.trim() ? 0.5 : 1,
               cursor: busy || !apiKey.trim() ? 'default' : 'pointer',
             }}>
@@ -279,7 +283,13 @@ function LinkOut({ href, children }: { href: string; children: React.ReactNode }
   )
 }
 
-function Badge({ children, hue }: { children: React.ReactNode; hue: string }) {
+/** A hue-tinted pill: the colour is the message (green = free, accent = privacy).
+ *  Named HueBadge, not Badge, because `LlmProviderGate` exports a DIFFERENT
+ *  `Badge` - a neutral filled/outline chip with no colour input. Two components
+ *  with one name in one flow is a real import hazard, and they should not be
+ *  merged: a single component taking both `filled` and `hue` would have two
+ *  mutually exclusive modes and no way to express that in its type. */
+function HueBadge({ children, hue }: { children: React.ReactNode; hue: string }) {
   return (
     <span className="font-mono self-start" style={{
       fontSize: 9, letterSpacing: '.1em', color: hue,

@@ -41,7 +41,7 @@ export function IntegrationsSection({ integrations, onChanged, gate = false, onD
           it says what connecting BUYS, which no title does. */}
       {!gate && (
         <>
-          <p className="mt-label" style={{ color: 'var(--color-state-proposal)' }}>Project management</p>
+          <p className="mt-label" style={{ color: 'var(--t-accent)' }}>Project management</p>
           <h1 className="mt-title-lg mt-1.5" style={{ color: 'var(--t-title)' }}>Connect your board</h1>
         </>
       )}

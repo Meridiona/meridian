@@ -29,7 +29,7 @@ export function TextInput({ value, onChange, placeholder, type = 'text', width =
         outline: 'none',
         fontFamily: 'inherit',
       }}
-      onFocus={e => (e.target.style.borderColor = 'var(--color-state-proposal)')}
+      onFocus={e => (e.target.style.borderColor = 'var(--t-accent)')}
       onBlur={e => (e.target.style.borderColor = 'var(--t-input-border)')}
     />
   )

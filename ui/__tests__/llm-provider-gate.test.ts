@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'bun:test'
 import { readFileSync } from 'fs'
 import {
-  CUSTOM_VENDOR_PRESETS, GROQ, GROQ_MODEL_PREFERENCE, LLM_GATE_CHOICES, LLM_GATE_TITLE,
+  GROQ, GROQ_MODEL_PREFERENCE, LLM_GATE_CHOICES, LLM_GATE_TITLE,
   pickGroqModel,
 } from '@/lib/llm-providers'
 
@@ -89,18 +89,33 @@ describe('the picker routes on the answer', () => {
 })
 
 describe('the Groq walkthrough', () => {
-  it('is the only preset left', () => {
+  it('is the only way an endpoint gets added', () => {
     // Gemini / OpenRouter / OpenAI / a free-text endpoint all made the no-subscription path
-    // a configuration exercise for someone who came here to avoid one.
-    expect(CUSTOM_VENDOR_PRESETS.length).toBe(1)
-    expect(CUSTOM_VENDOR_PRESETS[0].id).toBe('groq')
+    // a configuration exercise for someone who came here to avoid one. Once the preset list
+    // was down to Groq alone the add FORM was a questionnaire with one possible answer, so
+    // it and its tile went too - this pins that they stay gone.
+    const providers = readFileSync(`${uiRoot}/components/CustomProviders.tsx`, 'utf8')
+    for (const dead of ['AddCustomProvider', 'AddForm', 'CUSTOM_VENDOR_PRESETS']) {
+      expect(providers.includes(dead)).toBe(false)
+      expect(picker.includes(dead)).toBe(false)
+    }
+    // But the registry write itself survives - GroqSetup is what calls it now.
+    expect(providers).toContain('add_custom_llm_provider')
+    expect(groq).toContain('onAdd(')
   })
 
   it('leads with free and backs its privacy claims with a link', () => {
+    // Price and retention rank together, so both are badges - the second one exists
+    // because "what happens to what I send" was answered only in body text nobody
+    // reaches before deciding whether to paste a key.
     expect(GROQ.freeBadge).toBe('FREE')
+    expect(GROQ.privacyBadge.length).toBeGreaterThan(0)
+    expect(groq).toContain('GROQ.privacyBadge')
     expect(GROQ.trust.length).toBeGreaterThanOrEqual(3)
-    expect(GROQ.trust.join(' ')).toMatch(/does not train/i)
-    expect(GROQ.trust.join(' ')).toMatch(/not retained/i)
+    // Asserted by CLAIM, not by phrasing: the retention answer and the training answer
+    // are the two a careful reader wants, and both must be stated somewhere in the block.
+    expect(GROQ.trust.join(' ')).toMatch(/not (logged|stored|retained)/i)
+    expect(GROQ.trust.join(' ')).toMatch(/train/i)
     // A claim with no source is what a careful reader should refuse - each links out.
     expect(GROQ.privacyUrl).toMatch(/^https:\/\/groq\.com\//)
     expect(GROQ.termsUrl).toMatch(/^https:\/\/groq\.com\//)
@@ -108,9 +123,14 @@ describe('the Groq walkthrough', () => {
     expect(groq).toContain('GROQ.termsUrl')
   })
 
-  it('walks three steps and asks for exactly one thing', () => {
+  it('walks two steps and asks for exactly one thing', () => {
+    // Two, not three: getting the key is ONE trip to console.groq.com/keys, which handles
+    // signing up on the way. A separate "create an account" step numbered the same click
+    // twice and made a two-minute setup read as a chore.
     const steps = groq.match(/<Step n=\{\d\}/g) ?? []
-    expect(steps.length).toBe(3)
+    expect(steps.length).toBe(2)
+    // And exactly one place to go - a second outbound link here is the split coming back.
+    expect((groq.match(/<ActionLink/g) ?? []).length).toBe(1)
     // One input on the whole screen. Every other field the old add-form exposed is either
     // fixed by the vendor or decided for the user.
     expect((groq.match(/<input/g) ?? []).length).toBe(1)
@@ -207,16 +227,28 @@ describe('the required lock', () => {
 })
 
 describe('pickGroqModel', () => {
-  it('prefers the best structured-output family on offer', () => {
+  it('prefers strict schema support over a bigger model', () => {
+    // On Groq only the gpt-oss pair honours `json_schema`; everything else tops out at
+    // JSON Object mode, whose replies parse but need not carry the fields the pipeline
+    // reads - a failure that drops an hour instead of erroring. So a larger model does
+    // not outrank a schema-capable one, however good its prose.
     expect(pickGroqModel([
       'llama-3.3-70b-versatile',
       'moonshotai/kimi-k2-instruct-0905',
       'openai/gpt-oss-20b',
-    ])).toBe('moonshotai/kimi-k2-instruct-0905')
+    ])).toBe('openai/gpt-oss-20b')
+  })
+
+  it('takes 120b over 20b - the quota is identical, so size costs nothing', () => {
+    // Both are 30 RPM / 1K RPD / 8K TPM / 200K TPD on the free tier, so preferring the
+    // more accurate one gives up no headroom. If that ever stops being true this order
+    // is the thing to revisit.
+    expect(pickGroqModel(['openai/gpt-oss-20b', 'openai/gpt-oss-120b']))
+      .toBe('openai/gpt-oss-120b')
   })
 
   it('matches a family by prefix, so a dated revision still counts', () => {
-    expect(pickGroqModel(['moonshotai/kimi-k2-instruct-1130'])).toBe('moonshotai/kimi-k2-instruct-1130')
+    expect(pickGroqModel(['openai/gpt-oss-120b-0905'])).toBe('openai/gpt-oss-120b-0905')
   })
 
   it('falls through the preference order', () => {

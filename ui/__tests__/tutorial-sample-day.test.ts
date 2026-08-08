@@ -535,7 +535,7 @@ describe('the tracker branch, moved to the front', () => {
     // which is right: they are the two controls on this screen that CREATE.
     const board = readFileSync(new URL('../components/plan/PlanBoardColumn.tsx', import.meta.url), 'utf8')
     const btn = board.slice(board.indexOf('data-tour="plan-new-task"'), board.indexOf('New task', board.indexOf('data-tour="plan-new-task"')))
-    expect(btn).toContain("background: 'var(--color-state-proposal)'")
+    expect(btn).toContain("background: 'var(--btn-primary-bg)'")
     expect(btn).toContain("color: '#fff'")
     expect(btn).not.toContain('14%')
   })
@@ -1253,7 +1253,7 @@ describe('the OAuth wait has a way out that looks like one', () => {
     // it, on the one screen where the user is already unsure anything is
     // happening - exactly where an escape hatch has to look pressable.
     expect(block).not.toContain('Not going through? Cancel')
-    expect(block).toContain("background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)'")
+    expect(block).toContain("background: 'color-mix(in srgb, var(--t-accent) 12%, transparent)'")
   })
 
   it('is not gated on two specific providers', () => {
@@ -1555,7 +1555,7 @@ describe('the closing asks: a delivery time, and the off switch', () => {
     // shrug, and the link between it and the feature being switched on is left
     // for the reader to make. What is being set is a delivery time.
     expect(code(dialog)).not.toContain('When does your day end')
-    expect(dialog).toContain('When do you want these auto ready?')
+    expect(dialog).toContain('When do you want these ready?')
     expect(code(src)).not.toContain('does your day')
   })
 

@@ -24,7 +24,8 @@ import { TaskDetailDialog } from '@/components/timeline/TaskDetailDialog'
 import { dayString } from '@/components/timeline/types'
 import type { PlanResponse, IntegrationsResponse } from '@/lib/api-types'
 import { MAX_PLAN_TASKS } from '@/lib/api-types'
-import { load as bridgeLoad, mutate as bridgeMutate } from '@/lib/bridge'
+import { load as bridgeLoad } from '@/lib/bridge'
+import { syncTasks } from '@/lib/taskSync'
 import { availableTrackerNames, connectedTrackers } from '@/lib/integrations'
 import { usePlan, refreshPlan, planAction, pausePlanRefresh } from '@/components/plan/planStore'
 import { isTutorialRunning } from '@/components/tutorial/engine'
@@ -93,14 +94,23 @@ export default function PlanView() {
   // user's in-progress edits. Skipped entirely during an active drag — the store
   // holds off background refreshes for the drag's duration (see pausePlanRefresh),
   // which also stops OTHER readers' polls from swapping the board mid-drag.
-  const load = useCallback((initial = false) => {
-    if (!initial && draggingRef.current) return
-    // A thrown error = real backend failure (not an empty day) → surface, don't
+  //
+  // RESOLVES THE OUTCOME (`true` = the board is current). `refreshPlan` swallows
+  // its own failure and resolves `null` rather than throwing, so a caller that
+  // needs to know cannot learn it from a rejection - it has to come back as a
+  // value. The Refresh chip below depends on this.
+  const load = useCallback((initial = false): Promise<boolean> => {
+    // Nothing was attempted, so nothing failed - a paused background poll is not
+    // an error and must not light up the chip.
+    if (!initial && draggingRef.current) return Promise.resolve(true)
+    // A failed read = real backend failure (not an empty day) → surface, don't
     // render empty. `refreshPlan` publishes to the store, so `data` arrives via
     // usePlan rather than local state.
-    refreshPlan(todayKey).then(d => {
-      if (!initial) return
-      if (d) { setLoadFailed(false); derive(d) } else setLoadFailed(true)
+    return refreshPlan(todayKey).then(d => {
+      if (!initial) return d != null
+      if (d) { setLoadFailed(false); derive(d); return true }
+      setLoadFailed(true)
+      return false
     })
   }, [derive, todayKey])
 
@@ -116,12 +126,25 @@ export default function PlanView() {
   // with a tracker connected: personal-only plans have nothing to sync.
   // Returns the in-flight promise so the first-sync backstop below can tell when
   // the wait is genuinely over rather than guessing at a delay.
+  //
+  // Goes through `syncTasks`, which JOINS a sync already started by the connect flow
+  // rather than firing a second one. That matters on the path this exists for: the
+  // connect page now warm-starts the first sync, so by the time the planner mounts
+  // the call is usually already in flight and half done. Firing our own would spend a
+  // second outward request against the user's rate limit and then wait out the slower
+  // of the two.
+  //
+  // THE FAILURE SIGNAL IS THE RESULT, NOT A REJECTION. Neither `syncTasks` nor
+  // `load` ever rejects - both swallow and report - so the `.catch` that used to
+  // sit here was unreachable and the chip could never show "Sync failed" again.
+  // Both outcomes are checked: the sync can fail while the read succeeds (the
+  // board simply stays as it was), which is precisely the case worth telling the
+  // user about, since nothing else on screen would change.
   const handleSync = useCallback(() => {
     if (syncing) return Promise.resolve()
     setSyncing(true); setSyncError(false)
-    return bridgeMutate('/api/tasks/sync', 'sync_tasks', {})
-      .then(() => load(true))
-      .catch(() => setSyncError(true))
+    return syncTasks()
+      .then(synced => load(true).then(loaded => { if (!synced || !loaded) setSyncError(true) }))
       .finally(() => setSyncing(false))
   }, [syncing, load])
 
@@ -156,6 +179,9 @@ export default function PlanView() {
     // Nothing to pull, or something already there to show: the wait is over
     // before it started.
     if (trackers.length === 0 || (data.available?.length ?? 0) > 0) { setFirstSyncDone(true); return }
+    // Usually this JOINS the sync the connect flow already started - see `handleSync`.
+    // It stays as a backstop because plenty of empty-board arrivals never went near a
+    // connect: a reopened app, a board that emptied, a sync that failed an hour ago.
     handleSync().finally(() => setFirstSyncDone(true))
   }, [data, trackers, trackersLoaded, handleSync])
 

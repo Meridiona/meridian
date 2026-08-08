@@ -39,6 +39,38 @@ const DRAFT_MAX_TOKENS: u32 = 700;
 /// paste-bombing, and truncating beats blowing the context window.
 const NOTE_CAP: usize = 2000;
 
+/// Cap on how much of a provider's own words we repeat to the user. Long enough for a
+/// real explanation ("model X does not exist", "invalid api key"), short enough that a
+/// provider that dumps a stack trace cannot take over the composer.
+const REASON_CAP: usize = 180;
+
+/// Turn an [`llm::LlmError`] into one line the user can act on.
+///
+/// The engine's own words are the point. This used to be the fixed string "Couldn't draft
+/// that - write it below." for every possible failure, which told a user whose key had
+/// expired, whose model name was wrong, or who had simply run out of quota exactly the
+/// same thing: nothing. The cause is already known here - the only reason it was not
+/// shown is that nobody passed it on.
+fn engine_failure_message(e: &llm::LlmError) -> String {
+    let reason = match e {
+        // Self-resolving, and worth saying so - "try again" is the right advice here and
+        // the wrong advice for everything else.
+        llm::LlmError::RateLimited { .. } => {
+            return "Your AI provider is rate-limited right now - it will work again shortly."
+                .to_string()
+        }
+        llm::LlmError::Failed(m) => m.trim(),
+    };
+    if reason.is_empty() {
+        return "Your AI provider could not draft that - write it below.".to_string();
+    }
+    let mut short: String = reason.chars().take(REASON_CAP).collect();
+    if reason.chars().count() > REASON_CAP {
+        short.push('…');
+    }
+    format!("Your AI provider could not draft that - {short}")
+}
+
 /// A drafted task, in the shape the CLI prints and the tray/UI consume.
 ///
 /// Every field can be empty: an empty draft with `error` set is the honest answer when
@@ -52,6 +84,16 @@ pub struct TaskDraft {
     pub issue_type: String,
     /// Why the draft is empty, phrased for the user. `None` on success.
     pub error: Option<String>,
+    /// `true` when the ENGINE is what failed - the provider could not be reached, refused,
+    /// or answered with nothing - as opposed to answering with something unparseable.
+    ///
+    /// The composer needs this because the two cases want opposite affordances, and it
+    /// cannot tell them apart from the message. A provider fault is fixable in the AI
+    /// picker; a bad answer is transient and wants a retry. It also cannot infer it from
+    /// health: `classify_provider_health` scores the last RECORDED test, so a key that
+    /// connected fine a minute ago still reads `ok` while every real call is failing, and
+    /// the user gets a Try again that fails identically, forever.
+    pub provider_down: bool,
 }
 
 /// Draft a task from `note`. See the module header: this returns `Ok` with
@@ -86,7 +128,8 @@ pub async fn draft(note: &str) -> Result<TaskDraft> {
                 tracing::Span::current().record("drafted", false);
                 return Ok(TaskDraft {
                     issue_type: "Task".to_string(),
-                    error: Some("Couldn't draft that - write it below.".to_string()),
+                    error: Some(engine_failure_message(&e)),
+                    provider_down: true,
                     ..Default::default()
                 });
             }
@@ -149,6 +192,7 @@ fn parse_answer(text: &str) -> Option<TaskDraft> {
         description: field("description"),
         issue_type: issue_type.to_string(),
         error: None,
+        provider_down: false,
     })
 }
 
@@ -210,6 +254,51 @@ mod tests {
             parse_answer("[]").is_none(),
             "a bare array is not an object"
         );
+    }
+
+    #[test]
+    fn an_engine_failure_repeats_what_the_engine_said() {
+        // The whole point: the cause reaches the user. This was a fixed string for every
+        // failure, so an expired key, a wrong model name and an exhausted quota all read
+        // as "Couldn't draft that" - three different fixes, one useless sentence.
+        let m = engine_failure_message(&llm::LlmError::Failed(
+            "custom provider returned 401: invalid api key".to_string(),
+        ));
+        assert!(m.contains("invalid api key"), "cause must survive: {m}");
+    }
+
+    #[test]
+    fn a_rate_limit_is_named_as_temporary() {
+        // The one failure where waiting IS the fix. Sending this user to the provider
+        // picker to re-check a setup that is working would be a wasted trip.
+        let m = llm::LlmError::RateLimited {
+            message: "429 too many requests".to_string(),
+            retry_after: None,
+        };
+        let m = engine_failure_message(&m);
+        assert!(m.contains("rate-limited"), "{m}");
+        assert!(m.contains("shortly"), "must say it resolves itself: {m}");
+    }
+
+    #[test]
+    fn a_ranting_provider_cannot_take_over_the_composer() {
+        let m = engine_failure_message(&llm::LlmError::Failed("x".repeat(5000)));
+        assert!(
+            m.chars().count() < REASON_CAP + 80,
+            "message must stay one line, got {} chars",
+            m.chars().count()
+        );
+    }
+
+    #[test]
+    fn an_unparseable_answer_is_not_blamed_on_the_provider() {
+        // A model that answered - just badly - is a transient miss, and the composer
+        // reads `provider_down` to decide between "retry" and "go fix your provider".
+        // Sending someone to reconfigure a working engine over one bad answer is the
+        // opposite of helpful.
+        assert!(parse_answer("not json at all").is_none());
+        let d = parse_answer(r#"{"title":"T","description":"d","issue_type":"Task"}"#).unwrap();
+        assert!(!d.provider_down);
     }
 
     #[tokio::test]

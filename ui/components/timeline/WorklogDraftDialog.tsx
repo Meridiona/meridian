@@ -27,8 +27,12 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { GeneratingBar } from '@/components/GeneratingBar'
-import { load } from '@/lib/bridge'
-import type { BoardTicket, DayTaskWorklogDraft, IntegrationsResponse } from '@/lib/api-types'
+import { invoke, load } from '@/lib/bridge'
+import {
+  LOCAL_PROVIDER,
+  type BoardTicket, type DayTaskWorklogDraft, type EscalateResponse, type HealthStatus,
+  type IntegrationsResponse,
+} from '@/lib/api-types'
 import type { Tracker } from '@/lib/integrations'
 import { clockLabelFromIso } from './dayTaskLayout'
 import type { SettingsSection } from './settings/types'
@@ -37,8 +41,8 @@ import { WorklogTicketPicker } from './WorklogTicketPicker'
 import { DraftDocument } from './WorklogTargets'
 import { CopyUpdate } from './WorklogUpdateBody'
 import {
-  ConfirmPost, ConnectTrackerCta, DraftActions, GenerateCta, PostedBar, RegenerateDraft,
-  type PostedLink,
+  ConfirmPost, ConnectTrackerCta, DraftActions, GenerateCta, PersonalPostedBar, PostedBar,
+  RegenerateDraft, type PostedLink,
 } from './WorklogActions'
 
 /** The one line the task panel keeps: what the worklog is up to, and the way in.
@@ -274,7 +278,7 @@ export function WorklogDraftDialog({
     if (isDemo) { generate(); return }
     setChecking(true)
     try {
-      const h = await load<{ llm_provider_ok?: boolean }>('/api/health', 'get_health')
+      const h = await load<HealthStatus>('/api/health', 'get_health')
       if (h?.llm_provider_ok === false) { setProviderDown(true); return }
       setProviderDown(false)
       generate()
@@ -287,6 +291,32 @@ export function WorklogDraftDialog({
     } finally {
       setChecking(false)
     }
+  }
+
+  // ── Putting a PERSONAL post onto a real ticket ───────────────────────────
+  //
+  // A personal task's update is logged onto the task's own row and goes nowhere
+  // else. The two ways out of that (file a new ticket, or comment on one that
+  // exists) are the same `escalate_personal_task_*` commands the task dialog
+  // offers - called from here because here is where the user just watched the
+  // update land with nowhere to go, and the task dialog opens BEHIND this one.
+  //
+  // Re-reads the draft afterwards rather than patching it: escalation repoints
+  // `day_task_worklog_targets` at the real ticket inside the daemon, and
+  // reconstructing that here would be a second implementation of the same rules.
+  const [escalating, setEscalating] = useState(false)
+  const [escalateError, setEscalateError] = useState<string | null>(null)
+  const [matching, setMatching] = useState(false)
+  const personalPost = done.length > 0 && done.every((t) => t.provider === LOCAL_PROVIDER)
+
+  const runEscalate = (call: Promise<EscalateResponse>, fallback: string) => {
+    if (escalating) return
+    setEscalating(true)
+    setEscalateError(null)
+    call
+      .then(() => { setMatching(false); wl.refresh() })
+      .catch((e) => setEscalateError(e instanceof Error ? e.message : fallback))
+      .finally(() => setEscalating(false))
   }
 
   // The manual ticket picker, reset whenever the draft's targets change so a
@@ -369,10 +399,10 @@ export function WorklogDraftDialog({
             that commits. */}
         <div className="shrink-0 px-6 py-4 space-y-3"
           style={{ background: 'var(--t-card)', borderTop: '1px solid var(--t-card-border)' }}>
-          {error && (
+          {(error || escalateError) && (
             <p className="mt-body-sm rounded-lg px-3 py-2"
               style={{ color: 'var(--color-state-pending)', background: 'color-mix(in srgb, var(--color-state-pending) 12%, transparent)', fontSize: 12 }}>
-              {error}
+              {error || escalateError}
             </p>
           )}
           {draft && !posted && !picking && !confirming && phase !== 'generating' && (
@@ -382,7 +412,28 @@ export function WorklogDraftDialog({
             </div>
           )}
           {phase === 'generating' ? null
-            : posted ? (
+            : posted && personalPost ? (
+              // Logged on the task itself. The ordinary posted bar would claim it
+              // went to a board and offer a follow-up; what this state actually
+              // needs is a way onto a real ticket.
+              matching ? (
+                <WorklogTicketPicker current={null} busy={escalating} excludeLocal
+                  title="Put this update on which ticket?" tickets={boardTickets}
+                  onPick={(targetKey) => runEscalate(
+                    invoke<EscalateResponse>('escalate_personal_task_match', { taskKey: done[0].task_key, targetKey }),
+                    'Could not post to that ticket',
+                  )}
+                  onCancel={() => setMatching(false)} />
+              ) : (
+                <PersonalPostedBar trackers={trackers} hue={hue} busy={escalating}
+                  onCreate={() => runEscalate(
+                    invoke<EscalateResponse>('escalate_personal_task_create', { taskKey: done[0].task_key }),
+                    'Could not create the ticket',
+                  )}
+                  onMatch={() => { setEscalateError(null); setMatching(true) }}
+                  onConnect={() => onOpenSettings('integrations')} />
+              )
+            ) : posted ? (
               <PostedBar done={done} linkedTicket={linkedTicket} provider={draft?.provider ?? ''}
                 hue={hue} busy={busy} onRegenerate={generate} />
             ) : !draft ? (

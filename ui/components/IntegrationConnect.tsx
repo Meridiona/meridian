@@ -20,6 +20,8 @@ import type { IntegrationsResponse, TaskSummary, TasksResponse } from '@/lib/api
 import { TRACKERS } from '@/lib/integrations'
 import type { Tracker, TokenField } from '@/lib/integrations'
 import { ProviderGlyph, fmtDur } from '@/components/atoms'
+import { SelectableRow } from '@/components/ui/SelectableRow'
+import { syncTasks } from '@/lib/taskSync'
 import {
   useConnectStore, clearProviderNotice,
   oauthStore, startOAuth, cancelOAuth, setOAuthApiKey, resetOAuthIfSettled,
@@ -175,9 +177,12 @@ function ConnectedPanel({
       )}
       {pickingProjects ? (
         <div className="mb-1">
+          {/* Warm start here too - picking projects on an already-connected tracker is
+              the same "there are tickets to pull now" moment as a fresh connect, and
+              this is the path a user reaches from the "no projects selected" nudge. */}
           {tracker.id === 'github'
-            ? <GitHubProjectPicker onSuccess={() => { setPickingProjects(false); onChanged?.() }} />
-            : <JiraProjectPicker onSuccess={() => { setPickingProjects(false); onChanged?.() }} />}
+            ? <GitHubProjectPicker onSuccess={() => { void syncTasks(); setPickingProjects(false); onChanged?.() }} />
+            : <JiraProjectPicker onSuccess={() => { void syncTasks(); setPickingProjects(false); onChanged?.() }} />}
           <button onClick={() => setPickingProjects(false)} className="mt-2 text-[11px]" style={{ color: 'var(--ink-4)', cursor: 'pointer' }}>Cancel</button>
         </div>
       ) : reauthorizing ? (
@@ -259,7 +264,7 @@ function ProviderTasks({ tracker, expanded, onToggle, onSynced }: {
         </button>
         <button onClick={handleSync} disabled={syncing}
           className="text-[12px] px-3 py-1.5 rounded-md inline-flex items-center gap-1.5"
-          style={{ background: 'var(--color-state-proposal)', color: '#fff', border: 'none', opacity: syncing ? 0.6 : 1, cursor: syncing ? 'not-allowed' : 'pointer' }}
+          style={{ background: 'var(--btn-primary-bg)', color: '#fff', border: 'none', opacity: syncing ? 0.6 : 1, cursor: syncing ? 'not-allowed' : 'pointer' }}
           title="Pull the latest tasks from your trackers">
           <span style={{ display: 'inline-block', animation: syncing ? 'spin 1s linear infinite' : 'none' }}>↻</span>
           {syncing ? 'Syncing…' : 'Sync now'}
@@ -273,7 +278,7 @@ function ProviderTasks({ tracker, expanded, onToggle, onSynced }: {
           {loadError ? (
             <div className="px-3 py-3">
               <p className="text-[12px]" style={{ color: 'var(--status-error-dot)' }}>{loadError}</p>
-              <button onClick={fetchTasks} className="text-[11px] mt-2" style={{ color: 'var(--color-state-proposal)', cursor: 'pointer' }}>Retry</button>
+              <button onClick={fetchTasks} className="text-[11px] mt-2" style={{ color: 'var(--t-accent)', cursor: 'pointer' }}>Retry</button>
             </div>
           ) : sorted === null ? (
             <p className="text-[12px] px-3 py-3" style={{ color: 'var(--t-faint)' }}>Loading tasks…</p>
@@ -288,7 +293,7 @@ function ProviderTasks({ tracker, expanded, onToggle, onSynced }: {
                   style={{ borderTop: i > 0 ? '1px solid var(--t-hair)' : undefined, opacity: t.on_board ? 1 : 0.55 }}>
                   <a href={t.url} onClick={(e) => { e.preventDefault(); if (t.url) openExternal(t.url) }}
                     className="text-[11px] font-mono px-1.5 py-0.5 rounded shrink-0"
-                    style={{ background: 'var(--t-box)', color: 'var(--color-state-proposal)', cursor: t.url ? 'pointer' : 'default' }}
+                    style={{ background: 'var(--t-box)', color: 'var(--t-accent)', cursor: t.url ? 'pointer' : 'default' }}
                     title={t.url ? `Open ${t.key} ↗` : t.key}>
                     {t.key}
                   </a>
@@ -310,22 +315,35 @@ function ProviderTasks({ tracker, expanded, onToggle, onSynced }: {
 // ── Flow picker ───────────────────────────────────────────────────────────────
 function TrackerSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () => void }) {
   // Providers that offer BOTH OAuth and a token get a mode toggle.
-  const dual = !!tracker.oauth && !!tracker.token
   const [mode, setMode] = useState<'oauth' | 'token'>(tracker.oauth ? 'oauth' : 'token')
 
-  if (tracker.azure) return <AzureDevOpsSetup tracker={tracker} onSuccess={onSuccess} />
+  // WARM START. Every connect path in this component funnels its completion through
+  // here, so this is the one place that knows "a tracker just became usable" for all
+  // of them - and it is several seconds earlier than the planner, which is where the
+  // first sync used to be kicked off. Deliberately not awaited: the point is that the
+  // network round trip overlaps the confirmation the user is about to read and the
+  // screens they pass through next, instead of being paid in front of an empty board.
+  // See `@/lib/taskSync` for why a second caller joins this rather than duplicating it.
+  const done = () => { void syncTasks(); onSuccess?.() }
+
+  if (tracker.azure) return <AzureDevOpsSetup tracker={tracker} onSuccess={done} />
 
   return (
     <div style={{ background: 'var(--t-box)' }}>
-      {dual && (
+      {/* Narrowed inline rather than gated on `dual`. `dual` is a separately
+          computed boolean, and TypeScript cannot see that it implies both fields
+          are present - which is why this used to need `tracker.oauth!`. The `!`
+          was correct today and silently load-bearing: change how `dual` is derived
+          and the assertion keeps compiling while the guarantee is gone. */}
+      {tracker.oauth && tracker.token && (
         <div className="px-4 pt-2 pb-1 flex gap-2">
-          <ModeTab label={tracker.oauth!.label} active={mode === 'oauth'} onClick={() => setMode('oauth')} />
-          <ModeTab label={tracker.token!.label} active={mode === 'token'} onClick={() => setMode('token')} />
+          <ModeTab label={tracker.oauth.label} active={mode === 'oauth'} onClick={() => setMode('oauth')} />
+          <ModeTab label={tracker.token.label} active={mode === 'token'} onClick={() => setMode('token')} />
         </div>
       )}
       {mode === 'oauth' && tracker.oauth
-        ? <OAuthSetup tracker={tracker} onSuccess={onSuccess} />
-        : <TokenSetup tracker={tracker} onSuccess={onSuccess} />}
+        ? <OAuthSetup tracker={tracker} onSuccess={done} />
+        : <TokenSetup tracker={tracker} onSuccess={done} />}
     </div>
   )
 }
@@ -333,7 +351,7 @@ function TrackerSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: ()
 function ModeTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
     <button onClick={onClick} className="text-[11px] px-3 py-1 rounded-md"
-      style={{ background: active ? 'var(--color-state-proposal)' : 'color-mix(in srgb, var(--color-state-proposal) 10%, transparent)', color: active ? '#fff' : 'var(--t-faint)', cursor: 'pointer' }}>
+      style={{ background: active ? 'var(--btn-primary-bg)' : 'color-mix(in srgb, var(--t-accent) 10%, transparent)', color: active ? '#fff' : 'var(--t-faint)', cursor: 'pointer' }}>
       {label}
     </button>
   )
@@ -351,12 +369,12 @@ function DeviceStep({ n, state, title, children }: {
         style={{ background: 'var(--color-state-approved)', color: '#fff' }}>✓</span>
     ) : state === 'waiting' ? (
       <span className="block w-5 h-5 rounded-full animate-spin"
-        style={{ border: '2px solid var(--t-hair)', borderTopColor: 'var(--color-state-proposal)' }} />
+        style={{ border: '2px solid var(--t-hair)', borderTopColor: 'var(--t-accent)' }} />
     ) : (
       <span className="flex items-center justify-center w-5 h-5 rounded-full text-[11px] font-semibold"
         style={{
-          border: `1.5px solid ${state === 'active' ? 'var(--color-state-proposal)' : 'var(--t-hair)'}`,
-          color: state === 'active' ? 'var(--color-state-proposal)' : 'var(--t-faint-2)',
+          border: `1.5px solid ${state === 'active' ? 'var(--t-accent)' : 'var(--t-hair)'}`,
+          color: state === 'active' ? 'var(--t-accent)' : 'var(--t-faint-2)',
         }}>{n}</span>
     )
   return (
@@ -379,7 +397,7 @@ function GitHubGrantHint() {
   const hair = 'var(--t-hair)'
   const card = 'var(--t-card)'
   const muted = 'var(--t-faint-2)'
-  const accent = 'var(--color-state-proposal)'
+  const accent = 'var(--t-accent)'
   const ok = 'var(--color-state-approved)'
   return (
     <svg viewBox="0 0 280 120" role="img"
@@ -449,7 +467,7 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
             <>
               <p className="text-[12px]" style={{ color: 'var(--status-warning-dot)' }}>
                 A Trello API key is required.{' '}
-                <a href="https://trello.com/app-key" onClick={(e) => { e.preventDefault(); openExternal('https://trello.com/app-key') }} style={{ color: 'var(--color-state-proposal)' }}>Get it at trello.com/app-key ↗</a>
+                <a href="https://trello.com/app-key" onClick={(e) => { e.preventDefault(); openExternal('https://trello.com/app-key') }} style={{ color: 'var(--t-accent)' }}>Get it at trello.com/app-key ↗</a>
               </p>
               <Field
                 field={{
@@ -470,7 +488,7 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
             disabled={apiKeyPrompt && !apiKey.trim()}
             className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
             style={{
-              background: 'var(--color-state-proposal)', color: '#fff',
+              background: 'var(--btn-primary-bg)', color: '#fff',
               opacity: apiKeyPrompt && !apiKey.trim() ? 0.5 : 1,
               cursor: apiKeyPrompt && !apiKey.trim() ? 'not-allowed' : 'pointer',
             }}>
@@ -508,7 +526,7 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
                     className="text-[12px] px-3 py-2 rounded-md font-medium transition-colors"
                     style={{
                       color: '#fff',
-                      background: copied ? 'var(--color-state-approved)' : 'var(--color-state-proposal)',
+                      background: copied ? 'var(--color-state-approved)' : 'var(--btn-primary-bg)',
                       border: 'none', cursor: 'pointer',
                     }}>
                     {copied ? '✓ Copied' : 'Copy code'}
@@ -522,7 +540,7 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
                   onClick={() => { openExternal(verifyUri ?? 'https://github.com/login/device'); setOpened(true) }}
                   className="text-[12px] px-3 py-2 rounded-md font-medium inline-flex items-center gap-1.5 transition-opacity"
                   style={{
-                    background: 'var(--color-state-proposal)', color: '#fff',
+                    background: 'var(--btn-primary-bg)', color: '#fff',
                     opacity: copiedOnce ? 1 : 0.45, border: 'none',
                     cursor: copiedOnce ? 'pointer' : 'not-allowed',
                   }}>
@@ -568,9 +586,9 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
                 <button onClick={() => { cancelOAuth(tracker); void startOAuth(tracker) }}
                   className={`text-[12px] px-3 py-1.5 rounded-md transition-opacity hover:opacity-80`}
                   style={{
-                    fontWeight: 700, color: 'var(--color-state-proposal)', cursor: 'pointer',
-                    background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)',
-                    border: '1px solid color-mix(in srgb, var(--color-state-proposal) 30%, transparent)',
+                    fontWeight: 700, color: 'var(--t-accent)', cursor: 'pointer',
+                    background: 'color-mix(in srgb, var(--t-accent) 12%, transparent)',
+                    border: '1px solid color-mix(in srgb, var(--t-accent) 30%, transparent)',
                   }}>
                   Open it again
                 </button>
@@ -616,7 +634,7 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
       {status === 'error' && (
         <div className="space-y-2">
           <p className="text-[12px]" style={{ color: 'var(--status-error-dot)' }}>{error ?? 'OAuth failed.'}</p>
-          <button onClick={() => cancelOAuth(tracker)} className="text-[11px]" style={{ color: 'var(--color-state-proposal)', cursor: 'pointer' }}>
+          <button onClick={() => cancelOAuth(tracker)} className="text-[11px]" style={{ color: 'var(--t-accent)', cursor: 'pointer' }}>
             Try again
           </button>
         </div>
@@ -697,7 +715,7 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
         <button
           onClick={() => openExternal(method.url!)}
           className="text-[12px] px-3 py-2 rounded-md font-medium inline-flex items-center gap-1.5"
-          style={{ background: 'var(--color-state-proposal)', color: '#fff', border: 'none', cursor: 'pointer' }}>
+          style={{ background: 'var(--btn-primary-bg)', color: '#fff', border: 'none', cursor: 'pointer' }}>
           Open {tracker.name} ↗
         </button>
       )}
@@ -709,7 +727,7 @@ function TokenSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
       {error && <p className="text-[11px]" style={{ color: 'var(--status-error-dot)' }}>{error}</p>}
       {method.note && <p className="text-[11px] leading-relaxed" style={{ color: 'var(--t-faint-2)' }}>{method.note}</p>}
       <button onClick={save} disabled={!canSave || saving} className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
-        style={{ background: 'var(--color-state-proposal)', color: '#fff', opacity: !canSave || saving ? 0.5 : 1, cursor: !canSave || saving ? 'not-allowed' : 'pointer' }}>
+        style={{ background: 'var(--btn-primary-bg)', color: '#fff', opacity: !canSave || saving ? 0.5 : 1, cursor: !canSave || saving ? 'not-allowed' : 'pointer' }}>
         {saving ? 'Connecting…' : `Connect ${tracker.name}`}
       </button>
     </div>
@@ -772,7 +790,7 @@ function AzureDevOpsSetup({ tracker: _tracker, onSuccess }: { tracker: Tracker; 
       <p className="text-[12px] leading-relaxed" style={{ color: 'var(--t-muted)' }}>
         In Azure DevOps go to User settings → Personal access tokens → New token, set scope to{' '}
         <strong>All accessible organizations</strong> and enable <strong>Work Items → Read &amp; write</strong>.{' '}
-        <a href="https://dev.azure.com" onClick={(e) => { e.preventDefault(); openExternal('https://dev.azure.com') }} style={{ color: 'var(--color-state-proposal)' }}>Open ↗</a>
+        <a href="https://dev.azure.com" onClick={(e) => { e.preventDefault(); openExternal('https://dev.azure.com') }} style={{ color: 'var(--t-accent)' }}>Open ↗</a>
       </p>
       <div className="flex gap-2">
         <input type="password" value={pat} onChange={(e) => setAzurePat(e.target.value)}
@@ -781,7 +799,7 @@ function AzureDevOpsSetup({ tracker: _tracker, onSuccess }: { tracker: Tracker; 
           style={{ color: 'var(--t-title)', background: 'var(--t-card)', borderColor: 'var(--t-hair)', outline: 'none' }} />
         <button onClick={lookupOrgs} disabled={!pat.trim() || loading === 'orgs'}
           className="text-[11px] px-3 py-1.5 rounded-md shrink-0"
-          style={{ background: 'var(--color-state-proposal)', color: '#fff', opacity: (!pat.trim() || loading === 'orgs') ? 0.5 : 1, cursor: (!pat.trim() || loading === 'orgs') ? 'not-allowed' : 'pointer' }}>
+          style={{ background: 'var(--btn-primary-bg)', color: '#fff', opacity: (!pat.trim() || loading === 'orgs') ? 0.5 : 1, cursor: (!pat.trim() || loading === 'orgs') ? 'not-allowed' : 'pointer' }}>
           {loading === 'orgs' ? 'Looking up…' : 'Look up'}
         </button>
       </div>
@@ -838,7 +856,7 @@ function AzureDevOpsSetup({ tracker: _tracker, onSuccess }: { tracker: Tracker; 
               onClick={azureSubmitManualOrg}
               disabled={!manualOrg.trim() || loading === 'projects'}
               className="text-[11px] px-3 py-1.5 rounded-md shrink-0"
-              style={{ background: 'var(--color-state-proposal)', color: '#fff', opacity: (!manualOrg.trim() || loading === 'projects') ? 0.5 : 1, cursor: (!manualOrg.trim() || loading === 'projects') ? 'not-allowed' : 'pointer' }}>
+              style={{ background: 'var(--btn-primary-bg)', color: '#fff', opacity: (!manualOrg.trim() || loading === 'projects') ? 0.5 : 1, cursor: (!manualOrg.trim() || loading === 'projects') ? 'not-allowed' : 'pointer' }}>
               {loading === 'projects' ? 'Looking up…' : 'Look up projects'}
             </button>
           </div>
@@ -847,7 +865,7 @@ function AzureDevOpsSetup({ tracker: _tracker, onSuccess }: { tracker: Tracker; 
 
       {selectedOrg && selectedProject && (
         <button onClick={connect} disabled={loading === 'saving'} className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
-          style={{ background: 'var(--color-state-proposal)', color: '#fff', opacity: loading === 'saving' ? 0.5 : 1, cursor: loading === 'saving' ? 'not-allowed' : 'pointer' }}>
+          style={{ background: 'var(--btn-primary-bg)', color: '#fff', opacity: loading === 'saving' ? 0.5 : 1, cursor: loading === 'saving' ? 'not-allowed' : 'pointer' }}>
           {loading === 'saving' ? 'Connecting…' : 'Connect Azure DevOps'}
         </button>
       )}
@@ -868,13 +886,13 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
   useEffect(() => { resetGithubPickerIfSaved(); githubEnsureLoaded() }, [])
   useEffect(() => { if (saved) onSuccess?.(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [saved])
 
-  if (loading) return <p className="text-[11px]" style={{ color: 'var(--ink-3)' }}>Loading your GitHub Projects…</p>
+  if (loading) return <p className="text-[11px]" style={{ color: 'var(--t-muted)' }}>Loading your GitHub Projects…</p>
 
   if (loadError) return (
     <div className="space-y-2">
       <p className="text-[12px]" style={{ color: 'var(--status-error-text)' }}>{loadError}</p>
       <button onClick={() => githubEnsureLoaded()} className="text-[11px] px-3 py-1.5 rounded-md"
-        style={{ color: 'var(--color-state-proposal)', border: '1px solid var(--t-hair)', cursor: 'pointer', background: 'transparent' }}>
+        style={{ color: 'var(--t-accent)', border: '1px solid var(--t-hair)', cursor: 'pointer', background: 'transparent' }}>
         Retry
       </button>
     </div>
@@ -882,7 +900,7 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
 
   if (!projects || projects.length === 0) {
     return (
-      <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-3)' }}>
+      <p className="text-[12px] leading-relaxed" style={{ color: 'var(--t-muted)' }}>
         No GitHub Projects v2 boards found on this account.{' '}
         <a href="https://github.com/users/me/projects" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>Create one ↗</a>
       </p>
@@ -896,26 +914,36 @@ function GitHubProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
 
   return (
     <div className="space-y-3">
-      <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
+      <p className="text-[12px] leading-relaxed" style={{ color: 'var(--t-muted)' }}>
         Pick which GitHub Projects v2 boards to sync tasks from.
       </p>
-      <div className="space-y-2 max-h-48 overflow-y-auto">
+      <div className="flex flex-col gap-3 max-h-56 overflow-y-auto -mx-1 px-1 py-0.5">
         {Object.entries(byOwner).map(([owner, ps]) => (
-          <div key={owner}>
-            <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--ink-4)' }}>{owner}</span>
+          <div key={owner} className="flex flex-col gap-1.5">
+            <span className="mt-label" style={{ color: 'var(--t-faint)' }}>{owner}</span>
             {ps.map((p) => (
-              <label key={p.id} className="flex items-center gap-2 py-1 text-[12px]" style={{ color: 'var(--ink)' }}>
-                <input type="checkbox" checked={selected.has(p.id)} onChange={() => githubToggle(p.id)} />
-                {p.title}
-              </label>
+              <SelectableRow
+                key={p.id}
+                checked={selected.has(p.id)}
+                onChange={() => githubToggle(p.id)}
+                title={p.title}
+              />
             ))}
           </div>
         ))}
       </div>
       {saveError && <p className="text-[11px]" style={{ color: 'var(--status-error-text)' }}>{saveError}</p>}
-      <button onClick={() => void githubSave()} disabled={selected.size === 0 || saving} className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
-        style={{ background: 'var(--accent)', color: '#fff', opacity: (selected.size === 0 || saving) ? 0.5 : 1, cursor: (selected.size === 0 || saving) ? 'not-allowed' : 'pointer' }}>
-        {saving ? 'Saving…' : selected.size === 0 ? 'Select a project' : `Sync ${selected.size} project${selected.size === 1 ? '' : 's'}`}
+      <button onClick={() => void githubSave()} disabled={selected.size === 0 || saving} className="mt-body-sm px-4 py-2 rounded-lg transition-all"
+        style={{
+          fontWeight: 700, color: '#fff',
+          background: 'var(--btn-primary-bg)',
+          // The lift is what makes it read as the thing to press. Dropped when it
+          // cannot be pressed - a glowing disabled button is a lie.
+          boxShadow: (selected.size === 0 || saving) ? 'none' : '0 8px 22px -10px var(--t-accent)',
+          opacity: (selected.size === 0 || saving) ? 0.45 : 1,
+          cursor: (selected.size === 0 || saving) ? 'not-allowed' : 'pointer',
+        }}>
+        {saving ? 'Saving…' : selected.size === 0 ? 'Pick at least one' : `Sync ${selected.size} project${selected.size === 1 ? '' : 's'}`}
       </button>
       {reloadWarning && (
         <p className="text-[11px]" style={{ color: 'var(--t-faint)' }}>
@@ -941,13 +969,13 @@ function JiraProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
   useEffect(() => { resetJiraPickerIfSaved(); jiraEnsureLoaded() }, [])
   useEffect(() => { if (saved) onSuccess?.(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [saved])
 
-  if (loading) return <p className="text-[11px]" style={{ color: 'var(--ink-3)' }}>Loading your Jira projects…</p>
+  if (loading) return <p className="text-[11px]" style={{ color: 'var(--t-muted)' }}>Loading your Jira projects…</p>
 
   if (loadError) return (
     <div className="space-y-2">
       <p className="text-[12px]" style={{ color: 'var(--status-error-text)' }}>{loadError}</p>
       <button onClick={() => jiraEnsureLoaded()} className="text-[11px] px-3 py-1.5 rounded-md"
-        style={{ color: 'var(--color-state-proposal)', border: '1px solid var(--t-hair)', cursor: 'pointer', background: 'transparent' }}>
+        style={{ color: 'var(--t-accent)', border: '1px solid var(--t-hair)', cursor: 'pointer', background: 'transparent' }}>
         Retry
       </button>
     </div>
@@ -955,7 +983,7 @@ function JiraProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
 
   if (!projects || projects.length === 0) {
     return (
-      <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-3)' }}>
+      <p className="text-[12px] leading-relaxed" style={{ color: 'var(--t-muted)' }}>
         No Jira projects found for this account.
       </p>
     )
@@ -963,21 +991,35 @@ function JiraProjectPicker({ onSuccess }: { onSuccess?: () => void }) {
 
   return (
     <div className="space-y-3">
-      <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ink-2)' }}>
+      <p className="text-[12px] leading-relaxed" style={{ color: 'var(--t-muted)' }}>
         Pick which Jira projects to sync tasks from.
       </p>
-      <div className="space-y-1 max-h-48 overflow-y-auto">
+      {/* -mx-1 px-1: the rows carry their own border and selected fill, so they need
+          a hair of room either side or the focus ring and shadow clip on the scroll
+          container's edge. */}
+      <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto -mx-1 px-1 py-0.5">
         {projects.map((p: JiraProject) => (
-          <label key={p.id} className="flex items-center gap-2 py-1 text-[12px]" style={{ color: 'var(--ink)' }}>
-            <input type="checkbox" checked={selected.has(p.id)} onChange={() => jiraToggle(p.id)} />
-            {p.name} <span style={{ color: 'var(--ink-4)' }}>({p.key})</span>
-          </label>
+          <SelectableRow
+            key={p.id}
+            checked={selected.has(p.id)}
+            onChange={() => jiraToggle(p.id)}
+            title={p.name}
+            meta={p.key}
+          />
         ))}
       </div>
       {saveError && <p className="text-[11px]" style={{ color: 'var(--status-error-text)' }}>{saveError}</p>}
-      <button onClick={() => void jiraSave()} disabled={selected.size === 0 || saving} className="text-[12px] px-4 py-2 rounded-md font-medium transition-opacity"
-        style={{ background: 'var(--accent)', color: '#fff', opacity: (selected.size === 0 || saving) ? 0.5 : 1, cursor: (selected.size === 0 || saving) ? 'not-allowed' : 'pointer' }}>
-        {saving ? 'Saving…' : selected.size === 0 ? 'Select a project' : `Sync ${selected.size} project${selected.size === 1 ? '' : 's'}`}
+      <button onClick={() => void jiraSave()} disabled={selected.size === 0 || saving} className="mt-body-sm px-4 py-2 rounded-lg transition-all"
+        style={{
+          fontWeight: 700, color: '#fff',
+          background: 'var(--btn-primary-bg)',
+          // The lift is what makes it read as the thing to press. Dropped when it
+          // cannot be pressed - a glowing disabled button is a lie.
+          boxShadow: (selected.size === 0 || saving) ? 'none' : '0 8px 22px -10px var(--t-accent)',
+          opacity: (selected.size === 0 || saving) ? 0.45 : 1,
+          cursor: (selected.size === 0 || saving) ? 'not-allowed' : 'pointer',
+        }}>
+        {saving ? 'Saving…' : selected.size === 0 ? 'Pick at least one' : `Sync ${selected.size} project${selected.size === 1 ? '' : 's'}`}
       </button>
       {reloadWarning && (
         <p className="text-[11px]" style={{ color: 'var(--t-faint)' }}>

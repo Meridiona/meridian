@@ -92,7 +92,52 @@ Ticket linking and worklog drafting that consume these categories go through the
 - [ ] **graceful shutdown on SIGTERM** — `kill <pid>`; daemon finishes the current ETL pass and exits cleanly.
 - [ ] **graceful shutdown on Ctrl-C** — same as SIGTERM.
 
-### 9. LLM experimentation (dev-only LLM Lab)
+### 9. Windows
+
+Windows is a **shipped, maintained platform**, not a port in progress — the daemon,
+tray, notifications, packaging and release channel all have real Windows
+implementations, and CI runs a dedicated `rust-windows` job (clippy `-D warnings` +
+`cargo test`) on every PR into `pre-main`.
+
+This checklist did not follow it there, which is the gap these items close. **None of
+the automated suites cover the Windows install path**: `tests/install/` is
+launchd-shaped by construction (`plutil -lint`, plist rendering), and the local git
+hooks are bash, so a Windows contributor's `pre-push` cannot catch a Windows-only
+failure — only CI can. Everything below is therefore manual, on a real Windows 10/11
+machine.
+
+**Daemon lifecycle** (`tray/src-tauri/src/commands/daemon_control.rs` — named pipe +
+Task Scheduler, where macOS uses a Unix socket + launchd):
+
+- [ ] **task registered on install** — after the NSIS install, `schtasks /Query /TN "Meridian Daemon"` lists the task.
+- [ ] **start / stop from the tray** — the tray's daemon toggle drives `schtasks /Run` and `/End`; tray status reflects the change.
+- [ ] **policy-blocked `schtasks /Run` falls back** — the documented fallback spawns the staged `.exe` directly; the daemon still comes up.
+- [ ] **named-pipe control** — `\\.\pipe\meridian-daemon-<user>` accepts the tray's commands (this is the socket's Windows counterpart; a silent failure here looks like an unresponsive daemon).
+- [ ] **no console windows flash** — every spawned child uses `CREATE_NO_WINDOW` (`meridian-core/src/proc_ext.rs`); a stray black window on a poll tick is a regression.
+
+**Paths and config** (`meridian-core/src/util/paths.rs`):
+
+- [ ] **`%USERPROFILE%` resolution** — `~/.meridian` resolves under the user profile, with backslash separators, and the daemon creates it if absent.
+- [ ] **`MERIDIAN_DB` override with a Windows path** — e.g. `C:\temp\test.db`; the DB is created there.
+
+**Capture and permissions:**
+
+- [ ] **`Windows.Media.Ocr` path produces frames** — sessions appear (the OCR engine is async/fallible here, unlike Apple Vision).
+- [ ] **no TCC prompts** — Accessibility/Screen-Recording checks report granted without prompting; Windows Graphics Capture and UI Automation need no persistent grant.
+- [ ] **notification permission** — the WinRT `ToastNotifier::Setting()` check reports correctly, and a denied state points at **Windows** notification settings, not macOS wording.
+
+**Known macOS-only, degrade gracefully — confirm the fallback, not the feature:**
+
+- [ ] **app icons** — `NSWorkspace` icon extraction has no Windows equivalent; rows must fall back to the letter monogram, not a broken image.
+- [ ] **DRM/streaming detection** — the AppleScript detector is macOS-only, so frames are **not** skipped during protected playback on Windows. Confirm this is still the intended trade-off before a release.
+
+**Packaging and update:**
+
+- [ ] **NSIS installer, per-user** — installs under `currentUser` without an admin prompt.
+- [ ] **auto-update** — the updater manifest covers `windows-x86_64` and is signed with the same minisign key as the macOS DMG; an update installs and relaunches.
+- [ ] **uninstall** — removes the scheduled task (`schtasks /Delete /F`) and leaves no orphaned daemon.
+
+### 10. LLM experimentation (dev-only LLM Lab)
 
 The Python `deepeval` + MLX golden-dataset eval harness that lived under `services/tests/evals/` was removed along with the rest of the Python `services/` tree — there is no on-device model to score anymore. Generation now runs through the user's chosen third-party CLI provider (`src/llm/`).
 
@@ -101,6 +146,12 @@ Prompt and provider experimentation happens through the **dev-only LLM Lab** (`m
 ## Install-package tests
 
 Tests for the install package (`install.sh`, `scripts/meridian-cli.sh`, the daemon installers, and the plist templates) live under `tests/install/`.
+
+> **macOS only, by construction.** This suite lints plists with `plutil` and renders
+> launchd templates, so it has no meaning on Windows and there is no Windows
+> equivalent — the NSIS installer and the Task Scheduler registration have **no
+> automated coverage at all**. Section 9 above is the manual substitute; treat it as
+> required before a release that touches install, update, or daemon lifecycle.
 
 Run them with:
 

@@ -253,13 +253,13 @@ function SignInBody({ wiz }: { wiz: Wiz }) {
         <div className="w-full flex flex-col items-center mer-pop" style={{
           gap: 10, borderRadius: 16, padding: '26px 26px 22px', textAlign: 'center',
           border: '0.5px solid var(--t-card-border)',
-          background: 'color-mix(in srgb, var(--color-state-proposal) 6%, var(--t-card))',
+          background: 'color-mix(in srgb, var(--t-accent) 6%, var(--t-card))',
         }}>
           <span className="flex items-center justify-center shrink-0" style={{
             width: 42, height: 42, borderRadius: 13,
-            background: 'color-mix(in srgb, var(--color-state-proposal) 14%, transparent)',
-            color: 'var(--color-state-proposal)',
-          }}><Check size={19} color="var(--color-state-proposal)" w={2.2} /></span>
+            background: 'color-mix(in srgb, var(--t-accent) 14%, transparent)',
+            color: 'var(--t-accent)',
+          }}><Check size={19} color="var(--t-accent)" w={2.2} /></span>
           <div>
             <p style={{ fontSize: 14.5, fontWeight: 600, color: 'var(--t-title)' }}>You&apos;re signed in</p>
             <p style={{ fontSize: 12, color: 'var(--t-muted)', marginTop: 3 }}>{wiz.signedInEmail}</p>
@@ -320,78 +320,112 @@ export function Welcome({ onBegin, ready, error, onRetry }: {
     { icon: 'power', label: 'Understands your day automatically' },
     { icon: 'mail', label: 'Drafts updates, ready to post' },
   ]
+  // THIS SCREEN HAD EVERY GENERATED-PAGE TELL AT ONCE, and they compounded: a
+  // pink-to-violet-to-indigo gradient badge (that exact ramp is the signature of
+  // an unedited AI export, and it was hardcoded hex - outside the token system
+  // entirely), a headline split across two <h1>s with the second one coloured in
+  // the accent, an exclamation mark, three radius-99 pills each carrying a filled
+  // circular icon, and a segmented chip inside the primary button. Five different
+  // devices, all shouting, none of them hierarchy.
+  //
+  // The fix is subtraction, not restyling. Size and weight carry the hierarchy;
+  // the accent appears ONCE, on the one thing that is clickable. What is left is
+  // a masthead, a sentence, what the product does, and the way forward - which is
+  // all this screen ever had to say.
   return (
-    // Full-width flow, vertically centred as ONE block. The membership badge
-    // is now a COMPACT companion to the brand row (same row, top-right) rather
-    // than a tall column racing the pillars for height - the mismatch there
-    // (a 3-line pillar list next to a much taller card) was leaving a visible
-    // hole in the layout. The "welcome" copy moved into the main flow as a
-    // subtitle so the badge only has to carry the number, not a paragraph.
+    // Full-width flow, vertically centred as ONE block, and left-aligned all the
+    // way down: every line starts on the same rail, so the eye tracks straight
+    // down it instead of re-finding the start of each block. The founding-user
+    // mark shares the brand row (same row, top-right) rather than standing as a
+    // column of its own, which used to race the pillars for height and leave a
+    // hole in the layout.
     <div className="flex flex-col justify-center" style={{ height: '100%', padding: '0 64px' }}>
       <div>
-        <div className="flex items-start justify-between" style={{ gap: 24, marginBottom: 26 }}>
+        <div className="flex items-baseline justify-between" style={{ gap: 24, marginBottom: 30 }}>
           <div className="flex items-center mer-pop" style={{ gap: 13 }}>
             <Logo size={40} />
             <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 29, lineHeight: 1, letterSpacing: '-.02em', color: 'var(--t-title)' }}>Meridian</span>
           </div>
 
-          {/* The one thing that's just for this person, styled like the thing it
-             is - a membership badge: gradient lifted straight from the brand
-             mark's own rings, an embossed founding-user number. Compact and
-             paired with the brand row instead of forcing the layout below into
-             mismatched columns. */}
-          <div className="mer-pop shrink-0 flex items-center" style={{
-            gap: 12, borderRadius: 14, padding: '9px 16px', color: '#fff',
-            background: 'linear-gradient(135deg, #EC4899 0%, #8B5CF6 55%, #6366F1 100%)',
-            boxShadow: '0 6px 16px -6px color-mix(in srgb, var(--color-state-proposal) 45%, transparent)',
+          {/* A NUMBERED EDITION, not a badge. This is a real fact about this
+             person - they are the Nth user - and a fact reads as true when it is
+             stated plainly and as marketing when it is put in a coloured capsule
+             with a glow under it. So: no fill, no shadow, no radius; the label
+             small and quiet, the number in mono at title weight because the
+             NUMBER is the thing worth keeping. A hairline on the left ties it to
+             the brand row without drawing a box around it. */}
+          <div className="mer-pop shrink-0 flex items-baseline" style={{
+            gap: 9, paddingLeft: 16, borderLeft: '1px solid var(--t-hair)',
           }}>
-            <span className="mt-chip" style={{ color: 'rgba(255,255,255,.85)', letterSpacing: '.07em' }}>Founding user</span>
-            <span className="font-mono" style={{ fontSize: 17, fontWeight: 700, letterSpacing: '.04em' }}>No. {String(EARLY_CUSTOMER_NUMBER).padStart(3, '0')}</span>
+            <span className="mt-chip" style={{ color: 'var(--t-faint)', letterSpacing: '.08em' }}>Founding user</span>
+            <span className="font-mono" style={{
+              fontSize: 17, fontWeight: 700, letterSpacing: '.02em', color: 'var(--t-title)',
+            }}>
+              No. {String(EARLY_CUSTOMER_NUMBER).padStart(3, '0')}
+            </span>
           </div>
         </div>
 
-        <h1 style={{ ...DISPLAY, fontSize: 40, lineHeight: 1.14, color: 'var(--t-title)', textWrap: 'balance' }}>
-          You made it here!
-        </h1>
-        <h1 style={{ ...DISPLAY, fontSize: 40, lineHeight: 1.14, color: 'var(--color-state-proposal)', textWrap: 'balance' }}>
+        {/* ONE headline. It was two, at the same size, the second one in the
+            accent - which is not hierarchy, it is two titles fighting. The
+            greeting is a greeting, so it is set as one, above and small; the
+            promise is the thing being made, so it is the heading.
+
+            IN THE LAVENDER, WHOLE. Not the button's fill itself - that colour on
+            white is ~1.9:1, a surface tone that turns to a smear when it is set
+            as type - but the same hue carried down the ramp to where it clears
+            the large-text contrast line (`--lavender-ink`). And the WHOLE
+            sentence, not the second half: which words land on line two depends
+            on the window width, so colouring "work go unnoticed" would mean a
+            colour change that moves mid-phrase whenever the text rewraps. */}
+        <p style={{ fontSize: 14, fontWeight: 500, color: 'var(--t-muted)', marginBottom: 10 }}>
+          You made it here.
+        </p>
+        <h1 style={{ ...DISPLAY, fontSize: 40, lineHeight: 1.14, color: 'var(--lavender-ink)', textWrap: 'balance', maxWidth: 620 }}>
           We won&apos;t let your work go unnoticed.
         </h1>
 
-        <p style={{ fontSize: 13.5, lineHeight: 1.6, color: 'var(--t-muted)', marginTop: 14, maxWidth: 600, textWrap: 'pretty' }}>
-          Welcome to the club - you&apos;re one of the first <span style={{ fontWeight: 700, color: 'var(--t-title)' }}>{EARLY_CUSTOMER_NUMBER}</span> people helping us build Meridian. We hope it makes a real difference for you, too.
+        <p style={{ fontSize: 14, lineHeight: 1.65, color: 'var(--t-muted)', marginTop: 16, maxWidth: 560, textWrap: 'pretty' }}>
+          You&apos;re one of the first <span style={{ fontWeight: 600, color: 'var(--t-title)' }}>{EARLY_CUSTOMER_NUMBER}</span> people
+          helping us build Meridian. We hope it makes a real difference for you, too.
         </p>
 
-        <div className="flex items-center" style={{ gap: 10, marginTop: 26, flexWrap: 'wrap' }}>
+        {/* WHAT IT DOES, as three plain lines. They were chips - filled circular
+            icons on radius-99 capsules, three across - which is the shape of a
+            feature grid on a landing page, and it made three quiet facts look
+            like an advert. Set as text with the icons at the same weight as the
+            words beside them, the eye reads them instead of counting them. */}
+        <ul className="flex flex-col" style={{ gap: 9, marginTop: 26 }}>
           {pillars.map((p) => (
-            <span key={p.label} className="flex items-center" style={{
-              gap: 8, fontSize: 11.5, fontWeight: 500, color: 'var(--t-title)',
-              padding: '5px 13px 5px 5px', borderRadius: 99, background: 'var(--t-box)',
+            <li key={p.label} className="flex items-center" style={{
+              gap: 10, fontSize: 13.5, color: 'var(--t-title)',
             }}>
-              <span className="flex items-center justify-center shrink-0" style={{
-                width: 22, height: 22, borderRadius: 99, background: 'var(--color-state-proposal)', color: '#fff',
-              }}>
-                <PermIcon icon={p.icon} size={12} />
+              <span className="shrink-0 flex items-center" style={{ color: 'var(--t-faint)' }}>
+                <PermIcon icon={p.icon} size={15} />
               </span>
               {p.label}
-            </span>
+            </li>
           ))}
-        </div>
+        </ul>
       </div>
 
-      <div style={{ borderTop: '1px solid var(--t-hair)', marginTop: 30, paddingTop: 22 }}>
+      <div style={{ borderTop: '1px solid var(--t-hair)', marginTop: 34, paddingTop: 22 }}>
         {error ? (
           <div className="flex items-center" style={{ gap: 14 }}>
             <p style={{ fontSize: 12, color: 'var(--color-state-pending)' }}>Couldn&apos;t detect your platform - try again.</p>
             <Btn onClick={onRetry} style={{ padding: '12px 28px', fontSize: 14 }}>Retry</Btn>
           </div>
         ) : (
-          <div className="flex items-center justify-between">
-            <p style={{ fontSize: 12, color: 'var(--t-title)', fontWeight: 500 }}>Next up: getting you set up.</p>
-            <Btn onClick={onBegin} disabled={!ready} style={{ padding: '13px 22px', fontSize: 14.5, gap: 10 }}>
+          <div className="flex items-center justify-between" style={{ gap: 24 }}>
+            {/* The time estimate belongs to this sentence, not inside the button.
+                It was a divided chip within the label - a control carrying two
+                pieces of text separated by a rule, which reads as two controls
+                and makes the one you press harder to name. */}
+            <p style={{ fontSize: 13, color: 'var(--t-muted)' }}>
+              Next up: getting you set up. <span style={{ color: 'var(--t-faint)' }}>About 2 minutes.</span>
+            </p>
+            <Btn onClick={onBegin} disabled={!ready} style={{ padding: '13px 24px', fontSize: 14 }}>
               {ready ? "Let's get started" : 'Preparing setup…'}
-              {ready && (
-                <span style={{ fontSize: 11, fontWeight: 600, opacity: 0.82, borderLeft: '1px solid rgba(255,255,255,.35)', paddingLeft: 10 }}>2 min</span>
-              )}
             </Btn>
           </div>
         )}

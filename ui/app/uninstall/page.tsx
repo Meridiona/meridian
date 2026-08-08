@@ -158,7 +158,7 @@ function OptionRow({ checked, onToggle, title, subtitle, items }: {
         className="flex items-center justify-center shrink-0"
         style={{
           width: 20, height: 20, borderRadius: 6, marginTop: 1,
-          background: checked ? 'var(--color-state-proposal)' : 'transparent',
+          background: checked ? 'var(--btn-primary-bg)' : 'transparent',
           border: checked ? 'none' : '1px solid var(--t-card-border)',
         }}
       >

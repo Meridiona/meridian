@@ -101,3 +101,32 @@ describe('jiraSave submits project keys', () => {
     expect(store).toContain('fields: { project_keys: keys.join(\',\') }')
   })
 })
+
+// ── Presentation: both pickers use the app's own control, not the OS's ───────
+describe('project selection is a Meridian control', () => {
+  const row = readFileSync(uiRoot + '/components/ui/SelectableRow.tsx', 'utf8')
+
+  it('neither picker renders a bare native checkbox', () => {
+    // A raw `<input type="checkbox">` renders at the OS's size in the OS's blue,
+    // ignores every token in globals.css, and gives a ~13px hit target next to a
+    // 12px label - on the screen where someone is first setting Meridian up, in a
+    // list they have to hit several times.
+    const pickers = view.slice(view.indexOf('function GitHubProjectPicker'))
+    expect(pickers).not.toContain('type="checkbox"')
+    expect(pickers).toContain('<SelectableRow')
+  })
+
+  it('the shared row keeps the native input for keyboard and a11y', () => {
+    // Hidden, not replaced. A `<div onClick>` would drop Tab, Space and the
+    // checked semantics, and then have to reimplement all three worse.
+    expect(row).toContain('type="checkbox"')
+    expect(row).toContain('className="peer sr-only"')
+    expect(row).toContain('peer-focus-visible:outline')
+  })
+
+  it('the selected state is carried by the row, not only by a small glyph', () => {
+    // Scannable down a list at a glance - the reason the whole surface tints.
+    expect(row).toMatch(/background: checked \?/)
+    expect(row).toMatch(/border: `1px solid \$\{checked \?/)
+  })
+})

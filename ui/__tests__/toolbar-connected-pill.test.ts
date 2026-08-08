@@ -124,7 +124,7 @@ describe('the source backs the derivation', () => {
 
   it('keeps the dot fallback for the no-marks case', () => {
     expect(toolbar).toContain('connectedProviderIds.length > 0')
-    expect(toolbar).toContain("background: isSolo ? 'var(--t-faint)' : 'var(--color-state-proposal)'")
+    expect(toolbar).toContain("background: isSolo ? 'var(--t-faint)' : 'var(--t-accent)'")
   })
 
   it('is display-only - the pill is not a toggle', () => {

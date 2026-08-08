@@ -469,6 +469,30 @@ const PROBE_TIMEOUT_S: u64 = 20;
 const PROBE_SYSTEM: &str =
     "You are being connectivity-tested by Meridian.\n\nReply with exactly: OK. No other text, no punctuation, nothing else.";
 
+/// Completion budget for a connectivity test.
+///
+/// The answer this asks for is one word, and for a CLI provider 16 tokens was plenty. It is
+/// NOT plenty for a REASONING model on an OpenAI-compatible endpoint, because reasoning
+/// tokens are charged against the same completion budget as the visible answer - so a small
+/// cap is spent thinking and the response comes back with `finish_reason: "length"` and an
+/// EMPTY `content`.
+///
+/// That is not a hypothetical. Measured against Groq's `openai/gpt-oss-120b` - the model
+/// Meridian itself picks for the free path - on this exact prompt:
+///
+/// | max_tokens | reasoning_tokens | finish_reason | content |
+/// |------------|------------------|---------------|---------|
+/// | 16         | 14               | length        | `""`    |
+/// | 64         | 62               | length        | `""`    |
+/// | 256        | 53               | stop          | `"OK"`  |
+///
+/// `openai_compat` correctly reports empty content as a failure, so a perfectly good key
+/// failed Test Connection with "custom provider returned an empty answer" - the worst kind
+/// of wrong answer, because it accuses the user's key of being broken when nothing about it
+/// is. 512 leaves roughly 6x the observed reasoning trace as headroom, and it is a CEILING,
+/// not a target: a non-reasoning model still stops after "OK" and is billed for two tokens.
+const PROBE_MAX_TOKENS: u32 = 512;
+
 /// What a real connectivity test found. Mirrors [`super::LlmError`]'s two failure shapes
 /// (rate-limited vs everything else) so the UI can tell "this works, just not right now"
 /// from "this doesn't work" — a card can be correctly configured and still be temporarily
@@ -539,7 +563,7 @@ pub async fn test_provider(
         system: PROBE_SYSTEM,
         user: String::new(),
         schema: None,
-        max_tokens: 16,
+        max_tokens: PROBE_MAX_TOKENS,
         label: format!("provider-test {id}"),
     };
 
@@ -1282,6 +1306,17 @@ fn load_test_cache() -> HashMap<String, ProviderTestResult> {
     serde_json::from_str(&raw).unwrap_or_default()
 }
 
+/// The last recorded connectivity test for one provider wire id, or `None` if it has never
+/// been tested.
+///
+/// Exists for the providers [`detect_all`] does not enumerate — i.e. `custom`, which has no
+/// CLI to probe but does accumulate test results (`test_llm_provider`, and the dev Disconnect
+/// button). Without this the cached verdict for a cloud endpoint was written and then never
+/// read by anything that renders it.
+pub fn cached_test_result(id: &str) -> Option<ProviderTestResult> {
+    load_test_cache().get(id).cloned()
+}
+
 /// Serialises the load→insert→write of the test cache. `test_all_installed` fans the
 /// per-provider tests out concurrently and each lands its own result here; without this
 /// lock those read-modify-write cycles interleave and silently drop each other's entries
@@ -1639,6 +1674,28 @@ mod tests {
         assert!(
             PROBE_SYSTEM.contains('\n'),
             "a single-line probe passes even when a real prompt would fail to spawn on Windows"
+        );
+    }
+
+    /// A reasoning model spends the completion budget on hidden reasoning tokens BEFORE it
+    /// writes a visible character, so a probe budget sized for "one word" comes back with
+    /// `finish_reason: "length"` and empty content — and `openai_compat` correctly calls that
+    /// a failure. Measured against Groq's `openai/gpt-oss-120b` (the model Meridian picks for
+    /// its own free path): 16 tokens → 14 reasoning tokens, no content; 256 → answered "OK".
+    ///
+    /// So a perfectly good key failed Test Connection while the SCHEMA probe on the very same
+    /// endpoint passed — because `probe::PROBE_MAX_TOKENS` was already 512 and this one was
+    /// not. Both budgets must stay large enough to hold a reasoning trace.
+    #[test]
+    fn the_connectivity_probe_leaves_room_for_a_reasoning_trace() {
+        // Compared through a binding rather than asserted on the constant directly, which
+        // clippy rejects as always-true - the point is to fail the build if the CONSTANT is
+        // ever lowered, so the floor is what the comparison names.
+        let floor = 256;
+        assert!(
+            PROBE_MAX_TOKENS >= floor,
+            "a budget this small is spent on reasoning tokens before the model answers, and \
+             the empty response reads to the user as a broken key"
         );
     }
 
@@ -2420,6 +2477,38 @@ mod tests {
         assert_eq!(cache.len(), 2);
         assert_eq!(cache.get("claude"), Some(&result));
         assert_eq!(cache.get("cursor"), Some(&rate_limited));
+    }
+
+    /// `cached_test_result` is the READ side, and it exists because the write side alone
+    /// was not enough: a cloud endpoint's verdict was being persisted and then read by
+    /// nothing that renders it, so the picker showed a Groq tile as IN USE for a provider
+    /// the app had just been told was not usable. That fix shipped with no test.
+    ///
+    /// The `custom` id is the case that matters - `detect_all` cannot enumerate it (there
+    /// is no CLI to probe), so this lookup is the ONLY way its result reaches the UI.
+    #[test]
+    fn a_cached_verdict_is_readable_back_for_a_provider_with_no_cli() {
+        let _guard = ENV_LOCK.blocking_lock();
+        with_temp_meridian_home();
+
+        // Never tested is None, not a default-shaped "passing" result - the distinction
+        // the picker relies on to avoid claiming a verdict it does not have.
+        assert!(cached_test_result("custom").is_none());
+
+        let failed = ProviderTestResult {
+            id: "custom".into(),
+            outcome: ProviderTestOutcome::Failed {
+                message: "endpoint returned no content".into(),
+            },
+            elapsed_ms: 340,
+            tested_at: "2026-08-07T09:00:00+00:00".into(),
+            sticky: false,
+        };
+        persist_test_result(&failed);
+
+        assert_eq!(cached_test_result("custom"), Some(failed));
+        // A different provider's verdict must not answer for this one.
+        assert!(cached_test_result("groq").is_none());
     }
 
     /// The `test_all_installed` scenario: many providers persist their results at once.

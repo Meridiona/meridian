@@ -288,6 +288,22 @@ jobs:
         run: bun test
         working-directory: ui
 
+      # `ui/package.json` defined `typecheck` and NOTHING invoked it — not CI, not the
+      # git hooks. Type errors were caught only as a side effect of `next build`, which
+      # disappears the moment someone sets `typescript.ignoreBuildErrors` in
+      # next.config.ts (an entirely reasonable thing to reach for when a build is slow),
+      # with no failing job to notice. Run BEFORE the build: seconds against its
+      # minutes, and a type error should not cost a full production compile to surface.
+      #
+      # There is deliberately NO lint step. The `lint` script was `next lint`, which
+      # Next 16 REMOVED — it parsed "lint" as a directory name and could only ever
+      # fail — and this project has no ESLint config or dependency at all. The script
+      # has been deleted rather than left as a broken command that looks like coverage.
+      # Adding real ESLint is worth doing, but it is a change with its own diff.
+      - name: UI typecheck
+        run: npm run typecheck
+        working-directory: ui
+
       - name: UI build
         run: npm run build
         working-directory: ui

@@ -114,7 +114,7 @@ export function Toolbar({
                 {connectedProviderIds.map(id => <ProviderIcon key={id} provider={id} size={12} />)}
               </span>
             : <span className="inline-block w-1.5 h-1.5 rounded-full"
-                style={{ background: isSolo ? 'var(--t-faint)' : 'var(--color-state-proposal)' }} />}
+                style={{ background: isSolo ? 'var(--t-faint)' : 'var(--t-accent)' }} />}
           <span className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>{connectionLabel}</span>
         </span>
 

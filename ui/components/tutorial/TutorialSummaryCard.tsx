@@ -194,7 +194,7 @@ function HomeView({ sample, provider, posted, copied, onSelect, onCopy }: {
       {/* ── Hero: the day in a sentence, and the numbers behind it ─────────── */}
       <div data-tour="sum-hero" className="flex items-start gap-8">
         <div className="min-w-0 flex-1">
-          <p className="mt-label" style={{ color: 'var(--color-state-proposal)' }}>
+          <p className="mt-label" style={{ color: 'var(--t-accent)' }}>
             DAILY SUMMARY · {eyebrowDate()}
           </p>
           <h2 className="mt-2" style={{
@@ -221,7 +221,7 @@ function HomeView({ sample, provider, posted, copied, onSelect, onCopy }: {
 
       {/* ── The two things worth remembering ───────────────────────────────── */}
       <div data-tour="sum-cards" className="grid grid-cols-2 gap-3 mt-6">
-        <Insight glyph="↯" tint="var(--color-state-proposal)" title="Handled the unexpected"
+        <Insight glyph="↯" tint="var(--t-accent)" title="Handled the unexpected"
           body="A random-logout bug was not on the plan. You caught it and shipped a fix." />
         <Insight glyph="✦" tint="var(--color-state-approved)" title="New learning"
           body="Cursor pagination made the activity feed feel instant - worth reusing." />
@@ -269,9 +269,9 @@ function HomeView({ sample, provider, posted, copied, onSelect, onCopy }: {
               className="rounded-md px-2 py-1 hover:opacity-80"
               style={{
                 fontSize: 11, fontWeight: 700, cursor: 'pointer',
-                color: 'var(--color-state-proposal)',
-                background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)',
-                border: '1px solid color-mix(in srgb, var(--color-state-proposal) 30%, transparent)',
+                color: 'var(--t-accent)',
+                background: 'color-mix(in srgb, var(--t-accent) 12%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--t-accent) 30%, transparent)',
               }}>
               {copied ? 'Copied ✓' : 'Copy'}
             </button>
@@ -298,10 +298,18 @@ function OffPlanRow({ title, minutes, posted, provider, tour, onClick }: {
   tour?: string
   onClick: () => void
 }) {
+  // Mirrors `summary/WorkList.tsx`'s OffPlanRow, badge and all. The tour teaches the
+  // real screen, so a row that looks different here teaches the wrong thing - and the
+  // badge is the whole point of the beat that follows (there is something to post).
+  const tone = 'var(--t-accent)'
   return (
     <button data-tour={tour} onClick={onClick}
-      className="flex items-center gap-2.5 rounded-lg px-2 py-2 text-left hover:opacity-80"
-      style={{ background: 'transparent', border: 'none', cursor: 'pointer' }}>
+      className="flex items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-shadow hover:shadow-[0_1px_6px_-2px_rgba(0,0,0,0.18)]"
+      style={{
+        cursor: 'pointer',
+        background: posted ? 'transparent' : `color-mix(in srgb, ${tone} 7%, transparent)`,
+        border: posted ? '1px solid transparent' : `1px solid color-mix(in srgb, ${tone} 26%, transparent)`,
+      }}>
       <span className="inline-flex items-center justify-center shrink-0 rounded-md"
         style={{
           width: 17, height: 17, fontSize: 11, fontWeight: 800,
@@ -310,17 +318,29 @@ function OffPlanRow({ title, minutes, posted, provider, tour, onClick }: {
         }}>↯</span>
       <span className="min-w-0 flex-1">
         <span className="mt-body-sm block truncate" style={{ color: 'var(--t-title)' }}>{title}</span>
-        <span className="block" style={{ fontSize: 11, color: 'var(--t-faint)' }}>
-          {posted
-            ? `Filed as ${PROPOSED_TICKET.key}`
-            : `${dur(minutes)} · no ticket yet - draft ready`}
-        </span>
+        {posted ? (
+          <span className="block" style={{ fontSize: 11, color: 'var(--t-faint)' }}>
+            {`Filed as ${PROPOSED_TICKET.key}`}
+          </span>
+        ) : (
+          <span className="flex items-center gap-1.5" style={{ fontSize: 11, color: 'var(--t-faint)' }}>
+            <span>{dur(minutes)}</span>
+            <span aria-hidden>·</span>
+            <span className="px-1.5 py-px rounded"
+              style={{
+                fontSize: 9.5, fontWeight: 800, letterSpacing: '0.06em',
+                color: tone, background: `color-mix(in srgb, ${tone} 15%, transparent)`,
+              }}>
+              DRAFT READY TO POST
+            </span>
+          </span>
+        )}
       </span>
       {posted
         ? <span className="shrink-0 inline-flex items-center gap-1" style={{ fontSize: 11, color: 'var(--color-state-approved)' }}>
             {provider && <ProviderIcon provider={provider.id} size={10} />}✓
           </span>
-        : <span className="shrink-0" style={{ fontSize: 14, color: 'var(--t-faint)' }}>›</span>}
+        : <span className="shrink-0" style={{ fontSize: 14, color: tone }}>›</span>}
     </button>
   )
 }
@@ -369,7 +389,7 @@ function Donut({ pct }: { pct: number }) {
     <div className="relative shrink-0" style={{ width: 76, height: 76 }}>
       <svg width="76" height="76" viewBox="0 0 76 76">
         <circle cx="38" cy="38" r={R} fill="none" stroke="var(--t-box)" strokeWidth="8" />
-        <circle cx="38" cy="38" r={R} fill="none" stroke="var(--color-state-proposal)" strokeWidth="8"
+        <circle cx="38" cy="38" r={R} fill="none" stroke="var(--t-accent)" strokeWidth="8"
           strokeLinecap="round" strokeDasharray={`${dash} ${C - dash}`} transform="rotate(-90 38 38)" />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
@@ -385,7 +405,7 @@ function Stat({ n, l, accent }: { n: string; l: string; accent?: boolean }) {
     <div className="flex items-baseline gap-2">
       <span style={{
         font: '800 15px var(--font-sans)',
-        color: accent ? 'var(--color-state-proposal)' : 'var(--t-title)',
+        color: accent ? 'var(--t-accent)' : 'var(--t-title)',
       }}>{n}</span>
       <span style={{ fontSize: 9.5, letterSpacing: '.06em', color: 'var(--t-faint)' }}>{l}</span>
     </div>

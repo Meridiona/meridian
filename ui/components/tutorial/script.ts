@@ -97,6 +97,14 @@ const BOARD_CARD = '[data-tour="plan-board"] [data-plan-card]'
  * The line is there because 25 seconds of a still screen after a connect reads as
  * the connect having hung. Cleared either way, so nothing stale survives into the
  * next beat.
+ *
+ * MOSTLY A BACKSTOP NOW. The sync no longer starts when the planner opens: the
+ * connect flow warm-starts it the moment a tracker becomes usable (`@/lib/taskSync`)
+ * and the Settings hand-back holds itself open until it lands, so the wait is spent
+ * on a screen that has just said something true and finished rather than in front of
+ * an empty board. By the time this runs the tickets are usually already there and it
+ * returns immediately. It stays because the hand-back's hold is capped, and because
+ * a board can be empty for reasons that never went near a connect.
  */
 async function waitForTickets(s: Stage): Promise<boolean> {
   s.say('Pulling your tickets in - the first sync takes a moment.')

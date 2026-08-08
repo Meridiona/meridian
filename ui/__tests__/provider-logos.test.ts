@@ -149,9 +149,9 @@ describe('nothing looks chosen before the user chooses', () => {
     // Violet is Meridian's accent and is already on every interactive thing here, so a
     // violet ring reads as "clickable" rather than "this is the one". Green matches the
     // IN USE badge the same tile already carries.
-    expect(tile).toContain('const live = selected && !warning')
+    expect(tile).toContain('const live = selected && !TILE_NOT_LIVE.includes(phase.kind)')
     expect(tile).toContain("live ? 'var(--color-state-approved)' : 'var(--t-ctrl-border)'")
-    expect(tile).not.toContain("selected ? 'var(--color-state-proposal)'")
+    expect(tile).not.toContain("selected ? 'var(--t-accent)'")
   })
 
   it('and NOTHING else on the grid is ever coloured', () => {
@@ -162,7 +162,7 @@ describe('nothing looks chosen before the user chooses', () => {
     // states there are: a fresh install with no CLIs, and a signed-out provider.
     expect(tile).not.toContain('--color-state-pending')
     // The tile's own message is muted body text, like any other subtitle.
-    expect(tile).toContain("{warning ? warning.message : subtitle}")
+    expect(tile).toContain('{message}')
   })
 
   it('never says anything connected-sounding about a provider that is not connected', () => {

@@ -43,7 +43,7 @@ function AuthInput(props: {
         transition: 'border-color .14s',
         ...props.style,
       }}
-      onFocus={(e) => { e.target.style.borderColor = 'var(--color-state-proposal)' }}
+      onFocus={(e) => { e.target.style.borderColor = 'var(--t-accent)' }}
       onBlur={(e) => { e.target.style.borderColor = 'var(--t-input-border)' }}
     />
   )
@@ -226,8 +226,8 @@ export function EmailCodeForm() {
         <div className="flex flex-col items-center mer-pop" style={{ gap: 5, marginBottom: 20, textAlign: 'center' }}>
           <span className="flex items-center justify-center shrink-0" style={{
             width: 42, height: 42, borderRadius: 13, marginBottom: 4,
-            background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)',
-            color: 'var(--color-state-proposal)',
+            background: 'color-mix(in srgb, var(--t-accent) 12%, transparent)',
+            color: 'var(--t-accent)',
           }}>
             <PermIcon icon={phase === 'email' ? 'mail' : 'shield'} size={19} />
           </span>

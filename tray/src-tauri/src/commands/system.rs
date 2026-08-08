@@ -102,19 +102,38 @@ pub async fn open_setup(app: tauri::AppHandle) -> Result<(), String> {
 /// [`crate::tray::open_wizard_window`] opens it small (sized for Welcome) in
 /// the first place. Also raises the min size to match, so the user can't
 /// resize the window smaller than whichever card is currently showing.
+///
+/// Window sizing is one of the few things here that genuinely differs by platform and by
+/// window manager, so a failure is logged rather than only handed back to the frontend -
+/// which shows nothing for it, since a wizard at the wrong size is awkward but not broken.
+/// Without a log a Windows-only resize failure would surface as "the wizard looks wrong on
+/// my machine" and nothing else.
 #[tauri::command]
+#[tracing::instrument(skip(app))]
 pub async fn resize_setup_window(
     app: tauri::AppHandle,
     width: f64,
     height: f64,
 ) -> Result<(), String> {
     let Some(win) = app.get_webview_window("setup") else {
+        // Not an error: the frontend fires this on a step transition, and the window can
+        // legitimately be gone (user closed it mid-animation).
+        tracing::debug!("setup window not open - resize skipped");
         return Ok(());
     };
-    win.set_min_size(Some(tauri::LogicalSize::new(width, height)))
-        .map_err(|e| e.to_string())?;
-    win.set_size(tauri::LogicalSize::new(width, height))
-        .map_err(|e| e.to_string())
+    let resize = win
+        .set_min_size(Some(tauri::LogicalSize::new(width, height)))
+        .and_then(|()| win.set_size(tauri::LogicalSize::new(width, height)));
+    match resize {
+        Ok(()) => {
+            tracing::debug!(width, height, "setup window resized");
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, width, height, "setup window resize failed");
+            Err(e.to_string())
+        }
+    }
 }
 
 /// Fetch-and-clear the pending dashboard navigation target (e.g. "/plan") —

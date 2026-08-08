@@ -271,6 +271,7 @@ fn build_user_prompt(ev: &day_evidence::Evidence) -> String {
     achievement_pct = Empty,
     unplanned_minutes = Empty,
     insights = Empty,
+    insight_max_words = Empty,
     standup_lines = Empty,
     fallback = Empty,
     prompt_chars = Empty,
@@ -344,6 +345,19 @@ pub async fn generate(pool: &SqlitePool, day_local: &str) -> Result<DaySummary> 
     span.record("achievement_pct", adherence.achievement_pct);
     span.record("unplanned_minutes", adherence.unplanned_minutes);
     span.record("insights", a.insights.len());
+    // The longest card, in words. The prompt caps a card at 25 (three cards sit side
+    // by side and are read in a glance, so a card that runs to three lines is a card
+    // nobody finishes) - but a prompt is not an enforcement, and prose length drifts
+    // silently as models change underneath us. Recorded so the drift is a number in
+    // the trace rather than something a user has to complain about.
+    span.record(
+        "insight_max_words",
+        a.insights
+            .iter()
+            .map(|i| i.text.split_whitespace().count())
+            .max()
+            .unwrap_or(0),
+    );
     span.record("standup_lines", a.standup.len());
     span.record("fallback", fallback);
 

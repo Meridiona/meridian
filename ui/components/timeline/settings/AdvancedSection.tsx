@@ -47,7 +47,7 @@ export function AdvancedSection({ settings, setSettings, patch, save }: {
   return (
     <div className="max-w-[640px] flex flex-col gap-5">
       <div>
-        <p className="mt-label" style={{ color: 'var(--color-state-proposal)' }}>Runtime</p>
+        <p className="mt-label" style={{ color: 'var(--t-accent)' }}>Runtime</p>
         <h1 className="mt-title-lg mt-1.5" style={{ color: 'var(--t-title)' }}>Advanced</h1>
         <p className="mt-body-sm mt-2 max-w-[520px]" style={{ color: 'var(--t-muted)' }}>
           Internal daemon behavior — tracing, classification thresholds, and the local model.

@@ -129,15 +129,68 @@ function PlanRow({ title, sub, ticket, done, delay, onClick }: {
   )
 }
 
+/** How a row's worklog stands. `undefined` = we have no draft row for this task. */
+export type DraftBadge = { state: string; stale_minutes: number | null } | undefined
+
+/** The badge for a row's worklog state, or `null` when there is nothing to say.
+ *
+ *  THIS USED TO BE A FIXED STRING. Every off-plan row read "no ticket yet - draft
+ *  ready", in the same faint grey as the duration beside it, whether or not a draft
+ *  existed and whether or not it had already been posted. Three different situations,
+ *  one sentence, styled to be ignored - so the one thing worth acting on looked
+ *  identical to the two things that needed nothing.
+ *
+ *  Only `drafted` is an ASK, so only `drafted` gets the loud treatment. A posted row
+ *  is a receipt and a quiet one is correct; shouting at someone about work they have
+ *  already filed is how a badge stops being read at all. */
+function draftBadge(badge: DraftBadge): { label: string; tone: string; loud: boolean } | null {
+  if (!badge) return null
+  switch (badge.state) {
+    case 'drafted':
+      return { label: 'DRAFT READY TO POST', tone: 'var(--t-accent)', loud: true }
+    case 'approved':
+      return { label: 'APPROVED', tone: 'var(--color-state-approved)', loud: false }
+    case 'posted':
+      return { label: 'POSTED', tone: 'var(--color-state-approved)', loud: false }
+    case 'error':
+      return { label: 'POST FAILED', tone: 'var(--status-error-dot)', loud: true }
+    default:
+      return null
+  }
+}
+
+/** "· 40m of work since" - the draft's age, in the only unit that matters here.
+ *
+ *  Wall-clock age would be the obvious choice and the wrong one: a draft written at
+ *  09:00 and looked at after lunch is not stale if nothing happened on that task in
+ *  between. What makes a draft out of date is WORK it does not describe, which is
+ *  exactly `stale_minutes`. Suppressed under the threshold - a draft trailing by six
+ *  minutes is accurate, and saying so would train the user to ignore the line for the
+ *  day it trails by two hours. */
+const STALE_FLOOR_MINUTES = 25
+function staleNote(badge: DraftBadge): string | null {
+  if (!badge || badge.state !== 'drafted') return null
+  const m = badge.stale_minutes ?? 0
+  if (m < STALE_FLOOR_MINUTES) return null
+  return `${fmtDur(m * 60)} of work since`
+}
+
 /** One strand of work no planned ticket claims. Leads with the time it took rather
  *  than a ticket key, because the point of the row is that it does not have one. */
-function OffPlanRow({ title, minutes, delay, onClick }: {
+function OffPlanRow({ title, minutes, delay, onClick, badge }: {
   title: string
   minutes: number
   delay: number
   onClick: () => void
+  badge: DraftBadge
 }) {
   const reduce = useReducedMotion()
+  const chip = draftBadge(badge)
+  const stale = staleNote(badge)
+  // The row itself carries the state when there is something to do. A chip alone is a
+  // 9px detail in a list read at a glance - the tinted surface is what makes "three
+  // rows, all waiting on you" legible without reading a word.
+  const waiting = !!chip?.loud
   return (
     <motion.li
       initial={reduce ? false : { opacity: 0, y: 4 }}
@@ -146,8 +199,16 @@ function OffPlanRow({ title, minutes, delay, onClick }: {
     >
       <button
         onClick={onClick}
-        className="w-full flex items-center gap-2.5 rounded-lg px-2 py-2 text-left hover:opacity-80"
-        style={{ background: 'transparent', border: 'none', cursor: 'pointer' }}
+        className="w-full flex items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-shadow hover:shadow-[0_1px_6px_-2px_rgba(0,0,0,0.18)]"
+        style={{
+          cursor: 'pointer',
+          background: waiting
+            ? `color-mix(in srgb, ${chip.tone} 7%, transparent)`
+            : 'transparent',
+          border: waiting
+            ? `1px solid color-mix(in srgb, ${chip.tone} 26%, transparent)`
+            : '1px solid transparent',
+        }}
       >
         <span
           className="inline-flex items-center justify-center shrink-0 rounded-md"
@@ -162,17 +223,33 @@ function OffPlanRow({ title, minutes, delay, onClick }: {
         </span>
         <span className="min-w-0 flex-1">
           <span className="mt-body-sm block truncate" style={{ color: 'var(--t-title)' }}>{title}</span>
-          <span className="block" style={{ fontSize: 11, color: 'var(--t-faint)' }}>
-            {fmtDur(minutes * 60)} · no ticket yet - draft ready
+          <span className="flex items-center gap-1.5 flex-wrap" style={{ fontSize: 11, color: 'var(--t-faint)' }}>
+            <span>{fmtDur(minutes * 60)}</span>
+            {chip && (
+              <>
+                <span aria-hidden>·</span>
+                <span
+                  className="px-1.5 py-px rounded"
+                  style={{
+                    fontSize: 9.5, fontWeight: 800, letterSpacing: '0.06em',
+                    color: chip.tone,
+                    background: `color-mix(in srgb, ${chip.tone} 15%, transparent)`,
+                  }}
+                >
+                  {chip.label}
+                </span>
+              </>
+            )}
+            {stale && <><span aria-hidden>·</span><span>{stale}</span></>}
           </span>
         </span>
-        <span className="shrink-0" style={{ fontSize: 14, color: 'var(--t-faint)' }}>›</span>
+        <span className="shrink-0" style={{ fontSize: 14, color: waiting ? chip.tone : 'var(--t-faint)' }}>›</span>
       </button>
     </motion.li>
   )
 }
 
-export function WorkList({ tasks, plan, planned, onSelect, onOpenTask, delay = 0 }: {
+export function WorkList({ tasks, plan, planned, onSelect, onOpenTask, drafts, delay = 0 }: {
   /** The day's tasks, unfiltered - the floor is applied here. */
   tasks: DayTask[]
   /** One verdict per planned ticket; empty on a day with no plan. */
@@ -183,6 +260,10 @@ export function WorkList({ tasks, plan, planned, onSelect, onOpenTask, delay = 0
    *  the timeline's. */
   onSelect: (task: DayTask, indexInDay: number) => void
   onOpenTask: (key: string, title?: string) => void
+  /** Worklog state per task id, from `get_day_draft_states`. Absent while it loads,
+   *  and a task with no entry has no draft - both render without a badge, which is
+   *  the honest answer in each case. */
+  drafts?: Map<string, { state: string; stale_minutes: number | null }>
   delay?: number
 }) {
   const byId = new Map(tasks.map(t => [t.id, t]))
@@ -204,6 +285,7 @@ export function WorkList({ tasks, plan, planned, onSelect, onOpenTask, delay = 0
               minutes={t.minutes}
               delay={delay + 0.04 * n}
               onClick={() => onSelect(t, tasks.indexOf(t))}
+              badge={drafts?.get(t.id)}
             />
           ))}
         </ul>
@@ -269,6 +351,7 @@ export function WorkList({ tasks, plan, planned, onSelect, onOpenTask, delay = 0
                 minutes={t.minutes}
                 delay={delay + 0.04 * (plan.length + n)}
                 onClick={() => onSelect(t, tasks.indexOf(t))}
+                badge={drafts?.get(t.id)}
               />
             ))}
           </ul>

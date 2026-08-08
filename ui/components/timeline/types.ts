@@ -21,7 +21,7 @@ export type VisualState = 'approved' | 'rejected' | 'proposal' | 'pending'
 export const VISUAL_STATE_COLOR: Record<VisualState, string> = {
   approved: 'var(--color-state-approved)',
   rejected: 'var(--color-state-rejected)',
-  proposal: 'var(--color-state-proposal)',
+  proposal: 'var(--t-accent)',
   pending: 'var(--color-state-pending)',
 }
 
