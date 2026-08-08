@@ -134,49 +134,88 @@ pub async fn run_pm_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
 /// Re-triage the cached board into `pm_task_curation` after a sync. Best-effort:
 /// a triage failure must never fail the sync (the board is still usable), so we
 /// log and move on.
+///
+/// This used to also enqueue a once-a-day `board.hygiene` digest toast ("N
+/// tickets on your board need a closer look"). That was removed: its whole
+/// purpose was to drive the user into the Board Cleanup flow, and that UI is
+/// disabled (see the commented-out `CleanupModal` in
+/// `ui/components/timeline/MeridianTimelineShell.tsx`), so the toast nudged
+/// toward a surface that no longer opens — and its deep link (`/tasks`) is not
+/// a route the static-exported dashboard has either. Re-enabling Board Cleanup
+/// means restoring a producer here; migration 077 clears the rows this one left
+/// behind. The triage data itself is untouched — `pm_task_curation` still feeds
+/// the tasks panel and `HygieneDialog`.
 async fn triage_after_sync(meridian: &SqlitePool) {
     match task_triage::run_triage(meridian, chrono::Utc::now()).await {
-        Ok(s) => {
-            tracing::debug!(
-                ready = s.ready,
-                needs_detail = s.needs_detail,
-                looks_stale = s.looks_stale,
-                not_sure = s.not_sure,
-                pruned = s.pruned,
-                "board triaged"
-            );
-            maybe_notify_board_hygiene(meridian, &s).await;
-        }
+        Ok(s) => tracing::debug!(
+            ready = s.ready,
+            needs_detail = s.needs_detail,
+            looks_stale = s.looks_stale,
+            not_sure = s.not_sure,
+            pruned = s.pruned,
+            "board triaged"
+        ),
         Err(e) => tracing::warn!(error = %e, "board triage after sync failed"),
     }
 }
 
-/// Daily digest: if the board has tickets needing attention (not `Ready`),
-/// enqueue one batched notification rather than nudging on every sync tick —
-/// same once-per-day dedup shape as [`crate::daily_plan::maybe_nudge`]. Safe
-/// to call unconditionally on every `triage_after_sync` pass (potentially
-/// several times a day): the outbox's UNIQUE constraint on `dedup_key` makes
-/// a repeat call within the same day a no-op, so no extra gate is needed.
-async fn maybe_notify_board_hygiene(pool: &SqlitePool, s: &task_triage::TriageSummary) {
-    let attention = s.needs_detail + s.looks_stale + s.not_sure;
-    if attention == 0 {
-        return;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn db() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("src/migrations").run(&pool).await.unwrap();
+        pool
     }
-    let today = meridian_core::date::today_string();
-    let dedup = format!("board.hygiene:{today}");
-    let body = format!(
-        "{attention} ticket{} on your board need{} a closer look.",
-        if attention == 1 { "" } else { "s" },
-        if attention == 1 { "s" } else { "" }
-    );
-    let n = crate::notifications::NewNotification::event(
-        &dedup,
-        "board.hygiene",
-        "Board hygiene",
-        &body,
-    )
-    .link("/tasks?integrations=1");
-    if let Err(e) = crate::notifications::enqueue(pool, n).await {
-        tracing::warn!(error = %e, "board hygiene digest enqueue failed");
+
+    /// Board Cleanup is disabled, so triage must stay silent: a board full of
+    /// tickets needing attention triages into `pm_task_curation` (the tasks
+    /// panel still reads it) without enqueueing a `board.hygiene` toast.
+    ///
+    /// The seed mirrors `task_triage::store`'s own fixtures: an empty
+    /// description on an active ticket buckets as `needs_detail`, and an
+    /// untouched-since-January backlog ticket as `looks_stale` — between them
+    /// the two counts the old digest summed over.
+    #[tokio::test]
+    async fn triage_after_sync_enqueues_no_board_hygiene_digest() {
+        let pool = db().await;
+        for (key, status, desc, updated) in [
+            ("THIN-1", "In Progress", "", "2026-06-11T00:00:00Z"),
+            ("STALE-1", "Backlog", "A", "2026-01-01T00:00:00Z"),
+        ] {
+            sqlx::query(
+                "INSERT INTO pm_tasks (task_key, provider, title, description_text, status_raw, \
+                    is_terminal, url, updated_at) \
+                 VALUES (?, 'jira', 'A title that is plenty specific', ?, ?, 0, 'http://x', ?)",
+            )
+            .bind(key)
+            .bind(desc)
+            .bind(status)
+            .bind(updated)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        triage_after_sync(&pool).await;
+
+        let triaged: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pm_task_curation")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(triaged, 2, "triage itself must still run and persist");
+
+        let queued: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE event_key = 'board.hygiene'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(queued, 0, "the board hygiene digest producer was removed");
     }
 }
