@@ -249,9 +249,16 @@ registered`, `outbox toast delivered`, `notification action event: {...}`,
 | `system.disk_low` | `system_fault` | View | — (stamp only) — `~/.meridian`'s volume below 2 GB free |
 | `pm_worklog.{provider}` | `system_fault` | View | — (stamp only) — a worklog post to the tracker failed permanently |
 | `summariser.dead_letter` | `generic_link` | Open | — (stamp only) — daily digest of permanently-failed coding-agent summarisation, `dedup_key` scoped per day |
-| `board.hygiene` | `generic_link` | Open | — (stamp only) — daily digest of tickets needing attention, `dedup_key` scoped per day |
 | *(reserved)* | `verify_switch` | Yes · No · Reply… | — (PR 2: task-switch verification) |
 | *(generic)* | `generic_link` | Open | — (stamp only) |
+
+**Removed:** `board.hygiene` (daily digest of tickets needing attention) — its
+only job was to pull the user into the Board Cleanup flow, and that UI is
+disabled (`CleanupModal` is commented out in `MeridianTimelineShell.tsx`), so
+the toast pointed at a surface that no longer opens. Producer deleted from
+`src/intelligence/mod.rs::triage_after_sync`; migration 077 deletes the rows it
+already wrote, since undismissed banner rows never expire on their own.
+Re-enabling Board Cleanup means writing the producer back.
 
 There is no per-type settings toggle for any `event_key` — `event_allowed`
 gates every event the same way, on the master switch alone (plus quiet hours

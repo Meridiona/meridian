@@ -1,0 +1,14 @@
+-- ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
+--
+-- Retire the `board.hygiene` daily digest ("N tickets on your board need a
+-- closer look"). The producer is gone (src/intelligence/mod.rs), but removing
+-- it only stops FUTURE enqueues: rows already in the outbox stay live because
+-- `active_banners` filters on `banner_dismissed_at IS NULL` with no expiry, so
+-- every past day's digest keeps rendering in the dashboard banner until the
+-- user dismisses each one by hand. Delete them so an upgrade actually clears
+-- the notification the user is seeing.
+--
+-- Safe to run on a DB that never had one (0 rows), and safe against a future
+-- re-introduction: the dedup keys are day-scoped, so a restored producer starts
+-- clean rather than being deduped away by a deleted row.
+DELETE FROM notifications WHERE event_key = 'board.hygiene';
