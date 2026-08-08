@@ -415,7 +415,7 @@ pub async fn dismiss_day_task(
         .map_err(|e| crate::cmd_err!(e, "dismiss_day_task failed"))?;
     meridian_core::day_tasks::get_day_tasks(pool, &body.day)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| crate::cmd_err!(e, "dismiss_day_task: task-list refresh failed"))
 }
 
 /// Merge one inferred day-task into another (`task_id` folds into `into_task_id`).
@@ -442,7 +442,7 @@ pub async fn merge_day_task(
     .map_err(|e| crate::cmd_err!(e, "merge_day_task failed"))?;
     meridian_core::day_tasks::get_day_tasks(pool, &body.day)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| crate::cmd_err!(e, "merge_day_task: task-list refresh failed"))
 }
 
 /// Undo a day-task dismiss (un-hide it). Returns the fresh task list.
@@ -461,7 +461,7 @@ pub async fn restore_day_task(
         .map_err(|e| crate::cmd_err!(e, "restore_day_task failed"))?;
     meridian_core::day_tasks::get_day_tasks(pool, &body.day)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| crate::cmd_err!(e, "restore_day_task: task-list refresh failed"))
 }
 
 /// The user closed the Plan modal. Restarts the plan-nudge hold-back clock:

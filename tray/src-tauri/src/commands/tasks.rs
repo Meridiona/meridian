@@ -34,7 +34,7 @@ pub struct SyncResult {
 }
 
 /// Re-sync the board from the tracker (the ported /api/tasks/sync POST). Spawns
-/// `meridian tasks-sync` with a [`SYNC_TIMEOUT`] budget; returns its trimmed stdout as
+/// `meridian tasks-sync` with a `SYNC_TIMEOUT` budget; returns its trimmed stdout as
 /// `detail` on success, or an `Err` carrying stderr (the route's 500 body.error)
 /// on timeout / spawn failure / non-zero exit.
 #[tauri::command]
