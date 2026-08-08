@@ -118,10 +118,7 @@ pub async fn get_day_summary(
     let date = day.unwrap_or_else(meridian_core::date::today_string);
     meridian_core::day_summaries::get_day_summary(pool, &date)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_day_summary failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "get_day_summary failed"))
 }
 
 /// Everything the summary screen renders that does not come from the model:
@@ -157,10 +154,7 @@ pub async fn get_day_summary_data(
     let date = day.unwrap_or_else(meridian_core::date::today_string);
     let ev = meridian_core::day_evidence::collect(pool, &date)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_day_summary_data failed");
-            e.to_string()
-        })?;
+        .map_err(|e| crate::cmd_err!(e, "get_day_summary_data failed"))?;
 
     // A missing summary is NOT stale: there is nothing to recompose, and the screen
     // shows its own "compose this day" state instead. Only an existing one can go

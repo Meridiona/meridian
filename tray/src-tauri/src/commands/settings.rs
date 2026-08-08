@@ -185,10 +185,8 @@ pub async fn update_settings(
     // shown can hold a schema. An unenforced fold doesn't fail loudly — it drops the hour.
     enforce_custom_provider_gate(&updated)?;
 
-    meridian_core::settings::write_settings_value(&updated).map_err(|e| {
-        tracing::warn!(error = %e, "update_settings: write failed");
-        e.to_string()
-    })?;
+    meridian_core::settings::write_settings_value(&updated)
+        .map_err(|e| crate::cmd_err!(e, "update_settings: write failed"))?;
 
     // Refresh the live capture ignore list so a Settings change takes effect on
     // the very next captured frame — no capture restart. The frame + UI-event

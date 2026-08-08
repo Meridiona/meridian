@@ -142,10 +142,7 @@ pub async fn get_llm_experiments(
     };
     meridian_core::llm_experiments::list_experiments(pool, limit.unwrap_or(20))
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_llm_experiments failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "get_llm_experiments failed"))
 }
 
 /// One experiment's detail (input snapshot + every variant outcome), or `None`.
@@ -162,10 +159,7 @@ pub async fn get_llm_experiment(
     };
     meridian_core::llm_experiments::get_experiment(pool, id)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_llm_experiment failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "get_llm_experiment failed"))
 }
 
 /// POST body for [`draft_lab_worklog`] - the selected fold task plus the variant
