@@ -161,14 +161,20 @@ export function ReportModal({ onClose }: { onClose: () => void }) {
             prefilled form. */}
         <div style={{ padding: '8px 22px 22px' }}>
           <div className="flex gap-2">
+            {/* --t-title, not --t-muted: this is one of two equal-weight
+                actions, and muted grey made it read as the disabled twin of the
+                one beside it. --t-title rather than a literal #000 so it stays
+                the theme's own strongest text colour - near-black in
+                lilac/blush, near-white in ink, where a hardcoded black on a
+                dark control would be unreadable. */}
             <a href={ISSUE_URL('bug_report.yml')} target="_blank" rel="noopener noreferrer"
-              className="flex-1 text-center no-underline"
-              style={{ border: '1px solid var(--t-ctrl-border)', background: 'var(--t-ctrl)', color: 'var(--t-muted)', borderRadius: 12, padding: 11, font: "700 12.5px var(--font-sans)" }}>
+              className="mt-card-hover flex-1 text-center no-underline"
+              style={{ border: '1px solid var(--t-ctrl-border)', background: 'var(--t-ctrl)', color: 'var(--t-title)', borderRadius: 12, padding: 11, font: "700 12.5px var(--font-sans)" }}>
               Report a bug
             </a>
             <a href={ISSUE_URL('feature_request.yml')} target="_blank" rel="noopener noreferrer"
-              className="flex-1 text-center no-underline"
-              style={{ border: 'none', background: 'var(--btn-primary-bg)', color: '#fff', borderRadius: 12, padding: 11, font: "700 12.5px var(--font-sans)" }}>
+              className="mt-cta flex-1 text-center no-underline"
+              style={{ border: 'none', color: '#fff', borderRadius: 12, padding: 11, font: "700 12.5px var(--font-sans)" }}>
               Suggest a feature
             </a>
           </div>
