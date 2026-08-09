@@ -525,6 +525,14 @@ export function useTutorial(opts: {
   // would make the control dead on the only machines it matters on.
   const explicitRef = useRef(false)
 
+  // The same fact as `explicitRef`, but readable during RENDER — a ref is not,
+  // and the overlay needs it to decide whether to show the Skip control at all.
+  //
+  // Set in one place (the start effect, next to `setRunning(true)`) rather than
+  // in each of the three entry points: that is the single moment the answer is
+  // final, so the two can't disagree about the run that is actually starting.
+  const [explicit, setExplicit] = useState(false)
+
   // Replay hook. The walkthrough is a once-ever surface gated on a marker, so
   // without this the only way to see it again is deleting that key from the
   // console — every iteration, for anyone building or QAing it. Three ways in:
@@ -635,6 +643,9 @@ export function useTutorial(opts: {
           .catch(() => false)
         if (!armed || ctrl.signal.aborted) return
       }
+      // Captured at the one moment it is settled, and read by the overlay to
+      // decide whether a Skip control exists for this run. See `explicit` above.
+      setExplicit(explicitRef.current)
       setRunning(true)
       // Mirrored into the module flag so screens BELOW the shell can tell they are
       // being demonstrated rather than used - see `isTutorialRunning`.
@@ -704,7 +715,21 @@ export function useTutorial(opts: {
           ghost={ghost} clicking={clicking}
           spotlight={spotlight} spotlightDim={spotlightDim} awaiting={awaiting}
           choices={choices} onChoose={(v) => choiceRef.current?.(v)}
-          onSkip={finish}
+          // NO SKIP ON THE FIRST RUN. `null` here removes the control entirely
+          // rather than hiding or disabling it.
+          //
+          // The onboarding walkthrough is the one pass where the product gets to
+          // explain itself, and it is three minutes long. An out placed in the
+          // corner of the very first screen is read as the recommended action by
+          // anyone who is unsure - which is everyone, at that exact moment - so
+          // it was costing the explanation to the users who most needed it.
+          //
+          // A REPLAY keeps it. That run is one the user asked for out loud
+          // (Settings, `?tour=1`, or the console hook), by someone who has
+          // already seen the product, so trapping them for three minutes would
+          // be a different bug and not the one being fixed here. `explicit` is
+          // exactly that distinction, captured where the run starts.
+          onSkip={explicit ? finish : null}
           // Null in a packaged build, so the pill is not rendered at all. This
           // jumps PAST the compulsory AI-connect step, which the whole product
           // needs - it is a shortcut for whoever is editing part two, not a way

@@ -88,10 +88,15 @@ export function TutorialIntro({ lines, onDone }: {
 
   return (
     <div
-      // Silent click-through. No label for it: naming an escape hatch on the
-      // opening card invites the user to treat the tour itself as something to
-      // get out of, and the overlay's Skip control is visible from the very next
-      // frame anyway.
+      // Silent click-through — it dismisses the TITLE CARD, not the tour, and
+      // is deliberately unlabelled: naming an escape hatch on the opening card
+      // invites the user to treat the tour itself as something to get out of.
+      //
+      // That reasoning now runs all the way through. This used to add "and the
+      // overlay's Skip control is visible from the very next frame anyway",
+      // which stopped being true when the first-run walkthrough lost its Skip
+      // (see TutorialOverlay). So on a first run this click only skips the
+      // titles and lands on the walkthrough proper.
       onClick={() => setOut(true)}
       className="fixed inset-0 flex flex-col items-center justify-center"
       style={{

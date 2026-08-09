@@ -173,7 +173,10 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
    *  takes the screen, a one-button "carry on" stays inline. */
   choices: StageChoice[] | null
   onChoose: (value: string) => void
-  onSkip: () => void
+  /** `null` on the FIRST-RUN walkthrough, where there is deliberately no way to
+   *  skip - see the call site in useTutorial. Non-null only for a replay the
+   *  user asked for. */
+  onSkip: (() => void) | null
   /** DEV ONLY: jump to part two. `null` in a packaged build, where the pill is
    *  not rendered - see the button below. */
   onSkipToDay?: (() => void) | null
@@ -434,20 +437,28 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
         </div>
       )}
 
-      {/* Skip — its own control, NOT inside the caption bubble.
+      {/* Skip — REPLAYS ONLY. `onSkip` is null on the first run, and this
+          renders nothing at all then: the onboarding walkthrough has no out.
+          An escape hatch on the first screen a new user ever sees reads as the
+          recommended action to anyone unsure, which is everyone at that moment.
+          See the call site in useTutorial for the full reasoning.
+
+          When it IS shown it is its own control, NOT inside the caption bubble.
           It used to live in there, which meant it vanished on any beat with an
           empty caption and moved horizontally as the caption's width changed.
           An escape hatch that relocates, or disappears exactly when a confused
           user reaches for it, is not an escape hatch. Fixed top-right, present
           for the entire run. */}
-      <button onClick={onSkip} className="absolute mt-body-sm" style={{
-        top: 14, right: 16, pointerEvents: 'auto',
-        color: 'var(--t-muted)', cursor: 'pointer',
-        padding: '6px 13px', borderRadius: 99,
-        background: 'var(--t-card)',
-        border: '0.5px solid var(--t-card-border)',
-        boxShadow: 'var(--pop-shadow)',
-      }}>Skip tour</button>
+      {onSkip && (
+        <button onClick={onSkip} className="absolute mt-body-sm" style={{
+          top: 14, right: 16, pointerEvents: 'auto',
+          color: 'var(--t-muted)', cursor: 'pointer',
+          padding: '6px 13px', borderRadius: 99,
+          background: 'var(--t-card)',
+          border: '0.5px solid var(--t-card-border)',
+          boxShadow: 'var(--pop-shadow)',
+        }}>Skip tour</button>
+      )}
 
       {/* DEV ONLY - `null` in a packaged build, so this is not rendered at all.
           Jumps straight to part two (the timeline rebuilding itself), because

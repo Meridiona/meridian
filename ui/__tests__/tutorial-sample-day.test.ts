@@ -866,6 +866,40 @@ describe('the plan saves itself', () => {
   })
 })
 
+describe('a first run cannot be skipped, a replay can', () => {
+  const hook = readFileSync(new URL('../components/tutorial/useTutorial.tsx', import.meta.url), 'utf8')
+  const overlay = readFileSync(new URL('../components/tutorial/TutorialOverlay.tsx', import.meta.url), 'utf8')
+
+  it('gives the automatic first run no Skip control at all', () => {
+    // An out on the first screen a new user ever sees reads as the recommended
+    // action to anyone unsure - which is everyone at that moment - so it cost
+    // the product's only self-explanation to exactly the people who needed it.
+    expect(hook).toContain('onSkip={explicit ? finish : null}')
+  })
+
+  it('removes the button rather than hiding or disabling it', () => {
+    // Hidden-but-present is how a control comes back by accident, and a disabled
+    // button still tells the user there is a way out and it is denied to them.
+    expect(overlay).toContain('{onSkip && (')
+    expect(overlay).toContain('onSkip: (() => void) | null')
+  })
+
+  it('settles `explicit` at the one moment the run actually starts', () => {
+    // Not in each entry point: three writes can disagree about which run is
+    // starting. One write, next to setRunning, cannot.
+    expect(hook).toContain('setExplicit(explicitRef.current)')
+    expect(hook.indexOf('setExplicit(explicitRef.current)'))
+      .toBeLessThan(hook.indexOf('setRunning(true)\n      // Mirrored'))
+  })
+
+  it('still lets a replay out', () => {
+    // A replay is asked for out loud by someone who has already seen the
+    // product. Trapping them for three minutes is a different bug.
+    expect(hook).toMatch(/const replay = useCallback\(\(\) => \{\s*explicitRef\.current = true/)
+    expect(hook.match(/explicitRef\.current = true/g)?.length).toBe(3)
+  })
+})
+
 describe('the walkthrough points at the way out', () => {
   const src = SCRIPT_SRC
 
