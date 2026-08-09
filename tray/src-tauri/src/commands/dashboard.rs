@@ -57,10 +57,7 @@ pub async fn get_day_draft_states(
     let date = day.unwrap_or_else(meridian_core::date::today_string);
     let states = meridian_core::day_task_worklogs::day_draft_states(pool, &date)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_day_draft_states failed");
-            e.to_string()
-        })?;
+        .map_err(|e| crate::cmd_err!(e, "get_day_draft_states failed"))?;
     tracing::info!(day = %date, rows = states.len(), "day draft states served");
     Ok(states)
 }

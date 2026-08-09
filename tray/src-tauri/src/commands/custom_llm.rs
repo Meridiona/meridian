@@ -487,10 +487,8 @@ pub async fn replace_custom_llm_provider_key(
     );
 
     write_rows(&mut settings_v, &rows)?;
-    settings::write_settings_value(&settings_v).map_err(|e| {
-        tracing::warn!(error = %e, "custom_llm: write failed");
-        e.to_string()
-    })?;
+    settings::write_settings_value(&settings_v)
+        .map_err(|e| crate::cmd_err!(e, "custom_llm: write failed"))?;
 
     Ok(ProbeOutcome {
         provider: CustomProviderView::of(&rows[idx], selected_custom_id(&settings_v).as_deref()),
