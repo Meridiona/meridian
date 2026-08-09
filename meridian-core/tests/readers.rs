@@ -544,6 +544,103 @@ async fn plan_write_confirm_then_reopen_roundtrip() {
 }
 
 #[tokio::test]
+async fn adding_a_task_commits_the_day_so_the_dashboard_shows_it() {
+    // `add` is what `meridian plan-task-create` runs, i.e. the planner's task
+    // composer. It used to write `daily_plan` and leave `daily_plan_meta`
+    // untouched, so `confirmed` stayed false - and every reader gates on that
+    // (the dashboard renders `plan.confirmed ? plan.plan : []`). The row existed
+    // and was shown nowhere.
+    //
+    // That is the ONLY way a solo/no-tracker user can build a plan, and it is the
+    // path the onboarding walkthrough drives, so it broke precisely the first-run
+    // experience: "Saved - today's tasks are in", followed by an empty dashboard.
+    let pool = make_plan_pool().await;
+    let today = chrono::Local::now().date_naive();
+    let date = today.format("%Y-%m-%d").to_string();
+    seed_task(&pool, "PROJ-A", "Backlog", Some(&date), 0).await;
+    let now = chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+
+    let add = meridian_core::plan::PlanBody {
+        action: "add".to_string(),
+        date: Some(date.clone()),
+        task_key: Some("PROJ-A".to_string()),
+        task_keys: None,
+    };
+    let resp = meridian_core::plan::apply_plan_action(&pool, &add, &date, today, &now, Vec::new())
+        .await
+        .unwrap();
+    assert!(
+        resp.confirmed,
+        "authoring a task for the day must commit the day, or it renders nowhere"
+    );
+    assert!(!resp.skipped);
+    let keys: Vec<&str> = resp.plan.iter().map(|p| p.task_key.as_str()).collect();
+    assert_eq!(keys, vec!["PROJ-A"]);
+
+    // A second add must NOT move the original commit time - the day was committed
+    // when it was first committed, and later edits are edits, not re-commits.
+    let first: Option<String> =
+        sqlx::query_scalar("SELECT confirmed_at FROM daily_plan_meta WHERE plan_date = ?")
+            .bind(&date)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    seed_task(&pool, "PROJ-B", "Backlog", Some(&date), 0).await;
+    let later = "2099-01-01T00:00:00Z";
+    let add_b = meridian_core::plan::PlanBody {
+        action: "add".to_string(),
+        date: Some(date.clone()),
+        task_key: Some("PROJ-B".to_string()),
+        task_keys: None,
+    };
+    meridian_core::plan::apply_plan_action(&pool, &add_b, &date, today, later, Vec::new())
+        .await
+        .unwrap();
+    let second: Option<String> =
+        sqlx::query_scalar("SELECT confirmed_at FROM daily_plan_meta WHERE plan_date = ?")
+            .bind(&date)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(first, second, "a later add must not restamp confirmed_at");
+}
+
+#[tokio::test]
+async fn adding_a_task_to_a_skipped_day_un_skips_it() {
+    // Authoring a task for a day you had skipped is an explicit change of mind.
+    // Leaving `skipped` set would hide the task behind the same gate that hid it
+    // before, which reads as the Add button doing nothing.
+    let pool = make_plan_pool().await;
+    let today = chrono::Local::now().date_naive();
+    let date = today.format("%Y-%m-%d").to_string();
+    seed_task(&pool, "PROJ-A", "Backlog", Some(&date), 0).await;
+    let now = chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+
+    let skip = meridian_core::plan::PlanBody {
+        action: "skip".to_string(),
+        date: Some(date.clone()),
+        task_key: None,
+        task_keys: None,
+    };
+    let resp = meridian_core::plan::apply_plan_action(&pool, &skip, &date, today, &now, Vec::new())
+        .await
+        .unwrap();
+    assert!(resp.skipped);
+
+    let add = meridian_core::plan::PlanBody {
+        action: "add".to_string(),
+        date: Some(date.clone()),
+        task_key: Some("PROJ-A".to_string()),
+        task_keys: None,
+    };
+    let resp = meridian_core::plan::apply_plan_action(&pool, &add, &date, today, &now, Vec::new())
+        .await
+        .unwrap();
+    assert!(!resp.skipped, "adding a task un-skips the day");
+    assert!(resp.confirmed);
+}
+
+#[tokio::test]
 async fn plan_write_rejects_missing_keys_and_unready_storage() {
     let pool = make_plan_pool().await;
     let today = chrono::Local::now().date_naive();
