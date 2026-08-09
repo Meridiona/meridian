@@ -165,8 +165,13 @@ async fn check_a11y_trusted(home: &str) -> Option<bool> {
 /// duplicated the greeting handshake. Returns `Some(running)`; kept as an
 /// `Option` to match this module's other checks, which use `None` for
 /// "couldn't tell", though the probe collapses any failure to `running=false`.
+///
+/// [`daemon_control::status`] (probe + process-alive second opinion), NOT the
+/// bare probe: this feeds the popover's "Daemon: Not running" line and its
+/// Restart button, which flapped against a healthy daemon whenever the tray's
+/// own load starved the 800ms probe — see `status`'s doc.
 async fn check_daemon_running() -> Option<bool> {
-    Some(super::daemon_control::probe().await.running)
+    Some(super::daemon_control::status().await.running)
 }
 
 /// Fallback: ask `launchctl print` for the a11y-helper trust state.

@@ -181,7 +181,7 @@ pub struct DaySummary {
     /// rather than a guess at how it formatted a paragraph.
     ///
     /// Empty on the fallback path, on a day the model gave nothing for, and on every
-    /// row written before migration 078 - the block simply does not render.
+    /// row written before migration 080 - the block simply does not render.
     #[serde(default)]
     pub standup: Vec<String>,
     /// Which provider ACTUALLY answered (the resolver may degrade to local).
@@ -502,7 +502,7 @@ mod tests {
     }
 
     /// Migration 078 backfills every existing row with `'[]'`, which is exactly what
-    /// a pre-078 summary should read back as: no standup, so the block does not
+    /// a pre-080 summary should read back as: no standup, so the block does not
     /// render. The same path covers a column whose JSON has rotted - one field
     /// degrades, never the row, matching this module's stated tolerance.
     #[tokio::test]

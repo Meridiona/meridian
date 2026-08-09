@@ -960,6 +960,14 @@ export interface ProviderStatus {
   authenticated: boolean | null
   /** The last real connectivity test on record, if any. `null` means never tested — not failed. */
   last_test: ProviderTestResult | null
+  /** The installer THIS platform will actually run, or null when there is nothing to install.
+   *
+   *  Prefer this over `LlmProviderMeta.installHint` whenever it is present. That hint is one
+   *  static string in a dashboard that ships to both macOS and Windows, so it cannot be
+   *  correct on both — it names the npm command, while Windows installs natively. Since the
+   *  hint is also the "run it yourself" fallback shown after a failed install, using it on
+   *  Windows told the user to run the one command that cannot work there. */
+  install_command: string | null
 }
 
 // ── install / sign-in outcome ───────────────────────────────────────────────
@@ -1012,4 +1020,13 @@ export interface HealthStatus {
   llm_provider_rate_limited?: boolean
   llm_provider_name?: string
   llm_provider_detail?: string
+}
+
+/** `preview_repair` - what a database repair would face, for the confirmation copy. */
+export interface RepairPreview {
+  damaged: boolean
+  /** Tables that cannot be read end to end. */
+  corrupt_tables: string[]
+  /** Of those, the ones holding user data rather than capture scratch. */
+  product_tables: string[]
 }

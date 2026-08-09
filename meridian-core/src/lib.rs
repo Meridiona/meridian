@@ -60,8 +60,14 @@ pub mod proc_ext;
 /// shared by the tray's backend install and this crate's encrypt-in-place swap.
 pub mod retry;
 
+/// Raise the process file-descriptor soft limit. Lives here rather than in
+/// either binary because BOTH must call it — a `meridian.db` pool costs three
+/// descriptors per connection, and exhausting macOS's default 256 corrupts the
+/// database (`SQLITE_IOERR` 522 → `SQLITE_CORRUPT` 11).
+pub mod fd_limit;
+
 // ── Curated public API: flat module paths, stable across file moves ──────────
-pub use db::{get_active_session, open_existing, ActiveSession};
+pub use db::{get_active_session, open_existing, open_existing_lazy, ping, ActiveSession};
 
 pub use capture::{
     insert_capture_frame, insert_capture_secondary_screen, insert_capture_ui_event,
@@ -79,7 +85,10 @@ pub use readers::{
 
 pub use canonical_task::{CanonicalTask, PersonRef, Priority, Provider, StatusCategory, TaskKind};
 
-pub use llm_provider::{LlmProvider, CURSOR_CLI_VERSION, CURSOR_INSTALL_CMD, CURSOR_INSTALL_HINT};
+pub use llm_provider::{
+    LlmProvider, CLAUDE_INSTALL_CMD, CODEX_INSTALL_CMD, CURSOR_CLI_VERSION, CURSOR_INSTALL_CMD,
+    CURSOR_INSTALL_HINT,
+};
 /// The custom-endpoint registry types. `CustomLlmProvider` carries the API key and is the
 /// STORAGE form — see its docs before serialising one anywhere.
 pub use settings::{CustomLlmProvider, SchemaRung};

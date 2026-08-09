@@ -1302,20 +1302,23 @@ describe('deleting a personal task actually removes it from the plan', () => {
 
 describe('the plan section survives a solo user actually using it', () => {
   const panel = readFileSync(new URL('../components/timeline/OverviewPanel.tsx', import.meta.url), 'utf8')
-  const gate = panel.slice(panel.indexOf('{((isToday'), panel.indexOf('{((isToday') + 200)
 
-  it('shows a populated plan to solo users, not just the empty-state nudge', () => {
-    // The old gate was `(isToday && plan && focusItems.length === 0) || (!isSolo && …)`,
-    // written when a solo user could not have a confirmed plan. Both halves of that
-    // assumption died: PlanView's composer writes personal tracker-free tasks, and
-    // adding one now confirms the plan immediately (the Confirm button is gone). So
-    // the moment a solo user added their first task the whole section vanished -
-    // no checklist, no way back into the planner from this panel.
-    expect(gate).toContain('(isToday && plan)')
-    expect(gate).toContain('focusItems.length > 0')
-    // isSolo survives in exactly one place: a PAST day with nothing planned.
-    expect(gate).toContain('(!isSolo && !isToday)')
-    expect(gate).not.toContain('!isSolo && (focusItems.length > 0')
+  // The old gate was `(isToday && plan && focusItems.length === 0) || (!isSolo && …)`,
+  // written when a solo user could not have a confirmed plan. Both halves of that
+  // assumption died: PlanView's composer writes personal tracker-free tasks, and
+  // adding one now confirms the plan immediately (the Confirm button is gone). So the
+  // moment a solo user added their first task the whole section vanished - no
+  // checklist, no way back into the planner from this panel.
+  //
+  // That rule now lives in `focusSectionVisible` (components/timeline/types.ts) and is
+  // tested directly, by input, in overview-focus-section.test.ts - a far better test
+  // than the string-matching this used to do against an inline JSX condition. All that
+  // is left worth asserting here is that the panel still routes through the helper and
+  // has not grown a second, drifting copy of the rule inline.
+  it('defers the visibility rule to the shared helper', () => {
+    expect(panel).toContain('focusSectionVisible({ isToday, planLoaded: !!plan, itemCount: focusItems.length })')
+    // The specific regression: gating the populated checklist on having a tracker.
+    expect(panel).not.toContain('!isSolo && (focusItems.length > 0')
   })
 })
 

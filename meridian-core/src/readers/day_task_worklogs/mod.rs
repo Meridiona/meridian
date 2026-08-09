@@ -163,13 +163,13 @@ pub struct DayTaskWorklogDraft {
     /// still-`drafted` row — it is NOT "first generated at", it is "as of".
     pub updated_at: String,
     /// Measured minutes worked on this task SINCE the draft was written, or
-    /// `None` when that cannot be known — a row drafted before migration 077
+    /// `None` when that cannot be known — a row drafted before migration 079
     /// carries no baseline, and guessing one would declare every pre-upgrade
     /// draft stale by its task's whole duration.
     ///
     /// Deterministic: `day_tasks.minutes` (recomputed by the hourly fold from
     /// measured spans) minus the same figure captured at draft time. No model
-    /// is involved and no timestamp is compared — see migration 077 for why a
+    /// is involved and no timestamp is compared — see migration 079 for why a
     /// timestamp cannot carry this.
     pub stale_minutes: Option<i64>,
     /// Whether that growth is worth telling the user about, by the ONE
@@ -203,7 +203,7 @@ struct RawWorklog {
     created_task_key: Option<String>,
     last_error: Option<String>,
     updated_at: String,
-    /// The task's measured minutes when this draft was written (migration 077).
+    /// The task's measured minutes when this draft was written (migration 079).
     /// NULL on a row drafted before that migration.
     drafted_minutes: Option<i64>,
     /// The task's measured minutes NOW, LEFT JOINed from `day_tasks`. NULL when
@@ -236,7 +236,7 @@ const DRAFT_FROM: &str = "FROM day_task_worklogs w \
 /// is not a thing to show anyone.
 ///
 /// `MAX(…, 0)` is SQLite's two-argument scalar max, which yields NULL if either
-/// argument is NULL — that is deliberate and load-bearing: a pre-077 row (no
+/// argument is NULL — that is deliberate and load-bearing: a pre-079 row (no
 /// baseline) or a dismissed task reads as "cannot know", not as "perfectly
 /// current". Both readers map that NULL to `None`.
 const STALE_MINUTES_EXPR: &str = "MAX(t.minutes - w.drafted_minutes, 0) AS stale_minutes";
@@ -345,7 +345,7 @@ pub struct DayDraftState {
     /// `drafted` | `approved` | `posted` | `error`.
     pub state: String,
     /// Measured minutes worked since the draft was written, clamped at zero. `None`
-    /// when the row predates `drafted_minutes` (pre-077).
+    /// when the row predates `drafted_minutes` (pre-079).
     pub stale_minutes: Option<i64>,
 }
 
@@ -392,7 +392,7 @@ pub async fn day_draft_states(
             Ok(r)
         }
         // Same degradation as every other read here: a pre-060 DB has no table and a
-        // pre-077 one has no `drafted_minutes`. Neither is worth failing a summary
+        // pre-079 one has no `drafted_minutes`. Neither is worth failing a summary
         // over - the rows simply render without their badge.
         Err(e) => {
             tracing::debug!(error = %e, "day_task_worklogs.read.day_draft_states unavailable");
@@ -446,7 +446,7 @@ pub async fn stale_drafts(pool: &SqlitePool, day_local: &str) -> anyhow::Result<
             tracing::debug!(rows = r.len(), "day_task_worklogs.read.stale_drafts");
             Ok(r)
         }
-        // A pre-060 DB has no table and a pre-077 one has no column. Neither is
+        // A pre-060 DB has no table and a pre-079 one has no column. Neither is
         // an error worth failing an hourly fold over — there is simply nothing
         // to notify about.
         Err(e) => {

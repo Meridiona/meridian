@@ -34,6 +34,7 @@ const status = (installed: boolean, path: string | null = null): ProviderStatus 
   path,
   authenticated: null,
   last_test: null,
+  install_command: 'npm i -g @openai/codex',
 })
 
 const testResult = (outcome: ProviderTestResult['outcome']): ProviderTestResult => ({
@@ -153,6 +154,32 @@ it('every in-app sign-in provider carries BOTH its copy and its tray command in 
   // ...and the picker must not have grown a second, competing map.
   expect(picker).not.toMatch(/SIGN_IN_COMMANDS/)
   expect(picker).toMatch(/llmSignIn\(id\)\?\.trayCommand/)
+})
+
+// ── The displayed install command must come from the PROBE, not the static meta hint ────────
+//
+// `LlmProviderMeta.installHint` is one string compiled into a dashboard that ships to macOS
+// AND Windows, so it cannot be correct on both: it names the npm command, while Windows
+// installs natively (see meridian-core/src/llm_provider.rs). It is also the "run it yourself"
+// fallback shown AFTER a failed install — so sourcing it statically told a Windows user to run
+// the exact command that cannot work there. `ProviderStatus.install_command` is the command
+// the running backend will actually execute, so it is right on every platform by construction.
+
+it('the install hint shown to the user comes from the probe, falling back to the static meta hint only until it resolves', () => {
+  expect(detail).toMatch(/installHint=\{probed\?\.install_command \?\? p\.installHint\}/)
+})
+
+it('ProviderStatus carries the install command, so the UI never has to guess the platform', () => {
+  const apiTypes = src('lib/api-types.ts')
+  const block = apiTypes.slice(apiTypes.indexOf('export interface ProviderStatus'))
+  expect(block.slice(0, block.indexOf('\n}'))).toMatch(/install_command: string \| null/)
+})
+
+it('the detail view does not fall back to the static hint anywhere else — one source, no second path', () => {
+  // Every other `p.installHint` read would reintroduce the platform-wrong string. The single
+  // permitted use is the `??` fallback asserted above.
+  const reads = detail.match(/p\.installHint/g) ?? []
+  expect(reads.length).toBe(1)
 })
 
 it('every other provider surfaces the real failure message verbatim, not a generic substitute', () => {

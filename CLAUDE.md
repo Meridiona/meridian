@@ -169,15 +169,24 @@ care.
 # Build (SQLX_OFFLINE=true is set automatically via .cargo/config.toml)
 cargo build --release
 
-# Run all tests
-cargo test
+# Run all tests — `--workspace` is REQUIRED, see the warning below
+cargo test --workspace
 
 # Lint (must pass before committing)
-cargo clippy -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 
 # Format (must pass before committing)
 cargo fmt
 ```
+
+> **Always pass `--workspace`.** `members = [".", "meridian-core",
+> "meridian-oauth", "tray/src-tauri"]` makes the repo root itself a package, so
+> a bare `cargo test` / `cargo clippy` runs against **that package alone** and
+> silently skips the other three. They still *compile* (the daemon depends on
+> them), which is what makes the omission so convincing — they are simply never
+> tested and their test code is never linted. This hid two red `db_crypto` tests
+> for days with every gate green; CI and the pre-push hook now pass
+> `--workspace` for exactly this reason.
 
 Rust toolchain is pinned to **1.93.1** via `rust-toolchain.toml`.
 
@@ -219,7 +228,7 @@ cargo clippy -- -D warnings
 cargo test
 ```
 
-There are no JS/TS test suites yet. When adding them, place them under `ui/__tests__/`, `packages/meridian-mcp/src/__tests__/`, or `tray/src-tauri/src/__tests__/`.
+The dashboard has a bun test suite — `ui/__tests__/` (409 tests across 29 files as of 1.83.0), run with `bun test` from `ui/`. Many are source-scanning rather than behavioural (`cursor-pointer.test.ts`, `no-native-dialogs.test.ts`): they read the `.tsx` and assert on what it contains, which is the only available guard for things a headless run cannot exercise. New JS/TS tests go under `ui/__tests__/`, `packages/meridian-mcp/src/__tests__/`, or `tray/src-tauri/src/__tests__/`.
 
 ---
 
@@ -342,6 +351,7 @@ The fold replaces every `ui/app/api/*` route with a Rust command the frontend ca
 - The MCP server uses `sql.js` (pure WASM, no native compile step) — deliberately chosen over `better-sqlite3` after native-module ABI mismatches across Node versions/platforms caused real distribution pain (see `packages/meridian-mcp/src/db-cache.ts`'s header comment). Do not swap it back.
 - UI API routes live in `ui/app/api/`; keep them thin — query, transform, return JSON
 - No `any` types unless unavoidable and justified with a comment
+- **NEVER `window.confirm` / `window.alert` / `window.prompt` — they do nothing in the packaged tray.** WKWebView routes JS dialogs through the host app's `WKUIDelegate`, and nothing in the stack installs one (`wry`, `tauri-runtime-wry`, `tauri`, `tauri-utils` were each grepped for `ConfirmPanel|AlertPanel|WKUIDelegate` — all empty), so `confirm()` always returns `false` and `alert()` is a no-op. The damage is silence: a falsy `confirm()` is indistinguishable from the user clicking Cancel, so the gated action quietly never runs while every log, gate and test still passes. That is how the `db.corrupt` **Repair Database** button shipped dead in 1.83.0 — recovery had to be driven by hand from a terminal. Use `@/components/ConfirmDialog` (`ConfirmDialog` for consent, `AlertDialog` for failures). `__tests__/no-native-dialogs.test.ts` fails the build if they come back. `tauri-plugin-dialog` would also work but is not a dependency, and adding one costs a capability grant for a box the webview can render itself.
 - **Spawning the `meridian` binary from a UI route: ALWAYS use `selectMeridianBinary(meridianCandidates())` from `@/lib/meridian-bin`.** Never spawn a bare `'meridian'` (relies on `$PATH`), and never hand-roll a candidate list. The dashboard runs under **launchd**, whose PATH lacks Homebrew's `node`, so the `#!/usr/bin/env node` wrapper at `~/.local/bin/meridian` dies with `env: node: No such file or directory`. The helper probes the **native binary first** (`~/.meridian/app/bin/meridian`, no runtime deps → works under launchd), so it behaves identically in dev and installed. This bug is invisible in `dev-start` (dev installs a bash wrapper, not a node one) — it only surfaces on bundle/npm installs. `__tests__/meridian-bin.test.ts` guards the ordering. The one sanctioned exception is launching `meridian` in a user Terminal (`open -a Terminal …`, e.g. `api/update`), where an interactive login shell *does* have node/PATH.
 
 ### SQL migrations
@@ -613,7 +623,39 @@ anymore; a failing/rate-limited provider leaves work pending for the next cycle.
 # coding-agent ingest — runs inside the daemon; these are the one-shot CLIs
 echo '{"transcript_path":"~/.claude/projects/.../<uuid>.jsonl"}' | meridian coding-agent-hook  # SessionEnd: seal one session
 meridian coding-agent-summarise [--dry-run] [--day YYYY-MM-DD] [--limit N]                     # summarise the pending queue
+
+# database corruption — diagnose and recover (see "Database corruption" below)
+meridian db check    # per-table scan; exit 0 healthy, 1 damaged
+meridian db repair   # rebuild into a fresh file; requires the daemon AND tray stopped
 ```
+
+---
+
+## Database corruption (`src/db/integrity.rs`, `src/db/repair/`)
+
+SQLite b-tree damage is detected and recovered explicitly; it is not something
+the daemon can shrug off.
+
+- **Detection** — `quick_check` at daemon startup, plus `integrity::is_corrupt_error`
+  on the ETL error path. On a positive the daemon raises the `db.corrupt` notice
+  and **latches**: it stops calling `run_etl` for the rest of the process's life,
+  because the condition cannot clear without an operator and retrying only
+  re-reads damaged pages. Everything else in the poll loop keeps running.
+- **Recovery is never automatic.** Two processes write `meridian.db` (daemon +
+  tray), and the daemon cannot ask the tray to stop, so `meridian db repair`
+  refuses to run while either is alive. It rebuilds into a fresh file and swaps
+  it in; the damaged original is kept as `meridian.db.corrupt-backup-<ts>` and
+  never deleted.
+- **Repair-in-place is impossible** — on a corrupt tree both `REINDEX` and
+  `DROP TABLE` themselves raise `SQLITE_CORRUPT`. Salvage into a new file is the
+  only primitive that works.
+- **Never test table health with `count(*)`.** It is answered from an index and
+  reports a corrupt table as fine; even `count(*) … NOT INDEXED` misses overflow
+  pages. Only a full column read is authoritative — `integrity::scan_tables`.
+
+Both modules' headers carry the full reasoning and the measured numbers. Test
+fixtures that produce genuinely corrupt files live in `src/db/test_corrupt.rs`
+(`cargo test` covers them; `sqlite::memory:` cannot be corrupted).
 
 ---
 
@@ -622,7 +664,7 @@ meridian coding-agent-summarise [--dry-run] [--day YYYY-MM-DD] [--limit N]      
 - Commit message style: `type(scope): short description` — e.g. `fix(etl): detect sleep gaps that span ETL run boundaries`
 - `commit-msg` hook validates conventional commits format — fix message before retrying
 - `pre-commit` hook runs `cargo fmt --check` and `cargo clippy -- -D warnings`
-- `pre-push` hook runs the full suite: `cargo fmt` + `cargo clippy` + UI build + UI tests + security audit (claude CLI) + `cargo test`
+- `pre-push` hook runs the full suite: `cargo fmt` + `cargo clippy --workspace` + UI build + UI tests + security audit (claude CLI) + `cargo test --workspace`
 - Never skip hooks with `--no-verify`
 - Install hooks after cloning: `bash scripts/setup-hooks.sh`
 - Never amend a commit that has already been pushed to `main` or `pre-main`

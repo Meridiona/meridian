@@ -5162,7 +5162,7 @@ dependencies = [
 
 [[package]]
 name = "meridian"
-version = "1.77.0"
+version = "1.83.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5219,6 +5219,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dirs 5.0.1",
+ "libc",
  "libsqlite3-sys",
  "serde",
  "serde_json",

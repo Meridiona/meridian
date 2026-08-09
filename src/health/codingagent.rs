@@ -14,9 +14,6 @@ use std::path::PathBuf;
 pub fn checks(_cfg: &Config) -> Vec<Check> {
     let home = meridian_core::paths::home_dir_or_cwd();
 
-    let claude_present = which("claude").is_some();
-    let skill_path = home.join(".claude/commands/session-summary.md");
-
     let mut out = vec![
         cli("claude", "Claude Code"),
         cli("codex", "Codex"),
@@ -32,27 +29,19 @@ pub fn checks(_cfg: &Config) -> Vec<Check> {
         ),
     ];
 
-    // The session-summary skill must exist for `claude -p /session-summary` to
-    // work. Without it the command returns "Unknown command" and every Claude
-    // Code session fails to summarise and is left pending.
-    if claude_present {
-        if skill_path.exists() {
-            out.push(Check::ok(
-                "session-summary skill",
-                "L2",
-                "~/.claude/commands/session-summary.md present",
-            ));
-        } else {
-            out.push(
-                Check::warn(
-                    "session-summary skill",
-                    "L2",
-                    "~/.claude/commands/session-summary.md missing — claude summariser fails for every session (left pending)",
-                )
-                .with_remedy("meridian doctor --fix  (or: meridian coding-agent-install-skill)"),
-            );
-        }
-    }
+    // There is deliberately NO "session-summary skill" check here any more.
+    //
+    // It asserted that a missing ~/.claude/commands/session-summary.md meant
+    // "claude summariser fails for every session", which stopped being true
+    // when the Claude engine moved to embedding SUMMARY_RULES inline in
+    // `claude -p` (see `crate::coding_agent_session_ingest::summariser::claude`
+    // — `SUMMARISER_SKILL` is deprecated there and now only drives a warning).
+    // Nothing reads that file, so its absence diagnosed a failure that could
+    // not happen, escalated it to a critical Diagnosis, and offered a `doctor
+    // --fix` that wrote a file no code path opens.
+    //
+    // A genuinely stalled summariser is caught by "summariser queue" in
+    // `crate::health::daemon`, which measures the thing that actually matters.
 
     // Cursor: sidebar/IDE-agent transcripts are ingested from state.vscdb and
     // cursor-agent CLI chats from ~/.cursor/chats. Summaries use the

@@ -8,8 +8,13 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { subscribe } from '@/lib/bridge'
-import type { Notice } from '@/lib/api-types'
+import { load, subscribe } from '@/lib/bridge'
+import ConfirmDialog from '@/components/ConfirmDialog'
+import { formatSince } from '@/lib/notice-time'
+import type { Notice, RepairPreview } from '@/lib/api-types'
+
+// The one notice that can be acted on in-app rather than in a terminal.
+const DB_CORRUPT = 'db.corrupt'
 
 // Palette lives in globals.css (--status-*).
 const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string; dot: string }> = {
@@ -41,6 +46,10 @@ export default function NoticeBar() {
     <div style={{ position: 'sticky', top: 0, zIndex: 50 }}>
       {notices.map((n) => {
         const s = SEVERITY_STYLES[n.severity] ?? SEVERITY_STYLES.error
+        // When the fault was raised. A notice can outlive its cause (the
+        // db.corrupt banner once survived its own repair), and the stamp is
+        // what lets a user tell a stale alarm from a live one.
+        const since = formatSince(n.raised_at)
         return (
           <div
             key={n.notice_id}
@@ -71,12 +80,18 @@ export default function NoticeBar() {
               <span style={{ fontSize: 12, color: s.text, marginLeft: 8, opacity: 0.85 }}>
                 {n.detail}
               </span>
-              {n.remedy && (
+              {since && (
+                <span style={{ fontSize: 11, color: s.text, marginLeft: 8, opacity: 0.6, whiteSpace: 'nowrap' }}>
+                  {since}
+                </span>
+              )}
+              {n.remedy && n.notice_id !== DB_CORRUPT && (
                 <div style={{ marginTop: 2, fontSize: 11, color: s.text, opacity: 0.7 }}>
                   Fix: <code style={{ fontFamily: 'var(--font-mono)', background: 'rgba(0,0,0,0.06)', padding: '1px 4px', borderRadius: 3 }}>{n.remedy}</code>
                 </div>
               )}
             </div>
+            {n.notice_id === DB_CORRUPT && <RepairButton color={s.text} border={s.border} />}
             {n.notice_id.startsWith('pm.') && (
               <button
                 onClick={() => window.dispatchEvent(new CustomEvent('meridian:open-tasks'))}
@@ -101,5 +116,102 @@ export default function NoticeBar() {
         )
       })}
     </div>
+  )
+}
+
+// Offers the in-app repair for a damaged database.
+//
+// Two things this deliberately does NOT do:
+//   - Repair silently. The operation loses rows by design, so the user is told
+//     what it will cost (from `preview_repair`, a read-only scan) and agrees
+//     first - the same consent shape as the DMG updater.
+//   - Repair in place. `request_repair` marks the database and RESTARTS the
+//     app; the rebuild happens on the way back up, when nothing holds the file
+//     open. The button says so, because an app that vanishes without warning
+//     reads as a crash.
+//
+// The consent gate is `ConfirmDialog`, NOT `window.confirm` - that global
+// returns false in the packaged tray, which made this button a no-op from the
+// day it shipped (see ConfirmDialog's header). Errors render in the dialog for
+// the same reason: `window.alert` never appeared either, so a failed repair and
+// a dismissed one looked identical.
+function RepairButton({ color, border }: { color: string; border: string }) {
+  // `previewing` is the click-to-dialog gap; `starting` is request_repair in
+  // flight, which normally ends with the app restarting rather than a result.
+  const [stage, setStage] = useState<'idle' | 'previewing' | 'confirming' | 'starting'>('idle')
+  const [cost, setCost] = useState('')
+  const [error, setError] = useState('')
+
+  const busy = stage === 'previewing' || stage === 'starting'
+
+  async function onClick() {
+    setStage('previewing')
+    setError('')
+    // Ask what is actually damaged before quoting a cost. A failed preview is
+    // not a reason to block the repair - the database is already broken - so
+    // fall back to generic wording rather than refusing to proceed.
+    let quoted = 'Some recent activity data may be lost.'
+    try {
+      const p = await load<RepairPreview>('/api/db/repair/preview', 'preview_repair')
+      if (p.product_tables.length > 0) {
+        quoted = `Damage reaches ${p.product_tables.length} table(s) holding your data - some records cannot be recovered.`
+      } else if (p.corrupt_tables.length > 0) {
+        quoted = 'Only recent screen-activity data is damaged. Your history is intact.'
+      }
+    } catch {
+      // keep the generic wording
+    }
+    setCost(quoted)
+    setStage('confirming')
+  }
+
+  async function onConfirm() {
+    setStage('starting')
+    setError('')
+    try {
+      await load('/api/db/repair', 'request_repair')
+      // Not reached in practice - the command relaunches the app. Only a
+      // failure returns here, so leave the dialog up rather than closing it.
+    } catch (e) {
+      setError(`Could not start the repair: ${e instanceof Error ? e.message : String(e)}`)
+      setStage('confirming')
+    }
+  }
+
+  return (
+    <>
+      <button
+        onClick={onClick}
+        disabled={busy}
+        style={{
+          flexShrink: 0,
+          fontSize: 11,
+          fontWeight: 600,
+          color,
+          background: 'rgba(0,0,0,0.07)',
+          border: `1px solid ${border}`,
+          borderRadius: 5,
+          padding: '3px 8px',
+          whiteSpace: 'nowrap',
+          alignSelf: 'center',
+          cursor: busy ? 'default' : 'pointer',
+          opacity: busy ? 0.6 : 1,
+        }}
+      >
+        {busy ? 'Starting…' : 'Repair Database'}
+      </button>
+      {(stage === 'confirming' || stage === 'starting') && (
+        <ConfirmDialog
+          title="Repair Meridian's database?"
+          body={`${cost}\n\nEverything readable is kept, and the damaged copy is saved alongside it. Meridian will restart to do this.`}
+          confirmLabel="Repair and restart"
+          busyLabel="Starting…"
+          busy={stage === 'starting'}
+          error={error}
+          onConfirm={onConfirm}
+          onCancel={() => { setStage('idle'); setError('') }}
+        />
+      )}
+    </>
   )
 }

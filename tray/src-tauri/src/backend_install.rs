@@ -20,6 +20,16 @@
 //! agents (screenpipe / a11y-helper / MLX / UI server) are booted out during
 //! [`install`].
 //!
+//! **Windows has no equivalent of that plist key**, and getting it wrong is
+//! silent: `schtasks /Create` has no "Start in" field and the Startup-folder
+//! VBScript defaults to system32, so a daemon launched by either sees no `.env`
+//! — and therefore no `MERIDIAN_DB_KEY`, which is fatal once meridian.db has
+//! been encrypted in place. Every launch path here consequently sets the
+//! working directory to `~/.meridian` explicitly (the VBScript's
+//! `CurrentDirectory`, and `current_dir` on both direct spawns). The daemon
+//! *also* loads that file by absolute path (`src/main.rs`), so this is defence
+//! in depth and the fix for anyone whose task was registered by an older build.
+//!
 //! **The `meridian-a11y-helper` launchd agent is retired** (was
 //! `com.meridiona.a11y-helper`): it existed to poke `AXManualAccessibility`
 //! on Electron/Chromium apps for the old *external* screenpipe process. The
@@ -57,17 +67,25 @@ fn sha256_hex_of(path: &Path) -> std::io::Result<String> {
     Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
 }
 
+/// The daemon's launchd label and plist file name. Named separately from
+/// [`AGENTS`] because [`stop_daemon_for_migration`] and [`ensure_daemon_running`]
+/// address this one agent directly rather than iterating the table.
+#[cfg(target_os = "macos")]
+pub(crate) const DAEMON_LABEL: &str = "com.meridiona.daemon";
+#[cfg(target_os = "macos")]
+const DAEMON_PLIST: &str = "com.meridiona.daemon.plist";
+
 /// launchd agents this stages, paired with their bundled plist template.
 #[cfg(target_os = "macos")]
-const AGENTS: &[(&str, &str)] = &[("com.meridiona.daemon", "com.meridiona.daemon.plist")];
+const AGENTS: &[(&str, &str)] = &[(DAEMON_LABEL, DAEMON_PLIST)];
 
 /// The daemon executable's file name inside `Resources/backend/` and at its
 /// staged destination. Windows needs the `.exe` suffix to be runnable at all;
 /// `tauri.windows.conf.json`'s resource map bundles it under that name.
 #[cfg(target_os = "windows")]
-const DAEMON_FILE: &str = "meridian.exe";
+pub(crate) const DAEMON_FILE: &str = "meridian.exe";
 #[cfg(not(target_os = "windows"))]
-const DAEMON_FILE: &str = "meridian";
+pub(crate) const DAEMON_FILE: &str = "meridian";
 
 /// Stage the bundled backend and register its launchd agent — idempotent and
 /// non-fatal.
@@ -81,13 +99,6 @@ const DAEMON_FILE: &str = "meridian";
 /// **only after** the agent bootstraps, so a partial failure retries next launch.
 #[tracing::instrument(skip(app))]
 pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
-    let backend = match bundled_backend_dir(app) {
-        Some(d) => d,
-        None => {
-            tracing::debug!("backend_install: no bundled backend (dev/source run) — skipping");
-            return;
-        }
-    };
     let home = match meridian_core::paths::home_dir() {
         Some(h) => h,
         None => {
@@ -97,12 +108,33 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
             return;
         }
     };
+    let backend = match bundled_backend_dir(app) {
+        Some(d) => d,
+        None => {
+            // Nothing to STAGE on a dev/source run - but the daemon may still
+            // need STARTING, and this is the only place that does it. Quit now
+            // stops the daemon (`crate::daemon_lifecycle`), and a `bootout`
+            // cannot be undone by `KeepAlive` or by `RunAtLoad` at the next
+            // login: the job is no longer loaded for either to act on. Bailing
+            // here without this call is what would turn one dev quit into a
+            // permanently dead daemon.
+            //
+            // Safe on every path: the macOS arm no-ops when no plist is
+            // installed (a fresh clone) and when the daemon is already up.
+            tracing::debug!(
+                "backend_install: no bundled backend (dev/source run) — skipping staging"
+            );
+            crate::daemon_lifecycle::restore_unless_paused(&home).await;
+            return;
+        }
+    };
 
     let daemon_src = backend.join(DAEMON_FILE);
     let bundled_hash = match sha256_hex_of(&daemon_src) {
         Ok(h) => h,
         Err(e) => {
             tracing::warn!(error = %e, src = %daemon_src.display(), "backend_install: cannot hash bundled daemon");
+            crate::daemon_lifecycle::restore_unless_paused(&home).await;
             return;
         }
     };
@@ -113,7 +145,7 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
         // encrypt-in-place migration stops it earlier this launch (see lib.rs's
         // setup hook) to unlock meridian.db, and it can also simply crash. Bring
         // it back so a skipped *staging* never leaves a stopped *daemon*.
-        ensure_daemon_running(&home).await;
+        crate::daemon_lifecycle::restore_unless_paused(&home).await;
         return;
     }
 
@@ -153,6 +185,12 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
                 tracing::warn!(error = %notice_err, "backend-install-failure notice raise failed");
             }
         }
+        // A failed *staging* must not also mean a stopped *daemon*. The
+        // previously staged binary and its plist are still on disk, so the
+        // last-known-good daemon can usually still be started - and it has to
+        // be, because quit boots the agent out and nothing else will bring it
+        // back before the next launch (which may fail here again).
+        crate::daemon_lifecycle::restore_unless_paused(&home).await;
         return;
     }
     if let Some(p) = pool.as_ref() {
@@ -171,29 +209,165 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
 }
 
 /// Stop the running daemon so the tray's in-place `meridian.db` encryption
-/// migration can rename the file. **Windows-only concern**: a rename of a file
-/// another process holds open fails there with os error 32, which is why
-/// `encrypt_in_place` rolled back every launch while the daemon (autostarted at
-/// login) held the DB open. A no-op on other platforms, where the migration
-/// tolerates the open handle.
+/// migration can swap the file with no other process writing to it.
+///
+/// **Required on BOTH platforms, for opposite reasons.** On Windows, renaming a
+/// file another process holds open fails with os error 32, so `encrypt_in_place`
+/// rolled back every launch while the daemon (autostarted at login) held the DB.
+/// On macOS the rename *succeeds* despite the open handle — which is the
+/// dangerous case, not the safe one:
+///
+/// - the daemon keeps writing through its handle on the old (plaintext) inode
+///   while new connections open the swapped-in encrypted file, and
+/// - SQLite addresses the WAL and shm sidecars **by path**, not by inode, so a
+///   plaintext writer and an encrypted writer end up sharing one journal —
+///   with `finalize_encryption_swap` having deleted `-wal`/`-shm` out from under
+///   the live daemon, breaking the locking protocol on top.
+///
+/// That is what corrupted `meridian.db` on macOS installs from v1.80.0 onward:
+/// `SQLITE_IOERR_SHORT_READ` (522) as the file shortens beneath the open handle,
+/// then `file is not a database` (26), then `database disk image is malformed`
+/// (11). Central telemetry over the 30 days after the rollout put code 11 at six
+/// machines on macOS and **zero** on Windows — Windows' rename failure had been
+/// the only thing protecting it. The original "a no-op on other platforms, where
+/// the migration tolerates the open handle" had that safety exactly backwards.
+///
+/// A plain SIGTERM is not enough on macOS: the agent is registered with launchd
+/// `KeepAlive`, so it returns within seconds — straight back into the swap
+/// window. `bootout` removes it from the domain entirely, so nothing resurrects
+/// it until the migration is done.
 ///
 /// Called from the tray's setup hook BEFORE `encrypt_in_place`, and only when a
 /// migration will actually attempt (a key is set and the DB is still plaintext).
 /// The daemon is brought back up afterward by [`ensure_backend_installed`] —
 /// either its normal staging path (on an update) or [`ensure_daemon_running`]
-/// (on the up-to-date path).
-pub(crate) async fn stop_daemon_for_migration() -> Result<(), String> {
+/// (on the up-to-date path), which re-bootstraps the booted-out agent.
+pub(crate) async fn stop_daemon_for_migration(db_path: &Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
+        let _ = db_path;
         let home = meridian_core::paths::home_dir()
             .ok_or_else(|| "home directory could not be resolved".to_string())?;
         let daemon_bin = home.join(".meridian").join("bin").join(DAEMON_FILE);
         stop_running_daemon_before_stage(&daemon_bin).await
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
+        bootout_agent_and_wait(DAEMON_LABEL).await?;
+        // A bootout only removes the LAUNCHD-managed daemon. Anything else
+        // holding meridian.db - a dev `cargo run`, a binary spawned directly, an
+        // orphan from an overlapping install (all three have been seen on one
+        // machine here) - survives it untouched, and swapping the file under any
+        // of them reproduces exactly the corruption this function exists to
+        // prevent. So confirm the file is actually unheld rather than inferring
+        // it from the bootout succeeding.
+        wait_for_db_unheld(db_path).await
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = db_path;
         Ok(())
     }
+}
+
+/// Poll until nothing but this process holds `db_path` open (≤10 s), so the
+/// caller can swap the file knowing there is no second writer.
+///
+/// Deliberately keyed on **the database file**, not on a daemon binary path:
+/// the hazard is "some process has this file open", and a check that enumerates
+/// known daemon locations misses every writer that isn't at one of them.
+///
+/// A spawn failure of `lsof` is treated as **still held**, not as clear. Being
+/// unable to prove the file is free is not evidence that it is, and the cost of
+/// each answer is asymmetric: declining leaves the DB plaintext and retries next
+/// launch (annoying, and exactly what Windows has always done), while wrongly
+/// proceeding corrupts the user's data irrecoverably.
+#[cfg(target_os = "macos")]
+async fn wait_for_db_unheld(db_path: &Path) -> Result<(), String> {
+    for _ in 0..10 {
+        let out = tokio::process::Command::new("lsof")
+            .arg("-t")
+            .arg(db_path)
+            .output()
+            .await
+            .map_err(|e| format!("run lsof: {e}"))?;
+        // Exit status is non-zero when NO process holds the file, which is the
+        // success case here - read stdout rather than the status.
+        let holders = parse_lsof_holders(&String::from_utf8_lossy(&out.stdout), std::process::id());
+        if holders.is_empty() {
+            return Ok(());
+        }
+        tracing::debug!(holders = ?holders, "backend_install: waiting for db writers to exit");
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    Err("meridian.db is still held open 10s after stopping the daemon".to_string())
+}
+
+/// The pids in `lsof -t` output, excluding our own — i.e. the processes that
+/// would still be writing if the swap went ahead now.
+///
+/// Split from the spawn in [`wait_for_db_unheld`] so the rule can be tested:
+/// that function is `cfg(target_os = "macos")` and shells out, and what counts
+/// as "held" decides whether the user's database gets corrupted.
+///
+/// Unparseable lines are skipped rather than treated as holders — `lsof` writes
+/// its diagnostics to stderr, so anything non-numeric on stdout is noise. The
+/// asymmetry that matters is handled by the caller, not here: an `lsof` that
+/// cannot be RUN is an error, never an empty holder list.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn parse_lsof_holders(stdout: &str, self_pid: u32) -> Vec<u32> {
+    stdout
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .filter(|pid| *pid != self_pid)
+        .collect()
+}
+
+/// Whether `encrypt_in_place` may swap `meridian.db`, given what
+/// [`stop_daemon_for_migration`] returned — or `None` when no stop was attempted
+/// because nothing was going to migrate anyway (already encrypted, no key, or a
+/// debug build).
+///
+/// The whole point is `Some(Err(_)) => false`. v1.80.0 logged the failed stop and
+/// migrated regardless, and on macOS that is the data-destroying path: the rename
+/// succeeds under the live daemon and the two writers then share one WAL. Staying
+/// plaintext for another launch is the cheap failure, and is what Windows has
+/// always done — its rename fails with os error 32 rather than proceeding.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn may_swap_database(stop_outcome: Option<&Result<(), String>>) -> bool {
+    matches!(stop_outcome, None | Some(Ok(())))
+}
+
+/// `launchctl bootout gui/<uid>/<label>`, then poll `launchctl print` until the
+/// entry actually clears (≤15 s). Extracted from [`register_agent`], which
+/// performs the same wait for the same reason — `bootout` is asynchronous, and
+/// acting before the label clears is what makes a follow-up `bootstrap` fail
+/// with EIO.
+///
+/// [`stop_daemon_for_migration`] needs the wait for a sharper reason: returning
+/// while the daemon is still shutting down would hand the DB swap the very
+/// concurrent writer the bootout exists to remove. Returns `Err` if the entry is
+/// still present after the timeout, so the caller can decline to migrate rather
+/// than swap the file under a process that never went away.
+///
+/// `cfg_attr(allow(dead_code))` rather than `cfg(target_os = "macos")`, matching
+/// [`register_agent`] and [`launchctl`]: those are COMPILED on every platform
+/// and merely allowed to be dead, so a `cfg`-gated callee vanishes underneath
+/// them and breaks the Windows build even though nothing there can call it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) async fn bootout_agent_and_wait(label: &str) -> Result<(), String> {
+    let target = agent_target(label);
+    let _ = launchctl(&["bootout", &target]).await; // ok if not loaded
+    for _ in 0..15 {
+        if !launchctl(&["print", &target]).await.is_ok_and(|s| s) {
+            tracing::info!(label, "backend_install: daemon booted out for db migration");
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    Err(format!(
+        "launchd agent {label} still loaded 15s after bootout"
+    ))
 }
 
 /// Ensure the daemon is running, starting it if it isn't. Called on the
@@ -202,11 +376,22 @@ pub(crate) async fn stop_daemon_for_migration() -> Result<(), String> {
 /// *stopped* daemon — in particular after [`stop_daemon_for_migration`] stops it
 /// for the encryption migration, but also if it simply crashed.
 ///
-/// **Windows-only work**: prefer the scheduled task, else spawn the binary
-/// directly (the same fallback [`register_service`] uses on policy-locked
-/// machines). On macOS launchd's `KeepAlive` restarts the daemon itself, so this
-/// is a no-op there.
-async fn ensure_daemon_running(home: &Path) {
+/// On **Windows**: prefer the scheduled task, else spawn the binary directly
+/// (the same fallback [`register_service`] uses on policy-locked machines).
+///
+/// On **macOS**: re-register the agent. `KeepAlive` normally makes this
+/// unnecessary — it restarts a daemon that merely crashed — but it cannot
+/// resurrect one that [`stop_daemon_for_migration`] `bootout`ed, which is the
+/// whole point of using `bootout` there. Leaving this a no-op on macOS would
+/// therefore trade the corruption bug for a permanently dead daemon on every
+/// machine that ran the encryption migration.
+///
+/// It is **not** idempotent, which an earlier version of this comment claimed:
+/// [`register_agent`] finishes with `launchctl kickstart -k`, and `-k` is
+/// precisely what kills a running instance. Both platforms therefore return
+/// early when the daemon is already up, or an ordinary launch would SIGTERM a
+/// healthy daemon mid-write.
+pub(crate) async fn ensure_daemon_running(home: &Path) {
     #[cfg(target_os = "windows")]
     {
         let daemon_bin = home.join(".meridian").join("bin").join(DAEMON_FILE);
@@ -239,7 +424,10 @@ async fn ensure_daemon_running(home: &Path) {
                 "backend_install: scheduled task ran but the daemon isn't up yet, falling back to a direct spawn"
             );
         }
+        // `current_dir`: the daemon resolves its `.env` relative to the working
+        // directory, and a bare spawn would inherit the tray's instead.
         match tokio::process::Command::new(&daemon_bin)
+            .current_dir(home.join(".meridian"))
             .no_window()
             .spawn()
         {
@@ -251,9 +439,47 @@ async fn ensure_daemon_running(home: &Path) {
             }
         }
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
-        // launchd `KeepAlive` restarts the daemon on its own — nothing to do.
+        let plist = home.join("Library/LaunchAgents").join(DAEMON_PLIST);
+        if !plist.is_file() {
+            // Nothing staged yet (first launch); `install` renders the plist and
+            // registers the agent itself, so there is nothing to restore here.
+            return;
+        }
+        // Already up — leave it alone. `register_agent` ends in
+        // `launchctl kickstart -k`, which KILLS a running instance, so calling
+        // it unconditionally bounced a healthy daemon on every ordinary tray
+        // launch. That is a fourth path to the macOS `meridian.db` corruption
+        // (see `crate::poll::watchdog` for the measured one): a SIGTERM
+        // mid-WAL-write, landing at app start when the daemon is busiest.
+        // Windows has always returned early here for exactly this reason; macOS
+        // is only now matching it.
+        //
+        // This deliberately does NOT break the case the function exists for.
+        // `stop_daemon_for_migration` `bootout`s the agent, and a booted-out
+        // label is not loaded at all: `launchctl print` exits non-zero, so
+        // `process_alive()` reports `Some(false)` and registration still runs.
+        // Verified across all three states — booted-out (exit 113), loaded but
+        // stopped (exit 0, no `pid` line), and running (exit 0, `pid` present);
+        // only the last one returns `Some(true)`.
+        if crate::commands::daemon_control::process_alive().await == Some(true) {
+            tracing::debug!(
+                label = DAEMON_LABEL,
+                "backend_install: daemon already running — not re-registering"
+            );
+            return;
+        }
+        if let Err(e) = register_agent(DAEMON_LABEL, &plist).await {
+            tracing::warn!(
+                error = %e,
+                label = DAEMON_LABEL,
+                "backend_install: could not re-register the daemon agent"
+            );
+        }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
         let _ = home;
     }
 }
@@ -405,9 +631,17 @@ async fn register_service(_backend: &Path, home: &Path, daemon_bin: &Path) -> Re
                 error = %e,
                 "backend_install: schtasks registration failed — falling back to a Startup-folder launcher"
             );
-            install_startup_folder_launcher(daemon_bin).await?;
+            let meridian_home = home.join(".meridian");
+            install_startup_folder_launcher(&meridian_home, daemon_bin).await?;
             // Nothing else will start the daemon until next login — start it now.
-            if let Err(e) = tokio::process::Command::new(daemon_bin).no_window().spawn() {
+            // `current_dir` for the same reason the launcher sets it: the daemon
+            // resolves its `.env` relative to the working directory, and this
+            // spawn inherits the tray's otherwise.
+            if let Err(e) = tokio::process::Command::new(daemon_bin)
+                .current_dir(&meridian_home)
+                .no_window()
+                .spawn()
+            {
                 tracing::warn!(
                     error = %e,
                     bin = %daemon_bin.display(),
@@ -482,7 +716,7 @@ where
 /// still holds open would fail with os error 32, and the caller must surface
 /// that as an install failure rather than silently continuing.
 #[cfg(target_os = "windows")]
-async fn stop_running_daemon_before_stage(daemon_bin: &Path) -> Result<(), String> {
+pub(crate) async fn stop_running_daemon_before_stage(daemon_bin: &Path) -> Result<(), String> {
     // Targets our task by name — safe regardless of what else is named meridian.exe.
     let _ = tokio::process::Command::new("schtasks")
         .args(["/End", "/TN", WINDOWS_TASK_NAME])
@@ -684,19 +918,35 @@ fn startup_folder() -> Result<PathBuf, String> {
 
 /// Write the hidden-launch VBScript to the Startup folder. Idempotent:
 /// overwrites unconditionally, same as `schtasks /Create /F`.
+///
+/// `meridian_home` is the daemon's working directory (`~/.meridian`), the
+/// Windows counterpart of the macOS plist's `WorkingDirectory`.
 #[cfg(target_os = "windows")]
-async fn install_startup_folder_launcher(daemon_bin: &Path) -> Result<(), String> {
+async fn install_startup_folder_launcher(
+    meridian_home: &Path,
+    daemon_bin: &Path,
+) -> Result<(), String> {
     let dir = startup_folder()?;
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
     let script = dir.join(STARTUP_LAUNCHER_NAME);
+    // `CurrentDirectory` is set for parity with the macOS plist's
+    // `WorkingDirectory`: the daemon's `dotenvy` walk starts at the CWD, and a
+    // launcher that leaves it at system32 gives the daemon no `.env` — and so
+    // no MERIDIAN_DB_KEY — which is fatal once meridian.db is encrypted. The
+    // daemon also resolves ~/.meridian/.env by absolute path (`src/main.rs`),
+    // so this is defence in depth rather than the sole fix.
+    //
     // VBScript has no backslash-escaping to worry about — only `"` needs
     // doubling to embed a literal quote, wrapping the path so a space
     // anywhere in it (a differently-named Windows profile, say) can't split
     // `Run`'s argument.
     let contents = format!(
-        "CreateObject(\"WScript.Shell\").Run \"\"\"{}\"\"\", 0, False\r\n",
+        "Set sh = CreateObject(\"WScript.Shell\")\r\n\
+         sh.CurrentDirectory = \"{}\"\r\n\
+         sh.Run \"\"\"{}\"\"\", 0, False\r\n",
+        meridian_home.display(),
         daemon_bin.display()
     );
     tokio::fs::write(&script, contents)
@@ -1007,14 +1257,20 @@ async fn render_plist(template: &Path, dest: &Path, subs: &[(&str, &str)]) -> Re
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 async fn register_agent(label: &str, plist: &Path) -> Result<(), String> {
     let gui = format!("gui/{}", crate::sys::uid_str());
-    let target = format!("{gui}/{label}");
+    let target = agent_target(label);
 
-    let _ = launchctl(&["bootout", &target]).await; // ok if not loaded
-    for _ in 0..15 {
-        if !launchctl(&["print", &target]).await.is_ok_and(|s| s) {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    // Best-effort: if the entry hasn't cleared we still try to bootstrap, which
+    // is the long-standing behaviour here (this used to `break` out of the same
+    // wait loop and carry on regardless). Only the migration path treats a stuck
+    // entry as fatal — see `bootout_agent_and_wait`'s doc comment.
+    //
+    // DEBUG, not WARN: this path was previously silent, and WARN+ is what egresses
+    // to central telemetry. A slow-clearing entry here is recoverable and common
+    // enough on an install/update that warning would add fleet noise to the very
+    // stream used to spot real failures — while the case that actually matters
+    // (the migration) still surfaces, through its caller.
+    if let Err(e) = bootout_agent_and_wait(label).await {
+        tracing::debug!(error = %e, label, "backend_install: proceeding to bootstrap anyway");
     }
 
     let _ = launchctl(&["enable", &target]).await;
@@ -1026,9 +1282,30 @@ async fn register_agent(label: &str, plist: &Path) -> Result<(), String> {
         return Err(format!("launchctl bootstrap {label} failed"));
     }
     let _ = launchctl(&["enable", &target]).await;
-    let _ = launchctl(&["kickstart", "-k", &target]).await;
+    // `kickstart` WITHOUT `-k`. The agent was just booted out and bootstrapped,
+    // so there is nothing running for `-k` to kill on the happy path — it only
+    // ever bit when `bootout` had NOT cleared (the "proceeding to bootstrap
+    // anyway" branch above), which is exactly when something may still be
+    // running. It also closed a TOCTOU: callers check "is the daemon alive?"
+    // first, and the daemon can start between that check and this line, so a
+    // `-k` here could kill an instance the caller had just decided not to
+    // touch. Dropping the flag makes the worst case a no-op instead of a
+    // SIGTERM mid-WAL-write. See [`crate::poll::watchdog`] for what that cost.
+    let _ = launchctl(&["kickstart", &target]).await;
     tracing::info!(label, "backend_install: launchd agent registered");
     Ok(())
+}
+
+/// `gui/<uid>/<label>` — the launchd domain target for a per-user agent, as
+/// every `launchctl` subcommand here addresses it. Split out so the shape can be
+/// unit-tested without shelling out to `launchctl` (which would act on a real
+/// agent on the developer's or CI machine).
+///
+/// Compiled on every platform for the same reason as [`bootout_agent_and_wait`]
+/// — [`register_agent`] calls it and is itself always compiled.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn agent_target(label: &str) -> String {
+    format!("gui/{}/{label}", crate::sys::uid_str())
 }
 
 /// Run `launchctl <args>`, returning `Ok(true)` on exit 0. Errors only on spawn
@@ -1047,17 +1324,126 @@ async fn launchctl(args: &[&str]) -> Result<bool, String> {
 mod tests {
     use super::*;
 
-    /// On non-Windows, `stop_daemon_for_migration` is an inert no-op that returns
-    /// `Ok` — the encryption migration tolerates an open handle there, so there
-    /// is nothing to stop and the tray's setup hook proceeds straight to
-    /// `encrypt_in_place`. Gated off Windows so the test never kills a real
-    /// daemon; CI runs on macOS, so it executes there.
-    #[cfg(not(target_os = "windows"))]
-    #[tokio::test]
-    async fn stop_daemon_for_migration_is_a_noop_off_windows() {
+    /// Every path out of [`ensure_backend_installed`] that could leave a daemon
+    /// down must call [`crate::daemon_lifecycle::restore_unless_paused`] first.
+    ///
+    /// This is the other half of "quit stops the daemon"
+    /// ([`crate::daemon_lifecycle`]) and it is the half with no natural failure
+    /// signal. A `bootout` is not reversed by `KeepAlive`, and not by
+    /// `RunAtLoad` at the next login either — the job is no longer loaded for
+    /// either to act on — so dropping this call does not break a test or raise
+    /// a notice. It just means the daemon never comes back, and the symptom
+    /// (no sessions, ever) surfaces hours later somewhere else entirely.
+    ///
+    /// Scanned from source rather than executed: the function needs a live
+    /// `AppHandle` and would shell out to `launchctl` against the developer's
+    /// own daemon. Same tactic as the `cfg` audit further down this module.
+    #[test]
+    fn every_early_return_still_restores_the_daemon() {
+        const SRC: &str = include_str!("backend_install.rs");
+        let body = SRC
+            .split_once("pub async fn ensure_backend_installed")
+            .expect("ensure_backend_installed must exist")
+            .1;
+        // Bound the scan to the function: whichever item marker at column 0
+        // comes FIRST ends it. Splitting on `"\nasync fn"` alone was wrong -
+        // the next item is `pub(crate) async fn stop_daemon_for_migration`,
+        // which that pattern does not match, so the scan ran on to
+        // `wait_for_db_unheld` and swept a second function into the range.
+        // Harmless only by luck: `stop_daemon_for_migration` returns a
+        // `Result` and so cannot hold a bare `return;`. The next `pub(crate)
+        // fn` added between them would have failed this test with a message
+        // naming `ensure_backend_installed`, which is the worst kind of
+        // red - a true failure pointing at the wrong function.
+        let end = ["\npub ", "\npub(crate) ", "\nasync fn", "\nfn "]
+            .iter()
+            .filter_map(|m| body.find(m))
+            .min()
+            .unwrap_or(body.len());
+        let body = &body[..end];
+
+        // Pins the bound itself. Without it the two assertions below silently
+        // widen as the module grows, and a guard that scans the wrong lines
+        // reports on a function nobody edited.
         assert!(
-            stop_daemon_for_migration().await.is_ok(),
-            "off Windows this must be an inert Ok, not attempt to stop anything"
+            !body.contains("stop_daemon_for_migration"),
+            "the scan must stop at the end of ensure_backend_installed - it \
+             has run on into the following item"
+        );
+
+        // Every `return;` must be preceded by a restore. The one exception is
+        // the path where `$HOME` itself could not be resolved - there is no
+        // `home` to hand the restore, and nothing it could do.
+        let lines: Vec<&str> = body.lines().collect();
+        let mut unguarded: Vec<usize> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if line.trim() != "return;" {
+                continue;
+            }
+            let window = lines[i.saturating_sub(6)..i].join("\n");
+            let guarded =
+                window.contains("restore_unless_paused") || window.contains("cannot stage backend");
+            if !guarded {
+                unguarded.push(i);
+            }
+        }
+        assert!(
+            unguarded.is_empty(),
+            "every bail-out from ensure_backend_installed must call \
+             daemon_lifecycle::restore_unless_paused first, or a quit leaves \
+             the daemon permanently down - a `bootout` survives both KeepAlive \
+             and the next login. Unguarded `return;` at body lines {unguarded:?}"
+        );
+
+        // And the dev/source path specifically, since that is the one that
+        // returned without ever reaching the restore before this change.
+        let dev_arm = body
+            .split_once("no bundled backend")
+            .expect("the dev/source bail-out must still be identifiable")
+            .1;
+        let dev_arm = dev_arm.split_once("};").map(|(a, _)| a).unwrap_or(dev_arm);
+        assert!(
+            dev_arm.contains("restore_unless_paused"),
+            "the dev/source bail-out must restore the daemon before returning"
+        );
+
+        // ...and it must go through the pause gate, never call the raw start
+        // directly. A restore that skips the gate can start a daemon the user
+        // just paused, leaving a running daemon under a Paused label that the
+        // watchdog will not correct - because the pause flag is exactly what
+        // tells it to stand down.
+        assert!(
+            !body.contains("ensure_daemon_running(&home)"),
+            "restores must route through daemon_lifecycle::restore_unless_paused, \
+             not call ensure_daemon_running directly"
+        );
+    }
+
+    /// The launchd target `stop_daemon_for_migration` boots out must address the
+    /// daemon in the CURRENT user's GUI domain. A malformed target makes
+    /// `launchctl bootout` a silent no-op (it exits non-zero and the code
+    /// deliberately ignores that), which would put the migration straight back
+    /// into swapping `meridian.db` under a live daemon — the macOS-only
+    /// corruption this whole path exists to prevent.
+    ///
+    /// The bootout itself is deliberately NOT exercised here: it shells out to
+    /// `launchctl` and would stop the real daemon on a developer's machine and
+    /// on CI. This pins the part that can be checked without that side effect.
+    /// The previous test at this location asserted the opposite invariant — that
+    /// the function was an inert no-op off Windows — which is precisely the
+    /// behaviour that corrupted six macOS installs.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn migration_bootout_targets_the_daemon_in_the_user_gui_domain() {
+        let target = agent_target(DAEMON_LABEL);
+        assert_eq!(
+            target,
+            format!("gui/{}/com.meridiona.daemon", crate::sys::uid_str()),
+            "bootout target must be gui/<uid>/<daemon label>"
+        );
+        assert!(
+            !target.contains("gui//"),
+            "empty uid would silently make bootout a no-op: {target}"
         );
     }
 
@@ -1466,5 +1852,222 @@ mod tests {
             1,
             "exactly one probe, never zero"
         );
+    }
+
+    /// The swap in `encrypt_in_place` renames `meridian.db` out from under
+    /// anything holding it, and on macOS `rename(2)` SUCCEEDS while the daemon
+    /// has it open — which is how six installs got `database disk image is
+    /// malformed`. `wait_for_db_unheld` is the check that stops that, so what
+    /// counts as "held" is a data-integrity decision, not a parsing detail.
+    ///
+    /// Keyed on the DB file rather than on known daemon paths on purpose: a dev
+    /// build, a directly-spawned binary and an orphan from an overlapping
+    /// install have all been seen on one machine, and none of them is launchd's.
+    #[test]
+    fn any_process_holding_the_db_counts_as_a_writer() {
+        const SELF: u32 = 4242;
+
+        // Nothing holds it — the only state in which the swap may go ahead.
+        assert!(parse_lsof_holders("", SELF).is_empty());
+        assert!(parse_lsof_holders("\n  \n", SELF).is_empty());
+
+        // The daemon holds it. One survivor is enough to block the swap.
+        assert_eq!(parse_lsof_holders("50184\n", SELF), vec![50184]);
+        assert_eq!(
+            parse_lsof_holders("50184\n63667\n", SELF),
+            vec![50184, 63667],
+            "every holder counts, not just the first"
+        );
+
+        // Our own pid is not a reason to refuse to migrate.
+        assert!(parse_lsof_holders("4242\n", SELF).is_empty());
+        assert_eq!(parse_lsof_holders("4242\n50184\n", SELF), vec![50184]);
+
+        // Junk must not silently read as "clear" — that would green-light the
+        // swap on exactly the machines where lsof behaved unexpectedly.
+        assert!(parse_lsof_holders("lsof: WARNING: can't stat()\n", SELF).is_empty());
+        assert_eq!(parse_lsof_holders("garbage\n50184\n", SELF), vec![50184]);
+    }
+
+    /// The gate that decides whether `encrypt_in_place` may run at all.
+    ///
+    /// Warning and swapping anyway is what shipped in v1.80.0, and on macOS that
+    /// is precisely the data-destroying path: the rename succeeds under a live
+    /// writer. Leaving the database plaintext for one more launch is the cheap
+    /// failure — and is exactly what Windows has always done, where the rename
+    /// fails with os error 32 instead.
+    ///
+    /// This is the single assertion standing between a failed daemon stop and
+    /// corrupting the user's database, so it is pinned in both directions.
+    #[test]
+    fn a_failed_daemon_stop_must_block_the_database_swap() {
+        assert!(
+            !may_swap_database(Some(&Err("still loaded 15s after bootout".to_string()))),
+            "the daemon could not be stopped - swapping now corrupts the database"
+        );
+
+        // The two states in which proceeding is correct, so the guard cannot be
+        // satisfied by simply always refusing.
+        assert!(
+            may_swap_database(Some(&Ok(()))),
+            "daemon stopped cleanly - the migration must still be able to run"
+        );
+        assert!(
+            may_swap_database(None),
+            "no stop was needed (already encrypted, no key, or a debug build) - \
+             nothing is going to swap anything"
+        );
+    }
+
+    /// Two annotations in this file look interchangeable and are not:
+    ///
+    /// - `#[cfg_attr(not(target_os = "macos"), allow(dead_code))]` keeps the item
+    ///   **compiled on every platform**, merely permitting it to be unused;
+    /// - `#[cfg(target_os = "macos")]` **removes** it everywhere else.
+    ///
+    /// So a `cfg`-gated item called from a `cfg_attr` one compiles cleanly on
+    /// macOS and fails on Windows with `error[E0425]: cannot find function …`.
+    /// That shipped once (PR #671) and broke a staging release, because every
+    /// local check a macOS developer runs — `cargo clippy`, `cargo test`, the
+    /// pre-push hook — is structurally blind to it, and `cargo check --target
+    /// x86_64-pc-windows-msvc` can't stand in from macOS (it dies earlier in
+    /// `aws-lc-sys`, which needs `windows.h`).
+    ///
+    /// A unit test cannot catch this either — tests compile for one platform at
+    /// a time. So this reads the source instead, in the same spirit as
+    /// `ui/__tests__/no-native-dialogs.test.ts`. It runs on macOS, where the
+    /// mistake is made.
+    #[test]
+    fn no_macos_only_item_is_reachable_from_always_compiled_code() {
+        const SRC: &str = include_str!("backend_install.rs");
+        const MACOS_ONLY: &str = "#[cfg(target_os = \"macos\")]";
+        const ALWAYS: &str = "#[cfg_attr(not(target_os = \"macos\"), allow(dead_code))]";
+
+        /// The `fn` / `const` / `static` name declared at or just after `from`.
+        fn item_name_after(lines: &[&str], from: usize) -> Option<(String, usize)> {
+            for (offset, line) in lines.iter().enumerate().skip(from).take(6) {
+                let l = line.trim_start().trim_start_matches("pub(crate) ");
+                let l = l.trim_start_matches("pub ").trim_start_matches("async ");
+                for kw in ["fn ", "const ", "static "] {
+                    if let Some(rest) = l.strip_prefix(kw) {
+                        let name: String = rest
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric() || *c == '_')
+                            .collect();
+                        if !name.is_empty() {
+                            return Some((name, offset));
+                        }
+                    }
+                }
+            }
+            None
+        }
+
+        /// Line index one past the item's closing brace, by brace matching.
+        fn item_end(lines: &[&str], start: usize) -> usize {
+            let (mut depth, mut opened) = (0i32, false);
+            for (i, line) in lines.iter().enumerate().skip(start) {
+                depth += line.matches('{').count() as i32;
+                depth -= line.matches('}').count() as i32;
+                if line.contains('{') {
+                    opened = true;
+                }
+                if opened && depth <= 0 {
+                    return i + 1;
+                }
+            }
+            lines.len()
+        }
+
+        let lines: Vec<&str> = SRC.lines().collect();
+        let mut macos_only: Vec<String> = Vec::new();
+        let mut always_compiled: Vec<(String, usize, usize)> = Vec::new();
+
+        // Everything from `mod tests` onward is the test module, whose items are
+        // `cfg`-gated on purpose and never called from non-test code.
+        //
+        // Excluded by POSITION, not by a name prefix. The previous guard was
+        // `!name.starts_with("test_")`, and no test in this file carries that
+        // prefix — they read as sentences
+        // (`migration_bootout_targets_the_daemon_in_the_user_gui_domain`) — so
+        // the condition was always true, the exclusion never fired, and test
+        // items were counted toward the `macos_only` floor below. That left the
+        // floor unable to do its one job: prove the scanner still recognises the
+        // PRODUCTION items it exists to guard.
+        let tests_start = lines
+            .iter()
+            .position(|l| l.trim_start().starts_with("mod tests"))
+            .unwrap_or(lines.len());
+
+        for (i, line) in lines.iter().enumerate() {
+            let t = line.trim();
+            if i >= tests_start {
+                break;
+            }
+            if t == MACOS_ONLY {
+                if let Some((name, _at)) = item_name_after(&lines, i + 1) {
+                    macos_only.push(name);
+                }
+            } else if t == ALWAYS {
+                if let Some((name, at)) = item_name_after(&lines, i + 1) {
+                    always_compiled.push((name, at, item_end(&lines, at)));
+                }
+            }
+        }
+
+        assert!(
+            macos_only.len() >= 3 && always_compiled.len() >= 3,
+            "the scanner stopped recognising this file's shape \
+             ({} macos-only, {} always-compiled) - fix the scanner, \
+             do not delete the test",
+            macos_only.len(),
+            always_compiled.len()
+        );
+
+        for (fname, start, end) in &always_compiled {
+            // Drop `#[cfg(target_os = "macos")] { … }` blocks inside the body:
+            // code in those DOES compile only on macOS, so it may legitimately
+            // reference a macOS-only item.
+            let mut body = String::new();
+            let mut skip_until = 0usize;
+            for i in *start..*end {
+                if i < skip_until {
+                    continue;
+                }
+                if lines[i].trim() == MACOS_ONLY {
+                    skip_until = item_end(&lines, i + 1);
+                    continue;
+                }
+                body.push_str(lines[i]);
+                body.push('\n');
+            }
+
+            for item in &macos_only {
+                // Word-boundary match so `DAEMON_LABEL` doesn't hit
+                // `DAEMON_LABEL_X`, and a mention in a doc comment doesn't count.
+                let referenced = body
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with("//"))
+                    .any(|l| {
+                        l.match_indices(item.as_str()).any(|(idx, _)| {
+                            let before = l[..idx].chars().next_back();
+                            let after = l[idx + item.len()..].chars().next();
+                            let boundary = |c: Option<char>| {
+                                !matches!(c, Some(ch) if ch.is_alphanumeric() || ch == '_')
+                            };
+                            boundary(before) && boundary(after)
+                        })
+                    });
+                assert!(
+                    !referenced,
+                    "`{fname}` is compiled on every platform \
+                     (cfg_attr allow(dead_code)) but references `{item}`, which is \
+                     `#[cfg(target_os = \"macos\")]` and does not exist off macOS. \
+                     This builds on macOS and fails on Windows with E0425. \
+                     Give `{item}` the same cfg_attr form, or move the call into a \
+                     `#[cfg(target_os = \"macos\")]` block."
+                );
+            }
+        }
     }
 }

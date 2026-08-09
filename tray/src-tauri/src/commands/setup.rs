@@ -577,6 +577,14 @@ mod tests {
 
     /// Run `f` under a bare recording subscriber (no `EnvFilter` — every event is captured
     /// regardless of level) and return what it emitted.
+    ///
+    /// Reads the captured events back out through the shared `Mutex` rather than demanding
+    /// unique ownership of `seen` (`Arc::try_unwrap`) — `with_default`'s guard only resets
+    /// the *thread-local* default once it drops, and gives no guarantee about exactly when
+    /// the `Dispatch` holding our `Recorder`'s own `Arc` clone is deallocated. That
+    /// `try_unwrap` flaked intermittently on Windows CI (`Err` because a second strong ref
+    /// was still alive at that instant) despite passing reliably elsewhere. Locking and
+    /// draining works regardless of how many clones of `seen` are still outstanding.
     fn capture(f: impl FnOnce()) -> Vec<CapturedEvent> {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let subscriber = registry().with(Recorder(Arc::clone(&seen)));

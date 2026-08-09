@@ -31,10 +31,7 @@ pub async fn get_active(
     let now = chrono::Utc::now().to_rfc3339();
     meridian_core::active::get_active_view(pool, &now)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_active failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "get_active failed"))
 }
 
 /// Where every worklog on `day` stands, one row per task that has one.
@@ -86,10 +83,7 @@ pub async fn get_today(
     let now = chrono::Utc::now().to_rfc3339();
     meridian_core::today::get_today(pool, &date, &now)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_today failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "get_today failed"))
 }
 
 /// The day's inferred day-level tasks (`day_tasks`, migration 058 — no route).
@@ -108,10 +102,7 @@ pub async fn get_day_tasks(
     let date = day.unwrap_or_else(meridian_core::date::today_string);
     meridian_core::day_tasks::get_day_tasks(pool, &date)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_day_tasks failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "get_day_tasks failed"))
 }
 
 /// The 7-day Week summary, computed in Rust (the ported /api/week).
@@ -126,10 +117,7 @@ pub async fn get_week(
     let now = chrono::Utc::now().to_rfc3339();
     meridian_core::week::get_week(pool, &now)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_week failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "get_week failed"))
 }
 
 /// A day's coding-agent totals, computed in Rust (the ported /api/coding-agents).
@@ -153,10 +141,7 @@ pub async fn get_coding_agents(
     let date = day.unwrap_or_else(meridian_core::date::today_string);
     meridian_core::coding_agents::get_coding_agents(pool, &date)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_coding_agents failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "get_coding_agents failed"))
 }
 
 /// The apps Meridian has captured recently — the picker source for Settings →
@@ -172,10 +157,7 @@ pub async fn get_recent_capture_apps(
     };
     meridian_core::capture_apps::recent_capture_apps(pool, 30, 60)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_recent_capture_apps failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "get_recent_capture_apps failed"))
 }
 
 /// Full detail for one board ticket (the ported /api/plan/task). `key` is the
@@ -192,10 +174,7 @@ pub async fn get_task_detail(
     let today = chrono::Local::now().date_naive();
     meridian_core::task_detail::get_task_detail(pool, &key, today)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_task_detail failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "get_task_detail failed"))
 }
 
 /// The daily plan board (the ported /api/plan GET): the committed set + ranked
@@ -216,16 +195,10 @@ pub async fn get_plan(
     let (today, now_ms, recent_since) = plan_clock();
     let available = meridian_core::plan::build_available(pool, &date, today, now_ms, &recent_since)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_plan: build_available failed");
-            e.to_string()
-        })?;
+        .map_err(|e| crate::cmd_err!(e, "get_plan: build_available failed"))?;
     meridian_core::plan::build_plan_response(pool, &date, today, available)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_plan failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "get_plan failed"))
 }
 
 /// A daily-plan write (the ported /api/plan POST): one of confirm/set/add/
@@ -251,16 +224,10 @@ pub async fn plan_action(
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let available = meridian_core::plan::build_available(pool, &date, today, now_ms, &recent_since)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "plan_action: build_available failed");
-            e.to_string()
-        })?;
+        .map_err(|e| crate::cmd_err!(e, "plan_action: build_available failed"))?;
     meridian_core::plan::apply_plan_action(pool, &body, &date, today, &now, available)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "plan_action failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "plan_action failed"))
 }
 
 /// One ticket the worklog panel's manual picker can retarget a draft at.
@@ -302,10 +269,7 @@ pub async fn get_board_tickets(
     };
     let rows = meridian_core::board::fetch_open_board(pool, false)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_board_tickets failed");
-            e.to_string()
-        })?;
+        .map_err(|e| crate::cmd_err!(e, "get_board_tickets failed"))?;
     tracing::info!(tickets = rows.len(), "serving the board ticket picker");
     Ok(rows
         .into_iter()
@@ -347,10 +311,7 @@ pub async fn retarget_day_task_worklog(
     };
     let provider = meridian_core::board::provider_for_key(pool, &body.task_key)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "retarget: provider lookup failed");
-            e.to_string()
-        })?;
+        .map_err(|e| crate::cmd_err!(e, "retarget: provider lookup failed"))?;
     let Some(provider) = provider else {
         return Err("that ticket is not on your board - try again after a sync".to_string());
     };
@@ -369,10 +330,7 @@ pub async fn retarget_day_task_worklog(
         &now,
     )
     .await
-    .map_err(|e| {
-        tracing::warn!(error = %e, "retarget_day_task_worklog failed");
-        e.to_string()
-    })
+    .map_err(|e| crate::cmd_err!(e, "retarget_day_task_worklog failed"))
 }
 
 /// The body of a [`set_worklog_provider`] call.
@@ -424,10 +382,7 @@ pub async fn set_worklog_provider(
         &now,
     )
     .await
-    .map_err(|e| {
-        tracing::warn!(error = %e, "set_worklog_provider failed");
-        e.to_string()
-    })
+    .map_err(|e| crate::cmd_err!(e, "set_worklog_provider failed"))
 }
 
 /// The body of a [`dismiss_worklog_target`] call.
@@ -455,10 +410,7 @@ pub async fn dismiss_worklog_target(
     };
     meridian_core::day_task_worklogs::dismiss_target(pool, &body.day, &body.task_id, &body.task_key)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "dismiss_worklog_target failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "dismiss_worklog_target failed"))
 }
 
 /// The body of a [`dismiss_day_task`] / [`restore_day_task`] call.
@@ -491,13 +443,10 @@ pub async fn dismiss_day_task(
     let now = chrono::Utc::now().to_rfc3339();
     meridian_core::day_task_corrections::dismiss_day_task(pool, &body.day, &body.task_id, &now)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "dismiss_day_task failed");
-            e.to_string()
-        })?;
+        .map_err(|e| crate::cmd_err!(e, "dismiss_day_task failed"))?;
     meridian_core::day_tasks::get_day_tasks(pool, &body.day)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| crate::cmd_err!(e, "dismiss_day_task: task-list refresh failed"))
 }
 
 /// Merge one inferred day-task into another (`task_id` folds into `into_task_id`).
@@ -521,13 +470,10 @@ pub async fn merge_day_task(
         &now,
     )
     .await
-    .map_err(|e| {
-        tracing::warn!(error = %e, "merge_day_task failed");
-        e.to_string()
-    })?;
+    .map_err(|e| crate::cmd_err!(e, "merge_day_task failed"))?;
     meridian_core::day_tasks::get_day_tasks(pool, &body.day)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| crate::cmd_err!(e, "merge_day_task: task-list refresh failed"))
 }
 
 /// Undo a day-task dismiss (un-hide it). Returns the fresh task list.
@@ -543,13 +489,10 @@ pub async fn restore_day_task(
     let now = chrono::Utc::now().to_rfc3339();
     meridian_core::day_task_corrections::restore_day_task(pool, &body.day, &body.task_id, &now)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "restore_day_task failed");
-            e.to_string()
-        })?;
+        .map_err(|e| crate::cmd_err!(e, "restore_day_task failed"))?;
     meridian_core::day_tasks::get_day_tasks(pool, &body.day)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| crate::cmd_err!(e, "restore_day_task: task-list refresh failed"))
 }
 
 /// The user closed the Plan modal. Restarts the plan-nudge hold-back clock:
@@ -637,8 +580,5 @@ pub async fn get_tasks(
     let now_iso = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     meridian_core::tasks::get_tasks(pool, &today, &week_start, &now_iso)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_tasks failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "get_tasks failed"))
 }

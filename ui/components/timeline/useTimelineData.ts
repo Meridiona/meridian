@@ -64,6 +64,8 @@ export function useTimelineData(day: string) {
   const [counts, setCounts] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
+  // Last failure from `run`, held until the user dismisses it. See `run`.
+  const [actionError, setActionError] = useState<string | null>(null)
   const [integrations, setIntegrations] = useState<IntegrationsResponse | null>(null)
   const [tasks, setTasks] = useState<TaskSummary[]>([])
   const [today, setToday] = useState<TodayResponse | null>(null)
@@ -126,12 +128,21 @@ export function useTimelineData(day: string) {
   const errorMessage = (e: unknown): string =>
     e instanceof Error ? e.message : typeof e === 'string' ? e : 'Action failed'
 
+  // Stable identity — AlertDialog's Escape-key effect depends on it, and a new
+  // closure each render would re-register the listener on every render.
+  const clearActionError = useCallback(() => setActionError(null), [])
+
   const run = useCallback(async (key: string, fn: () => Promise<unknown>) => {
     setBusy(key)
     try {
       await fn()
     } catch (e) {
-      alert(errorMessage(e))
+      // Surfaced as state, NOT `alert()`. That global is a no-op in the packaged
+      // tray (nothing installs a WKUIDelegate — see components/ConfirmDialog.tsx),
+      // so every failure here used to vanish: the row silently snapped back to
+      // its server value with no explanation. MeridianTimelineShell renders this
+      // through AlertDialog.
+      setActionError(errorMessage(e))
     } finally {
       // Reconciles with the server's actual row — rolls back an optimistic
       // patch (see `patchItem`) on failure, or confirms it on success.
@@ -141,9 +152,9 @@ export function useTimelineData(day: string) {
   }, [day, loadWorklogs])
 
   // Same lifecycle as `run` (busy flag + reconciling refetch), but resolves
-  // to the outcome (including the mutation's return value) instead of
-  // alerting — for callers with a richer inline error surface than a native
-  // alert() (see `rematch`/WorklogActions).
+  // to the outcome (including the mutation's return value) instead of raising
+  // `actionError` — for callers with a richer inline error surface than a
+  // modal (see `rematch`/WorklogActions).
   const runQuiet = useCallback(async <T,>(key: string, fn: () => Promise<T>) => {
     setBusy(key)
     try {
@@ -252,6 +263,7 @@ export function useTimelineData(day: string) {
     act, reject, saveEdit, rematch, proposedAct, saveProposedTitle, saveProposedBody, approveAll,
     actions, integrations, isSolo, connectedProviderName, connectedProviderIds, tasks, cleanupIssueCount, today,
     hourStatus, capturing, hourReports, refetchTasks,
+    actionError, clearActionError,
   }
 }
 

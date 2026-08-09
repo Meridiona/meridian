@@ -8,8 +8,10 @@
 //!
 //! # Who calls this
 //! `shipper::run_tick()`, every `MERIDIAN_TELEMETRY_SHIP_INTERVAL_S` (default
-//! 30s), before the ship-target check: orphan sweep → age-based prune (both
-//! `pending/` and `sent/`) → pending-size cap → (only then) ship attempt.
+//! 30s), before the ship-target check — as ONE [`run_housekeeping`] unit on
+//! `spawn_blocking`, never inline on the runtime: orphan sweep → age-based
+//! prune (both `pending/` and `sent/`, rationed to every 60th tick — see
+//! [`prune_due`]) → pending-size cap → (only then) ship attempt.
 //!
 //! # Related
 //! - `writer.rs` — the `<signal>-<unix_micros>-<seq>.otlp` filename scheme
@@ -99,6 +101,48 @@ pub(super) fn list_pending_oldest_first(dir: &Path) -> Vec<PathBuf> {
 
     files.sort_by_key(|(m, s, _)| (*m, *s));
     files.into_iter().map(|(_, _, p)| p).collect()
+}
+
+/// Should tick `tick` run the age prune? Tick 0, then every 60th tick
+/// (~every 30 min at the default 30 s ship interval).
+///
+/// The prune scans BOTH spool dirs file-by-file, and `sent/` sits at a
+/// ~264k-file steady state (one file per flush x 7-day retention) — measured
+/// at 263,787 files on 2026-08-05, when thread sampling caught the shipper
+/// tick pinned in `prune_by_age -> stat` on a tokio runtime worker while the
+/// daemon's poll timers ran 30-100 s late and its socket greeting starved
+/// (the probe false-negatives behind the tray's status flapping and the old
+/// watchdog storms). A 7-day cutoff needs nothing close to twice-a-minute
+/// precision: every 60th tick bounds the scan cost, and tick 0 still prunes
+/// so a daemon that was stopped for days catches up on its first tick. Same
+/// tick-counter idiom as `etl::capture_retention`'s vacuum cadence.
+pub(super) fn prune_due(tick: u64) -> bool {
+    tick.is_multiple_of(60)
+}
+
+/// The shipper tick's whole filesystem sweep, as one blocking unit: clear
+/// crash-orphaned tmp files, age-prune both dirs (only when `prune` — see
+/// [`prune_due`]), and enforce the pending-size cap.
+///
+/// Exists so `shipper::run_tick` can hand the entire sweep to
+/// `tokio::task::spawn_blocking` and never touch these helpers from async
+/// context itself — every call here walks directories and `stat`s files, and
+/// doing that on a runtime worker is exactly the stall described on
+/// [`prune_due`]. The shipper's source is pinned to this split by
+/// `housekeeping_stays_off_the_async_runtime` in `shipper.rs`.
+pub(super) fn run_housekeeping(
+    pending: &Path,
+    sent: &Path,
+    cutoff_secs: u64,
+    prune: bool,
+) -> Result<()> {
+    sweep_tmp_orphans(pending);
+    if prune {
+        prune_by_age(pending, cutoff_secs)?;
+        prune_by_age(sent, cutoff_secs)?;
+    }
+    crate::telemetry_spool::launchd_log_cap::cap_launchd_logs();
+    enforce_pending_cap(pending)
 }
 
 /// Delete `.otlp` files in `dir` whose mtime is older than `cutoff_secs`.
@@ -252,6 +296,63 @@ mod tests {
             .to_str()
             .unwrap()
             .ends_with("-1.otlp"));
+    }
+
+    /// The prune cadence. Every 30 s ship tick used to age-scan BOTH spool
+    /// dirs, and `sent/` sits at a ~264k-file steady state (one file per
+    /// flush x 7-day retention) - so the daemon issued ~264k blocking `stat`s
+    /// twice a minute on a tokio runtime worker. Caught live by thread
+    /// sampling on 2026-08-05: the shipper tick was pinned in
+    /// `prune_by_age -> stat` while the daemon's 60 s poll timers fired
+    /// 30-100 s late and its socket greeting starved (the probe
+    /// false-negatives behind the status flapping and the old watchdog
+    /// storms). A 7-day cutoff does not need twice-a-minute precision; every
+    /// 60th tick is ample, and the first tick still prunes so a long-stopped
+    /// daemon catches up promptly on start.
+    #[test]
+    fn prune_runs_on_the_first_tick_then_every_60th() {
+        assert!(
+            prune_due(0),
+            "first tick must prune (catch-up after downtime)"
+        );
+        for t in 1..60 {
+            assert!(
+                !prune_due(t),
+                "tick {t} must not prune - the scan is ~264k stats"
+            );
+        }
+        assert!(prune_due(60));
+        assert!(!prune_due(61));
+        assert!(prune_due(120));
+    }
+
+    /// One call owning the whole blocking sweep, so the shipper can hand it to
+    /// `spawn_blocking` as a unit and its own source never touches the
+    /// filesystem helpers directly (pinned by a source-scan in `shipper.rs`).
+    ///
+    /// Asserted on `sent/` only: `pending/` is also subject to
+    /// `enforce_pending_cap`, whose size cap reads an env var that other
+    /// tests mutate - under a parallel run the cap can legitimately drop a
+    /// pending file and turn a gating assertion flaky. Only the age prune
+    /// ever touches `sent/`, so it isolates the gate. (Both-dirs prune
+    /// coverage lives in the `prune_by_age_*` tests above.)
+    #[test]
+    fn run_housekeeping_prunes_only_when_due() {
+        let dir = TempDir::new().unwrap();
+        let pending = pending_dir(dir.path());
+        std::fs::create_dir_all(&pending).unwrap();
+        let sent = dir.path().join("sent");
+        std::fs::create_dir_all(&sent).unwrap();
+        let s = sent.join("traces-1-0.otlp");
+        std::fs::write(&s, b"x").unwrap();
+
+        // Not due: survives a keep-nothing cutoff.
+        run_housekeeping(&pending, &sent, 0, false).unwrap();
+        assert!(s.exists(), "not-due housekeeping must not prune");
+
+        // Due: the 0-second cutoff removes it.
+        run_housekeeping(&pending, &sent, 0, true).unwrap();
+        assert!(!s.exists(), "due housekeeping must prune");
     }
 
     #[test]

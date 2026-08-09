@@ -1190,7 +1190,7 @@ async fn regenerating_resets_the_baseline() {
 
 #[tokio::test]
 async fn a_row_with_no_baseline_is_never_stale() {
-    // Drafted before migration 077. NULL reads as "cannot know" - the
+    // Drafted before migration 079. NULL reads as "cannot know" - the
     // alternative (DEFAULT 0) declares every pre-upgrade draft stale by its
     // task's whole duration on the first read after the update lands.
     let pool = seeded().await;
@@ -1360,7 +1360,7 @@ async fn day_draft_states_clamps_minutes_revised_down() {
 
 #[tokio::test]
 async fn day_draft_states_reports_no_baseline_as_unknown_not_zero() {
-    // Drafted before migration 077. NULL must survive as None: reading it as 0
+    // Drafted before migration 079. NULL must survive as None: reading it as 0
     // would claim the draft is perfectly current, which is a stronger statement
     // than the data supports.
     let pool = seeded().await;
@@ -1438,7 +1438,7 @@ async fn day_draft_states_is_scoped_to_its_day() {
 
 #[tokio::test]
 async fn day_draft_states_degrades_to_empty_on_a_missing_table() {
-    // A pre-060 DB has no table and a pre-077 one has no `drafted_minutes`.
+    // A pre-060 DB has no table and a pre-079 one has no `drafted_minutes`.
     // Neither is worth failing a whole day summary over.
     let pool = seeded().await;
     sqlx::query("DROP TABLE day_task_worklogs")

@@ -19,7 +19,7 @@ import { fmtDur } from '@/components/atoms'
 import { load as loadData, mutate as mutateData, openExternal } from '@/lib/bridge'
 import { usePlan, refreshPlan } from '@/components/plan/planStore'
 import type { PlanItem, CodingAgentsResponse } from '@/lib/api-types'
-import { formatDayLabel, isPending } from './types'
+import { focusSectionVisible, formatDayLabel, isPending } from './types'
 import { TimeByApp, appTotals } from './TimeByApp'
 import { TimeByCategory, categoryRows } from './TimeByCategory'
 import { UpdateCard } from './UpdateCard'
@@ -214,28 +214,14 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
           past. On a past date the section is read-only: it shows that day's
           committed focus (or a quiet empty note), with no Edit/Add
           affordances. `focusLabel` relabels the heading off "Today's".
-
-          NOT GATED ON A TRACKER, in either branch. It used to be: only the
-          empty-today nudge was shown to everyone and the populated checklist
-          required `!isSolo`, on the assumption that a solo user would never
-          have a confirmed plan. Two things made that false — PlanView's
-          composer has always written personal, tracker-free tasks
-          (`boardEmpty`), and adding one now confirms the plan immediately
-          (the Confirm button is gone, see PlanView's `commit`). So the moment
-          a solo user added their first task the whole section DISAPPEARED:
-          the nudge stopped qualifying (no longer empty) and the checklist was
-          barred (isSolo), leaving them with no plan surface and no way back
-          into the planner from this panel. A personal task is exactly as real
-          as an imported ticket; nothing in here reads a tracker.
-
-          The one place `isSolo` still counts is a PAST day with nothing
-          planned: "No focus was planned for Tuesday" is a useful absence to a
-          board user reviewing a week and pure noise to someone who has never
-          used the planner, so that branch is left exactly as it was.
-
-          `plan` gates the empty branch so it never flashes before the first
-          `get_plan` resolves. */}
-      {((isToday && plan) || focusItems.length > 0 || (!isSolo && !isToday)) && (
+          Shown to every user, solo/no-tracker included — PlanView's composer
+          supports a personal, tracker-free task (see its `boardEmpty` path),
+          and `toggleDone` below already routes a personal task to our own DB
+          rather than a tracker, so nothing here needs a board. This used to
+          gate everything except the empty-today nudge on `!isSolo`, which meant
+          a solo user was invited to plan and then never shown the plan they
+          committed. See `focusSectionVisible` for the whole rule. */}
+      {focusSectionVisible({ isToday, planLoaded: !!plan, itemCount: focusItems.length }) && (
         <div>
           {focusItems.length === 0 && isToday ? (
             <div>

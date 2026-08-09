@@ -1,6 +1,111 @@
 {
   "releases": [
     {
+      "version": "1.84.0",
+      "date": "2026-08-07",
+      "highlights": [
+        "Meridian now checks its database when it starts and repairs a damaged one on its own. Until now the offer to repair lived inside the database itself, so the worst damage took the offer down with it - the app simply sat there doing nothing, with no warning and no button to press, and the only way back was a support ticket. That case now heals itself before the app finishes opening.",
+        "Quit now really does stop Meridian. The background service used to keep running after you closed the app: still watching, still holding your data file open, still making network calls. Quitting stops it, and opening Meridian starts it again.",
+        "Pause now actually pauses. The menu switched to 'Disconnected' but the background service was put straight back a few seconds later, so it kept working while the menu said it had stopped."
+      ],
+      "fixes": [
+        "The 'Repair Database' button in the damaged-database banner works again. It had been doing nothing at all since it shipped - the confirmation box it asked for never appeared, and a box nobody answered counted as 'no', so the repair was silently cancelled every time.",
+        "Repairing by hand used to be impossible for the same reason Quit was: the instructions said to close Meridian first, and closing it did not stop the part that had to stop.",
+        "Meridian can no longer get stuck refusing to quit. If something went wrong while shutting down, every later attempt to close the app was ignored and the only way out was to force it.",
+        "If a damaged database cannot be opened at all, Meridian now leaves it alone unless it can confirm the file is genuinely damaged rather than locked. A file it cannot unlock looks identical to a broken one, and the safe assumption is that your data is fine and something else is wrong.",
+        "On Windows, the instructions shown when a database needs repairing now cover installs that start Meridian from the Startup folder, not only those using a scheduled task.",
+        "Pausing while Meridian was still setting itself up no longer leaves it running behind a paused label."
+      ]
+    },
+    {
+      "version": "1.83.2",
+      "date": "2026-08-05",
+      "highlights": [
+        "Meridian no longer reports its own background service as stopped when it is merely busy. The popover said 'Daemon: Not running' and offered a Restart button while recording carried on normally - and restarting at that moment is one of the ways the database gets damaged.",
+        "The 'database is damaged' banner now clears itself once a repair succeeds. It used to survive the very repair that fixed it, so people saw a warning about a problem that no longer existed - in one case twelve hours and two repairs later."
+      ],
+      "fixes": [
+        "Every notice banner now shows when it was raised, so a warning left over from this morning is obvious at a glance.",
+        "Fixed the background service's health check shutting down for good after one momentary error. Every screen then reported the service as stopped, next to a Restart button, while it was in fact still recording, and only restarting it cleared that.",
+        "Versions older than this one now install this update on their own rather than waiting for you to click, so a machine left on an affected build does not stay there."
+      ]
+    },
+    {
+      "version": "1.83.1",
+      "date": "2026-08-04",
+      "highlights": [
+        "The Repair Database button now actually works. In the last version, clicking through it did nothing at all - the confirmation box it relied on is invisible in the app, so repairing a damaged database meant using a terminal.",
+        "Three causes of database damage on Mac are fixed. One could strike while Meridian upgraded your data to encrypted storage, one on any busy day once Meridian ran out of the file handles macOS allows it, and one when Meridian restarted its own background service in the middle of a write because a health check mistook 'busy' for 'stopped'.",
+        "When a work log action fails, Meridian now tells you why. Approving, rejecting, posting and editing used to fail silently - the row simply snapped back to its old value with no explanation."
+      ],
+      "fixes": [
+        "Fixed the one-time encryption upgrade running while the background service was still writing to your data, which could leave the database damaged. Meridian now stops the service first, checks nothing else is still using the file, and leaves your data alone entirely if it cannot.",
+        "Fixed Meridian running out of file handles on Mac, which could damage the database in the middle of a write. It now asks the system for enough at startup.",
+        "Fixed Meridian restarting its own background service roughly every 45 seconds on a busy machine. The service was healthy every time; the check that judged it simply gave up waiting too early.",
+        "On Windows machines where company policy blocks scheduled tasks, restarting no longer reports a failure every single time. The backup method was already working - only the false alarm is gone.",
+        "Error reports now say which health check failed, rather than only that one did.",
+        "Fixed the Windows build of the app, which had been broken by the database fixes above."
+      ]
+    },
+    {
+      "version": "1.83.0",
+      "date": "2026-08-03",
+      "highlights": [
+        "Meridian now notices when its own database has been damaged and can rebuild it from inside the app, with no terminal needed. Your data is salvaged into a fresh file, the damaged copy is kept as a backup and never deleted, and the background service stands down while the work happens.",
+        "A banner tells you when the database is damaged, and offers the repair right there rather than leaving you to find it."
+      ],
+      "fixes": [
+        "The Install button for Claude and Codex now works on Windows. It used to report that the installer had finished and the tool was still missing, when in fact nothing had been installed at all.",
+        "The 'provider unavailable' banner now catches an assistant that is installed, tested fine an hour ago, and has been failing every request since. Before, your day could quietly stay empty while the banner insisted everything was fine."
+      ]
+    },
+    {
+      "version": "1.82.3",
+      "date": "2026-08-01",
+      "highlights": [],
+      "fixes": [
+        "A failure while Meridian was starting up no longer takes the whole app down with it. It now reports the problem and carries on.",
+        "Solo users can see their confirmed daily plan again."
+      ]
+    },
+    {
+      "version": "1.82.2",
+      "date": "2026-07-31",
+      "highlights": [
+        "A brand-new install now works on its very first launch. Meridian used to look for its database moments before the background service had created it, then never look again - so the dashboard stayed empty and nothing was recorded until you quit and reopened the app."
+      ],
+      "fixes": [
+        "Meridian no longer claims your data is encrypted under a lost key when the file is actually empty or cut short. That warning told people to contact support before removing anything, when deleting the leftover stub was all that was needed.",
+        "Meridian now refuses to create a new encryption key while your existing data is still encrypted under an older one - which would have made that data permanently unreadable. It stops and explains instead of quietly locking you out.",
+        "The tray tooltip no longer gets stranded on screen after a right-click.",
+        "Windows: notifications are no longer reported as blocked when the system simply has no record of them yet.",
+        "Windows: the background service can now open an encrypted database, instead of failing to find the settings it needed.",
+        "Dropped a health check that kept reporting a problem which no longer exists."
+      ]
+    },
+    {
+      "version": "1.82.1",
+      "date": "2026-07-29",
+      "highlights": [],
+      "fixes": [
+        "A behind-the-scenes release - build and packaging fixes only, with no change to how Meridian works day to day."
+      ]
+    },
+    {
+      "version": "1.82.0",
+      "date": "2026-07-29",
+      "highlights": [
+        "If you open Meridian straight from the disk image without dragging it to Applications first, it now offers to move itself there and reopen. Before, it worked for that session but could never start itself again after a restart.",
+        "Windows setup now includes a notification permission step, so reminders work from the start rather than silently doing nothing.",
+        "Meridian pauses capture when your disk is nearly full instead of writing into it. Doing so is a known way for the database to end up damaged."
+      ],
+      "fixes": [
+        "Signing in to Claude and Codex no longer fails with 'env: node: No such file or directory'.",
+        "Windows: the one-time encryption of your existing data now runs to completion, instead of being blocked by the background service still holding the file open.",
+        "If the background service cannot start at all, that now reaches the team as an error report. It used to be completely invisible from our side."
+      ]
+    },
+    {
       "version": "1.81.0",
       "date": "2026-07-28",
       "highlights": [
@@ -212,6 +317,11 @@
     }
   ],
   "roadmap": [
+    {
+      "title": "Track down the last cause of database damage on Mac",
+      "status": "in-progress",
+      "description": "Four causes are now fixed: a risky one-time encryption step, running out of file handles, Meridian restarting its own background service when it was only busy, and this release closing the gaps where the app and the background service could both write to your data at the same time. Damage has still been seen after the first three, so we are not calling this solved until the machines we are watching stay clean. What has changed is the recovery: Meridian now repairs a damaged database by itself at startup, so a bad one no longer means a dead app."
+    },
     {
       "title": "More trackers - Linear, Trello, and Azure DevOps",
       "status": "planned",

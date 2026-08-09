@@ -27,6 +27,7 @@ pub mod post;
 pub mod post_comment;
 pub mod status;
 pub mod trello;
+mod warn_throttle;
 
 pub use config::PmWorklogConfig;
 pub use generate::{approve, generate, ApproveResult};

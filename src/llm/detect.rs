@@ -75,8 +75,22 @@ fn candidate_dirs() -> Vec<PathBuf> {
         }
         if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
             dirs.push(
-                PathBuf::from(local_appdata)
+                PathBuf::from(&local_appdata)
                     .join("cursor-agent")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            // Where OpenAI's native installer puts `codex.exe`
+            // ([`meridian_core::CODEX_INSTALL_CMD`]'s Windows form). It writes the USER
+            // PATH, which an already-running tray cannot see, so without this entry a
+            // SUCCESSFUL install reports itself as failed - the same trap `cursor-agent`
+            // above exists for. Keep the two in lockstep with those install commands.
+            dirs.push(
+                PathBuf::from(&local_appdata)
+                    .join("Programs")
+                    .join("OpenAI")
+                    .join("Codex")
+                    .join("bin")
                     .to_string_lossy()
                     .into_owned(),
             );
@@ -115,6 +129,18 @@ pub struct ProviderStatus {
     /// the on-disk cache, never freshly run by [`detect`]/[`detect_all`] themselves. `None`
     /// means "never tested", not "failed".
     pub last_test: Option<ProviderTestResult>,
+    /// The installer this platform will actually run
+    /// ([`meridian_core::LlmProvider::install_command`]), or `None` for a provider with
+    /// nothing to install.
+    ///
+    /// Reported to the frontend because the UI's own `installHint`
+    /// (`ui/lib/llm-providers.ts`) is a single static string compiled into a dashboard that
+    /// runs on BOTH platforms, so it cannot be right on both: it names the npm command,
+    /// while Windows installs natively. That mattered beyond cosmetics — the hint doubles as
+    /// the "run this yourself" fallback shown when an install fails, so a Windows user was
+    /// told to run the exact command that cannot work there. Sourcing it from here makes the
+    /// displayed command the one that ran, on every platform, by construction.
+    pub install_command: Option<String>,
 }
 
 /// Probe one provider. A provider with no CLI binary (only `Custom`, a cloud endpoint) has
@@ -122,6 +148,7 @@ pub struct ProviderStatus {
 /// registry), so this early-return is not reached in practice.
 pub async fn detect(provider: LlmProvider) -> ProviderStatus {
     let id = provider.as_str().to_string();
+    let install_command = provider.install_command().map(str::to_string);
     let Some(bin) = provider.cli_name() else {
         return ProviderStatus {
             id,
@@ -129,6 +156,7 @@ pub async fn detect(provider: LlmProvider) -> ProviderStatus {
             path: None,
             authenticated: None,
             last_test: None,
+            install_command,
         };
     };
 
@@ -137,6 +165,7 @@ pub async fn detect(provider: LlmProvider) -> ProviderStatus {
         id,
         installed: found.is_some(),
         path: found.map(|p| p.display().to_string()),
+        install_command,
         authenticated: None,
         last_test: None,
     }
@@ -293,10 +322,14 @@ async fn compute_in_use_provider_health(settings: &RuntimeSettings) -> InUseProv
         };
     };
     let name = provider_display_name(provider).to_string();
-    let last_outcome = load_test_cache()
-        .get(provider.as_str())
-        .filter(|r| !failure_has_expired(r))
-        .map(|r| r.outcome.clone());
+    // Two independent signals: the last MANUAL Settings → Test, and what the pipeline last
+    // observed on a real call. The manual test alone can't see a provider that passed an hour
+    // ago and is failing every call since — the state that stalls the worklog pipeline — so
+    // the fresher of the two wins (see `runtime_health::most_recent_outcome`).
+    let cache = load_test_cache();
+    let last_test = cache.get(provider.as_str());
+    let last_runtime = super::runtime_health::latest_for(provider);
+    let last_outcome = super::runtime_health::most_recent_outcome(last_test, last_runtime.as_ref());
     // A cloud endpoint (`Custom`, `cli_name() == None`) has no binary to probe, so it's treated
     // as "installed" here — only its last test can tell us anything.
     let installed = match provider.cli_name() {
@@ -315,97 +348,6 @@ async fn compute_in_use_provider_health(settings: &RuntimeSettings) -> InUseProv
         "resolved provider install state"
     );
     classify_provider_health(name, installed, last_outcome.as_ref())
-}
-
-/// How long a recorded FAILURE is allowed to keep the banner up without anything
-/// re-confirming it.
-///
-/// This exists because a `Failed` entry used to be permanent. `tested_at` was
-/// written on every result and read by nothing, so a provider that failed once -
-/// signed out for an afternoon, a flaky spawn, a CLI mid-upgrade - was reported
-/// "isn't available" until the user happened to press Test Connection again.
-/// Meanwhile real calls kept succeeding, because they run down a completely
-/// separate path ([`crate::llm::complete`] → `resolve()` → the backend's own
-/// spawn) that never consults this verdict. The observable bug was a permanent
-/// red banner over a dashboard full of freshly AI-written work.
-///
-/// A day, because the failure this most needs to forget is "signed out
-/// yesterday, signed back in this morning". Anything genuinely still broken
-/// re-fails the moment work is attempted, and [`note_live_call_outcome`] records
-/// that within the hour - so the cost of forgetting too early is one hour of a
-/// missing warning, and the cost of forgetting too late was a warning nobody
-/// could clear.
-const FAILURE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
-
-/// Whether a cached result is a FAILURE old enough to stop being evidence.
-///
-/// Only failures expire. An `Ok` never needs to - it is the don't-alarm state
-/// either way - and a `RateLimited` that ages out lands on the same non-alarming
-/// verdict, so expiring it would change nothing. An unparseable `tested_at`
-/// (hand-edited file, a format change) is treated as expired rather than
-/// eternal: between silently keeping a warning up forever and dropping one we
-/// cannot date, the recoverable failure is dropping it.
-fn failure_has_expired(result: &ProviderTestResult) -> bool {
-    if !matches!(result.outcome, ProviderTestOutcome::Failed { .. }) {
-        return false;
-    }
-    // Asserted, not measured — the age of a state someone is deliberately holding
-    // says nothing about whether it still applies. Only an explicit test clears it.
-    if result.sticky {
-        return false;
-    }
-    match chrono::DateTime::parse_from_rfc3339(&result.tested_at) {
-        Ok(at) => {
-            let age = chrono::Utc::now().signed_duration_since(at.with_timezone(&chrono::Utc));
-            age.to_std().map(|a| a > FAILURE_TTL).unwrap_or(false)
-        }
-        Err(_) => true,
-    }
-}
-
-/// Record what a REAL call just proved, so the health verdict stops being able to
-/// contradict work the user can see on screen.
-///
-/// The gap this closes: [`persist_test_result`] was the only writer of the cache,
-/// and its only callers are the explicit Test Connection / Rescan paths. So the
-/// one thing that actually knows whether a provider works - a live
-/// [`crate::llm::complete`] call - reported nothing, and a stale `Failed` had no
-/// way to be cleared except by hand.
-///
-/// Deliberately ONE-DIRECTIONAL: a success clears, a failure is not recorded
-/// here. A real call carries a large prompt and a long timeout and can fail for
-/// reasons a provider is not guilty of (an oversized hour, a transient network
-/// blip mid-summary), and promoting those to a dashboard-wide "isn't available"
-/// would trade a banner that never clears for one that flaps. Failures still
-/// reach the cache the way they always did - through a test the user asked for.
-pub fn note_live_call_success(provider: &str) {
-    let cached = load_test_cache();
-    // Nothing on record, or the record is already good - no verdict to correct,
-    // so skip the disk write. This runs after every successful LLM call.
-    match cached.get(provider) {
-        // Asserted by the dev Disconnect button, which exists precisely to HOLD
-        // this state. Clearing it here made that button appear to do nothing: the
-        // next background call (an hourly fold, a coding-agent summary) undid it
-        // within minutes, on the very machine most likely to be running them.
-        Some(r) if r.sticky => return,
-        Some(r) if matches!(r.outcome, ProviderTestOutcome::Failed { .. }) => {}
-        Some(r) if matches!(r.outcome, ProviderTestOutcome::RateLimited { .. }) => {}
-        _ => return,
-    }
-    tracing::info!(
-        provider,
-        "clearing stale provider failure - a live call just succeeded"
-    );
-    persist_test_result(&ProviderTestResult {
-        id: provider.to_string(),
-        outcome: ProviderTestOutcome::Ok,
-        // Not a probe: there is no probe latency to report, and reporting the
-        // real call's duration here would show up in the panel as a wildly slow
-        // "Verified in 94s" for a test nobody ran.
-        elapsed_ms: 0,
-        tested_at: chrono::Utc::now().to_rfc3339(),
-        sticky: false,
-    });
 }
 
 /// The pure unavailable → rate-limited → fine decision, split out so the ladder can be unit-tested
@@ -517,12 +459,16 @@ pub struct ProviderTestResult {
     ///
     /// Exactly one thing sets it: the dev-only Disconnect button, whose entire job
     /// is to hold the app in the signed-out state so that state can be worked on.
-    /// Without this flag the two automatic corrections below immediately undo it -
-    /// [`note_live_call_success`] clears the failure the moment any background call
-    /// succeeds (which, on a machine that is being used, is within the hour), and
-    /// [`failure_has_expired`] would age it out - so pressing Disconnect appeared
-    /// to do nothing at all. A `Test Connection` or a Rescan replaces the whole row
-    /// and therefore clears this, which is right: the user asked for a real answer.
+    /// Without this flag an automatic correction undoes it almost immediately -
+    /// on a machine being used, a background fold or coding-agent summary succeeds
+    /// within minutes - so pressing Disconnect appeared to do nothing at all.
+    ///
+    /// It is honoured in [`crate::llm::runtime_health::most_recent_outcome`], which
+    /// is now the single place the health verdict is decided (this module's older
+    /// `note_live_call_success` + failure-TTL pair was superseded by that module and
+    /// removed). A measurement must never overturn an assertion; only a
+    /// `Test Connection` or a Rescan replaces the whole row and therefore clears
+    /// this, which is right - the user asked for a real answer.
     ///
     /// `#[serde(default)]` so caches written before this field existed still load.
     #[serde(default)]
@@ -676,6 +622,34 @@ pub struct InstallOutcome {
 /// can find one — see [`install_provider`]'s "leading binary" doc section for why. Returns
 /// `cmd` unchanged (not an `Option`) so every caller has a command to run either way; the
 /// resolution is best-effort by design.
+///
+/// # Windows: deliberately a no-op
+///
+/// Every reason above is a macOS/Linux reason, and the rewrite it produces is POSIX shell
+/// text - `export PATH="…:$PATH"; <abs path> …` - which [`installer_command`] feeds to
+/// **PowerShell**, where it is not merely suboptimal but unrunnable:
+///
+/// - `export` is not a PowerShell command (`$env:PATH` is, and entries are `;`-separated,
+///   not `:`), and `$PATH` is an undefined variable there.
+/// - The substituted absolute path is interpolated unquoted and without the `&` call
+///   operator, so a perfectly ordinary `C:\Program Files\nodejs\npm.cmd` is parsed as the
+///   command `C:\Program`.
+///
+/// Both fail with `CommandNotFoundException` before the vendor's installer runs at all. The
+/// premise doesn't hold here either: Windows has no Finder/launchd PATH stripping (see
+/// [`resolve_cli`]'s doc), so the current process's `PATH` already sees what a terminal
+/// does, and PowerShell resolves `npm` → `npm.cmd` itself via `PATHEXT`. Passing `cmd`
+/// through untouched is therefore both correct and sufficient.
+///
+/// This was a live bug: it made the Install button fail for every npm-based provider on
+/// Windows, and - because the leading token is what triggers the rewrite - Cursor was
+/// unaffected purely by accident, its command starting with `$s`.
+#[cfg(windows)]
+async fn resolve_installer_binary(cmd: &str) -> String {
+    cmd.to_string()
+}
+
+#[cfg(not(windows))]
 async fn resolve_installer_binary(cmd: &str) -> String {
     match cmd.split_once(' ') {
         Some((installer_bin, rest)) => match resolve_cli(installer_bin).await {
@@ -854,11 +828,34 @@ pub async fn install_provider(provider: LlmProvider) -> InstallOutcome {
 /// (`npm i -g …`) run identically well under `-Command` as they did under `cmd /C`.
 /// `-ExecutionPolicy Bypass` is defensive: inline `-Command` text isn't normally subject to
 /// the script-file execution policy, but a locked-down machine's policy could still be
-/// stricter than default, and there is no `.ps1` file here to sign. `; exit $LASTEXITCODE`
-/// guarantees the process's own exit code reflects the command's success/failure — relying on
-/// PowerShell's implicit propagation for the LAST statement in a `-Command` script is not
-/// documented behaviour and would silently report a failed `npm i -g …` as a successful
-/// install.
+/// stricter than default, and there is no `.ps1` file here to sign.
+///
+/// # Why the exit-code epilogue is more than `; exit $LASTEXITCODE`
+///
+/// Propagating the exit code explicitly is necessary — relying on PowerShell's implicit
+/// propagation for the LAST statement in a `-Command` script is not documented behaviour.
+/// But `; exit $LASTEXITCODE` ALONE is not sufficient, and its insufficiency is silent:
+///
+/// **`$LASTEXITCODE` is only ever set by a NATIVE executable.** If the command dies before
+/// reaching one — a `CommandNotFoundException` from a malformed command, a parse error — the
+/// variable is still `$null`, and `exit $null` exits **0**. [`install_provider`] then reads
+/// `status.success()` as true, skips the branch that surfaces stderr, and reports the
+/// generic "installer finished but the CLI still isn't on your PATH". That message sends the
+/// user to debug their PATH over what is really a broken install command, and the actual
+/// error — sitting in stderr — is discarded unread.
+///
+/// So the epilogue distinguishes three cases:
+///
+/// 1. A native exe ran → trust its code verbatim, exactly as before.
+/// 2. No native exe ran AND a command name failed to resolve → exit 127 (the conventional
+///    "command not found"), so the real stderr reaches the user.
+/// 3. Anything else → exit 0.
+///
+/// Case 2 keys on `CommandNotFoundException` specifically rather than "`$Error` is
+/// non-empty" on purpose: a vendor installer that raises and HANDLES a non-terminating error
+/// still leaves it in `$Error`, and failing on that would break installs that work today
+/// (Cursor's `iex`-ed script is pure PowerShell and may never set `$LASTEXITCODE` at all).
+/// An unresolvable command name, by contrast, is never a recoverable condition.
 #[cfg(windows)]
 pub(crate) fn installer_command(cmd: &str) -> Command {
     let mut command = Command::new("powershell");
@@ -867,9 +864,26 @@ pub(crate) fn installer_command(cmd: &str) -> Command {
         .arg("-ExecutionPolicy")
         .arg("Bypass")
         .arg("-Command")
-        .arg(format!("{cmd}; exit $LASTEXITCODE"));
+        .arg(format!("$Error.Clear(); {cmd}; {EXIT_EPILOGUE}"));
     command
 }
+
+/// The exit-code epilogue appended to every Windows installer command — see
+/// [`installer_command`]'s "Why the exit-code epilogue is more than `; exit $LASTEXITCODE`".
+///
+/// Split out as a named constant rather than inlined into the `format!` so the three-case
+/// logic is readable on its own, and so there is exactly one definition of it to change.
+/// Its BEHAVIOUR is pinned by `installer_command_reports_an_unrunnable_command_as_failed`
+/// and `installer_command_tolerates_a_handled_powershell_error`, which run the real shell
+/// rather than string-matching this text - a match on the text would pass just as happily
+/// for an epilogue that PowerShell rejects.
+#[cfg(windows)]
+pub(crate) const EXIT_EPILOGUE: &str = concat!(
+    "if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }; ",
+    "if ($Error | Where-Object { $_.FullyQualifiedErrorId -like 'CommandNotFound*' }) ",
+    "{ exit 127 }; ",
+    "exit 0"
+);
 
 #[cfg(not(windows))]
 pub(crate) fn installer_command(cmd: &str) -> Command {
@@ -1763,120 +1777,6 @@ mod tests {
         }
     }
 
-    /// A recorded FAILURE has to stop being evidence eventually.
-    ///
-    /// The shipped bug: `tested_at` was written on every result and read by
-    /// nothing, so one failure — signed out for an afternoon, a CLI mid-upgrade —
-    /// pinned "<provider> isn't available" across the dashboard permanently. The
-    /// only way to clear it was to press Test Connection, which nobody does when
-    /// the product is visibly working: real calls go down a completely separate
-    /// path that never consults this verdict, so they kept succeeding underneath
-    /// the banner. Observably, a dashboard full of freshly AI-written worklogs
-    /// under a red "AI isn't available".
-    #[test]
-    fn only_failures_expire_and_an_undateable_one_is_not_eternal() {
-        let stamp = |ago: chrono::Duration| (chrono::Utc::now() - ago).to_rfc3339();
-        let res = |outcome, tested_at: String| ProviderTestResult {
-            sticky: false,
-            id: "claude".into(),
-            outcome,
-            elapsed_ms: 10,
-            tested_at,
-        };
-        let failed = || ProviderTestOutcome::Failed {
-            message: "not signed in".into(),
-        };
-
-        // Fresh failure: still evidence, banner stays up.
-        assert!(!failure_has_expired(&res(
-            failed(),
-            stamp(chrono::Duration::hours(1))
-        )));
-        // Day-old failure with nothing re-confirming it: no longer evidence.
-        assert!(failure_has_expired(&res(
-            failed(),
-            stamp(chrono::Duration::hours(30))
-        )));
-
-        // ONLY failures. An old `Ok` must not expire into "unknown" — that is the
-        // same non-alarming verdict either way, but expiring it would throw away
-        // the "Verified 3m ago" the panel reads off the very same row.
-        assert!(!failure_has_expired(&res(
-            ProviderTestOutcome::Ok,
-            stamp(chrono::Duration::days(90))
-        )));
-        assert!(!failure_has_expired(&res(
-            ProviderTestOutcome::RateLimited {
-                message: "usage limit".into()
-            },
-            stamp(chrono::Duration::days(90))
-        )));
-
-        // Undateable failure (hand-edited file, a format change) counts as
-        // expired. Between silently keeping a warning up forever and dropping one
-        // we cannot date, the recoverable mistake is dropping it.
-        assert!(failure_has_expired(&res(failed(), "not a date".into())));
-
-        // A STICKY failure is asserted rather than measured, so its age says
-        // nothing and it never expires. This is what makes the dev Disconnect
-        // button hold: without it, the state it exists to create evaporated on
-        // its own, and the button looked broken.
-        let mut held = res(failed(), stamp(chrono::Duration::days(30)));
-        held.sticky = true;
-        assert!(!failure_has_expired(&held));
-    }
-
-    /// The dev Disconnect button asserts a signed-out provider so that state can
-    /// be worked on. Two automatic corrections in this module would otherwise
-    /// erase it within minutes on the very machine most likely to trigger them -
-    /// a developer's, where background folds and coding-agent summaries run
-    /// constantly. `sticky` is the flag that stops both, and a REAL test still
-    /// clears it, because the user asked for a real answer.
-    #[test]
-    fn a_live_success_clears_a_stale_failure_but_never_an_asserted_one() {
-        // Same isolation contract as the other cache tests: MERIDIAN_HOME is
-        // process-global and cargo runs these in parallel threads.
-        let _guard = ENV_LOCK.blocking_lock();
-        with_temp_meridian_home();
-        std::fs::remove_file(test_cache_path()).ok();
-
-        let seed = |sticky: bool| {
-            persist_test_result(&ProviderTestResult {
-                id: "claude".into(),
-                outcome: ProviderTestOutcome::Failed {
-                    message: "not signed in".into(),
-                },
-                elapsed_ms: 0,
-                tested_at: chrono::Utc::now().to_rfc3339(),
-                sticky,
-            });
-        };
-        let outcome_now = || load_test_cache().get("claude").map(|r| r.outcome.clone());
-
-        // An ordinary recorded failure yields to evidence: a call just worked.
-        seed(false);
-        note_live_call_success("claude");
-        assert_eq!(outcome_now(), Some(ProviderTestOutcome::Ok));
-
-        // An asserted one does not - it is being held on purpose.
-        seed(true);
-        note_live_call_success("claude");
-        assert!(matches!(
-            outcome_now(),
-            Some(ProviderTestOutcome::Failed { .. })
-        ));
-
-        // …but an explicit test replaces the whole row, flag included, so the
-        // developer is never stuck with a verdict they cannot get rid of.
-        persist_test_result(&finish_test(
-            "claude".into(),
-            ProviderTestOutcome::Ok,
-            Instant::now(),
-        ));
-        assert_eq!(outcome_now(), Some(ProviderTestOutcome::Ok));
-        assert!(!load_test_cache().get("claude").unwrap().sticky);
-    }
-
     /// The health verdict is memoised for 5 minutes, and recording a test result is
     /// the only thing that can change it. When the two were not wired together, the
     /// banner disagreed with the Intelligence panel for up to that long IN BOTH
@@ -1996,6 +1896,151 @@ mod tests {
         let output = cmd.output().await.expect("installer_command must spawn");
         assert!(!output.status.success());
         assert_eq!(output.status.code(), Some(7));
+    }
+
+    /// The measured Windows regression, pinned end to end: a command that dies before
+    /// reaching any native executable must be reported as FAILED, with its real error on
+    /// stderr.
+    ///
+    /// This is the exact shape `resolve_installer_binary` used to hand PowerShell — POSIX
+    /// `export` plus an unquoted space-bearing path — and every part of the old epilogue's
+    /// failure is reproduced here: PowerShell raises `CommandNotFoundException` twice, no
+    /// native exe ever runs, so `$LASTEXITCODE` stays `$null` and the old `exit $LASTEXITCODE`
+    /// exited **0**. `install_provider` read that as success, never looked at stderr, and told
+    /// the user their PATH was wrong.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn installer_command_reports_an_unrunnable_command_as_failed() {
+        let mut cmd = installer_command(
+            r#"export PATH="C:\Some Dir\bin:$PATH"; C:\Some Dir\bin\npm.cmd i -g some-package"#,
+        );
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = cmd.output().await.expect("installer_command must spawn");
+        assert!(
+            !output.status.success(),
+            "a command that never reached a native exe must not report success: {output:?}"
+        );
+        assert_eq!(output.status.code(), Some(127), "{output:?}");
+        // The cause must survive to stderr — `install_provider` only reads it on !success(),
+        // so reporting this as success is what silently discarded it.
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("not recognized"),
+            "the real error must reach stderr: {output:?}"
+        );
+    }
+
+    /// The other half of that fix, and the reason it keys on `CommandNotFoundException`
+    /// rather than "`$Error` is non-empty": a pure-PowerShell installer that raises and
+    /// HANDLES an error still leaves it in `$Error` and may never set `$LASTEXITCODE` at all.
+    /// Cursor's `iex`-ed script is exactly that shape, and it installs correctly today —
+    /// failing it would be a regression caused by the fix.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn installer_command_tolerates_a_handled_powershell_error() {
+        let mut cmd = installer_command(
+            r#"try { Get-Item 'C:\meridian\definitely\missing' -ErrorAction Stop } catch { }"#,
+        );
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = cmd.output().await.expect("installer_command must spawn");
+        assert!(
+            output.status.success(),
+            "a handled non-terminating error must not fail the install: {output:?}"
+        );
+    }
+
+    /// `resolve_installer_binary` must leave the command ALONE on Windows. Its rewrite is
+    /// POSIX shell text (`export PATH="…:$PATH"; <abs path> …`) which PowerShell cannot run,
+    /// and the premise doesn't hold here anyway — see the fn's Windows doc. Uses `cmd`, which
+    /// always resolves on Windows (`C:\Windows\System32\cmd.exe`), so this only passes
+    /// because the fn is a no-op, not because resolution happened to fail.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn resolve_installer_binary_is_a_no_op_on_windows() {
+        let original = "cmd /c exit 0";
+        assert_eq!(
+            resolve_installer_binary(original).await,
+            original,
+            "Windows must pass the installer command through untouched"
+        );
+    }
+
+    /// OpenAI's native installer writes the USER PATH, which an already-running tray cannot
+    /// see, so `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin` is the ONLY way the post-install
+    /// probe finds `codex.exe`. Dropping it turns a successful install into a reported
+    /// failure — the same bug `%LOCALAPPDATA%\cursor-agent` was added to prevent.
+    #[cfg(windows)]
+    #[test]
+    fn candidate_dirs_covers_the_native_codex_install_dir() {
+        // Same pattern as `candidate_dirs_includes_the_cursor_agent_install_root`: the lock
+        // and a pinned value are load-bearing, because a sibling test removes `LOCALAPPDATA`
+        // and these run in parallel.
+        let _guard = ENV_LOCK.blocking_lock();
+        let original = std::env::var_os("LOCALAPPDATA");
+        std::env::set_var("LOCALAPPDATA", r"C:\Users\meridian-test\AppData\Local");
+
+        let dirs = candidate_dirs();
+
+        match original {
+            Some(v) => std::env::set_var("LOCALAPPDATA", v),
+            None => std::env::remove_var("LOCALAPPDATA"),
+        }
+
+        assert!(
+            dirs.contains(&PathBuf::from(
+                r"C:\Users\meridian-test\AppData\Local\Programs\OpenAI\Codex\bin"
+            )),
+            "{dirs:?}"
+        );
+    }
+
+    /// `ProviderStatus` must report the installer THIS build will actually run, for every
+    /// provider that has one. The frontend renders this instead of its own static
+    /// `installHint`, which is a single string compiled for both platforms and therefore
+    /// wrong on one of them — and which doubles as the "run it yourself" fallback after a
+    /// failed install.
+    ///
+    /// Deliberately NOT `#[cfg]`-gated: it asserts the field tracks
+    /// `LlmProvider::install_command` rather than any particular command text, so it is
+    /// meaningful on macOS and Windows alike and runs in BOTH CI Rust jobs.
+    #[tokio::test]
+    async fn provider_status_reports_this_platforms_install_command() {
+        for provider in LlmProvider::builtins() {
+            let status = detect(provider).await;
+            assert_eq!(
+                status.install_command.as_deref(),
+                provider.install_command(),
+                "{provider:?} must report the command this platform installs with"
+            );
+            // Non-empty, not merely present: the UI renders this string as the
+            // "how to install" hint, so `Some("")` would pass an `is_some()`
+            // check and still show the user a blank instruction.
+            assert!(
+                status
+                    .install_command
+                    .as_deref()
+                    .is_some_and(|c| !c.trim().is_empty()),
+                "{provider:?} is a CLI provider and must have a non-empty installer command"
+            );
+        }
+    }
+
+    /// The wire contract with `ui/lib/api-types.ts`'s `ProviderStatus`: the field must
+    /// actually reach the frontend under the name the UI reads. A `#[serde(skip)]` or a
+    /// rename would leave `probed?.install_command` permanently `undefined`, silently
+    /// reverting the UI to the platform-wrong static hint with no test failing.
+    #[tokio::test]
+    async fn provider_status_serialises_install_command_for_the_frontend() {
+        let status = detect(LlmProvider::Claude).await;
+        let json = serde_json::to_value(&status).expect("ProviderStatus must serialise");
+        assert_eq!(
+            json.get("install_command").and_then(|v| v.as_str()),
+            LlmProvider::Claude.install_command(),
+            "the frontend reads `install_command` — got {json:?}"
+        );
     }
 
     /// The regression this exists for: an npm-based install (`npm i -g @openai/codex`, etc.)

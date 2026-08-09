@@ -14,6 +14,7 @@ import { invoke, load, subscribe } from '@/lib/bridge'
 import type { RuntimeSettings } from '@/lib/settings'
 import { applyTheme } from '@/lib/theme'
 import HealthBanner from '@/components/HealthBanner'
+import { AlertDialog } from '@/components/ConfirmDialog'
 import { useTimelineData } from './useTimelineData'
 import { dayString, shiftDay, isPending } from './types'
 import { Toolbar } from './Toolbar'
@@ -419,6 +420,18 @@ export default function MeridianTimelineShell() {
           Both are null when it is not running. */}
       {tutorial.screen}
       {tutorial.overlay}
+
+      {/* A failed worklog action (approve/reject/post/edit). Rendered last so it
+          sits above whatever modal it was triggered from. This used to be an
+          `alert()`, which is inert in the packaged tray — the failure was
+          invisible and the row just snapped back with no explanation. */}
+      {data.actionError && (
+        <AlertDialog
+          title="That did not go through"
+          body={data.actionError}
+          onDismiss={data.clearActionError}
+        />
+      )}
     </div>
   )
 }

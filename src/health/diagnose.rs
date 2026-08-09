@@ -7,6 +7,7 @@
 
 use crate::health::{Report, Severity};
 
+#[derive(Debug)]
 pub struct Diagnosis {
     /// The root cause, one line.
     pub title: String,
@@ -49,14 +50,14 @@ pub fn root_causes(report: &Report) -> Vec<Diagnosis> {
 
     // 1. Coding-agent summariser cascade — sealed sessions must be summarised
     //    (via each agent's own CLI) before they reach the classifier and worklog.
-    if bad("coding-agent", "session-summary skill") {
-        out.push(Diagnosis {
-            title: "session-summary Claude Code command is missing".into(),
-            cause: "The `claude -p /session-summary` invocation that produces transcript summaries returns 'Unknown command' because ~/.claude/commands/session-summary.md doesn't exist, so Claude Code sessions can't be summarised.".into(),
-            contributing: contributing(&[("coding-agent", "session-summary skill")]),
-            action: "`meridian doctor --fix`  (or: `meridian coding-agent-install-skill`)".into(),
-        });
-    } else if bad("meridian daemon", "summariser queue") {
+    //
+    //    There used to be a higher-priority branch here for a missing
+    //    ~/.claude/commands/session-summary.md. It was stale: the Claude engine
+    //    embeds SUMMARY_RULES inline in `claude -p` and has not invoked a
+    //    slash-skill since (see `summariser::claude`), so the file's absence
+    //    means nothing — but this diagnosis outranked the queue check below,
+    //    which is the one that actually detects a stalled summariser.
+    if bad("meridian daemon", "summariser queue") {
         out.push(Diagnosis {
             title: "Coding-agent summariser is stalled".into(),
             cause: "Sealed sessions aren't being summarised, so they never reach the classifier and the worklog hour-ledger backs up behind them.".into(),
@@ -134,9 +135,9 @@ pub fn root_causes(report: &Report) -> Vec<Diagnosis> {
     if bad("config", "settings file") {
         out.push(Diagnosis {
             title: "UI settings aren't reaching the daemon".into(),
-            cause: "The dashboard writes ~/.meridian/settings.json but the daemon reads <repo>/settings.json, so toggles made in the UI have no effect.".into(),
+            cause: "MERIDIAN_SETTINGS_PATH points the daemon at a different file from the one the dashboard writes (~/.meridian/settings.json), so toggles made in the UI have no effect.".into(),
             contributing: contributing(&[("config", "settings file")]),
-            action: "Align the two files — `meridian doctor --fix` can link them.".into(),
+            action: "Unset MERIDIAN_SETTINGS_PATH so both read ~/.meridian/settings.json.".into(),
         });
     }
 
@@ -220,9 +221,93 @@ mod tests {
         assert_eq!(dx[0].contributing.len(), 2);
     }
 
+    /// The branch-priority regression, pinned.
+    ///
+    /// `root_causes` used to test a "session-summary skill" check FIRST, in an
+    /// `if/else if` chain ahead of "summariser queue". That check fired on any
+    /// machine missing `~/.claude/commands/session-summary.md` — a file nothing
+    /// reads — so a genuinely stalled summariser was reported as a phantom
+    /// skill problem and the real diagnosis never ran at all.
+    ///
+    /// This deliberately feeds in BOTH signals rather than asserting the queue
+    /// branch works alone (`summariser_backlog_chains_to_one_root_cause`
+    /// already covers that): the bug was only ever visible when something else
+    /// in the chain outranked it. Any future higher-priority branch that
+    /// swallows a real stall the same way fails here.
+    #[test]
+    fn a_coding_agent_warning_does_not_mask_a_real_summariser_stall() {
+        let report = Report::new(vec![
+            Check::warn("session-summary skill", "L2", "missing").in_group("coding-agent"),
+            Check::warn("summariser queue", "L2", "293 backed up").in_group("meridian daemon"),
+        ]);
+        let dx = root_causes(&report);
+        let titles: Vec<&str> = dx.iter().map(|d| d.title.as_str()).collect();
+        assert!(
+            titles.iter().any(|t| t.contains("summariser")),
+            "a real summariser stall must still be diagnosed, got: {titles:?}"
+        );
+        // …and the removed check must never come back as a diagnosis of its own.
+        assert!(
+            !titles.iter().any(|t| t.contains("session-summary")),
+            "the deleted session-summary skill check must not diagnose anything, got: {titles:?}"
+        );
+    }
+
     #[test]
     fn healthy_report_has_no_diagnosis() {
         let report = Report::new(vec![Check::ok("x", "L1", "fine").in_group("system")]);
         assert!(root_causes(&report).is_empty());
+    }
+
+    /// An Info-severity `settings file` check must NOT raise the "UI settings
+    /// aren't reaching the daemon" diagnosis.
+    ///
+    /// This was half the damage on a healthy packaged machine: the check fired
+    /// permanently, and the summary escalated it into a fabricated root cause
+    /// telling the user their toggles had no effect — on machines where the
+    /// settings were demonstrably being applied.
+    ///
+    /// The coupling is `bad`'s `severity >= Severity::Warn` with `Info < Warn`,
+    /// which is exactly the kind of thing that gets "tidied" into `!= Ok` by
+    /// someone who does not know an Info branch depends on it.
+    #[test]
+    fn an_info_settings_check_raises_no_diagnosis() {
+        let report = Report::new(vec![Check::info(
+            "settings file",
+            "config",
+            "no settings.json yet — would resolve /tmp/settings.json",
+        )
+        .in_group("config")]);
+        assert!(
+            root_causes(&report).is_empty(),
+            "an Info check fabricated a root cause: {:?}",
+            root_causes(&report)
+        );
+    }
+
+    /// ...but a genuine split-brain still must. Pins that the fix above is a
+    /// severity change, not a deletion of the diagnosis.
+    #[test]
+    fn a_warning_settings_check_still_raises_the_diagnosis() {
+        let report = Report::new(vec![Check::warn(
+            "settings file",
+            "config",
+            "the daemon resolves /elsewhere/settings.json instead of the dashboard's file",
+        )
+        .in_group("config")]);
+        let dx = root_causes(&report);
+        assert_eq!(
+            dx.len(),
+            1,
+            "real split-brain must still be diagnosed: {dx:?}"
+        );
+        assert!(
+            dx[0].title.contains("UI settings"),
+            "unexpected diagnosis: {dx:?}"
+        );
+        assert!(
+            dx[0].cause.contains("MERIDIAN_SETTINGS_PATH"),
+            "the cause text still describes the obsolete <repo>/settings.json premise: {dx:?}"
+        );
     }
 }
