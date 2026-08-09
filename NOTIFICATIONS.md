@@ -104,11 +104,17 @@ simple for the user.
    derived from `responded_at`, so a retry is a no-op). Rows not matched by any
    arm are just stamped consumed.
 
-4. **Per-type toggle** — add a field to `RuntimeSettings`
-   (`meridian-core/src/settings.rs`), a match arm in
-   `meridian-core/src/notifications.rs::type_enabled`, and the checkbox in
-   `ui/components/timeline/settings/NotificationsSection.tsx`. Unknown
-   event keys default to enabled, so this step gates opt-out, not delivery.
+4. **Deep link** — if the toast should go somewhere, `.link(deep_links::X)`
+   using a constant from `meridian-core/src/notifications/mod.rs::deep_links`,
+   never a raw path. A new destination means adding the constant AND an arm in
+   `MeridianTimelineShell.tsx`'s `navigate`; two guard tests
+   (`tests/deep_links.rs`, `ui/__tests__/deep-links.test.ts`) fail if you do
+   one without the other.
+
+There is **no step 4 for a per-type settings toggle** — that used to be listed
+here and the machinery (`type_enabled`, the `notify_*` fields) was deleted.
+Every event is gated by the master switch alone; classification and timing are
+decided in code, not handed to the user.
 
 No tray changes are needed — delivery, buttons, response capture, deep-link
 navigation, and expiry all key off the row's columns.
@@ -234,23 +240,52 @@ Swift → Rust → JS chain is visible in stderr. Look for
 registered`, `outbox toast delivered`, `notification action event: {...}`,
 `notification response recorded`, `notification responses consumed`.
 
+## Is it notification-worthy? Ask / Fault / Status
+
+Before adding a producer, decide which of three things it is. This is an
+engineering decision, not a user preference — there is still exactly one user
+knob (the master switch, plus quiet hours), and nothing here adds another.
+
+| Class | Means | Channel | Expiry |
+|---|---|---|---|
+| **Ask** | A question only the user can answer; Meridian is worse off until they do | native + banner, inside working hours | ends when the answer stops mattering |
+| **Fault** | Something is broken and the user must act. Fires at any hour | native + banner, once per *raise* (not per detection) | cleared by recovery |
+| **Status** | State changed; nothing is being asked | banner or tray only — **never a toast** | short, self-expiring |
+
+`plan.nudge` is the reference Ask, and it is the only event with a meaningful
+answer rate (35 of 36 on a real install over five weeks; every other event key
+sat near zero). The difference is that it asks something, at a sane hour, and
+expires.
+
+**Status is the trap.** An internal state transition feels notification-worthy
+to the person writing it and is noise to everyone else. `system.health`'s
+"Back online." fired 18 times in five weeks for one interaction before it was
+removed — see the comment above `refresh_health`'s `notify_back` arm for the
+full post-mortem, including why "confirm the recovery" was the wrong instinct.
+
+A confirmation of something the **user just clicked** is not Status — it is the
+response to their action, and the tray menu has no other surface to render one
+on. That is why all six `system.update` toasts stay.
+
 ## Current producers & categories
 
-| event_key | category | buttons | consumer arm |
-|---|---|---|---|
-| `plan.nudge` | `plan_nudge` | Open Plan · Snooze 1h | snooze → re-enqueue +1h |
-| `worklog.ready` | `worklog_ready` | Open Worklogs · Snooze 1h | snooze → re-enqueue +1h — **registered but no producer fires it yet** (needs its own scoping: worklog generation is currently on-demand/user-clicked, not scheduled) |
-| `system.fault` | `system_fault` | View | — (stamp only) |
-| `system.pause` | `system_fault` | View | — (stamp only) — pause/resume, folded off the `sys::notify` bypass |
-| `system.health` | `system_fault` | View | — (stamp only) — daemon went-quiet/back-online, folded off the bypass |
-| `system.update` | `system_fault`\* | View\* | — (stamp only) — update check/download/failure, folded off the bypass. \*Discrete one-shot events (not raise/clear state), so these go through `notifications::enqueue` directly rather than `notices::raise_typed` — see `tray/src-tauri/src/update.rs::notify_update` |
-| `system.notif_permission` | `system_fault` | View | — (stamp only) — notification permission revoked (macOS TCC or, since gotcha #9, Windows' `ToastNotifier::Setting()`); the one notice guaranteed to reach the user via the dashboard banner even when toasts themselves are broken |
-| `system.capture_permission` | `system_fault` | View | — (stamp only) — Accessibility/Screen Recording revoked mid-session |
-| `system.disk_low` | `system_fault` | View | — (stamp only) — `~/.meridian`'s volume below 2 GB free |
-| `pm_worklog.{provider}` | `system_fault` | View | — (stamp only) — a worklog post to the tracker failed permanently |
-| `summariser.dead_letter` | `generic_link` | Open | — (stamp only) — daily digest of permanently-failed coding-agent summarisation, `dedup_key` scoped per day |
-| *(reserved)* | `verify_switch` | Yes · No · Reply… | — (PR 2: task-switch verification) |
-| *(generic)* | `generic_link` | Open | — (stamp only) |
+`class` is the taxonomy above.
+
+| event_key | class | category | buttons | consumer arm |
+|---|---|---|---|---|
+| `plan.nudge` | Ask | `plan_nudge` | Open Plan · Snooze 1h | snooze → re-enqueue +1h |
+| `worklog.ready` | Ask | `worklog_ready` | Open Worklogs · Snooze 1h | snooze → re-enqueue +1h — **registered but no producer fires it yet** (needs its own scoping: worklog generation is currently on-demand/user-clicked, not scheduled) |
+| `system.fault` | Fault | `system_fault` | View | — (stamp only) |
+| `system.pause` | Status | `system_fault` | View | — (stamp only) — pause/resume, folded off the `sys::notify` bypass |
+| `system.health` | Fault | `system_fault` | View | — (stamp only) — daemon went quiet, or the tray couldn't finish installing the backend. The paired **"Back online." recovery toast was removed** (Status: it confirmed a recovery the user often never knew about, and fired on Meridian's own restarts); the banner clearing is the recovery signal |
+| `system.update` | Ask/Fault | `system_fault`\* | View\* | — (stamp only) — update check/download/failure, folded off the bypass. \*Discrete one-shot events (not raise/clear state), so these go through `notifications::enqueue` directly rather than `notices::raise_typed` — see `tray/src-tauri/src/update.rs::notify_update` |
+| `system.notif_permission` | Fault | `system_fault` | View | — (stamp only) — notification permission revoked (macOS TCC or, since gotcha #9, Windows' `ToastNotifier::Setting()`); the one notice guaranteed to reach the user via the dashboard banner even when toasts themselves are broken |
+| `system.capture_permission` | Fault | `system_fault` | View | — (stamp only) — Accessibility/Screen Recording revoked mid-session |
+| `system.disk_low` | Fault | `system_fault` | View | — (stamp only) — `~/.meridian`'s volume below 2 GB free |
+| `pm_worklog.{provider}` | Fault | `system_fault` | View | — (stamp only) — a worklog post to the tracker failed permanently |
+| `summariser.dead_letter` | Status | `generic_link` | Open | — (stamp only) — daily digest of permanently-failed coding-agent summarisation, `dedup_key` scoped per day |
+| *(reserved)* | Ask | `verify_switch` | Yes · No · Reply… | — (PR 2: task-switch verification) |
+| *(generic)* | — | `generic_link` | Open | — (stamp only) |
 
 **Removed:** `board.hygiene` (daily digest of tickets needing attention) — its
 only job was to pull the user into the Board Cleanup flow, and that UI is

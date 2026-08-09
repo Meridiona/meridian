@@ -1,20 +1,38 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Global fault banner. Subscribes to the `notices-update` Tauri event (via
-// bridge.subscribe) and renders a banner for each active system notice. Banners auto-disappear when
-// the daemon clears the fault — no manual dismiss needed. Placed in the root
-// layout so it appears on every page.
+// bridge.subscribe) and renders a banner for each active system notice. Placed
+// in the root layout so it appears on every page.
+//
+// Most banners auto-disappear when the daemon clears the fault, and those have
+// no dismiss control on purpose — hiding a live fault would only make it
+// invisible, not fixed. The exception is ACKNOWLEDGEABLE (below): notices that
+// report a past EVENT rather than a current condition. Nothing can ever
+// "recover" from them, so without a dismiss they sit on screen forever.
 
 'use client'
 
 import { useEffect, useState } from 'react'
-import { load, subscribe } from '@/lib/bridge'
+import { load, mutate, subscribe } from '@/lib/bridge'
 import ConfirmDialog from '@/components/ConfirmDialog'
 import { formatSince } from '@/lib/notice-time'
 import type { Notice, RepairPreview } from '@/lib/api-types'
 
 // The one notice that can be acted on in-app rather than in a terminal.
 const DB_CORRUPT = 'db.corrupt'
+
+// Notices the user dismisses, because nothing else will.
+//
+// Both are raised once by the tray's boot-time repair (`lib.rs`) to report what
+// it did to the database. They describe something that already happened, so no
+// code path clears them — and NoticeBar had no dismiss — which meant any
+// machine that ever ran a boot repair carried the banner permanently. Same
+// shape as the 22 undismissable board-hygiene banners: a producer with no
+// matching consumer.
+//
+// A live fault must NOT be added here. If a notice can clear itself when the
+// condition passes, let it.
+const ACKNOWLEDGEABLE = new Set(['db.repaired', 'db.reset'])
 
 // Palette lives in globals.css (--status-*).
 const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string; dot: string }> = {
@@ -92,9 +110,16 @@ export default function NoticeBar() {
               )}
             </div>
             {n.notice_id === DB_CORRUPT && <RepairButton color={s.text} border={s.border} />}
+            {/* A tracker fault is fixed by reconnecting the tracker. This used
+                to say "Fix in Tasks →" and open the Tasks modal, which
+                disagreed with both this notice's own remedy text ("Reconnect X
+                in Settings → Integrations") and its toast's click-through -
+                three surfaces for one fault, two destinations. */}
             {n.notice_id.startsWith('pm.') && (
               <button
-                onClick={() => window.dispatchEvent(new CustomEvent('meridian:open-tasks'))}
+                onClick={() => window.dispatchEvent(
+                  new CustomEvent('meridian:open-settings', { detail: 'integrations' })
+                )}
                 style={{
                   flexShrink: 0,
                   fontSize: 11,
@@ -107,15 +132,64 @@ export default function NoticeBar() {
                   textDecoration: 'none',
                   whiteSpace: 'nowrap',
                   alignSelf: 'center',
+                  cursor: 'pointer',
                 }}
               >
-                Fix in Tasks →
+                Reconnect →
               </button>
+            )}
+            {ACKNOWLEDGEABLE.has(n.notice_id) && (
+              <DismissButton noticeId={n.notice_id} color={s.text}
+                onDone={() => setNotices(cur => cur.filter(x => x.notice_id !== n.notice_id))} />
             )}
           </div>
         )
       })}
     </div>
+  )
+}
+
+// Acknowledge a notice that reports a past event (see ACKNOWLEDGEABLE).
+//
+// Optimistic: the row is dropped locally the moment the write succeeds rather
+// than waiting for the next `notices-update` push, so the banner does not
+// linger for a poll interval after the click. A failed write leaves the banner
+// up - which is the honest outcome, since the notice really is still there.
+function DismissButton({ noticeId, color, onDone }: {
+  noticeId: string
+  color: string
+  onDone: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+  return (
+    <button
+      aria-label="Dismiss"
+      title="Dismiss"
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true)
+        try {
+          await mutate('/api/notices', 'delete_notice', { noticeId }, 'DELETE')
+          onDone()
+        } catch {
+          setBusy(false)
+        }
+      }}
+      style={{
+        flexShrink: 0,
+        alignSelf: 'center',
+        background: 'transparent',
+        border: 'none',
+        color,
+        opacity: busy ? 0.4 : 0.6,
+        fontSize: 14,
+        lineHeight: 1,
+        padding: '2px 6px',
+        cursor: busy ? 'default' : 'pointer',
+      }}
+    >
+      ✕
+    </button>
   )
 }
 
