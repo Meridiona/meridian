@@ -453,6 +453,98 @@ jobs:
           fi
           echo "OK — no existing migrations were modified, renamed, or deleted."
 
+  # ── The release cache is only warm if two env blocks stay identical ─────────
+  #
+  # cache-warm.yml exists to compile on `main` and leave a ~1.4 GB rust-cache
+  # tarball a tag-triggered release build can restore. Swatinem/rust-cache
+  # derives the first component of its cache key from the NAMES AND VALUES of
+  # every env var matching CARGO_*/RUSTC_*/RUST_*, and that same component is
+  # its only fallback restore key. So if the two workflows' env blocks differ by
+  # a single variable, the release build computes a key nothing has ever written
+  # and starts stone cold.
+  #
+  # Nothing about that failure is visible. The warm job succeeds, the cache is
+  # written, the release build succeeds — it just logs "No cache found." in a
+  # collapsed group and then compiles ~940 crates. It ran that way for this
+  # pipeline's entire history over one variable (`CARGO_NET_RETRY`, set in one
+  # file and not the other), costing ~21 min on macOS and ~36 min on Windows per
+  # release, while every status check stayed green.
+  #
+  # A comment saying "these must match" is what was already there, in both
+  # files, and it did not hold. This job is the version that fails.
+  cache-key-parity:
+    name: Release cache key parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Assert cache-warm.yml and release-build.yml hash the same env
+        run: |
+          python3 - <<'PY'
+          import sys
+
+          # The top-level `env:` block only: column-0 `env:`, then its indented
+          # body up to the next column-0 key. Deliberately NOT a YAML parse —
+          # this needs no dependency, and a job-level `env:` (indented) must not
+          # be picked up, since rust-cache reads the process environment the
+          # step actually runs with and both files put the shared vars at top
+          # level.
+          def top_level_env(path):
+              out, inside = {}, False
+              for line in open(path):
+                  if not inside:
+                      if line.rstrip("\n") == "env:":
+                          inside = True
+                      continue
+                  if line.strip() == "" or line.lstrip().startswith("#"):
+                      continue
+                  if not line.startswith((" ", "\t")):
+                      break
+                  k, _, v = line.strip().partition(":")
+                  out[k.strip()] = v.strip().strip('"').strip("'")
+              return out
+
+          # Exactly what rust-cache feeds into its key hash.
+          def keyed(env):
+              return {k: v for k, v in env.items()
+                      if k.startswith(("CARGO_", "RUSTC_", "RUST_"))}
+
+          files = {
+              "cache-warm.yml": ".github/workflows/cache-warm.yml",
+              "release-build.yml": ".github/workflows/release-build.yml",
+          }
+          got = {}
+          for name, path in files.items():
+              got[name] = keyed(top_level_env(path))
+              if not got[name]:
+                  sys.exit(f"::error file={path}::no top-level CARGO_*/RUSTC_* env "
+                           f"found - did the `env:` block move or get indented? "
+                           f"This guard cannot protect what it cannot find.")
+
+          warm, rel = got["cache-warm.yml"], got["release-build.yml"]
+          if warm == rel:
+              print("OK - both workflows hash an identical env into the cache key:")
+              for k in sorted(warm):
+                  print(f"    {k}={warm[k]}")
+              sys.exit(0)
+
+          lines = []
+          for k in sorted(set(warm) | set(rel)):
+              a, b = warm.get(k), rel.get(k)
+              if a != b:
+                  lines.append(f"    {k}: cache-warm={a!r}  release-build={b!r}")
+          print("::error::cache-warm.yml and release-build.yml no longer hash the "
+                "same environment, so every release build will restore NO cache "
+                "and compile the whole workspace from scratch (~21 min macOS, "
+                "~36 min Windows). Make the two top-level `env:` blocks identical "
+                "for every CARGO_*/RUSTC_*/RUST_* variable.")
+          print("Differences:")
+          print("\n".join(lines))
+          sys.exit(1)
+          PY
+
   # screenpipe relicensed MIT → Commercial on 2026-06-10. Meridian ships zero
   # screenpipe code, so staying pinned to the last MIT-based fork rev keeps the
   # install license-clean. Enforce the pin server-side so it can't silently
