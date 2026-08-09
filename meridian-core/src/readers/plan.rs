@@ -1137,6 +1137,46 @@ pub async fn apply_plan_action(
                     return Err(PlanWriteError::TooManyTasks(MAX_PLAN_TASKS + 1).into());
                 }
             }
+
+            // AUTHORING A TASK FOR A DAY IS COMMITTING TO IT.
+            //
+            // Every other arm that puts rows in `daily_plan` also writes
+            // `daily_plan_meta`; this one did not, and `confirmed_at` stayed
+            // NULL. That matters because `confirmed` is what every reader gates
+            // on — the dashboard's "Today's focus" renders
+            // `plan.confirmed ? plan.plan : []` — so a task added this way was
+            // written to the database correctly and then displayed nowhere.
+            //
+            // It hit hardest exactly where the product is trying hardest to make
+            // a good impression:
+            //   * the onboarding walkthrough, whose planner beat is driven
+            //     entirely by the composer. It says "Saved" and "today's tasks
+            //     are in", and then the dashboard it hands over to was empty.
+            //   * every solo / no-tracker user, for whom the composer is the ONLY
+            //     way to build a plan (there is no board to drag from), so their
+            //     plan never appeared at all.
+            // Dragging a board ticket across was unaffected, which is why this
+            // survived: that path goes through "confirm".
+            //
+            // `confirmed_at` is only stamped when NULL, so re-adding to a day
+            // that was committed hours ago does not move its timestamp. `skipped`
+            // is cleared unconditionally: authoring a task for a day you had
+            // skipped is an explicit change of mind, and leaving the flag set
+            // would hide the task behind the same gate again.
+            sqlx::query(
+                r#"INSERT INTO daily_plan_meta (plan_date, confirmed_at, skipped, created_at, updated_at)
+                   VALUES (?, ?, 0, ?, ?)
+                   ON CONFLICT(plan_date) DO UPDATE SET
+                     confirmed_at = COALESCE(daily_plan_meta.confirmed_at, excluded.confirmed_at),
+                     skipped      = 0,
+                     updated_at   = excluded.updated_at"#,
+            )
+            .bind(date)
+            .bind(now)
+            .bind(now)
+            .bind(now)
+            .execute(pool)
+            .await?;
         }
         "remove" => {
             let key = body
