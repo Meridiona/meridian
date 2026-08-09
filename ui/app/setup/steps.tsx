@@ -8,7 +8,7 @@
 
 import type { ReactNode } from 'react'
 import { Btn, Check, DISPLAY, Logo, PermIcon, PermissionPreview, Row } from './atoms'
-import { EARLY_CUSTOMER_NUMBER, PERMISSIONS } from './data'
+import { PERMISSIONS } from './data'
 import type { NotifState, PermissionMeta } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import { TRACKERS } from '@/lib/integrations'
@@ -347,22 +347,19 @@ export function Welcome({ onBegin, ready, error, onRetry }: {
             <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 29, lineHeight: 1, letterSpacing: '-.02em', color: 'var(--t-title)' }}>Meridian</span>
           </div>
 
-          {/* A NUMBERED EDITION, not a badge. This is a real fact about this
-             person - they are the Nth user - and a fact reads as true when it is
-             stated plainly and as marketing when it is put in a coloured capsule
-             with a glow under it. So: no fill, no shadow, no radius; the label
-             small and quiet, the number in mono at title weight because the
-             NUMBER is the thing worth keeping. A hairline on the left ties it to
-             the brand row without drawing a box around it. */}
+          {/* A MARK, not a numbered edition. This carried "No. 042" beside it,
+             which read as a real fact about the person holding the screen - their
+             place in the queue - and was not one: the number was a hand-edited
+             constant, so every user was told they were the 42nd. A number that
+             specific is exactly the kind a reader checks the rest of the product
+             against, so a false one costs more than it ever bought. What is left
+             is true of everyone who sees it. No fill, no shadow, no radius; a
+             hairline on the left ties it to the brand row without drawing a box
+             around it. */}
           <div className="mer-pop shrink-0 flex items-baseline" style={{
-            gap: 9, paddingLeft: 16, borderLeft: '1px solid var(--t-hair)',
+            paddingLeft: 16, borderLeft: '1px solid var(--t-hair)',
           }}>
             <span className="mt-chip" style={{ color: 'var(--t-faint)', letterSpacing: '.08em' }}>Founding user</span>
-            <span className="font-mono" style={{
-              fontSize: 17, fontWeight: 700, letterSpacing: '.02em', color: 'var(--t-title)',
-            }}>
-              No. {String(EARLY_CUSTOMER_NUMBER).padStart(3, '0')}
-            </span>
           </div>
         </div>
 
@@ -386,8 +383,8 @@ export function Welcome({ onBegin, ready, error, onRetry }: {
         </h1>
 
         <p style={{ fontSize: 14, lineHeight: 1.65, color: 'var(--t-muted)', marginTop: 16, maxWidth: 560, textWrap: 'pretty' }}>
-          You&apos;re one of the first <span style={{ fontWeight: 600, color: 'var(--t-title)' }}>{EARLY_CUSTOMER_NUMBER}</span> people
-          helping us build Meridian. We hope it makes a real difference for you, too.
+          You&apos;re one of the first people helping us build Meridian. We hope it
+          makes a real difference for you, too.
         </p>
 
         {/* WHAT IT DOES, as three plain lines. They were chips - filled circular
