@@ -30,11 +30,196 @@ export const DISPLAY: CSSProperties = {
   letterSpacing: '-.03em',
 }
 
+// ── Brand mark (the real app icon, not a colored dot) ────────────────────────
+// Renders `ui/public/meridian-logo.png`, cropped in to the mark itself (same
+// idea as the tray popover's `.brand-mark`, tray/src/style.css). The mark's
+// pixel bounding box is ~60.5% of the 512x512 canvas BUT is not centered on
+// it - it sits ~17px above true centre (measured directly from the PNG:
+// content spans x:100-409, y:85-394). backgroundPosition:center crops around
+// the canvas's geometric centre, not the mark's, so the old 166% zoom (sized
+// to exactly match the bbox width) clipped the top of the outer rings. 146%
+// is the largest zoom that still keeps the full off-centre bbox inside the
+// crop window on every side.
+export function Logo({ size = 30 }: { size?: number }) {
+  return (
+    <span aria-hidden="true" className="shrink-0" style={{
+      width: size, height: size, borderRadius: size / 3.6,
+      backgroundImage: 'url(/meridian-logo.png)',
+      backgroundSize: '146% 146%', backgroundPosition: 'center', backgroundRepeat: 'no-repeat',
+    }} />
+  )
+}
+
+// ── OS permission-toggle preview ──────────────────────────────────────────────
+// A small illustrative mock of "Meridian" as it appears, switched on, in the
+// OS's own permissions list — not a captured screenshot (no access to either
+// OS's real UI here), reconstructed from the real macOS System Settings panes
+// (Privacy & Security → Accessibility / Screen & System Audio Recording -
+// Notifications uses the same list-of-apps-with-toggles structure on macOS
+// too, so it reuses the same template) to read as "this is what you'll see"
+// rather than a generic illustration. Windows never shows Accessibility/Screen
+// Recording at all (no TCC consent analogue there), so it only ever needs the
+// simpler single-row preview for Notifications.
+//
+// Font sizes here run a couple of points bigger than a literal 1:1 shrink of
+// the real System Settings pane would use - at this card's actual on-screen
+// size a true-to-scale reproduction (8-9px type) read as barely legible, not
+// authentically tiny.
+const MAC_PANE_COPY: Record<'accessibility' | 'screen' | 'notifications', { title: string; blurb: string; others: string[] }> = {
+  accessibility: {
+    title: 'Accessibility',
+    blurb: 'Allow the applications below to control your computer.',
+    others: ['Terminal', 'Google Chrome'],
+  },
+  screen: {
+    title: 'Screen & System Audio Recording',
+    blurb: 'Allow the applications below to record the content of your screen.',
+    others: ['Terminal', 'Google Chrome'],
+  },
+  notifications: {
+    title: 'Notifications',
+    blurb: 'Allow the applications below to send notifications.',
+    others: ['Terminal', 'Google Chrome'],
+  },
+}
+
+function MacToggleOn() {
+  return (
+    <span aria-hidden="true" className="flex items-center shrink-0" style={{
+      width: 32, height: 19, borderRadius: 99, background: '#0A84FF', padding: 2, justifyContent: 'flex-end',
+    }}>
+      <span style={{ width: 15, height: 15, borderRadius: 99, background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,.25)' }} />
+    </span>
+  )
+}
+
+/** Reconstructed macOS System Settings pane (header chevrons, title, blurb,
+ *  and the app list) - used for all three permissions on macOS. Every OTHER
+ *  app in the list is a blurred, generic placeholder (never a real app's
+ *  name/icon - not what was in the reference screenshots, genericised on
+ *  purpose, and the SAME two placeholders for every permission so all three
+ *  panes have identical structure); the Meridian row is the one thing left
+ *  sharp and highlighted so the eye lands on it immediately.
+ *
+ *  Fills the full height of its container (`height:'100%'`, the app list
+ *  `flex:1`) rather than sizing to content - the three permission cards are
+ *  equal height (`items-stretch` in PermissionsBody), so without this the
+ *  pane itself would end up a different visible size in each card depending
+ *  on how much text its title/blurb wrapped to. */
+function MacSettingsPanePreview({ permissionId }: { permissionId: 'accessibility' | 'screen' | 'notifications' }) {
+  const copy = MAC_PANE_COPY[permissionId]
+  return (
+    <div className="w-full flex flex-col" style={{
+      height: '100%', borderRadius: 10, overflow: 'hidden',
+      border: '0.5px solid var(--t-card-border)', background: '#fff',
+    }}>
+      <div className="flex items-center shrink-0" style={{ gap: 7, padding: '6px 10px', background: '#F0F0F1' }}>
+        <span style={{
+          width: 16, height: 16, borderRadius: 99, background: '#fff', border: '0.5px solid #d2d2d7',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#1d1d1f', lineHeight: 1,
+        }}>‹</span>
+        <span style={{
+          width: 16, height: 16, borderRadius: 99, background: '#fff', border: '0.5px solid #e5e5e7',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#c7c7cc', lineHeight: 1,
+        }}>›</span>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: '#1d1d1f', marginLeft: 2 }}>{copy.title}</span>
+      </div>
+
+      <p className="shrink-0" style={{ fontSize: 10.5, lineHeight: 1.35, color: '#48484a', padding: '5px 10px 4px' }}>{copy.blurb}</p>
+
+      <div className="flex flex-col" style={{ flex: 1, margin: '2px 8px 7px', borderRadius: 8, overflow: 'hidden', background: '#F0F0F1' }}>
+        {copy.others.map((name) => (
+          <div key={name} className="flex items-center shrink-0" style={{
+            gap: 8, padding: '5px 10px', borderBottom: '0.5px solid rgba(0,0,0,.07)',
+            filter: 'blur(2px)', opacity: 0.5,
+          }}>
+            <span style={{ width: 16, height: 16, borderRadius: 4, background: '#c7c7cc', flexShrink: 0 }} />
+            <span style={{ flex: 1, fontSize: 10.5, color: '#1d1d1f' }}>{name}</span>
+            <MacToggleOn />
+          </div>
+        ))}
+        {/* Meridian - sharp and tinted so it visually "pops" out from the
+           blurred rows above it. A bigger icon/text/padding (not a transform
+           scale) makes it read as "larger" without risking an overflow past
+           the pane's own rounded corners - a scale() here used to spill the
+           toggle out past the card edge. flex:1 so it absorbs whatever height
+           the (equal-length, but wrap-sensitive) blurred rows above don't. */}
+        <div className="flex items-center" style={{
+          flex: 1, gap: 9, padding: '7px 11px', position: 'relative', zIndex: 1, borderRadius: 8,
+          background: 'color-mix(in srgb, var(--t-accent) 11%, #fff)',
+          boxShadow: 'inset 0 0 0 1.5px color-mix(in srgb, var(--t-accent) 50%, transparent)',
+        }}>
+          <Logo size={19} />
+          <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: '#1d1d1f' }}>Meridian</span>
+          <MacToggleOn />
+        </div>
+      </div>
+
+      <div className="flex items-center shrink-0" style={{ gap: 6, padding: '0 8px 6px' }}>
+        {['+', '−'].map((glyph) => (
+          <span key={glyph} style={{
+            width: 17, height: 17, borderRadius: 3, background: '#F0F0F1', border: '0.5px solid #e5e5e7',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#48484a', lineHeight: 1,
+          }}>{glyph}</span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** The simple single-row preview - used for Notifications on Windows only now
+ *  (macOS Notifications uses `MacSettingsPanePreview` like the other two).
+ *  Also fills its container height, centering the row vertically, so it
+ *  matches whatever height the (equal-height, `items-stretch`) sibling cards
+ *  end up at. */
+function SimpleTogglePreview({ os }: { os: 'macos' | 'windows' }) {
+  const isWin = os === 'windows'
+  return (
+    <div className="flex flex-col items-center justify-center" style={{ gap: 6, width: '100%', height: '100%' }}>
+      <div className="flex items-center" style={{
+        gap: 10, width: '100%', padding: '9px 12px',
+        borderRadius: isWin ? 6 : 10,
+        background: 'var(--t-box)', border: '0.5px solid var(--t-card-border)',
+      }}>
+        <Logo size={22} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--t-title)', lineHeight: 1.2 }}>Meridian</p>
+          {/* Windows Settings rows carry a subtext line (publisher/path) the
+             macOS list doesn't - the detail that makes each read as its own
+             OS rather than a reskinned copy of the other. */}
+          {isWin && <p style={{ fontSize: 10.5, color: 'var(--t-faint)', lineHeight: 1.2, marginTop: 1 }}>Meridian.exe</p>}
+        </div>
+        {/* macOS toggle: fully pill-shaped track, system blue when on.
+           Windows toggle: flatter rounded-rect track, accent blue when on -
+           the two OSes' actual toggle shapes differ and this keeps that. */}
+        <span aria-hidden="true" className="flex items-center shrink-0" style={{
+          width: isWin ? 42 : 34, height: 21, borderRadius: isWin ? 10 : 99,
+          background: isWin ? '#0067C0' : '#0A84FF',
+          padding: 2, justifyContent: 'flex-end',
+        }}>
+          <span style={{ width: 17, height: 17, borderRadius: 99, background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,.25)' }} />
+        </span>
+      </div>
+      <p style={{ fontSize: 10.5, color: 'var(--t-faint)' }}>What you&apos;ll see in {isWin ? 'Windows Settings' : 'System Settings'}</p>
+    </div>
+  )
+}
+
+export function PermissionPreview({ os, permissionId }: {
+  os: 'macos' | 'windows'
+  permissionId: 'accessibility' | 'screen' | 'notifications'
+}) {
+  if (os === 'macos') {
+    return <MacSettingsPanePreview permissionId={permissionId} />
+  }
+  return <SimpleTogglePreview os={os} />
+}
+
 // ── Rounded mono glyph mark (apps / integrations) ────────────────────────────
 export function Mark({ mono, color, size = 34, radius }: {
   mono: string; color: string; size?: number; radius?: number
 }) {
-  // `color` may be a hex literal (#rrggbb) or a CSS variable (var(--color-state-proposal)).
+  // `color` may be a hex literal (#rrggbb) or a CSS variable (var(--t-accent)).
   // Appending an alpha suffix only works for hex; for anything else use
   // color-mix so the tint renders instead of becoming an invalid value.
   const background = color.startsWith('#')
@@ -76,7 +261,7 @@ export function Check({ size = 14, color = 'currentColor', w = 2 }: { size?: num
     <path d="M3.5 8.5 6.5 11.5 12.5 5" /></svg>)
 }
 
-export function Spinner({ size = 14, width = 1.6, color = 'var(--color-state-proposal)' }: { size?: number; width?: number; color?: string }) {
+export function Spinner({ size = 14, width = 1.6, color = 'var(--t-accent)' }: { size?: number; width?: number; color?: string }) {
   return (
     <span className="mer-spin inline-block" style={{ width: size, height: size }} aria-hidden>
       <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
@@ -97,36 +282,66 @@ export function Btn({ children, variant = 'primary', size = 'md', disabled, onCl
   style?: CSSProperties
   title?: string
 }) {
+  const brand = variant === 'primary'
   const base: CSSProperties = {
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7,
     padding: size === 'sm' ? '6px 12px' : '9px 18px', fontSize: size === 'sm' ? 12 : 13,
     fontWeight: 500, borderRadius: 9, lineHeight: 1, whiteSpace: 'nowrap',
     transition: 'all .14s', cursor: disabled ? 'default' : 'pointer',
-    border: '0.5px solid transparent',
+    // Withheld for the brand variant so the CLASS can own the border. This is the `border`
+    // SHORTHAND, so writing it here writes an inline border-color too, and an
+    // inline value beats the stylesheet - the class's border (including its
+    // separate disabled colour) would never land.
+    ...(brand ? null : { border: '0.5px solid transparent' }),
   }
+  // THE PRODUCT'S ACCENT, not the timeline's proposal state. The whole wizard
+  // used to paint itself `--color-state-proposal` (#8B5CF6) - a theme-independent
+  // SEMANTIC colour whose job elsewhere is "a proposal exists", borrowed here
+  // only because it happened to be violet. The brand token is `--t-accent`
+  // (Violet 600, STYLESHEET.md §2), which is what every other primary action,
+  // link and focus ring in Meridian uses, so setup was a slightly different
+  // violet from the app it sets up.
+  //
+  // `primary` is the BRAND LOCKUP as a button (`.mer-btn-cta`, globals.css) -
+  // the same deep ink-violet as the nav pill the rest of the app already shows,
+  // rather than a violet invented for setup. Two earlier attempts (a pale
+  // lavender chip, then a saturated violet with an animated halo and a hover
+  // sheen) both read as machine-made, the second more than the first: a glowing
+  // gradient violet button is the house style of generated interfaces, so a
+  // tastefully-executed one is still the tell. The fix was fewer effects.
+  //
+  // (The app-wide `--btn-primary-bg` remains the white-on-violet fill for
+  // dashboard surfaces; text, tints and strokes here use `--t-accent`.)
+  //
+  // The skin lives in the stylesheet, NOT in this object: it needs :hover,
+  // :active and :disabled, which an inline style cannot express. Nothing here
+  // may set background/boxShadow for `primary` - inline styles outrank the
+  // stylesheet, so re-adding either one silently overrides the whole skin.
   const skins: Record<string, CSSProperties> = {
-    primary: { background: 'var(--color-state-proposal)', color: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,.12)' },
+    primary: { fontWeight: 600 },
     secondary: { background: 'var(--t-card)', color: 'var(--t-title)', borderColor: 'var(--t-card-border)' },
     ghost: { background: 'transparent', color: 'var(--t-faint)' },
-    soft: { background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)', color: 'var(--color-state-proposal)' },
+    soft: { background: 'color-mix(in srgb, var(--t-accent) 12%, transparent)', color: 'var(--t-accent)' },
   }
-  const dim: CSSProperties | null = disabled ? { opacity: 0.4, filter: 'saturate(.6)' } : null
+  // The brand variant opts OUT of this: fading a dark fill AND its white label
+  // toward a white card makes "Preparing setup…" unreadable. It has its own
+  // disabled skin in `.mer-btn-cta:disabled` (desaturated, not faded).
+  const dim: CSSProperties | null = disabled && !brand ? { opacity: 0.4, filter: 'saturate(.6)' } : null
   return (
     <button title={title} onClick={disabled ? undefined : onClick} disabled={disabled}
+      className={brand ? 'mer-btn-cta' : undefined}
       style={{ ...base, ...skins[variant], ...dim, ...style }}
-      onMouseEnter={(e) => { if (disabled) return
-        if (variant === 'primary') e.currentTarget.style.filter = 'brightness(1.06)'
-        else e.currentTarget.style.background = 'var(--t-box)' }}
-      onMouseLeave={(e) => { if (disabled) return
-        e.currentTarget.style.filter = 'none'
-        if (variant !== 'primary') e.currentTarget.style.background = String(skins[variant].background) }}>
+      onMouseEnter={(e) => { if (disabled || brand) return
+        e.currentTarget.style.background = 'var(--t-box)' }}
+      onMouseLeave={(e) => { if (disabled || brand) return
+        e.currentTarget.style.background = String(skins[variant].background) }}>
       {children}
     </button>
   )
 }
 
 // ── Progress bar ─────────────────────────────────────────────────────────────
-export function Bar({ pct, height = 6, track = 'var(--t-hair)', fill = 'var(--color-state-proposal)' }: {
+export function Bar({ pct, height = 6, track = 'var(--t-hair)', fill = 'var(--t-accent)' }: {
   pct: number; height?: number; track?: string; fill?: string
 }) {
   return (
@@ -174,7 +389,7 @@ export function MemoryGauge({ pct, size = 96, strokeWidth = 9 }: {
 // ── Kicker / eyebrow label ───────────────────────────────────────────────────
 // Same class + accent color as the Settings → Intelligence "Your AI" eyebrow
 // (IntelligenceSection.tsx) — the one shared eyebrow style, not a wizard-only one.
-export function Kicker({ children, color = 'var(--color-state-proposal)', style }: { children: ReactNode; color?: string; style?: CSSProperties }) {
+export function Kicker({ children, color = 'var(--t-accent)', style }: { children: ReactNode; color?: string; style?: CSSProperties }) {
   return (<p className="mt-label" style={{ color, ...style }}>{children}</p>)
 }
 
@@ -182,7 +397,7 @@ export function Kicker({ children, color = 'var(--color-state-proposal)', style 
 export function Row({ children, tone = 'surface', style }: {
   children: ReactNode; tone?: 'surface' | 'tint' | 'soft'; style?: CSSProperties
 }) {
-  const bg = tone === 'tint' ? 'color-mix(in srgb, var(--color-state-proposal) 8%, transparent)' : tone === 'soft' ? 'var(--t-box)' : 'var(--t-card)'
+  const bg = tone === 'tint' ? 'color-mix(in srgb, var(--t-accent) 8%, transparent)' : tone === 'soft' ? 'var(--t-box)' : 'var(--t-card)'
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 13, padding: '13px 15px',

@@ -159,6 +159,136 @@ html.dark {
   --draft-card-bg:   var(--t-accent);
 }
 
+/* Setup wizard CTA — pale lavender, glowing on hover (app/setup/atoms.tsx `Btn`).
+
+   The fill is THE HEADLINE'S OWN COLOUR - the same value as --lavender-ink, so
+   the wizard's first sentence and its one action are literally the same lavender
+   rather than two near-misses. It is set as a literal here rather than as
+   var(--lavender-ink) on purpose: they are the same colour today by intent, but
+   they answer to different constraints (one is type on white, one is a fill
+   holding a label), so aliasing them would make any future correction to either
+   silently drag the other along with it.
+
+   CONTRAST, HONESTLY: this fill sits in the dead zone where neither label colour
+   clears 4.5:1 at 14px - white is ~3.6:1, ink ~4.0:1. White is used because the
+   alternative is barely better and reads worse. Darkening the fill ~8% would
+   take white past 4.5:1 if that trade is ever wanted; it is the one-line fix.
+
+   WHAT WAS TRIED AND REJECTED, so it is not re-tried: a saturated violet fill
+   (#6B4CE8) read as machine-made - high-chroma violet is the note generated
+   interfaces hit. A multi-stop gradient across the face and an always-on
+   breathing halo went with it: a gradient baked into a button is one of the
+   loudest tells, and a halo that never switches off stops being a highlight and
+   just becomes the button's colour.
+
+   What survives is hover-triggered, and that is the distinction the design turns
+   on - effects that ANSWER the pointer read as craft; the same effects running
+   unprompted read as decoration. Flat pale lavender at rest; halo blooms and a
+   sheen travels across on the way in.
+
+   Theme-independent: a light chip holding ink, which works as-is on `ink`'s dark
+   surfaces (there it reads as a bright accent rather than a tint). */
+:root {
+  --btn-cta-bg:     #8877E2;
+  --btn-cta-border: #9C8DE8;
+  --btn-cta-text:   #FFFFFF;
+  /* The halo, at the fill's own hue - deep enough to read against a white card,
+     which a glow the same value as the surface never would. */
+  --btn-cta-glow:   124, 104, 220;
+  /* Lavender at a depth that can be READ rather than filled with - the setup
+     headline. Never body copy: it clears 3:1 (the WCAG large-text threshold,
+     >=24px or >=19px bold) and so covers display headings ONLY; at 14px it is
+     back under the 4.5:1 line. */
+  --lavender-ink:   #8877E2;
+}
+
+/* A class rather than an inline style object because it needs ::after, :hover,
+   :active and :disabled - none of which an inline style can express. */
+.mer-btn-cta {
+  position: relative;
+  overflow: hidden;                 /* clips the sheen; box-shadow is unaffected */
+  background: var(--btn-cta-bg);
+  color: var(--btn-cta-text);
+  border: 0.5px solid var(--btn-cta-border);
+  /* One shadow doing one job: sitting the button on the card. The hairline
+     inset is the top-edge light every physical control has. */
+  box-shadow:
+    0 1px 2px rgba(36, 28, 78, .14),
+    0 4px 12px -8px rgba(36, 28, 78, .24),
+    inset 0 1px 0 rgba(255, 255, 255, .26);
+}
+
+/* The sheen - the light that travels ACROSS the face while the halo blooms
+   around it. Parked off the left edge and swept once per hover, never looping:
+   it is a reaction to the pointer arriving, so it fires and is done.
+
+   It passes OVER the label (z-index 1, not -1 behind the fill) - that is the
+   effect, and a negative z-index would put it behind the button's own background
+   where it could never be seen. pointer-events:none so it can never eat a click. */
+.mer-btn-cta::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  transform: translateX(-130%);
+  background: linear-gradient(105deg,
+    transparent 32%, rgba(255, 255, 255, .38) 50%, transparent 68%);
+}
+
+.mer-btn-cta:hover:not(:disabled)::after {
+  animation: mer-btn-cta-sheen .62s ease-out;
+}
+
+@keyframes mer-btn-cta-sheen {
+  from { transform: translateX(-130%); }
+  to   { transform: translateX(130%); }
+}
+
+/* Hover: the halo blooms, and the fill DARKENS rather than brightens. The usual
+   brightness lift washes a pale fill out toward the white card behind it, which
+   reads as the button going disabled at the exact moment it should read as
+   active. `Btn`'s inline `transition: all .14s` carries the halo in and out -
+   remove that transition and this becomes a hard flash. */
+.mer-btn-cta:hover:not(:disabled) {
+  filter: brightness(.965);
+  box-shadow:
+    0 1px 2px rgba(36, 28, 78, .16),
+    0 14px 32px -10px rgba(var(--btn-cta-glow), .55),
+    0 0 0 4px rgba(var(--btn-cta-glow), .16),
+    inset 0 1px 0 rgba(255, 255, 255, .3);
+}
+
+/* Press pulls the halo back in - the button settles onto the card rather than
+   floating above it, which is what makes the click feel like it landed. */
+.mer-btn-cta:active:not(:disabled) {
+  filter: brightness(.94);
+  transform: translateY(1px);
+  box-shadow:
+    0 1px 1px rgba(36, 28, 78, .18),
+    0 4px 12px -6px rgba(var(--btn-cta-glow), .38),
+    inset 0 1px 2px rgba(36, 28, 78, .12);
+}
+
+/* "Preparing setup…" is a genuinely common first-launch state, and a button that
+   lights up under the pointer but cannot be pressed is a lie about what it does,
+   so the hover rules above exclude it. Drained of chroma rather than faded: the
+   generic disabled treatment (opacity .4) would wash the fill AND its white
+   label toward the white card and lose the label - `Btn` skips its opacity dim
+   for this variant. */
+.mer-btn-cta:disabled {
+  background: #9A94B4;
+  border-color: #A8A2C0;
+  color: #FFFFFF;
+  box-shadow: 0 1px 2px rgba(36, 28, 78, .08);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The halo is depth and stays; the sweep is travel across the screen, which is
+     precisely what this preference asks to be spared. */
+  .mer-btn-cta::after { display: none; }
+}
+
 /* ── Status banners — theme-independent semantic palette ──────────────────────
    Single source for the info/warning/error swatches used by NoticeBar
    (stateful faults). Consumed via inline style (JS reads them as var()
@@ -191,6 +321,30 @@ html.dark {
    SURF/THEMES token tables. Gradient-valued tokens (--win-bg/--desk/--glow/
    --chip) are consumed via inline style, not Tailwind utilities.
    ─────────────────────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────────────────────
+   PROVIDER BRAND COLOURS — the AI-provider marks in components/LlmProviderLogos.tsx.
+
+   Theme tokens rather than hardcoded fills, for one reason: two of these brands
+   ARE black. OpenAI's and Cursor's marks are published as black-on-light and
+   white-on-dark, exactly as their own brand guidance says, so they need the
+   `ink` override below or they vanish into a dark card. Claude's coral and
+   Groq's orange carry across both and are stated once.
+
+   Deliberately OUTSIDE the theme palettes below: a brand colour is not ours to
+   restyle per theme, so `ink` overrides only the two that must flip.
+   ─────────────────────────────────────────────────────────────────────────── */
+:root {
+  --logo-claude: #D97757;
+  --logo-openai: #000000;
+  --logo-cursor: #000000;
+  --logo-groq:   #F43E01;
+}
+
+html[data-theme="ink"] {
+  --logo-openai: #FFFFFF;
+  --logo-cursor: #FFFFFF;
+}
+
 :root, html[data-theme="lilac"] {
   --win-bg:     linear-gradient(165deg,#FCFBFF 0%,#EEE9FC 48%,#DCD3F3 78%,#CFC2ED 100%);
   --chrome-bg:  linear-gradient(180deg,#FCFBFF,#F0EAFC);
@@ -394,6 +548,32 @@ body, .font-sans {
 
 @keyframes mer-pop { from { opacity: 0; transform: scale(.82); } to { opacity: 1; transform: scale(1); } }
 .mer-pop { animation: mer-pop .32s cubic-bezier(.2,.7,.2,1) both; }
+
+/* One pane of the walkthrough giving way to another in the same slot — the
+   right column swapping between the replay clock, a task write-up and the
+   standing panel, and the summary card swapping between its two views. Every
+   one of those handovers used to be a hard cut, which is what made the tour
+   read as a slideshow rather than as one screen being operated. Lives here
+   rather than in the overlay's scoped <style> because the panes it animates are
+   nowhere near that component. */
+@keyframes mer-tour-pane {
+  from { opacity: 0; transform: translateY(7px); }
+  to   { opacity: 1; transform: none; }
+}
+.mer-tour-pane { animation: mer-tour-pane .34s cubic-bezier(.2,.8,.25,1) both; }
+
+/* There WAS a transform-free variant of this (`mer-tour-fade`), for the slot
+   that can open the worklog dialog: a transform on an ancestor becomes the
+   containing block for `fixed`, so the dialog got fenced into that 388px
+   column. Dropping the transform then hit the other half of the same problem -
+   the animated opacity opens a stacking context, so the timeline painted over
+   the dialog. Both are fixed at the source now: the dialog portals to
+   `document.body`, so nothing in this file can reach it. Any other `fixed`
+   descendant of an animated pane needs that same treatment - a fade is not a
+   safe substitute. */
+@media (prefers-reduced-motion: reduce) {
+  .mer-tour-pane { animation: none; }
+}
 
 /* "Connect a tracker" CTA curved connector (CurvedArrow.tsx) — a flowing
    marching-ants dash along the curve plus a gentle float on the whole glyph,
@@ -636,6 +816,21 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
 .dt-card:hover {
   transform: translateY(-1px);
   filter: brightness(1.02);
+}
+
+/* The worklog entry row in the task-detail panel — the whole row is the control,
+   so it needs to answer a hover like one. Same restrained treatment as .dt-card
+   (transform + brightness only) rather than a colour change, because its tint
+   already encodes the draft's state and must not shift when a cursor passes. */
+.dt-wl-entry {
+  transition: transform 140ms cubic-bezier(0.22, 1, 0.36, 1), filter 140ms ease;
+}
+.dt-wl-entry:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.03);
+}
+.dt-wl-entry:active {
+  transform: translateY(0);
 }
 
 /* Day-task detail: a gentle fade+rise as it takes over the right panel from the

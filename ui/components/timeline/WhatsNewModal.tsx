@@ -23,7 +23,7 @@ const ROADMAP_STATUS_LABEL: Record<RoadmapItem['status'], string> = {
 }
 
 const ROADMAP_STATUS_COLOR: Record<RoadmapItem['status'], string> = {
-  'in-progress': 'var(--color-state-proposal)',
+  'in-progress': 'var(--t-accent)',
   planned: 'var(--color-state-pending)',
   considering: 'var(--color-state-rejected)',
 }
@@ -97,7 +97,7 @@ function ReleaseList({ releases }: { releases: ReleaseNote[] }) {
         const latest = i === 0
         // Only the newest release gets the violet treatment — everything
         // lighting up equally would read as noise, not excitement.
-        const accent = latest ? 'var(--color-state-proposal)' : 'var(--t-card-border)'
+        const accent = latest ? 'var(--t-accent)' : 'var(--t-card-border)'
         return (
           <div key={r.version} className="mer-pop rounded-2xl p-5 bg-card mt-card-hover"
             style={{ animationDelay: `${i * 60}ms`, boxShadow: `inset 3px 0 0 ${accent}` }}>

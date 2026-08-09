@@ -166,7 +166,7 @@ export function ReviewCard({
             ) : (
               <button onClick={() => setMatchingTicket(true)} disabled={busy || saving}
                 className="mt-body-sm inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md self-start"
-                style={{ color: 'var(--color-state-proposal)', border: '1px solid var(--color-state-proposal)' }}>
+                style={{ color: 'var(--t-accent)', border: '1px solid var(--t-accent)' }}>
                 <span style={{ color: 'var(--t-faint)' }}>Matched to {displayKey}</span> · Change ticket
                 {pendingCandidate && (
                   <span className="mt-chip px-1.5 py-0.5 rounded" style={{ color: 'var(--color-state-pending)', border: '1px solid var(--color-state-pending)' }}>

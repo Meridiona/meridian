@@ -219,7 +219,7 @@ function FixRow({ issue, task, onApplied, onIgnore }: {
                 <button onClick={apply} disabled={!canApply}
                   className="mt-body-sm px-3 py-1.5 rounded-lg shrink-0"
                   style={{
-                    background: canApply ? 'var(--color-state-proposal)' : 'var(--t-hair)',
+                    background: canApply ? 'var(--btn-primary-bg)' : 'var(--t-hair)',
                     color: canApply ? '#fff' : 'var(--t-faint)',
                     cursor: canApply ? 'pointer' : 'not-allowed',
                   }}>
@@ -309,7 +309,7 @@ function ParentPicker({ provider, taskKey, saving, onPick }: {
               <button key={e.key} disabled={saving} onClick={() => onPick(e.key)}
                 className="w-full flex items-center gap-2 px-2.5 py-2 text-left"
                 style={{ borderColor: 'var(--t-hair)', cursor: saving ? 'wait' : 'pointer' }}>
-                <span className="mt-mono-sm text-[11px] shrink-0" style={{ color: 'var(--color-state-proposal)' }}>{e.key}</span>
+                <span className="mt-mono-sm text-[11px] shrink-0" style={{ color: 'var(--t-accent)' }}>{e.key}</span>
                 <span className="mt-body-sm truncate" style={{ color: 'var(--t-muted)' }}>{e.title}</span>
               </button>
             ))}

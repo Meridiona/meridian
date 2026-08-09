@@ -27,16 +27,35 @@ const NAV: { id: SettingsSection; label: string; glyph: string }[] = [
   { id: 'account', label: 'Account', glyph: '◍' },
 ]
 
-export function SettingsSidebar({ section, onSelect, integrations }: {
+export function SettingsSidebar({ section, onSelect, integrations, disabled = false }: {
   section: SettingsSection
   onSelect: (s: SettingsSection) => void
   integrations: IntegrationsResponse | null
+  /** Blur out and stop taking clicks.
+   *
+   *  Set while the modal is on a REQUIRED step (connecting an AI engine during the
+   *  walkthrough). Leaving the nav live there is the same escape hatch as an unlocked
+   *  backdrop wearing a different hat: one click on Appearance and the user is somewhere
+   *  else entirely, with the thing they were sent to do abandoned and nothing on screen
+   *  saying so. Blurred rather than hidden, so the nav is visibly still there and the
+   *  state reads as "not yet" rather than "gone". */
+  disabled?: boolean
 }) {
   const hasAnyConnected = !!integrations && TRACKERS.some(t => integrations[t.id])
 
   return (
     <div className="w-[220px] shrink-0 flex flex-col py-3.5 px-3 bg-panel"
-      style={{ borderRight: '1px solid var(--t-hair)' }}>
+      aria-hidden={disabled || undefined}
+      inert={disabled || undefined}
+      style={{
+        borderRight: '1px solid var(--t-hair)',
+        filter: disabled ? 'blur(2.5px)' : undefined,
+        opacity: disabled ? 0.4 : 1,
+        pointerEvents: disabled ? 'none' : undefined,
+        // Long, because it runs when the step is SATISFIED - the nav coming back is the
+        // release being announced, and a snap there reads as a glitch.
+        transition: 'filter 420ms ease, opacity 420ms ease',
+      }}>
       <p className="mt-label px-2 pb-2" style={{ color: 'var(--t-faint-2)' }}>Settings</p>
       {NAV.map(n => {
         const active = n.id === section
@@ -48,22 +67,22 @@ export function SettingsSidebar({ section, onSelect, integrations }: {
               border: 'none',
               cursor: 'pointer',
               font: "700 12.5px var(--font-sans)",
-              color: active ? 'var(--color-state-proposal)' : 'var(--t-muted)',
-              background: active ? 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)' : 'transparent',
-              boxShadow: active ? 'inset 0 0 0 1px color-mix(in srgb, var(--color-state-proposal) 24%, transparent)' : 'none',
+              color: active ? 'var(--t-accent)' : 'var(--t-muted)',
+              background: active ? 'color-mix(in srgb, var(--t-accent) 12%, transparent)' : 'transparent',
+              boxShadow: active ? 'inset 0 0 0 1px color-mix(in srgb, var(--t-accent) 24%, transparent)' : 'none',
             }}>
             <span className="inline-flex items-center justify-center rounded-md shrink-0"
               style={{
                 width: 24, height: 24, fontSize: 12,
                 background: active ? 'var(--t-card)' : 'var(--t-box)',
-                color: active ? 'var(--color-state-proposal)' : 'var(--t-faint-2)',
+                color: active ? 'var(--t-accent)' : 'var(--t-faint-2)',
               }} aria-hidden="true">
               {n.glyph}
             </span>
             <span className="flex-1">{n.label}</span>
             {showBadge && (
               <span className="rounded-full shrink-0"
-                style={{ width: 6, height: 6, background: 'var(--color-state-proposal)' }}
+                style={{ width: 6, height: 6, background: 'var(--t-accent)' }}
                 aria-label="No trackers connected" />
             )}
           </button>

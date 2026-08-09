@@ -54,6 +54,13 @@ export interface WorklogState {
   /** Choose which connected tracker a PROPOSED new ticket is created on. A no-op
    *  on a matched draft, where each target carries its own provider. */
   setProvider: (provider: string) => void
+  /** Re-read the draft, discarding the cached copy.
+   *
+   *  For writes that happen OUTSIDE this machine and change what the draft points
+   *  at. Escalating a personal task is the one that exists: it repoints
+   *  `day_task_worklog_targets` at the real ticket in the daemon, so without this
+   *  the footer would keep naming the local key that no longer exists. */
+  refresh: () => void
 }
 
 const errMsg = (e: unknown): string =>
@@ -219,6 +226,27 @@ function runRetarget(day: string, taskId: string, taskKey: string) {
     .catch((e) => patch(key, { phase: 'idle', error: errMsg(e) }))
 }
 
+/** Force a re-read of the draft, ignoring `loaded`.
+ *
+ *  `ensureLoaded` deliberately reads once per key and never again, which is right
+ *  for a draft only this machine writes. Escalation is the exception - the daemon
+ *  repoints the draft's targets at the real ticket - so this is the way to pick
+ *  that up without inventing what the new state is from the escalate response.
+ *  Still refuses to stomp an in-flight generate/approve, same rule as everywhere
+ *  else here. */
+function runRefresh(day: string, taskId: string) {
+  const key = keyOf(day, taskId)
+  const cur = store.get(key)
+  if (cur?.phase === 'generating' || cur?.phase === 'approving') return
+  load<DayTaskWorklogDraft | null>(API, 'get_day_task_worklog', { day, taskId })
+    .then((r) => {
+      const now = store.get(key)
+      if (now && (now.phase === 'generating' || now.phase === 'approving')) return
+      patch(key, { draft: r ?? null, phase: 'idle', loaded: true })
+    })
+    .catch(() => {})
+}
+
 // ── The hook: a thin view over the store ──────────────────────────────────────
 
 /** Own the worklog flow for `(day, taskId)`. Reads live state from the module
@@ -270,5 +298,6 @@ export function useWorklog(day: string, taskId: string): WorklogState {
       setConfirming(false)
       runSetProvider(day, taskId, provider)
     },
+    refresh: () => runRefresh(day, taskId),
   }
 }

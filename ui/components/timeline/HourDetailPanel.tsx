@@ -91,7 +91,7 @@ export function HourDetailPanel({ hour, selectedCardKey, onBack, data, onEditWor
               })()}
               <button onClick={() => setShowFullReport(true)}
                 className="mt-body-sm inline-flex items-center gap-1"
-                style={{ color: 'var(--color-state-proposal)', fontWeight: 700 }}>
+                style={{ color: 'var(--t-accent)', fontWeight: 700 }}>
                 View full report ↗
               </button>
             </div>
@@ -107,8 +107,8 @@ export function HourDetailPanel({ hour, selectedCardKey, onBack, data, onEditWor
               <button onClick={() => onOpenSettings('integrations')}
                 className="w-full flex items-center gap-3 rounded-xl px-4 py-3 text-left transition-colors mt-card-hover"
                 style={{
-                  border: '1px dashed color-mix(in srgb, var(--color-state-proposal) 45%, transparent)',
-                  background: 'color-mix(in srgb, var(--color-state-proposal) 6%, transparent)',
+                  border: '1px dashed color-mix(in srgb, var(--t-accent) 45%, transparent)',
+                  background: 'color-mix(in srgb, var(--t-accent) 6%, transparent)',
                 }}>
                 <span className="flex-1 min-w-0">
                   <p className="mt-body-sm" style={{ color: 'var(--t-title)', fontWeight: 700 }}>Want this logged to your PM app?</p>

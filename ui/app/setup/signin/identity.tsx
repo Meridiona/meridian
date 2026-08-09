@@ -35,8 +35,8 @@ function AccountAvatar({ email }: { email: string }) {
       className="flex items-center justify-center shrink-0 rounded-full"
       style={{
         width: 36, height: 36, fontSize: 13, fontWeight: 600, letterSpacing: 0.2,
-        background: 'color-mix(in srgb, var(--color-state-proposal) 16%, transparent)',
-        color: 'var(--color-state-proposal)',
+        background: 'color-mix(in srgb, var(--t-accent) 16%, transparent)',
+        color: 'var(--t-accent)',
       }}
     >
       {emailInitials(email)}

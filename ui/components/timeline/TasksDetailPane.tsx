@@ -59,7 +59,7 @@ export function TasksDetailPane({ task, sessions, epicColor, onFix, onOpenDetail
               {providerMeta.label}
             </span>
           )}
-          <button onClick={onOpenDetail} className="mt-body-sm ml-auto shrink-0" style={{ color: 'var(--color-state-proposal)', fontWeight: 700 }}>
+          <button onClick={onOpenDetail} className="mt-body-sm ml-auto shrink-0" style={{ color: 'var(--t-accent)', fontWeight: 700 }}>
             Full details →
           </button>
         </div>

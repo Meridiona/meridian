@@ -27,6 +27,57 @@ pub async fn is_first_run() -> bool {
     }
 }
 
+/// Name of the marker holding when the user OPENED the wizard, the counterpart to
+/// `onboarded` (which records when they finished).
+const STARTED_MARKER: &str = "setup_started";
+
+/// Stamp `~/.meridian/setup_started` with the current time — called once when the
+/// wizard's first screen mounts.
+///
+/// Completion has always been timestamped (`onboarded`), but nothing recorded when
+/// onboarding *began*, so the elapsed time was not derivable. That duration is
+/// user-facing twice over: the "Setup complete in Ns" line the walkthrough opens
+/// with, and the time span on the "Setting up Meridian" day-task card the
+/// walkthrough writes at the end (see [`setup_elapsed_secs`]).
+///
+/// Overwrites rather than preserving a first-ever value: re-running setup (Settings
+/// → Account → Re-run Setup) is a fresh run and should report its own duration, not
+/// the months since the original install.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn mark_setup_started() -> Result<(), String> {
+    let dir = meridian_core::paths::meridian_dir()
+        .ok_or_else(|| "could not resolve home directory".to_string())?;
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("create ~/.meridian: {e}"))?;
+    tokio::fs::write(dir.join(STARTED_MARKER), chrono::Local::now().to_rfc3339())
+        .await
+        .map_err(|e| format!("write {STARTED_MARKER}: {e}"))?;
+    tracing::info!("setup: start marker written");
+    Ok(())
+}
+
+/// Seconds elapsed since [`mark_setup_started`] stamped its marker, or `None` when
+/// the marker is missing or unparseable (an install that onboarded before this
+/// existed, or a hand-edited file).
+///
+/// `None` is a normal outcome the caller must render around — the walkthrough drops
+/// its "in Ns" clause rather than showing a wrong or zero duration. A negative delta
+/// (clock moved backwards between the two reads) is also reported as `None` for the
+/// same reason.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn setup_elapsed_secs() -> Option<u64> {
+    let dir = meridian_core::paths::meridian_dir()?;
+    let raw = tokio::fs::read_to_string(dir.join(STARTED_MARKER))
+        .await
+        .ok()?;
+    let started = chrono::DateTime::parse_from_rfc3339(raw.trim()).ok()?;
+    let secs = (chrono::Local::now() - started.with_timezone(&chrono::Local)).num_seconds();
+    u64::try_from(secs).ok()
+}
+
 /// Write `~/.meridian/onboarded` (RFC-3339 timestamp) to mark wizard completion.
 /// Future tray launches skip the auto-open. Idempotent — safe to call more than once.
 #[tauri::command]
@@ -213,7 +264,36 @@ pub async fn request_notifications(app: tauri::AppHandle) -> String {
 #[tauri::command]
 #[tracing::instrument]
 pub async fn detect_llm_providers() -> Result<Vec<meridian::llm::detect::ProviderStatus>, String> {
-    let found = meridian::llm::detect::detect_all_with_cache().await;
+    let mut found = meridian::llm::detect::detect_all_with_cache().await;
+
+    // `detect_all` enumerates BUILT-INS only, on purpose: a custom endpoint is a registry row
+    // with no CLI to probe, so it has no install state. But the test cache is keyed by wire id
+    // and DOES hold a row for `custom` - written by `test_llm_provider` and by the dev
+    // Disconnect button - and dropping it here meant nothing on the chooser could ever see it.
+    // The Groq tile therefore rendered IN USE off `value === 'custom'` alone: a green,
+    // confident "connected" for a provider the app had just been told is not.
+    //
+    // So the cached verdict is carried through as its own status row. `installed: true` is the
+    // honest answer for a cloud endpoint (there is nothing to install), and the row appears
+    // only when there is a cached test to report, so a never-tested endpoint stays absent
+    // rather than arriving as a bare green tick.
+    if let Some(last) =
+        meridian::llm::detect::cached_test_result(meridian_core::LlmProvider::Custom.as_str())
+    {
+        found.push(meridian::llm::detect::ProviderStatus {
+            id: meridian_core::LlmProvider::Custom.as_str().to_string(),
+            installed: true,
+            path: None,
+            authenticated: None,
+            last_test: Some(last),
+            // Nothing to install, which is the same reason `installed: true` above is the
+            // honest answer - a cloud endpoint is reached over HTTP, not spawned. The UI
+            // falls back to its static hint when this is None, and never shows an install
+            // step for this row anyway.
+            install_command: None,
+        });
+    }
+
     tracing::info!(
         installed = found.iter().filter(|p| p.installed).count(),
         verified = found
@@ -234,6 +314,7 @@ pub async fn detect_llm_providers() -> Result<Vec<meridian::llm::detect::Provide
 #[tauri::command]
 #[tracing::instrument]
 pub async fn test_llm_provider(
+    app: tauri::AppHandle,
     id: String,
 ) -> Result<meridian::llm::detect::ProviderTestResult, String> {
     let provider = meridian_core::LlmProvider::from_wire(&id)
@@ -247,7 +328,59 @@ pub async fn test_llm_provider(
         elapsed_ms = result.elapsed_ms,
         "llm: provider test complete"
     );
+    // A test is the one moment provider health provably changed - don't make the banner
+    // wait out the poll loop's 60 s cadence to agree with the card the user just pressed.
+    crate::commands::health::push_health_update(&app).await;
     Ok(result)
+}
+
+/// Forget `id`'s recorded connectivity test, so the app treats it as signed out.
+/// **Dev builds only.**
+///
+/// This exists because "connected" is app state with no UI that can un-set it: the
+/// picker only ever records successes, so once a provider tests OK there is no way
+/// back to the not-connected state short of hand-editing
+/// `~/.meridian/provider_test_cache.json`. That state is the entire first-run
+/// experience — the "Meridian needs an AI engine" prompt, the locked provider
+/// screen, the tour beat that leads into it — and it was being re-created by hand
+/// every time any of it needed a look.
+///
+/// Writes a `Failed` outcome rather than deleting the entry, because that is the
+/// real shape of the case worth rehearsing: a CLI that is installed but signed
+/// out. A missing entry means "never tested", which
+/// [`classify_provider_health`](meridian::llm::detect) deliberately treats as fine.
+///
+/// Gated exactly like the LLM Lab (`commands/llm_lab.rs`): `cfg!(debug_assertions)`,
+/// refused in shipped builds even against a hand-crafted `invoke`, so no release
+/// can be talked into disconnecting a user's provider.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn disconnect_llm_provider(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if !cfg!(debug_assertions) {
+        return Err("disconnecting a provider is a dev-only surface".to_string());
+    }
+    let provider = meridian_core::LlmProvider::from_wire(&id)
+        .ok_or_else(|| format!("unknown provider {id:?}"))?;
+    meridian::llm::detect::persist_test_result(&meridian::llm::detect::ProviderTestResult {
+        id: provider.as_str().to_string(),
+        outcome: meridian::llm::detect::ProviderTestOutcome::Failed {
+            message: "Disconnected from the dev panel".to_string(),
+        },
+        elapsed_ms: 0,
+        tested_at: chrono::Utc::now().to_rfc3339(),
+        // ASSERTED, not measured — so nothing automatic may undo it. Both of the
+        // health layer's self-corrections would otherwise erase this within
+        // minutes: a successful background call clears a recorded failure, and a
+        // day-old failure ages out. Neither is wrong in general; both are wrong
+        // for a state the developer is deliberately holding in order to work on
+        // it. Only an explicit Test Connection or Rescan replaces this row.
+        sticky: true,
+    });
+    tracing::info!(provider = %id, "llm: provider disconnected (dev)");
+    // The whole point of this button is to reach the not-connected state - which IS the
+    // banner. Push it now rather than at the next 60 s health tick.
+    crate::commands::health::push_health_update(&app).await;
+    Ok(())
 }
 
 /// Log a sign-in [`InstallOutcome`](meridian::llm::detect::InstallOutcome) at the right level
@@ -461,8 +594,14 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let subscriber = registry().with(Recorder(Arc::clone(&seen)));
         tracing::subscriber::with_default(subscriber, f);
-        let mut events = seen.lock().unwrap();
-        std::mem::take(&mut *events)
+        // Take the events THROUGH the Arc rather than unwrapping it. `with_default` restores
+        // the previous dispatcher on return but tracing does not promise the old one is
+        // dropped by then - it keeps a thread-local cache - so a second strong reference to
+        // the recorder can still be alive here. `Arc::try_unwrap` then fails, which showed up
+        // as this test failing roughly one run in three with the events it was asserting on
+        // printed in the panic message.
+        let events = std::mem::take(&mut *seen.lock().unwrap());
+        events
     }
 
     fn field<'a>(event: &'a CapturedEvent, name: &str) -> Option<&'a str> {

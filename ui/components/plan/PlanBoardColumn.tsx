@@ -22,7 +22,7 @@ import { MAX_PLAN_TASKS } from '@/lib/api-types'
 import type { Tracker } from '@/lib/integrations'
 
 export function PlanBoardColumn({
-  day, board, trackers, editable, planFull, search, sortMode,
+  day, board, trackers, editable, planFull, pulling = false, search, sortMode,
   onSearch, onSort, onAdd, onOpen, onCreated,
 }: {
   day: string
@@ -36,6 +36,10 @@ export function PlanBoardColumn({
    *  what stops that outward-facing act from happening for nothing (the daemon
    *  refuses too, before it files anything - see plan_tasks::create). */
   planFull: boolean
+  /** A tracker sync is in flight, so an empty list means "not here YET" rather
+   *  than "nothing to show". Only the empty message reads it - the column is
+   *  otherwise fully usable while tickets arrive. */
+  pulling?: boolean
   search: string
   sortMode: 'top' | 'due' | 'az'
   onSearch: (q: string) => void
@@ -59,8 +63,15 @@ export function PlanBoardColumn({
         <>
           <div className="shrink-0">
             <div className="flex items-center justify-between gap-2 mb-3">
-              <p className="mt-label" style={{ color: 'var(--t-faint)' }}>
-                Your tasks{search ? ` · ${board.length} match${board.length === 1 ? '' : 'es'}` : ` · ${board.length}`}
+              {/* A real column heading, matching PlanTodayColumn's. These two are
+                  the only structural labels on the screen - which half is your
+                  board and which half is your day - and as `.mt-label` micro-caps
+                  they read as field labels for the controls under them instead. */}
+              <p style={{ font: '800 16px var(--font-sans)', letterSpacing: '-.012em', color: 'var(--t-title)' }}>
+                Your tasks
+                <span className="mt-body-sm" style={{ color: 'var(--t-faint)', fontWeight: 500, marginLeft: 7 }}>
+                  {search ? `${board.length} match${board.length === 1 ? '' : 'es'}` : board.length}
+                </span>
               </p>
               {/* NOT gated on `editable`. The lock exists so a confirmed plan isn't
                   silently reshuffled - it is not a reason to refuse to let someone
@@ -68,15 +79,27 @@ export function PlanBoardColumn({
                   server-side and the plan re-derives from the server, so a locked
                   plan simply gains the task rather than being edited behind your
                   back. Hiding this behind Edit plan made it undiscoverable. */}
-              <button onClick={() => setComposing(true)} disabled={planFull}
+              {/* SOLID, not tinted. This is the only way to author a task in the
+                  planner and it was a 14%-alpha chip the size of a sort toggle,
+                  sitting one row above three more grey controls - it read as the
+                  fourth filter rather than as the primary action of the column, and
+                  the walkthrough had to point at it because nobody found it. Filled
+                  accent + white label + the button's own shadow is the same weight
+                  class as "Add to today", which is correct: they are the two things
+                  on this screen that CREATE something. Violet rather than the
+                  commit-green of `+ Add`, because this opens the AI drafting
+                  surface - see this file's header on the two hues. */}
+              {/* data-tour: an inert hook for the walkthrough's "you can write a task
+                  here without opening Jira" beat. See components/tutorial/script.ts. */}
+              <button data-tour="plan-new-task" onClick={() => setComposing(true)} disabled={planFull}
                 title={planFull ? `Today already has ${MAX_PLAN_TASKS} tasks - remove one to add another` : undefined}
-                className={`shrink-0 mt-chip px-3 py-1.5 rounded-md transition-opacity hover:opacity-80 ${FOCUS}`}
+                className={`shrink-0 mt-body-sm inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg transition-opacity hover:opacity-90 ${FOCUS}`}
                 style={{
-                  background: 'color-mix(in srgb, var(--color-state-proposal) 14%, transparent)',
-                  color: 'var(--color-state-proposal)', fontWeight: 700,
+                  background: 'var(--btn-primary-bg)', color: '#fff', fontWeight: 700,
+                  boxShadow: planFull ? 'none' : '0 8px 22px -10px var(--t-accent)',
                   opacity: planFull ? 0.45 : 1, cursor: planFull ? 'default' : 'pointer',
                 }}>
-                ＋ New task
+                <span aria-hidden style={{ fontSize: 15, lineHeight: 1, marginTop: -1 }}>＋</span> New task
               </button>
             </div>
             <div className="flex items-center gap-2 mb-3">
@@ -101,6 +124,11 @@ export function PlanBoardColumn({
           <Droppable droppableId="board">
             {(provided, snapshot) => (
               <div ref={provided.innerRef} {...provided.droppableProps}
+                // data-tour: the walkthrough's demonstration drag picks its source
+                // card from in here (`[data-tour="plan-board"] [data-plan-card]`) -
+                // it cannot name a ticket, since the board is whatever the user's
+                // own tracker returned.
+                data-tour="plan-board"
                 className="space-y-2 flex-1 min-h-0 overflow-y-auto nice-scroll rounded-xl transition-colors p-1 pr-1.5"
                 style={{ outline: snapshot.isDraggingOver ? '1.5px dashed var(--t-hair)' : '1.5px dashed transparent', outlineOffset: 2 }}>
                 {board.map((t, i) => (
@@ -119,7 +147,14 @@ export function PlanBoardColumn({
                 {provided.placeholder}
                 {board.length === 0 && (
                   <p className="py-8 text-center mt-body-sm" style={{ color: 'var(--t-faint-2)' }}>
-                    {search ? 'No tasks match your search.' : 'Everything is in today’s plan. Drag a card here to remove it.'}
+                    {search
+                      ? 'No tasks match your search.'
+                      // "Everything is in today's plan" is a confident claim, and it
+                      // was being made about a board that had simply not finished
+                      // loading - the one moment it is most likely to be false.
+                      : pulling
+                        ? 'Pulling in your tickets…'
+                        : 'Everything is in today’s plan. Drag a card here to remove it.'}
                   </p>
                 )}
               </div>

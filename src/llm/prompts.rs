@@ -290,9 +290,22 @@ pub fn daily_summary_schema() -> Value {
                 // is worse than a short row.
                 "minItems": 2,
                 "maxItems": 3
+            },
+            // The standup block: the day as it would be said out loud tomorrow.
+            // Plain strings, one per bullet, because the screen renders them as a
+            // list and its Copy button joins them back with newlines - asking for a
+            // paragraph would make that split a guess about the model's formatting.
+            //
+            // Five is a ceiling rather than a target: a standup that runs longer
+            // than five lines is a status report, which is the thing nobody reads.
+            "standup": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 3,
+                "maxItems": 5
             }
         },
-        "required": ["headline", "insights"],
+        "required": ["headline", "insights", "standup"],
         "additionalProperties": false
     })
 }
@@ -391,12 +404,13 @@ mod tests {
     }
 
     #[test]
-    fn daily_summary_schema_is_headline_and_cards_only() {
+    fn daily_summary_schema_is_prose_only() {
         let s = daily_summary_schema();
-        // The model answers ONLY a headline and the cards. The plan ledger is
-        // resolved deterministically in Rust, so a verdict/theme/narrative field
-        // here would be work the model is asked to do and the code then ignores.
-        assert_eq!(s["required"], json!(["headline", "insights"]));
+        // The model answers ONLY prose: a headline, the cards, and the standup. The
+        // plan ledger is resolved deterministically in Rust, so a verdict/theme/
+        // narrative field here would be work the model is asked to do and the code
+        // then ignores.
+        assert_eq!(s["required"], json!(["headline", "insights", "standup"]));
         for gone in ["plan_verdicts", "themes", "narrative"] {
             assert!(
                 s["properties"].get(gone).is_none(),
@@ -418,6 +432,15 @@ mod tests {
         }
         assert_eq!(s["properties"]["insights"]["minItems"], json!(2));
         assert_eq!(s["properties"]["insights"]["maxItems"], json!(3));
+
+        // The standup is plain strings, one per bullet - the screen draws the
+        // bullets and its Copy button joins the lines with newlines, so an object
+        // shape here would be structure nothing renders. Capped at five: a standup
+        // longer than that is a status report, which is the thing nobody reads.
+        let standup = &s["properties"]["standup"];
+        assert_eq!(standup["items"], json!({"type": "string"}));
+        assert_eq!(standup["minItems"], json!(3));
+        assert_eq!(standup["maxItems"], json!(5));
 
         // No number of any kind is asked for. The score is computed, so a number in
         // this schema is one the ring and the checklist beside it could disagree with.

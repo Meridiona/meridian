@@ -116,6 +116,41 @@ export function planAction(
   })
 }
 
+// A DELETED TASK MUST LEAVE EVERY PLAN THAT HOLDS IT, and the delete does not
+// come from here.
+//
+// `TaskDetailDialog` is a shared modal layered over whichever surface opened it,
+// and deleting a personal task there stamps `pm_tasks.deleted_at` and closes.
+// The Rust reader does the right thing - `load_plan` filters `deleted_at IS
+// NULL`, so the row is gone from the NEXT `get_plan`. The problem was that
+// nothing asked for one: the dialog opened from "Today's focus" (the shell's own
+// TaskDetailDialog) wires no `onDeleted`, OverviewPanel has no poll of its own,
+// and PlanView's 30s poll only runs while the planner modal is open. So on the
+// Today screen the task simply stayed on the list - the delete looked like it had
+// silently failed, and pressing it again did nothing, because server-side it had
+// already worked the first time.
+//
+// Fixed HERE rather than by threading an `onDeleted` through every opener,
+// because every plan-reading surface has the same problem and there is no bound
+// on how many of them there will be. The dialog already broadcasts
+// `meridian:task-deleted` for exactly this (TasksPanel listens to it too); this
+// makes the plan store one of its listeners.
+//
+// Refreshes EVERY cached day, not just today: a personal task can sit on more
+// than one day's plan, and the deletion is not scoped to one of them.
+if (typeof window !== 'undefined') {
+  window.addEventListener('meridian:task-deleted', () => {
+    // Straight past the drag hold-off. `paused` exists so a background poll
+    // cannot reshuffle a board mid-drag; a delete is a user action whose result
+    // must be visible, and a drag cannot be in progress while a modal dialog has
+    // the pointer anyway.
+    const wasPaused = paused
+    paused = false
+    Promise.all([...store.keys()].map(d => refreshPlan(d)))
+      .finally(() => { paused = wasPaused })
+  })
+}
+
 /** Subscribe to one day's plan. Returns a stable EMPTY entry for a day that has
  *  never been fetched. */
 export function usePlan(date: string): PlanEntry {

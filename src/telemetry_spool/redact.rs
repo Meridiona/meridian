@@ -963,6 +963,32 @@ mod tests {
         assert!(!keys.contains(&"llm.response"));
     }
 
+    /// `day` and `endpoint_id` are WARN-site fields this codebase really emits, and both
+    /// are deliberately NOT allowlisted. Pinned as a test because the alternative is a
+    /// silent default: a future edit adds one to `SAFE_STRING_KEYS` "to make the error
+    /// useful remotely" without anyone noticing what the value actually contains.
+    ///
+    /// - `day` is a local date. CLAUDE.md names `hour/day` outright in the set that must
+    ///   stay off - it is a fact about when the user was working.
+    /// - `endpoint_id` looks like an opaque key but is not: `make_id` slugifies the
+    ///   provider name the USER typed (`tray/src-tauri/src/commands/custom_llm.rs`), so
+    ///   an internal service name lands in it verbatim, minus punctuation.
+    ///
+    /// The cost is real and accepted: a shipped "custom provider returned no content"
+    /// cannot say which endpoint. `provider` IS allowlisted and names our own component,
+    /// which is the attribution that can be had without carrying the user's words.
+    #[test]
+    fn user_scoped_diagnostic_keys_stay_off_the_allowlist() {
+        for key in ["day", "endpoint_id"] {
+            assert!(
+                !SAFE_STRING_KEYS.contains(&key),
+                "`{key}` carries user data and must not be allowlisted - see this test's doc"
+            );
+        }
+        // The attribution that IS permitted, so the trade-off above stays true.
+        assert!(SAFE_STRING_KEYS.contains(&"provider"));
+    }
+
     #[test]
     fn kept_string_values_are_path_scrubbed() {
         let record = log_record(

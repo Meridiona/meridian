@@ -56,9 +56,9 @@ export function SettingsButton({ onClick, children, disabled, variant = 'solid' 
     <button type="button" onClick={onClick} disabled={disabled}
       className="mt-body-sm font-semibold rounded-lg px-3.5 py-1.5"
       style={{
-        background: solid ? 'var(--color-state-proposal)' : 'transparent',
-        color: solid ? '#fff' : 'var(--color-state-proposal)',
-        border: solid ? 'none' : '1px solid var(--color-state-proposal)',
+        background: solid ? 'var(--btn-primary-bg)' : 'transparent',
+        color: solid ? '#fff' : 'var(--t-accent)',
+        border: solid ? 'none' : '1px solid var(--t-accent)',
         opacity: disabled ? 0.65 : 1,
         cursor: disabled ? 'not-allowed' : 'pointer',
       }}>

@@ -21,7 +21,7 @@ export function NotificationsSection({ settings, patch, save }: {
   return (
     <div className="max-w-[640px] flex flex-col gap-5">
       <div>
-        <p className="mt-label" style={{ color: 'var(--color-state-proposal)' }}>Alerts</p>
+        <p className="mt-label" style={{ color: 'var(--t-accent)' }}>Alerts</p>
         <h1 className="mt-title-lg mt-1.5" style={{ color: 'var(--t-title)' }}>Notifications</h1>
         <p className="mt-body-sm mt-2 max-w-[520px]" style={{ color: 'var(--t-muted)' }}>
           Choose what Meridian nudges you about, and when to stay quiet.

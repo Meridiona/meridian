@@ -127,15 +127,39 @@ fi
 # Editing daemon code still kills an in-flight hour; this stops everything else from.
 DAEMON_WATCH="--watch src --watch meridian-core/src --watch meridian-oauth/src --watch build.rs --watch Cargo.toml"
 
+# ---------------------------------------------------------------------------
+# Forward MERIDIAN_DB into both windows
+# ---------------------------------------------------------------------------
+# `do script` opens a fresh Terminal LOGIN shell, which inherits Terminal.app's
+# environment — not this script's. So `MERIDIAN_DB=… meridian dev` used to be
+# silently ignored: both services came up on the default ~/.meridian/meridian.db
+# while the caller believed they were pointed somewhere else. That failure is
+# invisible until real data shows up in what was meant to be a clean run, so the
+# override is passed through the command string explicitly, and the summary
+# below always names the DB actually in use.
+#
+# The tilde is expanded here rather than passed along: this script's caller may
+# quote the value (`MERIDIAN_DB="~/x/y.db"`), and while the daemon's
+# Config::from_env expands `~`, the tray's install.rs::meridian_db_path returns
+# the env var verbatim — so an unexpanded tilde would point the two halves of
+# the app at two different databases.
+DB_ENV=""
+if [ -n "${MERIDIAN_DB:-}" ]; then
+    case "${MERIDIAN_DB}" in
+        "~/"*) MERIDIAN_DB="${HOME}/${MERIDIAN_DB#\~/}" ;;
+    esac
+    DB_ENV="MERIDIAN_DB='${MERIDIAN_DB}' "
+fi
+
 osascript <<APPLESCRIPT
 tell application "Terminal"
     activate
 
     -- 1. Rust daemon (cargo watch)
-    do script "echo '=== Rust daemon (cargo watch) ===' && cd '${REPO_ROOT}' && cargo watch ${DAEMON_WATCH} ${FORK_WATCH_FLAG} -x 'run --bin meridian'"
+    do script "echo '=== Rust daemon (cargo watch) ===' && cd '${REPO_ROOT}' && ${DB_ENV}cargo watch ${DAEMON_WATCH} ${FORK_WATCH_FLAG} -x 'run --bin meridian'"
 
     -- 2. Tauri tray (hot reload — also starts Next.js dev server automatically via beforeDevCommand)
-    do script "echo '=== Tauri tray (tauri dev) ===' && cd '${REPO_ROOT}/tray' && npm run tauri dev"
+    do script "echo '=== Tauri tray (tauri dev) ===' && cd '${REPO_ROOT}/tray' && ${DB_ENV}npm run tauri dev"
 end tell
 APPLESCRIPT
 
@@ -144,6 +168,16 @@ echo "✓ Dev services starting in 2 Terminal windows:"
 echo ""
 echo "  1. Rust daemon  — rebuilds automatically on .rs save"
 echo "  2. Tauri tray   — hot reload (Next.js dev server starts automatically)"
+echo ""
+# Always name the database. A scratch run and a real run look identical from
+# the outside, and mistaking one for the other means either demoing over real
+# work or believing a clean run wrote nothing when it wrote to the real DB.
+if [ -n "${MERIDIAN_DB:-}" ]; then
+    echo "  ⚠ DB override: ${MERIDIAN_DB}"
+    echo "    (your normal ~/.meridian/meridian.db is untouched)"
+else
+    echo "  DB: ~/.meridian/meridian.db (default)"
+fi
 echo ""
 echo "  Dashboard: open the Meridian tray icon → Open Dashboard"
 echo "  Capture runs in-process inside the tray — no separate agent needed."

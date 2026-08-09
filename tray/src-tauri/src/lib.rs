@@ -1098,6 +1098,7 @@ pub fn run() {
             // dashboard DB reads (ported /api/* GETs)
             commands::get_active,
             commands::get_today,
+            commands::get_day_draft_states,
             commands::get_day_tasks,
             commands::dismiss_day_task,
             commands::merge_day_task,
@@ -1189,8 +1190,11 @@ pub fn run() {
             commands::open_external_url,
             commands::quit_app,
             commands::hide_popover,
+            commands::resize_setup_window,
             // Setup wizard (first-run, permissions, providers)
             commands::is_first_run,
+            commands::mark_setup_started,
+            commands::setup_elapsed_secs,
             commands::mark_setup_complete,
             commands::get_platform,
             commands::save_account_email,
@@ -1203,6 +1207,7 @@ pub fn run() {
             commands::request_notifications,
             commands::detect_llm_providers,
             commands::test_llm_provider,
+            commands::disconnect_llm_provider,
             commands::test_all_llm_providers,
             commands::install_llm_provider,
             commands::cursor_sign_in,
@@ -1214,6 +1219,7 @@ pub fn run() {
             commands::assess_llm_capacity,
             commands::probe_custom_llm_provider,
             commands::remove_custom_llm_provider,
+            commands::replace_custom_llm_provider_key,
             commands::list_custom_llm_providers,
             commands::list_custom_llm_provider_models,
             // Uninstall wizard (plan + execute; see src/uninstall.rs for the CLI it drives)

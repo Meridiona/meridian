@@ -3,20 +3,9 @@
 
 import { useEffect, useState } from 'react'
 import { subscribe } from '@/lib/bridge'
-
-interface HealthStatus {
-  a11y_helper_trusted?: boolean
-  database_ready?: boolean
-  error?: string
-  /** Whether the in-use LLM provider is usable. `false` → the provider is missing or failing,
-   *  so summaries are paused/degraded. `llm_provider_name`/`_detail` fill the banner copy. */
-  llm_provider_ok?: boolean
-  /** `true` → the provider is usable but rate-limited: a softer "catching up" notice, not the
-   *  "unavailable" alarm (it clears on its own). Only meaningful when `llm_provider_ok !== false`. */
-  llm_provider_rate_limited?: boolean
-  llm_provider_name?: string
-  llm_provider_detail?: string
-}
+// Shared, not private to this file: three other call sites read the same command
+// and each had grown its own inline shape. See the type's own note in api-types.
+import type { HealthStatus } from '@/lib/api-types'
 
 export default function HealthBanner() {
   const [health, setHealth] = useState<HealthStatus | null>(null)
@@ -57,6 +46,19 @@ export default function HealthBanner() {
         : showA11yWarning
           ? 'a11y'
           : null
+
+  // A dismissal only survives while the thing dismissed is still true. Once the
+  // problem clears, the dismissal is spent — so if the SAME problem comes back
+  // later, it is announced again instead of being silently swallowed by a
+  // decision the user made about a different occurrence of it.
+  //
+  // Without this, "dismiss → fix it → it breaks again the same way" showed no
+  // banner at all for the rest of the session, because the signature is content-
+  // derived and a recurrence reproduces it byte for byte. The failure mode is
+  // invisible from here: the app looks healthy precisely when it is not.
+  useEffect(() => {
+    if (!activeSig) setDismissedSig(null)
+  }, [activeSig])
 
   if (!health || !activeSig || activeSig === dismissedSig) {
     return null
@@ -100,32 +102,40 @@ export default function HealthBanner() {
     )
   }
 
+  // CRITICAL, AND NOT DISMISSIBLE — the same treatment as a missing database,
+  // because it has the same consequence.
+  //
+  // This used to be a soft yellow notice with a Dismiss button, describing the
+  // problem as an inconvenience to the hourly summaries. It is not: the TIMELINE
+  // itself is produced by the hourly fold (`workstream::run`, which calls
+  // `llm::complete` unconditionally), so with no working provider Meridian
+  // generates nothing at all - no task cards, no summaries, no worklogs. The whole
+  // product is inert, and the day being lived right now is the day being lost.
+  //
+  // So there is nothing to dismiss. A Dismiss button on a blocker offers to hide
+  // the only evidence that the app has stopped working, and whoever takes it gets
+  // a dashboard that looks idle rather than broken - then finds the hole in their
+  // week days later, when the work is no longer reconstructible. It stays up until
+  // it is no longer true, which is precisely when the fix has landed.
   if (showProviderError) {
     const providerName = health.llm_provider_name ?? 'Your AI provider'
     return (
       <div
-        className="w-full px-6 py-3.5 flex items-center justify-between border-b"
-        style={{ borderBottomColor: 'var(--rule)', backgroundColor: 'rgba(253, 224, 71, 0.08)' }}
+        className="w-full px-6 py-3.5 flex items-center gap-3 border-b"
+        style={{ borderBottomColor: 'var(--rule)', backgroundColor: 'rgba(239, 68, 68, 0.08)' }}
       >
-        <div className="flex items-center gap-3 flex-1">
-          <span className="text-lg">🤖</span>
-          <div className="flex-1">
-            <p className="text-sm" style={{ color: 'var(--ink-2)' }}>
-              <strong>{providerName} isn&apos;t available</strong>
-            </p>
-            <p className="text-xs mt-0.5" style={{ color: 'var(--ink-3)' }}>
-              {health.llm_provider_detail ? `${health.llm_provider_detail}. ` : ''}
-              Hourly summaries are paused. Open Settings → Intelligence to reinstall, sign in, or pick another provider.
-            </p>
-          </div>
+        <span className="text-lg">🚨</span>
+        <div className="flex-1">
+          <p className="text-sm" style={{ color: 'var(--ink-2)' }}>
+            <strong>{providerName} isn&apos;t available - Meridian has stopped writing your day</strong>
+          </p>
+          <p className="text-xs mt-0.5" style={{ color: 'var(--ink-3)' }}>
+            {health.llm_provider_detail ? `${health.llm_provider_detail}. ` : ''}
+            Your timeline, summaries and worklogs all need a model, so nothing new is being
+            recorded until this is fixed. Open Settings → Intelligence to reinstall, sign in,
+            or pick another provider.
+          </p>
         </div>
-        <button
-          onClick={dismiss}
-          className="px-3 py-1 text-xs rounded hover:opacity-70 transition-opacity"
-          style={{ color: 'var(--ink-3)', border: '1px solid var(--rule)' }}
-        >
-          Dismiss
-        </button>
       </div>
     )
   }

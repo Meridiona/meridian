@@ -11,11 +11,12 @@
 
 'use client'
 
+import { useState } from 'react'
 import type { DayTaskWorklogDraft, GeneratedWorklogUpdate, WorklogTarget } from '@/lib/api-types'
 import type { Tracker } from '@/lib/integrations'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { trackerName } from '@/lib/integrations'
-import { Bullets, Field } from './dayTaskKit'
+import { CopyUpdate, UpdateBody } from './WorklogUpdateBody'
 
 /** Where the update will land: every matched ticket, or the proposed new one.
  *
@@ -23,11 +24,15 @@ import { Bullets, Field } from './dayTaskKit'
  *  percentage. The model's confidence is clamped to 1.0 on the way in, so a manual
  *  pick would otherwise render as "100% match" - the AI taking credit for a
  *  decision it did not make. */
-export function DraftTargets({ draft, busy, trackers, onOpenTask, onDismiss, onSetProvider }: {
+export function DraftTargets({ draft, busy, trackers, flat = false, onOpenTask, onDismiss, onSetProvider }: {
   draft: DayTaskWorklogDraft
   busy: boolean
   /** Connected trackers. 0 or 1 means there is no board choice to offer. */
   trackers: Tracker[]
+  /** Rendered INSIDE `DraftDocument`'s card, which is already the surface: drop
+   *  the tinted panel and set the text as body copy. Standalone (the default) it
+   *  still needs its own edges. */
+  flat?: boolean
   onOpenTask: (key: string, title?: string) => void
   onDismiss: (taskKey: string) => void
   onSetProvider: (provider: string) => void
@@ -38,12 +43,35 @@ export function DraftTargets({ draft, busy, trackers, onOpenTask, onDismiss, onS
     // is not undoable. So when there IS a choice, it is shown up front rather than
     // discovered afterwards in the tracker it landed on.
     return (
-      <div className="rounded-lg px-3 py-2" style={{ background: 'color-mix(in srgb, var(--color-state-pending) 12%, transparent)' }}>
-        <p className="mt-body-sm" style={{ color: 'var(--color-state-pending)', fontSize: 12, fontWeight: 700 }}>
-          New {draft.propose.issue_type}: {draft.propose.title}
-        </p>
+      <div className={flat ? undefined : 'rounded-lg px-3 py-2'}
+        style={flat ? undefined : { background: 'color-mix(in srgb, var(--color-state-pending) 12%, transparent)' }}>
+        {/* THE TITLE IS THE THING BEING DECIDED, so it is the largest text in
+            the block and the issue type is a chip beside it rather than a
+            prefix inside it. It used to run "New Task: <title>" as one string,
+            which buried the title mid-sentence behind boilerplate. */}
+        <div className="flex items-baseline gap-2 flex-wrap">
+          {flat && (
+            <span className="mt-label shrink-0 rounded px-1.5 py-0.5" style={{
+              fontSize: 9.5, color: 'var(--color-state-pending)',
+              background: 'color-mix(in srgb, var(--color-state-pending) 14%, transparent)',
+            }}>
+              {draft.propose.issue_type}
+            </span>
+          )}
+          <p className="mt-body-sm min-w-0" style={{
+            color: flat ? 'var(--t-title)' : 'var(--color-state-pending)',
+            fontSize: flat ? 15 : 12, fontWeight: 700,
+            letterSpacing: flat ? '-0.01em' : undefined, lineHeight: 1.3,
+          }}>
+            {flat ? draft.propose.title : `New ${draft.propose.issue_type}: ${draft.propose.title}`}
+          </p>
+        </div>
         {draft.propose.description && (
-          <p className="mt-body-sm mt-1" style={{ color: 'var(--t-muted)', fontSize: 11.5, lineHeight: 1.45 }}>{draft.propose.description}</p>
+          flat
+            ? <TicketDescription text={draft.propose.description} />
+            : <p className="mt-body-sm mt-1.5" style={{
+              color: 'var(--t-muted)', fontSize: 11.5, lineHeight: 1.45, fontWeight: 400,
+            }}>{draft.propose.description}</p>
         )}
         <ProposeProvider draft={draft} trackers={trackers} busy={busy} onSetProvider={onSetProvider} />
       </div>
@@ -61,7 +89,9 @@ export function DraftTargets({ draft, busy, trackers, onOpenTask, onDismiss, onS
   // draft, the fallback), the shared body stays below the list and rows stay compact.
   const perTicket = draft.targets.some((t) => t.update != null)
   return (
-    <div className="space-y-1.5">
+    // data-tour: the first-run walkthrough rings this block when it explains what
+    // "matched" means and how far it is allowed to have looked. Inert otherwise.
+    <div data-tour="draft-targets" className="space-y-1.5">
       {draft.targets.length > 1 && (
         <p className="mt-label" style={{ color: 'var(--t-faint)' }}>
           {perTicket
@@ -70,7 +100,7 @@ export function DraftTargets({ draft, busy, trackers, onOpenTask, onDismiss, onS
         </p>
       )}
       {draft.targets.map((t) => (
-        <TargetRow key={t.task_key} target={t} busy={busy}
+        <TargetRow key={t.task_key} target={t} busy={busy} flat={flat}
           canDismiss={editable && draft.targets.length > 0}
           body={perTicket ? (t.update ?? draft.update) : null}
           onOpen={() => onOpenTask(t.task_key, t.task_title ?? undefined)}
@@ -80,34 +110,115 @@ export function DraftTargets({ draft, busy, trackers, onOpenTask, onDismiss, onS
   )
 }
 
+/** The whole draft, laid out as the document it is.
+ *
+ *  NO CARD. Successive versions of this were a card, then two cards, then one
+ *  card with internal header rows - and every one of them was a framed surface
+ *  drawn inside a dialog that is already a framed surface with its own title bar
+ *  and its own footer. Two chromes nested, the inner one repeating the outer
+ *  one's job: a header saying "THE UPDATE" directly beneath a title bar saying
+ *  "Worklog draft", a border inside a border, a tinted panel on a tinted panel.
+ *  The dialog IS the document. This is its contents, and nothing else.
+ *
+ *  THE UPDATE LEADS, the destination follows. The proposal used to open the
+ *  dialog, so the reader met a model-written ticket body before the thing they
+ *  are being asked to judge - and "where does it go" is a question you ask AFTER
+ *  you know what "it" says. Putting the destination last also puts it directly
+ *  above the button that acts on it, which is where proximity should have had it
+ *  all along.
+ *
+ *  # Who calls this
+ *  [`WorklogDraftDialog`]'s body, and the walkthrough's `TutorialSummaryTask`,
+ *  which is the same surface by design. */
+export function DraftDocument({ draft, busy, trackers, onOpenTask, onDismiss, onSetProvider }: {
+  draft: DayTaskWorklogDraft
+  busy: boolean
+  trackers: Tracker[]
+  onOpenTask: (key: string, title?: string) => void
+  onDismiss: (taskKey: string) => void
+  onSetProvider: (provider: string) => void
+}) {
+  return (
+    <div>
+      {/* Where it lands, FIRST. A single tinted band rather than a card: it is a
+          different KIND of thing from the prose below it (a destination, not a
+          document), and one change of surface says that more quietly than a
+          border, a header row and a heading all saying it at once. */}
+      <div data-tour="sum-where" className="rounded-xl px-4 py-3.5" style={{
+        background: 'var(--t-box)',
+      }}>
+        <p className="mt-label mb-2.5" style={{ color: 'var(--t-faint-2)' }}>
+          {draft.propose ? 'CREATES A NEW TICKET' : 'GOES TO'}
+        </p>
+        <DraftTargets draft={draft} busy={busy} trackers={trackers} flat
+          onOpenTask={onOpenTask} onDismiss={onDismiss} onSetProvider={onSetProvider} />
+      </div>
+
+      {/* Then the document itself - no label of its own, because the dialog's
+          title already says what it is, and the band above is the only thing
+          that needs naming.
+          THE BAND IS COMPACT ON PURPOSE. It leads, which is why the ticket
+          description folds after three lines rather than running to a hundred
+          words: whatever is at the top sets what the reader thinks the screen
+          is about, and that has to be the destination in a sentence, not a
+          model-written ticket body. */}
+      {!hasPerTicketUpdates(draft) && (
+        <div data-tour="sum-update" className="mt-6">
+          <UpdateBody update={draft.update} boxed unframed />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** How much proposed-ticket description shows before it is folded away. Roughly
+ *  three lines at the card's width - enough to tell what the ticket is about. */
+const DESCRIPTION_PEEK = 190
+
+/** The proposed ticket's description, folded when it is long.
+ *
+ *  IT IS REFERENCE, NOT THE DECISION. The model writes a full ticket body -
+ *  scope, first target, what else is in play - and at a hundred-odd words it was
+ *  the tallest block in the dialog, sitting ABOVE the update and pushing the
+ *  thing the user is actually judging below the fold. Worse, it largely restates
+ *  that update in a different register, so the reader meets the same work twice
+ *  and has to work out which one they are being asked about.
+ *
+ *  So: a peek, and a way to read the rest. Nothing is hidden that changes the
+ *  decision - the title says what the ticket is, and this says how it will be
+ *  written up once it exists. */
+function TicketDescription({ text }: { text: string }) {
+  const long = text.length > DESCRIPTION_PEEK
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mt-2">
+      <p className="mt-body-sm" style={{
+        color: 'var(--t-muted)', fontSize: 12.5, lineHeight: 1.55, fontWeight: 400,
+        ...(long && !open
+          ? { display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical' as const, overflow: 'hidden' }
+          : null),
+      }}>
+        {text}
+      </p>
+      {long && (
+        <button onClick={() => setOpen(!open)}
+          className="mt-1.5"
+          style={{
+            fontSize: 11.5, fontWeight: 700, color: 'var(--t-accent)',
+            background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
+          }}>
+          {open ? 'Show less' : 'Read the full description'}
+        </button>
+      )}
+    </div>
+  )
+}
+
 /** Whether the draft carries a distinct per-ticket update on any target. Exported
  *  so the panel can decide whether to ALSO show the shared body block (it must not
  *  when the bodies live in the rows). */
 export function hasPerTicketUpdates(draft: DayTaskWorklogDraft): boolean {
   return draft.targets.some((t) => t.update != null)
-}
-
-/** One update rendered inline: summary, its labelled sections, and a status line.
- *  The shared shape used both per-ticket (in a target row) and for the whole draft. */
-export function UpdateBody({ update }: { update: GeneratedWorklogUpdate }) {
-  const sections = update.sections.filter((s) => s.heading.trim() && s.points.some((p) => p.trim()))
-  return (
-    <div className="space-y-2 mt-1.5">
-      {update.summary && (
-        <p className="mt-body-sm" style={{ color: 'var(--t-title)', fontSize: 12.5, lineHeight: 1.55 }}>{update.summary}</p>
-      )}
-      {sections.map((sec, i) => (
-        <Field key={`${sec.heading}-${i}`} label={sec.heading}>
-          <Bullets items={sec.points.filter((p) => p.trim())} size={12} />
-        </Field>
-      ))}
-      {update.status && (
-        <Field label="Status">
-          <p className="mt-body-sm" style={{ color: 'var(--t-muted)', fontSize: 12, lineHeight: 1.5 }}>{update.status}</p>
-        </Field>
-      )}
-    </div>
-  )
 }
 
 /** Whether the user may still choose the board a PROPOSED ticket is created on.
@@ -180,9 +291,11 @@ function ProposeProvider({ draft, trackers, busy, onSetProvider }: {
 /** One ticket the update lands on, with the reason it's here and a way out.
  *  `body`, when set, is THIS ticket's own update rendered inline (the multi-match
  *  split) - null when the shared body is shown once below the whole list instead. */
-function TargetRow({ target, busy, canDismiss, body, onOpen, onDismiss }: {
+function TargetRow({ target, busy, canDismiss, body, flat = false, onOpen, onDismiss }: {
   target: WorklogTarget; busy: boolean; canDismiss: boolean
   body: GeneratedWorklogUpdate | null
+  /** Inside `DraftDocument`'s single card - no tint of its own. */
+  flat?: boolean
   onOpen: () => void; onDismiss: () => void
 }) {
   const { task_key, task_title, provider, confidence, manual, posted, outcome_unknown, error } = target
@@ -192,24 +305,50 @@ function TargetRow({ target, busy, canDismiss, body, onOpen, onDismiss }: {
   // we genuinely do not know whether this comment is live, and telling the user
   // "posted" or "not posted" would both be guesses they'd act on.
   const state = posted ? (isPersonal ? 'logged' : 'posted') : outcome_unknown ? 'not confirmed' : why
+  // THE TICKET'S OWN TITLE LEADS. This row used to open "Comment on MER-475 ·
+  // 90% match" in bold and drop the actual ticket name underneath it, smaller and
+  // dimmer - so the largest text on the row described the MECHANISM (that a
+  // comment is the delivery method) while the one thing the user has to judge,
+  // "is this the right ticket?", was the quietest thing in the box. The key, the
+  // tracker's mark and the confidence are all still here; they are metadata about
+  // the title, and they now read that way.
+  const tone = posted ? 'var(--color-state-approved)'
+    : outcome_unknown ? 'var(--color-state-pending)'
+      : 'var(--t-accent)'
+  // A PERSONAL TASK ROW IS NOT A DOOR. Every other row opens the ticket it names,
+  // which is the useful thing to do with a ticket. A personal task has no ticket -
+  // "opening" it raised the task dialog UNDERNEATH this one, so the click read as
+  // nothing happening and the thing it revealed was found only after closing the
+  // draft. What the user actually wants from that row (put this on a real ticket)
+  // now lives in the footer, next to the outcome it acts on.
+  const Row = isPersonal ? 'div' : 'button'
   return (
     <div className="flex items-stretch gap-1.5">
-      <button onClick={onOpen}
-        className="flex-1 min-w-0 text-left rounded-lg px-3 py-2"
-        style={{ background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)', cursor: 'pointer' }}>
-        <p className="mt-body-sm" style={{ color: 'var(--color-state-proposal)', fontSize: 12, fontWeight: 700 }}>
-          {posted ? <span aria-hidden>✓ </span> : null}
-          {isPersonal ? 'Logged to' : 'Comment on'} {task_key}
-          <span style={{ opacity: 0.7, fontWeight: 400 }}> · {state}</span>
+      <Row onClick={isPersonal ? undefined : onOpen}
+        className={`flex-1 min-w-0 text-left rounded-lg ${flat ? '' : 'px-3 py-2.5'}`}
+        style={{ background: flat ? 'transparent' : `color-mix(in srgb, ${tone} 10%, transparent)`, cursor: isPersonal ? 'default' : 'pointer' }}>
+        <p className="mt-body-sm" style={{ color: 'var(--t-title)', fontSize: 13.5, fontWeight: 700, lineHeight: 1.35 }}>
+          {task_title || task_key}
         </p>
-        {task_title && (
-          <p className="mt-body-sm mt-0.5 truncate" style={{ color: 'var(--color-state-proposal)', fontSize: 12, fontWeight: 500, opacity: 0.9 }}>
-            {task_title}
-          </p>
-        )}
+        {/* One quiet meta line: whose board, which ticket, how sure. The tracker
+            is its own mark rather than a word - it is recognised faster than it is
+            read, and it keeps the line short enough to take in at a glance. */}
+        <span className="flex items-center gap-1.5 mt-1.5">
+          {!isPersonal && <ProviderIcon provider={provider} size={13} />}
+          <span style={{ color: 'var(--t-muted)', fontSize: 11.5, fontWeight: 600, fontFamily: 'var(--font-jetbrains-mono), monospace' }}>
+            {isPersonal ? 'Personal task' : task_key}
+          </span>
+          <span aria-hidden style={{ color: 'var(--t-faint)', fontSize: 11 }}>·</span>
+          <span style={{ color: tone, fontSize: 11.5, fontWeight: 700 }}>
+            {posted ? <span aria-hidden>✓ </span> : null}{state}
+          </span>
+        </span>
         {isPersonal && (
           <p className="mt-body-sm mt-0.5" style={{ color: 'var(--t-faint)', fontSize: 11, lineHeight: 1.4 }}>
-            Personal task - not logged to your PM provider. Open it to create a ticket and post, or match it to an existing one.
+            {/* No instruction here. This used to say "open it to create a ticket
+                and post" - an instruction pointing at a surface behind this one,
+                for an action that is now a button below. */}
+            Personal task - this update stays in Meridian, not on your board.
           </p>
         )}
         {outcome_unknown && (
@@ -224,7 +363,7 @@ function TargetRow({ target, busy, canDismiss, body, onOpen, onDismiss }: {
           </p>
         )}
         {body && <UpdateBody update={body} />}
-      </button>
+      </Row>
       {canDismiss && !posted && (
         <button onClick={onDismiss} disabled={busy}
           title={`Don't post to ${task_key}`}

@@ -175,6 +175,15 @@ pub struct DaySummary {
     /// What the day was about, for the no-plan case; empty when there was a plan.
     #[serde(default)]
     pub themes: Vec<DayTheme>,
+    /// The day as three or four lines you could say at standup tomorrow, in the
+    /// model's words. One string per bullet - the screen renders them as a list and
+    /// its Copy button joins them with newlines, so the split is the model's answer
+    /// rather than a guess at how it formatted a paragraph.
+    ///
+    /// Empty on the fallback path, on a day the model gave nothing for, and on every
+    /// row written before migration 080 - the block simply does not render.
+    #[serde(default)]
+    pub standup: Vec<String>,
     /// Which provider ACTUALLY answered (the resolver may degrade to local).
     pub provider: String,
     /// The model override in force, or "" for the provider's default.
@@ -204,6 +213,7 @@ pub struct SummaryUpsert {
     pub plan: Vec<PlanVerdict>,
     pub adherence: Adherence,
     pub themes: Vec<DayTheme>,
+    pub standup: Vec<String>,
     pub provider: String,
     pub model: String,
     pub fallback: bool,
@@ -220,6 +230,12 @@ struct RawSummaryRow {
     plan_json: String,
     adherence_json: String,
     themes_json: String,
+    /// `Option` purely as belt-and-braces, like `evidence_at` above. Migration 078
+    /// declares this `NOT NULL DEFAULT '[]'`, so a migrated DB never yields NULL and
+    /// an UN-migrated one fails the whole SELECT on the unknown column (which
+    /// [`get_day_summary`] already degrades to `None`). It costs nothing and means a
+    /// hand-added nullable column does not panic the read.
+    standup_json: Option<String>,
     provider: String,
     model: String,
     fallback: i64,
@@ -240,7 +256,7 @@ struct RawSummaryRow {
 pub async fn get_day_summary(pool: &SqlitePool, day: &str) -> anyhow::Result<Option<DaySummary>> {
     let row = sqlx::query_as::<_, RawSummaryRow>(
         "SELECT day_local, headline, narrative, insights_json, plan_json, adherence_json, \
-                themes_json, provider, model, fallback, generated_at, evidence_at \
+                themes_json, standup_json, provider, model, fallback, generated_at, evidence_at \
          FROM day_summaries WHERE day_local = ?",
     )
     .bind(day)
@@ -268,6 +284,11 @@ pub async fn get_day_summary(pool: &SqlitePool, day: &str) -> anyhow::Result<Opt
         plan: serde_json::from_str(&r.plan_json).unwrap_or_default(),
         adherence: serde_json::from_str(&r.adherence_json).unwrap_or_default(),
         themes: serde_json::from_str(&r.themes_json).unwrap_or_default(),
+        standup: r
+            .standup_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default(),
         provider: r.provider,
         model: r.model,
         fallback: r.fallback != 0,
@@ -320,12 +341,14 @@ pub async fn upsert_summary(pool: &SqlitePool, up: &SummaryUpsert) -> anyhow::Re
     let adherence_json =
         serde_json::to_string(&up.adherence).context("day_summaries: encode adherence")?;
     let themes_json = serde_json::to_string(&up.themes).context("day_summaries: encode themes")?;
+    let standup_json =
+        serde_json::to_string(&up.standup).context("day_summaries: encode standup")?;
 
     sqlx::query(
         "INSERT INTO day_summaries \
             (day_local, headline, narrative, insights_json, plan_json, adherence_json, \
-             themes_json, provider, model, fallback, generated_at, evidence_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             themes_json, standup_json, provider, model, fallback, generated_at, evidence_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(day_local) DO UPDATE SET \
             headline = excluded.headline, \
             narrative = excluded.narrative, \
@@ -333,6 +356,7 @@ pub async fn upsert_summary(pool: &SqlitePool, up: &SummaryUpsert) -> anyhow::Re
             plan_json = excluded.plan_json, \
             adherence_json = excluded.adherence_json, \
             themes_json = excluded.themes_json, \
+            standup_json = excluded.standup_json, \
             provider = excluded.provider, \
             model = excluded.model, \
             fallback = excluded.fallback, \
@@ -346,6 +370,7 @@ pub async fn upsert_summary(pool: &SqlitePool, up: &SummaryUpsert) -> anyhow::Re
     .bind(&plan_json)
     .bind(&adherence_json)
     .bind(&themes_json)
+    .bind(&standup_json)
     .bind(&up.provider)
     .bind(&up.model)
     .bind(up.fallback as i64)
@@ -371,7 +396,7 @@ mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
 
-    /// The post-068 table, as the migration leaves it.
+    /// The post-078 table, as the migrations leave it.
     async fn pool_with_summaries() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -384,7 +409,8 @@ mod tests {
              model TEXT NOT NULL DEFAULT '', fallback INTEGER NOT NULL DEFAULT 0, \
              generated_at TEXT NOT NULL, headline TEXT NOT NULL DEFAULT '', \
              plan_json TEXT NOT NULL DEFAULT '[]', adherence_json TEXT NOT NULL DEFAULT '{}', \
-             themes_json TEXT NOT NULL DEFAULT '[]', evidence_at TEXT)",
+             themes_json TEXT NOT NULL DEFAULT '[]', evidence_at TEXT, \
+             standup_json TEXT NOT NULL DEFAULT '[]')",
         )
         .execute(&pool)
         .await
@@ -430,6 +456,10 @@ mod tests {
                 unplanned_minutes: 40,
             },
             themes: Vec::new(),
+            standup: vec![
+                "Shipped the activity-feed pagination (KAN-1).".to_string(),
+                "Next up: onboarding empty-state polish.".to_string(),
+            ],
             provider: "claude".to_string(),
             model: "sonnet".to_string(),
             fallback: false,
@@ -466,7 +496,31 @@ mod tests {
         assert_eq!(got.adherence.achievement_pct, 100);
         assert_eq!(got.adherence.unplanned_minutes, 40);
         assert_eq!(got.evidence_at, "2026-07-17T17:55:00Z");
+        assert_eq!(got.standup.len(), 2);
+        assert!(got.standup[1].starts_with("Next up:"));
         assert!(!got.fallback);
+    }
+
+    /// Migration 078 backfills every existing row with `'[]'`, which is exactly what
+    /// a pre-080 summary should read back as: no standup, so the block does not
+    /// render. The same path covers a column whose JSON has rotted - one field
+    /// degrades, never the row, matching this module's stated tolerance.
+    #[tokio::test]
+    async fn an_unreadable_standup_degrades_to_empty_not_to_a_failed_read() {
+        let pool = pool_with_summaries().await;
+        upsert_summary(&pool, &upsert_of("2026-07-16", "A long day.", &["KAN-1"]))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE day_summaries SET standup_json = 'not json'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let got = get_day_summary(&pool, "2026-07-16").await.unwrap().unwrap();
+        assert!(got.standup.is_empty());
+        // Everything else still came through - this costs one field, not the row.
+        assert_eq!(got.headline, "A good day, one detour");
+        assert_eq!(got.plan.len(), 1);
     }
 
     /// Regenerating replaces the day's summary outright rather than accumulating

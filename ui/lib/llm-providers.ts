@@ -351,103 +351,254 @@ export const CHOOSER_PROVIDER_IDS: LlmProviderId[] = ['claude', 'codex', 'cursor
  *  so the one choice reads identically wherever it is made. Plain hyphens (user-facing). */
 export const LLM_INTRO_TITLE = 'Choose your AI provider'
 
-/** The shared sub-heading. States the job, the tiny footprint, and the escape hatch in one
- *  breath, in plain language. */
+/** The shared sub-heading. States the job and the escape hatch, and stops.
+ *
+ *  It used to also quote the usage footprint ("well under 1% of your plan") - a THIRD wording
+ *  of a number that `LLM_RECOMMENDED_NOTE` states directly under the grid, in the same
+ *  viewport, as 2%. Three sizes of the same claim, two of them disagreeing, is how a
+ *  reassurance turns into a reason for doubt. The number is made once now, below the tiles. */
 export const LLM_INTRO_BODY =
-  'Meridian uses this to write your hourly summaries and worklogs. It sends about one short request per active hour - well under 1% of your plan with Claude, Codex, or Cursor, so it never eats into your own coding. Pick one, or bring your own API key.'
+  'Meridian uses this to write your hourly summaries and worklogs. Pick a coding agent you already pay for, or bring your own API key.'
 
-/** The badge every recommended CLI carries at the top level. */
+/**
+ * The one question asked before any provider is shown, and the two answers.
+ *
+ * It exists because the old chooser put four tiles in front of someone who had, a moment
+ * earlier, only asked to draft a task. Three of those tiles are useless without a paid
+ * subscription and the fourth was labelled "advanced" - so the screen silently required the
+ * user to know which group they were in before it would help them. Asking outright costs one
+ * click and lets each answer get a screen built for it.
+ *
+ * THE RECOMMENDATION IS A BADGE, NOT A PARAGRAPH. Both answers are legitimate and one of
+ * them is free; ranking them in prose would read as pressure to spend money, and burying the
+ * ranking entirely would leave someone with a Claude subscription on the weaker path for no
+ * reason. A badge states it and gets out of the way.
+ */
+/** The gate's recommendation. Used ONLY where it ranks one thing against another - which,
+ *  on the gate, it does: a paid coding agent is the more accurate path than the free one.
+ *
+ *  It is deliberately NOT the chooser grid's badge any more. All three tiles there carried
+ *  it, and a badge every option wears cannot rank anything: three cards each shouting
+ *  RECOMMENDED just made the row loud. The grid uses the kind labels below instead, which
+ *  say what the tile IS - the real distinction between the three and the fourth. */
 export const LLM_RECOMMENDED_BADGE = 'RECOMMENDED'
 
-/** Why we recommend them - shown once under the recommended row. */
-export const LLM_RECOMMENDED_NOTE =
-  'These run on frontier models through a subscription you already pay for - the most accurate option, and no extra cost.'
+/** How the two paths rank, as the pair of badges BOTH screens show.
+ *
+ *  The gate asks which path you are on; the chooser grid then shows one path's tiles beside
+ *  the other's. Those are the same claim made twice, so they read from one record - a user
+ *  who is told BEST ACCURACY on the question and then sees nothing on the tiles has been
+ *  given a ranking and then had it taken away at the moment they act on it.
+ *
+ *  `badge` is the ranking itself and renders FILLED; `note` is what you get and renders
+ *  outlined. Neither is coloured - see LlmProviderGate's header for why. */
+export interface LlmRank { badge: string; note: string }
+export const LLM_RANK_SUBSCRIPTION: LlmRank = {
+  badge: LLM_RECOMMENDED_BADGE,
+  note: 'BEST ACCURACY',
+}
+export const LLM_RANK_FREE: LlmRank = { badge: 'FREE', note: 'GOOD ACCURACY' }
+
+export const LLM_GATE_TITLE = 'Do you have a Claude, ChatGPT or Cursor subscription?'
+export const LLM_GATE_BODY =
+  'Meridian writes your summaries with an AI engine. It can use a subscription you already pay for, or set you up with a free one.'
+
+export interface LlmGateChoice {
+  value: 'subscription' | 'free'
+  label: string
+  /** The primary badge - the recommendation itself. */
+  badge: string
+  /** The second badge - what you get, in two words. */
+  note: string
+  /** One line naming what happens next, so neither answer is a leap of faith. */
+  detail: string
+}
+
+export const LLM_GATE_CHOICES: LlmGateChoice[] = [
+  {
+    value: 'subscription',
+    ...LLM_RANK_SUBSCRIPTION,
+    label: 'Yes, I have one',
+    detail: 'Claude Code, Codex or Cursor - Meridian runs on the plan you already have.',
+  },
+  {
+    value: 'free',
+    ...LLM_RANK_FREE,
+    label: 'No, set me up',
+    detail: 'A free Groq key, in three steps. No card, no subscription.',
+  },
+]
+
+
+/** The one line under the recommended row.
+ *
+ *  It used to be a 20-word sentence about frontier models and marginal cost, set at 11px -
+ *  which is the size you use for a footnote nobody is expected to read, carrying the one
+ *  fact that decides the question. The real objection to pointing Meridian at a plan you
+ *  already pay for is "will it eat my usage", so that is the whole line now, short enough
+ *  to be set at a readable size. */
+export const LLM_RECOMMENDED_NOTE = 'Meridian uses less than 2% of your daily usage.'
 
 /**
  * The rough share of a plan's usage limit that Meridian's hourly summaries consume - one
  * short request per active hour. Surfaced to reassure users that pointing Meridian at
  * their coding-agent subscription won't eat into their own coding headroom.
+ *
+ * It quotes the SAME figure as `LLM_RECOMMENDED_NOTE` on purpose. The two used to disagree
+ * ("less than 2%" on the grid, "well under 1%" one click later on the detail screen), which
+ * is the kind of thing a user reads as a number chosen to sound good rather than measured.
+ * The higher, more conservative one is the one both say.
  */
 export const USAGE_FOOTPRINT_NOTE =
-  'Meridian sends about one short request per active hour - well under 1% of your plan’s usage limits, so it won’t eat into your own coding.'
+  'About one short request per active hour - less than 2% of your daily usage, so it will not eat into your own coding.'
 
 /**
- * The warning shown wherever a custom endpoint is added or listed.
+ * THERE IS NO ADD-AN-ENDPOINT PATH ANY MORE, and the vendor-preset machinery that served it
+ * is gone with it (`CUSTOM_VENDOR_PRESETS`, `customVendorPreset`, `CustomVendorPreset`,
+ * `CUSTOM_PROVIDER_COST_NOTE`, and the `<AddForm>`/`<AddCustomProvider>` pair).
  *
- * Every other provider is flat-rate: a CLI spends a subscription the user already pays
- * for. A custom endpoint is the ONLY one that bills per
- * call, on the user's own key, with no cap Meridian can enforce - the pipeline runs
- * unattended every hour, and testing an endpoint alone spends up to one request per schema.
- * So the guidance is free-tier only, stated where the key is typed rather than buried in
- * docs nobody reads before pasting a billing-enabled key.
+ * The list had already collapsed to Groq alone, which made the form a questionnaire with
+ * one possible answer: pick the only vendor, keep the URL it filled in, press "List models"
+ * to choose from ids nobody outside the team can rank, then guess two rate-limit numbers the
+ * verdict would otherwise nag about. `<GroqSetup>` answers every one of those for the user
+ * from one pasted key, so the form was a second, worse route to the same endpoint - and the
+ * "+ Add a custom endpoint" tile advertised it on the settings screen as though it were a
+ * capability rather than a leftover.
+ *
+ * The cost, stated plainly: an arbitrary OpenAI-compatible endpoint can no longer be added
+ * from the UI. The registry underneath is untouched - `add_custom_llm_provider` still
+ * exists, `<GroqSetup>` still calls it, and an endpoint added by an older build still loads,
+ * runs and can be selected. Only the way to CREATE one narrowed.
  */
-export const CUSTOM_PROVIDER_COST_NOTE =
-  'Use a free-tier API key only. A custom endpoint bills your own account for every call and Meridian cannot cap what it spends - the pipeline runs each hour on its own, and testing one costs a few requests.'
 
 /**
- * The OpenAI-compatible endpoints offered as presets, so the common case is a name and a
- * key rather than a URL nobody can be expected to remember.
+ * Everything the no-subscription path says and points at, in one record.
  *
- * `baseUrl` is the OpenAI-compatible root - Meridian appends `/chat/completions`. These are
- * conveniences ONLY: nothing about a preset grants capability. What an endpoint can
- * actually do is measured when it is added (see `SchemaRung` / `llm::probe`), because
- * "OpenAI-compatible" is not one contract - measured, OpenAI rejects a schema Gemini
- * accepts, and Gemini refuses strict mode for one of the four schemas it otherwise handles.
+ * The privacy claims are LINKED, not just asserted. This screen asks someone to paste a key
+ * on the strength of a sentence about data handling, and a sentence with no source is
+ * exactly the thing a careful user should not accept - so each claim carries the vendor's
+ * own page next to it, and the wording stays close enough to that page to survive being
+ * checked against it.
  *
- * Gemini leads because it is the one endpoint measured end-to-end against the real
- * pipeline schemas, and it has a free tier - which is the only kind we want here (see
- * `CUSTOM_PROVIDER_COST_NOTE`).
+ * All hyphens plain, per the user-facing text rule.
  */
-export interface CustomVendorPreset {
-  id: string
-  name: string
-  /** Empty = the user types their own (the `other` escape hatch). */
-  baseUrl: string
-  /** Where to get a key. */
-  keyUrl?: string
-  /** Shown under the picker - free tier or not is the deciding fact here. */
-  hint?: string
-}
+export const GROQ = {
+  vendor: 'groq',
+  /** The name stored on the registry row, and what the rest of the app then calls it. */
+  name: 'Groq',
+  baseUrl: 'https://api.groq.com/openai/v1',
+  // No signUpUrl. The keys page IS the sign-up path - signed out it asks you to create an
+  // account and then lands on the key screen - so a separate login link only added a step
+  // that describes the same click.
+  keyUrl: 'https://console.groq.com/keys',
+  privacyUrl: 'https://groq.com/privacy-policy/',
+  // Terms of USE, not the old /terms-of-sale/ - that path 404s, and a dead link under a
+  // privacy claim is worse than no link: it reads as a claim that cannot be checked.
+  termsUrl: 'https://groq.com/terms-and-conditions/',
+  /** Shown at the very top - the single fact that makes this option make sense. */
+  freeBadge: 'FREE',
+  /** The second badge, next to FREE.
+   *
+   *  Cost is only half of what someone weighs before pasting a key into a screen that
+   *  reads their working hours. The other half is what happens to what gets sent, and
+   *  that answer used to live three paragraphs down in a block most people scroll past.
+   *  It ranks with the price, so it is stated with the price. */
+  privacyBadge: 'ZERO DATA RETENTION',
+  headline: 'Groq Cloud',
+  blurb: 'A free API key, and Meridian handles the rest. No card, no subscription.',
+  /** The three claims, each with the page that backs it.
+   *
+   *  Ordered by what a careful reader asks first: is it kept, is it learned from, and how
+   *  much of my machine goes with it. The retention line leads because "is a log of my day
+   *  sitting on someone's server" is the question, and asserting it plainly is the only
+   *  useful answer - a hedge here reads as a yes. */
+  trust: [
+    'Your prompts and replies are not logged or stored - Groq answers the request and drops it.',
+    'Nothing you send is used to train any model.',
+    'Meridian sends one hour of activity at a time. Your screen, your files and your keystrokes stay on this Mac.',
+  ],
+  /** Keys look like `gsk_…` - shown as a placeholder so a wrong paste is obvious. */
+  keyPlaceholder: 'gsk_…',
+  /** Groq's published FREE-TIER limits for the gpt-oss pair this screen configures
+   *  (30 RPM, 1,000 RPD - console.groq.com/docs/rate-limits, checked Aug 2026).
+   *
+   *  These used to be written as 0/0 - "unknown rather than guessed" - which was right while
+   *  the model was whatever the key happened to serve, but is no longer: the model is pinned
+   *  to gpt-oss (see GROQ_MODEL_PREFERENCE) and both members carry these exact numbers. The
+   *  cost of leaving them unknown was a permanent notice on the endpoint card asking the user
+   *  to go and look up a limit we already know, and unpaced requests on a key that does have
+   *  a per-minute cap.
+   *
+   *  Understating a PAID key is the deliberate direction to be wrong in: a working day needs
+   *  23 requests against 1,000, so the verdict reads "sufficient" either way, and pacing at
+   *  30/min costs a paid user nothing at this volume. */
+  freeRpm: 30,
+  freeRpd: 1000,
+} as const
 
-export const CUSTOM_VENDOR_PRESETS: CustomVendorPreset[] = [
-  {
-    id: 'gemini',
-    name: 'Google Gemini',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    keyUrl: 'https://aistudio.google.com/apikey',
-    hint: 'Has a free tier. Verified against Meridian’s schemas.',
-  },
-  {
-    id: 'groq',
-    name: 'Groq',
-    baseUrl: 'https://api.groq.com/openai/v1',
-    keyUrl: 'https://console.groq.com/keys',
-    hint: 'Has a free tier.',
-  },
-  {
-    id: 'openrouter',
-    name: 'OpenRouter',
-    baseUrl: 'https://openrouter.ai/api/v1',
-    keyUrl: 'https://openrouter.ai/keys',
-    hint: 'Free models exist (ids ending in :free). Paid models bill per call.',
-  },
-  {
-    id: 'openai',
-    name: 'OpenAI',
-    baseUrl: 'https://api.openai.com/v1',
-    keyUrl: 'https://platform.openai.com/api-keys',
-    hint: 'Paid only - every call is billed.',
-  },
-  {
-    id: 'other',
-    name: 'Other (OpenAI-compatible)',
-    baseUrl: '',
-    hint: 'Any endpoint serving /chat/completions.',
-  },
+/**
+ * Which Groq model Meridian picks, best first - matched as a PREFIX against whatever the
+ * endpoint's own `/models` actually returns.
+ *
+ * Asking the endpoint rather than hardcoding one id is the whole point. Groq's catalogue
+ * turns over quickly, and a hardcoded id that has been retired fails at the first real hour
+ * rather than at setup - the worst possible place. Prefixes (not exact ids) so a dated
+ * revision like `…-0905` still matches its family.
+ *
+ * Order is by structured-output support, which is the only property that matters here: the
+ * pipeline asks for JSON conforming to a schema, and an endpoint that cannot do that is
+ * rejected by `production_eligible` no matter how good its prose is.
+ *
+ * WHY THE LIST IS ONLY TWO ENTRIES (checked against Groq's docs, Aug 2026). On Groq,
+ * `response_format: json_schema` is supported by `openai/gpt-oss-120b` and
+ * `openai/gpt-oss-20b` and NOTHING ELSE - every other model tops out at JSON Object mode,
+ * which produces valid JSON of no particular shape. That is exactly the failure this
+ * pipeline cannot absorb: a reply that parses but omits a field does not error, it drops
+ * an hour silently. So a bigger or better-reasoning model that lacks strict schema support
+ * is not a trade-off here, it is disqualified - which is why `llama-3.3-70b`,
+ * `moonshotai/kimi-k2` and the `llama-4-*` pair were removed. Ranking them ahead of the
+ * gpt-oss pair meant the setup screen picked a model the probe would then refuse,
+ * turning a working key into "could not return the structured replies Meridian needs".
+ *
+ * ACCURACY AND QUOTA DO NOT TRADE OFF AGAINST EACH OTHER HERE. Both survivors carry the
+ * same free-tier limits (30 RPM, 1,000 RPD, 8K TPM, 200K TPD), so taking the larger,
+ * more accurate 120b gives up no headroom whatsoever - it is simply the better model on
+ * identical quota. A working day costs 23 requests (`meridian_core::llm_capacity`), so
+ * 1,000 RPD is ~43x what the automatic pipeline needs; the daily TOKEN ceiling is the
+ * tighter of the two, and it is identical on both. 20b stays as the fallback for a key
+ * that only serves it, and is roughly twice as fast if that ever matters more.
+ *
+ * The trailing fallback in `pickGroqModel` (first usable id) is kept deliberately: Groq
+ * adds strict-schema models faster than this list is edited, and the probe - not this
+ * list - is the real gate. A model this list has never heard of gets a chance to prove
+ * itself and is refused honestly if it cannot.
+ */
+export const GROQ_MODEL_PREFERENCE: string[] = [
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
 ]
 
-export function customVendorPreset(id: string): CustomVendorPreset | undefined {
-  return CUSTOM_VENDOR_PRESETS.find(v => v.id === id)
+/** Model families that cannot answer a chat completion at all - speech, embeddings and the
+ *  safety classifiers Groq lists alongside the chat models. Excluded before ranking so a
+ *  fallback can never land on one. */
+const GROQ_NON_CHAT = ['whisper', 'tts', 'embed', 'guard', 'prompt-guard']
+
+/**
+ * Choose the model to configure from the ids the endpoint reported.
+ *
+ * Falls back to the first usable id when nothing preferred is on offer, and to `null` only
+ * when the list is empty or entirely non-chat - which the caller must treat as "could not
+ * set this up", never as "use the default", since there is no default to use.
+ */
+export function pickGroqModel(available: string[]): string | null {
+  const usable = available.filter(
+    (m) => !GROQ_NON_CHAT.some((bad) => m.toLowerCase().includes(bad)),
+  )
+  for (const want of GROQ_MODEL_PREFERENCE) {
+    const hit = usable.find((m) => m.toLowerCase().startsWith(want.toLowerCase()))
+    if (hit) return hit
+  }
+  return usable[0] ?? null
 }
 
 /**

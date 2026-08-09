@@ -61,6 +61,15 @@ export class LruMap<K, V> {
     return this.map.has(key)
   }
 
+  /** The cached keys, least- to most-recently-used.
+   *
+   *  A snapshot array rather than the live iterator: callers use this to fan a
+   *  refresh out over every cached entry (planStore's task-deleted listener), and
+   *  those refreshes `set` back into this map while iterating. */
+  keys(): K[] {
+    return [...this.map.keys()]
+  }
+
   delete(key: K): boolean {
     return this.map.delete(key)
   }

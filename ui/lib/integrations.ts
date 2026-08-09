@@ -204,7 +204,10 @@ export function availableTrackerNames(): string {
  *  registry doesn't know is a backend that got ahead of the UI, and showing
  *  `some_tracker` beats showing an empty gap where the board name should be. */
 export function trackerName(id: string): string {
-  return TRACKER_BY_ID[id as TrackerId]?.name ?? id
+  // An empty id is a draft with no tracker resolved yet. Falling through to `id`
+  // rendered it as nothing at all, so copy built on this read "Will be created
+  // in " with a hole where the board should be.
+  return TRACKER_BY_ID[id as TrackerId]?.name ?? (id || 'your tracker')
 }
 
 /** The display names of the PM trackers currently connected (e.g. `['Jira']`),

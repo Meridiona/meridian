@@ -294,9 +294,26 @@ impl LlmBackend for OpenAiCompatBackend {
             .trim()
             .to_string();
         if text.is_empty() {
-            return Err(LlmError::Failed(
-                "custom provider returned an empty answer".into(),
-            ));
+            // WHY it was empty, when the endpoint told us. A REASONING model charges its
+            // hidden reasoning tokens against the same completion budget as the visible
+            // answer, so a budget that is merely small comes back `finish_reason: "length"`
+            // with no content at all - and the bare "returned an empty answer" then reads as
+            // "your key is broken" over a key that answered perfectly. (Measured: Groq's
+            // gpt-oss-120b spends 14 reasoning tokens before writing a single character of
+            // "OK"; see `detect::PROBE_MAX_TOKENS`.)
+            let truncated = payload["choices"][0]["finish_reason"].as_str() == Some("length");
+            tracing::warn!(
+                endpoint_id = %ep.id,
+                truncated,
+                "custom provider returned no content"
+            );
+            return Err(LlmError::Failed(if truncated {
+                "custom provider used its whole token budget before answering - \
+                 the model is likely a reasoning model that needs a larger budget"
+                    .into()
+            } else {
+                "custom provider returned an empty answer".to_string()
+            }));
         }
 
         let usage = &payload["usage"];

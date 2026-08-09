@@ -1,17 +1,17 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 'use client'
 
-// Wizard step bodies + Welcome + Completion + the STEPS meta (ported from the
-// design's steps.jsx). Every body is driven by the live `Wiz` handle built in
+// Wizard step bodies + Welcome + the STEPS meta (ported from the design's
+// steps.jsx). Every body is driven by the live `Wiz` handle built in
 // page.tsx — permissions, integrations, sign-in, and the AI-provider choice are
 // all real. Nothing here fabricates data.
 
 import type { ReactNode } from 'react'
-import { Btn, Check, DISPLAY, Kicker, PermIcon, Row } from './atoms'
-import { PERMISSIONS } from './data'
+import { Btn, Check, DISPLAY, Logo, PermIcon, PermissionPreview, Row } from './atoms'
+import { EARLY_CUSTOMER_NUMBER, PERMISSIONS } from './data'
 import type { NotifState, PermissionMeta } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
-import { TRACKERS, availableTrackers, availableTrackerNames } from '@/lib/integrations'
+import { TRACKERS } from '@/lib/integrations'
 import { llmProvider, LLM_INTRO_BODY, LLM_INTRO_TITLE, type LlmProviderId } from '@/lib/llm-providers'
 import ConnectTrackers from '@/components/IntegrationConnect'
 import LlmProviderPicker, { type InstallOutcome, type ProviderStatus } from '@/components/LlmProviderPicker'
@@ -65,20 +65,48 @@ export interface Wiz {
 // note below), so their cards would be permanent always-green no-ops.
 function PermissionsBody({ wiz }: { wiz: Wiz }) {
   const isWin = wiz.platform === 'windows'
-  const cards = isWin ? PERMISSIONS.filter((p) => p.id === 'notifications') : PERMISSIONS
   // Only Screen Recording lives locally on the Mac; on Windows the same
   // reassurance holds, just for "this PC".
   const device = isWin ? 'PC' : 'Mac'
-  // On Windows the notifications card IS the whole step, so when PermCard hides
-  // it — no plugin (`unbundled tauri dev`) or a WinRT probe that returned None
-  // in a packaged build — the step would otherwise render blank. Show a
-  // fallback line so there is always something to read. (On macOS the same hide
-  // still leaves the two TCC cards, so no fallback is needed there.)
+  // On Windows the notifications card IS the whole step, so when it hides —
+  // no plugin (`unbundled tauri dev`) or a WinRT probe that returned None in a
+  // packaged build — the step would otherwise render blank. Show a fallback
+  // line so there is always something to read. (On macOS the two TCC cards
+  // below are still there, so no fallback is needed there.)
   const notifHidden = isWin && wiz.perms.notifications === 'unavailable'
+  const notifCard = PERMISSIONS.find((p) => p.id === 'notifications')!
+  const requiredCards = PERMISSIONS.filter((p) => p.id !== 'notifications')
   return (
-    <div className="flex flex-col" style={{ gap: 9 }}>
-      {notifHidden
-        ? <Row tone="surface">
+    // Sized to its own content (no flex:1 stretch) - this step's cards are
+    // short, and forcing them to fill the whole card height (as a prior pass
+    // did) just left a big empty gap inside each one. Scoped to this step
+    // only: the shared 628 card height, and every other step's own layout,
+    // is untouched.
+    <div className="flex flex-col" style={{ gap: 12 }}>
+      <span className="flex items-center shrink-0" style={{
+        gap: 5, alignSelf: 'flex-start', borderRadius: 99, padding: '4px 10px',
+        background: 'color-mix(in srgb, var(--color-state-approved) 10%, transparent)',
+        border: '0.5px solid color-mix(in srgb, var(--color-state-approved) 30%, transparent)',
+      }}>
+        <PermIcon icon="shield" size={11} />
+        <span className="mt-chip" style={{ color: 'var(--color-state-approved)', letterSpacing: '.06em' }}>Privacy first</span>
+      </span>
+
+      {/* All three permissions in one row, not 2+1 - Notifications joins
+         Accessibility/Screen Recording as an equal third column instead of a
+         separate full-width row below them. */}
+      {!isWin && (
+        <div className="flex items-stretch" style={{ gap: 12 }}>
+          {requiredCards.map((p) => <PermCard key={p.id} p={p} wiz={wiz} />)}
+          <PermCard p={notifCard} wiz={wiz} />
+        </div>
+      )}
+      {/* Windows only ever shows Notifications (no TCC analogue for the other
+         two there) - it's the whole step, so it renders alone rather than in
+         the three-column row above. */}
+      {isWin && (
+        notifHidden ? (
+          <Row tone="surface">
             <span className="flex items-center justify-center shrink-0" style={{
               width: 34, height: 34, borderRadius: 10,
               background: 'var(--t-box)', color: 'var(--t-faint)', border: '0.5px solid var(--t-card-border)',
@@ -88,10 +116,13 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
               <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-muted)', marginTop: 3 }}>Notification settings aren&apos;t available in this build - you can turn them on later from Windows Settings.</p>
             </div>
           </Row>
-        : cards.map((p) => <PermCard key={p.id} p={p} wiz={wiz} />)}
+        ) : (
+          <PermCard p={notifCard} wiz={wiz} />
+        )
+      )}
       <p className="flex items-start" style={{ gap: 7, fontSize: 11, lineHeight: 1.5, color: 'var(--t-muted)', marginTop: 3 }}>
         <span style={{ width: 5, height: 5, borderRadius: 99, background: 'var(--color-state-approved)', marginTop: 5, flexShrink: 0 }} />
-        Your screen, tasks, and worklogs stay on this {device} and are never uploaded. We send usage stats - daily focus time, app version, and your email once you sign in - to improve Meridian, never your content.
+        Read on this {device}. Never stored, never collected by Meridian.
       </p>
     </div>
   )
@@ -99,43 +130,88 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
 
 // A single OS-permission card, shared by macOS and Windows. Notifications is
 // tri-state (deny and not-yet-asked need different grant actions); the two TCC
-// grants are booleans.
+// grants are booleans. Vertical layout (icon+badge, then title/desc, then an
+// OS-styled preview of the toggle itself, then the grant action) rather
+// than the old single horizontal bar — the two required cards render side by
+// side (see PermissionsBody) and stretch to fill the step, and a vertical
+// card is what gives the preview room to grow into that height instead of
+// squeezing everything onto one row.
 function PermCard({ p, wiz }: { p: PermissionMeta; wiz: Wiz }) {
   const notif = p.id === 'notifications'
   // Unbundled runs (`tauri dev`) have no notification plugin at all — nothing
   // to grant, so the card hides rather than dead-ends.
   if (notif && wiz.perms.notifications === 'unavailable') return null
   const granted = notif ? wiz.perms.notifications === 'granted' : !!wiz.perms[p.id]
+  const isMac = wiz.platform !== 'windows'
+  // The reconstructed macOS pane already carries its own title + description,
+  // lifted from the real System Settings copy - repeating our own title/desc
+  // above it just said the same thing twice, so every macOS permission skips
+  // the text (not the card itself - the bordered boundary stays, just without
+  // the duplicate copy inside it). Windows' Notifications preview is a bare
+  // toggle row with no such built-in copy, so it keeps its own title/desc.
+  const selfDescribing = isMac
+  // One badge, one state: REQUIRED/OPTIONAL until granted, then it flips to
+  // GRANTED in place - rather than the badge staying "REQUIRED" forever while
+  // a separate "Granted" line appeared below. Every permission here is
+  // required now (including Notifications - see PERMISSIONS in data.ts), but
+  // the fallback stays in case that ever changes again.
+  const badge = granted
+    ? { label: 'GRANTED', color: 'var(--color-state-approved)', border: 'var(--color-state-approved)' }
+    : { label: p.required ? 'REQUIRED' : 'OPTIONAL', color: 'var(--t-muted)', border: 'var(--t-card-border)' }
+  const badgeEl = (
+    <span className="mt-chip" style={{ color: badge.color, border: `0.5px solid ${badge.border}`, borderRadius: 4, padding: '1px 5px' }}>{badge.label}</span>
+  )
   return (
-    <Row tone={granted ? 'tint' : 'surface'}>
-      <span className="flex items-center justify-center shrink-0" style={{
-        width: 34, height: 34, borderRadius: 10,
-        background: granted ? 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)' : 'var(--t-box)',
-        color: granted ? 'var(--color-state-proposal)' : 'var(--t-faint)',
-        border: '0.5px solid var(--t-card-border)',
-      }}><PermIcon icon={p.icon} /></span>
+    <div className="flex flex-col" style={{
+      flex: 1, minWidth: 0, gap: selfDescribing ? 6 : 8, padding: '11px 13px', borderRadius: 13,
+      // Granted turns the whole card green - a clear at-a-glance "this one's
+      // done", not just a faint accent tint (which used to still read as
+      // pending at a glance).
+      border: `0.5px solid ${granted ? 'color-mix(in srgb, var(--color-state-approved) 40%, var(--t-card-border))' : 'var(--t-card-border)'}`,
+      background: granted ? 'color-mix(in srgb, var(--color-state-approved) 9%, var(--t-card))' : 'var(--t-card)',
+    }}>
+      {selfDescribing ? (
+        <div className="flex justify-end">{badgeEl}</div>
+      ) : (
+        <>
+          <div className="flex items-center justify-between">
+            <span className="flex items-center justify-center shrink-0" style={{
+              width: 34, height: 34, borderRadius: 10,
+              background: granted ? 'color-mix(in srgb, var(--color-state-approved) 14%, transparent)' : 'var(--t-box)',
+              color: granted ? 'var(--color-state-approved)' : 'var(--t-faint)',
+              border: '0.5px solid var(--t-card-border)',
+            }}><PermIcon icon={p.icon} /></span>
+            {badgeEl}
+          </div>
+          <div>
+            <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>{p.name}</span>
+            <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-muted)', marginTop: 3 }}>{p.desc}</p>
+          </div>
+        </>
+      )}
 
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div className="flex items-center" style={{ gap: 8 }}>
-          <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>{p.name}</span>
-          {!notif && <span className="mt-chip" style={{ color: 'var(--t-muted)', border: '0.5px solid var(--t-card-border)', borderRadius: 4, padding: '1px 5px' }}>{p.required ? 'REQUIRED' : 'OPTIONAL'}</span>}
-        </div>
-        <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-muted)', marginTop: 3 }}>{p.desc}</p>
+      {/* Directly under the pane preview, full-width, and clicking it goes
+         straight to that permission's own System Settings pane (`openPane`
+         is keyed per-permission - screen_recording/accessibility/notifications,
+         never a generic prefs URL). Once granted the badge above already says
+         so, so this slot clears instead of repeating it here. */}
+      <div className="flex items-center" style={{ flex: 1 }}>
+        <PermissionPreview os={isMac ? 'macos' : 'windows'} permissionId={p.id} />
       </div>
 
-      <div className="shrink-0">
-        {granted
-          ? <span className="flex items-center" style={{ gap: 6, fontSize: 12, color: 'var(--color-state-approved)', fontWeight: 500 }}><Check size={15} color="var(--color-state-approved)" />Granted</span>
-          : notif
+      {!granted && (
+        <div style={{ paddingTop: 2 }}>
+          {notif
             // 'prompt' → the button surfaces the one-shot OS dialog (macOS only —
             // Windows reports only granted/denied, never prompt);
             // 'denied' → the OS won't re-prompt, so it opens the Notifications
             // pane directly (grantNotifications skips the pointless re-request
             // when told it's already denied).
-            ? <Btn size="sm" variant="secondary" onClick={() => wiz.grantNotifications(wiz.perms.notifications === 'denied')}>{wiz.perms.notifications === 'denied' ? 'Open Settings' : 'Allow'}</Btn>
-            : <Btn size="sm" variant="secondary" onClick={() => p.id === 'screen' ? wiz.grantScreen() : wiz.openPane(p.pane)}>Open Settings</Btn>}
-      </div>
-    </Row>
+            ? <Btn size="sm" variant="secondary" onClick={() => wiz.grantNotifications(wiz.perms.notifications === 'denied')} style={{ width: '100%' }}>{wiz.perms.notifications === 'denied' ? 'Open Settings' : 'Allow'}</Btn>
+            : <Btn size="sm" variant="secondary" onClick={() => p.id === 'screen' ? wiz.grantScreen() : wiz.openPane(p.pane)} style={{ width: '100%' }}>Open Settings</Btn>}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -173,17 +249,23 @@ function IntegrationsBody({ wiz }: { wiz: Wiz }) {
 function SignInBody({ wiz }: { wiz: Wiz }) {
   if (wiz.signedInEmail) {
     return (
-      <Row tone="tint">
-        <span className="flex items-center justify-center shrink-0" style={{
-          width: 34, height: 34, borderRadius: 10,
-          background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)',
-          color: 'var(--color-state-proposal)', border: '0.5px solid var(--t-card-border)',
-        }}><Check size={16} color="var(--color-state-proposal)" w={2.2} /></span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <span style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--t-title)' }}>Signed in</span>
-          <p style={{ fontSize: 11.5, lineHeight: 1.4, color: 'var(--t-muted)', marginTop: 3 }}>{wiz.signedInEmail}</p>
+      <div className="flex flex-col items-center" style={{ width: '100%', maxWidth: 340, margin: '0 auto' }}>
+        <div className="w-full flex flex-col items-center mer-pop" style={{
+          gap: 10, borderRadius: 16, padding: '26px 26px 22px', textAlign: 'center',
+          border: '0.5px solid var(--t-card-border)',
+          background: 'color-mix(in srgb, var(--t-accent) 6%, var(--t-card))',
+        }}>
+          <span className="flex items-center justify-center shrink-0" style={{
+            width: 42, height: 42, borderRadius: 13,
+            background: 'color-mix(in srgb, var(--t-accent) 14%, transparent)',
+            color: 'var(--t-accent)',
+          }}><Check size={19} color="var(--t-accent)" w={2.2} /></span>
+          <div>
+            <p style={{ fontSize: 14.5, fontWeight: 600, color: 'var(--t-title)' }}>You&apos;re signed in</p>
+            <p style={{ fontSize: 12, color: 'var(--t-muted)', marginTop: 3 }}>{wiz.signedInEmail}</p>
+          </div>
         </div>
-      </Row>
+      </div>
     )
   }
   return <SignInWidget onSignedIn={wiz.onSignedIn} />
@@ -201,6 +283,11 @@ function SignInBody({ wiz }: { wiz: Wiz }) {
 function IntelligenceBody({ wiz }: { wiz: Wiz }) {
   return (
     <LlmProviderPicker
+      // First run: ask about a subscription before showing any provider. Without it this
+      // step opens on three CLI names and an "advanced" tile, which is unanswerable for
+      // anyone who does not already pay for one of them - and they are the users most
+      // likely to be here.
+      gate
       value={wiz.provider}
       selectedCustomId={wiz.providerCustomId}
       onChange={wiz.setProvider}
@@ -218,98 +305,131 @@ function IntelligenceBody({ wiz }: { wiz: Wiz }) {
 }
 
 // ── Welcome (pre-step intro) ──────────────────────────────────────────────────
-export function Welcome({ onBegin, steps, ready, error, onRetry }: {
+export function Welcome({ onBegin, ready, error, onRetry }: {
   onBegin: () => void
-  steps: StepMeta[]
   /** False until `get_platform` resolves — "Get started" stays disabled so the
    *  step list (which depends on platform) can't reshape after the user begins. */
   ready: boolean
   error: boolean
   onRetry: () => void
 }) {
-  const points = [
-    { t: 'On-device', d: 'Your screen is read and understood locally on your device, never uploaded.' },
-    { t: 'Automatic', d: 'Builds an accurate timeline of the tickets you worked on, then drafts the updates for you.' },
-    { t: 'Connected', d: availableTrackers().length
-        ? `Works with ${availableTrackerNames()}, with more trackers coming soon.`
-        : 'Tracker integrations are coming soon.' },
+  // Three short benefit clauses, not feature labels - one voice, one payoff
+  // each, no tracker brand names (those mean nothing until step 2).
+  const pillars = [
+    { icon: 'shield', label: 'Never leaves this device' },
+    { icon: 'power', label: 'Understands your day automatically' },
+    { icon: 'mail', label: 'Drafts updates, ready to post' },
   ]
+  // THIS SCREEN HAD EVERY GENERATED-PAGE TELL AT ONCE, and they compounded: a
+  // pink-to-violet-to-indigo gradient badge (that exact ramp is the signature of
+  // an unedited AI export, and it was hardcoded hex - outside the token system
+  // entirely), a headline split across two <h1>s with the second one coloured in
+  // the accent, an exclamation mark, three radius-99 pills each carrying a filled
+  // circular icon, and a segmented chip inside the primary button. Five different
+  // devices, all shouting, none of them hierarchy.
+  //
+  // The fix is subtraction, not restyling. Size and weight carry the hierarchy;
+  // the accent appears ONCE, on the one thing that is clickable. What is left is
+  // a masthead, a sentence, what the product does, and the way forward - which is
+  // all this screen ever had to say.
   return (
-    <div className="flex flex-col items-center justify-center" style={{ height: '100%', textAlign: 'center', padding: '36px 44px' }}>
-      <div className="flex items-center mer-pop" style={{ gap: 9, marginBottom: 22 }}>
-        <span style={{ width: 9, height: 9, borderRadius: 99, background: 'var(--color-state-proposal)' }} />
-        <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 19, lineHeight: 1, letterSpacing: '-.01em', color: 'var(--t-title)' }}>meridian</span>
-      </div>
-      <Kicker style={{ marginBottom: 14 }}>First-run setup</Kicker>
-      <h1 style={{ ...DISPLAY, fontSize: 33, lineHeight: 1.08, color: 'var(--t-title)', maxWidth: 400, textWrap: 'balance' }}>
-        Your work, <span style={{ color: 'var(--color-state-proposal)' }}>remembered accurately.</span>
-      </h1>
-      <p style={{ fontSize: 13.5, lineHeight: 1.55, color: 'var(--t-muted)', marginTop: 13, maxWidth: 384, textWrap: 'pretty' }}>
-        Meridian watches your work on-device and keeps an accurate record of what you actually did, then turns it into worklogs and ticket updates you just approve.
-      </p>
-      <div className="flex flex-col" style={{ gap: 11, margin: '26px 0 28px', textAlign: 'left', width: '100%', maxWidth: 360 }}>
-        {points.map((p) => (
-          <div key={p.t} className="flex items-start" style={{ gap: 11 }}>
-            <span className="flex items-center justify-center shrink-0" style={{ width: 19, height: 19, borderRadius: 99, background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)', marginTop: 1 }}>
-              <Check size={12} color="var(--color-state-proposal)" w={2.2} />
-            </span>
-            <p style={{ fontSize: 12.5, lineHeight: 1.4, color: 'var(--t-muted)' }}>
-              <span style={{ fontWeight: 500, color: 'var(--t-title)' }}>{p.t}.</span> {p.d}
-            </p>
+    // Full-width flow, vertically centred as ONE block, and left-aligned all the
+    // way down: every line starts on the same rail, so the eye tracks straight
+    // down it instead of re-finding the start of each block. The founding-user
+    // mark shares the brand row (same row, top-right) rather than standing as a
+    // column of its own, which used to race the pillars for height and leave a
+    // hole in the layout.
+    <div className="flex flex-col justify-center" style={{ height: '100%', padding: '0 64px' }}>
+      <div>
+        <div className="flex items-baseline justify-between" style={{ gap: 24, marginBottom: 30 }}>
+          <div className="flex items-center mer-pop" style={{ gap: 13 }}>
+            <Logo size={40} />
+            <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 29, lineHeight: 1, letterSpacing: '-.02em', color: 'var(--t-title)' }}>Meridian</span>
           </div>
-        ))}
-      </div>
-      {error ? (
-        <div className="flex flex-col items-center" style={{ gap: 8 }}>
-          <p style={{ fontSize: 12, color: 'var(--color-state-pending)' }}>Couldn't detect your platform - try again.</p>
-          <Btn onClick={onRetry} style={{ padding: '11px 26px', fontSize: 13.5 }}>Retry</Btn>
-        </div>
-      ) : (
-        <Btn onClick={onBegin} disabled={!ready} style={{ padding: '11px 26px', fontSize: 13.5 }}>
-          {ready ? 'Get started' : 'Preparing setup…'}
-        </Btn>
-      )}
-      <p className="font-mono" style={{ fontSize: 10.5, letterSpacing: '.04em', color: 'var(--t-faint)', marginTop: 14 }}>{steps.length} quick steps · about a minute</p>
-    </div>
-  )
-}
 
-// ── Completion ────────────────────────────────────────────────────────────────
-export function Completion({ wiz }: { wiz: Wiz }) {
-  const connected = TRACKERS.filter((t) => wiz.integrations?.[t.id])
-  const grantedCount = [wiz.perms.accessibility, wiz.perms.screen].filter(Boolean).length
-  // macOS summarises the two TCC grants; Windows has no such step — only the
-  // optional Notifications card — so it reports that instead of "2 of 2 granted",
-  // which would count permissions Windows never actually prompts for.
-  const permsLine = wiz.platform === 'windows'
-    ? { k: 'Notifications', v: notifSummary(wiz.perms.notifications) }
-    : { k: 'Permissions', v: `${grantedCount} of 2 granted` }
-  const lines = [
-    permsLine,
-    { k: 'Intelligence', v: llmProvider(wiz.provider).name },
-    { k: 'Connected', v: connected.length ? connected.map((c) => c.name).join(', ') : 'None yet' },
-  ]
-  return (
-    <div className="flex flex-col items-center" style={{ textAlign: 'center', padding: '8px 8px 0' }}>
-      <span className="flex items-center justify-center mer-pop" style={{ width: 56, height: 56, borderRadius: 99, background: 'color-mix(in srgb, var(--color-state-proposal) 12%, transparent)', color: 'var(--color-state-proposal)', marginBottom: 18 }}>
-        <Check size={28} color="var(--color-state-proposal)" w={2.2} />
-      </span>
-      <Kicker style={{ marginBottom: 10 }}>Setup complete</Kicker>
-      <h1 style={{ ...DISPLAY, fontSize: 31, lineHeight: 1.05, color: 'var(--t-title)', marginBottom: 10 }}>You&apos;re all set.</h1>
-      <p style={{ fontSize: 13.5, lineHeight: 1.5, color: 'var(--t-muted)', maxWidth: 340, textWrap: 'pretty', marginBottom: 22 }}>
-        Meridian is now tracking quietly in your menu bar - on-device, private, and matched to your work.
-      </p>
-      <div style={{ width: '100%', maxWidth: 360, border: '0.5px solid var(--t-card-border)', borderRadius: 13, overflow: 'hidden' }}>
-        {lines.map((l, i) => (
-          <div key={l.k} className="flex items-center justify-between" style={{ padding: '10px 14px', borderTop: i ? '1px solid var(--t-hair)' : 'none' }}>
-            <span className="mt-chip" style={{ color: 'var(--t-faint)' }}>{l.k}</span>
-            <span style={{ fontSize: 12.5, color: 'var(--t-title)', fontWeight: 450 }}>{l.v}</span>
+          {/* A NUMBERED EDITION, not a badge. This is a real fact about this
+             person - they are the Nth user - and a fact reads as true when it is
+             stated plainly and as marketing when it is put in a coloured capsule
+             with a glow under it. So: no fill, no shadow, no radius; the label
+             small and quiet, the number in mono at title weight because the
+             NUMBER is the thing worth keeping. A hairline on the left ties it to
+             the brand row without drawing a box around it. */}
+          <div className="mer-pop shrink-0 flex items-baseline" style={{
+            gap: 9, paddingLeft: 16, borderLeft: '1px solid var(--t-hair)',
+          }}>
+            <span className="mt-chip" style={{ color: 'var(--t-faint)', letterSpacing: '.08em' }}>Founding user</span>
+            <span className="font-mono" style={{
+              fontSize: 17, fontWeight: 700, letterSpacing: '.02em', color: 'var(--t-title)',
+            }}>
+              No. {String(EARLY_CUSTOMER_NUMBER).padStart(3, '0')}
+            </span>
           </div>
-        ))}
+        </div>
+
+        {/* ONE headline. It was two, at the same size, the second one in the
+            accent - which is not hierarchy, it is two titles fighting. The
+            greeting is a greeting, so it is set as one, above and small; the
+            promise is the thing being made, so it is the heading.
+
+            IN THE LAVENDER, WHOLE. Not the button's fill itself - that colour on
+            white is ~1.9:1, a surface tone that turns to a smear when it is set
+            as type - but the same hue carried down the ramp to where it clears
+            the large-text contrast line (`--lavender-ink`). And the WHOLE
+            sentence, not the second half: which words land on line two depends
+            on the window width, so colouring "work go unnoticed" would mean a
+            colour change that moves mid-phrase whenever the text rewraps. */}
+        <p style={{ fontSize: 14, fontWeight: 500, color: 'var(--t-muted)', marginBottom: 10 }}>
+          You made it here.
+        </p>
+        <h1 style={{ ...DISPLAY, fontSize: 40, lineHeight: 1.14, color: 'var(--lavender-ink)', textWrap: 'balance', maxWidth: 620 }}>
+          We won&apos;t let your work go unnoticed.
+        </h1>
+
+        <p style={{ fontSize: 14, lineHeight: 1.65, color: 'var(--t-muted)', marginTop: 16, maxWidth: 560, textWrap: 'pretty' }}>
+          You&apos;re one of the first <span style={{ fontWeight: 600, color: 'var(--t-title)' }}>{EARLY_CUSTOMER_NUMBER}</span> people
+          helping us build Meridian. We hope it makes a real difference for you, too.
+        </p>
+
+        {/* WHAT IT DOES, as three plain lines. They were chips - filled circular
+            icons on radius-99 capsules, three across - which is the shape of a
+            feature grid on a landing page, and it made three quiet facts look
+            like an advert. Set as text with the icons at the same weight as the
+            words beside them, the eye reads them instead of counting them. */}
+        <ul className="flex flex-col" style={{ gap: 9, marginTop: 26 }}>
+          {pillars.map((p) => (
+            <li key={p.label} className="flex items-center" style={{
+              gap: 10, fontSize: 13.5, color: 'var(--t-title)',
+            }}>
+              <span className="shrink-0 flex items-center" style={{ color: 'var(--t-faint)' }}>
+                <PermIcon icon={p.icon} size={15} />
+              </span>
+              {p.label}
+            </li>
+          ))}
+        </ul>
       </div>
-      <p style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--t-faint)', maxWidth: 360, marginTop: 16, textAlign: 'center' }}>
-        Meridian sends error reports to help fix bugs (change in Settings).
-      </p>
+
+      <div style={{ borderTop: '1px solid var(--t-hair)', marginTop: 34, paddingTop: 22 }}>
+        {error ? (
+          <div className="flex items-center" style={{ gap: 14 }}>
+            <p style={{ fontSize: 12, color: 'var(--color-state-pending)' }}>Couldn&apos;t detect your platform - try again.</p>
+            <Btn onClick={onRetry} style={{ padding: '12px 28px', fontSize: 14 }}>Retry</Btn>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between" style={{ gap: 24 }}>
+            {/* The time estimate belongs to this sentence, not inside the button.
+                It was a divided chip within the label - a control carrying two
+                pieces of text separated by a rule, which reads as two controls
+                and makes the one you press harder to name. */}
+            <p style={{ fontSize: 13, color: 'var(--t-muted)' }}>
+              Next up: getting you set up. <span style={{ color: 'var(--t-faint)' }}>About 2 minutes.</span>
+            </p>
+            <Btn onClick={onBegin} disabled={!ready} style={{ padding: '13px 24px', fontSize: 14 }}>
+              {ready ? "Let's get started" : 'Preparing setup…'}
+            </Btn>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -327,9 +447,10 @@ export interface StepMeta {
   canNext: (w: Wiz) => boolean
 }
 
-// Permissions stays first (capture needs the grants on macOS); the AI-provider
-// choice comes last so the user has connected their trackers and signed in
-// before picking which model writes their summaries.
+// Sign in comes first (so the wizard knows who it's setting up for from the
+// start), then Permissions (capture needs the grants on macOS); the
+// AI-provider choice stays last so the user has connected their trackers and
+// signed in before picking which model writes their summaries.
 //
 // The step is platform-SHAPED, not platform-dropped. macOS capture needs
 // Accessibility + Screen Recording — TCC grants with no analogue on Windows,
@@ -343,8 +464,8 @@ export interface StepMeta {
 // check_notifications poll fires on either.
 const PERMISSIONS_STEP: StepMeta = {
   id: 'permissions', n: '01', label: 'Permissions', kicker: 'Access',
-  title: 'Let Meridian see your work',
-  subtitle: "Two macOS permissions let Meridian recognise what you're focused on. Read locally, never uploaded.",
+  title: 'Help Meridian reconstruct your day',
+  subtitle: "That's what these permissions are for - your data stays local, and Meridian never collects it.",
   Body: PermissionsBody,
   status: (s) => { const g = [s.perms.accessibility, s.perms.screen].filter(Boolean).length; return g ? `${g} granted` : 'Not granted' },
   canNext: (s) => !!(s.perms.accessibility && s.perms.screen),
@@ -365,36 +486,53 @@ const WINDOWS_NOTIFICATIONS_STEP: StepMeta = {
   canNext: () => true,
 }
 
+const SIGNIN_STEP: StepMeta = {
+  id: 'signin', n: '01', label: 'Sign in', kicker: 'Account',
+  title: 'Sign in to Meridian',
+  subtitle: "So we know who's using Meridian.",
+  Body: SignInBody,
+  status: (s) => s.signedInEmail ?? 'Not signed in',
+  canNext: (s) => !!s.signedInEmail,
+}
+
+// ── Steps the WIZARD no longer runs — owned by the post-setup walkthrough ─────
+// Both of these used to be wizard steps 03/04. They moved because upfront they
+// are unmotivated: "connect your Jira" before the user has seen anything reads
+// as a data grab, and "pick an AI model" means nothing before they have read
+// something a model wrote. The walkthrough asks for each at the moment its value
+// just became visible on screen — same ask, very different conversion.
+//
+// They keep their StepMeta shape (rather than collapsing to bare components) so
+// the walkthrough gets the title/subtitle/status/gating copy for free and there
+// is still exactly one definition of each. Not in [`ALL_STEPS`] — nothing else
+// should add them back without moving the corresponding walkthrough beat.
+export const INTEGRATIONS_STEP: StepMeta = {
+  id: 'integrations', n: '03', label: 'Integrations', kicker: 'Project tools',
+  title: 'Connect your trackers',
+  subtitle: 'Link the tools you use so Meridian can match sessions to tickets and draft worklogs - skip it and Meridian still tracks your day; connect anytime from Settings.',
+  Body: IntegrationsBody,
+  status: (s) => { const c = TRACKERS.filter((t) => s.integrations?.[t.id]).length; return c ? `${c} connected` : 'Optional' },
+  canNext: () => true,
+}
+
+export const PROVIDER_STEP: StepMeta = {
+  id: 'provider', n: '04', label: 'Intelligence', kicker: 'Your AI',
+  // The SHARED copy - the same words Settings shows. These used to be hardcoded here with
+  // different wording while llm-providers.ts claimed they were shared.
+  title: LLM_INTRO_TITLE,
+  subtitle: LLM_INTRO_BODY,
+  Body: IntelligenceBody,
+  status: (s) => llmProvider(s.provider).name,
+  // Never gates. Every path out of this step is valid — including picking a CLI that
+  // isn't installed yet: that hour is left pending rather than dead-ending setup.
+  canNext: () => true,
+}
+
+// The wizard proper: identity, then the grants capture cannot run without.
+// Everything else the user can decide once they have seen what Meridian does.
 const ALL_STEPS: StepMeta[] = [
+  SIGNIN_STEP,
   PERMISSIONS_STEP,
-  {
-    id: 'integrations', n: '02', label: 'Integrations', kicker: 'Project tools',
-    title: 'Connect your trackers',
-    subtitle: 'Link the tools you use so Meridian can match sessions to tickets and draft worklogs - skip it and Meridian still tracks your day; connect anytime from Settings.',
-    Body: IntegrationsBody,
-    status: (s) => { const c = TRACKERS.filter((t) => s.integrations?.[t.id]).length; return c ? `${c} connected` : 'Optional' },
-    canNext: () => true,
-  },
-  {
-    id: 'signin', n: '03', label: 'Sign in', kicker: 'Account',
-    title: 'Sign in to Meridian',
-    subtitle: "One quick sign-in so we know who's using Meridian - we'll email you a one-time code, no password needed.",
-    Body: SignInBody,
-    status: (s) => s.signedInEmail ?? 'Not signed in',
-    canNext: (s) => !!s.signedInEmail,
-  },
-  {
-    id: 'provider', n: '04', label: 'Intelligence', kicker: 'Your AI',
-    // The SHARED copy - the same words Settings shows. These used to be hardcoded here with
-    // different wording while llm-providers.ts claimed they were shared.
-    title: LLM_INTRO_TITLE,
-    subtitle: LLM_INTRO_BODY,
-    Body: IntelligenceBody,
-    status: (s) => llmProvider(s.provider).name,
-    // Never gates. Every path out of this step is valid — including picking a CLI that
-    // isn't installed yet: that hour is left pending rather than dead-ending setup.
-    canNext: () => true,
-  },
 ]
 
 /** Platform-specific step list. On Windows the Permissions step is swapped for

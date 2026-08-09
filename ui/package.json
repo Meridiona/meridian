@@ -6,7 +6,6 @@
     "dev": "env -u NODE_ENV next dev --turbopack -p 3939",
     "build": "next build && node ../tray/scripts/sync-popover.mjs build",
     "start": "next start -p 3939",
-    "lint": "next lint",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -27,6 +26,7 @@
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.10.6",
     "@tailwindcss/postcss": "4.1.4",
+    "@types/bun": "1.3.14",
     "@types/node": "22.0.0",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",

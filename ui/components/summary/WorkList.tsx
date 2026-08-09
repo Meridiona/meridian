@@ -1,15 +1,16 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// ONE list of the day: the plan, then the work done on top of it.
+// The day's work, in the walkthrough's two blocks: the plan, ticked off, and then
+// what came up that nobody planned.
 //
-// KEYED BY TICKET, NOT BY WORKSTREAM. This is the load-bearing decision. On a
-// planned day the top of the list is one row per COMMITTED TICKET, in plan order -
-// so a `4 / 6` ring always shows six rows with four ticked, and the list reconciles
-// with the number above it. An earlier version keyed the whole list by workstream
-// and annotated each with the ticket it advanced; that silently dropped any ticket
-// whose work was folded into a shared row (two tickets, one workstream) or had no
-// tracked work at all, so a six-ticket plan could render four rows. Keying by ticket
-// makes the plan portion count-exact by construction.
+// KEYED BY TICKET, NOT BY WORKSTREAM. This is the load-bearing decision and it
+// survived the restyle. On a planned day the top block is one row per COMMITTED
+// TICKET, in plan order - so a `4 / 6` ring always shows six rows with four ticked,
+// and the list reconciles with the number above it. An earlier version keyed the
+// whole list by workstream and annotated each with the ticket it advanced; that
+// silently dropped any ticket whose work was folded into a shared row (two tickets,
+// one workstream) or had no tracked work at all, so a six-ticket plan could render
+// four rows. Keying by ticket makes the plan portion count-exact by construction.
 //
 // A ticket's ROW still shows the WORK, not the ticket's own wording: the first
 // workstream behind it (`PlanVerdict.day_task_ids`, the join `day_evidence::
@@ -18,15 +19,27 @@
 // opens the ticket instead - there is no worklog to write for work that did not
 // happen.
 //
-// Below the plan sits the BONUS half: substantial work no planned ticket claims.
-// The 30-minute floor applies there (`TASK_MIN_MINUTES`, the same one that keeps
-// `task_count` honest) and the sub-floor remainder is stated as a tail, so the
-// minutes still reconcile. Planned tickets are exempt from the floor - a ticket you
-// committed to shows however little it took.
+// WHY OFF-PLAN WORK GETS ITS OWN HEADED BLOCK rather than an inline chip on a row.
+// A real day contains work nobody planned, and a summary that quietly folds it into
+// the plan is the one people stop trusting - it is precisely the work they get asked
+// about and cannot account for. Under its own heading it is also the only honest
+// place to show the second worklog outcome: these strands matched no planned ticket,
+// so Meridian drafts a NEW one rather than forcing them onto the nearest half-match.
+// That is what the sub-line on each row says, and it is why the rows are clickable.
 //
-// Clicking a row opens the timeline's own DayTaskDetailPanel (generate / approve /
-// retarget / dismiss arrive with it, no worklog logic here) or, for an untouched
-// ticket, the ticket itself.
+// NO SUB-FLOOR TAIL. The 30-minute floor (`TASK_MIN_MINUTES`) still decides what is
+// a thing you did rather than a detour, but the remainder is no longer stated as a
+// line under the list - the minutes therefore do not add up to the "time logged"
+// figure above, deliberately, and the timeline is where the whole day is accounted
+// for.
+//
+// # Who calls this
+// [`DaySummaryOverlay`], in the left column of the plan row.
+//
+// # Related
+// - `ui/components/tutorial/TutorialSummaryCard.tsx` — the scripted version of these
+//   two blocks, and where the shape came from.
+// - `./DayScore.tsx` — the same plan, as the donut above.
 
 'use client'
 
@@ -34,8 +47,8 @@ import { motion, useReducedMotion } from 'framer-motion'
 import { fmtDur } from '@/components/atoms'
 import { TASK_MIN_MINUTES, type DayTask, type PlanVerdict } from '@/lib/api-types'
 
-/** Split the day's tasks at the floor. Both halves are needed: one to list, one to
- *  account for. */
+/** The day's substantial work, longest first. The floor keeps a five-minute glance
+ *  out of a list whose claim is that everything in it is a thing you did. */
 export function splitAtFloor(tasks: DayTask[]): { shown: DayTask[]; tailMinutes: number } {
   const shown = tasks
     .filter(t => t.minutes >= TASK_MIN_MINUTES)
@@ -47,49 +60,144 @@ export function splitAtFloor(tasks: DayTask[]): { shown: DayTask[]; tailMinutes:
   return { shown, tailMinutes }
 }
 
-/** The left marker: a checkbox. Ticked means the work HAPPENED - this is
- *  deterministic, not a judgement. Any stretch of real tracked time appears here
- *  ticked, because you did in fact do it; a planned ticket nothing touched draws an
- *  empty box. No half-states: the box answers "did this happen", and the row's
- *  sub-line and time carry how much. */
-function Checkbox({ done }: { done: boolean }) {
-  if (!done) {
-    return (
-      <span
-        className="shrink-0 rounded-md"
-        style={{ width: 18, height: 18, border: '1.5px solid var(--t-faint-2)' }}
-        aria-hidden
-      />
-    )
-  }
+/** A block heading inside the list panel. */
+function BlockLabel({ children }: { children: React.ReactNode }) {
   return (
-    <span
-      className="shrink-0 rounded-md flex items-center justify-center"
-      style={{ width: 18, height: 18, background: 'var(--accent)' }}
-      aria-hidden
-    >
-      <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
-        <path d="M2.5 6.2 4.8 8.5 9.5 3.5" stroke="#fff" strokeWidth="1.8"
-          strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    </span>
+    <p className="mt-label mb-2" style={{ color: 'var(--t-faint-2)' }}>{children}</p>
   )
 }
 
-/** One row, whatever it stands for. */
-function Row({ title, sub, time, done, tint, chip, delay, onClick }: {
+/** One planned ticket. NOT a button: the plan rows are read, not opened - the row
+ *  that leads somewhere is an off-plan one, which is the row with a decision still
+ *  attached to it. A ticket nobody touched is the exception, and opens the ticket. */
+function PlanRow({ title, sub, ticket, done, delay, onClick }: {
   title: string
   sub: string
-  /** Already formatted, or a plain dash when there is no time to state. */
-  time: string
-  /** The work happened - ticks the box. */
+  ticket: string
   done: boolean
-  tint?: boolean
-  chip?: string
   delay: number
-  onClick: () => void
+  onClick?: () => void
 }) {
   const reduce = useReducedMotion()
+  const body = (
+    <>
+      <span
+        className="inline-flex items-center justify-center shrink-0 rounded-md"
+        style={{
+          width: 17, height: 17, fontSize: 11, fontWeight: 800,
+          color: done ? '#fff' : 'transparent',
+          background: done ? 'var(--accent)' : 'transparent',
+          border: done ? 'none' : '1.5px solid var(--t-ctrl-border)',
+        }}
+        aria-hidden
+      >
+        ✓
+      </span>
+      <span className="min-w-0 flex-1">
+        <span
+          className="mt-body-sm block truncate"
+          style={{
+            color: done ? 'var(--t-faint-2)' : 'var(--t-title)',
+            textDecoration: done ? 'line-through' : 'none',
+          }}
+        >
+          {title}
+        </span>
+        <span className="block truncate" style={{ fontSize: 11, color: 'var(--t-faint)' }}>{sub}</span>
+      </span>
+      <span className="shrink-0" style={{ fontSize: 11, color: 'var(--t-faint)' }}>{ticket}</span>
+    </>
+  )
+  return (
+    <motion.li
+      initial={reduce ? false : { opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: reduce ? 0 : 0.3, delay: reduce ? 0 : delay }}
+    >
+      {onClick ? (
+        <button
+          onClick={onClick}
+          className="w-full flex items-center gap-2.5 rounded-lg px-2 py-2 text-left hover:opacity-80"
+          style={{ background: 'transparent', border: 'none', cursor: 'pointer' }}
+        >
+          {body}
+        </button>
+      ) : (
+        <div className="flex items-center gap-2.5 rounded-lg px-2 py-2 text-left">{body}</div>
+      )}
+    </motion.li>
+  )
+}
+
+/** How a row's worklog stands. `undefined` = we have no draft row for this task. */
+export type DraftBadge = { state: string; stale_minutes: number | null; stale: boolean } | undefined
+
+/** The badge for a row's worklog state, or `null` when there is nothing to say.
+ *
+ *  THIS USED TO BE A FIXED STRING. Every off-plan row read "no ticket yet - draft
+ *  ready", in the same faint grey as the duration beside it, whether or not a draft
+ *  existed and whether or not it had already been posted. Three different situations,
+ *  one sentence, styled to be ignored - so the one thing worth acting on looked
+ *  identical to the two things that needed nothing.
+ *
+ *  Only `drafted` is an ASK, so only `drafted` gets the loud treatment. A posted row
+ *  is a receipt and a quiet one is correct; shouting at someone about work they have
+ *  already filed is how a badge stops being read at all. */
+function draftBadge(badge: DraftBadge): { label: string; tone: string; loud: boolean } | null {
+  if (!badge) return null
+  switch (badge.state) {
+    case 'drafted':
+      return { label: 'DRAFT READY TO POST', tone: 'var(--t-accent)', loud: true }
+    case 'approved':
+      return { label: 'APPROVED', tone: 'var(--color-state-approved)', loud: false }
+    case 'posted':
+      return { label: 'POSTED', tone: 'var(--color-state-approved)', loud: false }
+    case 'error':
+      return { label: 'POST FAILED', tone: 'var(--status-error-dot)', loud: true }
+    default:
+      return null
+  }
+}
+
+/** "· 40m of work since" - the draft's age, in the only unit that matters here.
+ *
+ *  Wall-clock age would be the obvious choice and the wrong one: a draft written at
+ *  09:00 and looked at after lunch is not stale if nothing happened on that task in
+ *  between. What makes a draft out of date is WORK it does not describe, which is
+ *  exactly `stale_minutes`.
+ *
+ *  WHETHER that gap is worth mentioning is NOT decided here. It is decided once, in
+ *  Rust, by `WORKLOG_STALE_MINUTES` - and `stale` is that decision, already made. This
+ *  used to re-threshold `stale_minutes` against a local 25, against the daemon's 15,
+ *  which put the screen and the notification into direct contradiction over the same
+ *  draft: between 15 and 25 minutes the user got a toast saying their draft was out of
+ *  date, opened the summary the toast linked to, and found the row saying nothing was
+ *  wrong. Two definitions of one word cannot both be right, and the one the user was
+ *  already told is the one that has to win. `api-types.ts` says exactly this on the
+ *  field itself. */
+function staleNote(badge: DraftBadge): string | null {
+  if (!badge || badge.state !== 'drafted' || !badge.stale) return null
+  const m = badge.stale_minutes ?? 0
+  if (m <= 0) return null
+  return `${fmtDur(m * 60)} of work since`
+}
+
+/** One strand of work no planned ticket claims. Leads with the time it took rather
+ *  than a ticket key, because the point of the row is that it does not have one. */
+function OffPlanRow({ title, minutes, delay, onClick, badge }: {
+  title: string
+  minutes: number
+  delay: number
+  onClick: () => void
+  badge: DraftBadge
+}) {
+  const reduce = useReducedMotion()
+  const chip = draftBadge(badge)
+  const stale = staleNote(badge)
+  // The row itself carries the state when there is something to do. A chip alone is a
+  // 9px detail in a list read at a glance - the tinted surface is what makes "three
+  // rows, all waiting on you" legible without reading a word.
+  const waiting = !!chip?.loud
   return (
     <motion.li
       initial={reduce ? false : { opacity: 0, y: 4 }}
@@ -98,179 +206,177 @@ function Row({ title, sub, time, done, tint, chip, delay, onClick }: {
     >
       <button
         onClick={onClick}
-        className="w-full flex items-center gap-3.5 text-left rounded-xl px-4 py-3 transition-opacity hover:opacity-80"
+        className="w-full flex items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-shadow hover:shadow-[0_1px_6px_-2px_rgba(0,0,0,0.18)]"
         style={{
-          background: tint
-            ? 'color-mix(in srgb, var(--accent) 8%, var(--t-box))'
-            : 'var(--t-box)',
+          cursor: 'pointer',
+          background: waiting
+            ? `color-mix(in srgb, ${chip.tone} 7%, transparent)`
+            : 'transparent',
+          border: waiting
+            ? `1px solid color-mix(in srgb, ${chip.tone} 26%, transparent)`
+            : '1px solid transparent',
         }}
       >
-        <Checkbox done={done} />
-
-        <span className="flex-1 min-w-0">
-          <span className="block truncate mt-body" style={{ color: 'var(--t-title)', fontWeight: 600 }}>
-            {title}
-          </span>
-          {sub && (
-            <span className="block truncate mt-body-sm" style={{ color: 'var(--t-faint-2)' }}>
-              {sub}
-            </span>
-          )}
-        </span>
-
-        {chip && (
-          <span
-            className="shrink-0 mt-chip rounded-full px-2 py-1 whitespace-nowrap"
-            style={{
-              background: 'color-mix(in srgb, var(--accent) 14%, transparent)',
-              color: 'var(--accent)',
-            }}
-          >
-            {chip}
-          </span>
-        )}
-
         <span
-          className="shrink-0 mt-body-sm tabular-nums text-right"
-          style={{ color: 'var(--t-muted)', width: 56 }}
+          className="inline-flex items-center justify-center shrink-0 rounded-md"
+          style={{
+            width: 17, height: 17, fontSize: 11, fontWeight: 800,
+            color: 'var(--color-state-pending)',
+            background: 'color-mix(in srgb, var(--color-state-pending) 16%, transparent)',
+          }}
+          aria-hidden
         >
-          {time}
+          ↯
         </span>
-        <span className="shrink-0 mt-body-sm" style={{ color: 'var(--t-faint-2)' }}>›</span>
+        <span className="min-w-0 flex-1">
+          <span className="mt-body-sm block truncate" style={{ color: 'var(--t-title)' }}>{title}</span>
+          <span className="flex items-center gap-1.5 flex-wrap" style={{ fontSize: 11, color: 'var(--t-faint)' }}>
+            <span>{fmtDur(minutes * 60)}</span>
+            {chip && (
+              <>
+                <span aria-hidden>·</span>
+                <span
+                  className="px-1.5 py-px rounded"
+                  style={{
+                    fontSize: 9.5, fontWeight: 800, letterSpacing: '0.06em',
+                    color: chip.tone,
+                    background: `color-mix(in srgb, ${chip.tone} 15%, transparent)`,
+                  }}
+                >
+                  {chip.label}
+                </span>
+              </>
+            )}
+            {stale && <><span aria-hidden>·</span><span>{stale}</span></>}
+          </span>
+        </span>
+        <span className="shrink-0" style={{ fontSize: 14, color: waiting ? chip.tone : 'var(--t-faint)' }}>›</span>
       </button>
     </motion.li>
   )
 }
 
-export function WorkList({ tasks, plan, planned, allPlanDone, onSelect, onOpenTask, delay = 0 }: {
+export function WorkList({ tasks, plan, planned, onSelect, onOpenTask, drafts, delay = 0 }: {
   /** The day's tasks, unfiltered - the floor is applied here. */
   tasks: DayTask[]
   /** One verdict per planned ticket; empty on a day with no plan. */
   plan: PlanVerdict[]
   /** The day had a committed plan. Without one there is nothing to be on or off. */
   planned: boolean
-  /** Every planned ticket came out done. Only then is unplanned work honestly
-   *  "over-delivered" - you cleared the whole plan AND did more. Short of that,
-   *  unplanned work is still credited, just not as beating a plan you did not
-   *  finish. */
-  allPlanDone: boolean
   /** Called with the task and its index in the FULL day list, so the colour matches
    *  the timeline's. */
   onSelect: (task: DayTask, indexInDay: number) => void
   onOpenTask: (key: string, title?: string) => void
+  /** Worklog state per task id, from `get_day_draft_states`. Absent while it loads,
+   *  and a task with no entry has no draft - both render without a badge, which is
+   *  the honest answer in each case. */
+  drafts?: Map<string, { state: string; stale_minutes: number | null; stale: boolean }>
   delay?: number
 }) {
   const byId = new Map(tasks.map(t => [t.id, t]))
 
-  // ── No plan: the list is just the day's real work, every row ticked (it
-  //    happened), no plan annotations to make. ─────────────────────────────────
+  // ── No plan: one block of the day's real work, every row openable. There is no
+  //    plan to be off, so nothing is headed "not on the plan" - the whole list IS
+  //    the day. A day nobody planned did not fail an exercise. ──────────────────
   if (!planned) {
-    const { shown, tailMinutes } = splitAtFloor(tasks)
+    const { shown } = splitAtFloor(tasks)
     if (shown.length === 0) return null
     return (
-      <div className="flex flex-col">
-        <ul className="flex flex-col gap-2">
+      <Panel>
+        <BlockLabel>WHAT YOU WORKED ON</BlockLabel>
+        <ul className="flex flex-col gap-1">
           {shown.map((t, n) => (
-            <Row
+            <OffPlanRow
               key={t.id}
               title={t.title}
-              sub=""
-              time={fmtDur(t.minutes * 60)}
-              done
+              minutes={t.minutes}
               delay={delay + 0.04 * n}
               onClick={() => onSelect(t, tasks.indexOf(t))}
+              badge={drafts?.get(t.id)}
             />
           ))}
         </ul>
-        <Tail minutes={tailMinutes} />
-      </div>
+      </Panel>
     )
   }
 
-  // ── Planned: the list is keyed by PLANNED TICKET first, then the work done on
-  //    top of the plan. Keying the plan portion by ticket (not by workstream) is
-  //    what makes the rows reconcile with the ring: one row per committed ticket,
-  //    so `4 / 6` always shows six rows with four ticked. Keying it by workstream
-  //    silently dropped any ticket whose work was folded into a shared row.
+  // ── Planned: the plan first, keyed by ticket, then what came up on top of it.
   const consumed = new Set<string>()
   for (const v of plan) for (const id of v.day_task_ids) if (byId.has(id)) consumed.add(id)
 
-  // The word on an unplanned-work row. "Over-delivered" is earned only by a clean
-  // sweep of the plan; short of that the work is a genuine pickup, credited warmly
-  // without claiming a plan was beaten.
-  const bonusChip = allPlanDone ? 'over-delivered' : 'also got to'
-
-  // The bonus half: substantial work no planned ticket claims. The floor applies
-  // here (a five-minute glance is not a thing you "also did"); planned tickets are
-  // exempt, because a ticket you committed to still shows however little it took.
-  const bonus = tasks
+  // The floor applies to the off-plan half only; a ticket you committed to shows
+  // however little it took.
+  const offPlan = tasks
     .filter(t => t.minutes >= TASK_MIN_MINUTES && !consumed.has(t.id))
     .sort((a, b) => b.minutes - a.minutes)
-  const tailMinutes = tasks
-    .filter(t => t.minutes < TASK_MIN_MINUTES && !consumed.has(t.id))
-    .reduce((n, t) => n + t.minutes, 0)
 
   return (
-    <div className="flex flex-col gap-4">
-      <ul className="flex flex-col gap-2">
+    <Panel>
+      <BlockLabel>TODAY&apos;S PLAN</BlockLabel>
+      <ul className="flex flex-col gap-1">
         {plan.map((v, n) => {
           // The first real workstream behind this ticket, if any. Its title is what
-          // the person actually did, which reads better than the ticket's own name;
-          // clicking it opens the worklog flow for that work. A ticket with no tied
-          // workstream (not touched, or closed with nothing logged) falls back to
-          // its own title and opens the ticket instead.
+          // the person actually did, which reads better than the ticket's own name.
+          // A ticket with no tied workstream (not touched, or closed with nothing
+          // logged) falls back to its own title and opens the ticket instead.
           const primary = v.day_task_ids.map(id => byId.get(id)).find(Boolean)
           const done = v.outcome === 'done'
           return (
-            <Row
+            <PlanRow
               key={v.task_key}
               title={primary ? primary.title : v.title || v.task_key}
               sub={
                 primary
-                  ? `On today's plan · ${v.task_key}${v.outcome === 'partial' ? ' · in progress' : ''}`
-                  : v.evidence ||
-                    (v.outcome === 'not_touched'
-                      ? 'Planned - nothing tracked against it today'
-                      : 'No tracked time could be tied to it')
+                  ? done
+                    ? `Done · ${fmtDur(v.minutes * 60)}`
+                    : v.outcome === 'partial'
+                      ? `In progress · ${fmtDur(v.minutes * 60)}`
+                      : 'Carried over to tomorrow'
+                  : v.outcome === 'not_touched'
+                    ? 'Carried over to tomorrow'
+                    : v.evidence || 'No tracked time could be tied to it'
               }
-              time={v.minutes > 0 ? fmtDur(v.minutes * 60) : '-'}
-              tint={!done}
+              ticket={v.task_key}
               done={done}
               delay={delay + 0.04 * n}
-              onClick={() =>
-                primary ? onSelect(primary, tasks.indexOf(primary)) : onOpenTask(v.task_key, v.title)
-              }
+              // Only the untouched tickets lead anywhere, and they lead to the
+              // ticket: there is no worklog to write for work that did not happen.
+              onClick={primary ? undefined : () => onOpenTask(v.task_key, v.title)}
             />
           )
         })}
-
-        {bonus.map((t, n) => (
-          <Row
-            key={t.id}
-            title={t.title}
-            sub="Picked up along the way"
-            time={fmtDur(t.minutes * 60)}
-            done
-            chip={bonusChip}
-            delay={delay + 0.04 * (plan.length + n)}
-            onClick={() => onSelect(t, tasks.indexOf(t))}
-          />
-        ))}
       </ul>
 
-      <Tail minutes={tailMinutes} />
-    </div>
+      {offPlan.length > 0 && (
+        <div className="mt-3.5 pt-3 border-t" style={{ borderColor: 'var(--t-card-border)' }}>
+          <BlockLabel>CAME UP TODAY - NOT ON THE PLAN</BlockLabel>
+          <ul className="flex flex-col gap-1">
+            {offPlan.map((t, n) => (
+              <OffPlanRow
+                key={t.id}
+                title={t.title}
+                minutes={t.minutes}
+                delay={delay + 0.04 * (plan.length + n)}
+                onClick={() => onSelect(t, tasks.indexOf(t))}
+                badge={drafts?.get(t.id)}
+              />
+            ))}
+          </ul>
+        </div>
+      )}
+    </Panel>
   )
 }
 
-/** The sub-floor remainder, stated plainly - a list that quietly loses half an hour
- *  is a list nobody can reconcile with their own memory. Renders nothing when there
- *  is nothing below the floor. */
-function Tail({ minutes }: { minutes: number }) {
-  if (minutes <= 0) return null
+/** The quiet panel both blocks sit on. A row of small type with a marker and a time
+ *  on it needs an edge to sit against, or it floats with nothing holding it. */
+function Panel({ children }: { children: React.ReactNode }) {
   return (
-    <p className="mt-body-sm px-4" style={{ color: 'var(--t-faint-2)' }}>
-      plus {fmtDur(minutes * 60)} across shorter stretches
-    </p>
+    <div
+      className="rounded-xl p-3.5 h-full"
+      style={{ background: 'var(--t-box)', border: '1px solid var(--t-card-border)' }}
+    >
+      {children}
+    </div>
   )
 }

@@ -34,6 +34,34 @@ pub async fn get_active(
         .map_err(|e| crate::cmd_err!(e, "get_active failed"))
 }
 
+/// Where every worklog on `day` stands, one row per task that has one.
+///
+/// A direct pool read rather than a CLI spawn (unlike its single-task sibling
+/// [`crate::commands::get_day_task_worklog`]): this backs a LIST, and the daily summary
+/// asks for it on open. Shelling out per render for something the tray can read from
+/// the DB it already holds open would be a process launch to answer a question about
+/// three rows.
+///
+/// # Who calls this
+/// `ui/components/summary/DaySummaryOverlay.tsx` → `WorkList`, for the per-row "draft
+/// ready to post" badge.
+#[tauri::command]
+#[tracing::instrument(skip(pool))]
+pub async fn get_day_draft_states(
+    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    day: Option<String>,
+) -> Result<Vec<meridian_core::day_task_worklogs::DayDraftState>, String> {
+    let Some(pool) = pool.inner() else {
+        return Err("meridian.db is not open yet".to_string());
+    };
+    let date = day.unwrap_or_else(meridian_core::date::today_string);
+    let states = meridian_core::day_task_worklogs::day_draft_states(pool, &date)
+        .await
+        .map_err(|e| crate::cmd_err!(e, "get_day_draft_states failed"))?;
+    tracing::info!(day = %date, rows = states.len(), "day draft states served");
+    Ok(states)
+}
+
 /// The Today dashboard payload, computed entirely in Rust (the ported
 /// /api/today). `day` defaults to today (local) when omitted, matching
 /// [`crate::commands::get_worklogs`] — the timeline's Overview panel passes

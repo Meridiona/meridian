@@ -190,8 +190,8 @@ export function DatePicker({ value, onChange, placeholder = 'Set due date' }: {
                       height: 28,
                       fontSize: 11.5,
                       color: isSelected ? '#fff' : inMonth ? 'var(--t-title)' : 'var(--t-faint-2)',
-                      background: isSelected ? 'var(--color-state-proposal)' : 'transparent',
-                      border: isToday && !isSelected ? '1px solid var(--color-state-proposal)' : '1px solid transparent',
+                      background: isSelected ? 'var(--btn-primary-bg)' : 'transparent',
+                      border: isToday && !isSelected ? '1px solid var(--t-accent)' : '1px solid transparent',
                       fontWeight: isSelected || isToday ? 700 : 400,
                     }}>
                     {d.getDate()}
@@ -202,7 +202,7 @@ export function DatePicker({ value, onChange, placeholder = 'Set due date' }: {
           </div>
 
           <div className="flex items-center justify-between px-3 py-2.5" style={{ borderTop: '1px solid var(--t-hair)' }}>
-            <button onClick={() => pick(today)} className="mt-body-sm" style={{ color: 'var(--color-state-proposal)', fontWeight: 700 }}>Today</button>
+            <button onClick={() => pick(today)} className="mt-body-sm" style={{ color: 'var(--t-accent)', fontWeight: 700 }}>Today</button>
             {value && (
               <button onClick={() => { onChange(''); setOpen(false) }} className="mt-body-sm" style={{ color: 'var(--t-faint)' }}>Clear</button>
             )}

@@ -145,7 +145,7 @@ export function StatusBanner({ undo, note, busy, onUndo, onDismissUndo, onDismis
           </span>
           <button onClick={onUndo} disabled={busy}
             className="mt-body-sm px-2.5 py-1 rounded-md"
-            style={{ color: 'var(--color-state-proposal)', fontWeight: 700, border: '1px solid color-mix(in srgb, var(--color-state-proposal) 40%, transparent)', opacity: busy ? 0.6 : 1 }}>
+            style={{ color: 'var(--t-accent)', fontWeight: 700, border: '1px solid color-mix(in srgb, var(--t-accent) 40%, transparent)', opacity: busy ? 0.6 : 1 }}>
             {busy ? 'Undoing…' : 'Undo'}
           </button>
           <button onClick={onDismissUndo} aria-label="Dismiss" className="mt-body-sm" style={{ color: 'var(--t-faint)', padding: '0 2px' }}>✕</button>

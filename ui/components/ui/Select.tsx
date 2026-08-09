@@ -54,7 +54,7 @@ export function Select({ value, onValueChange, options, placeholder }: SelectPro
             justifyContent: 'center',
             width: '24px',
             alignSelf: 'stretch',
-            background: 'var(--color-state-proposal)',
+            background: 'var(--btn-primary-bg)',
             flexShrink: 0,
           }}>
             <SelectChevrons />
@@ -96,7 +96,7 @@ export function Select({ value, onValueChange, options, placeholder }: SelectPro
                 }}
               >
                 <RadixSelect.ItemText>{opt.label}</RadixSelect.ItemText>
-                <RadixSelect.ItemIndicator className="select-check" style={{ color: 'var(--color-state-proposal)', marginLeft: '8px' }}>
+                <RadixSelect.ItemIndicator className="select-check" style={{ color: 'var(--t-accent)', marginLeft: '8px' }}>
                   <Check size={12} strokeWidth={2.5} />
                 </RadixSelect.ItemIndicator>
               </RadixSelect.Item>
