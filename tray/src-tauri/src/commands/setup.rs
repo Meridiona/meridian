@@ -286,6 +286,11 @@ pub async fn detect_llm_providers() -> Result<Vec<meridian::llm::detect::Provide
             path: None,
             authenticated: None,
             last_test: Some(last),
+            // Nothing to install, which is the same reason `installed: true` above is the
+            // honest answer - a cloud endpoint is reached over HTTP, not spawned. The UI
+            // falls back to its static hint when this is None, and never shows an install
+            // step for this row anyway.
+            install_command: None,
         });
     }
 
