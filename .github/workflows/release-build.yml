@@ -2,11 +2,14 @@ name: Release (build & publish)
 
 # BUILDS, SIGNS, NOTARIZES AND PUBLISHES A TAGGED RELEASE. DECIDES NOTHING.
 #
-# Triggered by the `v*` tag that release-prepare.yml pushes. Read that file's
-# header first — it explains why version-deciding and building are separate
-# workflows (short version: semantic-release demands branch HEAD, an immutable
-# build ref demands the opposite, and a 30-minute build makes the conflict
-# certain rather than theoretical).
+# Dispatched by release-prepare.yml after it pushes the `v*` tag — ALWAYS with
+# branch = main, and the tag as an INPUT. It is deliberately not triggered by
+# the tag push itself; see the `on:` block for why that one detail was the
+# difference between an 8-minute release and a 35-minute one. Read
+# release-prepare.yml's header first — it explains why version-deciding and
+# building are separate workflows (short version: semantic-release demands
+# branch HEAD, an immutable build ref demands the opposite, and a long build
+# makes the conflict certain rather than theoretical).
 #
 # THIS FILE REPLACES BOTH release-staging.yml AND the old monolithic
 # release.yml, which have been deleted. It is now the ONLY build path, for both
@@ -121,35 +124,71 @@ name: Release (build & publish)
 # goes through the CLI as before; only the compile step needed the env-var
 # equivalent.
 
+# ── DISPATCHED AGAINST `main`, BUILDS A TAG. NOT TRIGGERED BY THE TAG PUSH. ──
+#
+# This used to be `push: tags: ["v*"]`, which is the obvious shape and was the
+# single reason the release pipeline was slow for its entire existence.
+#
+# GitHub scopes the Actions cache by `github.ref`, and its rule for tags has no
+# workaround: "tags only have access to caches created in default branch"
+# (docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching).
+# A tag-triggered build therefore cannot read `pre-main`'s cache, and cannot
+# read a sibling tag's — and every release cuts a brand-new tag, so whatever it
+# saved was scoped to a ref nothing would ever restore from again.
+#
+# The old answer to that was cache-warm.yml: a second ~380-line workflow that
+# recompiled the whole app on `main`, nightly and on every push, purely to
+# manufacture a cache this one could read. It had to mirror this file's runner,
+# toolchain, target, cargo invocation, shared-key AND environment byte for byte,
+# through a contract nothing enforced. That contract broke over a single
+# variable (`CARGO_NET_RETRY`, set there and not here) and every release built
+# stone cold — 21 min macOS, 36 min Windows — while the warm job dutifully wrote
+# a cache under a key nothing ever asked for. Silent the whole time: green
+# checks, correct binaries, "No cache found." in a collapsed log group.
+#
+# THE FIX IS THE TRIGGER, NOT MORE MACHINERY.
+#
+# Cache scope follows `github.ref`, which for a `workflow_dispatch` is THE
+# BRANCH IT WAS DISPATCHED AGAINST — not what the job checks out. So dispatching
+# against `main` while checking out the tag gives both properties at once:
+#
+#     github.ref = refs/heads/main   -> cache scope is the default branch
+#     checkout ref = inputs.tag      -> the built tree is still immutable
+#
+# Consequences worth stating plainly, because they are the whole point:
+#
+#   * Every release READS main's cache and WRITES it back (`save-if` below is
+#     now naturally true). Each release warms the next one. The cache maintains
+#     itself, with no second workflow and no nightly compile.
+#   * cache-warm.yml is DELETED, along with the byte-match contract and the
+#     ci.yml parity guard that existed only to police it.
+#   * The tag<->binary correspondence is unchanged — `prepare` still resolves a
+#     real `v*` tag and every job checks it out by name.
+#
+# THE ONE REAL TRADE-OFF: the workflow LOGIC now comes from `main` while the
+# SOURCE comes from the tag. A staging tag cut from `pre-main` is therefore
+# built by main's copy of this file. That is the same coupling as before (main's
+# cache-warm.yml had to match the tag's release-build.yml) reduced to one file
+# on one branch, and made visible — but it does mean a change to the BUILD STEPS
+# only takes effect for releases once it has reached `main`.
+#
+# `release-prepare.yml` does the dispatch automatically after it pushes the tag,
+# so cutting a release is still one action.
 on:
-  push:
-    # EVERY release tag, both channels. `v1.75.0` builds stable, `v1.75.0-staging.3`
-    # builds staging; the channel is derived from the tag string in `prepare`, so
-    # one pipeline serves both and they cannot drift apart.
-    #
-    # This was `v*-staging*` while the pipeline was being proven on staging and
-    # the old monolithic release.yml still owned `main` — matching `v*` then
-    # would have made BOTH pipelines fire on the same production tag. That
-    # workflow has since been deleted, so `v*` is now unambiguous.
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing v*-staging* tag to (re)build and publish (or to compile against, if cache_warm_only)"
+        description: "Existing v* tag to build and publish (e.g. v1.84.0 or v1.84.0-staging.7). ALWAYS dispatch with branch = main, or the build starts from a cold cache."
         required: true
         type: string
       cache_warm_only:
-        # For seeding the `main`-scoped rust-cache entries the macos/windows
-        # jobs' `save-if` conditions require (see their rust-cache steps) —
-        # a tag push can only ever restore a cache saved on that SAME tag or
-        # on `main`, never a sibling tag, so a `main`-scoped entry has to
-        # exist before any tag build can warm-start. Dispatching this
-        # workflow with branch context = `main` and this input set to true
-        # compiles + saves the cache exactly like a real release build would,
-        # but skips creating/publishing anything — no draft release, no
-        # signing, no notarization, no asset upload. Safe to run against an
-        # already-published tag for exactly that reason.
-        description: "Compile + warm the release rust-cache only. Skips creating/publishing a release entirely. Run with branch context = main."
+        # Still useful, and now it is specifically the BOOTSTRAP tool. The very
+        # first dispatch-on-main build after this lands has no main-scoped cache
+        # under the new key and compiles cold (~36 min) before saving one; every
+        # release after it starts warm. Running this against any existing tag,
+        # with branch = main, pays that one-time cost without creating a draft
+        # release, signing, notarizing or uploading anything.
+        description: "Compile + save the main-scoped rust-cache only. Creates and publishes nothing. Run with branch = main."
         required: false
         type: boolean
         default: false
@@ -164,31 +203,27 @@ concurrency:
 permissions:
   contents: read
 
-# *** THIS BLOCK IS PART OF THE CACHE KEY. IT MUST MATCH cache-warm.yml's. ***
+# *** THIS BLOCK IS PART OF THE CACHE KEY. ***
 #
 # Swatinem/rust-cache hashes the NAMES AND VALUES of every env var matching
 # CARGO_*/RUSTC_*/RUST_* into the first component of its cache key, and its only
 # fallback restore key is `<shared-key>-<runner>-<that hash>`. So a var that
 # cannot possibly affect a compiled byte still decides whether a release build
-# starts warm or compiles ~940 crates from scratch.
+# starts warm or compiles ~1100 crates from scratch.
 #
-# It had already broken, silently, for every release ever cut on this pipeline.
-# `CARGO_NET_RETRY` was set in cache-warm.yml and NOT here — nothing else
-# differed, same toolchain, same Cargo.lock (both keys ended `-049b9ef7`) — and
-# that alone moved the hash:
+# That is not a caution, it is history: `CARGO_NET_RETRY` was set in the old
+# cache-warm.yml and not here — nothing else differed, same toolchain, same
+# Cargo.lock (both keys ended `-049b9ef7`) — and that alone moved the hash from
+# `92908ebe` to `11b475d7`, so no release build ever restored anything.
 #
-#     cache-warm.yml  writes  v0-rust-macos-release-…-Darwin-arm64-92908ebe-049b9ef7
-#     release-build   wants   v0-rust-macos-release-…-Darwin-arm64-11b475d7-049b9ef7
-#
-# Measured on run 31305072099, the last release before this was fixed: rust-cache
-# logged "No cache found." on BOTH platforms, sccache reported a Rust hit rate of
-# 0.00%, and the compile steps ran 20.9 min (macOS) and 35.7 min (Windows).
-# Notarization — the part everyone assumes is the slow bit — was 1.5 min.
-#
-# So: adding, renaming or removing ANY CARGO_*/RUSTC_* var here means making the
-# identical change in cache-warm.yml. The `cache-key-parity` job in ci.yml fails
-# the build if the two blocks drift, because nothing else notices — the build
-# still passes, it just quietly takes half an hour.
+# Since this workflow is now the ONLY thing that writes these cache keys (it
+# both reads and writes main's entry — see the `on:` block), a change here can
+# no longer desynchronise two files. It still costs exactly one cold build:
+# editing any CARGO_*/RUSTC_* var below changes the key, so the next release
+# compiles from scratch and reseeds. That is a fair price for a real change and
+# a pointless one for a cosmetic var, which is why CARGO_TERM_COLOR and
+# CARGO_NET_RETRY are pinned here rather than left to whatever a runner image
+# or a toolchain action happens to set.
 env:
   SQLX_OFFLINE: "true"
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
@@ -209,16 +244,44 @@ jobs:
       channel: ${{ steps.ctx.outputs.channel }}
       prerelease: ${{ steps.ctx.outputs.prerelease }}
     steps:
+      # *** THE DISPATCH BRANCH IS LOAD-BEARING. IT IS NOT COSMETIC. ***
+      #
+      # `github.ref` is what GitHub scopes the Actions cache by, and for a
+      # workflow_dispatch that is the branch chosen in the "Use workflow from"
+      # dropdown — NOT `inputs.tag`, and not what any job checks out. Dispatch
+      # this from `pre-main`, or from a tag, and every compile job below silently
+      # restores nothing and saves to a scope no future run can read: a ~36
+      # minute build that looks completely normal and leaves the cache no better
+      # than it found it.
+      #
+      # That silence is the entire failure mode this pipeline was rebuilt to
+      # remove, so it fails here instead — before a single runner-minute of
+      # compiling, signing or notarizing is spent. `release-prepare.yml`
+      # dispatches with `--ref main` automatically; this only ever trips on a
+      # hand-run dispatch with the wrong dropdown value.
+      - name: Refuse a dispatch from anywhere but main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "${REF}" != "refs/heads/main" ]; then
+            echo "::error::dispatched from ${REF}, but the release build must run with branch = main. GitHub scopes the Actions cache by github.ref, so this run would restore nothing (a full cold compile, ~36 min) and save to a scope nothing can read. Re-dispatch with 'Use workflow from' set to main - the tag you are building is the `tag` INPUT, not the branch."
+            exit 1
+          fi
+          echo "→ dispatched from main; the cache scope is the default branch"
+
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          # The TAG, from the input — immutable, and deliberately unrelated to
+          # the branch this was dispatched from (see the guard above).
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Derive the release context from the tag
         id: ctx
         env:
-          RAW_TAG: ${{ inputs.tag || github.ref_name }}
+          RAW_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           tag="${RAW_TAG}"
@@ -437,22 +500,26 @@ jobs:
           # on every run; caching the source directory removes the cause.
           cache-directories: |
             ~/.cargo/registry/src
-          # Only ever save from `main`. A run restores from its own ref OR the
-          # default branch — nothing else — so a save on a tag ref is only
-          # ever restorable by a byte-identical re-run of that SAME tag, which
-          # in practice never happens (every release is a brand-new tag).
-          # `startsWith(refs/tags/v)` used to be in this condition on the
-          # theory that "main must write its own copy or releases can never
-          # warm from staging's" — but staging never had one to warm FROM in
-          # the first place, and every tag build was quietly writing a
-          # ~1.5 GB entry nothing could ever read back, which is what pushed
-          # the repo's cache quota (10 GiB, evicted globally by LRU once
-          # crossed) to the point of evicting entries other jobs actually
-          # need. `refs/heads/pre-main` was dead for the same underlying
-          # reason from a different angle: this workflow only ever triggers
-          # on a `v*` tag push or `workflow_dispatch` (see the `on:` block),
-          # never on a push to `pre-main` itself, so that branch of the
-          # condition could never evaluate true.
+          # THIS IS WHAT MAKES THE CACHE SELF-MAINTAINING, and it is the whole
+          # payoff of dispatching against main (see the `on:` block).
+          #
+          # The condition is unchanged from when this workflow was triggered by
+          # a tag push — but back then it could NEVER be true, because
+          # `github.ref` was always `refs/tags/v…`. Nothing here ever saved.
+          # A separate workflow (cache-warm.yml, now deleted) existed solely to
+          # write the entry this job could not.
+          #
+          # Dispatched from main, `github.ref` IS `refs/heads/main`, so every
+          # release now writes the cache it just used back to the default
+          # branch — the one scope every future tag build can read. Each
+          # release warms the next one, from its own real workload, with no
+          # nightly compile and no second file to keep in step.
+          #
+          # Keep the condition rather than hardcoding `true`: the guard in
+          # `prepare` already rejects a non-main dispatch, and if that guard is
+          # ever loosened this must not start writing entries scoped to a ref
+          # nothing can restore from — which is exactly how the repo's 10 GiB
+          # quota filled up and began evicting caches other jobs needed.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: actions/setup-node@v4
@@ -814,19 +881,12 @@ jobs:
           # cache shared across every workflow that compiles this target.
           add-job-id-key: false
           shared-key: windows-release-x86_64-pc-windows-msvc
-          # Only ever save from `main` — see the macOS job's rust-cache step
-          # for the full reasoning. This one in particular had NEVER once
-          # saved to `main` (confirmed via the cache API: every
-          # windows-release-* entry that ever existed was tag-scoped), so
-          # every tag-triggered Windows release build restored nothing and
-          # compiled OpenSSL-from-source + SQLCipher + the daemon/tray from a
-          # stone-cold cache — every single time, not just once. Restoring
-          # `main`'s cache instead of a dead tag copy is what actually makes
-          # this job fast; dropping the tag-ref save alone would only make it
-          # cold forever instead of cold most of the time, so this job's
-          # `main`-scoped cache needs to exist before this change helps —
-          # currently seeded via a one-off `workflow_dispatch` run with branch
-          # context set to `main`.
+          # Same self-maintaining save as the macOS job — see the full note
+          # there. This is the job that needed it most: every
+          # `windows-release-*` entry that ever existed was tag-scoped
+          # (confirmed via the cache API), so every Windows release build
+          # compiled OpenSSL-from-source + SQLCipher + the daemon and tray from
+          # a stone-cold cache, 35.7 min of a 37 min job, every single time.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: actions/setup-node@v4
