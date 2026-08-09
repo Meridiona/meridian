@@ -14,13 +14,19 @@
 //! binaries, the install marker) and **keeps user data**. Three independent,
 //! additive flags widen the scope:
 //! - `--remove-data` — `~/.meridian`'s user data (db, credentials, settings,
-//!   logs, telemetry spool, icon cache, onboarded marker), plus (macOS only)
-//!   the OS-managed WebKit/AppKit caches for the tray's bundle id
-//!   (`com.meridiona.tray`'s `Application Support`/`Caches`/`WebKit`/
-//!   `Saved Application State`/`HTTPStorages`) and a best-effort `tccutil
-//!   reset` of the Accessibility/Screen Recording/Input Monitoring grants —
-//!   none of that lives under `~/.meridian` or the app bundle, so it would
-//!   otherwise survive every uninstall path, including this one, forever.
+//!   logs, telemetry spool, icon cache, onboarded/autostart markers), plus
+//!   everything Meridian leaves OUTSIDE that directory and outside the app
+//!   bundle, which would otherwise survive every uninstall path forever:
+//!   - the **OS keychain entry holding the SQLCipher key** for `meridian.db`
+//!     ([`remove_db_key_from_keychain`]) — the only user data that lives on no
+//!     filesystem path at all;
+//!   - the tray bundle id's OS-managed app data — on **macOS** the
+//!     WebKit/AppKit caches (`Application Support`/`Caches`/`WebKit`/`Saved
+//!     Application State`/`HTTPStorages`), on **Windows** `%LOCALAPPDATA%`/
+//!     `%APPDATA%\com.meridiona.tray`, which is where WebView2 keeps the
+//!     cookies and localStorage the signed-in account session lives in;
+//!   - (macOS) a best-effort `tccutil reset` of the Accessibility/Screen
+//!     Recording/Input Monitoring grants.
 //! - `--remove-runtime` — the downloaded Python + MLX runtime and any venvs.
 //! - `--remove-models` — Meridian's own MLX models from the shared HuggingFace
 //!   cache, allowlisted by exact directory name (never touches a model the user
@@ -332,6 +338,32 @@ fn run_human(plan: &Plan) {
             Ok(o) if o.status.success() => println!("✓ removed login task  Meridian Daemon"),
             _ => println!("✓ login task  Meridian Daemon (not registered)"),
         }
+
+        // The TRAY's launch-at-login is a separate mechanism from the daemon's
+        // scheduled task above: `tauri-plugin-autostart` registers it as an
+        // HKCU Run value, not a task, so the `schtasks /Delete` never touched
+        // it. On macOS the equivalent is a `com.meridiona.*` LaunchAgent plist,
+        // which the plist loop below already sweeps up - Windows had no such
+        // coverage, so the tray kept trying to start at every login with its
+        // executable deleted.
+        //
+        // The value name is the app's productName, which is what the plugin
+        // registers under. Best-effort: `reg delete` exits non-zero when the
+        // value is absent, the normal case on a second uninstall.
+        let out = std::process::Command::new("reg")
+            .args([
+                "delete",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                "/V",
+                "Meridian",
+                "/F",
+            ])
+            .no_window()
+            .output();
+        match out {
+            Ok(o) if o.status.success() => println!("✓ removed login item  Meridian"),
+            _ => println!("✓ login item  Meridian (not registered)"),
+        }
     }
 
     let uid = uid_str();
@@ -363,6 +395,10 @@ fn run_human(plan: &Plan) {
     if flags.remove_data {
         for f in reset_tcc_grants() {
             eprintln!("⚠ could not reset TCC grant {f}");
+        }
+        match remove_db_key_from_keychain() {
+            None => println!("✓ removed database key from the OS keychain"),
+            Some(reason) => eprintln!("⚠ {reason}"),
         }
     }
     for f in &plan.runtime {
@@ -495,6 +531,11 @@ fn data_items(home: &Path) -> Vec<PathBuf> {
         "walkthrough_armed",
         "icon-cache",
         "daemon.sock",
+        // Written once by the tray after it successfully registers the
+        // launch-at-login item (tray/src-tauri/src/autostart.rs). Left behind,
+        // a reinstall would believe autostart was already configured and never
+        // re-register it, so the app would silently stop starting at login.
+        "autostart_configured",
     ]
     .iter()
     .map(|r| meridian.join(r))
@@ -523,10 +564,103 @@ fn app_cache_items(home: &Path) -> Vec<PathBuf> {
         .filter(|p| p.symlink_metadata().is_ok())
         .collect()
     }
-    #[cfg(not(target_os = "macos"))]
+    // Windows' equivalent: everything WebView2 and Tauri keep OUTSIDE the
+    // install directory, keyed off the same bundle id. `%LOCALAPPDATA%\
+    // com.meridiona.tray` is where WebView2 puts its `EBWebView` profile —
+    // cookies, localStorage, IndexedDB, cache — which is where the signed-in
+    // account session actually lives, so leaving it behind means an uninstall
+    // + reinstall silently comes back still logged in. `%APPDATA%\...` is the
+    // roaming half. Neither is touched by the NSIS uninstaller, which only
+    // removes what it installed.
+    //
+    // Read from the environment rather than composed from `home`: the two are
+    // independently redirectable (roaming profiles, redirected folders), so
+    // deriving them from the home directory would miss the real location on
+    // exactly the machines where it matters.
+    #[cfg(target_os = "windows")]
+    {
+        let _ = home;
+        bundle_dirs_under(
+            ["LOCALAPPDATA", "APPDATA"]
+                .iter()
+                .filter_map(|var| std::env::var_os(var))
+                .map(PathBuf::from),
+        )
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = home;
         Vec::new()
+    }
+}
+
+/// Joins the tray's bundle id onto each base directory and keeps only the ones
+/// that exist — the existence filter every other item list here uses, so a
+/// wizard checkbox never advertises removing nothing.
+///
+/// Split out of [`app_cache_items`]'s Windows branch purely so it is testable
+/// WITHOUT mutating `%LOCALAPPDATA%`/`%APPDATA%`: those are process-global, and
+/// Rust runs tests in parallel threads, so a test that set them would race every
+/// other test in the binary. Compiled on non-Windows only under `cfg(test)`, so
+/// the coverage runs on every platform's CI while release builds carry nothing
+/// dead.
+#[cfg(any(target_os = "windows", test))]
+fn bundle_dirs_under(bases: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    const BUNDLE_ID: &str = "com.meridiona.tray";
+    bases
+        .into_iter()
+        .map(|base| base.join(BUNDLE_ID))
+        .filter(|p| p.symlink_metadata().is_ok())
+        .collect()
+}
+
+/// Best-effort removal of the SQLCipher key for `meridian.db` from the OS
+/// keychain (macOS Keychain / Windows Credential Manager), written by
+/// `tray/src-tauri/src/db_key.rs`.
+///
+/// This is the one piece of Meridian's user data that lives nowhere on disk, so
+/// no amount of deleting directories reaches it. Left behind it is both a
+/// privacy leak (the key to a database the user asked us to destroy) and a
+/// correctness hazard: a reinstall finds a key in the keychain and assumes the
+/// database it decrypts is its own.
+///
+/// The service/account pair and the `keyring` crate are deliberately the SAME
+/// ones the tray writes with, rather than a hand-rolled `security
+/// delete-generic-password` / `cmdkey /delete` shell-out. Windows' credential
+/// target is an internal `keyring` convention (`{user}.{service}`), so spelling
+/// it out here would silently stop matching the day that crate changes it - and
+/// the failure mode is invisible, which is exactly what this function exists to
+/// prevent.
+///
+/// Non-fatal, and returns a reason when it did NOT clearly succeed: the item
+/// may be ACL-restricted to the tray's code signature, so macOS can refuse or
+/// prompt. A missing entry is a SUCCESS - that is the normal second-uninstall
+/// case, and the desired end state either way.
+fn remove_db_key_from_keychain() -> Option<String> {
+    // Mirrors tray/src-tauri/src/db_key.rs's SERVICE/ACCOUNT.
+    const SERVICE: &str = "Meridian";
+    const ACCOUNT: &str = "db-encryption-key";
+
+    let entry = match keyring::Entry::new(SERVICE, ACCOUNT) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(error = %e, "uninstall: could not open the OS keychain");
+            return Some(format!("could not open the OS keychain: {e}"));
+        }
+    };
+    match entry.delete_credential() {
+        Ok(()) => {
+            tracing::info!("uninstall: removed the database key from the OS keychain");
+            None
+        }
+        Err(keyring::Error::NoEntry) => {
+            tracing::info!("uninstall: no database key in the OS keychain");
+            None
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "uninstall: could not remove the database key");
+            Some(format!("could not remove the database key: {e}"))
+        }
     }
 }
 

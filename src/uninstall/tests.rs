@@ -132,6 +132,40 @@ fn data_items_includes_app_caches_when_present() {
         .any(|p| p.ends_with("com.meridiona.tray.savedState")));
 }
 
+/// The launch-at-login marker must be removed with the rest of the user data.
+/// Left behind, a reinstall reads it, believes autostart is already configured,
+/// and never re-registers the login item — so the app silently stops starting
+/// at login and nothing reports an error.
+#[test]
+fn data_items_includes_the_autostart_marker() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+    let meridian = home.join(".meridian");
+    std::fs::create_dir_all(&meridian).unwrap();
+    std::fs::write(meridian.join("autostart_configured"), "").unwrap();
+
+    assert!(data_items(home).contains(&meridian.join("autostart_configured")));
+}
+
+/// The Windows branch of [`app_cache_items`]: `%LOCALAPPDATA%`/`%APPDATA%`'s
+/// `com.meridiona.tray` directories are where WebView2 keeps the cookies and
+/// localStorage the signed-in session lives in, so an uninstall that skipped
+/// them would come back still logged in. Exercised through `bundle_dirs_under`
+/// on every platform rather than through the env vars, which are process-global
+/// and would race the other tests.
+#[test]
+fn bundle_dirs_are_listed_only_when_they_exist() {
+    let tmp = TempDir::new().unwrap();
+    let local = tmp.path().join("Local");
+    let roaming = tmp.path().join("Roaming");
+    std::fs::create_dir_all(local.join("com.meridiona.tray")).unwrap();
+    // `roaming` deliberately has no bundle dir — must not be listed.
+    std::fs::create_dir_all(&roaming).unwrap();
+
+    let found = bundle_dirs_under([local.clone(), roaming.clone()]);
+    assert_eq!(found, vec![local.join("com.meridiona.tray")]);
+}
+
 /// `model_items` only returns catalog entries that exist on disk, and never
 /// invents a path for a model that isn't in [`MODEL_CATALOG`].
 #[test]
