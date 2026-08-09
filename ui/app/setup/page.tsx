@@ -224,6 +224,27 @@ export default function SetupWizard() {
       setErr(String(e))
       return
     }
+    // FINISHING THE WIZARD IS WHAT ENTITLES THIS ONBOARDING TO THE WALKTHROUGH,
+    // so clear the "already seen it" key here.
+    //
+    // The walkthrough auto-starts on two conditions that live in two different
+    // stores with two different lifetimes: `~/.meridian/walkthrough_armed`, which
+    // the command above just wrote, and `meridian.walkthrough.seen.v1` in the
+    // webview's localStorage. Wiping `~/.meridian` does not touch localStorage —
+    // nothing outside the webview can — so a machine that has ever completed the
+    // walkthrough kept that key forever.
+    //
+    // The result: reinstall, or delete ~/.meridian to start over, and setup runs
+    // again (correctly) but the walkthrough silently never plays. Nothing fails,
+    // nothing logs, the dashboard just opens. That is what happened on the first
+    // real test of this flow.
+    //
+    // Clearing it here makes wizard completion the single authority: you finished
+    // onboarding, so this onboarding has not been shown the walkthrough. It also
+    // makes Settings → Re-run Setup replay the tour, which is the honest reading
+    // of re-running onboarding (and matches `mark_setup_started`, which likewise
+    // treats a re-run as a fresh run rather than preserving the original).
+    try { localStorage.removeItem('meridian.walkthrough.seen.v1') } catch { /* private mode */ }
     try {
       await invoke('open_dashboard')
     } catch { /* ignore if dashboard fails to open */ }
