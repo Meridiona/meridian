@@ -85,17 +85,30 @@ concurrency:
 permissions:
   contents: read
 
+# *** THIS BLOCK IS PART OF THE CACHE KEY. IT MUST MATCH release-build.yml's. ***
+#
+# Not "should" — the cache this whole workflow exists to write is UNREADABLE by
+# release-build.yml unless every CARGO_*/RUSTC_* name AND value here is
+# identical to the block in that file. rust-cache hashes them into the first
+# component of its key, and that component is also its only fallback restore
+# key, so one extra var is indistinguishable from a cold cache.
+#
+# That is not hypothetical: `CARGO_NET_RETRY` was set here and not there, and
+# it silently made every release build in this pipeline's history compile from
+# scratch (~940 crates, 21 min macOS / 36 min Windows) while this workflow
+# faithfully wrote a warm cache nothing could ever read. The full measurement
+# is in release-build.yml's `env:` comment.
+#
+# `cache-key-parity` in ci.yml compares the two blocks and fails if they drift.
+# sccache (RUSTC_WRAPPER/SCCACHE_GHA_ENABLED) used to live here too — removed,
+# see release-build.yml's note above its rust-cache step for why it was making
+# things slower rather than faster.
 env:
   SQLX_OFFLINE: "true"
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "3"
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-  # sccache — see release-build.yml's "Set up sccache" step comment for the
-  # full reasoning. Must match release-build.yml's compile jobs for the cache
-  # this workflow warms to actually help them (same principle as the
-  # shared-key comments below).
-  RUSTC_WRAPPER: sccache
-  SCCACHE_GHA_ENABLED: "true"
+  CARGO_TERM_COLOR: always
 
 jobs:
   warm-macos:
@@ -110,7 +123,8 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-      actions: write # sccache's GHA cache backend needs this to SAVE entries
+      # No `actions: write`: that grant existed only for sccache's GHA cache
+      # backend, now removed. actions/cache saves via ACTIONS_RUNTIME_TOKEN.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -129,10 +143,6 @@ jobs:
         with:
           toolchain: "1.93.1"
           targets: aarch64-apple-darwin
-
-      # See release-build.yml's "Set up sccache" step for the full reasoning.
-      - name: Set up sccache
-        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -218,7 +228,8 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-      actions: write # sccache's GHA cache backend needs this to SAVE entries
+      # No `actions: write`: that grant existed only for sccache's GHA cache
+      # backend, now removed. actions/cache saves via ACTIONS_RUNTIME_TOKEN.
     defaults:
       run:
         # Same reasoning as release-build.yml's Windows job: every step here
@@ -259,10 +270,6 @@ jobs:
           toolchain: "1.93.1"
           # No explicit target: windows-latest's host triple
           # (x86_64-pc-windows-msvc) is exactly what we ship.
-
-      # See release-build.yml's "Set up sccache" step for the full reasoning.
-      - name: Set up sccache
-        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -415,3 +422,41 @@ jobs:
                 || echo "::warning::failed to delete cache ${id} (non-fatal, next run will retry)"
             done
           done
+
+      - name: Reap orphaned sccache objects
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # sccache's GHA backend was removed from this workflow and from
+        # release-build.yml, but the entries it already wrote do not expire for
+        # a week and there are thousands of them. They are not merely clutter:
+        # the repo cache quota is 10 GB repo-wide and GitHub evicts it by LRU
+        # across ALL entries, so a swarm of tiny objects evicts the ~1.4 GB
+        # tarballs the release build depends on. Measured before this landed:
+        # 5288 `sccache/*` entries vs 20 for everything else, 8.8 GB total, and
+        # the `macos-release-aarch64-apple-darwin` tarball already gone hours
+        # after a successful warm run wrote it.
+        #
+        # This deletes them in bulk on the first run and finds nothing on every
+        # run after, at which point it is a no-op that costs one API call. It is
+        # kept (rather than being a one-off manual cleanup) so that re-adding
+        # sccache anywhere cannot quietly recreate the condition — the entries
+        # get reaped nightly and whoever added it sees the deletions in the log.
+        #
+        # Deliberately unbounded by ref: sccache scoped its writes to whatever
+        # ref happened to be building, so these are spread across main, tags and
+        # PR merge refs. `|| true` throughout — reaping is best-effort
+        # housekeeping and must never fail a warm run.
+        run: |
+          set -uo pipefail
+          ids=$(gh api --paginate "repos/${{ github.repository }}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.key | startswith("sccache/")) | .id' 2>/dev/null) || true
+          if [ -z "${ids}" ]; then
+            echo "no orphaned sccache entries"
+            exit 0
+          fi
+          n=0
+          for id in $ids; do
+            gh api -X DELETE "repos/${{ github.repository }}/actions/caches/${id}" >/dev/null 2>&1 \
+              && n=$((n + 1)) || true
+          done
+          echo "reaped ${n} orphaned sccache cache entries"

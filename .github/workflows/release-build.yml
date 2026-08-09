@@ -164,16 +164,37 @@ concurrency:
 permissions:
   contents: read
 
+# *** THIS BLOCK IS PART OF THE CACHE KEY. IT MUST MATCH cache-warm.yml's. ***
+#
+# Swatinem/rust-cache hashes the NAMES AND VALUES of every env var matching
+# CARGO_*/RUSTC_*/RUST_* into the first component of its cache key, and its only
+# fallback restore key is `<shared-key>-<runner>-<that hash>`. So a var that
+# cannot possibly affect a compiled byte still decides whether a release build
+# starts warm or compiles ~940 crates from scratch.
+#
+# It had already broken, silently, for every release ever cut on this pipeline.
+# `CARGO_NET_RETRY` was set in cache-warm.yml and NOT here — nothing else
+# differed, same toolchain, same Cargo.lock (both keys ended `-049b9ef7`) — and
+# that alone moved the hash:
+#
+#     cache-warm.yml  writes  v0-rust-macos-release-…-Darwin-arm64-92908ebe-049b9ef7
+#     release-build   wants   v0-rust-macos-release-…-Darwin-arm64-11b475d7-049b9ef7
+#
+# Measured on run 31305072099, the last release before this was fixed: rust-cache
+# logged "No cache found." on BOTH platforms, sccache reported a Rust hit rate of
+# 0.00%, and the compile steps ran 20.9 min (macOS) and 35.7 min (Windows).
+# Notarization — the part everyone assumes is the slow bit — was 1.5 min.
+#
+# So: adding, renaming or removing ANY CARGO_*/RUSTC_* var here means making the
+# identical change in cache-warm.yml. The `cache-key-parity` job in ci.yml fails
+# the build if the two blocks drift, because nothing else notices — the build
+# still passes, it just quietly takes half an hour.
 env:
   SQLX_OFFLINE: "true"
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  CARGO_NET_RETRY: "3"
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  # sccache — see the "Set up sccache" step comment in each compile job for
-  # why this runs alongside rust-cache rather than replacing it. Harmless on
-  # jobs that never invoke cargo (prepare, publish).
-  RUSTC_WRAPPER: sccache
-  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   # ── Stage 1: cheap validation + a draft release for everyone to upload into ──
@@ -302,7 +323,11 @@ jobs:
     timeout-minutes: 60 # a hung `notarytool --wait` otherwise burns 10x-billed minutes indefinitely
     permissions:
       contents: write # uploads assets into the draft
-      actions: write # sccache's GHA cache backend needs this to SAVE entries, not just read
+      # No `actions: write` — that grant existed ONLY for sccache's GHA cache
+      # backend, which this job no longer uses (see the note above the
+      # rust-cache step). actions/cache saves via ACTIONS_RUNTIME_TOKEN and
+      # needs no such permission, so dropping it costs nothing and keeps a job
+      # that holds the signing key at least privilege.
     strategy:
       # One flaky architecture must not kill the other's artifacts — and we want
       # its timing either way.
@@ -365,26 +390,31 @@ jobs:
           toolchain: "1.93.1"
           targets: ${{ matrix.target }}
 
-      # Complements rust-cache below, doesn't replace it. rust-cache restores
-      # a whole target/ tarball keyed on Cargo.lock — great when it matches
-      # exactly, but a tag-triggered build can only ever restore from ITS OWN
-      # ref or `main` (GitHub's cache scoping), never from `pre-main` directly.
-      # A staging release cut from a `pre-main` that has drifted from `main`
-      # (routine — pre-main accumulates merges between releases) gets a
-      # partially-stale target/, and rust-cache's fingerprint mismatch forces
-      # full recompilation of anything that LOOKS different, even crates whose
-      # actual compiled output would be identical. sccache intercepts at the
-      # individual rustc-invocation level regardless of why cargo decided to
-      # invoke it, so it can still return a hit there. Free GHA cache backend
-      # (SCCACHE_GHA_ENABLED below) — same underlying service as rust-cache,
-      # so still ref-scoped in principle, but per-object rather than
-      # per-tarball, which degrades far more gracefully on drift. Does NOT
-      # cover the vendored-OpenSSL C compile or the Swift static-lib build
-      # (tauri-plugin-notifications) — that's still rust-cache's job via its
-      # cache-directories entry below.
-      - name: Set up sccache
-        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
-
+      # *** DO NOT RE-ADD sccache HERE. IT MADE RELEASES SLOWER, MEASURABLY. ***
+      #
+      # A `Set up sccache` step (mozilla-actions/sccache-action, GHA backend)
+      # used to sit here, on the theory that it degrades more gracefully than
+      # rust-cache when a tag build's target/ is partially stale — per-object
+      # instead of per-tarball. The theory was sound; the accounting was not.
+      #
+      # sccache's GHA backend writes ONE CACHE ENTRY PER COMPILED OBJECT, into
+      # the same 10 GB repo-wide pool rust-cache lives in, which GitHub evicts
+      # by LRU. Measured directly against the cache API: 5288 sccache entries
+      # holding ~3 GB of an 8.8 GB total, against 20 entries for everything
+      # else — and by then the `macos-release-aarch64-apple-darwin` tarball had
+      # ALREADY been evicted, hours after a warm run wrote it. So the fallback
+      # was evicting the primary.
+      #
+      # And it did not even pay for itself: on that same release build sccache
+      # reported `Cache hits rate (Rust) 0.00%` on both platforms — 942 Rust
+      # compilations, zero hits. Its only real hits were C/C++ (vendored
+      # OpenSSL/SQLCipher), which rust-cache's target/ + `~/.cargo/registry/src`
+      # entry already covers once it actually restores.
+      #
+      # It also broke the prune job below: listing caches by ref had to paginate
+      # 50+ pages, and `Prune superseded caches` logged "failed to list caches
+      # for v0-rust-macos-release-aarch64-apple-darwin" — so stale entries
+      # stopped being reaped too, feeding the same eviction.
       - uses: Swatinem/rust-cache@v2
         with:
           # shared-key REPLACES rust-cache's automatic job-based key. That
@@ -689,7 +719,11 @@ jobs:
     timeout-minutes: 60 # same cap as macos — bound a hung build instead of falling back to GitHub's 360-minute default
     permissions:
       contents: write # uploads assets into the draft
-      actions: write # sccache's GHA cache backend needs this to SAVE entries, not just read
+      # No `actions: write` — that grant existed ONLY for sccache's GHA cache
+      # backend, which this job no longer uses (see the note above the
+      # rust-cache step). actions/cache saves via ACTIONS_RUNTIME_TOKEN and
+      # needs no such permission, so dropping it costs nothing and keeps a job
+      # that holds the signing key at least privilege.
     env:
       # Same compile-time constants the macOS job bakes in (see its `env:`
       # comment) — these are cross-platform values (OAuth client ids, public
@@ -771,11 +805,9 @@ jobs:
           # produces it — unlike the macOS job, which cross-arch-targets a
           # single shared runner.
 
-      # See the macOS job's "Set up sccache" step for the full reasoning —
-      # identical here, complements rust-cache rather than replacing it.
-      - name: Set up sccache
-        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
-
+      # sccache was removed here too — see the macOS job's note above the
+      # equivalent step for the measurement (5288 cache entries evicting the
+      # tarball that actually matters, for a 0.00% Rust hit rate).
       - uses: Swatinem/rust-cache@v2
         with:
           # Keyed by triple only, same reasoning as the macOS job — one warm
