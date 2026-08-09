@@ -173,12 +173,48 @@ fn has_unresolved_failure(
     )
 }
 
+/// Record that `provider` answered a call made specifically to re-establish truth.
+///
+/// The difference from [`record_success`] is that this ALWAYS writes. `record_success` is
+/// on the hot path and deliberately writes only on a state change, deciding "was there
+/// anything to clear?" from [`has_unresolved_failure`] — which reads the RUNTIME record and
+/// nothing else. That is correct for its own callers and wrong here: the verdict a probe
+/// exists to overturn usually lives in the MANUAL TEST cache (a failed Settings → Test
+/// Connection), where `has_unresolved_failure` cannot see it. `record_success` would find no
+/// runtime failure, early-return, write nothing, and leave the failed test as the most
+/// recent word — so the probe would succeed and change nothing, and the next call would be
+/// refused by the same gate that let this one through. A manual test result carries no
+/// expiry, so "nothing" here means forever.
+///
+/// Writing unconditionally is safe precisely because the caller is rare: `resolver`'s probe
+/// exemption admits at most one call per provider per interval, so this cannot become the
+/// per-call disk write that `record_success`'s short circuit exists to avoid.
+pub fn record_probe_success(provider: LlmProvider) {
+    let id = provider.as_str().to_string();
+    clear_streak(&id);
+    tracing::info!(
+        provider = %id,
+        "llm provider answered a health probe - clearing the failed verdict"
+    );
+    persist(RuntimeObservation {
+        id,
+        outcome: ProviderTestOutcome::Ok,
+        observed_at: chrono::Utc::now().to_rfc3339(),
+    });
+    // `persist` alone is not enough to end the outage. `in_use_provider_health` memoises its
+    // verdict for `IN_USE_HEALTH_TTL` (5 min), and the gate reads that memo — so without
+    // this the recovered provider would keep being refused for up to another five minutes,
+    // by a cached copy of the verdict we just disproved.
+    super::detect::invalidate_in_use_health();
+}
+
 /// Record that `provider` answered a real call.
 ///
 /// Clears the failure streak and stamps an `Ok` observation, so a recovered provider drops
 /// the banner on the tray's next health poll rather than waiting for the user to re-test.
 /// Writes only on a state CHANGE (the first success after failures) — a healthy provider
-/// making an hourly call must not rewrite the file forever.
+/// making an hourly call must not rewrite the file forever. A call made to test a REFUSED
+/// provider uses [`record_probe_success`] instead, which has no such short circuit.
 pub fn record_success(provider: LlmProvider) {
     let id = provider.as_str().to_string();
     let was_failing = clear_streak(&id);

@@ -1243,7 +1243,14 @@ describe('the OAuth wait has a way out that looks like one', () => {
     // redirects back (no error to catch) - but far more often the tab simply
     // never opened, was closed, or landed on the wrong account, and that user
     // wants another go rather than a way out.
-    expect(block).toContain('cancelOAuth(tracker); void startOAuth(tracker)')
+    // Retry goes through `restartOAuth`, which AWAITS the teardown before starting
+    // again. The pair it replaced (`cancelOAuth(...); void startOAuth(...)`) raced:
+    // the cancel frees a loopback port that the immediately-following start needs to
+    // bind, so on jira/trello the retry could fail with the "already in progress"
+    // error the cancel exists to prevent - on the one button whose job is rescuing a
+    // user who is already stuck.
+    expect(block).toContain('void restartOAuth(tracker)')
+    expect(block).not.toContain('void startOAuth(tracker)')
     expect(block).toContain('Open it again')
     expect(block).toContain('Cancel')
   })

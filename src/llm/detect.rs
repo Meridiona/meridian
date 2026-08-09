@@ -217,6 +217,25 @@ pub struct InUseProviderHealth {
     /// The reason to show: the failure/"not installed" text when `!ok`, or the rate-limit message
     /// when `rate_limited`. `None` when the provider is simply fine.
     pub detail: Option<String>,
+    /// This `!ok` verdict rests on a MEASURED failure, so only a real call can overturn it.
+    ///
+    /// Exists for [`crate::llm::resolver`]'s probe exemption, which is the only thing that
+    /// reads it. The gate in `complete_inner` refuses every call while `!ok`, and the
+    /// evidence that would clear the verdict can only come FROM a call — so without a
+    /// periodic exemption the refusal is self-latching. Three states have to be told apart,
+    /// and only the first is worth spending a call on:
+    ///
+    /// - **a recorded `Failed` outcome** → `true`. Nothing in the system re-measures this on
+    ///   its own: a runtime observation ages out after six hours, and a manual test result
+    ///   never expires at all, so a single bad Test Connection would otherwise black out
+    ///   every AI feature until the user happened to press the button again.
+    /// - **not installed** → `false`. Already self-healing: `resolve_cli` caches only
+    ///   successes, so the next health poll re-probes the filesystem and clears this by
+    ///   itself the moment the CLI appears. A call would spend a spawn to learn nothing.
+    /// - **an ASSERTED (`sticky`) verdict** → `false`. Someone is deliberately holding this
+    ///   state (today the dev-only Disconnect button) and a measurement must not overturn an
+    ///   assertion — that is the entire point of the flag.
+    pub probeable: bool,
 }
 
 /// A human display name for the banner — mirrors the chooser tiles in `ui/lib/llm-providers.ts`.
@@ -319,6 +338,7 @@ async fn compute_in_use_provider_health(settings: &RuntimeSettings) -> InUseProv
             rate_limited: false,
             name: settings.llm_provider.clone(),
             detail: None,
+            probeable: false,
         };
     };
     let name = provider_display_name(provider).to_string();
@@ -347,7 +367,10 @@ async fn compute_in_use_provider_health(settings: &RuntimeSettings) -> InUseProv
         }),
         "resolved provider install state"
     );
-    classify_provider_health(name, installed, last_outcome.as_ref())
+    // `sticky` is read from the RAW test row rather than from `last_outcome`, which has
+    // already collapsed the two signals into one verdict and cannot say which side won.
+    let asserted = last_test.is_some_and(|t| t.sticky);
+    classify_provider_health(name, installed, last_outcome.as_ref(), asserted)
 }
 
 /// The pure unavailable → rate-limited → fine decision, split out so the ladder can be unit-tested
@@ -358,10 +381,14 @@ async fn compute_in_use_provider_health(settings: &RuntimeSettings) -> InUseProv
 /// - installed + last test `RateLimited` → **rate-limited** (`ok: true, rate_limited: true`): it
 ///   clears on its own, so a softer flag rather than the alarm — alarming would cry wolf.
 /// - installed + `Ok`/no test on record → **fine** (don't alarm before we've had a reason to).
+///
+/// `asserted` marks `last_outcome` as coming from a `sticky` test row; it only ever
+/// suppresses [`InUseProviderHealth::probeable`] and never changes the verdict itself.
 fn classify_provider_health(
     name: String,
     installed: bool,
     last_outcome: Option<&ProviderTestOutcome>,
+    asserted: bool,
 ) -> InUseProviderHealth {
     if !installed {
         return InUseProviderHealth {
@@ -369,6 +396,8 @@ fn classify_provider_health(
             rate_limited: false,
             detail: Some(format!("{name} isn't installed")),
             name,
+            // Re-probed from the filesystem on every health poll, so it clears itself.
+            probeable: false,
         };
     }
     match last_outcome {
@@ -377,18 +406,21 @@ fn classify_provider_health(
             rate_limited: false,
             name,
             detail: Some(message.clone()),
+            probeable: !asserted,
         },
         Some(ProviderTestOutcome::RateLimited { message }) => InUseProviderHealth {
             ok: true,
             rate_limited: true,
             name,
             detail: Some(message.clone()),
+            probeable: false,
         },
         _ => InUseProviderHealth {
             ok: true,
             rate_limited: false,
             name,
             detail: None,
+            probeable: false,
         },
     }
 }
@@ -1749,7 +1781,7 @@ mod tests {
     #[test]
     fn classify_provider_health_ranks_unavailable_over_rate_limited_over_fine() {
         // not installed → unavailable, regardless of any prior test result.
-        let h = classify_provider_health("Codex".into(), false, None);
+        let h = classify_provider_health("Codex".into(), false, None, false);
         assert!(!h.ok && !h.rate_limited);
         assert_eq!(h.detail.as_deref(), Some("Codex isn't installed"));
 
@@ -1757,7 +1789,7 @@ mod tests {
         let failed = ProviderTestOutcome::Failed {
             message: "not signed in".into(),
         };
-        let h = classify_provider_health("Codex".into(), true, Some(&failed));
+        let h = classify_provider_health("Codex".into(), true, Some(&failed), false);
         assert!(!h.ok && !h.rate_limited);
         assert_eq!(h.detail.as_deref(), Some("not signed in"));
 
@@ -1765,16 +1797,59 @@ mod tests {
         let rl = ProviderTestOutcome::RateLimited {
             message: "usage limit".into(),
         };
-        let h = classify_provider_health("Codex".into(), true, Some(&rl));
+        let h = classify_provider_health("Codex".into(), true, Some(&rl), false);
         assert!(h.ok && h.rate_limited);
         assert_eq!(h.detail.as_deref(), Some("usage limit"));
 
         // installed + Ok, and installed + no test on record → fine, no banner, no detail.
         let ok = ProviderTestOutcome::Ok;
         for last in [Some(&ok), None] {
-            let h = classify_provider_health("Codex".into(), true, last);
+            let h = classify_provider_health("Codex".into(), true, last, false);
             assert!(h.ok && !h.rate_limited && h.detail.is_none());
         }
+    }
+
+    /// Which `!ok` verdicts are worth spending a real call to re-check.
+    ///
+    /// `probeable` exists because the resolver's health gate refuses on a recorded
+    /// verdict while only a successful call can replace one — so a verdict nothing
+    /// re-measures latches shut. The distinction it draws is the whole value: a
+    /// MEASURED failure is worth a periodic call because nothing else will ever
+    /// overturn it, while the other two `!ok` states must not spend one.
+    #[test]
+    fn only_a_measured_failure_is_worth_probing() {
+        let failed = ProviderTestOutcome::Failed {
+            message: "not signed in".into(),
+        };
+
+        // A measured failure: nothing re-measures this on its own. A runtime observation
+        // ages out after six hours and a manual test result never expires at all, so
+        // without a probe a single bad Test Connection is a permanent blackout.
+        assert!(
+            classify_provider_health("Codex".into(), true, Some(&failed), false).probeable,
+            "a measured failure is the case the exemption exists for"
+        );
+
+        // ASSERTED (`sticky`): someone is deliberately holding this state, and a
+        // measurement must never overturn an assertion.
+        assert!(
+            !classify_provider_health("Codex".into(), true, Some(&failed), true).probeable,
+            "an asserted verdict must not be second-guessed by a probe"
+        );
+
+        // Not installed: already self-healing. `resolve_cli` caches only successes, so the
+        // next health poll re-probes the filesystem and clears this for free — a call would
+        // spend a CLI spawn to learn what a `Path::exists` already knows.
+        assert!(
+            !classify_provider_health("Codex".into(), false, None, false).probeable,
+            "a missing install re-checks itself; a call would buy nothing"
+        );
+
+        // Rate-limited is not a refusal at all, so there is nothing to probe past.
+        let rl = ProviderTestOutcome::RateLimited {
+            message: "usage limit".into(),
+        };
+        assert!(!classify_provider_health("Codex".into(), true, Some(&rl), false).probeable);
     }
 
     /// The health verdict is memoised for 5 minutes, and recording a test result is
@@ -1798,6 +1873,7 @@ mod tests {
                 rate_limited: false,
                 name: "Claude Code".into(),
                 detail: None,
+                probeable: false,
             },
         ));
 

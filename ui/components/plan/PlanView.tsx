@@ -197,8 +197,16 @@ export default function PlanView() {
   const metaAction = useCallback((action: string, keys: string[]) => {
     planAction(todayKey, action, keys)
       .then(d => { setSaveError(false); derive(d) })
-      .catch(() => setSaveError(true))
-  }, [derive, todayKey])
+      // Raise the banner AND put the column back to what the server actually holds.
+      // The banner alone is not enough: `commit` applies the change to local state
+      // before writing, so a rejected write leaves the board showing a plan that does
+      // not exist - the header counts the tasks it can see and reads "Saved · 4 tasks"
+      // over a plan the server has none of. That is the same shape as the `⚠ Sync
+      // failed` regression fixed elsewhere in this branch: a write that failed, drawn
+      // as one that worked. Re-deriving is safe here because a failed write changed
+      // nothing server-side, so this restores rather than discards.
+      .catch(() => { setSaveError(true); load(true) })
+  }, [derive, todayKey, load])
 
   // EVERY CHANGE SAVES. Dropping a task into Today, removing one, reordering, or
   // adding from the composer writes the plan and marks it confirmed, immediately.

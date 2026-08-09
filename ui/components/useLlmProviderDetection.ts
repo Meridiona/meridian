@@ -64,7 +64,30 @@ export function useLlmProviderDetection() {
     if (!opts?.silent) setTestingIds((prev) => new Set(prev).add(id))
     try {
       const result = await invoke<ProviderTestResult>('test_llm_provider', { id })
-      setStatus((prev) => (prev[id] ? { ...prev, [id]: { ...prev[id], last_test: result } } : prev))
+      // Keep the result even when this provider has no row yet. The guard used to drop
+      // it on the floor, which is silent and reachable: `detect()`'s catch can leave
+      // `status` empty, and a test spends a real metered request against the user's
+      // subscription — so the discarded answer costs money AND leaves the panel showing
+      // "never tested" for a provider that was just tested. A row built here carries
+      // only what a test can actually attest to; the next `detect()` fills in the rest.
+      setStatus((prev) =>
+        prev[id]
+          ? { ...prev, [id]: { ...prev[id], last_test: result } }
+          : {
+              ...prev,
+              [id]: {
+                id,
+                // An answer came back, so something ran — but this is not an install
+                // probe, and claiming a path or an install state it never measured
+                // would be inventing detail. `detect()` is what establishes those.
+                installed: true,
+                path: null,
+                authenticated: null,
+                install_command: null,
+                last_test: result,
+              },
+            },
+      )
     } catch {
       // A failed probe CALL isn't evidence the provider stopped working — keep what was cached.
     } finally {

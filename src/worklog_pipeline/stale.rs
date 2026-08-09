@@ -15,11 +15,14 @@
 // warning, and the moment the information matters is the moment the work
 // happened, not whenever they next open the window.
 //
-// ONE PER STEP, NOT ONE PER HOUR. The dedup key carries the staleness rounded
-// down to a multiple of `WORKLOG_STALE_MINUTES`, so a task worked all afternoon
-// notifies at 15, 30, 45 minutes behind - not every fold, and not once and then
-// never again as the gap grows to something absurd. `enqueue` is idempotent on
-// that key, so this can run on every tick without a further guard.
+// ONE PER STEP, NOT ONE PER HOUR. The dedup key carries the staleness bucketed
+// by `notify_step` - the threshold, doubling: 15, 30, 60, 120 minutes behind -
+// so a task worked all afternoon escalates a few times and then goes quiet,
+// rather than notifying on every fold or falling silent as the gap grows to
+// something absurd. `enqueue` is idempotent on that key, so this can run on
+// every tick without a further guard. The doubling is load-bearing and not a
+// stylistic choice: see `notify_step`, where a linear step is what turned this
+// guarantee into one notification per hour, forever.
 //
 // # Who calls this
 // [`crate::worklog_pipeline::workstream::run`], immediately after the hourly
@@ -57,9 +60,7 @@ pub async fn notify_stale_drafts(pool: &SqlitePool, day_local: &str) {
     }
 
     for d in &stale {
-        // Rounded DOWN to the step, so the key only changes when the gap has
-        // grown by another whole step's worth of work.
-        let step = (d.stale_minutes / WORKLOG_STALE_MINUTES) * WORKLOG_STALE_MINUTES;
+        let step = notify_step(d.stale_minutes);
         let dedup = format!("worklog.stale:{day_local}:{}:{step}", d.task_id);
         let body = stale_body(&d.title, d.stale_minutes);
         let n = NewNotification::event(
@@ -115,6 +116,31 @@ fn stale_body(title: &str, minutes: i64) -> String {
     format!("You have worked {amount} on \"{title}\" since the draft was written. Regenerate it before you post.")
 }
 
+/// The dedup bucket a given staleness falls in: `WORKLOG_STALE_MINUTES` doubling each
+/// time — 15, 30, 60, 120, 240 minutes behind.
+///
+/// A LINEAR step (every 15 minutes) is what this used to be, and it did not survive
+/// contact with the caller's cadence. `notify_stale_drafts` runs once per hourly fold,
+/// and an hour spent on the task adds about sixty minutes of staleness — four whole
+/// linear steps — so the key had ALWAYS moved by the time the next fold looked at it.
+/// The documented "one per step, not one per hour" guarantee therefore delivered
+/// exactly one per hour, every hour, for as long as the draft went unregenerated: the
+/// nagging the dedup key exists to prevent, arriving reliably.
+///
+/// Doubling fixes it without giving up the early warning, because it matches how the
+/// news actually decays. The first 15 minutes behind is worth saying once; going from
+/// 15 to 30 is worth saying; going from 4 hours to 4 hours 15 is not news, it is the
+/// same fact again. Over a full working day this is at most five notifications for one
+/// draft instead of eight and counting, and it stays a pure function of `stale_minutes`
+/// — no state, so `enqueue`'s idempotency on the key is still the only guard needed.
+fn notify_step(stale_minutes: i64) -> i64 {
+    let mut step = WORKLOG_STALE_MINUTES;
+    while stale_minutes >= step.saturating_mul(2) {
+        step = step.saturating_mul(2);
+    }
+    step
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,12 +173,57 @@ mod tests {
     fn the_dedup_step_only_moves_once_per_whole_step() {
         // The property the once-per-step guarantee rests on: everything inside
         // one step shares a key, and `enqueue` is idempotent on it.
-        let step = |m: i64| (m / WORKLOG_STALE_MINUTES) * WORKLOG_STALE_MINUTES;
-        assert_eq!(step(WORKLOG_STALE_MINUTES), step(WORKLOG_STALE_MINUTES + 1));
         assert_eq!(
-            step(WORKLOG_STALE_MINUTES * 2 - 1),
-            step(WORKLOG_STALE_MINUTES)
+            notify_step(WORKLOG_STALE_MINUTES),
+            notify_step(WORKLOG_STALE_MINUTES + 1)
         );
-        assert_ne!(step(WORKLOG_STALE_MINUTES * 2), step(WORKLOG_STALE_MINUTES));
+        assert_eq!(
+            notify_step(WORKLOG_STALE_MINUTES * 2 - 1),
+            notify_step(WORKLOG_STALE_MINUTES)
+        );
+        assert_ne!(
+            notify_step(WORKLOG_STALE_MINUTES * 2),
+            notify_step(WORKLOG_STALE_MINUTES)
+        );
+    }
+
+    /// The reason the step doubles instead of stepping linearly.
+    ///
+    /// This function's only caller runs once an hour, and an hour of work on the task
+    /// adds about an hour of staleness. Under a linear step that cleared four buckets
+    /// per fold, so the key had always moved and the user was notified about the same
+    /// unregenerated draft every single hour - which is precisely what the dedup key
+    /// was introduced to stop.
+    #[test]
+    fn a_draft_worked_all_day_does_not_notify_every_hour() {
+        // A full working day of continuous work on one un-regenerated draft, sampled
+        // as the hourly fold would see it.
+        let hourly: Vec<i64> = (1..=8).map(|h| h * 60).collect();
+        let buckets: std::collections::BTreeSet<i64> =
+            hourly.iter().copied().map(notify_step).collect();
+        assert!(
+            buckets.len() <= 4,
+            "eight hourly folds must not mean eight notifications, got {buckets:?}"
+        );
+
+        // ...while the early, genuinely informative escalation still gets through:
+        // first crossing, then each doubling.
+        assert_ne!(notify_step(15), notify_step(30));
+        assert_ne!(notify_step(30), notify_step(60));
+        assert_ne!(notify_step(60), notify_step(120));
+
+        // ...and a big gap growing slightly is not news a second time.
+        assert_eq!(notify_step(240), notify_step(255));
+    }
+
+    /// Below the threshold nothing is ever enqueued (`stale_drafts` filters those out),
+    /// but the bucket must still be well-defined rather than dividing by a smaller step.
+    #[test]
+    fn the_first_bucket_is_the_threshold_itself() {
+        assert_eq!(notify_step(0), WORKLOG_STALE_MINUTES);
+        assert_eq!(
+            notify_step(WORKLOG_STALE_MINUTES - 1),
+            WORKLOG_STALE_MINUTES
+        );
     }
 }

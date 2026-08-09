@@ -176,6 +176,50 @@ fn start_backoff(key: &str, duration: Duration) {
     guard.insert(key.to_string(), Instant::now() + duration);
 }
 
+/// How often a provider the health gate has refused is allowed one real call to find out
+/// whether the verdict still holds.
+///
+/// The trade is between a wasted call and a silent outage. Too long and the exemption stops
+/// being a recovery path - the point is that a provider fixed at 10:00 is working again by
+/// about 10:15, not at 16:00 when a runtime observation would have aged out on its own.
+/// Too short and a genuinely broken provider is dialled repeatedly, which on a metered
+/// endpoint costs money to keep confirming bad news. Fifteen minutes sits under the hourly
+/// fold cadence - the main thing an outage delays - so at most one hour's work is deferred.
+const HEALTH_PROBE_INTERVAL: Duration = Duration::from_secs(15 * 60);
+
+/// When each provider was last allowed a probe past the health gate.
+///
+/// In-process and deliberately not persisted: a restart re-earning one probe is the right
+/// behaviour, since a restart is the single most likely thing to have FIXED the provider
+/// (new PATH, fresh credentials, a CLI installed while the daemon was down).
+static LAST_HEALTH_PROBE: Mutex<Option<BTreeMap<String, Instant>>> = Mutex::new(None);
+
+/// Whether `provider` may spend one call re-checking a refusal, stamping the attempt if so.
+///
+/// Check and stamp are one operation under one lock on purpose: several pipeline stages can
+/// reach the gate concurrently on the same tick, and a check that did not immediately record
+/// the grant would let all of them through together - turning "one call per interval" into a
+/// small burst against a provider already believed to be failing.
+fn health_probe_is_due(provider: LlmProvider) -> bool {
+    let mut guard = LAST_HEALTH_PROBE.lock().unwrap_or_else(|e| e.into_inner());
+    let map = guard.get_or_insert_with(BTreeMap::new);
+    let now = Instant::now();
+    match map.get(provider.as_str()) {
+        Some(last) if now.duration_since(*last) < HEALTH_PROBE_INTERVAL => false,
+        _ => {
+            map.insert(provider.as_str().to_string(), now);
+            true
+        }
+    }
+}
+
+/// Forget every recorded probe, so the next refusal is exempted immediately. Test-only.
+#[cfg(test)]
+pub fn clear_health_probes() {
+    let mut guard = LAST_HEALTH_PROBE.lock().unwrap_or_else(|e| e.into_inner());
+    guard.get_or_insert_with(BTreeMap::new).clear();
+}
+
 /// Clear all backoff state. Test-only: per-backend keying (see [`RATE_LIMITED_UNTIL`]) means
 /// a live install never needs an explicit clear — switching providers just consults a
 /// different key, and each entry expires on its own.
@@ -388,15 +432,39 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
     // caller leaves its unit of work pending and retries on the following tick, so
     // nothing is lost by refusing early; the same work is drafted the moment the
     // provider is working again.
+    // ONE EXEMPTION, and the gate does not work without it. Everything above is a refusal
+    // based on a recorded verdict, and the only thing that can overturn that verdict is a
+    // successful call - which this gate is refusing to make. Left as a plain `return Err`
+    // the check is self-latching: a runtime failure blacks out every AI feature for the
+    // full six hours until the observation ages out, and a failed manual Test Connection,
+    // which carries no expiry at all, blacks them out until the user happens to press that
+    // button a second time. Neither is announced; the features simply stop.
+    //
+    // So a `probeable` verdict (see `InUseProviderHealth::probeable` - a MEASURED failure,
+    // not a missing install and not an assertion) buys one real call per
+    // `HEALTH_PROBE_INTERVAL` to find out whether it is still true. If that call succeeds
+    // the verdict is cleared on the spot and normal service resumes; if it fails, the
+    // refusal stands and costs one call every fifteen minutes to keep checking.
     let health = super::detect::in_use_provider_health(&s).await;
+    let mut probing = false;
     if let Some(refusal) = health_refusal(&health) {
-        tracing::warn!(
+        if !(health.probeable && health_probe_is_due(chosen)) {
+            tracing::warn!(
+                provider = chosen.as_str(),
+                label = %req.label,
+                error = %refusal,
+                probeable = health.probeable,
+                "llm: refusing the call - the chosen provider is not available"
+            );
+            return Err(refusal);
+        }
+        probing = true;
+        tracing::info!(
             provider = chosen.as_str(),
             label = %req.label,
             error = %refusal,
-            "llm: refusing the call - the chosen provider is not available"
+            "llm: provider is marked unavailable - letting one call through to re-check"
         );
-        return Err(refusal);
     }
 
     // Still inside an earlier rate limit's window. Refuse without dialling out: the quota
@@ -446,7 +514,17 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
             Ok(out) => {
                 // The provider answered: clear any runtime health flag it was carrying, so a
                 // recovered provider drops the banner without waiting on a manual re-test.
-                super::runtime_health::record_success(chosen);
+                //
+                // A probe takes the unconditional path. `record_success` decides whether
+                // there is anything to clear by looking at the RUNTIME record only, and the
+                // verdict a probe was sent to disprove is usually in the manual-test cache,
+                // which that check cannot see - so it would write nothing and the next call
+                // would be refused again by the verdict this one just disproved.
+                if probing {
+                    super::runtime_health::record_probe_success(chosen);
+                } else {
+                    super::runtime_health::record_success(chosen);
+                }
                 return Ok((out, chosen));
             }
             Err(LlmError::RateLimited {
@@ -557,6 +635,10 @@ mod tests {
                 rate_limited,
                 name: "Claude Code".to_string(),
                 detail: detail.map(str::to_string),
+                // Irrelevant here: `health_refusal` decides WHETHER a verdict refuses, and
+                // `probeable` only decides whether `complete_inner` spends a call testing
+                // one that already does. Pinned false so this stays a test of the ladder.
+                probeable: false,
             };
 
         // Unavailable → refuse, carrying the reason AND the fix.
@@ -581,6 +663,40 @@ mod tests {
 
         // Healthy → nothing in the way.
         assert!(health_refusal(&health(true, false, None)).is_none());
+    }
+
+    /// The exemption that keeps the health gate from latching shut.
+    ///
+    /// The gate refuses on a recorded verdict, and only a successful call can replace
+    /// that verdict — so without a periodic exemption the refusal is its own evidence.
+    /// A failed manual test never expires, which makes the blackout permanent rather
+    /// than merely long, and nothing tells the user any of it.
+    #[test]
+    fn a_refused_provider_earns_one_probe_per_interval() {
+        clear_health_probes();
+
+        // First refusal after the interval: one call goes through to re-check.
+        assert!(
+            health_probe_is_due(LlmProvider::Claude),
+            "a refused provider must get a chance to prove the verdict wrong"
+        );
+
+        // Everything else in the window is still refused. This is the half that keeps
+        // the exemption from becoming "ignore the gate": several pipeline stages hit
+        // this on the same tick, and letting them all through would dial a provider
+        // believed to be broken once per stage.
+        for _ in 0..5 {
+            assert!(
+                !health_probe_is_due(LlmProvider::Claude),
+                "only ONE call per interval may pass the gate"
+            );
+        }
+
+        // Per provider, not global: a broken Claude must not consume Codex's probe.
+        assert!(
+            health_probe_is_due(LlmProvider::Codex),
+            "the allowance is keyed per provider"
+        );
     }
 
     #[test]

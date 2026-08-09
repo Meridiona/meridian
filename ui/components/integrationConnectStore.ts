@@ -45,9 +45,19 @@ export function clearProviderNotice(provider: string): void {
 
 // Abort a still-running jira/trello browser-OAuth attempt so a fresh start_oauth
 // doesn't hit "already in progress". Only jira/trello are wired server-side
-// (github's device flow has no loopback port to free). Fire-and-forget.
-function cancelOAuthServer(provider: string): void {
-  void mutate('/api/auth/oauth/cancel', 'cancel_oauth', { provider }).catch(() => {})
+// (github's device flow has no loopback port to free).
+//
+// RETURNS ITS PROMISE rather than swallowing it. The caller that only wants the
+// attempt gone can still ignore it, but "Open it again" cannot: teardown frees
+// the loopback port that the immediately-following start_oauth needs to bind, so
+// fire-and-forget there is a race against the exact failure this function exists
+// to prevent. Errors stay swallowed - a teardown that fails should not stop the
+// user retrying, and start_oauth reports its own failure anyway.
+function cancelOAuthServer(provider: string): Promise<void> {
+  return mutate('/api/auth/oauth/cancel', 'cancel_oauth', { provider }).then(
+    () => {},
+    () => {},
+  )
 }
 
 // ── Generic keyed external store ──────────────────────────────────────────────
@@ -141,11 +151,37 @@ export function resetOAuthIfSettled(provider: string): void {
 }
 
 /** Abort a 'waiting' or 'error' attempt back to idle: stop the poll, free the
- *  loopback port (jira/trello), reset local state. */
-export function cancelOAuth(tracker: Tracker): void {
+ *  loopback port (jira/trello), reset local state.
+ *
+ *  Resolves when the server-side teardown has actually completed. Local state is
+ *  updated synchronously either way, so a caller that just wants the panel to
+ *  stop waiting can ignore the promise — [`cancelOAuth`] is exactly that. */
+export function cancelOAuthSettled(tracker: Tracker): Promise<void> {
   stopPoll(tracker.id)
-  if (tracker.id === 'jira' || tracker.id === 'trello') cancelOAuthServer(tracker.id)
+  const tornDown =
+    tracker.id === 'jira' || tracker.id === 'trello'
+      ? cancelOAuthServer(tracker.id)
+      : Promise.resolve()
   oauthStore.set(tracker.id, { status: 'idle', error: null, deviceCode: null, verifyUri: null })
+  return tornDown
+}
+
+/** Abort an attempt and forget about it — the Cancel button, which has nothing to
+ *  sequence afterwards. */
+export function cancelOAuth(tracker: Tracker): void {
+  void cancelOAuthSettled(tracker)
+}
+
+/** "Open it again": abort the stuck attempt, WAIT for the teardown, then start over.
+ *
+ *  The wait is the whole point. On jira/trello the cancel frees a loopback port
+ *  that `start_oauth` immediately needs to bind, so starting before the teardown
+ *  lands races it — and the failure is the "already in progress" error that the
+ *  cancel exists to prevent, arriving on the button whose entire job is to rescue a
+ *  user who is already stuck. */
+export async function restartOAuth(tracker: Tracker): Promise<void> {
+  await cancelOAuthSettled(tracker)
+  await startOAuth(tracker)
 }
 
 /** Start (or restart) the browser/device OAuth flow for `tracker`. Idempotent

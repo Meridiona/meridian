@@ -130,7 +130,7 @@ function PlanRow({ title, sub, ticket, done, delay, onClick }: {
 }
 
 /** How a row's worklog stands. `undefined` = we have no draft row for this task. */
-export type DraftBadge = { state: string; stale_minutes: number | null } | undefined
+export type DraftBadge = { state: string; stale_minutes: number | null; stale: boolean } | undefined
 
 /** The badge for a row's worklog state, or `null` when there is nothing to say.
  *
@@ -164,14 +164,21 @@ function draftBadge(badge: DraftBadge): { label: string; tone: string; loud: boo
  *  Wall-clock age would be the obvious choice and the wrong one: a draft written at
  *  09:00 and looked at after lunch is not stale if nothing happened on that task in
  *  between. What makes a draft out of date is WORK it does not describe, which is
- *  exactly `stale_minutes`. Suppressed under the threshold - a draft trailing by six
- *  minutes is accurate, and saying so would train the user to ignore the line for the
- *  day it trails by two hours. */
-const STALE_FLOOR_MINUTES = 25
+ *  exactly `stale_minutes`.
+ *
+ *  WHETHER that gap is worth mentioning is NOT decided here. It is decided once, in
+ *  Rust, by `WORKLOG_STALE_MINUTES` - and `stale` is that decision, already made. This
+ *  used to re-threshold `stale_minutes` against a local 25, against the daemon's 15,
+ *  which put the screen and the notification into direct contradiction over the same
+ *  draft: between 15 and 25 minutes the user got a toast saying their draft was out of
+ *  date, opened the summary the toast linked to, and found the row saying nothing was
+ *  wrong. Two definitions of one word cannot both be right, and the one the user was
+ *  already told is the one that has to win. `api-types.ts` says exactly this on the
+ *  field itself. */
 function staleNote(badge: DraftBadge): string | null {
-  if (!badge || badge.state !== 'drafted') return null
+  if (!badge || badge.state !== 'drafted' || !badge.stale) return null
   const m = badge.stale_minutes ?? 0
-  if (m < STALE_FLOOR_MINUTES) return null
+  if (m <= 0) return null
   return `${fmtDur(m * 60)} of work since`
 }
 
@@ -263,7 +270,7 @@ export function WorkList({ tasks, plan, planned, onSelect, onOpenTask, drafts, d
   /** Worklog state per task id, from `get_day_draft_states`. Absent while it loads,
    *  and a task with no entry has no draft - both render without a badge, which is
    *  the honest answer in each case. */
-  drafts?: Map<string, { state: string; stale_minutes: number | null }>
+  drafts?: Map<string, { state: string; stale_minutes: number | null; stale: boolean }>
   delay?: number
 }) {
   const byId = new Map(tasks.map(t => [t.id, t]))

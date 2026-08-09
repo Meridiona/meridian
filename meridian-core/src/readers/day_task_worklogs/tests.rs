@@ -1343,6 +1343,69 @@ async fn day_draft_states_counts_work_done_since_the_draft() {
     assert_eq!(states[0].stale_minutes, Some(22));
 }
 
+/// The summary's staleness line and the daemon's notification must agree, because the
+/// notification is what sends the user to the summary in the first place.
+///
+/// The reader now carries the verdict rather than the raw number alone. The summary
+/// used to re-threshold `stale_minutes` in TypeScript at 25 minutes against the
+/// daemon's [`WORKLOG_STALE_MINUTES`] of 15 — so a draft between those two numbers
+/// produced a toast saying it had fallen behind and a summary row, reached by
+/// following that toast, saying nothing was wrong.
+#[tokio::test]
+async fn day_draft_states_carries_the_same_verdict_the_notifier_sends() {
+    let pool = seeded().await;
+    put_task(&pool, "T1", 40).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+
+    // One minute under the threshold: real growth, not yet worth acting on.
+    put_task(&pool, "T1", 40 + WORKLOG_STALE_MINUTES - 1).await;
+    let states = day_draft_states(&pool, DAY).await.unwrap();
+    assert!(!states[0].stale, "under the threshold is not stale");
+
+    // Exactly at it: stale. This is the value the notifier fires on, and it sits well
+    // inside the 15-25 window where the two definitions used to disagree.
+    put_task(&pool, "T1", 40 + WORKLOG_STALE_MINUTES).await;
+    let states = day_draft_states(&pool, DAY).await.unwrap();
+    assert!(
+        states[0].stale,
+        "at the threshold the user has been notified"
+    );
+    assert_eq!(states[0].stale_minutes, Some(WORKLOG_STALE_MINUTES));
+
+    // The same rows the notifier would pick up, from the sibling reader — the two
+    // must not be able to disagree about the same draft.
+    let notified = stale_drafts(&pool, DAY).await.unwrap();
+    assert_eq!(
+        notified.len(),
+        1,
+        "the notifier and the summary disagree about this draft"
+    );
+}
+
+/// Staleness is about a draft going out of date, so a draft that has already gone out
+/// stops being stale. Offering to rewrite a posted update offers to lose it.
+#[tokio::test]
+async fn a_posted_update_is_never_stale_however_much_work_follows_it() {
+    let pool = seeded().await;
+    put_task(&pool, "T1", 10).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    sqlx::query("UPDATE day_task_worklogs SET state = 'posted' WHERE task_id = 'T1'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    put_task(&pool, "T1", 10 + WORKLOG_STALE_MINUTES * 10).await;
+
+    let states = day_draft_states(&pool, DAY).await.unwrap();
+    assert!(
+        !states[0].stale,
+        "a posted update is a record of what went out, not a draft going stale"
+    );
+}
+
 #[tokio::test]
 async fn day_draft_states_clamps_minutes_revised_down() {
     // The fold can move a segment to another workstream, so a task's minutes

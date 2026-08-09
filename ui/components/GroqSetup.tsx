@@ -52,46 +52,84 @@ export default function GroqSetup({ onBack, onAdd, onPick }: {
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
   const [model, setModel] = useState<string | null>(null)
+  // Set once the endpoint EXISTS daemon-side, which is what makes a retry different from a
+  // first attempt: the add can never be repeated (the tray rejects a duplicate name,
+  // permanently), so from here on the recovery is to re-measure the endpoint we already
+  // saved. Without this the screen was a dead end - see `connect`.
+  const [addedId, setAddedId] = useState<string | null>(null)
 
   const busy = phase === 'listing' || phase === 'adding' || phase === 'selecting'
+  // Once the endpoint is saved the key lives daemon-side and is not needed again, so the
+  // button must not be gated on a field the flow itself no longer requires.
+  const canConnect = !busy && (!!apiKey.trim() || !!addedId)
 
+  // THE FAILURE THIS IS SHAPED AROUND is a free-tier 429 during the eligibility probe -
+  // the expected case on Groq's free tier, not a rare one - landing on the COMPULSORY
+  // AI-connect step of first-run.
+  //
+  // It used to be unrecoverable. The key was cleared as soon as the endpoint was saved but
+  // before eligibility was checked, so the throw left an empty field; `connect` opens by
+  // returning early on an empty key, so pressing the button again did nothing at all -
+  // no request, no error, no change. And even with the key retyped, a retry re-ran the add,
+  // which the tray refuses forever once an endpoint named "Groq" exists. There was no way
+  // out from inside the flow either: the picker renders this screen unconditionally for the
+  // "free" gate answer and Back returns to that same gate.
+  //
+  // So: the key is held until the whole flow succeeds, and a retry after the save re-measures
+  // the existing endpoint instead of trying to create a second one.
   async function connect() {
     const key = apiKey.trim()
-    if (!key) return
+    if (!key && !addedId) return
     setError(null)
     try {
-      // 1. Ask Groq what it serves, on this key. Doubles as the first real check that the
-      //    key works at all - a typo fails here, before anything is written to settings.
-      setPhase('listing')
-      const ids = await invoke<string[]>('list_custom_llm_provider_models', {
-        baseUrl: GROQ.baseUrl,
-        apiKey: key,
-      })
-      const chosen = pickGroqModel(ids)
-      if (!chosen) {
-        // Empty, or nothing but speech/embedding models. There is no default to fall back
-        // on, so say so rather than writing an endpoint that cannot answer a prompt.
-        throw new Error('This key has no chat models available on it. Check the key is from console.groq.com and try again.')
-      }
-      setModel(chosen)
+      let outcome: ProbeOutcome
+      if (addedId) {
+        // RETRY, endpoint already saved. Re-measure rather than re-add: `refresh: true` runs
+        // the same schema probe the add ran, which is the step a 429 interrupted, and it is
+        // the only one that needs repeating. The key is not passed because the daemon holds
+        // it - which is also why the field being empty here is correct rather than a problem.
+        setPhase('adding')
+        outcome = await invoke<ProbeOutcome>('probe_custom_llm_provider', {
+          id: addedId,
+          refresh: true,
+        })
+      } else {
+        // 1. Ask Groq what it serves, on this key. Doubles as the first real check that the
+        //    key works at all - a typo fails here, before anything is written to settings.
+        setPhase('listing')
+        const ids = await invoke<string[]>('list_custom_llm_provider_models', {
+          baseUrl: GROQ.baseUrl,
+          apiKey: key,
+        })
+        const chosen = pickGroqModel(ids)
+        if (!chosen) {
+          // Empty, or nothing but speech/embedding models. There is no default to fall back
+          // on, so say so rather than writing an endpoint that cannot answer a prompt.
+          throw new Error('This key has no chat models available on it. Check the key is from console.groq.com and try again.')
+        }
+        setModel(chosen)
 
-      // 2. Save + MEASURE it. `add` runs the real schema probe, which is what decides
-      //    whether Meridian can actually use it - see `production_eligible`.
-      setPhase('adding')
-      const outcome = await onAdd({
-        vendor: GROQ.vendor, name: GROQ.name, base_url: GROQ.baseUrl,
-        model: chosen, api_key: key,
-        // Groq's published free-tier limits for the model we just pinned - not a guess, and
-        // not left at 0 either: unknown limits mean unpaced requests and a standing notice on
-        // the endpoint card asking for a number we already know. See GROQ.freeRpm/freeRpd.
-        rpm: GROQ.freeRpm, rpd: GROQ.freeRpd,
-      })
-      setApiKey('')  // stored daemon-side now, and it never comes back
+        // 2. Save + MEASURE it. `add` runs the real schema probe, which is what decides
+        //    whether Meridian can actually use it - see `production_eligible`.
+        setPhase('adding')
+        outcome = await onAdd({
+          vendor: GROQ.vendor, name: GROQ.name, base_url: GROQ.baseUrl,
+          model: chosen, api_key: key,
+          // Groq's published free-tier limits for the model we just pinned - not a guess, and
+          // not left at 0 either: unknown limits mean unpaced requests and a standing notice on
+          // the endpoint card asking for a number we already know. See GROQ.freeRpm/freeRpd.
+          rpm: GROQ.freeRpm, rpd: GROQ.freeRpd,
+        })
+        // Recorded BEFORE the eligibility check below, because it is true regardless of how
+        // that check goes: the endpoint exists now, so every later attempt must re-measure
+        // this id rather than try to create it again.
+        setAddedId(outcome.provider.id)
+      }
 
       if (!outcome.provider.production_eligible) {
         throw new Error(
-          `${chosen} answered, but it could not return the structured replies Meridian needs. ` +
-          `The key is saved - open All providers to try measuring it again.`,
+          `${outcome.provider.model} answered, but it could not return the structured replies ` +
+          `Meridian needs. This is often a busy free tier - press Connect Groq to try again.`,
         )
       }
 
@@ -99,6 +137,7 @@ export default function GroqSetup({ onBack, onAdd, onPick }: {
       //    selecting an ineligible endpoint, so this can fail even though the add worked.
       setPhase('selecting')
       await onPick(outcome.provider.id)
+      setApiKey('')  // stored daemon-side now, and it never comes back
       setPhase('done')
     } catch (e) {
       setError(String(e).replace(/^Error:\s*/, ''))
@@ -202,14 +241,14 @@ export default function GroqSetup({ onBack, onAdd, onPick }: {
           <button
             data-tour="groq-connect"
             onClick={connect}
-            disabled={busy || !apiKey.trim()}
+            disabled={!canConnect}
             className="self-start"
             style={{
               fontSize: 12, fontWeight: 700, color: '#fff', padding: '8px 14px',
               borderRadius: 9, border: 'none',
               background: 'var(--btn-primary-bg)',
-              opacity: busy || !apiKey.trim() ? 0.5 : 1,
-              cursor: busy || !apiKey.trim() ? 'default' : 'pointer',
+              opacity: canConnect ? 1 : 0.5,
+              cursor: canConnect ? 'pointer' : 'default',
             }}>
             {phase === 'listing' ? 'Checking your key…'
               : phase === 'adding' ? 'Setting up…'

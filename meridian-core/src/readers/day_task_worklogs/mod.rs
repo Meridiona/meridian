@@ -241,6 +241,24 @@ const DRAFT_FROM: &str = "FROM day_task_worklogs w \
 /// current". Both readers map that NULL to `None`.
 const STALE_MINUTES_EXPR: &str = "MAX(t.minutes - w.drafted_minutes, 0) AS stale_minutes";
 
+/// Is this draft far enough behind its task to be worth acting on?
+///
+/// THE definition of the word "stale" in this product, and the reason it is a function
+/// rather than an expression repeated per reader. Every surface that answers the
+/// question has to answer it identically: the notification the daemon sends, the badge
+/// on the draft, and the line under the task in the daily summary. When the summary
+/// re-derived it in TypeScript against its own threshold, a user between the two
+/// numbers was notified that a draft had fallen behind, followed the notification to
+/// the summary, and read that nothing was wrong.
+///
+/// Never stale once the draft leaves `drafted`: an approved or posted update is a
+/// record of what went out, not a draft going out of date, and offering to rewrite it
+/// is offering to lose it. A `None` baseline (pre-079 row, or a task since dismissed)
+/// is "cannot know" and must not read as "perfectly current".
+pub(crate) fn draft_is_stale(state: &str, stale_minutes: Option<i64>) -> bool {
+    state == "drafted" && stale_minutes.is_some_and(|m| m >= WORKLOG_STALE_MINUTES)
+}
+
 impl RawWorklog {
     fn into_draft(self, targets: Vec<WorklogTarget>) -> DayTaskWorklogDraft {
         // Prefer the full JSON object; fall back to the denormalised summary so a
@@ -268,7 +286,7 @@ impl RawWorklog {
             _ => None,
         };
         let state = self.state;
-        let stale = state == "drafted" && stale_minutes.is_some_and(|m| m >= WORKLOG_STALE_MINUTES);
+        let stale = draft_is_stale(&state, stale_minutes);
         DayTaskWorklogDraft {
             state,
             provider: self.provider,
@@ -347,6 +365,22 @@ pub struct DayDraftState {
     /// Measured minutes worked since the draft was written, clamped at zero. `None`
     /// when the row predates `drafted_minutes` (pre-079).
     pub stale_minutes: Option<i64>,
+    /// Whether that growth is worth acting on, by the SINGLE definition
+    /// ([`WORKLOG_STALE_MINUTES`]) that also drives the daemon's stale-draft
+    /// notification.
+    ///
+    /// Computed here, and not by the consumer, because the consumer got it wrong: the
+    /// summary re-thresholded `stale_minutes` in TypeScript against a local 25 while
+    /// the daemon notified at 15. Between those two numbers the user was told by a
+    /// toast that a draft had fallen behind, followed the toast to the summary it
+    /// linked to, and found the row reporting nothing was wrong. Two definitions of
+    /// one word, and the one the user has already been shown has to win.
+    ///
+    /// Not selected from SQL: it is derived by [`draft_is_stale`] after the read, so
+    /// the rule lives in exactly one place rather than being transcribed into a second
+    /// query that can drift from the first.
+    #[sqlx(default)]
+    pub stale: bool,
 }
 
 /// Every worklog row on `day_local`, one per task that has one.
@@ -387,7 +421,10 @@ pub async fn day_draft_states(
     .await;
 
     match rows {
-        Ok(r) => {
+        Ok(mut r) => {
+            for row in &mut r {
+                row.stale = draft_is_stale(&row.state, row.stale_minutes);
+            }
             tracing::debug!(rows = r.len(), "day_task_worklogs.read.day_draft_states");
             Ok(r)
         }

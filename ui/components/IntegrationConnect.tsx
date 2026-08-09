@@ -24,7 +24,7 @@ import { SelectableRow } from '@/components/ui/SelectableRow'
 import { syncTasks } from '@/lib/taskSync'
 import {
   useConnectStore, clearProviderNotice,
-  oauthStore, startOAuth, cancelOAuth, setOAuthApiKey, resetOAuthIfSettled,
+  oauthStore, startOAuth, cancelOAuth, restartOAuth, setOAuthApiKey, resetOAuthIfSettled,
   azureStore, azureLookupOrgs, azureSelectOrg, azureSubmitManualOrg, azureConnect,
   setAzurePat, setAzureSelectedProject, setAzureManualOrg, resetAzureIfSettled,
   githubPickerStore, githubEnsureLoaded, githubToggle, githubSave, resetGithubPickerIfSaved,
@@ -583,7 +583,7 @@ function OAuthSetup({ tracker, onSuccess }: { tracker: Tracker; onSuccess?: () =
                   not provider-specific. `cancelOAuth` already does the
                   provider-specific server-side teardown internally. */}
               <div className="flex items-center gap-2 pt-0.5">
-                <button onClick={() => { cancelOAuth(tracker); void startOAuth(tracker) }}
+                <button onClick={() => { void restartOAuth(tracker) }}
                   className={`text-[12px] px-3 py-1.5 rounded-md transition-opacity hover:opacity-80`}
                   style={{
                     fontWeight: 700, color: 'var(--t-accent)', cursor: 'pointer',

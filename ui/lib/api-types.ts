@@ -286,6 +286,14 @@ export interface DayDraftState {
   state: string
   /** Measured minutes worked since the draft was written. Null on a pre-077 row. */
   stale_minutes: number | null
+  /** Whether that growth is worth acting on, by the one definition
+   *  (`WORKLOG_STALE_MINUTES`, 15) the daemon's notifier and this UI both read.
+   *
+   *  Read this rather than thresholding `stale_minutes` here. A local threshold is
+   *  a second definition of "stale", and it disagreed with the notification the
+   *  user had already been shown - a toast saying the draft had fallen behind,
+   *  linking to a summary that said it had not. */
+  stale: boolean
 }
 
 export interface DayTasksResponse {
