@@ -128,6 +128,36 @@ html.dark {
    (Toolbar.tsx's MeridianMark, ui/public/meridian-logo.png), not a token. */
 :root {
   --mer-pill-bg:       linear-gradient(135deg,#332A63,#241C49);
+  /* Meridian's own backdrop, for the surfaces that ARE the app rather than a
+     panel inside it and carry white content — so they cannot follow --win-bg
+     into lilac/blush, where it turns near-white and the text disappears.
+     Consumer: ReportModal's hero.
+
+     The base is ink's --win-bg ramp (deep indigo → near-black, same family, so
+     the modal reads as Meridian and not as a stray dark box). What sits on top
+     of it is the part that matters: three wide, low-alpha radial washes, none
+     of them centred and none of them fully inside the box. A single linear ramp
+     is flat — every pixel on a given scanline is the same colour — and flat is
+     what makes a dark header look like 2013 chrome. Off-centre radials give the
+     light a SOURCE, so the surface has a near corner and a far one.
+
+     Cool, deliberately. The washes are indigo and cyan, NOT violet: violet on a
+     Meridian surface means a model wrote it (see --draft-card-bg), and this is
+     the screen where a person reads your message. The one warm-leaning stop is
+     kept under 8% alpha and low in the box, where it reads as depth.
+
+     Alphas are low on purpose (.30 / .16 / .55 over a dark base) — a wash you
+     can NAME as a shape is a blob; these should only register as the surface
+     being unevenly lit. */
+  --mer-brand-bg:
+    radial-gradient(115% 85% at 8% -15%,  rgba(129,150,255,.30) 0%, rgba(129,150,255,0) 58%),
+    radial-gradient(95% 75% at 96% 2%,    rgba(86,201,255,.16)  0%, rgba(86,201,255,0)  62%),
+    radial-gradient(90% 115% at 72% 118%, rgba(72,58,158,.55)   0%, rgba(72,58,158,0)   64%),
+    linear-gradient(165deg,#3A3178 0%,#241E52 46%,#171331 78%,#100D24 100%);
+  /* The hairline of light along the top edge of that surface, and the shadow it
+     casts into the content below. Both are what stop a filled rectangle from
+     looking pasted on: real materials catch light on their top edge. */
+  --mer-brand-edge:    inset 0 1px 0 rgba(255,255,255,.14), 0 1px 0 rgba(0,0,0,.20);
   --mer-pill-border:   rgba(255,255,255,.12);
   --mer-pill-shadow:   0 14px 32px -12px rgba(50,30,110,.5), inset 0 1px 0 rgba(255,255,255,.1);
   /* Generating-hour takeover card accents (ring behind the icon, typing-dot
