@@ -84,6 +84,92 @@ static CHECKING: AtomicBool = AtomicBool::new(false);
 /// attempts would race.
 static INSTALLING: AtomicBool = AtomicBool::new(false);
 
+/// Why an install attempt came back instead of relaunching.
+///
+/// The distinction exists because losing it shipped a bug: every surface
+/// rendered any [`download_and_apply`] rejection as "Update failed", so the
+/// single-flight refusal below — which means *the install is running fine, just
+/// not on this button* — was displayed as a failed update, alongside an offer
+/// to retry that could only be refused again. See [`UpdateError`].
+///
+/// `rename_all` is load-bearing: `inProgress` is the exact token both banners
+/// match on (`tray/src/app.js`, `ui/components/timeline/UpdateCard.tsx`), and
+/// `ui/__tests__/update-in-progress.test.ts` pins all three spellings together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UpdateErrorKind {
+    /// Another surface already holds the install slot. Not a failure: that
+    /// install is still running and will relaunch the app when it lands.
+    InProgress,
+    /// A genuine pre-relaunch failure — unreachable manifest, signature
+    /// mismatch, a write that didn't take.
+    Failed,
+}
+
+/// A failed [`download_and_apply`], as the banners receive it.
+///
+/// Serialised straight across the `install_update` command's `Err`, so the
+/// frontend gets `{ kind, message }` rather than a bare string it would have to
+/// pattern-match on prose. `message` stays human-readable for logs and for the
+/// dashboard's diagnostic text.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateError {
+    pub kind: UpdateErrorKind,
+    pub message: String,
+}
+
+impl UpdateError {
+    /// The single-flight refusal — an install is already under way elsewhere.
+    fn in_progress() -> Self {
+        Self {
+            kind: UpdateErrorKind::InProgress,
+            message: "An update is already being installed.".to_string(),
+        }
+    }
+
+    /// A real failure, from whatever stage produced it.
+    fn failed(message: impl Into<String>) -> Self {
+        Self {
+            kind: UpdateErrorKind::Failed,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for UpdateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// RAII holder of the single-flight install slot. Dropping it frees the slot, so
+/// every early return in [`download_and_apply`] leaves a failed install
+/// retryable; the happy path never drops it because `restart()` re-execs first.
+///
+/// `Debug` is only for `expect_err` in the slot test — a `Result<InstallSlot, _>`
+/// cannot report its error without it.
+#[derive(Debug)]
+struct InstallSlot;
+
+impl Drop for InstallSlot {
+    fn drop(&mut self) {
+        INSTALLING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Take the install slot, or report that someone else holds it.
+///
+/// Split out of [`download_and_apply`] purely so the refusal is reachable from
+/// a unit test — the function it guards needs a live `AppHandle` and a network,
+/// and the refusal is the half that was rendering wrong in the field.
+fn acquire_install_slot() -> Result<InstallSlot, UpdateError> {
+    if INSTALLING.swap(true, Ordering::SeqCst) {
+        return Err(UpdateError::in_progress());
+    }
+    Ok(InstallSlot)
+}
+
 /// Structured result of an update check, for the in-app banners. Deliberately
 /// NOT a `Result` — a failed check is data (`state = "error"` + `error`) the UI
 /// renders, not a thrown command that the banner would have to swallow. `state`
@@ -271,30 +357,28 @@ pub async fn check_status(app: &AppHandle) -> UpdateStatus {
 
 /// Download → verify → install the available update, emitting `update-progress`
 /// `{ downloaded, contentLength }` events so the banners can show a bar, then
-/// relaunch into the new version. Returns `Err` only on a pre-relaunch failure —
+/// relaunch into the new version. Returns `Err` only on a pre-relaunch outcome —
 /// the success path never returns (`restart()` re-execs the app).
+///
+/// Two of those outcomes are not the same thing, and the caller must tell them
+/// apart: [`UpdateErrorKind::InProgress`] means another surface's install is
+/// already running (benign — that one will relaunch), while
+/// [`UpdateErrorKind::Failed`] is a real fault worth showing and retrying.
 #[tracing::instrument(skip(app))]
-pub async fn download_and_apply(app: &AppHandle) -> Result<(), String> {
+pub async fn download_and_apply(app: &AppHandle) -> Result<(), UpdateError> {
     // Single-flight: refuse a concurrent install. On the happy path `restart()`
-    // re-execs the process so the guard's reset never matters; on every error
-    // path the drop guard clears it so a failed install can be retried.
-    if INSTALLING.swap(true, Ordering::SeqCst) {
-        return Err("An update is already being installed.".to_string());
-    }
-    struct ResetOnDrop;
-    impl Drop for ResetOnDrop {
-        fn drop(&mut self) {
-            INSTALLING.store(false, Ordering::SeqCst);
-        }
-    }
-    let _reset = ResetOnDrop;
+    // re-execs the process so the slot's reset never matters; on every error
+    // path dropping it clears the slot so a failed install can be retried.
+    let _slot = acquire_install_slot()?;
 
-    let updater = app.updater().map_err(|e| e.to_string())?;
+    let updater = app
+        .updater()
+        .map_err(|e| UpdateError::failed(e.to_string()))?;
     let update = updater
         .check()
         .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "No update available".to_string())?;
+        .map_err(|e| UpdateError::failed(e.to_string()))?
+        .ok_or_else(|| UpdateError::failed("No update available"))?;
 
     let emitter = app.clone();
     let mut downloaded: usize = 0;
@@ -310,7 +394,7 @@ pub async fn download_and_apply(app: &AppHandle) -> Result<(), String> {
             || tracing::info!("update: download finished, installing"),
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| UpdateError::failed(e.to_string()))?;
 
     tracing::info!("update: installed — restarting");
     app.restart();
@@ -480,11 +564,22 @@ pub fn enforce_minimum_version(app: &AppHandle) {
             }
             if let Err(e) = download_and_apply(&app).await {
                 due = Deadline::after(retry);
-                tracing::warn!(
-                    error = %e,
-                    retry_s = retry.as_secs(),
-                    "update: forced install failed - retrying"
-                );
+                // A user-initiated install holding the slot is not a failed
+                // enforcement — that install lands the same bytes and relaunches
+                // the app, satisfying the floor. Logging it as a failure sent
+                // support chasing an update path that was working.
+                if e.kind == UpdateErrorKind::InProgress {
+                    tracing::info!(
+                        retry_s = retry.as_secs(),
+                        "update: forced install deferred - a user-initiated install is already running"
+                    );
+                } else {
+                    tracing::warn!(
+                        error = %e,
+                        retry_s = retry.as_secs(),
+                        "update: forced install failed - retrying"
+                    );
+                }
                 retry = next_retry(retry);
             } else {
                 due = Deadline::after(ENFORCE_INTERVAL);
@@ -516,14 +611,29 @@ pub fn check_for_updates(app: &AppHandle) {
                 )
                 .await;
                 if let Err(e) = download_and_apply(&app).await {
-                    tracing::warn!(error = %e, "update: install failed");
-                    notify_update(
-                        &app,
-                        "failed",
-                        "Update failed",
-                        "The update couldn't be installed.",
-                    )
-                    .await;
+                    // Same distinction the banners make: a refusal from the
+                    // single-flight guard means a banner click already started
+                    // this install, so telling the user it failed would be a
+                    // plain lie about a download that is running.
+                    if e.kind == UpdateErrorKind::InProgress {
+                        tracing::info!("update: menu install skipped - one is already running");
+                        notify_update(
+                            &app,
+                            "in_progress",
+                            "Update already in progress",
+                            "Meridian is installing the update now and will restart when it's ready.",
+                        )
+                        .await;
+                    } else {
+                        tracing::warn!(error = %e, "update: install failed");
+                        notify_update(
+                            &app,
+                            "failed",
+                            "Update failed",
+                            "The update couldn't be installed.",
+                        )
+                        .await;
+                    }
                 }
             }
             "uptodate" => {
@@ -688,6 +798,56 @@ mod tests {
         assert!(!is_missing_platform_asset(
             &tauri_plugin_updater::Error::ReleaseNotFound
         ));
+    }
+
+    /// Regression guard for the 1.84.0-staging.7 field incident: the popover
+    /// and the dashboard card were both open, both were clicked, and the
+    /// loser's single-flight refusal rendered as "Update failed" while the
+    /// winner's install completed and relaunched the app 36 s later.
+    ///
+    /// The refusal has to be *distinguishable* from a real fault, which is what
+    /// this pins — the kind, and the exact wire spelling both banners match on.
+    ///
+    /// One test owns the whole slot lifecycle on purpose: `INSTALLING` is a
+    /// process-global, and `cargo test` runs tests in parallel threads, so
+    /// splitting this across cases would race.
+    #[test]
+    fn a_concurrent_install_is_refused_as_in_progress_not_as_a_failure() {
+        let first = acquire_install_slot().expect("an idle slot must be takeable");
+
+        let refused = acquire_install_slot().expect_err("a second install must be refused");
+        assert_eq!(
+            refused.kind,
+            UpdateErrorKind::InProgress,
+            "the refusal must not masquerade as a failed install"
+        );
+
+        // `inProgress` is the token `tray/src/app.js` and `UpdateCard.tsx` test
+        // for. If serde ever stopped renaming, both banners would silently fall
+        // back to rendering this as a failure again — the original bug.
+        let wire = serde_json::to_string(&refused).expect("serialises for the command boundary");
+        assert!(
+            wire.contains("\"kind\":\"inProgress\""),
+            "wire shape drifted from what the banners match on: {wire}"
+        );
+
+        drop(first);
+        // A failed install must leave the slot retryable, not wedged.
+        assert!(
+            acquire_install_slot().is_ok(),
+            "dropping the slot must free it"
+        );
+    }
+
+    /// The other half of the discriminant: everything that isn't the
+    /// single-flight refusal stays a failure, so a genuinely broken update path
+    /// still shows up as broken.
+    #[test]
+    fn real_faults_keep_the_failed_kind_and_their_message() {
+        let e = UpdateError::failed("signature verification failed");
+        assert_eq!(e.kind, UpdateErrorKind::Failed);
+        // `Display` is what the `%e` log sites render — it must carry the cause.
+        assert_eq!(e.to_string(), "signature verification failed");
     }
 
     /// The comparison `check_status` performs: strictly-below is mandatory,
