@@ -516,6 +516,15 @@ export function useTutorial(opts: {
   // Start once, on the first ready render for a user who has not seen it.
   const startedRef = useRef(false)
 
+  // Set by the three explicit entry points below, and read by the start effect to
+  // skip the "is this install entitled to the walkthrough" check.
+  //
+  // That check exists for the AUTOMATIC start only. Someone who pressed "Show me
+  // around" has asked for the tour in so many words, and an install that predates
+  // the walkthrough is precisely the one most likely to press it — refusing them
+  // would make the control dead on the only machines it matters on.
+  const explicitRef = useRef(false)
+
   // Replay hook. The walkthrough is a once-ever surface gated on a marker, so
   // without this the only way to see it again is deleting that key from the
   // console — every iteration, for anyone building or QAing it. Three ways in:
@@ -525,6 +534,7 @@ export function useTutorial(opts: {
   //   window.__meridianTour() from the console (no reload)
   const [replayNonce, setReplayNonce] = useState(0)
   const replay = useCallback(() => {
+    explicitRef.current = true
     try { localStorage.removeItem(SEEN_KEY) } catch { /* private mode */ }
     // Clear the dev jump too, so the ordinary Replay always means the WHOLE
     // walkthrough. Without this, one use of the shortcut latches the tour into
@@ -537,6 +547,7 @@ export function useTutorial(opts: {
   }, [])
 
   const replayFromDay = useCallback(() => {
+    explicitRef.current = true
     try { localStorage.setItem(DEV_FROM_KEY, 'day') } catch { /* private mode */ }
     try { localStorage.removeItem(SEEN_KEY) } catch { /* private mode */ }
     startedRef.current = false
@@ -570,8 +581,11 @@ export function useTutorial(opts: {
     return () => { delete w.__meridianTour; delete w.__meridianTourDay }
   }, [replay, replayFromDay])
 
+  // Declared BEFORE the start effect on purpose: effects run in declaration order,
+  // so `explicitRef` is already set by the time the start effect reads it.
   useEffect(() => {
     if (!new URLSearchParams(window.location.search).has('tour')) return
+    explicitRef.current = true
     try { localStorage.removeItem(SEEN_KEY) } catch { /* private mode */ }
   }, [])
 
@@ -603,12 +617,28 @@ export function useTutorial(opts: {
 
     const ctrl = new AbortController()
     abortRef.current = ctrl
-    setRunning(true)
-    // Mirrored into the module flag so screens BELOW the shell can tell they are
-    // being demonstrated rather than used - see `isTutorialRunning`.
-    setTutorialRunning(true)
     ;(async () => {
       if (ctrl.signal.aborted) return
+      // THE UPGRADE GUARD. `SEEN_KEY` above answers "has this browser profile been
+      // shown the walkthrough", and for every install that predates the walkthrough
+      // the honest answer is no - so on its own it hands a full-screen tour of the
+      // product to someone who has been using it for months, on the first launch
+      // after an update. `walkthrough_is_armed` is the missing half: it is written
+      // only by the wizard's own completion, so absent means "onboarded before this
+      // existed" and the tour stays out of the way.
+      //
+      // Failure is treated as NOT armed. The cost of being wrong in that direction
+      // is a walkthrough the user can still reach from Settings; the other way it is
+      // an unskippable-looking takeover of a working dashboard.
+      if (!explicitRef.current) {
+        const armed = await load<boolean>('/api/walkthrough-armed', 'walkthrough_is_armed')
+          .catch(() => false)
+        if (!armed || ctrl.signal.aborted) return
+      }
+      setRunning(true)
+      // Mirrored into the module flag so screens BELOW the shell can tell they are
+      // being demonstrated rather than used - see `isTutorialRunning`.
+      setTutorialRunning(true)
       try {
         await runScript(stageRef.current)
       } catch (e) {

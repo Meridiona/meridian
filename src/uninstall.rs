@@ -489,6 +489,10 @@ fn data_items(home: &Path) -> Vec<PathBuf> {
         "logs",
         "telemetry",
         "onboarded",
+        // The wizard's two companion markers: when it was opened, and whether the
+        // dashboard walkthrough that follows it has been armed (commands/setup.rs).
+        "setup_started",
+        "walkthrough_armed",
         "icon-cache",
         "daemon.sock",
     ]

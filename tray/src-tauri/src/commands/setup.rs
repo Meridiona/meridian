@@ -78,7 +78,12 @@ pub async fn setup_elapsed_secs() -> Option<u64> {
     u64::try_from(secs).ok()
 }
 
-/// Write `~/.meridian/onboarded` (RFC-3339 timestamp) to mark wizard completion.
+/// Name of the marker that ARMS the dashboard walkthrough — written when the wizard
+/// completes, read by [`walkthrough_is_armed`].
+const WALKTHROUGH_MARKER: &str = "walkthrough_armed";
+
+/// Write `~/.meridian/onboarded` (RFC-3339 timestamp) to mark wizard completion,
+/// and arm the dashboard walkthrough that follows it.
 /// Future tray launches skip the auto-open. Idempotent — safe to call more than once.
 #[tauri::command]
 #[tracing::instrument]
@@ -91,8 +96,43 @@ pub async fn mark_setup_complete() -> Result<(), String> {
     tokio::fs::write(dir.join("onboarded"), chrono::Local::now().to_rfc3339())
         .await
         .map_err(|e| format!("write onboarded: {e}"))?;
-    tracing::info!("setup: onboarded flag written");
+    // The walkthrough is the second half of onboarding, so finishing the wizard is
+    // what earns it. See [`walkthrough_is_armed`] for why it needs its own marker
+    // rather than reading `onboarded`.
+    tokio::fs::write(
+        dir.join(WALKTHROUGH_MARKER),
+        chrono::Local::now().to_rfc3339(),
+    )
+    .await
+    .map_err(|e| format!("write {WALKTHROUGH_MARKER}: {e}"))?;
+    tracing::info!("setup: onboarded flag written, walkthrough armed");
     Ok(())
+}
+
+/// Whether this install finished the wizard on a build that has the walkthrough —
+/// the one thing that entitles the dashboard to take the screen over on load.
+///
+/// # Why this is not `!is_first_run()`
+///
+/// The walkthrough's own "have you seen it" marker is a localStorage key, which no
+/// install predating it can possibly hold — so on its own it reads every existing
+/// user as brand new and hands a months-old install a full-screen tour of a product
+/// they already use. `onboarded` cannot fix that either: it is set for the existing
+/// user AND for the new one who just finished the wizard seconds ago, so it cannot
+/// tell them apart. This marker can, because only [`mark_setup_complete`] writes it
+/// and no upgrade back-fills it: absent means "onboarded before the walkthrough
+/// existed", which is exactly the population that must not see it.
+///
+/// Deliberately NOT consumed on read. Clearing it here would mean quitting mid-tour
+/// loses the walkthrough for good; the once-ever guarantee is the localStorage
+/// marker's job, written when the user finishes or skips.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn walkthrough_is_armed() -> bool {
+    match meridian_core::paths::meridian_dir() {
+        Some(dir) => dir.join(WALKTHROUGH_MARKER).exists(),
+        None => false,
+    }
 }
 
 /// The current OS, for the wizard to adapt its copy/steps — e.g. the
