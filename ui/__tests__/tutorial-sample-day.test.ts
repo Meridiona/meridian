@@ -1665,3 +1665,43 @@ describe('the closing asks: a delivery time, and the off switch', () => {
     expect(close).toContain('Close this window - Meridian keeps going')
   })
 })
+
+// The walkthrough auto-starts on a dashboard the user may have been running for
+// months, so the question "is this install entitled to it" has to be answered by
+// something an upgrade cannot get wrong. It was answered by a localStorage key
+// alone, which no existing install can hold - so every user who updated got a
+// full-screen tour of a product they already use, once, on first launch. Nothing
+// about that fails a build or logs a warning; it just happens to everybody at once.
+describe('the walkthrough does not ambush an install that predates it', () => {
+  const hook = readFileSync(new URL('../components/tutorial/useTutorial.tsx', import.meta.url), 'utf8')
+  const setup = readFileSync(new URL('../../tray/src-tauri/src/commands/setup.rs', import.meta.url), 'utf8')
+
+  it('gates the automatic start on the wizard-written marker, not just localStorage', () => {
+    expect(hook).toContain("'walkthrough_is_armed'")
+    // Before the surface is shown, not after - the check is worthless if the tour
+    // has already claimed the screen by the time it resolves.
+    expect(hook.indexOf("'walkthrough_is_armed'")).toBeLessThan(hook.indexOf('setRunning(true)\n      // Mirrored'))
+  })
+
+  it('treats an unanswerable check as NOT armed', () => {
+    // The two failure directions are not symmetric: a missed walkthrough is one
+    // menu item away, an unwanted one takes the whole screen.
+    expect(hook).toContain('.catch(() => false)')
+  })
+
+  it('only the wizard arms it, so no upgrade can back-fill the marker', () => {
+    expect(setup).toContain('const WALKTHROUGH_MARKER: &str = "walkthrough_armed"')
+    // Touched in exactly two places - written by completion, read by the gate.
+    // A third would mean something other than finishing the wizard can arm it,
+    // and "absent means this install predates the walkthrough" stops being true.
+    expect(setup.match(/dir\.join\(WALKTHROUGH_MARKER\)/g)?.length).toBe(2)
+  })
+
+  it('still lets someone ASK for it - the control exists for exactly these installs', () => {
+    // `explicitRef` is what separates "the app decided to show you this" from
+    // "you pressed Show me around". Gating the second on the marker would make
+    // the control dead on every pre-walkthrough install.
+    expect(hook).toContain('if (!explicitRef.current) {')
+    expect(hook.match(/explicitRef\.current = true/g)?.length).toBe(3)
+  })
+})

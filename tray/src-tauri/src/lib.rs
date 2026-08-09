@@ -1196,6 +1196,7 @@ pub fn run() {
             commands::mark_setup_started,
             commands::setup_elapsed_secs,
             commands::mark_setup_complete,
+            commands::walkthrough_is_armed,
             commands::get_platform,
             commands::save_account_email,
             commands::get_account_email,

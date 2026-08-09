@@ -128,6 +128,50 @@ html.dark {
    (Toolbar.tsx's MeridianMark, ui/public/meridian-logo.png), not a token. */
 :root {
   --mer-pill-bg:       linear-gradient(135deg,#332A63,#241C49);
+  /* Meridian's own backdrop, for the surfaces that ARE the app rather than a
+     panel inside it and carry white content — so they cannot follow --win-bg
+     into lilac/blush, where it turns near-white and the text disappears.
+     Consumer: ReportModal's hero.
+
+     The base is ink's --win-bg ramp (deep indigo → near-black, same family, so
+     the modal reads as Meridian and not as a stray dark box). What sits on top
+     of it is the part that matters: three wide, low-alpha radial washes, none
+     of them centred and none of them fully inside the box. A single linear ramp
+     is flat — every pixel on a given scanline is the same colour — and flat is
+     what makes a dark header look like 2013 chrome. Off-centre radials give the
+     light a SOURCE, so the surface has a near corner and a far one.
+
+     Cool, deliberately. The washes are indigo and cyan, NOT violet: violet on a
+     Meridian surface means a model wrote it (see --draft-card-bg), and this is
+     the screen where a person reads your message. The one warm-leaning stop is
+     kept under 8% alpha and low in the box, where it reads as depth.
+
+     Alphas are low on purpose — a wash you can NAME as a shape is a blob; these
+     should only register as the surface being unevenly lit. The base ramp is
+     kept ABOVE near-black (#100D24 was the old floor and made the lower third
+     read as a dead band); ending at #191542 keeps the whole panel luminous, and
+     the depth comes from the washes rather than from draining the colour out. */
+  --mer-brand-bg:
+    radial-gradient(120% 95% at 6% -20%,  rgba(150,168,255,.38) 0%, rgba(150,168,255,0) 60%),
+    radial-gradient(85%  70% at 98% -6%,  rgba(94,214,255,.20)  0%, rgba(94,214,255,0)  58%),
+    radial-gradient(95% 110% at 78% 125%, rgba(96,78,196,.46)   0%, rgba(96,78,196,0)   66%),
+    linear-gradient(158deg,#4A3F92 0%,#332A70 40%,#241E56 72%,#191542 100%);
+  /* The hairline of light along the top edge of that surface, and the shadow it
+     casts into the content below. Both are what stop a filled rectangle from
+     looking pasted on: real materials catch light on their top edge. */
+  --mer-brand-edge:    inset 0 1px 0 rgba(255,255,255,.16), 0 1px 0 rgba(0,0,0,.22);
+
+  /* The CTA that belongs to that surface — same indigo family, compressed into
+     a button-sized ramp. NOT --btn-primary-bg (flat --t-accent violet): the
+     modal's whole correction was getting the AI colour off a screen about
+     reaching a person, and leaving the one filled control in it undid that at
+     the exact moment the user acts. Lit top-left to bottom-right so it agrees
+     with the hero's light source rather than fighting it, with the same
+     top-edge highlight the hero carries and a shadow in its own hue so it lifts
+     off the panel instead of casting grey. */
+  --mer-cta-bg:        linear-gradient(135deg,#5A4CC4 0%,#453AA0 52%,#332B7C 100%);
+  --mer-cta-bg-hover:  linear-gradient(135deg,#6555D8 0%,#4E42B4 52%,#3B318C 100%);
+  --mer-cta-shadow:    inset 0 1px 0 rgba(255,255,255,.20), 0 6px 16px -8px rgba(48,38,120,.75);
   --mer-pill-border:   rgba(255,255,255,.12);
   --mer-pill-shadow:   0 14px 32px -12px rgba(50,30,110,.5), inset 0 1px 0 rgba(255,255,255,.1);
   /* Generating-hour takeover card accents (ring behind the icon, typing-dot
@@ -795,6 +839,27 @@ html.density-comfy   .density-pad { padding-top: 1.25rem; padding-bottom: 1.25re
 .mt-card-hover.mt-card-selected {
   transform: translateY(-2px);
   box-shadow: 0 16px 32px -12px rgba(40, 30, 90, 0.32);
+}
+
+/* Meridian's filled CTA — the gradient counterpart to --btn-primary-bg's flat
+   fill, in the same indigo family as --mer-brand-bg so a button sitting under
+   that surface belongs to it. A real CSS rule for the same reason as
+   .mt-card-hover above: the fill and its hover cannot be inline, because an
+   inline background always beats :hover and would silently kill the hover
+   state. Consumer: ReportModal's "Suggest a feature". */
+.mt-cta {
+  background: var(--mer-cta-bg);
+  box-shadow: var(--mer-cta-shadow);
+  transition: background 0.18s, box-shadow 0.18s, transform 0.18s;
+}
+.mt-cta:hover {
+  background: var(--mer-cta-bg-hover);
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.24), 0 10px 22px -9px rgba(48,38,120,.85);
+}
+.mt-cta:active {
+  transform: translateY(0);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.28);
 }
 
 /* Plain list-row hover (candidate pickers etc) — same reasoning as

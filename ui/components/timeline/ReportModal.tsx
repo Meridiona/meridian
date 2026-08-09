@@ -3,9 +3,9 @@
 // "Report" / get-in-touch modal, ported from the Meridian Timeline design
 // mock (Claude Design project b8656e29-ae04-4f69-b17f-d5fab4d00f3a, the
 // REPORT / GET IN TOUCH MODAL block) opened from the toolbar nav pill's
-// "Report" item (see Toolbar.tsx's MeridianNavPill). The gradient hero header
-// is a fixed brand treatment — deliberately independent of the light/blush/ink
-// surface theme, same rule the nav pill's dark lockup follows — everything
+// "Report" item (see Toolbar.tsx's MeridianNavPill). The hero header IS the nav
+// pill's dark lockup (`--mer-pill-bg`) — deliberately independent of the
+// light/blush/ink surface theme — everything
 // below it (channel cards, buttons, footer) uses the live `--t-*` tokens so it
 // matches whichever theme is active. Overlay/backdrop/Escape-to-close mirrors
 // ModalShell; the hero header replaces ModalShell's plain title bar so this
@@ -15,6 +15,23 @@
 
 import { useEffect } from 'react'
 
+import { MeridianMark } from './Toolbar'
+
+/** The public repo the in-app links point at - issues, releases, and the two
+ *  report buttons below. One constant so the four call sites cannot drift onto
+ *  different orgs, which is how the old `github.com/meridiona` (no repo, wrong
+ *  case) survived. */
+const REPO = 'https://github.com/Meridiona/meridian'
+
+/** Deep link to a prefilled new-issue form. `template` is a file name under
+ *  `.github/ISSUE_TEMPLATE/`. */
+const ISSUE_URL = (template: string) => `${REPO}/issues/new?template=${template}`
+
+// TWO CHANNELS, NOT FOUR. Discord (`discord.gg/meridiona`) and X
+// (`@meridionaapp`) were listed before either existed, so both links landed on
+// a dead invite and an empty profile - a contact screen whose whole promise is
+// "a person reads every message" is the worst place in the product to have a
+// link that goes nowhere. They come back when there is something behind them.
 const CHANNELS: {
   name: string
   handle: string
@@ -23,8 +40,8 @@ const CHANNELS: {
 }[] = [
   {
     name: 'Email',
-    handle: 'hey@meridiona.com',
-    href: 'mailto:hey@meridiona.com',
+    handle: 'company@meridiona.com',
+    href: 'mailto:company@meridiona.com',
     icon: (
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none">
         <rect x="2.5" y="5" width="19" height="14" rx="3" stroke="#EA4335" strokeWidth="1.8" />
@@ -33,32 +50,12 @@ const CHANNELS: {
     ),
   },
   {
-    name: 'Discord',
-    handle: 'Join the community',
-    href: 'https://discord.gg/meridiona',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="#5865F2">
-        <path d="M19.5 5.6A16 16 0 0 0 15.5 4.4l-.2.4a12 12 0 0 1 3.4 1.7 11 11 0 0 0-9.4 0 12 12 0 0 1 3.4-1.7l-.2-.4A16 16 0 0 0 4.5 5.6 16.5 16.5 0 0 0 1.7 17a16 16 0 0 0 4.9 2.5l.6-1a10.5 10.5 0 0 1-1.7-.8l.4-.3a11.5 11.5 0 0 0 10.2 0l.4.3a10.5 10.5 0 0 1-1.7.8l.6 1A16 16 0 0 0 22.3 17 16.5 16.5 0 0 0 19.5 5.6ZM8.6 14.4c-.9 0-1.7-.9-1.7-1.9s.8-1.9 1.7-1.9 1.7.9 1.7 1.9-.8 1.9-1.7 1.9Zm6.8 0c-.9 0-1.7-.9-1.7-1.9s.8-1.9 1.7-1.9 1.7.9 1.7 1.9-.8 1.9-1.7 1.9Z" />
-      </svg>
-    ),
-  },
-  {
     name: 'GitHub',
     handle: 'Issues & releases',
-    href: 'https://github.com/meridiona',
+    href: `${REPO}/issues`,
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" style={{ fill: 'var(--t-title)' }}>
         <path d="M12 2A10 10 0 0 0 8.8 21.5c.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.3-3.4-1.3-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.3 1.1 2.9.8.1-.6.3-1.1.6-1.3-2.2-.3-4.6-1.1-4.6-4.9 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.6 0 0 .8-.3 2.7 1a9.4 9.4 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1 .5 1.3.2 2.3.1 2.6.6.7 1 1.6 1 2.7 0 3.8-2.4 4.6-4.6 4.9.3.3.6.9.6 1.8v2.7c0 .3.2.6.7.5A10 10 0 0 0 12 2Z" />
-      </svg>
-    ),
-  },
-  {
-    name: 'X',
-    handle: '@meridionaapp',
-    href: 'https://x.com/meridionaapp',
-    icon: (
-      <svg width="15" height="15" viewBox="0 0 24 24" style={{ fill: 'var(--t-title)' }}>
-        <path d="M18.2 2.5h3.3l-7.2 8.2 8.5 11.3h-6.7l-5.2-6.9-6 6.9H1.6l7.7-8.8L1.2 2.5H8l4.7 6.3 5.5-6.3Zm-1.2 17.8h1.8L7.1 4.3H5.2l11.8 16Z" />
       </svg>
     ),
   },
@@ -77,22 +74,50 @@ export function ReportModal({ onClose }: { onClose: () => void }) {
       <div className="w-full rounded-[22px] overflow-hidden bg-card"
         style={{ maxWidth: 500, maxHeight: '92%', boxShadow: '0 44px 90px -34px rgba(20,10,60,0.6)' }}
         onClick={e => e.stopPropagation()}>
-        {/* hero header — fixed brand gradient, theme-independent */}
+        {/* Hero header - Meridian's own backdrop (--mer-brand-bg), theme-independent.
+            NOT --draft-card-bg, which this used to be. That token is the fill of
+            an AI-drafted card, and in Meridian violet has one meaning: a model
+            wrote this. Painting "get in touch with the team" in it said the
+            opposite of what the screen is for - the whole point of the copy is
+            that a person reads every message.
+
+            THE TWO WHITE DISCS ARE GONE. This carried a 130px and a 120px flat
+            white circle bled off opposite corners at 14% and 10% - the standard
+            2015 "decorated header" move, and the reason the panel looked dated
+            even after the colour was fixed. They are flat (one alpha edge to
+            edge), they are hard-edged (a disc you can trace is decoration, not
+            light), and they fought the gradient underneath instead of belonging
+            to it. The lighting now lives in the token as soft off-centre
+            radials, so it reads as a lit surface rather than a rectangle with
+            shapes stuck on it. */}
         <div className="relative text-center overflow-hidden"
-          style={{ padding: '28px 26px 24px', background: 'var(--draft-card-bg)' }}>
-          <div className="absolute rounded-full pointer-events-none"
-            style={{ left: -30, top: -30, width: 130, height: 130, background: 'rgba(255,255,255,.14)' }} />
-          <div className="absolute rounded-full pointer-events-none"
-            style={{ right: -24, bottom: -40, width: 120, height: 120, background: 'rgba(255,255,255,.1)' }} />
+          style={{
+            padding: '30px 26px 26px',
+            background: 'var(--mer-brand-bg)',
+            boxShadow: 'var(--mer-brand-edge)',
+          }}>
           <button onClick={onClose} aria-label="Close"
-            className="absolute inline-flex items-center justify-center rounded-full"
-            style={{ right: 16, top: 16, width: 30, height: 30, border: 'none', background: 'rgba(255,255,255,.22)', color: '#fff', zIndex: 2 }}>
+            className="mt-card-hover absolute inline-flex items-center justify-center rounded-full"
+            style={{ right: 16, top: 16, width: 30, height: 30, border: '1px solid rgba(255,255,255,.16)', background: 'rgba(255,255,255,.10)', color: '#fff', zIndex: 2 }}>
             <span className="text-[15px] leading-none">×</span>
           </button>
           <div className="relative">
-            <div className="mx-auto rounded-[17px] flex items-center justify-center"
-              style={{ width: 56, height: 56, background: 'rgba(255,255,255,.16)', border: '1px solid rgba(255,255,255,.28)', fontSize: 26, color: '#fff' }}>
-              ✦
+            {/* Glass, not a flat white square: a translucent fill under a
+                brighter top-edge highlight, so the chip picks up the same light
+                the surface behind it does. The mark is the app logo rather than
+                a ✦ - a sparkle is this product's AI signifier, and it was
+                sitting at the top of the one screen that is explicitly about
+                reaching a human. Via MeridianMark, not a raw <img>: the source
+                PNG carries app-icon safe-area padding, so anything that does not
+                apply its 166% crop renders a mark floating in dead space. */}
+            <div className="mx-auto rounded-[17px] flex items-center justify-center overflow-hidden"
+              style={{
+                width: 56, height: 56,
+                background: 'rgba(255,255,255,.10)',
+                border: '1px solid rgba(255,255,255,.20)',
+                boxShadow: 'inset 0 1px 0 rgba(255,255,255,.22), 0 8px 20px -10px rgba(0,0,0,.6)',
+              }}>
+              <MeridianMark size={30} />
             </div>
             <p className="mt-modal-title mt-4" style={{ color: '#fff' }}>You&apos;re shaping Meridian</p>
             <p className="mt-body-sm mx-auto mt-2" style={{ color: 'rgba(255,255,255,.9)', maxWidth: 360 }}>
@@ -124,20 +149,37 @@ export function ReportModal({ onClose }: { onClose: () => void }) {
           </div>
         </div>
 
-        {/* quick report */}
+        {/* Quick report. These two open the REPO'S OWN issue forms
+            (.github/ISSUE_TEMPLATE/), not a mailto - the templates already exist
+            and already ask the questions a useful report needs, which an empty
+            mail draft does not. It also means a report is searchable, dedupes
+            against the ones already filed, and the person who filed it can
+            follow the fix; a mail thread gives none of that and has to be
+            triaged by hand. Keep these template file names in step with that
+            directory - GitHub silently falls back to the template CHOOSER on an
+            unknown `template=`, which still works but drops the label and the
+            prefilled form. */}
         <div style={{ padding: '8px 22px 22px' }}>
           <div className="flex gap-2">
-            <a href="mailto:hey@meridiona.com?subject=Bug%20report" className="flex-1 text-center no-underline"
-              style={{ border: '1px solid var(--t-ctrl-border)', background: 'var(--t-ctrl)', color: 'var(--t-muted)', borderRadius: 12, padding: 11, font: "700 12.5px var(--font-sans)" }}>
+            {/* --t-title, not --t-muted: this is one of two equal-weight
+                actions, and muted grey made it read as the disabled twin of the
+                one beside it. --t-title rather than a literal #000 so it stays
+                the theme's own strongest text colour - near-black in
+                lilac/blush, near-white in ink, where a hardcoded black on a
+                dark control would be unreadable. */}
+            <a href={ISSUE_URL('bug_report.yml')} target="_blank" rel="noopener noreferrer"
+              className="mt-card-hover flex-1 text-center no-underline"
+              style={{ border: '1px solid var(--t-ctrl-border)', background: 'var(--t-ctrl)', color: 'var(--t-title)', borderRadius: 12, padding: 11, font: "700 12.5px var(--font-sans)" }}>
               Report a bug
             </a>
-            <a href="mailto:hey@meridiona.com?subject=Feature%20suggestion" className="flex-1 text-center no-underline"
-              style={{ border: 'none', background: 'var(--btn-primary-bg)', color: '#fff', borderRadius: 12, padding: 11, font: "700 12.5px var(--font-sans)" }}>
+            <a href={ISSUE_URL('feature_request.yml')} target="_blank" rel="noopener noreferrer"
+              className="mt-cta flex-1 text-center no-underline"
+              style={{ border: 'none', color: '#fff', borderRadius: 12, padding: 11, font: "700 12.5px var(--font-sans)" }}>
               Suggest a feature
             </a>
           </div>
           <p className="text-center" style={{ font: "500 10.5px var(--font-sans)", color: 'var(--t-faint-2)', marginTop: 12 }}>
-            Thank you for helping Meridian get better · we usually reply within a day 💜
+            Thank you for helping Meridian get better · we usually reply within a day
           </p>
         </div>
       </div>

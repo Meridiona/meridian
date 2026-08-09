@@ -30,11 +30,14 @@ export interface PermissionMeta {
   required: boolean
 }
 
-// ── Welcome screen — early-customer badge ─────────────────────────────────────
-// Hand-updated placeholder, not a live counter: no shared signup-count source
-// exists yet (no users table, no waitlist API - Clerk's frontend SDK can't
-// report a total). Bump this by hand as the customer base grows.
-export const EARLY_CUSTOMER_NUMBER = 42
+// The welcome screen's early-customer count lived here as a hand-edited constant
+// (42) and was rendered twice: as "No. 042" beside the Founding user mark, and
+// inside "one of the first 42 people". Neither was true — nothing counts signups
+// (no users table, no waitlist API, and Clerk's frontend SDK cannot report a
+// total), so every user was told the same number and the first of the two told
+// them it was their own position. Removed rather than made accurate: the welcome
+// screen reads fine without a count, and this is the wrong layer to reintroduce
+// one at. If a real figure is ever wanted, it needs a live source, not a literal.
 
 export const PERMISSIONS: PermissionMeta[] = [
   {
