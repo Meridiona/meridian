@@ -314,23 +314,32 @@ jobs:
         run: |
           set -euo pipefail
 
-          # ── TRANSITIONAL, AND IT DELETES ITSELF ──────────────────────────────
+          # ── DOES THE TAG PUSH ALREADY BUILD? ASK THE TAG, NOT main. ──────────
           #
-          # This change lands on `pre-main` first and only reaches `main` at the
-          # next release merge. In that window `main` still carries the OLD,
-          # tag-triggered release-build.yml — so the tag this job just pushed has
-          # ALREADY started a build, and dispatching would start a second one.
-          # Both would target the same draft release; the loser fails on "already
-          # published" after burning a full macOS + Windows compile.
+          # The only question here is whether pushing ${TAG} a moment ago ALREADY
+          # started a build, because then dispatching would start a second one
+          # against the same draft release and the loser dies on "already
+          # published" after a full macOS + Windows compile.
           #
-          # `gh workflow run` always runs the workflow file as it exists on the
-          # --ref branch, so what matters is what main has RIGHT NOW, not what
-          # this branch says. Read it and decide. Once main is dispatch-only this
-          # check simply stops matching and the dispatch proceeds every time.
-          main_wf="$(gh api "repos/${GITHUB_REPOSITORY}/contents/.github/workflows/release-build.yml?ref=main" \
-            --jq '.content' | base64 -d 2>/dev/null || true)"
-          if printf '%s' "${main_wf}" | grep -qE '^\s{2}push:'; then
-            echo "::warning::main's release-build.yml is still tag-triggered, so pushing ${TAG} already started the build. Skipping the dispatch to avoid building it twice. This resolves itself once main has the dispatch-only workflow - and until then the build runs from a cold cache, as it always did."
+          # GitHub answers that from the workflow files AT THE PUSHED REF — for a
+          # tag, the tag's own tree, which is this checkout. NOT the default
+          # branch's copy. So the file to inspect is the local one.
+          #
+          # An earlier version of this step read main's copy over the API, on the
+          # reasoning that `gh workflow run --ref main` executes main's file so
+          # main's file must be what matters. That conflates two different
+          # questions. It made this step skip the dispatch precisely when the tag
+          # had NOT auto-built — this branch is dispatch-only, so its tags start
+          # nothing — leaving a tagged release with no build at all: the exact
+          # silent failure this pipeline keeps being bitten by.
+          #
+          # Local file still tag-triggered  -> the push started it; do not double up.
+          # Local file dispatch-only        -> nothing started; dispatch (always).
+          #
+          # Self-deleting: once no release branch carries a `push:` trigger, this
+          # never matches again.
+          if grep -qE '^\s{2}push:' .github/workflows/release-build.yml; then
+            echo "::warning::this branch's release-build.yml is still tag-triggered, so pushing ${TAG} already started the build. Skipping the dispatch to avoid building it twice."
             exit 0
           fi
 

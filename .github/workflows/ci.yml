@@ -519,6 +519,20 @@ jobs:
                   "would be pushed and nothing would build, or it would build from "
                   "a cold cache.")
 
+          # The "did the tag push already build?" question is answered by the
+          # workflow files AT THE PUSHED REF - the tag's own tree, i.e. this
+          # checkout - never by the default branch's copy. Reading main's copy
+          # instead inverts the answer on exactly the branch that is dispatch-
+          # only, and skips the dispatch for a tag that auto-built nothing:
+          # tagged, nothing building, no failure anywhere. That shipped once.
+          if "contents/.github/workflows/release-build.yml?ref=main" in prep_src:
+              fail.append(
+                  "release-prepare.yml decides whether to dispatch by reading "
+                  "MAIN's release-build.yml. Trigger evaluation uses the workflow "
+                  "file at the PUSHED REF (the tag's own tree), so this answers the "
+                  "wrong question and can leave a tag with no build at all. Inspect "
+                  "the local .github/workflows/release-build.yml instead.")
+
           if fail:
               for f in fail:
                   print(f"::error::{f}")
