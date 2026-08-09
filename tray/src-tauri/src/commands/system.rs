@@ -28,6 +28,20 @@ use tauri_plugin_opener::OpenerExt;
 /// caller (popover, tray menu, notification click) triggered this.
 #[tauri::command]
 pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
+    // Same gate as the tray-menu path — see `tray::open_native_dashboard` for the
+    // full reasoning. It is repeated rather than shared because these are two
+    // independent entry points into the same window: this one serves the
+    // popover's button and a notification click, and a fresh install can reach
+    // either while the wizard is still opening.
+    //
+    // Returns Ok, not Err: the caller's request was honoured, just routed to the
+    // window that actually helps. An Err here would surface as a failed action in
+    // the popover for a user who is being sent somewhere useful.
+    if !crate::onboarding_complete() {
+        tracing::info!("dashboard requested before onboarding finished; opening the wizard");
+        crate::tray::open_wizard_window(&app);
+        return Ok(());
+    }
     dismiss_popover(&app);
     if let Some(win) = app.get_webview_window("dashboard") {
         let _ = win.show();

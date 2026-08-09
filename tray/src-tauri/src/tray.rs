@@ -95,6 +95,27 @@ pub(crate) fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
 /// Drafts), independent of the popover's own `invoke('open_dashboard')` button,
 /// so it needs the same fix to avoid leaving the popover stuck on screen.
 pub(crate) fn open_native_dashboard(app: &tauri::AppHandle) {
+    // SETUP COMES FIRST ON A FRESH INSTALL.
+    //
+    // The wizard auto-opens 800 ms after launch, but nothing stopped the user
+    // reaching the dashboard before or instead of it — the tray menu's "Open
+    // Dashboard" and "Review Drafts" are both live from the first second, and
+    // the tray icon is the most obvious thing on screen while the wizard is
+    // still coming up.
+    //
+    // What they got was the real timeline against a database with no capture
+    // permissions granted, no AI provider, and no tracker: an empty product that
+    // looks broken rather than unconfigured, on the one screen that decides
+    // whether they keep it.
+    //
+    // Redirect rather than refuse. The wizard IS what they wanted — a way into
+    // the app — so open it; a disabled menu item or a silent no-op would just
+    // read as the app being broken instead.
+    if !crate::onboarding_complete() {
+        tracing::info!("dashboard requested before onboarding finished; opening the wizard");
+        open_wizard_window(app);
+        return;
+    }
     crate::commands::system::dismiss_popover(app);
     if let Some(win) = app.get_webview_window("dashboard") {
         let _ = win.show();
