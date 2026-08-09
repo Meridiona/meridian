@@ -195,7 +195,7 @@ pub(super) async fn refresh_health(
                 detail,
                 remedy: None,
                 event_key: "system.health",
-                deep_link: Some("/logs"),
+                deep_link: Some(meridian_core::notifications::deep_links::LOGS),
             },
         )
         .await
@@ -224,7 +224,7 @@ pub(super) async fn refresh_health(
                 detail: "Couldn't start it automatically. Tap to check what happened.",
                 remedy: None,
                 event_key: "system.health",
-                deep_link: Some("/logs"),
+                deep_link: Some(meridian_core::notifications::deep_links::LOGS),
             },
         )
         .await
@@ -686,7 +686,7 @@ mod tests {
                 detail: "Tap to check what happened.",
                 remedy: None,
                 event_key: "system.health",
-                deep_link: Some("/logs"),
+                deep_link: Some(meridian_core::notifications::deep_links::LOGS),
             },
         )
         .await

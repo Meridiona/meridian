@@ -69,7 +69,7 @@ pub async fn notify_stale_drafts(pool: &SqlitePool, day_local: &str) {
             "Your worklog draft is out of date",
             &body,
         )
-        .link("/today");
+        .link(meridian_core::notifications::deep_links::TODAY);
         if let Err(e) = notifications::enqueue(pool, n).await {
             tracing::warn!(
                 day = day_local,

@@ -76,7 +76,7 @@ pub(crate) async fn maybe_auto_open_plan(app: &tauri::AppHandle, pool: &meridian
     // picks; parking both ways would leave a stale target for a later manual
     // open) — then open/focus the window.
     write_marker(&marker, &now);
-    crate::deep_link::navigate_dashboard(app, "/plan");
+    crate::deep_link::navigate_dashboard(app, meridian_core::notifications::deep_links::PLAN);
     crate::tray::open_native_dashboard(app);
     tracing::info!(%today, "plan auto-open: opened dashboard on the Plan view");
 }

@@ -98,6 +98,80 @@ pub mod categories {
     }
 }
 
+/// The fixed `deep_link` vocabulary — every value a producer may put on a
+/// notification or notice, and nothing else.
+///
+/// These are NOT URLs. The dashboard is a static export whose only real routes
+/// are `/`, `/setup` and `/uninstall`; a deep link is a *navigation intent*
+/// the shell resolves to a modal or a settings section
+/// (`MeridianTimelineShell.tsx`'s `navigate`). The path-like spelling is
+/// historical — they are the former Next route paths, kept because rows
+/// carrying them are already in users' outboxes.
+///
+/// Why this module exists: `navigate` used to handle three values with no
+/// `else` arm, while producers emitted seven. The other four — including the
+/// `[View]` button on every fault toast — silently opened the dashboard's
+/// default view instead of the thing the notification was about, and
+/// `/tasks?integrations=1` went on being emitted for months after the `/tasks`
+/// route was deleted. Nothing failed, because nothing checked. [`ALL`] is what
+/// the two guard tests check against: `deep_link_literals_are_all_known`
+/// (Rust, every literal in a producer is listed here) and
+/// `deep-links.test.ts` (bun, `navigate` handles every entry here).
+///
+/// **Adding one means updating `navigate` in the same change** — the bun guard
+/// fails otherwise. Legacy spellings stay handled by `navigate` forever (old
+/// rows never rewrite themselves) but must not be used by new producers, which
+/// is why they live in [`LEGACY`] rather than here.
+pub mod deep_links {
+    /// The daily planner.
+    pub const PLAN: &str = "/plan";
+    /// Worklog review.
+    pub const WORKLOGS: &str = "/worklogs";
+    /// The What's New modal.
+    pub const WHATS_NEW: &str = "/whats-new";
+    /// The dashboard's own default view (dismisses any open modal).
+    pub const TODAY: &str = "/today";
+    /// Settings, at its default section.
+    pub const SETTINGS: &str = "/settings";
+    /// Settings → Integrations — where a tracker is (re)connected.
+    pub const INTEGRATIONS: &str = "/settings/integrations";
+    /// Settings → Account, which holds the Support ID and Export Diagnostics.
+    /// This is where a fault sends the user: there is no in-app log viewer, so
+    /// the actionable response to "something broke" is exporting diagnostics
+    /// and quoting the Support ID. The `/logs` spelling predates that being
+    /// true and is kept only because outbox rows carry it.
+    pub const LOGS: &str = "/logs";
+
+    /// Every link a producer may emit.
+    pub const ALL: [&str; 7] = [
+        PLAN,
+        WORKLOGS,
+        WHATS_NEW,
+        TODAY,
+        SETTINGS,
+        INTEGRATIONS,
+        LOGS,
+    ];
+
+    /// Spellings retired from the producer side but still resolvable, because
+    /// undelivered rows and older installs carry them. `navigate` must keep
+    /// handling these; new code must not emit them.
+    ///
+    /// - `/tasks?integrations=1` — the pre-fold Next route for the tracker
+    ///   panel, emitted by every `pm.*` sync fault until it moved to
+    ///   [`INTEGRATIONS`]. The `/tasks` route itself no longer exists.
+    /// - `/health` — an early daemon-health target; observed on rows in the
+    ///   wild, no longer emitted anywhere.
+    pub const LEGACY: [&str; 2] = ["/tasks?integrations=1", "/health"];
+
+    /// Whether `link` is a value the shell is expected to resolve — current
+    /// vocabulary or legacy. Used by the guard test and by producers that
+    /// accept a caller-supplied link.
+    pub fn is_known(link: &str) -> bool {
+        ALL.contains(&link) || LEGACY.contains(&link)
+    }
+}
+
 /// A native notification ready to fire (the shape the tray delivers + the route
 /// returns). `category`/`actions` are `None` on plain rows AND on a pre-057 DB
 /// (the columns are selected only when present), so the tray falls back to a

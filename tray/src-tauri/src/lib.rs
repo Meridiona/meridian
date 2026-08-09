@@ -658,7 +658,7 @@ pub fn run() {
                                             // event_key mirrors id so each outcome's
                                             // OS toast dedupes independently.
                                             event_key: id,
-                                            deep_link: (!fault_cleared).then_some("/logs"),
+                                            deep_link: (!fault_cleared).then_some(meridian_core::notifications::deep_links::LOGS),
                                         },
                                     )
                                     .await
@@ -729,7 +729,7 @@ pub fn run() {
                                                         detail: "Meridian couldn't finish encrypting its local database this time. Your data is safe but stored unencrypted for now - Meridian will retry automatically the next time it restarts.",
                                                         remedy: None,
                                                         event_key: "system.health",
-                                                        deep_link: Some("/logs"),
+                                                        deep_link: Some(meridian_core::notifications::deep_links::LOGS),
                                                     },
                                                 )
                                                 .await
