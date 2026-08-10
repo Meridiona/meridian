@@ -16,13 +16,39 @@
 
 import { useEffect, useState } from 'react'
 import { invoke, isTauri, subscribe } from '@/lib/bridge'
-import type { UpdateProgress, UpdateStatus } from '@/lib/api-types'
+import type { UpdateError, UpdateProgress, UpdateStatus } from '@/lib/api-types'
+
+/**
+ * True when `install_update` was refused because an install is ALREADY running
+ * (the Rust single-flight guard), rather than because one failed.
+ *
+ * The card and the tray popover can both be open, and both drive the same
+ * command - so the second one clicked always loses this race. Treating that
+ * loss as a failure is what showed "Update failed / Click to try again" over a
+ * download that went on to succeed.
+ *
+ * Anything that isn't the exact `{ kind: 'inProgress' }` object gets the safe
+ * reading - a failure. An IPC-level throw arrives as an `Error`, and guessing
+ * "in progress" there would hide a genuinely broken updater behind a reassuring
+ * label. Exported for `ui/__tests__/update-in-progress.test.ts`.
+ */
+export function isInstallInProgress(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as Partial<UpdateError>).kind === 'inProgress'
+  )
+}
 
 export function UpdateCard() {
   const [status, setStatus] = useState<UpdateStatus | null>(null)
   const [installing, setInstalling] = useState(false)
   const [pct, setPct] = useState<number | null>(null)
   const [failed, setFailed] = useState(false)
+  // Set when *another* surface owns the running install. Stays in the installing
+  // state (so the shared `update-progress` events keep painting this card) but
+  // labels itself honestly until the first percentage lands.
+  const [elsewhere, setElsewhere] = useState(false)
 
   // Check once on mount; only keep an *available* result (up-to-date / error /
   // unsupported stay silent, same as the popover).
@@ -47,15 +73,39 @@ export function UpdateCard() {
     })
   }, [])
 
+  // Terminal failure of the install this card is tracking. Broadcast app-wide by
+  // download_and_apply, because the surface that LOST the single-flight race
+  // never receives that Err itself - without this it stays disabled on
+  // "Already in progress..." forever when the winning install dies, which is a
+  // worse outcome than the mislabel this component was fixed for.
+  useEffect(() => {
+    if (!isTauri()) return
+    return subscribe<{ ok: boolean }>('/api/update/finished', null, 'update-finished', (d) => {
+      if (d?.ok) return
+      setInstalling(false)
+      setElsewhere(false)
+      setPct(null)
+      setFailed(true)
+    })
+  }, [])
+
   if (!status) return null
 
   const onInstall = () => {
     if (installing) return
     setInstalling(true)
     setFailed(false)
+    setElsewhere(false)
     setPct(null)
     // Resolves only on failure - success re-execs the app (the relaunch).
-    invoke('install_update').catch(() => {
+    invoke('install_update').catch((err) => {
+      if (isInstallInProgress(err)) {
+        // The other surface got there first. Stay installing: its progress
+        // events are broadcast to every window, so this card keeps tracking the
+        // real download and the app relaunches under both of them.
+        setElsewhere(true)
+        return
+      }
       setInstalling(false)
       setFailed(true)
     })
@@ -74,7 +124,9 @@ export function UpdateCard() {
     : installing
       ? pct !== null
         ? `Downloading... ${pct}%`
-        : 'Starting...'
+        : elsewhere
+          ? 'Already in progress...'
+          : 'Starting...'
       : `v${status.currentVersion} → v${status.version}`
 
   return (

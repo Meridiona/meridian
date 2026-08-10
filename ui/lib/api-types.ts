@@ -778,6 +778,19 @@ export interface UpdateProgress {
   contentLength: number | null
 }
 
+// What `install_update` rejects with — mirrors `update.rs`'s `UpdateError`.
+//
+// `kind` exists so a banner can tell a broken update from a busy one. Both
+// surfaces can be open at once and both call the same command, so clicking the
+// second while the first downloads hits the Rust single-flight guard and gets
+// `inProgress` back. That is not a failure: the install is running and will
+// relaunch the app. Rendering it as one (and inviting a retry that can only be
+// refused again) is the bug `update-in-progress.test.ts` guards.
+export interface UpdateError {
+  kind: 'inProgress' | 'failed'
+  message: string
+}
+
 // ── What's New (`get_whats_new`) ───────────────────────────────────────────────
 
 export interface ReleaseNote {
