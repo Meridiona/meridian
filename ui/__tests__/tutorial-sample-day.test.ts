@@ -866,6 +866,35 @@ describe('the plan saves itself', () => {
   })
 })
 
+describe('finishing setup entitles this onboarding to the walkthrough', () => {
+  const page = readFileSync(new URL('../app/setup/page.tsx', import.meta.url), 'utf8')
+  const hook = readFileSync(new URL('../components/tutorial/useTutorial.tsx', import.meta.url), 'utf8')
+
+  it('clears the seen key when the wizard completes', () => {
+    // The auto-start needs BOTH `~/.meridian/walkthrough_armed` (a file) and an
+    // absent `meridian.walkthrough.seen.v1` (localStorage). Those stores have
+    // different lifetimes: wiping ~/.meridian cannot touch localStorage, so a
+    // machine that ever finished the walkthrough kept that key forever and a
+    // reinstall ran setup again but silently never played the tour.
+    expect(page).toContain("localStorage.removeItem('meridian.walkthrough.seen.v1')")
+  })
+
+  it('clears it only after the marker is actually written', () => {
+    // Clearing first would leave a machine entitled to the tour with no arm
+    // marker if mark_setup_complete then failed - the wizard reopens next launch
+    // and the tour cannot run, which is the worse of the two orderings.
+    expect(page.indexOf("await invoke('mark_setup_complete')"))
+      .toBeLessThan(page.indexOf("localStorage.removeItem('meridian.walkthrough.seen.v1')"))
+  })
+
+  it('still gates the auto-start on both halves', () => {
+    // The fix must not have loosened the upgrade guard - an install predating the
+    // walkthrough has no arm marker and must still be left alone.
+    expect(hook).toContain("const armed = await load<boolean>('/api/walkthrough-armed', 'walkthrough_is_armed')")
+    expect(hook).toContain('if (seen) return')
+  })
+})
+
 describe('a first run cannot be skipped, a replay can', () => {
   const hook = readFileSync(new URL('../components/tutorial/useTutorial.tsx', import.meta.url), 'utf8')
   const overlay = readFileSync(new URL('../components/tutorial/TutorialOverlay.tsx', import.meta.url), 'utf8')

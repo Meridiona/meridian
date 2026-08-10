@@ -23,6 +23,7 @@ import { focusSectionVisible, formatDayLabel, isPending } from './types'
 import { TimeByApp, appTotals } from './TimeByApp'
 import { TimeByCategory, categoryRows } from './TimeByCategory'
 import { UpdateCard } from './UpdateCard'
+import { OpenSourceCard } from './OpenSourceCard'
 import type { TimelineData } from './useTimelineData'
 import type { ActiveModal } from './MeridianTimelineShell'
 import type { SettingsSection } from './settings/types'
@@ -325,6 +326,9 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
           <span style={{ color: 'var(--t-accent)' }}>→</span>
         </button>
       )}
+
+      {/* Last on the page on purpose — see OpenSourceCard's module doc. */}
+      <OpenSourceCard />
     </div>
   )
 }

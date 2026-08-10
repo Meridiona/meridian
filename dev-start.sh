@@ -78,15 +78,11 @@ pkill -f 'next dev --turbopack -p 3939' 2>/dev/null || true   # orphaned Next.js
 # then pkill the installed binary BY PATH as a backstop (the dev pkills above only
 # match `target/debug/meridian`, never `~/.meridian/bin/meridian`). Re-enable the
 # installed daemon later with `meridian start`.
-DAEMON_LABEL="gui/$(id -u)/com.meridiona.daemon"
-launchctl disable "$DAEMON_LABEL" 2>/dev/null || true
-launchctl bootout "$DAEMON_LABEL" 2>/dev/null || true
-pkill -f '\.meridian/bin/meridian$' 2>/dev/null || true   # DMG-staged installed daemon
-if pgrep -f '\.meridian/bin/meridian$' >/dev/null 2>&1; then
-    echo "  ⚠ an installed daemon (~/.meridian/bin/meridian) is STILL running — quit the Meridian app and re-run" >&2
-else
-    echo "  ✓ canonical launchd daemon stopped + disabled (re-enable later with: meridian start)"
-fi
+# Lives in scripts/dev-claim-daemon.sh rather than inline, because the DAEMON
+# TAB spawned below has to run it too — see that file's header. Doing it only
+# here fixed nothing the moment the tab was re-run on its own (Up-Enter, or
+# Terminal reopening it at login), which is the common case.
+bash "${REPO_ROOT}/scripts/dev-claim-daemon.sh" || true
 # Also stops the legacy launchd-managed a11y-helper, if present. Capture now runs
 # in-process inside the dev tray binary, so a lingering a11y-helper would be a
 # second, independent capture writer into the same meridian.db capture tables.
@@ -156,10 +152,23 @@ tell application "Terminal"
     activate
 
     -- 1. Rust daemon (cargo watch)
-    do script "echo '=== Rust daemon (cargo watch) ===' && cd '${REPO_ROOT}' && ${DB_ENV}cargo watch ${DAEMON_WATCH} ${FORK_WATCH_FLAG} -x 'run --bin meridian'"
+    -- The claim step runs INSIDE the tab, chained with &&, so it re-runs every
+    -- time this command does — including when the tab is restarted by hand or
+    -- reopened at login, long after this script exited. Without it the dev
+    -- daemon silently exits 0 against an installed daemon that took the socket
+    -- back. `&&` (not `;`) on purpose: if the socket cannot be freed, stop
+    -- rather than start a watcher that can only no-op.
+    do script "echo '=== Rust daemon (cargo watch) ===' && cd '${REPO_ROOT}' && bash scripts/dev-claim-daemon.sh && ${DB_ENV}cargo watch ${DAEMON_WATCH} ${FORK_WATCH_FLAG} -x 'run --bin meridian'"
 
     -- 2. Tauri tray (hot reload — also starts Next.js dev server automatically via beforeDevCommand)
-    do script "echo '=== Tauri tray (tauri dev) ===' && cd '${REPO_ROOT}/tray' && ${DB_ENV}npm run tauri dev"
+    -- MERIDIAN_DEV_DAEMON=1 tells the tray that a DEV daemon owns
+    -- ~/.meridian/daemon.sock, so its launch-time restore stands down
+    -- (daemon_lifecycle::restore_unless_paused). Without it this tab's tray
+    -- reached the dev/source bail-out in ensure_backend_installed, re-registered
+    -- and kickstarted the INSTALLED launchd daemon, and that daemon took the
+    -- socket back from the tab above - which then exited on the single-instance
+    -- guard with status 0, looking healthy while running nothing.
+    do script "echo '=== Tauri tray (tauri dev) ===' && cd '${REPO_ROOT}/tray' && MERIDIAN_DEV_DAEMON=1 ${DB_ENV}npm run tauri dev"
 end tell
 APPLESCRIPT
 
