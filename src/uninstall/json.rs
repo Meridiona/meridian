@@ -108,6 +108,15 @@ pub(super) fn run_json(plan: &Plan) {
         for f in reset_tcc_grants() {
             report.errors.push(format!("tccutil reset {f}"));
         }
+        // The database key in the OS keychain lives on no filesystem path, so
+        // it cannot ride the `plan` loops above and has to be removed here too
+        // — this is the path the tray's uninstall WIZARD drives, which is how
+        // most users uninstall, so omitting it would leave the key behind on
+        // exactly the common route.
+        match super::remove_db_key_from_keychain() {
+            None => report.removed.push("OS keychain: database key".to_string()),
+            Some(reason) => report.errors.push(reason),
+        }
     }
     // `--purge` only: nuke anything left under ~/.meridian the itemized lists
     // above didn't name. Mirrors the human path's `--purge`-only gate — see the

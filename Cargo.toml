@@ -125,6 +125,13 @@ hex = "0.4"
 # Error handling
 anyhow = "1.0.86"
 
+# OS keychain — `meridian uninstall --remove-data/--purge` deletes the SQLCipher
+# key for meridian.db, the one piece of user data that lives nowhere on disk.
+# Version and features are deliberately IDENTICAL to tray/src-tauri/Cargo.toml's
+# (the crate that writes the entry, in db_key.rs) so cargo unifies them into one
+# build and the delete cannot drift from the write.
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+
 # HTTP client for PM provider APIs (Jira, GitHub, Linear)
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 
