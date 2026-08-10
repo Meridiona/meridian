@@ -468,14 +468,13 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   s.showWorklogSchedule(false)
   await s.pause(600)
 
-  // ── 11. Running, and you can stop looking at it ─────────────────────────
-  // The reassurance the whole product depends on and the one a demo cannot
-  // demonstrate: nothing more is required of them. Said plainly, with the
-  // notification promise attached, because the alternative reading of an ambient
-  // tool is that it needs minding.
-  await s.next(
-    "You are set up. Close this window - Meridian keeps going, and tells you when something is ready.",
-    'One last thing', { center: true })
+  // ── 11. (was: "Running, and you can stop looking at it") ────────────────
+  // GONE. A standalone "you are set up, close this window" card, shown right
+  // after the worklog-time question and before the handoff below - which
+  // already says the same thing at the actual moment it becomes true (the
+  // example day is about to disappear and hand back to the user's own,
+  // empty one). A second "you're done" card one beat earlier than the real
+  // one reads as the tour finishing twice.
 
   // ── 12. (was: the off switch, on a drawn tray) ──────────────────────────
   // GONE. Three beats used to drive a REPLICA of the tray popover - click the

@@ -105,8 +105,18 @@ const BOARD_CARD = '[data-tour="plan-board"] [data-plan-card]'
  * an empty board. By the time this runs the tickets are usually already there and it
  * returns immediately. It stays because the hand-back's hold is capped, and because
  * a board can be empty for reasons that never went near a connect.
+ *
+ * CHECKED BEFORE NARRATING, not after. `appeared(sel, 0)` reads the DOM once with no
+ * wait, so the common case - the hand-back already held the screen until the board
+ * had cards - sees them and returns immediately without saying anything. Saying "the
+ * first sync takes a moment" AFTER the screen has already moved to a board full of
+ * tickets contradicts what the user is looking at: the plan they were just handed
+ * back to reads as already done, and a line claiming otherwise reads as the tour
+ * having lost track of what just happened. The line is reserved for the genuine
+ * backstop case, where the board is still empty when this beat runs.
  */
 async function waitForTickets(s: Stage): Promise<boolean> {
+  if (await s.appeared(BOARD_CARD, 0)) return true
   s.say('Pulling your tickets in - the first sync takes a moment.')
   const got = await s.appeared(BOARD_CARD, 25000)
   s.say('')
@@ -530,7 +540,7 @@ export async function runScript(s: Stage): Promise<void> {
       // stalls a user who now feels they are supposed to find something to fix.
       // The fields are plainly editable - they are two text boxes with a cursor in
       // them - and nothing later depends on the user knowing it here.
-      s.spotlight('[data-tour="task-title"]')
+      s.spotlight(null)
       await s.waitForValue('[data-tour="task-title"]', { fallbackMs: 90000, settled: true })
       // AND the description, because Add to today needs BOTH - `canCreate` in
       // useTaskComposer.ts requires a title of MIN_TITLE_WORDS *and* a
