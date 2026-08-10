@@ -177,7 +177,7 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
                     detail: &e,
                     remedy: None,
                     event_key: "system.health",
-                    deep_link: Some("/logs"),
+                    deep_link: Some(meridian_core::notifications::deep_links::LOGS),
                 },
             )
             .await

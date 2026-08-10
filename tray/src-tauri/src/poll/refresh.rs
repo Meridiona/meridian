@@ -195,7 +195,7 @@ pub(super) async fn refresh_health(
                 detail,
                 remedy: None,
                 event_key: "system.health",
-                deep_link: Some("/logs"),
+                deep_link: Some(meridian_core::notifications::deep_links::LOGS),
             },
         )
         .await
@@ -224,7 +224,7 @@ pub(super) async fn refresh_health(
                 detail: "Couldn't start it automatically. Tap to check what happened.",
                 remedy: None,
                 event_key: "system.health",
-                deep_link: Some("/logs"),
+                deep_link: Some(meridian_core::notifications::deep_links::LOGS),
             },
         )
         .await
@@ -237,38 +237,44 @@ pub(super) async fn refresh_health(
         {
             tracing::warn!(error = %e, "daemon-health notice clear failed");
         }
-        send_back_online_toast(pool).await;
+        tracing::info!("daemon recovered - went-quiet notice cleared");
     } else if reconcile_stale {
         match meridian::notices::clear_typed_reporting(pool, "tray.daemon_quiet", "system.health")
             .await
         {
-            // A notice really was sitting there from a prior process instance —
-            // confirm the recovery the same way the normal path does.
-            Ok(true) => send_back_online_toast(pool).await,
+            Ok(true) => {
+                tracing::info!("cleared a went-quiet notice left by a prior process instance")
+            }
             Ok(false) => {}
             Err(e) => tracing::warn!(error = %e, "daemon-health stale notice reconcile failed"),
         }
     }
 }
 
-/// "Back online" is a discrete confirmation, not a state to leave sitting as a
-/// banner once the fault it answers is already cleared.
-async fn send_back_online_toast(pool: &SqlitePool) {
-    let dedup = format!(
-        "system.health:back_online:{}",
-        chrono::Utc::now().timestamp()
-    );
-    let n = meridian::notifications::NewNotification::event(
-        &dedup,
-        "system.health",
-        "Back online.",
-        "Picking up where you left off.",
-    )
-    .via(meridian::notifications::CHANNEL_NATIVE);
-    if let Err(e) = meridian::notifications::enqueue(pool, n).await {
-        tracing::warn!(error = %e, "back-online notification enqueue failed");
-    }
-}
+// A recovery used to also fire a "Back online. / Picking up where you left off."
+// toast (`send_back_online_toast`). It was removed, and the reasoning is worth
+// keeping because "confirm the recovery" sounds obviously right:
+//
+//   * It asks nothing and reports no action the user can take - it is state,
+//     and state belongs in the tray icon/tooltip, which the poll loop already
+//     syncs every tick. Measured on a real install: 18 fired in ~5 weeks and
+//     exactly one was ever interacted with.
+//   * Much of the time it arrived with no context. The went-quiet notice's own
+//     toast row is DELETED by `clear_typed` on recovery, so a down->up cycle
+//     shorter than the tray's 30 s drain retracts the warning before it is
+//     ever shown - and the user gets a bare "Back online." for an outage they
+//     never saw. The `reconcile_stale` branch is worse: it fires for a notice
+//     raised by a PREVIOUS process instance, i.e. an outage that by definition
+//     happened while this tray was not running.
+//   * Meridian restarts its own daemon routinely - updates, the watchdog, a
+//     manual restart - so this fired as a side effect of ordinary lifecycle
+//     events, not just real faults. Five of those 18 landed after the watchdog
+//     restart-storm fix (#678), two of them minutes after an auto-update
+//     installed.
+//
+// The went-quiet banner disappearing is the recovery signal. If a confirmation
+// is ever wanted again, it belongs on the banner channel attached to the
+// original fault, not as a fresh interruptive toast.
 
 /// The actions a health tick can trigger. Among the three *notice* actions
 /// (`notify_down` / `notify_back` / `reconcile_stale`) at most one is ever true.
@@ -686,7 +692,7 @@ mod tests {
                 detail: "Tap to check what happened.",
                 remedy: None,
                 event_key: "system.health",
-                deep_link: Some("/logs"),
+                deep_link: Some(meridian_core::notifications::deep_links::LOGS),
             },
         )
         .await
@@ -713,8 +719,6 @@ mod tests {
             cleared,
             "a real stale notice must report as actually cleared"
         );
-        send_back_online_toast(&pool).await;
-
         let remaining: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM system_notices WHERE notice_id = 'tray.daemon_quiet'",
         )
@@ -723,14 +727,20 @@ mod tests {
         .unwrap();
         assert_eq!(remaining, 0, "the banner's backing row must be gone");
 
-        let toast_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE event_key = 'system.health' AND title = 'Back online.'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        // Clearing the banner is the WHOLE recovery signal. This branch used to
+        // also enqueue a "Back online." toast; it fired for an outage that
+        // happened while this process was not running, so the user was told
+        // something recovered without ever being told it broke. See the comment
+        // above `refresh_health`'s notify_back arm.
+        let toast_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE event_key = 'system.health'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(
-            toast_count, 1,
-            "a back-online toast must confirm the recovery"
+            toast_count, 0,
+            "reconciling a stale notice must not toast - nothing is being asked of the user"
         );
     }
 }

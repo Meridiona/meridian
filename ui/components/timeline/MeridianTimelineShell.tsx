@@ -135,13 +135,23 @@ export default function MeridianTimelineShell() {
     setShowWorklogPrompt(true)
   }, [worklogPrompted])
 
-  // NoticeBar lives at the root layout, outside this tree, so its
-  // "Fix in Tasks" CTA reaches the Tasks modal via a window event instead of
-  // props.
+  // NoticeBar lives at the root layout, outside this tree, so its pm.* CTA
+  // reaches this shell through a window event rather than props.
+  //
+  // The event used to be `meridian:open-tasks` (a "Fix in Tasks →" button).
+  // That button now says "Reconnect →" and opens Settings → Integrations,
+  // which is where the same notice's own `remedy` text and its toast's
+  // click-through both send the user. The old listener was removed with its
+  // last dispatcher — a listener kept alive by a comment asserting it is live
+  // is the same drift this change is cleaning up.
   useEffect(() => {
-    const openTasks = () => setActiveModal('tasks')
-    window.addEventListener('meridian:open-tasks', openTasks)
-    return () => window.removeEventListener('meridian:open-tasks', openTasks)
+    const openSettings = (e: Event) => {
+      const section = (e as CustomEvent<SettingsSection>).detail
+      setSettingsSection(section)
+      setActiveModal('settings')
+    }
+    window.addEventListener('meridian:open-settings', openSettings)
+    return () => window.removeEventListener('meridian:open-settings', openSettings)
   }, [])
 
 
@@ -162,15 +172,62 @@ export default function MeridianTimelineShell() {
   // its listener is the push half (`dashboard-navigate`, for a window that is
   // already open and won't remount). Targets are the former route paths the
   // notification producers still use as `deep_link`s.
+  //
+  // EVERY value in `meridian_core::notifications::deep_links::ALL` must have an
+  // arm here, plus the retired spellings in `LEGACY` (rows already sitting in
+  // users' outboxes still carry those, and a producer change never rewrites
+  // them). `ui/__tests__/deep-links.test.ts` reads those Rust constants and
+  // fails the build if one is unhandled.
+  //
+  // This used to be three arms with no `else`, while producers emitted seven.
+  // The missing four just fell through — so the [View] button on every fault
+  // toast opened the default view, and `/tasks?integrations=1` went on being
+  // emitted for months after that route was deleted. Nothing failed, because a
+  // link that resolves to nothing looks exactly like one that works. Hence the
+  // `else`: an unrecognised target is now loud, and still lands somewhere sane.
   useEffect(() => {
     const navigate = (target: string | null) => {
-      if (target === '/plan') {
-        setActiveModal('plan')
-      } else if (target === '/worklogs') {
-        setReviewFocusKey(null)
-        setActiveModal('review')
-      } else if (target === '/whats-new') {
-        setActiveModal('whats-new')
+      if (target === null) return
+      // `undefined` means "whatever Settings defaults to" — see the
+      // settingsSection state declaration.
+      const openSettings = (section?: SettingsSection) => {
+        setSettingsSection(section)
+        setActiveModal('settings')
+      }
+      switch (target) {
+        case '/plan':
+          setActiveModal('plan')
+          break
+        case '/worklogs':
+          setReviewFocusKey(null)
+          setActiveModal('review')
+          break
+        case '/whats-new':
+          setActiveModal('whats-new')
+          break
+        case '/today':
+          // The dashboard itself — close whatever is covering it.
+          setActiveModal(null)
+          break
+        case '/settings':
+          openSettings()
+          break
+        // Both spellings mean "reconnect a tracker". `/tasks?integrations=1`
+        // is the pre-fold route every pm.* sync fault used to emit.
+        case '/settings/integrations':
+        case '/tasks?integrations=1':
+          openSettings('integrations')
+          break
+        // There is no in-app log viewer. What a user can actually do about a
+        // fault is quote their Support ID and export diagnostics, both of which
+        // live in Account. `/health` is an older spelling of the same intent.
+        case '/logs':
+        case '/health':
+          openSettings('account')
+          break
+        default:
+          console.warn(`[deep-link] unhandled target ${target} - opening the dashboard`)
+          setActiveModal(null)
       }
     }
     return subscribe<string | null>('/deep-link', 'take_pending_deep_link', 'dashboard-navigate', navigate)
@@ -223,7 +280,7 @@ export default function MeridianTimelineShell() {
   // rather than taking a callback, because it is rendered two modals deep
   // (PlanModal → PlanView → TaskComposer) and threading an opener through both
   // would put a Settings concern in two components that have nothing to do with
-  // Settings. Same window-event pattern as `meridian:open-tasks` above.
+  // Settings. Same window-event pattern as `meridian:open-settings` above.
   useEffect(() => {
     const connectAi = () => {
       setSettingsSection('intelligence')

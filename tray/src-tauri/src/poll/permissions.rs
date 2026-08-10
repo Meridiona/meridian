@@ -119,7 +119,7 @@ async fn check_bool_permission(
                 detail,
                 remedy: Some(remedy),
                 event_key,
-                deep_link: Some("/settings"),
+                deep_link: Some(meridian_core::notifications::deep_links::SETTINGS),
             },
         )
         .await

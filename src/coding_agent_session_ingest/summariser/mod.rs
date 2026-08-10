@@ -822,7 +822,7 @@ pub async fn maybe_notify_dead_letters(pool: &SqlitePool) -> anyhow::Result<()> 
             "Some coding sessions weren't summarised",
             &body,
         )
-        .link("/settings"),
+        .link(meridian_core::notifications::deep_links::SETTINGS),
     )
     .await?;
     Ok(())
