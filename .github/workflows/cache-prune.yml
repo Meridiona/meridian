@@ -115,6 +115,82 @@ jobs:
             done
           done
 
+      - name: Reap caches no run can ever restore
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # THE POOL IS 10 GiB, SHARED, AND EVICTED BY LRU ACROSS EVERYTHING.
+        #
+        # That is the whole problem. The four tarballs this project actually
+        # needs are ~6 GiB of it, so anything else that accumulates competes
+        # directly with them — and when the cap is crossed GitHub evicts the
+        # OLDEST entry, not the most useless one. Measured at 8.94 GiB with two
+        # categories of provably dead weight in the way:
+        #
+        #   TAG-SCOPED (0.74 GiB, +~380 MiB per release). GitHub scopes caches
+        #   by ref, and a run may restore only from its own ref or the default
+        #   branch. So one tag's cache is unreadable by every other tag, by
+        #   every branch, forever — it is garbage the instant that build ends.
+        #   These stop being created at all once `main` carries the
+        #   dispatch-on-main release workflow (release builds then run with
+        #   github.ref = refs/heads/main), so this is mostly clearing a legacy
+        #   pile. Re-running a build for the SAME tag would go cold, which is
+        #   the one thing given up here and is worth roughly nothing: with
+        #   dispatch-on-main a rebuild restores main's cache instead.
+        #
+        #   CLOSED-PR MERGE REFS. Same rule: refs/pull/N/merge is reachable
+        #   only from that PR's own runs. Once it is merged or closed, nothing
+        #   can read it again. Only OPEN PRs are spared.
+        #
+        # Both categories are identified by REF, never by key, so a new cache
+        # key added anywhere is covered automatically instead of silently
+        # accumulating until someone extends a hardcoded prefix list.
+        #
+        # Best-effort throughout: reaping is housekeeping and must never fail a
+        # run. A cache that survives one night is reaped the next.
+        run: |
+          set -uo pipefail
+          repo="${{ github.repository }}"
+
+          # `refs/heads/refs/tags/v…` is not a typo — that is how GitHub records
+          # the scope of a cache saved during a tag-triggered run. Match both
+          # spellings so this keeps working if that ever changes.
+          tag_ids=$(gh api --paginate "repos/${repo}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.ref | test("refs/tags/")) | .id' 2>/dev/null) || true
+
+          open_prs=$(gh api --paginate "repos/${repo}/pulls?state=open&per_page=100" \
+            --jq '.[].number' 2>/dev/null | tr '\n' ' ') || true
+
+          pr_ids=""
+          while IFS=$'\t' read -r id ref; do
+            [ -n "${id}" ] || continue
+            n=$(printf '%s' "${ref}" | sed -nE 's#^refs/pull/([0-9]+)/.*#\1#p')
+            [ -n "${n}" ] || continue
+            case " ${open_prs} " in
+              *" ${n} "*) continue ;;   # still open — its next run may restore this
+            esac
+            pr_ids="${pr_ids} ${id}"
+          done <<< "$(gh api --paginate "repos/${repo}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.ref | startswith("refs/pull/")) | "\(.id)\t\(.ref)"' 2>/dev/null || true)"
+
+          n=0
+          for id in ${tag_ids} ${pr_ids}; do
+            gh api -X DELETE "repos/${repo}/actions/caches/${id}" >/dev/null 2>&1 \
+              && n=$((n + 1)) || true
+          done
+          echo "reaped ${n} unreachable cache entries (tag-scoped + closed-PR)"
+
+          used=$(gh api "repos/${repo}/actions/cache/usage" \
+            --jq '.active_caches_size_in_bytes' 2>/dev/null || echo 0)
+          echo "cache pool now $((used / 1048576)) MiB of 10240 MiB"
+          # 8 GiB. Past this, LRU is close enough to start evicting the release
+          # tarballs, which costs a ~35-minute cold build rather than a slow PR.
+          # A warning rather than a failure: this job's whole purpose is to keep
+          # the pool healthy, and failing it would page someone about a
+          # condition it has already done everything it can about.
+          if [ "${used}" -gt 8589934592 ]; then
+            echo "::warning::Actions cache pool is $((used / 1048576)) MiB of 10240 MiB. LRU eviction can drop the release tarballs, which costs a full cold release build. Biggest remaining lever: merge pre-main into main so release builds stop running the old sccache-enabled workflow."
+          fi
+
       - name: Reap orphaned sccache objects
         env:
           GH_TOKEN: ${{ github.token }}
