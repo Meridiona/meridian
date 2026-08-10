@@ -144,7 +144,7 @@ export function TaskDetailDialog({
    *  surface, so its own already-fetched list would otherwise stay stale after a
    *  successful delete. `onDeleted` covers the one caller that wires it
    *  (PlanView); the `meridian:task-deleted` window event (same pattern as
-   *  NoticeBar's `meridian:open-tasks`) is the broadcast every OTHER list-owning
+   *  NoticeBar's `meridian:open-settings`) is the broadcast every OTHER list-owning
    *  surface listens for instead of threading a callback through every opener. */
   function deleteTask() {
     if (deleting) return

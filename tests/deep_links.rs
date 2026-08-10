@@ -108,11 +108,15 @@ fn deep_link_literals(code: &str) -> Vec<String> {
         // Advance past this anchor regardless of what we find, so overlapping
         // matches (`deep_link` contains `link`) can't loop forever.
         cursor = at + 1;
-        let end = (at + LOOKAHEAD).min(code.len());
         // Respect char boundaries — source files carry non-ASCII (em-dashes in
-        // comments), and slicing mid-codepoint would panic.
-        if !code.is_char_boundary(at) || !code.is_char_boundary(end) {
-            continue;
+        // comments) and slicing mid-codepoint would panic. Walk the END down to
+        // the nearest boundary rather than skipping the window: `continue` here
+        // would silently drop every literal in that anchor's range, quietly
+        // reducing coverage in exactly the way this guard exists to prevent.
+        // (`at` is a match offset, so it is always a boundary already.)
+        let mut end = (at + LOOKAHEAD).min(code.len());
+        while end > at && !code.is_char_boundary(end) {
+            end -= 1;
         }
         let mut rest = &code[at..end];
         while let Some(i) = rest.find('"') {

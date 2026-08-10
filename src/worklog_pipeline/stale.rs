@@ -69,7 +69,11 @@ pub async fn notify_stale_drafts(pool: &SqlitePool, day_local: &str) {
             "Your worklog draft is out of date",
             &body,
         )
-        .link(meridian_core::notifications::deep_links::TODAY);
+        // The draft is edited in the worklog review surface, not on the
+        // timeline. `/today` merely closed any open modal, which resolved but
+        // landed nowhere useful — the one ALL entry whose handler was still
+        // behaviourally a no-op.
+        .link(meridian_core::notifications::deep_links::WORKLOGS);
         if let Err(e) = notifications::enqueue(pool, n).await {
             tracing::warn!(
                 day = day_local,

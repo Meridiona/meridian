@@ -276,14 +276,15 @@ on. That is why all six `system.update` toasts stay.
 | `plan.nudge` | Ask | `plan_nudge` | Open Plan · Snooze 1h | snooze → re-enqueue +1h |
 | `worklog.ready` | Ask | `worklog_ready` | Open Worklogs · Snooze 1h | snooze → re-enqueue +1h — **registered but no producer fires it yet** (needs its own scoping: worklog generation is currently on-demand/user-clicked, not scheduled) |
 | `system.fault` | Fault | `system_fault` | View | — (stamp only) |
-| `system.pause` | Status | `system_fault` | View | — (stamp only) — pause/resume, folded off the `sys::notify` bypass |
+| `system.pause` | Fault\*\* | `system_fault` | View | — (stamp only) — pause/resume, folded off the `sys::notify` bypass. \*\*The pause notice is a live condition (tracking is off — a Fault). Its "Resumed" toast (`commands/pause.rs`) is structurally identical to the removed back-online toast — one-shot, timestamp dedup, native — but fires ONLY on a manual resume, so it is a response to a click, not unsolicited Status |
 | `system.health` | Fault | `system_fault` | View | — (stamp only) — daemon went quiet, or the tray couldn't finish installing the backend. The paired **"Back online." recovery toast was removed** (Status: it confirmed a recovery the user often never knew about, and fired on Meridian's own restarts); the banner clearing is the recovery signal |
 | `system.update` | Ask/Fault | `system_fault`\* | View\* | — (stamp only) — update check/download/failure, folded off the bypass. \*Discrete one-shot events (not raise/clear state), so these go through `notifications::enqueue` directly rather than `notices::raise_typed` — see `tray/src-tauri/src/update.rs::notify_update` |
 | `system.notif_permission` | Fault | `system_fault` | View | — (stamp only) — notification permission revoked (macOS TCC or, since gotcha #9, Windows' `ToastNotifier::Setting()`); the one notice guaranteed to reach the user via the dashboard banner even when toasts themselves are broken |
 | `system.capture_permission` | Fault | `system_fault` | View | — (stamp only) — Accessibility/Screen Recording revoked mid-session |
 | `system.disk_low` | Fault | `system_fault` | View | — (stamp only) — `~/.meridian`'s volume below 2 GB free |
 | `pm_worklog.{provider}` | Fault | `system_fault` | View | — (stamp only) — a worklog post to the tracker failed permanently |
-| `summariser.dead_letter` | Status | `generic_link` | Open | — (stamp only) — daily digest of permanently-failed coding-agent summarisation, `dedup_key` scoped per day |
+| `summariser.dead_letter` | Fault | `generic_link` | Open | — (stamp only) — daily digest of permanently-failed coding-agent summarisation, `dedup_key` scoped per day. Body asks the user to check their coding-agent CLIs are signed in, so it is a Fault needing action, not Status |
+| `worklog.stale` | Ask | `generic_link` | Open | — (stamp only) — a draft has drifted from the work it describes; links to the worklog review surface |
 | *(reserved)* | Ask | `verify_switch` | Yes · No · Reply… | — (PR 2: task-switch verification) |
 | *(generic)* | — | `generic_link` | Open | — (stamp only) |
 

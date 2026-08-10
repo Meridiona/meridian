@@ -28,10 +28,26 @@ const SHELL = 'ui/components/timeline/MeridianTimelineShell.tsx'
 // the `LEGACY` array's entries. Parsing the Rust rather than restating the
 // values here is the whole point - a copy would drift silently, which is the
 // class of bug this guards.
+/** Slice from `start` to the brace that closes the block opening at `start`. */
+function braceBlock(src: string, start: number): string {
+  const open = src.indexOf('{', start)
+  let depth = 0
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === '{') depth++
+    else if (src[i] === '}' && --depth === 0) return src.slice(start, i + 1)
+  }
+  return src.slice(start)
+}
+
 function parseDeepLinks(src: string): { all: string[]; legacy: string[] } {
   const modStart = src.indexOf('pub mod deep_links {')
   expect(modStart).toBeGreaterThan(-1)
-  const body = src.slice(modStart)
+  // Brace-matched, NOT sliced to EOF. Slicing to the end of the file worked
+  // only because `deep_links` happens to be the last thing declaring a
+  // `pub const X: &str`; one unrelated const below it would be absorbed into
+  // `all`, and this suite would then demand a navigate() arm for it and fail
+  // pointing at the wrong thing entirely.
+  const body = braceBlock(src, modStart)
 
   const all: string[] = []
   for (const m of body.matchAll(/pub const [A-Z_]+: &str = "([^"]+)";/g)) all.push(m[1])
@@ -77,7 +93,13 @@ describe('deep-link vocabulary', () => {
   it('navigate() has a default arm, so an unknown target is never silent', () => {
     // The absence of this is the root cause of the original bug: a target that
     // matched nothing did nothing, indistinguishably from success.
-    const nav = shell.slice(shell.indexOf('const navigate ='))
+    //
+    // Bounded to navigate's own body. Slicing to EOF would be satisfied by a
+    // `default:` or `console.warn` anywhere in the remaining ~300 lines of the
+    // shell - passing by coincidence of file ordering, which is the failure
+    // mode this whole suite exists to rule out.
+    const nav = braceBlock(shell, shell.indexOf('const navigate ='))
+    expect(nav.length).toBeLessThan(3000) // it really is bounded
     expect(nav).toContain('default:')
     expect(nav).toContain('console.warn')
   })

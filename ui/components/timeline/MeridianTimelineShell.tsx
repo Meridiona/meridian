@@ -135,24 +135,23 @@ export default function MeridianTimelineShell() {
     setShowWorklogPrompt(true)
   }, [worklogPrompted])
 
-  // NoticeBar lives at the root layout, outside this tree, so its
-  // "Fix in Tasks" CTA reaches the Tasks modal via a window event instead of
-  // props.
+  // NoticeBar lives at the root layout, outside this tree, so its pm.* CTA
+  // reaches this shell through a window event rather than props.
+  //
+  // The event used to be `meridian:open-tasks` (a "Fix in Tasks →" button).
+  // That button now says "Reconnect →" and opens Settings → Integrations,
+  // which is where the same notice's own `remedy` text and its toast's
+  // click-through both send the user. The old listener was removed with its
+  // last dispatcher — a listener kept alive by a comment asserting it is live
+  // is the same drift this change is cleaning up.
   useEffect(() => {
-    const openTasks = () => setActiveModal('tasks')
-    // NoticeBar's pm.* "Reconnect →" button, which sends the user to the same
-    // place that fault's remedy text and its toast click-through do.
     const openSettings = (e: Event) => {
       const section = (e as CustomEvent<SettingsSection>).detail
       setSettingsSection(section)
       setActiveModal('settings')
     }
-    window.addEventListener('meridian:open-tasks', openTasks)
     window.addEventListener('meridian:open-settings', openSettings)
-    return () => {
-      window.removeEventListener('meridian:open-tasks', openTasks)
-      window.removeEventListener('meridian:open-settings', openSettings)
-    }
+    return () => window.removeEventListener('meridian:open-settings', openSettings)
   }, [])
 
 
@@ -281,7 +280,7 @@ export default function MeridianTimelineShell() {
   // rather than taking a callback, because it is rendered two modals deep
   // (PlanModal → PlanView → TaskComposer) and threading an opener through both
   // would put a Settings concern in two components that have nothing to do with
-  // Settings. Same window-event pattern as `meridian:open-tasks` above.
+  // Settings. Same window-event pattern as `meridian:open-settings` above.
   useEffect(() => {
     const connectAi = () => {
       setSettingsSection('intelligence')

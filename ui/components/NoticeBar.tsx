@@ -13,7 +13,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { load, mutate, subscribe } from '@/lib/bridge'
+import { load, invoke, subscribe } from '@/lib/bridge'
 import ConfirmDialog from '@/components/ConfirmDialog'
 import { formatSince } from '@/lib/notice-time'
 import type { Notice, RepairPreview } from '@/lib/api-types'
@@ -47,6 +47,17 @@ const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string
     border: 'var(--status-warning-border)',
     text: 'var(--status-warning-text)',
     dot: 'var(--status-warning-dot)',
+  },
+  // `info` was missing, and the lookup below falls back to `error` — so
+  // "Database repaired", raised with severity "info" (tray lib.rs), rendered in
+  // full red error styling: a successful recovery that looks like a failure.
+  // Nothing surfaced info-severity notices before ACKNOWLEDGEABLE made this one
+  // dismissable, which is why it went unnoticed.
+  info: {
+    bg: 'var(--status-info-bg)',
+    border: 'var(--status-info-border)',
+    text: 'var(--status-info-text)',
+    dot: 'var(--status-info-dot)',
   },
 }
 
@@ -155,6 +166,16 @@ export default function NoticeBar() {
 // than waiting for the next `notices-update` push, so the banner does not
 // linger for a poll interval after the click. A failed write leaves the banner
 // up - which is the honest outcome, since the notice really is still there.
+//
+// `invoke`, NOT `mutate`. `mutate` wraps its body — `invoke(command, { body })`
+// — and `delete_notice` takes `notice_id` at the top level rather than a
+// `body:` struct, so `mutate` fails argument deserialization. The first draft
+// of this button used it and was therefore dead on arrival: it rendered, it
+// was clickable, and the rejected promise died in the catch. That is the exact
+// failure this whole PR is about, and the same shape as the `window.confirm`
+// Repair Database button below, which shipped inert in 1.83.0.
+// `__tests__/mutate-body-contract.test.ts` now fails the build for any
+// mutate() call whose command has no `body:` param.
 function DismissButton({ noticeId, color, onDone }: {
   noticeId: string
   color: string
@@ -169,9 +190,11 @@ function DismissButton({ noticeId, color, onDone }: {
       onClick={async () => {
         setBusy(true)
         try {
-          await mutate('/api/notices', 'delete_notice', { noticeId }, 'DELETE')
+          await invoke('delete_notice', { noticeId })
           onDone()
-        } catch {
+        } catch (e) {
+          // Never swallow: a silent catch is what hid the broken call above.
+          console.error('[NoticeBar] dismissing notice failed', noticeId, e)
           setBusy(false)
         }
       }}

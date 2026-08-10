@@ -19,8 +19,17 @@
 import { usePathname } from 'next/navigation'
 import NoticeBar from '@/components/NoticeBar'
 
+// Routes with no MeridianTimelineShell mounted. NoticeBar's action buttons
+// ("Reconnect →", "Fix in Tasks") reach the shell through window events, so on
+// these routes they render, click, and do nothing — the same silent-dead-control
+// failure the notification work is cleaning up. Neither banner is actionable
+// mid-onboard or mid-uninstall anyway (and db.corrupt's Repair button restarts
+// the app, which would be actively wrong during an uninstall), so gate the whole
+// bar rather than individual buttons.
+const SHELL_LESS_ROUTES = ['/setup', '/uninstall']
+
 export default function LayoutBanners() {
   const pathname = usePathname()
-  if (pathname?.startsWith('/setup')) return null
+  if (SHELL_LESS_ROUTES.some(r => pathname?.startsWith(r))) return null
   return <NoticeBar />
 }

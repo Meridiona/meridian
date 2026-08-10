@@ -165,8 +165,12 @@ pub mod deep_links {
     pub const LEGACY: [&str; 2] = ["/tasks?integrations=1", "/health"];
 
     /// Whether `link` is a value the shell is expected to resolve — current
-    /// vocabulary or legacy. Used by the guard test and by producers that
-    /// accept a caller-supplied link.
+    /// vocabulary or legacy.
+    ///
+    /// Used by `tests/deep_links.rs`. Deliberately NOT called by producers: a
+    /// runtime check would fire on the user's machine long after the mistake
+    /// was made, whereas the static scan fails the build. If a producer ever
+    /// takes a caller-supplied link (none does today), this is the gate for it.
     pub fn is_known(link: &str) -> bool {
         ALL.contains(&link) || LEGACY.contains(&link)
     }
