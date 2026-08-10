@@ -250,6 +250,12 @@ capture = [
 # whatever happens to exist on the machine running the tests.
 [dev-dependencies]
 tempfile = "3"
+# Test-only: `test-util` gives `#[tokio::test(start_paused = true)]`, which
+# advances tokio's clock instantly. commands/daemon.rs's reload rate limit is
+# built around a 30 s launchd window; without a paused clock its tests would
+# have to sleep through that window for real, so they would either be skipped
+# or made meaningless with a shrunken constant that no longer matches the plist.
+tokio = { version = "1", features = ["test-util"] }
 # Test-only: captures tracing events (level + fields) to assert log-level and
 # redaction-allowlist-field regressions in commands/setup.rs's LLM install/
 # sign-in logging without spawning a real subscriber pipeline.
