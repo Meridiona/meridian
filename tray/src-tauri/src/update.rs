@@ -112,8 +112,10 @@ pub enum UpdateErrorKind {
 /// frontend gets `{ kind, message }` rather than a bare string it would have to
 /// pattern-match on prose. `message` stays human-readable for logs and for the
 /// dashboard's diagnostic text.
+// No `rename_all` here on purpose: `kind` and `message` are already single
+// lowercase words, so it would be a no-op — and carrying one next to the enum's
+// (where it IS load-bearing) invites the reader to believe this one matters too.
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct UpdateError {
     pub kind: UpdateErrorKind,
     pub message: String,
@@ -364,8 +366,42 @@ pub async fn check_status(app: &AppHandle) -> UpdateStatus {
 /// apart: [`UpdateErrorKind::InProgress`] means another surface's install is
 /// already running (benign — that one will relaunch), while
 /// [`UpdateErrorKind::Failed`] is a real fault worth showing and retrying.
-#[tracing::instrument(skip(app))]
+#[tracing::instrument(skip(app), fields(otel.status_code = tracing::field::Empty))]
 pub async fn download_and_apply(app: &AppHandle) -> Result<(), UpdateError> {
+    let result = install_now(app).await;
+
+    // Broadcast a TERMINAL failure so the surface that did NOT get this `Err`
+    // stops waiting on an install that is never going to finish.
+    //
+    // Only `Failed` qualifies. A surface that lost the single-flight race parks
+    // itself in the installing state on purpose (it tracks the winner's
+    // `update-progress` and relaunches with it), and nothing else would ever
+    // wake it: `download_and_apply` returns the error to the *winner* alone. So
+    // if the winner dies — dropped connection, signature mismatch, a write that
+    // did not take — the loser's banner would sit inert until the app is
+    // relaunched, with its retry button disabled. That is a worse failure than
+    // the mislabel this module was written to fix.
+    //
+    // `InProgress` must NOT emit: it is not a terminal outcome, it is the
+    // refusal itself, and the install it refers to is still running.
+    if let Err(e) = &result {
+        if e.kind == UpdateErrorKind::Failed {
+            // A real fault: mark the span ERROR so it is visible in the traces
+            // (and, on a packaged install, is one of the few things the redacted
+            // ship leg lets out at all). The InProgress refusal deliberately
+            // does NOT — it is a normal outcome of two open surfaces, and
+            // flagging it would make a routine double-click look like a fault.
+            tracing::Span::current().record("otel.status_code", "ERROR");
+            tracing::warn!(error = %e, "update: install failed");
+            let _ = app.emit("update-finished", serde_json::json!({ "ok": false }));
+        }
+    }
+    result
+}
+
+/// The install proper. Split out so [`download_and_apply`] owns the terminal
+/// broadcast on every error path without repeating it at each `?`.
+async fn install_now(app: &AppHandle) -> Result<(), UpdateError> {
     // Single-flight: refuse a concurrent install. On the happy path `restart()`
     // re-execs the process so the slot's reset never matters; on every error
     // path dropping it clears the slot so a failed install can be retried.
@@ -563,24 +599,33 @@ pub fn enforce_minimum_version(app: &AppHandle) {
                 notified = true;
             }
             if let Err(e) = download_and_apply(&app).await {
-                due = Deadline::after(retry);
                 // A user-initiated install holding the slot is not a failed
                 // enforcement — that install lands the same bytes and relaunches
                 // the app, satisfying the floor. Logging it as a failure sent
                 // support chasing an update path that was working.
+                //
+                // It must not pay a failure's PENALTY either. `next_retry`
+                // doubles (2m → 4m → 8m …, capped at ENFORCE_INTERVAL), so a
+                // couple of concurrent banner clicks would push a *mandatory*
+                // update — the kill-switch for releases that must not keep
+                // running — minutes further out, and further still if that
+                // concurrent install then fails. Re-check at the base delay and
+                // leave the escalating backoff untouched for real faults.
                 if e.kind == UpdateErrorKind::InProgress {
+                    due = Deadline::after(ENFORCE_RETRY_BASE);
                     tracing::info!(
-                        retry_s = retry.as_secs(),
+                        retry_s = ENFORCE_RETRY_BASE.as_secs(),
                         "update: forced install deferred - a user-initiated install is already running"
                     );
                 } else {
+                    due = Deadline::after(retry);
                     tracing::warn!(
                         error = %e,
                         retry_s = retry.as_secs(),
                         "update: forced install failed - retrying"
                     );
+                    retry = next_retry(retry);
                 }
-                retry = next_retry(retry);
             } else {
                 due = Deadline::after(ENFORCE_INTERVAL);
             }
@@ -603,13 +648,20 @@ pub fn check_for_updates(app: &AppHandle) {
         match status.state.as_str() {
             "available" => {
                 let v = status.version.clone().unwrap_or_default();
-                notify_update(
-                    &app,
-                    "downloading",
-                    "Updating Meridian",
-                    &format!("Downloading v{v}…"),
-                )
-                .await;
+                // Don't promise a download the single-flight guard is about to
+                // refuse: one menu click otherwise toasted "Downloading v1.84.0…"
+                // and then immediately "Update already in progress". The slot can
+                // still be taken between here and the call — the cost of losing
+                // that race is one skipped toast, never a wrong one.
+                if !INSTALLING.load(Ordering::SeqCst) {
+                    notify_update(
+                        &app,
+                        "downloading",
+                        "Updating Meridian",
+                        &format!("Downloading v{v}…"),
+                    )
+                    .await;
+                }
                 if let Err(e) = download_and_apply(&app).await {
                     // Same distinction the banners make: a refusal from the
                     // single-flight guard means a banner click already started
@@ -625,7 +677,9 @@ pub fn check_for_updates(app: &AppHandle) {
                         )
                         .await;
                     } else {
-                        tracing::warn!(error = %e, "update: install failed");
+                        // The failure itself is logged (and the span marked
+                        // ERROR) by `download_and_apply`, which owns it — this
+                        // arm only owns the user-facing toast.
                         notify_update(
                             &app,
                             "failed",

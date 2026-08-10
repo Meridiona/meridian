@@ -73,6 +73,22 @@ export function UpdateCard() {
     })
   }, [])
 
+  // Terminal failure of the install this card is tracking. Broadcast app-wide by
+  // download_and_apply, because the surface that LOST the single-flight race
+  // never receives that Err itself - without this it stays disabled on
+  // "Already in progress..." forever when the winning install dies, which is a
+  // worse outcome than the mislabel this component was fixed for.
+  useEffect(() => {
+    if (!isTauri()) return
+    return subscribe<{ ok: boolean }>('/api/update/finished', null, 'update-finished', (d) => {
+      if (d?.ok) return
+      setInstalling(false)
+      setElsewhere(false)
+      setPct(null)
+      setFailed(true)
+    })
+  }, [])
+
   if (!status) return null
 
   const onInstall = () => {

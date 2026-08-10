@@ -400,6 +400,17 @@ listen('update-progress', (e) => {
     updText.textContent = `Downloading… ${Math.round((d.downloaded / d.contentLength) * 100)}%`
   }
 })
+// A terminal failure of the install THIS banner is tracking. Emitted by
+// download_and_apply for the whole app, so the surface that lost the
+// single-flight race (and therefore never got the Err back) also learns the
+// install died — otherwise it stays disabled on 'Update in progress…' until the
+// app is relaunched, with its retry button dead. Also covers the case where the
+// winner's download reports no contentLength, so no progress event ever lands.
+listen('update-finished', (e) => {
+  if ((e.payload || {}).ok) return
+  installing = false
+  updText.textContent = 'Update failed'
+})
 // `install_update` rejects with UpdateError { kind, message } (update.rs). Only
 // `failed` is a real fault: `inProgress` means the dashboard card's click won
 // the single-flight race, so an install IS running — it just isn't ours. Both
