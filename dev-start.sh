@@ -161,7 +161,14 @@ tell application "Terminal"
     do script "echo '=== Rust daemon (cargo watch) ===' && cd '${REPO_ROOT}' && bash scripts/dev-claim-daemon.sh && ${DB_ENV}cargo watch ${DAEMON_WATCH} ${FORK_WATCH_FLAG} -x 'run --bin meridian'"
 
     -- 2. Tauri tray (hot reload — also starts Next.js dev server automatically via beforeDevCommand)
-    do script "echo '=== Tauri tray (tauri dev) ===' && cd '${REPO_ROOT}/tray' && ${DB_ENV}npm run tauri dev"
+    -- MERIDIAN_DEV_DAEMON=1 tells the tray that a DEV daemon owns
+    -- ~/.meridian/daemon.sock, so its launch-time restore stands down
+    -- (daemon_lifecycle::restore_unless_paused). Without it this tab's tray
+    -- reached the dev/source bail-out in ensure_backend_installed, re-registered
+    -- and kickstarted the INSTALLED launchd daemon, and that daemon took the
+    -- socket back from the tab above - which then exited on the single-instance
+    -- guard with status 0, looking healthy while running nothing.
+    do script "echo '=== Tauri tray (tauri dev) ===' && cd '${REPO_ROOT}/tray' && MERIDIAN_DEV_DAEMON=1 ${DB_ENV}npm run tauri dev"
 end tell
 APPLESCRIPT
 
