@@ -174,6 +174,47 @@ name: Release (build & publish)
 #
 # `release-prepare.yml` does the dispatch automatically after it pushes the tag,
 # so cutting a release is still one action.
+#
+# ── WHERE THE TIME ACTUALLY GOES (measured, v1.84.0-staging.9, first warm run) ─
+#
+# macOS 7m31s. Windows 12m41s (its upload was a 60s network outlier; 3-11s is
+# typical across the last six releases, so ~11m50s is the honest Windows
+# number). The release is as slow as Windows, and Windows breaks down as:
+#
+#   412s  compiling the 4 workspace crates      <- the wall
+#    56s  index refresh + fingerprinting 1167 deps
+#    54s  npm ci (now concurrent, see below)
+#    49s  rust-cache restore
+#    49s  NSIS bundling
+#    27s  next build
+#    ~55s runner setup, toolchain, node, checkout, upload, post steps
+#
+# THE 412s IS IRREDUCIBLE HERE, and the dead ends are worth recording so nobody
+# re-runs this investigation:
+#
+#   * rust-cache PRUNES workspace members by design, so meridian / meridian-core
+#     / meridian-oauth / meridian-tray recompile on every build even on a
+#     perfect cache hit. Caching them is pointless anyway — their source is what
+#     changed.
+#   * `meridian-tray` alone is ~54% of the work and is a SINGLE serial unit, so
+#     it sets a floor no amount of parallelism goes under.
+#   * Profile tuning does almost nothing, measured locally on 14 cores:
+#     opt-level 3 -> 2 was 76.4s -> 76.8s (noise), opt-level 1 on the tray alone
+#     72s -> 69s, and codegen-units 256 changed nothing. Of the tray's ~63s,
+#     only ~16s is the frontend; the rest is LINKING, which ignores opt-level.
+#     Windows already links with rust-lld (.cargo/config.toml).
+#   * sccache was removed rather than tuned: it measured a 0.00% hit rate on
+#     BOTH platforms and structurally always will, because the only crates that
+#     ever compile here are the workspace crates whose source just changed.
+#
+# WHAT WOULD ACTUALLY FIX IT: an 8-core larger runner, which roughly halves the
+# compile. Larger runners need a GitHub Team plan and are billed per-minute even
+# on public repos (they are NOT covered by the free public-repo minutes), and
+# this org is on the free plan — `/orgs/Meridiona/actions/hosted-runners` returns
+# "GitHub hosted runners are not supported for this organization". So sub-10-min
+# Windows is a billing decision, not a workflow one. Everything cheap has been
+# taken; what is left costs either money or product quality (a lower opt-level
+# on shipped binaries, or weaker NSIS compression for a fatter installer).
 on:
   workflow_dispatch:
     inputs:
@@ -556,8 +597,22 @@ jobs:
         # it would move ~1 minute out of three PARALLEL jobs into one SERIAL
         # one. We are optimising wall clock.
         run: |
-          (cd ui && npm ci --no-audit --no-fund)
-          (cd tray && npm ci --no-audit --no-fund)
+          # Concurrent, not back to back. The two installs write disjoint
+          # node_modules trees and npm's cache takes its own locks (cacache is
+          # built for concurrent access), so there is nothing to serialise for.
+          # Measured serial on the Windows runner: 54s, all of it on the
+          # critical path of the slowest job in the release.
+          #
+          # Each pid is waited on SEPARATELY and the result OR-ed into rc: a
+          # bare `wait` returns the status of only the last pid, which would
+          # let a failed `ui` install pass silently and surface much later as a
+          # confusing "Build the UI" error.
+          (cd ui && npm ci --no-audit --no-fund) & ui=$!
+          (cd tray && npm ci --no-audit --no-fund) & tray=$!
+          rc=0
+          wait "$ui" || rc=1
+          wait "$tray" || rc=1
+          exit "$rc"
 
       - name: Build the UI
         # `tauri build`'s `beforeBuildCommand` used to do this automatically.
@@ -915,8 +970,22 @@ jobs:
         # compiles (frontendDist is embedded at compile time by generate_context!),
         # so it is not hoisted into `prepare` and shared as an artifact.
         run: |
-          (cd ui && npm ci --no-audit --no-fund)
-          (cd tray && npm ci --no-audit --no-fund)
+          # Concurrent, not back to back. The two installs write disjoint
+          # node_modules trees and npm's cache takes its own locks (cacache is
+          # built for concurrent access), so there is nothing to serialise for.
+          # Measured serial on the Windows runner: 54s, all of it on the
+          # critical path of the slowest job in the release.
+          #
+          # Each pid is waited on SEPARATELY and the result OR-ed into rc: a
+          # bare `wait` returns the status of only the last pid, which would
+          # let a failed `ui` install pass silently and surface much later as a
+          # confusing "Build the UI" error.
+          (cd ui && npm ci --no-audit --no-fund) & ui=$!
+          (cd tray && npm ci --no-audit --no-fund) & tray=$!
+          rc=0
+          wait "$ui" || rc=1
+          wait "$tray" || rc=1
+          exit "$rc"
 
       - name: Build the UI
         # Same reasoning as the macOS job's "Build the UI" step: compiling via
