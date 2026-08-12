@@ -53,13 +53,23 @@ pub(super) static FILTER_HANDLE: OnceLock<FilterHandle> = OnceLock::new();
 /// **Re-audit if the fork's revision is bumped** — this is exactly the class of
 /// change that could start shipping captured content.
 ///
+/// `tauri_plugin_clerk` was added alongside its `vendor/tauri-plugin-clerk`
+/// session-persistence fix (`tray/src-tauri/vendor/tauri-plugin-clerk`) so the
+/// new `tracing::warn!` sites that replaced a swallowed deserialize error are
+/// actually visible in `meridian logs`/OpenObserve instead of only the local
+/// terminal. Audited every `warn!`/`error!` site added: all interpolate only
+/// `serde_json::Error`'s `Display` (a schema-mismatch message — field names,
+/// not field values) — never the Clerk payload itself (email, JWT, name).
+/// **Re-audit alongside the vendored crate** if it's ever un-vendored back to
+/// a crates.io release (see that crate's module doc for the un-vendor plan).
+///
 /// # Adding to this list
 /// Add the bare target (crate) name here and every log level picks it up
 /// automatically. It is deliberately a list of names rather than a formatted
 /// directive string: the level varies per branch in [`build_default_filter`],
 /// and hardcoding the pairs in each branch is how a new entry silently ends up
 /// with no coverage at one level.
-const CAPTURE_TARGETS: &[&str] = &["screenpipe_screen", "screenpipe_a11y"];
+const CAPTURE_TARGETS: &[&str] = &["screenpipe_screen", "screenpipe_a11y", "tauri_plugin_clerk"];
 
 /// Render [`CAPTURE_TARGETS`] as `EnvFilter` directives at `level`.
 fn capture_directives(level: &str) -> String {

@@ -1,0 +1,14 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = "Default permissions for the plugin"
+permissions = ["allow-client"]
+
+[[permission]]
+identifier = "allow-client"
+description = "Enables use of Clerk in JS code"
+commands.allow = [
+    "initialize",
+    "get_client_authorization_header",
+    "set_client_authorization_header",
+]

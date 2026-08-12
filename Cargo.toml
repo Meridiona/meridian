@@ -1,5 +1,13 @@
 [workspace]
 members = [".", "meridian-core", "meridian-oauth", "tray/src-tauri"]
+# Vendored, patched fork of tauri-plugin-clerk (see
+# tray/src-tauri/Cargo.toml's dependency comment + vendor/tauri-plugin-clerk's
+# module doc) — a `path` dependency of tray/src-tauri, deliberately excluded
+# from the workspace so `cargo fmt --workspace`/`cargo clippy --workspace`
+# don't churn on vendored, mostly-unmodified third-party code. It has its own
+# fmt/clippy/test gate — see the crate's own `cargo test`/`cargo clippy` run
+# from within that directory.
+exclude = ["tray/src-tauri/vendor/tauri-plugin-clerk"]
 resolver = "2"
 
 # Release profile — every value here is cargo's DEFAULT, stated explicitly so
