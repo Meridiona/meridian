@@ -1724,8 +1724,14 @@ describe('the closing asks: a delivery time, and the off switch', () => {
     // show: the alternative reading of an ambient tool is that it needs minding.
     // Short on purpose. This is the last thing said before the off switch, and
     // a paragraph here is a paragraph nobody finishes.
-    const close = src.slice(src.indexOf('── 11. Running'))
-    expect(close).toContain('Close this window - Meridian keeps going')
+    //
+    // A standalone "you are set up, close this window" card used to carry this
+    // line, one beat before the Handoff below - which already says the same
+    // thing at the actual moment it becomes true. That card is gone (see
+    // section 11's "GONE" comment in scriptDay.ts); the reassurance now opens
+    // Handoff itself, so this test moved with it.
+    const close = src.slice(src.indexOf('── 13. Handoff'))
+    expect(close).toContain('That is everything.')
   })
 })
 
