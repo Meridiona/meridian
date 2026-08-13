@@ -1,20 +1,38 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
 // Global fault banner. Subscribes to the `notices-update` Tauri event (via
-// bridge.subscribe) and renders a banner for each active system notice. Banners auto-disappear when
-// the daemon clears the fault — no manual dismiss needed. Placed in the root
-// layout so it appears on every page.
+// bridge.subscribe) and renders a banner for each active system notice. Placed
+// in the root layout so it appears on every page.
+//
+// Most banners auto-disappear when the daemon clears the fault, and those have
+// no dismiss control on purpose — hiding a live fault would only make it
+// invisible, not fixed. The exception is ACKNOWLEDGEABLE (below): notices that
+// report a past EVENT rather than a current condition. Nothing can ever
+// "recover" from them, so without a dismiss they sit on screen forever.
 
 'use client'
 
 import { useEffect, useState } from 'react'
-import { load, subscribe } from '@/lib/bridge'
+import { load, invoke, subscribe } from '@/lib/bridge'
 import ConfirmDialog from '@/components/ConfirmDialog'
 import { formatSince } from '@/lib/notice-time'
 import type { Notice, RepairPreview } from '@/lib/api-types'
 
 // The one notice that can be acted on in-app rather than in a terminal.
 const DB_CORRUPT = 'db.corrupt'
+
+// Notices the user dismisses, because nothing else will.
+//
+// Both are raised once by the tray's boot-time repair (`lib.rs`) to report what
+// it did to the database. They describe something that already happened, so no
+// code path clears them — and NoticeBar had no dismiss — which meant any
+// machine that ever ran a boot repair carried the banner permanently. Same
+// shape as the 22 undismissable board-hygiene banners: a producer with no
+// matching consumer.
+//
+// A live fault must NOT be added here. If a notice can clear itself when the
+// condition passes, let it.
+const ACKNOWLEDGEABLE = new Set(['db.repaired', 'db.reset'])
 
 // Palette lives in globals.css (--status-*).
 const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string; dot: string }> = {
@@ -29,6 +47,17 @@ const SEVERITY_STYLES: Record<string, { bg: string; border: string; text: string
     border: 'var(--status-warning-border)',
     text: 'var(--status-warning-text)',
     dot: 'var(--status-warning-dot)',
+  },
+  // `info` was missing, and the lookup below falls back to `error` — so
+  // "Database repaired", raised with severity "info" (tray lib.rs), rendered in
+  // full red error styling: a successful recovery that looks like a failure.
+  // Nothing surfaced info-severity notices before ACKNOWLEDGEABLE made this one
+  // dismissable, which is why it went unnoticed.
+  info: {
+    bg: 'var(--status-info-bg)',
+    border: 'var(--status-info-border)',
+    text: 'var(--status-info-text)',
+    dot: 'var(--status-info-dot)',
   },
 }
 
@@ -92,9 +121,16 @@ export default function NoticeBar() {
               )}
             </div>
             {n.notice_id === DB_CORRUPT && <RepairButton color={s.text} border={s.border} />}
+            {/* A tracker fault is fixed by reconnecting the tracker. This used
+                to say "Fix in Tasks →" and open the Tasks modal, which
+                disagreed with both this notice's own remedy text ("Reconnect X
+                in Settings → Integrations") and its toast's click-through -
+                three surfaces for one fault, two destinations. */}
             {n.notice_id.startsWith('pm.') && (
               <button
-                onClick={() => window.dispatchEvent(new CustomEvent('meridian:open-tasks'))}
+                onClick={() => window.dispatchEvent(
+                  new CustomEvent('meridian:open-settings', { detail: 'integrations' })
+                )}
                 style={{
                   flexShrink: 0,
                   fontSize: 11,
@@ -107,15 +143,76 @@ export default function NoticeBar() {
                   textDecoration: 'none',
                   whiteSpace: 'nowrap',
                   alignSelf: 'center',
+                  cursor: 'pointer',
                 }}
               >
-                Fix in Tasks →
+                Reconnect →
               </button>
+            )}
+            {ACKNOWLEDGEABLE.has(n.notice_id) && (
+              <DismissButton noticeId={n.notice_id} color={s.text}
+                onDone={() => setNotices(cur => cur.filter(x => x.notice_id !== n.notice_id))} />
             )}
           </div>
         )
       })}
     </div>
+  )
+}
+
+// Acknowledge a notice that reports a past event (see ACKNOWLEDGEABLE).
+//
+// Optimistic: the row is dropped locally the moment the write succeeds rather
+// than waiting for the next `notices-update` push, so the banner does not
+// linger for a poll interval after the click. A failed write leaves the banner
+// up - which is the honest outcome, since the notice really is still there.
+//
+// `invoke`, NOT `mutate`. `mutate` wraps its body — `invoke(command, { body })`
+// — and `delete_notice` takes `notice_id` at the top level rather than a
+// `body:` struct, so `mutate` fails argument deserialization. The first draft
+// of this button used it and was therefore dead on arrival: it rendered, it
+// was clickable, and the rejected promise died in the catch. That is the exact
+// failure this whole PR is about, and the same shape as the `window.confirm`
+// Repair Database button below, which shipped inert in 1.83.0.
+// `__tests__/mutate-body-contract.test.ts` now fails the build for any
+// mutate() call whose command has no `body:` param.
+function DismissButton({ noticeId, color, onDone }: {
+  noticeId: string
+  color: string
+  onDone: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+  return (
+    <button
+      aria-label="Dismiss"
+      title="Dismiss"
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true)
+        try {
+          await invoke('delete_notice', { noticeId })
+          onDone()
+        } catch (e) {
+          // Never swallow: a silent catch is what hid the broken call above.
+          console.error('[NoticeBar] dismissing notice failed', noticeId, e)
+          setBusy(false)
+        }
+      }}
+      style={{
+        flexShrink: 0,
+        alignSelf: 'center',
+        background: 'transparent',
+        border: 'none',
+        color,
+        opacity: busy ? 0.4 : 0.6,
+        fontSize: 14,
+        lineHeight: 1,
+        padding: '2px 6px',
+        cursor: busy ? 'default' : 'pointer',
+      }}
+    >
+      ✕
+    </button>
   )
 }
 

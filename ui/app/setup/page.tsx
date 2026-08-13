@@ -8,22 +8,21 @@
 // permission polling, integrations, sign-in, and the AI-provider choice — is all
 // live. No fabricated state.
 
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react'
 import type { ReactNode } from 'react'
 import { invoke, load, mutate, tauri } from '@/lib/bridge'
-import { buildSteps, Welcome, Completion } from './steps'
-import type { StepMeta, Wiz } from './steps'
+import { buildSteps, Welcome } from './steps'
+import type { Wiz } from './steps'
 import type { NotifState } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import type { RuntimeSettings } from '@/lib/settings'
 import { DEFAULT_LLM_PROVIDER, providerChoiceFields, type LlmProviderId } from '@/lib/llm-providers'
 import { useLlmProviderDetection } from '@/components/LlmProviderPicker'
-import { Btn, Check, DISPLAY, Kicker } from './atoms'
+import { Btn, DISPLAY, Kicker } from './atoms'
 
 export default function SetupWizard() {
   const [welcome, setWelcome] = useState(true)
   const [step, setStep] = useState(0)
-  const [done, setDone] = useState(false)
   const [err, setErr] = useState('')
 
   // Platform shapes the Permissions step — macOS shows the two TCC grants +
@@ -42,6 +41,13 @@ export default function SetupWizard() {
   }, [])
   useEffect(() => { resolvePlatform() }, [resolvePlatform])
   const steps = useMemo(() => buildSteps(platform), [platform])
+
+  // Stamp when onboarding BEGAN. Completion has always been timestamped
+  // (`~/.meridian/onboarded`) but the start was not, so the elapsed time — shown
+  // as "Setup complete in Ns" and as the time span on the "Setting up Meridian"
+  // day-task card — had nothing to subtract from. Fire-and-forget: a failed
+  // stamp costs the duration line, never the wizard.
+  useEffect(() => { invoke('mark_setup_started').catch(() => {}) }, [])
 
   // Step 1 — permissions (live)
   const [perms, setPerms] = useState<Wiz['perms']>({ accessibility: null, screen: null, notifications: null })
@@ -99,7 +105,7 @@ export default function SetupWizard() {
       })
   }, [])
 
-  const active = !welcome && !done
+  const active = !welcome
 
   // Poll the two required permissions + optional notifications on the
   // Permissions step. Input Monitoring is intentionally not polled — it's
@@ -206,25 +212,91 @@ export default function SetupWizard() {
   // ── Navigation ───────────────────────────────────────────────────────────────
   const meta = steps[step]
   const last = step === steps.length - 1
-  const goStep = (i: number) => { setErr(''); setWelcome(false); setDone(false); setStep(i) }
   const finish = async () => {
     // `mark_setup_complete` writes the onboarded flag that stops the wizard
-    // reopening next launch. Only show "complete" if it actually persisted —
-    // otherwise the user would think they're done but the wizard would reappear.
+    // reopening next launch. Only proceed to the dashboard if it actually
+    // persisted — otherwise the user would land there but the wizard would
+    // reappear next launch.
     setErr('')
     try {
       await invoke('mark_setup_complete')
-      setDone(true)
     } catch (e) {
       setErr(String(e))
+      return
     }
-  }
-  const closeWindow = async () => {
+    // FINISHING THE WIZARD IS WHAT ENTITLES THIS ONBOARDING TO THE WALKTHROUGH,
+    // so clear the "already seen it" key here.
+    //
+    // The walkthrough auto-starts on two conditions that live in two different
+    // stores with two different lifetimes: `~/.meridian/walkthrough_armed`, which
+    // the command above just wrote, and `meridian.walkthrough.seen.v1` in the
+    // webview's localStorage. Wiping `~/.meridian` does not touch localStorage —
+    // nothing outside the webview can — so a machine that has ever completed the
+    // walkthrough kept that key forever.
+    //
+    // The result: reinstall, or delete ~/.meridian to start over, and setup runs
+    // again (correctly) but the walkthrough silently never plays. Nothing fails,
+    // nothing logs, the dashboard just opens. That is what happened on the first
+    // real test of this flow.
+    //
+    // Clearing it here makes wizard completion the single authority: you finished
+    // onboarding, so this onboarding has not been shown the walkthrough. It also
+    // makes Settings → Re-run Setup replay the tour, which is the honest reading
+    // of re-running onboarding (and matches `mark_setup_started`, which likewise
+    // treats a re-run as a fresh run rather than preserving the original).
+    try { localStorage.removeItem('meridian.walkthrough.seen.v1') } catch { /* private mode */ }
     try {
       await invoke('open_dashboard')
     } catch { /* ignore if dashboard fails to open */ }
     tauri()?.window.getCurrentWindow().close()
   }
+
+  // Sign in is the one step that genuinely can't be pinned to a magic number
+  // (its content changes size - email phase vs. code phase vs. an error line
+  // appearing) and repeatedly guessing one (490 scrolled, 520 left whitespace,
+  // 512 as a compromise…) for Permissions already proved how brittle that is.
+  // So instead of another hardcoded height, the card measures its OWN actual
+  // rendered height on this step (`cardRef` + ResizeObserver below) and uses
+  // that - never a guess, and it re-measures live if the content inside it
+  // ever changes height.
+  const isSignin = !welcome && meta?.id === 'signin'
+  const cardRef = useRef<HTMLDivElement>(null)
+  const [signinHeight, setSigninHeight] = useState<number | null>(null)
+  useLayoutEffect(() => {
+    if (!isSignin || !cardRef.current) return
+    const el = cardRef.current
+    const observer = new ResizeObserver(([entry]) => {
+      setSigninHeight(Math.ceil(entry.contentRect.height))
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [isSignin])
+
+  // The card is a different fixed height depending on what's showing, each
+  // sized to that screen's actual content instead of one height shared by
+  // everything (which used to leave dead top/bottom whitespace on the
+  // shorter screens): Welcome (520, content only runs to ~372px), Sign in
+  // (measured live, see above), Permissions (512 - the true minimum sits
+  // somewhere between 490, which scrolled, and 520, which didn't; biased
+  // toward the known-safe end rather than re-clipping again), everything else
+  // (628, unchanged - Integrations/Intelligence all still need the room).
+  const cardHeight = welcome ? 520 : isSignin ? (signinHeight ?? 460) : meta?.id === 'permissions' ? 512 : 628
+  // Height divisor scaled with the card (700 * cardHeight/628) to keep the
+  // same ~26px margin ratio the window was sized for at any height.
+  const heightDivisor = Math.round((700 * cardHeight) / 628)
+
+  // The host OS window (`tray.rs::open_wizard_window`) opens already sized for
+  // Welcome (1000×572) so it doesn't start with a big empty backdrop margin;
+  // this keeps it in sync with `cardHeight` from then on - one place that
+  // resizes the window, rather than a resize call bolted onto each individual
+  // transition (Welcome → step 1, step → step, …). Only re-invokes when the
+  // target height actually changes, so paging between same-height steps (or
+  // a Sign-in re-measure that comes out the same) is a no-op. Best-effort:
+  // outside Tauri (a plain browser preview) or on a slow IPC round-trip, the
+  // wizard keeps working rather than getting stuck waiting on the window resize.
+  useEffect(() => {
+    invoke('resize_setup_window', { width: 1000, height: cardHeight + 52 }).catch(() => {})
+  }, [cardHeight])
 
   return (
     <div style={{
@@ -234,8 +306,8 @@ export default function SetupWizard() {
       // on a big flat panel.
       background: 'radial-gradient(130% 130% at 50% 0%, color-mix(in srgb, var(--t-card) 34%, var(--t-panel)) 0%, var(--t-panel) 62%)',
     }}>
-      <div className="rise" style={{
-        width: 948, height: 628, borderRadius: 18, background: 'var(--t-card)',
+      <div ref={cardRef} className="rise" style={{
+        width: 948, height: isSignin ? 'auto' : cardHeight, borderRadius: 18, background: 'var(--t-card)',
         border: '0.5px solid var(--t-card-border)', overflow: 'hidden', color: 'var(--t-title)',
         boxShadow: 'var(--pop-shadow)',
         // Grow the whole card proportionally as the window grows (macOS
@@ -244,95 +316,36 @@ export default function SetupWizard() {
         // design size at the default window), cap = 1.7 (won't balloon on a 27").
         // min() of the width- and height-fits guarantees it never exceeds the
         // viewport; vector text scales crisply.
-        transform: 'scale(clamp(1, min(calc(100vw / 1010), calc(100vh / 700)), 1.7))',
+        transform: `scale(clamp(1, min(calc(100vw / 1010), calc(100vh / ${heightDivisor})), 1.7))`,
         transformOrigin: 'center',
       }}>
         {welcome ? (
           <Welcome
             onBegin={() => { setWelcome(false); setStep(0) }}
-            steps={steps}
             ready={platform !== null}
             error={platformError}
             onRetry={resolvePlatform}
           />
         ) : (
-          <div className="flex" style={{ height: '100%' }}>
-            <Rail step={step} done={done} wiz={wiz} steps={steps} goStep={goStep} />
-            <div className="flex flex-col" style={{ flex: 1, minWidth: 0 }}>
-              {done ? (
-                <div className="nice-scroll" style={{ flex: 1, overflowY: 'auto', display: 'grid', placeItems: 'center', padding: '28px 32px' }}>
-                  <div className="flex flex-col items-center">
-                    <Completion wiz={wiz} />
-                    <Btn onClick={closeWindow} style={{ marginTop: 22, padding: '10px 24px', fontSize: 13.5 }}>Open Meridian</Btn>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div style={{ padding: '26px 32px 16px' }}>
-                    <Kicker style={{ marginBottom: 9 }}>{meta.kicker}</Kicker>
-                    <h1 style={{ ...DISPLAY, fontSize: 23, lineHeight: 1.1, color: 'var(--t-title)' }}>{meta.title}</h1>
-                    <p style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--t-muted)', marginTop: 8, maxWidth: 460, textWrap: 'pretty' }}>{meta.subtitle}</p>
-                  </div>
-                  <div className="nice-scroll flex flex-col" style={{ flex: 1, overflowY: 'auto', padding: '18px 32px 22px' }}>
-                    <meta.Body wiz={wiz} />
-                  </div>
-                  <Footer step={step} last={last} canNext={meta.canNext(wiz)} err={err}
-                    onBack={() => { setErr(''); setStep(Math.max(0, step - 1)) }}
-                    onNext={() => (last ? finish() : (setErr(''), setStep(step + 1)))} />
-                </>
-              )}
+          <div className="flex flex-col" style={{ height: '100%' }}>
+            <div style={{ padding: '26px 32px 14px', textAlign: isSignin ? 'center' : 'left' }}>
+              <Kicker style={{ marginBottom: 9 }}>{meta.kicker}</Kicker>
+              <h1 style={{ ...DISPLAY, fontSize: 23, lineHeight: 1.1, color: 'var(--t-title)' }}>{meta.title}</h1>
+              <p style={{
+                fontSize: 12.5, lineHeight: 1.5, color: 'var(--t-muted)', marginTop: 8,
+                maxWidth: isSignin ? 340 : 620, marginLeft: isSignin ? 'auto' : undefined, marginRight: isSignin ? 'auto' : undefined,
+                textWrap: 'pretty',
+              }}>{meta.subtitle}</p>
             </div>
+            <div className="nice-scroll flex flex-col" style={{ flex: 1, overflowY: 'auto', padding: '4px 32px 22px' }}>
+              <meta.Body wiz={wiz} />
+            </div>
+            <Footer step={step} last={last} canNext={meta.canNext(wiz)} err={err}
+              onBack={() => { setErr(''); setStep(Math.max(0, step - 1)) }}
+              onNext={() => (last ? finish() : (setErr(''), setStep(step + 1)))} />
           </div>
         )}
       </div>
-    </div>
-  )
-}
-
-// ── Left step rail ────────────────────────────────────────────────────────────
-function Rail({ step, done, wiz, steps, goStep }: {
-  step: number; done: boolean; wiz: Wiz; steps: StepMeta[]; goStep: (i: number) => void
-}) {
-  return (
-    <div className="flex flex-col" style={{ width: 250, flexShrink: 0, background: 'var(--t-box)', borderRight: '1px solid var(--t-hair)', padding: '22px 18px' }}>
-      <div style={{ padding: '0 6px', marginBottom: 26 }}>
-        <div className="flex items-center" style={{ gap: 8 }}>
-          <span style={{ width: 8, height: 8, borderRadius: 99, background: 'var(--color-state-proposal)' }} />
-          <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 16, lineHeight: 1, letterSpacing: '-.01em', color: 'var(--t-title)' }}>meridian</span>
-        </div>
-      </div>
-      <div className="flex flex-col" style={{ gap: 2 }}>
-        {steps.map((s, i) => {
-          const isCur = i === step && !done
-          const reached = done || i <= step
-          const ok = done || i < step
-          // A future step is reachable only once every step between the current
-          // one and it satisfies its gate — so the rail can't skip a required
-          // step (e.g. permissions) that the Footer's "Continue" would block.
-          const reachable = done || i <= step || steps.slice(step, i).every((p) => p.canNext(wiz))
-          return (
-            <button key={s.id} disabled={!reachable} onClick={() => { if (reachable) goStep(i) }} className="flex items-start"
-              style={{ gap: 12, padding: '10px 8px', borderRadius: 10, textAlign: 'left',
-                cursor: reachable ? 'pointer' : 'not-allowed', opacity: reachable ? 1 : 0.55,
-                background: isCur ? 'color-mix(in srgb, var(--color-state-proposal) 8%, transparent)' : 'transparent', transition: 'background .14s' }}
-              onMouseEnter={(e) => { if (!isCur && reachable) e.currentTarget.style.background = 'var(--t-card)' }}
-              onMouseLeave={(e) => { if (!isCur) e.currentTarget.style.background = 'transparent' }}>
-              <span className="flex items-center justify-center font-mono shrink-0" style={{
-                width: 24, height: 24, borderRadius: 99, fontSize: 11, fontWeight: 600, marginTop: 1,
-                background: ok ? 'var(--color-state-proposal)' : isCur ? 'var(--t-card)' : 'transparent',
-                color: ok ? '#fff' : isCur ? 'var(--color-state-proposal)' : 'var(--t-faint)',
-                border: ok ? 'none' : `1px solid ${isCur ? 'var(--color-state-proposal)' : 'var(--t-card-border)'}`,
-              }}>{ok ? <Check size={13} color="#fff" /> : s.n}</span>
-              <div style={{ minWidth: 0, paddingTop: 1 }}>
-                <p style={{ fontSize: 13, fontWeight: isCur ? 600 : 450, color: reached ? 'var(--t-title)' : 'var(--t-muted)' }}>{s.label}</p>
-                <p className="mt-mono-sm" style={{ fontSize: 10, color: ok ? 'var(--color-state-approved)' : 'var(--t-faint)', marginTop: 2 }}>{s.status(wiz)}</p>
-              </div>
-            </button>
-          )
-        })}
-      </div>
-      <div style={{ flex: 1 }} />
-      <p className="mt-chip" style={{ color: 'var(--t-faint)', padding: '0 8px' }}>First-run setup</p>
     </div>
   )
 }

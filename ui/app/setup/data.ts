@@ -30,6 +30,15 @@ export interface PermissionMeta {
   required: boolean
 }
 
+// The welcome screen's early-customer count lived here as a hand-edited constant
+// (42) and was rendered twice: as "No. 042" beside the Founding user mark, and
+// inside "one of the first 42 people". Neither was true — nothing counts signups
+// (no users table, no waitlist API, and Clerk's frontend SDK cannot report a
+// total), so every user was told the same number and the first of the two told
+// them it was their own position. Removed rather than made accurate: the welcome
+// screen reads fine without a count, and this is the wrong layer to reintroduce
+// one at. If a real figure is ever wanted, it needs a live source, not a literal.
+
 export const PERMISSIONS: PermissionMeta[] = [
   {
     id: 'accessibility', icon: 'access', name: 'Accessibility', pane: 'accessibility', required: true,
@@ -40,7 +49,11 @@ export const PERMISSIONS: PermissionMeta[] = [
     desc: 'Reads on-screen text to understand your work. Pixels/video are never stored; extracted text stays on-device.',
   },
   {
-    id: 'notifications', icon: 'bell', name: 'Notifications', pane: 'notifications', required: false,
+    // Badge-level "required" only (matches the other two's REQUIRED chip) -
+    // NOT wired into the step's `canNext` gate (PERMISSIONS_STEP below still
+    // only checks accessibility+screen), so it doesn't block Continue. Flip
+    // that too if notifications should actually block setup completion.
+    id: 'notifications', icon: 'bell', name: 'Notifications', pane: 'notifications', required: true,
     desc: 'Nudges you when a worklog draft is ready or your plan needs attention. Quiet by default - you control every type in Settings.',
   },
 ]

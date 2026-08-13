@@ -113,7 +113,7 @@ pub async fn maybe_nudge(pool: &SqlitePool) -> Result<()> {
         "Plan your day",
         "Pick what you're working on today so Meridian can match your work to the right tickets.",
     )
-    .link("/plan")
+    .link(meridian_core::notifications::deep_links::PLAN)
     .interactive(categories::PLAN_NUDGE);
     if let Some(exp) = expires.as_deref() {
         nudge = nudge.expiring(exp);

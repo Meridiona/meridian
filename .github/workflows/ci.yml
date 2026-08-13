@@ -405,6 +405,22 @@ jobs:
         run: bun test
         working-directory: ui
 
+      # `ui/package.json` defined `typecheck` and NOTHING invoked it — not CI, not the
+      # git hooks. Type errors were caught only as a side effect of `next build`, which
+      # disappears the moment someone sets `typescript.ignoreBuildErrors` in
+      # next.config.ts (an entirely reasonable thing to reach for when a build is slow),
+      # with no failing job to notice. Run BEFORE the build: seconds against its
+      # minutes, and a type error should not cost a full production compile to surface.
+      #
+      # There is deliberately NO lint step. The `lint` script was `next lint`, which
+      # Next 16 REMOVED — it parsed "lint" as a directory name and could only ever
+      # fail — and this project has no ESLint config or dependency at all. The script
+      # has been deleted rather than left as a broken command that looks like coverage.
+      # Adding real ESLint is worth doing, but it is a change with its own diff.
+      - name: UI typecheck
+        run: npm run typecheck
+        working-directory: ui
+
       - name: UI build
         run: npm run build
         working-directory: ui
@@ -436,6 +452,94 @@ jobs:
             exit 1
           fi
           echo "OK — no existing migrations were modified, renamed, or deleted."
+
+  # ── The release build must stay dispatch-on-main, not tag-triggered ─────────
+  #
+  # `release-build.yml` is dispatched against `main` with the tag as an INPUT,
+  # rather than triggered by the tag push. That is not a style choice: GitHub
+  # scopes the Actions cache by `github.ref`, and tags may only read the DEFAULT
+  # BRANCH's cache. A tag-triggered build can therefore never restore anything,
+  # because every release cuts a brand-new tag.
+  #
+  # It was tag-triggered for this pipeline's entire history and nobody noticed,
+  # because the failure is invisible: green checks, correct signed binaries,
+  # "No cache found." inside a collapsed log group, and ~25 extra minutes per
+  # release. A whole second workflow (cache-warm.yml, since deleted) existed to
+  # paper over it and was itself silently broken by one environment variable.
+  #
+  # Adding `push: tags:` back here would restore all of that, look completely
+  # reasonable in review, and cost half an hour a release with nothing failing.
+  # So it fails here instead. Nearly free - it reads two files.
+  release-trigger-shape:
+    name: Release trigger shape
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Assert the release build is dispatched against main, not tag-triggered
+        run: |
+          python3 - <<'PY'
+          import sys, yaml
+
+          build = yaml.safe_load(open(".github/workflows/release-build.yml"))
+          prep_src = open(".github/workflows/release-prepare.yml").read()
+          build_src = open(".github/workflows/release-build.yml").read()
+
+          # PyYAML resolves the bare key `on` to the boolean True (YAML 1.1
+          # "Norway problem"), so accept either spelling rather than depending
+          # on which one this loader produces.
+          triggers = build.get("on", build.get(True)) or {}
+          fail = []
+
+          if "push" in triggers:
+              fail.append(
+                  "release-build.yml has a `push:` trigger. A tag-triggered build "
+                  "cannot restore main's cache (GitHub scopes caches by github.ref "
+                  "and tags only read the default branch), so every release would "
+                  "compile ~1100 crates cold. It must be workflow_dispatch only.")
+
+          dispatch = (triggers.get("workflow_dispatch") or {})
+          if "tag" not in (dispatch.get("inputs") or {}):
+              fail.append(
+                  "release-build.yml's workflow_dispatch has no `tag` input. That "
+                  "input is how the immutable ref reaches the build while the "
+                  "cache scope stays on main.")
+
+          if "refs/heads/main" not in build_src:
+              fail.append(
+                  "release-build.yml no longer checks `github.ref` against "
+                  "refs/heads/main. Without that guard a dispatch from the wrong "
+                  "branch silently builds cold and saves to an unreadable scope.")
+
+          if "--ref main" not in prep_src:
+              fail.append(
+                  "release-prepare.yml does not dispatch with `--ref main`. The tag "
+                  "would be pushed and nothing would build, or it would build from "
+                  "a cold cache.")
+
+          # The "did the tag push already build?" question is answered by the
+          # workflow files AT THE PUSHED REF - the tag's own tree, i.e. this
+          # checkout - never by the default branch's copy. Reading main's copy
+          # instead inverts the answer on exactly the branch that is dispatch-
+          # only, and skips the dispatch for a tag that auto-built nothing:
+          # tagged, nothing building, no failure anywhere. That shipped once.
+          if "contents/.github/workflows/release-build.yml?ref=main" in prep_src:
+              fail.append(
+                  "release-prepare.yml decides whether to dispatch by reading "
+                  "MAIN's release-build.yml. Trigger evaluation uses the workflow "
+                  "file at the PUSHED REF (the tag's own tree), so this answers the "
+                  "wrong question and can leave a tag with no build at all. Inspect "
+                  "the local .github/workflows/release-build.yml instead.")
+
+          if fail:
+              for f in fail:
+                  print(f"::error::{f}")
+              sys.exit(1)
+          print("OK - release-build is workflow_dispatch-only with a `tag` input, "
+                "guards on refs/heads/main, and release-prepare dispatches --ref main.")
+          PY
 
   # screenpipe relicensed MIT → Commercial on 2026-06-10. Meridian ships zero
   # screenpipe code, so staying pinned to the last MIT-based fork rev keeps the

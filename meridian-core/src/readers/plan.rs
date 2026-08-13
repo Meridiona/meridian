@@ -317,6 +317,83 @@ pub async fn plan_for_day(
     })
 }
 
+/// Whether `date` may have yesterday's unfinished work written into it automatically.
+///
+/// Carry-over is a convenience, and the cost of getting it wrong is putting tasks in
+/// someone's plan that they took out on purpose — so it fires only into a day nobody has
+/// expressed any intention about yet. Three guards, each closing a different way to be
+/// wrong:
+///
+/// - **only today.** A past date is a record of what was planned then. Writing into it
+///   would rewrite history, and the timeline renders past days from exactly these rows.
+/// - **only an untouched day.** The presence of a `daily_plan_meta` row is the marker,
+///   and it is what makes this idempotent in the sense that matters: not "runs once" but
+///   "never contradicts the user". Confirming, skipping, or clearing the plan all leave a
+///   row, so a user who deletes a carried-over task and closes the modal does not find it
+///   back the next time anything reads the plan. An empty plan with a meta row is a
+///   DECISION; an empty plan with no meta row is a day not started.
+/// - **only with a prior planned day to carry from**, which `carry_over_unfinished`
+///   establishes by finding candidates at all.
+async fn carry_over_is_due(
+    pool: &SqlitePool,
+    date: &str,
+    today: NaiveDate,
+) -> anyhow::Result<bool> {
+    if date != today.format("%Y-%m-%d").to_string().as_str() {
+        return Ok(false);
+    }
+    if !table_exists(pool, "daily_plan_meta").await {
+        // No meta table means no way to tell an untouched day from a cleared one, and
+        // guessing wrong here re-adds work the user deliberately removed.
+        return Ok(false);
+    }
+    let touched: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM daily_plan_meta WHERE plan_date = ?")
+            .bind(date)
+            .fetch_optional(pool)
+            .instrument(tracing::debug_span!("plan.read.daily_plan_meta.touched"))
+            .await?;
+    Ok(touched.is_none())
+}
+
+/// Write the carried-over tasks from `available` into `date`'s plan, and mark the day
+/// confirmed. Returns how many were written.
+///
+/// Marking it CONFIRMED is the part worth stating plainly, because it is what makes the
+/// feature visible at all. `confirmed` is what the timeline's "Today's focus" reads to
+/// decide it has a plan to show (`OverviewPanel`), so carrying tasks over without it would
+/// write rows that only the plan modal ever renders — reproducing, exactly, the split this
+/// fixes: a modal listing today's tasks behind a panel insisting there are none. A plan
+/// the app composed on the user's behalf is still a plan; they can empty it, and the meta
+/// row that leaves behind stops it coming back.
+async fn carry_over_unfinished(
+    pool: &SqlitePool,
+    date: &str,
+    available: &[AvailableTask],
+) -> anyhow::Result<usize> {
+    // `carryover` already means "was on the last planned day AND is still open" - the flag
+    // is computed against `available`, which holds only non-terminal tasks. So a task
+    // finished yesterday is absent here rather than filtered out again.
+    let keys: Vec<String> = available
+        .iter()
+        .filter(|a| a.carryover)
+        .take(MAX_PLAN_TASKS)
+        .map(|a| a.key.clone())
+        .collect();
+    if keys.is_empty() {
+        return Ok(0);
+    }
+
+    let now = chrono::Local::now().to_rfc3339();
+    let mut tx = pool.begin().await?;
+    // Origin "carryover" rather than "manual": the card's label ("Carried over") is read
+    // from this, so a task the user did not put there says where it came from.
+    replace_plan(&mut tx, date, &keys, &|_| "carryover".to_string(), &now).await?;
+    upsert_meta(&mut tx, date, Some(&now), 0, &now).await?;
+    tx.commit().await?;
+    Ok(keys.len())
+}
+
 /// task_keys committed on the most recent planned day strictly before `date`.
 async fn carryover_keys(pool: &SqlitePool, date: &str) -> anyhow::Result<HashSet<String>> {
     if !table_exists(pool, "daily_plan").await {
@@ -808,8 +885,30 @@ pub async fn build_plan_response(
     available: Vec<AvailableTask>,
 ) -> anyhow::Result<PlanResponse> {
     let has_table = table_exists(pool, "daily_plan").await;
-    let meta = load_meta(pool, date).await?;
-    let plan = load_plan(pool, date, today).await?;
+    let mut meta = load_meta(pool, date).await?;
+    let mut plan = load_plan(pool, date, today).await?;
+
+    // Yesterday's unfinished work becomes today's plan, without being asked.
+    if has_table && plan.is_empty() && carry_over_is_due(pool, date, today).await? {
+        match carry_over_unfinished(pool, date, &available).await {
+            Ok(0) => {}
+            Ok(n) => {
+                // Re-read rather than synthesising the rows we just wrote: `load_plan`
+                // resolves each task's CURRENT status/terminal state, which is the whole
+                // reason a carried-over task can be shown as already done.
+                meta = load_meta(pool, date).await?;
+                plan = load_plan(pool, date, today).await?;
+                tracing::info!(
+                    date,
+                    carried = n,
+                    "plan: carried yesterday's unfinished work over"
+                );
+            }
+            // Never fatal. A day with no plan is a worse outcome than a day the user
+            // plans by hand, so a failure here degrades to the empty state it replaced.
+            Err(e) => tracing::warn!(date, error = %e, "plan: carry-over failed"),
+        }
+    }
 
     let committed: HashSet<String> = plan.iter().map(|p| p.task_key.clone()).collect();
     // Carryover (yesterday's confirmed, still-not-Done) tasks are never subject to
@@ -1038,6 +1137,46 @@ pub async fn apply_plan_action(
                     return Err(PlanWriteError::TooManyTasks(MAX_PLAN_TASKS + 1).into());
                 }
             }
+
+            // AUTHORING A TASK FOR A DAY IS COMMITTING TO IT.
+            //
+            // Every other arm that puts rows in `daily_plan` also writes
+            // `daily_plan_meta`; this one did not, and `confirmed_at` stayed
+            // NULL. That matters because `confirmed` is what every reader gates
+            // on — the dashboard's "Today's focus" renders
+            // `plan.confirmed ? plan.plan : []` — so a task added this way was
+            // written to the database correctly and then displayed nowhere.
+            //
+            // It hit hardest exactly where the product is trying hardest to make
+            // a good impression:
+            //   * the onboarding walkthrough, whose planner beat is driven
+            //     entirely by the composer. It says "Saved" and "today's tasks
+            //     are in", and then the dashboard it hands over to was empty.
+            //   * every solo / no-tracker user, for whom the composer is the ONLY
+            //     way to build a plan (there is no board to drag from), so their
+            //     plan never appeared at all.
+            // Dragging a board ticket across was unaffected, which is why this
+            // survived: that path goes through "confirm".
+            //
+            // `confirmed_at` is only stamped when NULL, so re-adding to a day
+            // that was committed hours ago does not move its timestamp. `skipped`
+            // is cleared unconditionally: authoring a task for a day you had
+            // skipped is an explicit change of mind, and leaving the flag set
+            // would hide the task behind the same gate again.
+            sqlx::query(
+                r#"INSERT INTO daily_plan_meta (plan_date, confirmed_at, skipped, created_at, updated_at)
+                   VALUES (?, ?, 0, ?, ?)
+                   ON CONFLICT(plan_date) DO UPDATE SET
+                     confirmed_at = COALESCE(daily_plan_meta.confirmed_at, excluded.confirmed_at),
+                     skipped      = 0,
+                     updated_at   = excluded.updated_at"#,
+            )
+            .bind(date)
+            .bind(now)
+            .bind(now)
+            .bind(now)
+            .execute(pool)
+            .await?;
         }
         "remove" => {
             let key = body

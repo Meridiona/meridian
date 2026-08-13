@@ -162,7 +162,32 @@ pub struct DayTaskWorklogDraft {
     /// (`upsert_draft`) stamps this, including a regenerate that overwrites a
     /// still-`drafted` row — it is NOT "first generated at", it is "as of".
     pub updated_at: String,
+    /// Measured minutes worked on this task SINCE the draft was written, or
+    /// `None` when that cannot be known — a row drafted before migration 079
+    /// carries no baseline, and guessing one would declare every pre-upgrade
+    /// draft stale by its task's whole duration.
+    ///
+    /// Deterministic: `day_tasks.minutes` (recomputed by the hourly fold from
+    /// measured spans) minus the same figure captured at draft time. No model
+    /// is involved and no timestamp is compared — see migration 079 for why a
+    /// timestamp cannot carry this.
+    pub stale_minutes: Option<i64>,
+    /// Whether that growth is worth telling the user about, by the ONE
+    /// definition ([`WORKLOG_STALE_MINUTES`]) the notifier and the dashboard
+    /// both read. Always false once the draft leaves `drafted`: an approved or
+    /// posted update is a record of what went out, not a draft going out of
+    /// date, and offering to overwrite it would be offering to lose it.
+    pub stale: bool,
 }
+
+/// How much unaccounted work makes a draft worth rewriting.
+///
+/// Not zero, and the reason is the cost of being wrong in each direction. A
+/// draft that trails its task by two minutes is still an accurate summary, and
+/// flagging it would train the user to ignore the flag — the failure mode that
+/// makes every later warning useless. A draft that trails by a quarter of an
+/// hour is missing something the reader of that ticket would notice.
+pub const WORKLOG_STALE_MINUTES: i64 = 15;
 
 /// The raw parent row (migration 060, less the columns 062 moved to [`targets`]).
 #[derive(FromRow)]
@@ -178,6 +203,60 @@ struct RawWorklog {
     created_task_key: Option<String>,
     last_error: Option<String>,
     updated_at: String,
+    /// The task's measured minutes when this draft was written (migration 079).
+    /// NULL on a row drafted before that migration.
+    drafted_minutes: Option<i64>,
+    /// The task's measured minutes NOW, LEFT JOINed from `day_tasks`. NULL when
+    /// the task has since been dismissed or the day rewritten without it.
+    task_minutes: Option<i64>,
+}
+
+/// The columns every draft read selects, including the two staleness inputs.
+/// One constant because the three call sites drifted apart once already, and a
+/// missing column here is a silent `None` rather than a compile error.
+const DRAFT_COLUMNS: &str = "w.provider, w.propose_issue_type, w.propose_title, \
+     w.propose_description, w.update_summary, w.update_json, w.reasoning, w.state, \
+     w.created_task_key, w.last_error, w.updated_at, w.drafted_minutes, \
+     t.minutes AS task_minutes";
+
+/// The FROM/JOIN every draft read shares. LEFT, not INNER: a draft whose task
+/// has been dismissed must still render (the user may want to read or delete
+/// it) — it simply has no baseline to compare against.
+const DRAFT_FROM: &str = "FROM day_task_worklogs w \
+     LEFT JOIN day_tasks t ON t.day_local = w.day_local AND t.task_id = w.task_id";
+
+/// How far a draft has fallen behind its task, in minutes, clamped at zero.
+///
+/// The whole staleness feature is this one expression, and it was written out
+/// twice — once in [`day_draft_states`], once in [`stale_drafts`] — for the same
+/// reason [`DRAFT_COLUMNS`] exists: two copies of one rule drift, and this pair
+/// drifts SILENTLY, because both sides keep returning plausible numbers. The
+/// clamp is the part that matters: a task's minutes can genuinely go DOWN when
+/// the fold moves a segment to another workstream, and "-35 minutes of new work"
+/// is not a thing to show anyone.
+///
+/// `MAX(…, 0)` is SQLite's two-argument scalar max, which yields NULL if either
+/// argument is NULL — that is deliberate and load-bearing: a pre-079 row (no
+/// baseline) or a dismissed task reads as "cannot know", not as "perfectly
+/// current". Both readers map that NULL to `None`.
+const STALE_MINUTES_EXPR: &str = "MAX(t.minutes - w.drafted_minutes, 0) AS stale_minutes";
+
+/// Is this draft far enough behind its task to be worth acting on?
+///
+/// THE definition of the word "stale" in this product, and the reason it is a function
+/// rather than an expression repeated per reader. Every surface that answers the
+/// question has to answer it identically: the notification the daemon sends, the badge
+/// on the draft, and the line under the task in the daily summary. When the summary
+/// re-derived it in TypeScript against its own threshold, a user between the two
+/// numbers was notified that a draft had fallen behind, followed the notification to
+/// the summary, and read that nothing was wrong.
+///
+/// Never stale once the draft leaves `drafted`: an approved or posted update is a
+/// record of what went out, not a draft going out of date, and offering to rewrite it
+/// is offering to lose it. A `None` baseline (pre-079 row, or a task since dismissed)
+/// is "cannot know" and must not read as "perfectly current".
+pub(crate) fn draft_is_stale(state: &str, stale_minutes: Option<i64>) -> bool {
+    state == "drafted" && stale_minutes.is_some_and(|m| m >= WORKLOG_STALE_MINUTES)
 }
 
 impl RawWorklog {
@@ -199,8 +278,17 @@ impl RawWorklog {
             }),
             _ => None,
         };
+        // Clamped at zero: the fold can revise a task's minutes DOWN (a segment
+        // reassigned to another workstream, a correction applied), and "-8
+        // minutes of new work" is not a thing to show anyone.
+        let stale_minutes = match (self.drafted_minutes, self.task_minutes) {
+            (Some(base), Some(now)) => Some((now - base).max(0)),
+            _ => None,
+        };
+        let state = self.state;
+        let stale = draft_is_stale(&state, stale_minutes);
         DayTaskWorklogDraft {
-            state: self.state,
+            state,
             provider: self.provider,
             targets,
             propose,
@@ -209,6 +297,8 @@ impl RawWorklog {
             created_task_key: self.created_task_key,
             error: self.last_error,
             updated_at: self.updated_at,
+            stale_minutes,
+            stale,
         }
     }
 }
@@ -221,13 +311,9 @@ pub async fn get_day_task_worklog(
     day_local: &str,
     task_id: &str,
 ) -> anyhow::Result<Option<DayTaskWorklogDraft>> {
-    let row = sqlx::query_as::<_, RawWorklog>(
-        "SELECT provider, propose_issue_type, propose_title, propose_description, \
-                update_summary, update_json, reasoning, state, created_task_key, last_error, \
-                updated_at \
-         FROM day_task_worklogs \
-         WHERE day_local = ? AND task_id = ?",
-    )
+    let row = sqlx::query_as::<_, RawWorklog>(&format!(
+        "SELECT {DRAFT_COLUMNS} {DRAFT_FROM} WHERE w.day_local = ? AND w.task_id = ?"
+    ))
     .bind(day_local)
     .bind(task_id)
     .fetch_optional(pool)
@@ -264,6 +350,147 @@ async fn read_back(
     get_day_task_worklog(pool, day_local, task_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("draft vanished mid-write"))
+}
+
+/// Where one day-task's worklog stands, for a list that shows many at once.
+///
+/// Deliberately NOT the full [`DayTaskWorklogDraft`]: this exists to render a badge on
+/// a row, and the full shape carries the update text, the reasoning and every target -
+/// a payload the size of the summary itself, for a list that shows none of it.
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct DayDraftState {
+    pub task_id: String,
+    /// `drafted` | `approved` | `posted` | `error`.
+    pub state: String,
+    /// Measured minutes worked since the draft was written, clamped at zero. `None`
+    /// when the row predates `drafted_minutes` (pre-079).
+    pub stale_minutes: Option<i64>,
+    /// Whether that growth is worth acting on, by the SINGLE definition
+    /// ([`WORKLOG_STALE_MINUTES`]) that also drives the daemon's stale-draft
+    /// notification.
+    ///
+    /// Computed here, and not by the consumer, because the consumer got it wrong: the
+    /// summary re-thresholded `stale_minutes` in TypeScript against a local 25 while
+    /// the daemon notified at 15. Between those two numbers the user was told by a
+    /// toast that a draft had fallen behind, followed the toast to the summary it
+    /// linked to, and found the row reporting nothing was wrong. Two definitions of
+    /// one word, and the one the user has already been shown has to win.
+    ///
+    /// Not selected from SQL: it is derived by [`draft_is_stale`] after the read, so
+    /// the rule lives in exactly one place rather than being transcribed into a second
+    /// query that can drift from the first.
+    #[sqlx(default)]
+    pub stale: bool,
+}
+
+/// Every worklog row on `day_local`, one per task that has one.
+///
+/// # Why the summary needs this
+/// The daily summary lists a day's work and, under each row, said "no ticket yet -
+/// draft ready" - as a fixed string, on every row, whether or not a draft existed. It
+/// was a guess dressed as a fact: a task whose draft had never been generated read
+/// identically to one with a draft waiting, and a task already POSTED read as though
+/// it still needed doing. The one thing the line was for - telling the user there is
+/// something here to act on - was the one thing it could not do.
+///
+/// Absent rows are the answer for "no draft", so a caller can distinguish all three
+/// states rather than folding "none" and "ready" together.
+///
+/// # Who calls this
+/// The tray's `get_day_draft_states` → `ui/components/summary/WorkList.tsx`.
+///
+/// # Related
+/// - [`get_day_task_worklog`] — the full draft, for the one task a user opened.
+/// - [`stale_drafts`] — the notifier's narrower read (already-stale rows only).
+#[tracing::instrument(skip(pool))]
+pub async fn day_draft_states(
+    pool: &SqlitePool,
+    day_local: &str,
+) -> anyhow::Result<Vec<DayDraftState>> {
+    let rows = sqlx::query_as::<_, DayDraftState>(&format!(
+        "SELECT w.task_id AS task_id, w.state AS state, {STALE_MINUTES_EXPR} \
+         {DRAFT_FROM} \
+         WHERE w.day_local = ? \
+         ORDER BY w.task_id"
+    ))
+    .bind(day_local)
+    .fetch_all(pool)
+    .instrument(tracing::debug_span!(
+        "day_task_worklogs.read.day_draft_states"
+    ))
+    .await;
+
+    match rows {
+        Ok(mut r) => {
+            for row in &mut r {
+                row.stale = draft_is_stale(&row.state, row.stale_minutes);
+            }
+            tracing::debug!(rows = r.len(), "day_task_worklogs.read.day_draft_states");
+            Ok(r)
+        }
+        // Same degradation as every other read here: a pre-060 DB has no table and a
+        // pre-079 one has no `drafted_minutes`. Neither is worth failing a summary
+        // over - the rows simply render without their badge.
+        Err(e) => {
+            tracing::debug!(error = %e, "day_task_worklogs.read.day_draft_states unavailable");
+            Ok(Vec::new())
+        }
+    }
+}
+
+/// One draft that has fallen behind its task, for the daemon's notifier.
+#[derive(Debug, Clone, FromRow)]
+pub struct StaleDraft {
+    pub task_id: String,
+    pub title: String,
+    /// Measured minutes worked since the draft was written — already past
+    /// [`WORKLOG_STALE_MINUTES`], clamped at zero.
+    pub stale_minutes: i64,
+}
+
+/// Every still-`drafted` worklog on `day_local` whose task has grown by at least
+/// [`WORKLOG_STALE_MINUTES`] since it was written.
+///
+/// `drafted` only, deliberately: an approved or posted update is a record of
+/// what went out, and telling someone it is "out of date" invites them to
+/// overwrite the only copy of something already live on a ticket.
+///
+/// # Who calls this
+/// The daemon's hourly fold, which notifies once per (task, staleness step) —
+/// see `src/worklog_pipeline/stale.rs`.
+#[tracing::instrument(skip(pool))]
+pub async fn stale_drafts(pool: &SqlitePool, day_local: &str) -> anyhow::Result<Vec<StaleDraft>> {
+    // INNER JOIN here, unlike [`DRAFT_FROM`]'s LEFT: this read exists to notify about a
+    // draft falling behind its task, and a draft whose task is gone has nothing to fall
+    // behind. The staleness arithmetic is still the shared one - only the join differs.
+    let rows = sqlx::query_as::<_, StaleDraft>(&format!(
+        "SELECT w.task_id AS task_id, t.title AS title, {STALE_MINUTES_EXPR} \
+         FROM day_task_worklogs w \
+         JOIN day_tasks t ON t.day_local = w.day_local AND t.task_id = w.task_id \
+         WHERE w.day_local = ? AND w.state = 'drafted' \
+           AND w.drafted_minutes IS NOT NULL \
+           AND t.minutes - w.drafted_minutes >= ? \
+         ORDER BY w.task_id"
+    ))
+    .bind(day_local)
+    .bind(WORKLOG_STALE_MINUTES)
+    .fetch_all(pool)
+    .instrument(tracing::debug_span!("day_task_worklogs.read.stale_drafts"))
+    .await;
+
+    match rows {
+        Ok(r) => {
+            tracing::debug!(rows = r.len(), "day_task_worklogs.read.stale_drafts");
+            Ok(r)
+        }
+        // A pre-060 DB has no table and a pre-079 one has no column. Neither is
+        // an error worth failing an hourly fold over — there is simply nothing
+        // to notify about.
+        Err(e) => {
+            tracing::debug!(error = %e, "day_task_worklogs.read.stale_drafts unavailable");
+            Ok(Vec::new())
+        }
+    }
 }
 
 /// The fields an [`upsert_draft`] writes. Kept as a struct to stay under clippy's
@@ -315,12 +542,21 @@ pub async fn upsert_draft(
         .await
         .context("opening the worklog draft upsert")?;
     let res = sqlx::query(
+        // `drafted_minutes` is read here rather than passed in: it is not a
+        // property of the generated update, it is a property of the moment the
+        // write happens, and every caller would otherwise have to fetch and
+        // thread the same number through with the same chance of forgetting.
+        // Inside the transaction, so the baseline can never be a value from
+        // before a concurrent fold. NULL when the task row is missing, which
+        // reads back as "cannot know" rather than as zero.
         "INSERT INTO day_task_worklogs \
             (day_local, task_id, provider, propose_issue_type, propose_title, \
              propose_description, update_summary, update_json, reasoning, state, \
-             created_task_key, last_error, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'drafted', NULL, NULL, ?, ?) \
+             created_task_key, last_error, created_at, updated_at, drafted_minutes) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'drafted', NULL, NULL, ?, ?, \
+             (SELECT minutes FROM day_tasks WHERE day_local = ? AND task_id = ?)) \
          ON CONFLICT(day_local, task_id) DO UPDATE SET \
+            drafted_minutes = excluded.drafted_minutes, \
             provider = excluded.provider, \
             propose_issue_type = excluded.propose_issue_type, \
             propose_title = excluded.propose_title, \
@@ -346,6 +582,8 @@ pub async fn upsert_draft(
     .bind(&upsert.reasoning)
     .bind(now)
     .bind(now)
+    .bind(day_local)
+    .bind(task_id)
     .execute(&mut *tx)
     .instrument(tracing::debug_span!("day_task_worklogs.write.upsert"))
     .await?;

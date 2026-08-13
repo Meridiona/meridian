@@ -163,20 +163,30 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
     // Debug-build-only terminal mirror. `Option<Layer>` itself implements
     // `Layer` (tracing-subscriber's blanket impl), so `.with(fmt_stdout)`
     // below is a no-op layer in a release build — no runtime cost, no output.
+    //
+    // ONE layer, with the writer choosing the stream by level — NOT two layers.
+    // It used to be a stdout layer taking every level plus a second stderr
+    // layer filtered to WARN, which meant every warning and error was printed
+    // TWICE in a dev run (once per layer) while INFO printed once. Two layers
+    // are two subscribers: each one formats and writes the event independently,
+    // so a level filter on the second narrows WHICH events it duplicates, never
+    // whether it duplicates them.
+    //
+    // `with_max_level(WARN)` reads by SEVERITY, not verbosity: it admits WARN
+    // and ERROR (the levels at or above WARN in severity) and rejects
+    // INFO/DEBUG/TRACE. `or_else` then catches exactly what stderr declined, so
+    // the two streams partition the events rather than overlapping — every
+    // event lands on exactly one stream, once.
+    use tracing_subscriber::fmt::writer::MakeWriterExt as _;
     let fmt_stdout = cfg!(debug_assertions).then(|| {
         tracing_subscriber::fmt::layer()
             .with_target(true)
-            .with_writer(std::io::stdout)
+            .with_writer(
+                std::io::stderr
+                    .with_max_level(tracing::Level::WARN)
+                    .or_else(std::io::stdout),
+            )
             .compact()
-    });
-    use tracing_subscriber::filter::LevelFilter;
-    use tracing_subscriber::Layer as _;
-    let fmt_stderr = cfg!(debug_assertions).then(|| {
-        tracing_subscriber::fmt::layer()
-            .with_target(true)
-            .with_writer(std::io::stderr)
-            .compact()
-            .with_filter(LevelFilter::WARN)
     });
 
     // Build OTel providers first (no generic subscriber type involved yet),
@@ -194,7 +204,6 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
                 tracing_subscriber::registry()
                     .with(rl.take().unwrap())
                     .with(fmt_stdout)
-                    .with(fmt_stderr)
                     .with(trace_layer)
                     .with(log_layer)
                     .init();
@@ -210,7 +219,6 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
                 tracing_subscriber::registry()
                     .with(rl.take().unwrap())
                     .with(fmt_stdout)
-                    .with(fmt_stderr)
                     .init();
                 (false, None, None)
             }
@@ -219,7 +227,6 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
                 tracing_subscriber::registry()
                     .with(rl.take().unwrap())
                     .with(fmt_stdout)
-                    .with(fmt_stderr)
                     .init();
                 (false, None, None)
             }

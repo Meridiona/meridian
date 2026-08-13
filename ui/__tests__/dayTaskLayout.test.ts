@@ -32,6 +32,14 @@ function task(
     last_hour: -1,
     status: 'active',
     linked_ticket: null,
+    // Required on `DayTask`, and not optional there on purpose: the reader always
+    // sends them (null when nothing is posted). Omitting them here let the
+    // `Partial<DayTask>` spread widen them to `| undefined`, which is a state the
+    // real payload never has - so the fixture was typed looser than the thing it
+    // stands in for.
+    posted_provider: null,
+    posted_target_key: null,
+    posted_browse_url: null,
     ...extra,
   }
 }

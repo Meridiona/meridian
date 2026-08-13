@@ -68,10 +68,7 @@ pub async fn dismiss_notification(
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     meridian_core::notifications::dismiss_banner(pool, id, &now)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, id, "dismiss_notification failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, id, "dismiss_notification failed"))
 }
 
 /// Record the user's answer to an interactive toast (button press, inline
@@ -102,10 +99,7 @@ pub async fn record_notification_response(
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     meridian_core::notifications::record_response(pool, id, &action, text.as_deref(), &now)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, id, action, "record_notification_response failed");
-            e.to_string()
-        })?;
+        .map_err(|e| crate::cmd_err!(e, id, action, "record_notification_response failed"))?;
     tracing::info!(
         id,
         action,

@@ -217,6 +217,25 @@ pub struct InUseProviderHealth {
     /// The reason to show: the failure/"not installed" text when `!ok`, or the rate-limit message
     /// when `rate_limited`. `None` when the provider is simply fine.
     pub detail: Option<String>,
+    /// This `!ok` verdict rests on a MEASURED failure, so only a real call can overturn it.
+    ///
+    /// Exists for [`crate::llm::resolver`]'s probe exemption, which is the only thing that
+    /// reads it. The gate in `complete_inner` refuses every call while `!ok`, and the
+    /// evidence that would clear the verdict can only come FROM a call — so without a
+    /// periodic exemption the refusal is self-latching. Three states have to be told apart,
+    /// and only the first is worth spending a call on:
+    ///
+    /// - **a recorded `Failed` outcome** → `true`. Nothing in the system re-measures this on
+    ///   its own: a runtime observation ages out after six hours, and a manual test result
+    ///   never expires at all, so a single bad Test Connection would otherwise black out
+    ///   every AI feature until the user happened to press the button again.
+    /// - **not installed** → `false`. Already self-healing: `resolve_cli` caches only
+    ///   successes, so the next health poll re-probes the filesystem and clears this by
+    ///   itself the moment the CLI appears. A call would spend a spawn to learn nothing.
+    /// - **an ASSERTED (`sticky`) verdict** → `false`. Someone is deliberately holding this
+    ///   state (today the dev-only Disconnect button) and a measurement must not overturn an
+    ///   assertion — that is the entire point of the flag.
+    pub probeable: bool,
 }
 
 /// A human display name for the banner — mirrors the chooser tiles in `ui/lib/llm-providers.ts`.
@@ -319,6 +338,7 @@ async fn compute_in_use_provider_health(settings: &RuntimeSettings) -> InUseProv
             rate_limited: false,
             name: settings.llm_provider.clone(),
             detail: None,
+            probeable: false,
         };
     };
     let name = provider_display_name(provider).to_string();
@@ -347,7 +367,10 @@ async fn compute_in_use_provider_health(settings: &RuntimeSettings) -> InUseProv
         }),
         "resolved provider install state"
     );
-    classify_provider_health(name, installed, last_outcome.as_ref())
+    // `sticky` is read from the RAW test row rather than from `last_outcome`, which has
+    // already collapsed the two signals into one verdict and cannot say which side won.
+    let asserted = last_test.is_some_and(|t| t.sticky);
+    classify_provider_health(name, installed, last_outcome.as_ref(), asserted)
 }
 
 /// The pure unavailable → rate-limited → fine decision, split out so the ladder can be unit-tested
@@ -358,10 +381,14 @@ async fn compute_in_use_provider_health(settings: &RuntimeSettings) -> InUseProv
 /// - installed + last test `RateLimited` → **rate-limited** (`ok: true, rate_limited: true`): it
 ///   clears on its own, so a softer flag rather than the alarm — alarming would cry wolf.
 /// - installed + `Ok`/no test on record → **fine** (don't alarm before we've had a reason to).
+///
+/// `asserted` marks `last_outcome` as coming from a `sticky` test row; it only ever
+/// suppresses [`InUseProviderHealth::probeable`] and never changes the verdict itself.
 fn classify_provider_health(
     name: String,
     installed: bool,
     last_outcome: Option<&ProviderTestOutcome>,
+    asserted: bool,
 ) -> InUseProviderHealth {
     if !installed {
         return InUseProviderHealth {
@@ -369,6 +396,8 @@ fn classify_provider_health(
             rate_limited: false,
             detail: Some(format!("{name} isn't installed")),
             name,
+            // Re-probed from the filesystem on every health poll, so it clears itself.
+            probeable: false,
         };
     }
     match last_outcome {
@@ -377,18 +406,21 @@ fn classify_provider_health(
             rate_limited: false,
             name,
             detail: Some(message.clone()),
+            probeable: !asserted,
         },
         Some(ProviderTestOutcome::RateLimited { message }) => InUseProviderHealth {
             ok: true,
             rate_limited: true,
             name,
             detail: Some(message.clone()),
+            probeable: false,
         },
         _ => InUseProviderHealth {
             ok: true,
             rate_limited: false,
             name,
             detail: None,
+            probeable: false,
         },
     }
 }
@@ -411,6 +443,30 @@ const PROBE_TIMEOUT_S: u64 = 20;
 const PROBE_SYSTEM: &str =
     "You are being connectivity-tested by Meridian.\n\nReply with exactly: OK. No other text, no punctuation, nothing else.";
 
+/// Completion budget for a connectivity test.
+///
+/// The answer this asks for is one word, and for a CLI provider 16 tokens was plenty. It is
+/// NOT plenty for a REASONING model on an OpenAI-compatible endpoint, because reasoning
+/// tokens are charged against the same completion budget as the visible answer - so a small
+/// cap is spent thinking and the response comes back with `finish_reason: "length"` and an
+/// EMPTY `content`.
+///
+/// That is not a hypothetical. Measured against Groq's `openai/gpt-oss-120b` - the model
+/// Meridian itself picks for the free path - on this exact prompt:
+///
+/// | max_tokens | reasoning_tokens | finish_reason | content |
+/// |------------|------------------|---------------|---------|
+/// | 16         | 14               | length        | `""`    |
+/// | 64         | 62               | length        | `""`    |
+/// | 256        | 53               | stop          | `"OK"`  |
+///
+/// `openai_compat` correctly reports empty content as a failure, so a perfectly good key
+/// failed Test Connection with "custom provider returned an empty answer" - the worst kind
+/// of wrong answer, because it accuses the user's key of being broken when nothing about it
+/// is. 512 leaves roughly 6x the observed reasoning trace as headroom, and it is a CEILING,
+/// not a target: a non-reasoning model still stops after "OK" and is billed for two tokens.
+const PROBE_MAX_TOKENS: u32 = 512;
+
 /// What a real connectivity test found. Mirrors [`super::LlmError`]'s two failure shapes
 /// (rate-limited vs everything else) so the UI can tell "this works, just not right now"
 /// from "this doesn't work" — a card can be correctly configured and still be temporarily
@@ -430,6 +486,25 @@ pub struct ProviderTestResult {
     pub elapsed_ms: u64,
     /// RFC3339. When this test was run — the UI reads this back as "Verified 3m ago".
     pub tested_at: String,
+    /// This verdict was ASSERTED, not measured, and must not be second-guessed by
+    /// anything except an explicit test.
+    ///
+    /// Exactly one thing sets it: the dev-only Disconnect button, whose entire job
+    /// is to hold the app in the signed-out state so that state can be worked on.
+    /// Without this flag an automatic correction undoes it almost immediately -
+    /// on a machine being used, a background fold or coding-agent summary succeeds
+    /// within minutes - so pressing Disconnect appeared to do nothing at all.
+    ///
+    /// It is honoured in [`crate::llm::runtime_health::most_recent_outcome`], which
+    /// is now the single place the health verdict is decided (this module's older
+    /// `note_live_call_success` + failure-TTL pair was superseded by that module and
+    /// removed). A measurement must never overturn an assertion; only a
+    /// `Test Connection` or a Rescan replaces the whole row and therefore clears
+    /// this, which is right - the user asked for a real answer.
+    ///
+    /// `#[serde(default)]` so caches written before this field existed still load.
+    #[serde(default)]
+    pub sticky: bool,
 }
 
 /// Run one real, trivial call against `provider` and report what happened. Does NOT touch
@@ -440,6 +515,14 @@ pub struct ProviderTestResult {
 /// currently CHOSEN one: `llm_provider_model` is scoped to "within the chosen provider"
 /// (see [`LlmConfig`]), so applying it while testing a provider the user has NOT selected
 /// would pass one provider's model string to a different CLI's `--model` flag.
+///
+/// **Calls the backend DIRECTLY, and must keep doing so.** [`crate::llm::complete`] now
+/// refuses outright when this provider's last recorded verdict is unavailable — which is
+/// the correct behaviour for real work, and fatal here: this function's whole job is to
+/// find out whether that verdict is still true. Routed through the funnel, a provider that
+/// failed once could never be re-tested, so the failure that closed the gate would also be
+/// the thing preventing it from ever reopening. It would look like a provider that can
+/// never be reconnected, with a Test button that fails instantly for no visible reason.
 pub async fn test_provider(
     provider: LlmProvider,
     settings: &RuntimeSettings,
@@ -458,7 +541,7 @@ pub async fn test_provider(
         system: PROBE_SYSTEM,
         user: String::new(),
         schema: None,
-        max_tokens: 16,
+        max_tokens: PROBE_MAX_TOKENS,
         label: format!("provider-test {id}"),
     };
 
@@ -478,6 +561,8 @@ fn finish_test(id: String, outcome: ProviderTestOutcome, t0: Instant) -> Provide
         outcome,
         elapsed_ms: t0.elapsed().as_millis() as u64,
         tested_at: chrono::Utc::now().to_rfc3339(),
+        // A measured result, so it is open to correction like any other.
+        sticky: false,
     }
 }
 
@@ -1267,6 +1352,17 @@ fn load_test_cache() -> HashMap<String, ProviderTestResult> {
     serde_json::from_str(&raw).unwrap_or_default()
 }
 
+/// The last recorded connectivity test for one provider wire id, or `None` if it has never
+/// been tested.
+///
+/// Exists for the providers [`detect_all`] does not enumerate — i.e. `custom`, which has no
+/// CLI to probe but does accumulate test results (`test_llm_provider`, and the dev Disconnect
+/// button). Without this the cached verdict for a cloud endpoint was written and then never
+/// read by anything that renders it.
+pub fn cached_test_result(id: &str) -> Option<ProviderTestResult> {
+    load_test_cache().get(id).cloned()
+}
+
 /// Serialises the load→insert→write of the test cache. `test_all_installed` fans the
 /// per-provider tests out concurrently and each lands its own result here; without this
 /// lock those read-modify-write cycles interleave and silently drop each other's entries
@@ -1282,11 +1378,29 @@ static CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// The whole read-modify-write is held under [`CACHE_LOCK`] so concurrent persists (a
 /// Rescan testing every installed provider at once) can't lose each other's results.
 pub fn persist_test_result(result: &ProviderTestResult) {
-    let _guard = CACHE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut cache = load_test_cache();
-    cache.insert(result.id.clone(), result.clone());
-    if let Err(e) = meridian_core::fs_utils::atomic_write_json(&test_cache_path(), &cache) {
-        tracing::warn!(error = %e, provider = %result.id, "failed to persist provider test result");
+    {
+        let _guard = CACHE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = load_test_cache();
+        cache.insert(result.id.clone(), result.clone());
+        if let Err(e) = meridian_core::fs_utils::atomic_write_json(&test_cache_path(), &cache) {
+            tracing::warn!(error = %e, provider = %result.id, "failed to persist provider test result");
+        }
+    }
+    // A recorded outcome is the ONLY thing that changes the health verdict, and
+    // that verdict is memoised for IN_USE_HEALTH_TTL (5 min). Without this the
+    // banner contradicts the panel for up to five minutes in both directions: a
+    // user who fixes a signed-out provider and watches its card go green still
+    // sees "unavailable" across the top, and concludes the fix did not work.
+    // Every path that records an outcome comes through here, so this is the one
+    // place it can be done without a caller being able to forget.
+    invalidate_in_use_health();
+}
+
+/// Drop the memoised in-use provider verdict, so the next
+/// [`in_use_provider_health`] recomputes instead of serving a stale answer.
+pub fn invalidate_in_use_health() {
+    if let Some(cell) = IN_USE_HEALTH_CACHE.get() {
+        *cell.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
 
@@ -1609,6 +1723,28 @@ mod tests {
         );
     }
 
+    /// A reasoning model spends the completion budget on hidden reasoning tokens BEFORE it
+    /// writes a visible character, so a probe budget sized for "one word" comes back with
+    /// `finish_reason: "length"` and empty content — and `openai_compat` correctly calls that
+    /// a failure. Measured against Groq's `openai/gpt-oss-120b` (the model Meridian picks for
+    /// its own free path): 16 tokens → 14 reasoning tokens, no content; 256 → answered "OK".
+    ///
+    /// So a perfectly good key failed Test Connection while the SCHEMA probe on the very same
+    /// endpoint passed — because `probe::PROBE_MAX_TOKENS` was already 512 and this one was
+    /// not. Both budgets must stay large enough to hold a reasoning trace.
+    #[test]
+    fn the_connectivity_probe_leaves_room_for_a_reasoning_trace() {
+        // Compared through a binding rather than asserted on the constant directly, which
+        // clippy rejects as always-true - the point is to fail the build if the CONSTANT is
+        // ever lowered, so the floor is what the comparison names.
+        let floor = 256;
+        assert!(
+            PROBE_MAX_TOKENS >= floor,
+            "a budget this small is spent on reasoning tokens before the model answers, and \
+             the empty response reads to the user as a broken key"
+        );
+    }
+
     #[tokio::test]
     async fn detect_all_covers_every_builtin_exactly_once() {
         let all = detect_all().await;
@@ -1645,7 +1781,7 @@ mod tests {
     #[test]
     fn classify_provider_health_ranks_unavailable_over_rate_limited_over_fine() {
         // not installed → unavailable, regardless of any prior test result.
-        let h = classify_provider_health("Codex".into(), false, None);
+        let h = classify_provider_health("Codex".into(), false, None, false);
         assert!(!h.ok && !h.rate_limited);
         assert_eq!(h.detail.as_deref(), Some("Codex isn't installed"));
 
@@ -1653,7 +1789,7 @@ mod tests {
         let failed = ProviderTestOutcome::Failed {
             message: "not signed in".into(),
         };
-        let h = classify_provider_health("Codex".into(), true, Some(&failed));
+        let h = classify_provider_health("Codex".into(), true, Some(&failed), false);
         assert!(!h.ok && !h.rate_limited);
         assert_eq!(h.detail.as_deref(), Some("not signed in"));
 
@@ -1661,16 +1797,93 @@ mod tests {
         let rl = ProviderTestOutcome::RateLimited {
             message: "usage limit".into(),
         };
-        let h = classify_provider_health("Codex".into(), true, Some(&rl));
+        let h = classify_provider_health("Codex".into(), true, Some(&rl), false);
         assert!(h.ok && h.rate_limited);
         assert_eq!(h.detail.as_deref(), Some("usage limit"));
 
         // installed + Ok, and installed + no test on record → fine, no banner, no detail.
         let ok = ProviderTestOutcome::Ok;
         for last in [Some(&ok), None] {
-            let h = classify_provider_health("Codex".into(), true, last);
+            let h = classify_provider_health("Codex".into(), true, last, false);
             assert!(h.ok && !h.rate_limited && h.detail.is_none());
         }
+    }
+
+    /// Which `!ok` verdicts are worth spending a real call to re-check.
+    ///
+    /// `probeable` exists because the resolver's health gate refuses on a recorded
+    /// verdict while only a successful call can replace one — so a verdict nothing
+    /// re-measures latches shut. The distinction it draws is the whole value: a
+    /// MEASURED failure is worth a periodic call because nothing else will ever
+    /// overturn it, while the other two `!ok` states must not spend one.
+    #[test]
+    fn only_a_measured_failure_is_worth_probing() {
+        let failed = ProviderTestOutcome::Failed {
+            message: "not signed in".into(),
+        };
+
+        // A measured failure: nothing re-measures this on its own. A runtime observation
+        // ages out after six hours and a manual test result never expires at all, so
+        // without a probe a single bad Test Connection is a permanent blackout.
+        assert!(
+            classify_provider_health("Codex".into(), true, Some(&failed), false).probeable,
+            "a measured failure is the case the exemption exists for"
+        );
+
+        // ASSERTED (`sticky`): someone is deliberately holding this state, and a
+        // measurement must never overturn an assertion.
+        assert!(
+            !classify_provider_health("Codex".into(), true, Some(&failed), true).probeable,
+            "an asserted verdict must not be second-guessed by a probe"
+        );
+
+        // Not installed: already self-healing. `resolve_cli` caches only successes, so the
+        // next health poll re-probes the filesystem and clears this for free — a call would
+        // spend a CLI spawn to learn what a `Path::exists` already knows.
+        assert!(
+            !classify_provider_health("Codex".into(), false, None, false).probeable,
+            "a missing install re-checks itself; a call would buy nothing"
+        );
+
+        // Rate-limited is not a refusal at all, so there is nothing to probe past.
+        let rl = ProviderTestOutcome::RateLimited {
+            message: "usage limit".into(),
+        };
+        assert!(!classify_provider_health("Codex".into(), true, Some(&rl), false).probeable);
+    }
+
+    /// The health verdict is memoised for 5 minutes, and recording a test result is
+    /// the only thing that can change it. When the two were not wired together, the
+    /// banner disagreed with the Intelligence panel for up to that long IN BOTH
+    /// DIRECTIONS — a user who fixed a signed-out provider watched its card go green
+    /// while "provider unavailable" stayed across the top, and reasonably concluded
+    /// the fix had not worked. Nothing about that failure is visible in a type or a
+    /// log; it just looks like the app ignoring you.
+    #[test]
+    fn recording_a_test_result_drops_the_memoised_health_verdict() {
+        // Seed the cache with a verdict, as a health poll would.
+        *IN_USE_HEALTH_CACHE
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap() = Some((
+            "claude".to_string(),
+            Instant::now(),
+            InUseProviderHealth {
+                ok: true,
+                rate_limited: false,
+                name: "Claude Code".into(),
+                detail: None,
+                probeable: false,
+            },
+        ));
+
+        invalidate_in_use_health();
+
+        assert!(
+            IN_USE_HEALTH_CACHE.get().unwrap().lock().unwrap().is_none(),
+            "a recorded outcome must invalidate the memoised verdict, or the banner \
+             serves a stale answer for up to IN_USE_HEALTH_TTL"
+        );
     }
 
     #[tokio::test]
@@ -2363,6 +2576,7 @@ mod tests {
             outcome: ProviderTestOutcome::Ok,
             elapsed_ms: 842,
             tested_at: "2026-07-16T10:00:00+00:00".into(),
+            sticky: false,
         };
         persist_test_result(&result);
 
@@ -2377,12 +2591,45 @@ mod tests {
             },
             elapsed_ms: 12,
             tested_at: "2026-07-16T10:05:00+00:00".into(),
+            sticky: false,
         };
         persist_test_result(&rate_limited);
         let cache = load_test_cache();
         assert_eq!(cache.len(), 2);
         assert_eq!(cache.get("claude"), Some(&result));
         assert_eq!(cache.get("cursor"), Some(&rate_limited));
+    }
+
+    /// `cached_test_result` is the READ side, and it exists because the write side alone
+    /// was not enough: a cloud endpoint's verdict was being persisted and then read by
+    /// nothing that renders it, so the picker showed a Groq tile as IN USE for a provider
+    /// the app had just been told was not usable. That fix shipped with no test.
+    ///
+    /// The `custom` id is the case that matters - `detect_all` cannot enumerate it (there
+    /// is no CLI to probe), so this lookup is the ONLY way its result reaches the UI.
+    #[test]
+    fn a_cached_verdict_is_readable_back_for_a_provider_with_no_cli() {
+        let _guard = ENV_LOCK.blocking_lock();
+        with_temp_meridian_home();
+
+        // Never tested is None, not a default-shaped "passing" result - the distinction
+        // the picker relies on to avoid claiming a verdict it does not have.
+        assert!(cached_test_result("custom").is_none());
+
+        let failed = ProviderTestResult {
+            id: "custom".into(),
+            outcome: ProviderTestOutcome::Failed {
+                message: "endpoint returned no content".into(),
+            },
+            elapsed_ms: 340,
+            tested_at: "2026-08-07T09:00:00+00:00".into(),
+            sticky: false,
+        };
+        persist_test_result(&failed);
+
+        assert_eq!(cached_test_result("custom"), Some(failed));
+        // A different provider's verdict must not answer for this one.
+        assert!(cached_test_result("groq").is_none());
     }
 
     /// The `test_all_installed` scenario: many providers persist their results at once.
@@ -2403,6 +2650,7 @@ mod tests {
                         outcome: ProviderTestOutcome::Ok,
                         elapsed_ms: i as u64,
                         tested_at: "2026-07-17T10:00:00+00:00".into(),
+                        sticky: false,
                     });
                 });
             }

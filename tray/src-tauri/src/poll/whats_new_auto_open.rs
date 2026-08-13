@@ -69,7 +69,7 @@ pub(crate) async fn maybe_auto_open_whats_new(app: &tauri::AppHandle) {
     if let Err(e) = whats_new::mark_whats_new_seen(home, &current_version) {
         tracing::warn!(error = %e, "whats-new auto-open: marker write failed");
     }
-    crate::deep_link::navigate_dashboard(app, "/whats-new");
+    crate::deep_link::navigate_dashboard(app, meridian_core::notifications::deep_links::WHATS_NEW);
     crate::tray::open_native_dashboard(app);
     tracing::info!(version = %current_version, "whats-new auto-open: opened dashboard on the What's New view");
 }

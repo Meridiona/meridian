@@ -5180,6 +5180,7 @@ dependencies = [
  "hex",
  "http",
  "jsonschema",
+ "keyring",
  "libsqlite3-sys",
  "meridian-core",
  "meridian-oauth",

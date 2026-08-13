@@ -1,31 +1,21 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// The day's numbers, with the plan drawn as a ring you can count.
+// The day's numbers: how much of the plan came out, and the figures behind it.
 //
-// WHY A SEGMENTED RING. A plain progress bar reads as one continuous quantity, and
-// a plan is not continuous - it is five specific things named this morning. So the
-// ring is divided into one arc per planned ticket, with a gap between them: three of
-// five looks like three of five before a number is read. An earlier take used a
-// flat segmented bar under the figures and it read as a loading indicator, not an
-// achievement - the ring is the thing this screen is remembered by.
-//
-// The outcome is carried by FILL WEIGHT, never by hue:
-//
-//   done         solid accent
-//   partial      accent at low opacity, on the same track
-//   not touched  the bare track
-//
-// One accent, no traffic lights. A red arc for an untouched ticket would be the
-// screen telling someone off for a day that was probably fine.
+// ONE DONUT, ONE ARC. This was a segmented ring - one arc per planned ticket, so
+// three of five looked like three of five before a number was read - and it is now
+// the single-arc donut the walkthrough shows, so the screen a new user is taught is
+// the screen they get. The count it stops conveying at a glance is carried by the
+// `done / planned` figure immediately beside it and by the checklist below, where
+// every ticket has its own row.
 //
 // EVERY NUMBER HERE IS MEASURED. The counts and the percentage come from
-// `day_evidence::adherence` in Rust; the durations are summed from the same
-// day-task list the rows below render. The model contributes no figure.
+// `day_evidence::adherence` in Rust; the durations are summed from the same day-task
+// list the rows below render. The model contributes no figure.
 //
 // # Related
-// - `WorkList` - the same plan and the same work, itemised.
 // - `WorkList` - the same plan and the same work, itemised. On a no-plan day this
-//   component simply renders the stat row without the ring.
+//   component renders the stat row without the donut.
 
 'use client'
 
@@ -33,101 +23,75 @@ import { motion, useReducedMotion } from 'framer-motion'
 import { fmtDur } from '@/components/atoms'
 import type { Adherence, PlanVerdict } from '@/lib/api-types'
 
-const SIZE = 132
-const STROKE = 12
+const SIZE = 76
+const STROKE = 8
 const R = (SIZE - STROKE) / 2
 const C = 2 * Math.PI * R
-// Gap between two arcs, in px along the ring. Measured in pixels, not degrees,
-// because the round caps each add STROKE/2 per end - a degree gap silently closes
-// up at five or six segments, which is the exact thing dividing the ring is for.
-const GAP_PX = 6
 
-function fillOpacity(outcome: PlanVerdict['outcome']): number | null {
-  switch (outcome) {
-    case 'done': return 1
-    case 'partial': return 0.38
-    default: return null
-  }
-}
-
-/** The segmented plan ring. */
-function PlanRing({ plan, adherence }: { plan: PlanVerdict[]; adherence: Adherence }) {
+/** The plan, as one filled arc. */
+function PlanDonut({ pct }: { pct: number }) {
   const reduce = useReducedMotion()
-  const n = Math.max(plan.length, 1)
-  const slice = C / n
-  const gap = n === 1 ? 0 : Math.min(GAP_PX + STROKE, slice * 0.55)
-  const arcLen = Math.max(slice - gap, 1)
-  const offsetOf = (i: number) => -(i * slice + gap / 2)
+  const dash = (Math.max(0, Math.min(100, pct)) / 100) * C
   const track = 'color-mix(in srgb, var(--t-title) 11%, var(--t-track))'
 
   return (
     <div className="relative shrink-0" style={{ width: SIZE, height: SIZE }}>
       <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} aria-hidden>
-        <g transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`}>
-          {plan.map((v, i) => (
-            <circle
-              key={`t-${v.task_key}`}
-              cx={SIZE / 2} cy={SIZE / 2} r={R} fill="none"
-              stroke={track} strokeWidth={STROKE} strokeLinecap="round"
-              strokeDasharray={`${arcLen} ${C - arcLen}`} strokeDashoffset={offsetOf(i)}
-            />
-          ))}
-          {plan.map((v, i) => {
-            const op = fillOpacity(v.outcome)
-            if (op === null) return null
-            return (
-              <motion.circle
-                key={v.task_key}
-                cx={SIZE / 2} cy={SIZE / 2} r={R} fill="none"
-                stroke="var(--accent)" strokeWidth={STROKE} strokeLinecap="round"
-                strokeDasharray={`${arcLen} ${C - arcLen}`} strokeDashoffset={offsetOf(i)}
-                initial={reduce ? false : { opacity: 0 }}
-                animate={{ opacity: op }}
-                transition={{ duration: reduce ? 0 : 0.32, delay: reduce ? 0 : 0.1 + 0.06 * i }}
-              />
-            )
-          })}
-        </g>
+        <circle cx={SIZE / 2} cy={SIZE / 2} r={R} fill="none" stroke={track} strokeWidth={STROKE} />
+        <motion.circle
+          cx={SIZE / 2} cy={SIZE / 2} r={R} fill="none"
+          stroke="var(--accent)" strokeWidth={STROKE} strokeLinecap="round"
+          strokeDasharray={`${dash} ${C - dash}`}
+          transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`}
+          initial={reduce ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: reduce ? 0 : 0.32, delay: reduce ? 0 : 0.1 }}
+        />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-        <motion.p
+        <motion.span
           className="leading-none tabular-nums"
-          style={{ font: '800 30px var(--font-sans)', letterSpacing: '-0.035em', color: 'var(--t-title)' }}
+          style={{ font: '800 16px var(--font-sans)', letterSpacing: '-0.02em', color: 'var(--t-title)' }}
           initial={reduce ? false : { opacity: 0, y: 3 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: reduce ? 0 : 0.3, delay: reduce ? 0 : 0.16 }}
         >
-          {adherence.achievement_pct}%
-        </motion.p>
-        <p className="mt-label mt-1.5" style={{ color: 'var(--t-faint-2)' }}>of plan</p>
+          {pct}%
+        </motion.span>
+        <span style={{ fontSize: 9, color: 'var(--t-faint)' }}>of plan</span>
       </div>
     </div>
   )
 }
 
-/** One figure and its label. */
+/** One figure and its label, on one line - the walkthrough's stacked shape. */
 function Stat({ value, label, accent = false, delay }: {
   value: string; label: string; accent?: boolean; delay: number
 }) {
   const reduce = useReducedMotion()
   return (
     <motion.div
-      className="flex flex-col gap-1.5 min-w-0"
+      className="flex items-baseline gap-2 min-w-0"
       initial={reduce ? false : { opacity: 0, y: 5 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: reduce ? 0 : 0.3, delay: reduce ? 0 : delay }}
     >
-      <p
-        className="leading-none tabular-nums truncate"
+      <span
+        className="tabular-nums"
         style={{
-          font: '800 25px var(--font-sans)',
-          letterSpacing: '-0.035em',
+          font: '800 15px var(--font-sans)',
+          letterSpacing: '-0.02em',
           color: accent ? 'var(--accent)' : 'var(--t-title)',
         }}
       >
         {value}
-      </p>
-      <p className="mt-label truncate" style={{ color: 'var(--t-faint-2)' }}>{label}</p>
+      </span>
+      <span
+        className="truncate"
+        style={{ fontSize: 9.5, letterSpacing: '.06em', color: 'var(--t-faint)', textTransform: 'uppercase' }}
+      >
+        {label}
+      </span>
     </motion.div>
   )
 }
@@ -142,10 +106,10 @@ export function DayScore({ plan, adherence, planned, loggedMinutes, bonusCount, 
   focusSeconds: number
 }) {
   if (!planned) {
-    // No plan, no ring - a day nobody planned did not fail an exercise, and an empty
+    // No plan, no donut - a day nobody planned did not fail an exercise, and an empty
     // meter is a screen punishing them for not using a feature.
     return (
-      <div className="flex items-start gap-8 sm:gap-11 flex-wrap">
+      <div className="flex flex-col gap-2">
         <Stat value={fmtDur(loggedMinutes * 60)} label="time logged" delay={0.06} />
         <Stat value={`${workstreamCount}`} label="things worked on" delay={0.11} />
         <Stat value={fmtDur(focusSeconds)} label="focused" delay={0.16} />
@@ -154,9 +118,9 @@ export function DayScore({ plan, adherence, planned, loggedMinutes, bonusCount, 
   }
 
   return (
-    <div className="flex items-center gap-7 sm:gap-9 flex-wrap">
-      {plan.length > 0 && <PlanRing plan={plan} adherence={adherence} />}
-      <div className="flex items-start gap-7 sm:gap-9 flex-wrap">
+    <div className="flex items-center gap-5">
+      {plan.length > 0 && <PlanDonut pct={adherence.achievement_pct} />}
+      <div className="flex flex-col gap-2 min-w-0">
         <Stat value={`${adherence.done} / ${adherence.planned}`} label="planned done" delay={0.1} />
         <Stat value={fmtDur(loggedMinutes * 60)} label="time logged" delay={0.15} />
         {/* Only when there IS extra. A "+0 picked up" every evening reads as a

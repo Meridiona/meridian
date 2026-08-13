@@ -29,6 +29,23 @@ use std::sync::{Arc, Mutex};
 use tauri::State;
 use tracing::Instrument;
 
+// Everything below is used ONLY by the macOS reload rate limit, so it carries
+// the same gate as the code that uses it. Without that, the Windows build sees
+// three unused imports and fails on `-D warnings` — a break that is invisible
+// from macOS and only shows up in the Windows CI job.
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
+#[cfg(target_os = "macos")]
+use std::time::Duration;
+// tokio's `Instant`, not std's: behaviourally identical in production, but it
+// is the one `#[tokio::test(start_paused = true)]` can advance. With std's, a
+// test that "sleeps" past the 30 s launchd window advances only tokio's timer
+// while the stamps being compared stay microseconds old, so the guard under
+// test never sees the window close and the test asserts the opposite of the
+// truth.
+#[cfg(target_os = "macos")]
+use tokio::time::Instant;
+
 /// The cached tray status (health + active session + today totals), read from
 /// the poll-loop-maintained [`AppState`]. Synchronous — just locks and snapshots.
 #[tauri::command]
@@ -157,11 +174,594 @@ pub struct ReloadResponse {
 /// re-read every poll tick regardless, so only startup-only ones need this.
 /// Log-level changes hot-reload in-process and need neither.
 ///
-/// Errors when the daemon isn't running (the route's 503).
+/// Errors when the daemon isn't running (the route's 503) — callers surface
+/// that as "your change applies when the daemon starts", so it must stay
+/// reachable. See [`plan_reload`] for the macOS rate limit.
 #[tauri::command]
 #[tracing::instrument]
 pub async fn reload_daemon() -> Result<ReloadResponse, String> {
-    let pid = super::daemon_control::reload().await?;
-    tracing::info!(pid, "daemon reload requested");
-    Ok(ReloadResponse { ok: true, pid })
+    #[cfg(target_os = "macos")]
+    {
+        reload_throttled(reload_state(), super::daemon_control::reload, || async {
+            super::daemon_control::status().await.running
+        })
+        .await
+    }
+    // Windows restarts the scheduled task (`schtasks /End` + `/Run`). There is
+    // no launchd, no SIGHUP and no `ThrottleInterval` there, so rate-limiting
+    // would delay credential pickup by 30 s to respect a constant with no
+    // meaning on the platform.
+    #[cfg(not(target_os = "macos"))]
+    {
+        let pid = super::daemon_control::reload().await?;
+        tracing::info!(pid, "daemon reload requested");
+        Ok(ReloadResponse { ok: true, pid })
+    }
+}
+
+// ── macOS reload rate limit ─────────────────────────────────────────────────
+
+/// launchd's `ThrottleInterval` for `com.meridiona.daemon`, verbatim from
+/// `scripts/com.meridiona.daemon.plist`.
+#[cfg(target_os = "macos")]
+const LAUNCHD_THROTTLE: Duration = Duration::from_secs(30);
+
+/// Slack added to [`LAUNCHD_THROTTLE`] to get [`THROTTLE_INTERVAL`].
+///
+/// Not padding. launchd measures its interval from the job's **start**, while
+/// all we can observe is when we sent the signal — and between the two sits the
+/// daemon's graceful shutdown (pool close, telemetry flush). Waiting exactly
+/// `ThrottleInterval` from our own signal therefore lands *inside* the window
+/// launchd is enforcing, by however long that shutdown takes, re-creating a
+/// smaller version of the outage this module exists to remove. Approach the
+/// boundary from the safe side instead.
+#[cfg(target_os = "macos")]
+const SHUTDOWN_MARGIN: Duration = Duration::from_secs(2);
+
+/// How long we actually wait between signals.
+#[cfg(target_os = "macos")]
+const THROTTLE_INTERVAL: Duration =
+    Duration::from_secs(LAUNCHD_THROTTLE.as_secs() + SHUTDOWN_MARGIN.as_secs());
+
+/// Attempts for a deferred reload whose signal failed. The scheduled moment is
+/// the *most* likely one to fail — it is when launchd is relaunching, so the
+/// probe inside `reload()` can still report the daemon down — and dropping it
+/// there would silently lose the credential change it was carrying.
+#[cfg(target_os = "macos")]
+const DEFERRED_SEND_ATTEMPTS: u32 = 3;
+
+/// Gap between those attempts.
+#[cfg(target_os = "macos")]
+const DEFERRED_RETRY_GAP: Duration = Duration::from_secs(3);
+
+/// What to do with a reload request. See [`plan_reload`].
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReloadAction {
+    /// Signal the daemon now.
+    SendNow,
+    /// Inside the throttle window - signal after this long instead.
+    Defer(Duration),
+    /// A deferred reload is already scheduled; it will cover this request too.
+    AlreadyPending,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct ReloadState {
+    last_sent: Option<Instant>,
+    pending: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn reload_state() -> Arc<Mutex<ReloadState>> {
+    static STATE: OnceLock<Arc<Mutex<ReloadState>>> = OnceLock::new();
+    STATE
+        .get_or_init(|| Arc::new(Mutex::new(ReloadState::default())))
+        .clone()
+}
+
+/// Lock helper that keeps working after a panic elsewhere poisoned the mutex.
+///
+/// A poisoned lock here used to be unrecoverable in the worst way: the guard
+/// state would stay latched and every later reload would be silently dropped
+/// for the life of the process. The state this protects is two plain fields
+/// with no invariant a panic could have torn, so recovering is strictly better
+/// than propagating. Also keeps this off `unwrap`/`expect`, per CLAUDE.md.
+#[cfg(target_os = "macos")]
+fn lock_state(state: &Mutex<ReloadState>) -> std::sync::MutexGuard<'_, ReloadState> {
+    state.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Clears `pending` even if the deferred task unwinds.
+///
+/// Without this, a panic between scheduling and clearing latches `pending` at
+/// `true` forever: [`plan_reload`] then answers every future request
+/// `AlreadyPending`, so token saves, OAuth completions and the reload button
+/// all return success and do nothing, with no log and no recovery short of
+/// quitting the tray. A guard that fails silently and permanently is worse than
+/// the bug it guards.
+#[cfg(target_os = "macos")]
+struct PendingGuard(Arc<Mutex<ReloadState>>);
+
+#[cfg(target_os = "macos")]
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        lock_state(&self.0).pending = false;
+    }
+}
+
+/// The rate-limited reload. `send` performs the signal; `is_running` reports
+/// whether the daemon is up. Both are injected so the state machine — not just
+/// [`plan_reload`] — is testable without launchd, a socket or a real clock.
+#[cfg(target_os = "macos")]
+async fn reload_throttled<S, SFut, P, PFut>(
+    state: Arc<Mutex<ReloadState>>,
+    send: S,
+    is_running: P,
+) -> Result<ReloadResponse, String>
+where
+    S: Fn() -> SFut + Send + Sync + Clone + 'static,
+    SFut: std::future::Future<Output = Result<u32, String>> + Send,
+    P: Fn() -> PFut,
+    PFut: std::future::Future<Output = bool>,
+{
+    let action = {
+        let st = lock_state(&state);
+        plan_reload(st.last_sent, st.pending, Instant::now(), THROTTLE_INTERVAL)
+    };
+
+    match action {
+        ReloadAction::SendNow => {
+            // Stamp BEFORE awaiting the send. `send` probes and spawns a
+            // process, so leaving the stamp until afterwards left a window in
+            // which a second caller read the old `last_sent` and was also told
+            // to send - the two credential call sites are not synchronised with
+            // each other, so that overlap is reachable.
+            lock_state(&state).last_sent = Some(Instant::now());
+            match send().await {
+                Ok(pid) => {
+                    tracing::info!(pid, "daemon reload requested");
+                    Ok(ReloadResponse { ok: true, pid })
+                }
+                Err(e) => {
+                    // Nothing was signalled, so no throttle window opened;
+                    // clear the stamp so the next attempt is not made to wait
+                    // out a restart that never happened.
+                    lock_state(&state).last_sent = None;
+                    Err(e)
+                }
+            }
+        }
+
+        ReloadAction::Defer(wait) => {
+            // A down daemon needs no reload at all - it reads `.env` and
+            // `settings.json` when it starts. Report it as the error the
+            // callers already understand, so the UI keeps telling the user
+            // their change applies on next start. Without this probe the
+            // deferred path answered `ok` unconditionally and that warning
+            // became unreachable for the whole window.
+            if !is_running().await {
+                return Err("daemon not running".to_string());
+            }
+
+            {
+                let mut st = lock_state(&state);
+                if st.pending {
+                    tracing::info!("daemon reload coalesced into the pending one");
+                    return Ok(ReloadResponse { ok: true, pid: 0 });
+                }
+                st.pending = true;
+            }
+
+            let task_state = state.clone();
+            let task_send = send.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(wait).await;
+                let _guard = PendingGuard(task_state.clone());
+                {
+                    // Clear `pending` and stamp the send in ONE critical
+                    // section, before the signal goes out. Clearing after the
+                    // send would drop any request that arrived while it was in
+                    // flight - and such a request's `.env` write happened after
+                    // the reload it got folded into, so it would genuinely be
+                    // lost. Requests arriving from here on see `pending: false`
+                    // with a fresh stamp and schedule their own trailing
+                    // reload, which does cover them.
+                    let mut st = lock_state(&task_state);
+                    st.pending = false;
+                    st.last_sent = Some(Instant::now());
+                }
+                for attempt in 1..=DEFERRED_SEND_ATTEMPTS {
+                    match task_send().await {
+                        Ok(pid) => {
+                            tracing::info!(pid, attempt, "daemon reload sent (deferred)");
+                            return;
+                        }
+                        Err(e) if attempt == DEFERRED_SEND_ATTEMPTS => {
+                            tracing::warn!(
+                                error = %e,
+                                attempts = DEFERRED_SEND_ATTEMPTS,
+                                "deferred daemon reload failed - config applies on next start"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::info!(
+                                error = %e,
+                                attempt,
+                                "deferred daemon reload not ready - retrying"
+                            );
+                            tokio::time::sleep(DEFERRED_RETRY_GAP).await;
+                        }
+                    }
+                }
+            });
+
+            tracing::info!(
+                wait_s = wait.as_secs(),
+                "daemon reload deferred - inside launchd's throttle window"
+            );
+            // `pid: 0` = nothing signalled yet; the reload IS going to happen.
+            Ok(ReloadResponse { ok: true, pid: 0 })
+        }
+
+        ReloadAction::AlreadyPending => {
+            tracing::info!("daemon reload coalesced into the pending one");
+            Ok(ReloadResponse { ok: true, pid: 0 })
+        }
+    }
+}
+
+/// Decide when a reload may actually be signalled.
+///
+/// # Why this exists
+/// On macOS a "reload" is `kill -HUP`, and the daemon handles SIGHUP by
+/// **exiting cleanly** so launchd relaunches it (`src/platform/unix.rs`).
+/// launchd will not relaunch a job more often than the plist's
+/// `ThrottleInterval` (30 s), measured from the job's last *start* - so a second
+/// SIGHUP inside that window does not reload the daemon, it **kills it for the
+/// remainder of the window**.
+///
+/// That is not hypothetical. Measured on 1.84.0-staging.7:
+///
+/// ```text
+/// 03:05:42.556  daemon starting          (first reload - launchd relaunches immediately)
+/// 03:05:48.331  SIGHUP received          (second reload, 6 s later - daemon exits)
+/// 03:05:55      watchdog: "not running"  (launchd is throttled, nothing to probe)
+/// 03:06:12.847  daemon starting          = 03:05:42.556 + 30 s, exactly
+/// ```
+///
+/// The daemon was down for 24 s, and the tray's long-lived SQLCipher pool spent
+/// that window returning `(code: 11) database disk image is malformed` from
+/// `get_tasks` - surfaced in the integrations panel as a corrupt database, on a
+/// file whose `PRAGMA integrity_check` was (and stayed) `ok`.
+///
+/// Two independent call sites reload after a credential change
+/// (`integrations.rs`'s token save and the GitHub device-flow completion), so a
+/// single connect flow can trip this on its own.
+///
+/// # The rule
+/// Never signal within [`THROTTLE_INTERVAL`] of the previous signal; defer to
+/// the moment the window closes, and collapse every request arriving in the
+/// meantime into that one deferred reload.
+#[cfg(target_os = "macos")]
+fn plan_reload(
+    last_sent: Option<Instant>,
+    pending: bool,
+    now: Instant,
+    throttle: Duration,
+) -> ReloadAction {
+    if pending {
+        return ReloadAction::AlreadyPending;
+    }
+    match last_sent {
+        // `saturating_duration_since` rather than `-`: a monotonic clock cannot
+        // go backwards, but saturating keeps a future stamp from panicking.
+        Some(prev) => match throttle.checked_sub(now.saturating_duration_since(prev)) {
+            Some(remaining) if !remaining.is_zero() => ReloadAction::Defer(remaining),
+            _ => ReloadAction::SendNow,
+        },
+        None => ReloadAction::SendNow,
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    // ── The planner ─────────────────────────────────────────────────────────
+
+    /// The exact field sequence from 1.84.0-staging.7 (see [`plan_reload`]):
+    /// two reloads 6 s apart. The second MUST NOT be signalled - doing so exits
+    /// the daemon into launchd's throttle window and takes it down for the
+    /// remainder of it, which is what produced the bogus "database disk image
+    /// is malformed" in the integrations panel.
+    #[test]
+    fn a_second_reload_six_seconds_later_is_deferred_not_signalled() {
+        let start = Instant::now();
+        assert_eq!(
+            plan_reload(None, false, start, THROTTLE_INTERVAL),
+            ReloadAction::SendNow,
+            "the first reload always sends"
+        );
+
+        let six_s_later = start + Duration::from_secs(6);
+        assert_eq!(
+            plan_reload(Some(start), false, six_s_later, THROTTLE_INTERVAL),
+            ReloadAction::Defer(THROTTLE_INTERVAL - Duration::from_secs(6)),
+            "must wait out the rest of the throttle, not SIGHUP into it"
+        );
+    }
+
+    /// The invariant the whole module exists for, swept across the window
+    /// rather than spot-checked - including the sub-second edge, which is
+    /// where `remaining.is_zero()` actually decides and where a whole-second
+    /// sweep would step straight over the bug.
+    #[test]
+    fn nothing_inside_the_throttle_window_is_ever_signalled_immediately() {
+        let start = Instant::now();
+        let mut offsets: Vec<Duration> = (0..THROTTLE_INTERVAL.as_secs())
+            .map(Duration::from_secs)
+            .collect();
+        offsets.push(THROTTLE_INTERVAL - Duration::from_millis(1));
+        offsets.push(THROTTLE_INTERVAL - Duration::from_nanos(1));
+
+        for offset in offsets {
+            match plan_reload(Some(start), false, start + offset, THROTTLE_INTERVAL) {
+                ReloadAction::Defer(wait) => assert_eq!(
+                    offset + wait,
+                    THROTTLE_INTERVAL,
+                    "a deferral at +{offset:?} must fire exactly when the window closes"
+                ),
+                other => panic!("reload at +{offset:?} must be deferred, got {other:?}"),
+            }
+        }
+    }
+
+    /// Once the window has closed launchd will relaunch immediately again, so
+    /// the reload must actually go out - a guard that never re-armed would
+    /// leave credential changes needing a manual restart.
+    #[test]
+    fn a_reload_after_the_window_closes_is_signalled() {
+        let start = Instant::now();
+        for offset in [
+            THROTTLE_INTERVAL,
+            THROTTLE_INTERVAL + Duration::from_secs(1),
+        ] {
+            assert_eq!(
+                plan_reload(Some(start), false, start + offset, THROTTLE_INTERVAL),
+                ReloadAction::SendNow,
+                "a reload at +{offset:?} is outside the throttle and must send"
+            );
+        }
+    }
+
+    /// A burst (token save + OAuth completion + a retry) must collapse into the
+    /// ONE already-scheduled reload.
+    #[test]
+    fn requests_arriving_while_one_is_pending_are_coalesced() {
+        let start = Instant::now();
+        for elapsed in [0u64, 3, 6, 29, 45] {
+            assert_eq!(
+                plan_reload(
+                    Some(start),
+                    true,
+                    start + Duration::from_secs(elapsed),
+                    THROTTLE_INTERVAL
+                ),
+                ReloadAction::AlreadyPending,
+                "a pending reload covers the request arriving at +{elapsed}s"
+            );
+        }
+    }
+
+    /// The margin is the whole point of [`THROTTLE_INTERVAL`]: launchd measures
+    /// from the daemon's START, we can only observe our own SIGHUP, and the
+    /// graceful shutdown sits between them. Waiting exactly the plist value
+    /// lands inside the window launchd enforces.
+    #[test]
+    fn the_throttle_we_wait_clears_the_one_launchd_enforces() {
+        let plist = include_str!("../../../../scripts/com.meridiona.daemon.plist");
+        let value: u64 = plist
+            .split("<key>ThrottleInterval</key>")
+            .nth(1)
+            .and_then(|s| s.split("<integer>").nth(1))
+            .and_then(|s| s.split("</integer>").next())
+            .expect("the plist declares ThrottleInterval")
+            .trim()
+            .parse()
+            .expect("ThrottleInterval parses");
+
+        assert_eq!(
+            value,
+            LAUNCHD_THROTTLE.as_secs(),
+            "LAUNCHD_THROTTLE drifted from the plist launchd actually reads"
+        );
+        assert!(
+            THROTTLE_INTERVAL > LAUNCHD_THROTTLE,
+            "waiting {THROTTLE_INTERVAL:?} does not clear launchd's {LAUNCHD_THROTTLE:?} \
+             once the daemon's graceful shutdown is counted"
+        );
+    }
+
+    // ── The state machine ───────────────────────────────────────────────────
+    //
+    // Everything above is a pure function; every defect that reached review
+    // lived out here, in the stateful wrapper. These drive `reload_throttled`
+    // with injected send/probe so the sequencing is exercised for real.
+
+    fn fresh_state() -> Arc<Mutex<ReloadState>> {
+        Arc::new(Mutex::new(ReloadState::default()))
+    }
+
+    #[tokio::test]
+    async fn the_first_reload_signals_and_a_prompt_second_one_does_not() {
+        let state = fresh_state();
+        let calls = Arc::new(AtomicU32::new(0));
+
+        let c = calls.clone();
+        let send = move || {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Ok(4242u32)
+            }
+        };
+        let running = || async { true };
+
+        let first = reload_throttled(state.clone(), send.clone(), running)
+            .await
+            .expect("first reload sends");
+        assert_eq!(first.pid, 4242);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // Immediately again: must NOT reach the daemon.
+        let second = reload_throttled(state.clone(), send.clone(), running)
+            .await
+            .expect("second reload is accepted but deferred");
+        assert_eq!(second.pid, 0, "nothing was signalled");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a second SIGHUP inside the window is exactly the outage"
+        );
+
+        // …and a third is folded into the pending one rather than queuing its
+        // own trailing SIGHUP.
+        let third = reload_throttled(state.clone(), send, running)
+            .await
+            .expect("third is coalesced");
+        assert_eq!(third.pid, 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(
+            lock_state(&state).pending,
+            "one deferred reload is scheduled"
+        );
+    }
+
+    /// A failed signal opened no throttle window, so it must not make the next
+    /// attempt wait one out.
+    #[tokio::test]
+    async fn a_failed_send_does_not_start_a_throttle_window() {
+        let state = fresh_state();
+        let send = || async { Err::<u32, String>("kill failed".to_string()) };
+        let running = || async { true };
+
+        let err = reload_throttled(state.clone(), send, running)
+            .await
+            .expect_err("the send failed, so the command fails");
+        assert!(err.contains("kill failed"));
+        assert!(
+            lock_state(&state).last_sent.is_none(),
+            "a signal that never landed must not stamp a window"
+        );
+    }
+
+    /// The warning the integrations UI shows ("your credentials apply when the
+    /// daemon starts") is driven by this Err. Inside the throttle window the
+    /// deferred path used to answer `ok` unconditionally, making it unreachable
+    /// exactly when the daemon was most likely to be down.
+    #[tokio::test]
+    async fn a_down_daemon_still_reports_an_error_inside_the_window() {
+        let state = fresh_state();
+        // Pretend a reload just went out, so the next request lands in the window.
+        lock_state(&state).last_sent = Some(Instant::now());
+
+        let calls = Arc::new(AtomicU32::new(0));
+        let c = calls.clone();
+        let send = move || {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Ok(1u32)
+            }
+        };
+
+        let err = reload_throttled(state.clone(), send, || async { false })
+            .await
+            .expect_err("a down daemon must surface as an error, not a silent ok");
+        assert_eq!(err, "daemon not running");
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing to signal");
+        assert!(
+            !lock_state(&state).pending,
+            "no trailing reload is scheduled for a daemon that will read config on start"
+        );
+    }
+
+    /// The latch that would have bricked reload for the life of the process:
+    /// `pending` stuck at `true` answers every later request `AlreadyPending`,
+    /// silently dropping it. It must clear even when the deferred send fails.
+    #[tokio::test(start_paused = true)]
+    async fn a_deferred_reload_clears_pending_and_fires_even_if_the_send_fails() {
+        let state = fresh_state();
+        lock_state(&state).last_sent = Some(Instant::now());
+
+        let calls = Arc::new(AtomicU32::new(0));
+        let c = calls.clone();
+        // Always fails - the worst case for the latch.
+        let send = move || {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Err::<u32, String>("daemon not running".to_string())
+            }
+        };
+
+        reload_throttled(state.clone(), send, || async { true })
+            .await
+            .expect("deferred");
+        assert!(lock_state(&state).pending, "scheduled");
+
+        // Past the window and every retry gap.
+        tokio::time::sleep(THROTTLE_INTERVAL + DEFERRED_RETRY_GAP * DEFERRED_SEND_ATTEMPTS * 2)
+            .await;
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            DEFERRED_SEND_ATTEMPTS,
+            "the deferred send retries instead of being dropped at the one moment \
+             launchd is most likely to still be relaunching"
+        );
+        assert!(
+            !lock_state(&state).pending,
+            "pending must clear, or every future reload is silently discarded"
+        );
+    }
+
+    /// After the deferred reload has gone out, the guard must be usable again -
+    /// and a request arriving later must not be swallowed by a stale `pending`.
+    #[tokio::test(start_paused = true)]
+    async fn the_guard_re_arms_after_a_deferred_reload() {
+        let state = fresh_state();
+        lock_state(&state).last_sent = Some(Instant::now());
+
+        let calls = Arc::new(AtomicU32::new(0));
+        let c = calls.clone();
+        let send = move || {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Ok(7u32)
+            }
+        };
+
+        reload_throttled(state.clone(), send.clone(), || async { true })
+            .await
+            .expect("deferred");
+        tokio::time::sleep(THROTTLE_INTERVAL + Duration::from_secs(1)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the deferred send fired");
+        assert!(!lock_state(&state).pending);
+
+        // Far enough past that send for the window to have closed again.
+        tokio::time::sleep(THROTTLE_INTERVAL + Duration::from_secs(1)).await;
+        reload_throttled(state.clone(), send, || async { true })
+            .await
+            .expect("re-armed");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "a later reload still reaches the daemon"
+        );
+    }
 }

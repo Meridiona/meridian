@@ -17,25 +17,15 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { fmtDur, PROVIDER_META, ProviderGlyph } from '@/components/atoms'
-import { GeneratingBar } from '@/components/GeneratingBar'
+import { fmtDur } from '@/components/atoms'
 import { load, mutate } from '@/lib/bridge'
-import { connectedTrackers, trackerName as providerName } from '@/lib/integrations'
-import type { Tracker } from '@/lib/integrations'
-import type { DayTask, DayTasksResponse, DayTaskWorklogDraft, IntegrationsResponse } from '@/lib/api-types'
-import { clockLabel, clockLabelFromIso, type LaidSegment } from './dayTaskLayout'
+import { connectedTrackers } from '@/lib/integrations'
+import type { BoardTicket, DayTask, DayTasksResponse, IntegrationsResponse } from '@/lib/api-types'
+import { clockLabel, type LaidSegment } from './dayTaskLayout'
 import type { SettingsSection } from './settings/types'
-import { Bullets, Field, LinkChip } from './dayTaskKit'
+import { Bullets, Field } from './dayTaskKit'
 import { useWorklog, type WorklogState } from './useWorklog'
-import { WorklogTicketPicker } from './WorklogTicketPicker'
-import { DraftTargets, UpdateBody, hasPerTicketUpdates } from './WorklogTargets'
-
-/** Join tracker names for prose: `['Jira']`→"Jira", `['Jira','Linear']`→"Jira and
- *  Linear", more →"Jira, Linear and GitHub". */
-function joinNames(names: string[]): string {
-  if (names.length <= 1) return names[0] ?? ''
-  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
-}
+import { WorklogDraftDialog, WorklogEntry } from './WorklogDraftDialog'
 
 /** Everything the right-panel detail needs about one selected workstream — built
  *  from a `LaidOutTask` by DayTaskColumn so the panel stays free of layout math. */
@@ -54,7 +44,7 @@ export interface DayTaskDetail {
 
 /** The selected workstream's breakdown, rendered inside the right column, with a
  *  pinned worklog action bar so Generate/Approve is always reachable. */
-export function DayTaskDetailPanel({ detail, onClose, onCorrected, onOpenSettings, onOpenTask }: {
+export function DayTaskDetailPanel({ detail, onClose, onCorrected, onOpenSettings, onOpenTask, worklog, boardTickets }: {
   detail: DayTaskDetail
   onClose: () => void
   // A dismiss/merge landed — the shell clears this selection and reloads the
@@ -62,10 +52,30 @@ export function DayTaskDetailPanel({ detail, onClose, onCorrected, onOpenSetting
   onCorrected: () => void
   onOpenSettings: (section?: SettingsSection) => void
   onOpenTask: (key: string, title?: string) => void
+  /** Replace the live worklog machine with a scripted one.
+   *
+   *  Set ONLY by the first-run walkthrough, which stands on an example day: its
+   *  task ids exist in no database and its ticket keys belong to another project,
+   *  so the real `generate` can only fail and the real `approve` could only file a
+   *  wrong comment on somebody's board. Overriding the STATE leaves every control,
+   *  label and transition below exactly as shipped - which is the point, since a
+   *  tour that teaches a lookalike has taught the lookalike. */
+  worklog?: WorklogState
+  /** Pre-supplied tickets for the retarget picker, for the same reason - the
+   *  example day's matches are not on the user's real board. */
+  boardTickets?: BoardTicket[]
 }) {
   const { day, id, title, minutes, hue, segments, summary, footLo, footHi } = detail
   const range = segments.length > 0 ? `${clockLabel(footLo)} - ${clockLabel(footHi)}` : ''
-  const wl = useWorklog(day, id)
+  // Called unconditionally (a hook cannot be conditional) and discarded when an
+  // override is supplied. The cost is one `get_day_task_worklog` read that comes
+  // back empty for an id the database has never seen.
+  const live = useWorklog(day, id)
+  const wl = worklog ?? live
+  // A scripted worklog means the walkthrough is driving this panel: nothing below
+  // reaches a model or a board, so the real provider/tracker pre-flights must not
+  // reshape it.
+  const isDemo = worklog !== undefined
 
   // Which PM trackers are connected — names the tracker in the CTA copy, and
   // decides whether to offer Generate or prompt the user to connect one. `null`
@@ -82,6 +92,19 @@ export function DayTaskDetailPanel({ detail, onClose, onCorrected, onOpenSetting
   // two shapes - never a second get_integrations call that could disagree.
   const connected = connectedTrackers(integrations)
   const trackers = connected.map(t => t.name)
+  // Integrations loaded and nothing connected → there is nowhere to post, so the
+  // entry row offers a connect instead of a dead Generate. Never in the
+  // walkthrough: the tour has its own beat for the no-tracker case and drives the
+  // entry row directly, so a live read of the user's integrations must not replace
+  // the control a beat is waiting on.
+  const noTracker = !isDemo && integrations !== null && trackers.length === 0
+
+  // The draft opens as its own dialog rather than stacking under the evidence -
+  // see `WorklogDraftDialog` for why. Closed by default on every task, including
+  // one that already has a posted update: arriving on a task should show what the
+  // task WAS, and a document about it is a step the user takes.
+  const [draftOpen, setDraftOpen] = useState(false)
+  useEffect(() => { setDraftOpen(false) }, [id])
 
   return (
     <div className="dt-detail h-full flex flex-col">
@@ -91,26 +114,43 @@ export function DayTaskDetailPanel({ detail, onClose, onCorrected, onOpenSetting
 
         <TaskActions day={day} taskId={id} onCorrected={onCorrected} />
 
+        {/* data-tour: inert hooks the first-run walkthrough rings, one beat each.
+            These two blocks ARE the product's answer to "how would it know?" -
+            the sittings it stitched together and the write-up it produced - so
+            the tour names them separately rather than waving at the panel.
+            See ui/components/tutorial/script.ts. */}
         {segments.length > 0 && (
-          <div className="rounded-xl p-4 bg-card" style={{ border: '1px solid var(--t-card-border)' }}>
+          <div data-tour="detail-when" className="rounded-xl p-4 bg-card" style={{ border: '1px solid var(--t-card-border)' }}>
             <Field label="When"><SegmentList segments={segments} hue={hue} /></Field>
           </div>
         )}
 
         {summary.length > 0 && (
-          <Field label="What was done"><Bullets items={summary} accent={hue} /></Field>
+          <div data-tour="detail-done">
+            <Field label="What was done"><Bullets items={summary} accent={hue} /></Field>
+          </div>
         )}
 
-        {wl.draft && (
-          <DraftPreview draft={wl.draft} hue={hue} onOpenTask={onOpenTask} trackers={connected}
-            busy={wl.phase === 'generating' || wl.phase === 'approving'} onDismiss={wl.dismiss}
-            onSetProvider={wl.setProvider} />
-        )}
       </div>
 
-      {/* Pinned action bar — always visible, never scrolls out of reach. */}
-      <WorklogFooter wl={wl} hue={hue} linkedTicket={detail.linkedTicket}
-        integrations={integrations} trackers={trackers} onOpenSettings={onOpenSettings} />
+      {/* The worklog, as ONE ROW. Pinned, so it never scrolls out of reach, but a
+          row rather than a document: the draft is addressed to a ticket while
+          everything above is addressed to the user, and side by side in a 388px
+          column the two read as one confused block. */}
+      <div className="shrink-0 p-4"
+        style={{ background: 'var(--t-card)', borderTop: '1px solid var(--t-card-border)', boxShadow: '0 -10px 26px -18px rgba(0,0,0,0.35)' }}>
+        <WorklogEntry wl={wl} hue={hue} linkedTicket={detail.linkedTicket} noTracker={noTracker}
+          onOpen={() => setDraftOpen(true)}
+          onConnectTracker={() => onOpenSettings('integrations')} />
+      </div>
+
+      {draftOpen && (
+        <WorklogDraftDialog wl={wl} hue={hue} taskTitle={title} linkedTicket={detail.linkedTicket}
+          integrations={integrations} trackers={trackers} connected={connected}
+          boardTickets={boardTickets} isDemo={isDemo}
+          onClose={() => setDraftOpen(false)}
+          onOpenSettings={onOpenSettings} onOpenTask={onOpenTask} />
+      )}
     </div>
   )
 }
@@ -300,298 +340,3 @@ function SegmentList({ segments, hue }: { segments: LaidSegment[]; hue: string }
     </ul>
   )
 }
-
-// ── Worklog: draft preview (scrolls) + pinned action footer ──────────────────
-
-/** The generated worklog draft — preview only; the actions live in the footer. */
-function DraftPreview({ draft, hue, busy, trackers, onOpenTask, onDismiss, onSetProvider }: {
-  draft: DayTaskWorklogDraft; hue: string; busy: boolean
-  /** Connected trackers, for the propose branch's board picker. */
-  trackers: Tracker[]
-  onOpenTask: (key: string, title?: string) => void
-  onDismiss: (taskKey: string) => void
-  onSetProvider: (provider: string) => void
-}) {
-  // No link chip here: the tickets are already named twice below — by DraftTargets
-  // ("Comment on KAN-12 · 87% match") before you post, and by the footer's
-  // "✓ Posted to KAN-12" + its chip after. A third mention beside the heading was
-  // just noise repeating the same key down the panel.
-  const generatedAt = clockLabelFromIso(draft.updated_at)
-  return (
-    <div>
-      <div className="flex items-center justify-between gap-2 mb-2.5">
-        <p className="mt-label" style={{ color: hue, fontWeight: 700 }}>Worklog draft</p>
-        {generatedAt && (
-          <p className="text-[10.5px]" style={{ color: 'var(--t-faint)' }}>
-            Generated at {generatedAt} · still working on this? Regenerate below
-          </p>
-        )}
-      </div>
-      <div className="rounded-xl p-4 space-y-3"
-        style={{ border: `1px solid color-mix(in srgb, ${hue} 26%, transparent)`, background: `color-mix(in srgb, ${hue} 5%, var(--t-card))` }}>
-        <DraftTargets draft={draft} busy={busy} trackers={trackers} onOpenTask={onOpenTask}
-          onDismiss={onDismiss} onSetProvider={onSetProvider} />
-        {/* When the model split the work per ticket, each body renders inside its
-            own target row (DraftTargets). The shared block is only for the propose
-            branch and single/legacy matches, where there's one body for the draft. */}
-        {!hasPerTicketUpdates(draft) && <UpdateBody update={draft.update} />}
-      </div>
-      <DraftProvenance draft={draft} />
-    </div>
-  )
-}
-
-/** One line under the draft saying what it was actually compared against.
- *
- *  Without this a proposal is silently ambiguous: the user can't tell "your board
- *  has nothing like this" from "this wasn't on today's list", and those call for
- *  completely different reactions. Say which it was, and point at the fix. Stays
- *  quiet once the user has taken over the choice - they know what they picked. */
-function DraftProvenance({ draft }: { draft: DayTaskWorklogDraft }) {
-  // Once every ticket on the draft is the user's own pick, there is nothing left to
-  // explain — they know where they sent it.
-  if (draft.targets.length > 0 && draft.targets.every((t) => t.manual)) return null
-  const text = draft.propose
-    ? 'This work didn\'t match any of today\'s tasks, so Meridian drafted a new one. Only today\'s tasks are compared - if it belongs to another ticket, pick it below.'
-    : 'Matched against today\'s tasks only, not your whole board. Remove any that don\'t fit, or pick a different ticket below.'
-  return (
-    <p className="mt-body-sm mt-2 px-1" style={{ color: 'var(--t-faint)', fontSize: 11.5, lineHeight: 1.5 }}>
-      {text}
-    </p>
-  )
-}
-
-/** The pinned footer holding the primary worklog action, with a clear time hint.
- *  The AI match/propose call routes through the user's chosen provider and can
- *  take a while, so we set the expectation both before the click and while it runs. */
-function WorklogFooter({ wl, hue, linkedTicket, integrations, trackers, onOpenSettings }: {
-  wl: WorklogState; hue: string; linkedTicket: string | null
-  integrations: IntegrationsResponse | null
-  trackers: string[]
-  onOpenSettings: (section?: SettingsSection) => void
-}) {
-  const { draft, phase, error, posted, confirming, setConfirming, generate, approve, retarget } = wl
-  const busy = phase === 'generating' || phase === 'approving'
-  const done = draft?.targets.filter((t) => t.posted) ?? []
-  // Integrations loaded and nothing connected → the feature can't match/post, so
-  // prompt to connect a tracker instead of offering a dead Generate.
-  const noTracker = integrations !== null && trackers.length === 0
-
-  // The manual ticket picker. Local to the footer and reset whenever the draft's
-  // targets change, so a successful pick closes it without the caller wiring that up.
-  const [picking, setPicking] = useState(false)
-  const targetKeys = draft?.targets.map((t) => t.task_key).join(',')
-  useEffect(() => { setPicking(false) }, [targetKeys, draft?.propose?.title])
-
-  return (
-    <div className="shrink-0 p-4 space-y-2.5"
-      style={{ background: 'var(--t-card)', borderTop: '1px solid var(--t-card-border)', boxShadow: '0 -10px 26px -18px rgba(0,0,0,0.35)' }}>
-      {error && (
-        <p className="mt-body-sm rounded-lg px-3 py-2"
-          style={{ color: 'var(--color-state-pending)', background: 'color-mix(in srgb, var(--color-state-pending) 12%, transparent)', fontSize: 12 }}>
-          {error}
-        </p>
-      )}
-
-      {phase === 'generating' ? (
-        <GeneratingBar hue={hue} label="Generating your worklog…"
-          detail="Reading your work, comparing it against today's tasks and drafting the update - you can keep using Meridian while this runs." />
-      ) : posted ? (
-        <PostedBar done={done} linkedTicket={linkedTicket} provider={draft?.provider ?? ''}
-          hue={hue} busy={busy} onRegenerate={generate} />
-      ) : !draft ? (
-        noTracker
-          ? <ConnectTrackerCta hue={hue} onConnect={() => onOpenSettings('integrations')} />
-          : <GenerateCta hue={hue} trackers={trackers} disabled={busy || phase === 'loading'} onGenerate={generate} />
-      ) : picking ? (
-        <WorklogTicketPicker current={draft.targets[0]?.task_key ?? null} busy={busy}
-          onPick={retarget} onCancel={() => setPicking(false)} />
-      ) : confirming ? (
-        <ConfirmPost draft={draft} busy={busy} approving={phase === 'approving'} onApprove={approve} onCancel={() => setConfirming(false)} />
-      ) : (
-        <DraftActions draft={draft} hue={hue} busy={busy} onApprove={() => setConfirming(true)}
-          onRegenerate={generate} onPick={() => setPicking(true)} />
-      )}
-    </div>
-  )
-}
-
-/** Everything posted — one link chip per ticket that took the update.
- *
- *  Lists every ticket rather than the day-task's `linked_ticket`: that column holds
- *  one key, so a two-ticket update would silently report half of what it did. The
- *  linked ticket is only the fallback for a row posted before the draft existed. */
-function PostedBar({ done, linkedTicket, provider, hue, busy, onRegenerate }: {
-  done: PostedLink[]; linkedTicket: string | null; provider: string
-  hue: string; busy: boolean; onRegenerate: () => void
-}) {
-  const links: PostedLink[] = done.length > 0
-    ? done
-    : linkedTicket ? [{ task_key: linkedTicket, browse_url: null, provider }] : []
-  // All of a draft's targets share one tracker, so the first link's provider (or
-  // the draft's own, for the linkedTicket-only fallback with no targets at all)
-  // is the one to badge.
-  const meta = PROVIDER_META[links[0]?.provider ?? provider]
-  return (
-    <div className="space-y-2.5">
-      <div className="space-y-1.5">
-        <span className="inline-flex items-center gap-1.5 rounded-full py-1 pl-1 pr-3"
-          style={{ background: `color-mix(in srgb, ${meta?.color ?? 'var(--color-state-approved)'} 14%, transparent)` }}>
-          <ProviderGlyph provider={links[0]?.provider ?? provider} size={18} />
-          <span className="mt-body-sm" style={{ color: meta?.color ?? 'var(--color-state-approved)', fontSize: 12.5, fontWeight: 700 }}>
-            Posted{links.length > 1 ? ` to ${links.length} tickets` : links[0] ? ` to ${links[0].task_key}` : ''}
-          </span>
-        </span>
-        {links.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5">
-            {links.map((l) => <LinkChip key={l.task_key} label={l.task_key} url={l.browse_url} />)}
-          </div>
-        )}
-      </div>
-      {/* Posting appends a comment and can't be undone, but work keeps going - so
-          the posted update goes stale. Regenerate drafts a fresh follow-up from the
-          work done since; approving it posts a NEW comment (the one already on the
-          tracker stays). Kept quiet (a text link, not a button) so it never reads as
-          "your post didn't land". */}
-      <div className="flex items-center gap-1.5" style={{ color: 'var(--t-faint)', fontSize: 11.5 }}>
-        <span>Kept working on this?</span>
-        <button onClick={onRegenerate} disabled={busy}
-          className="inline-flex items-center gap-1 rounded"
-          style={{ color: hue, fontWeight: 700, opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer', textDecoration: 'underline' }}
-          title="Regenerate a fresh update and post it as a follow-up comment">
-          <span aria-hidden>↻</span> Regenerate
-        </button>
-      </div>
-    </div>
-  )
-}
-
-/** The slice of a posted target [`PostedBar`] links to. */
-interface PostedLink { task_key: string; browse_url: string | null; provider: string }
-
-/** No draft yet, a tracker connected — the primary generate CTA.
- *
- *  The copy says OUT LOUD that only today's tasks are compared against. That is
- *  not a detail: the user picked those tasks this morning, and if they don't know
- *  that's the whole comparison set, a proposal for unplanned work reads as
- *  Meridian failing to find an obvious match rather than doing what it said. The
- *  second sentence is the release valve, so the limit never feels like a wall.
- *
- *  No time claim here - that's shown once it is actually running (GeneratingBar). */
-function GenerateCta({ hue, trackers, disabled, onGenerate }: {
-  hue: string; trackers: string[]; disabled: boolean; onGenerate: () => void
-}) {
-  const where = trackers.length > 0 ? joinNames(trackers) : 'your tracker'
-  return (
-    <div>
-      <button onClick={onGenerate} disabled={disabled}
-        className="w-full inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3"
-        style={{ fontSize: 14, fontWeight: 700, color: '#fff', background: hue, opacity: disabled ? 0.55 : 1, cursor: disabled ? 'default' : 'pointer', boxShadow: `0 8px 22px -10px ${hue}` }}>
-        <span aria-hidden>✨</span> Generate worklog
-      </button>
-      <p className="mt-2.5 text-center" style={{ color: 'var(--t-muted)', fontSize: 13, lineHeight: 1.55 }}>
-        Meridian checks this work against <span style={{ fontWeight: 700, color: 'var(--t-title)' }}>today&apos;s tasks only</span> - not your whole board - and writes a short status update. If it doesn&apos;t belong to any of them, it proposes a new {where} issue instead, and you can pick a different ticket yourself. Nothing posts until you approve it.
-      </p>
-    </div>
-  )
-}
-
-/** No draft yet, and no tracker connected — the feature can't match or post, so
- *  invite the user to connect a PM app instead.
- *
- *  Deliberately no draft on this path: a status update with nowhere to go is a
- *  dead end dressed up as a feature. Lead with what connecting BUYS (drafting,
- *  matching, posting), not with the fact that something is missing. */
-function ConnectTrackerCta({ hue, onConnect }: { hue: string; onConnect: () => void }) {
-  return (
-    <div>
-      <button onClick={onConnect}
-        className="w-full inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3"
-        style={{ fontSize: 14, fontWeight: 700, color: '#fff', background: hue, cursor: 'pointer', boxShadow: `0 8px 22px -10px ${hue}` }}>
-        <span aria-hidden>🔗</span> Connect a tracker to auto-log this
-      </button>
-      <p className="mt-2.5 text-center" style={{ color: 'var(--t-muted)', fontSize: 13, lineHeight: 1.55 }}>
-        Connect Jira, Linear, GitHub, Trello, or Azure DevOps and Meridian drafts this work into a status update, matches it to the right issue, and posts it for you - so your tickets stay current without you writing them up. You approve every post.
-      </p>
-    </div>
-  )
-}
-
-/** Draft ready — approve (primary), regenerate (overwrites), or pick the ticket
- *  yourself. Clicking Regenerate flips the footer straight to the GeneratingBar,
- *  so that control itself never needs an in-progress label.
- *
- *  The pick affordance is ALWAYS offered, not just when nothing matched. Meridian
- *  only compares against today's planned tasks, so it can be confidently wrong
- *  about a day that went off-plan, and there'd be nothing the user could do about
- *  it. The wording changes with the draft, since "a different ticket" is
- *  nonsense when no ticket was chosen. Picking replaces every matched ticket with
- *  the one chosen; to drop just one of several, use the ✕ on its row. */
-function DraftActions({ draft, hue, busy, onApprove, onRegenerate, onPick }: {
-  draft: DayTaskWorklogDraft; hue: string; busy: boolean
-  onApprove: () => void; onRegenerate: () => void; onPick: () => void
-}) {
-  // Nothing to post to (every match dismissed, no proposal) — approve would only
-  // fail, so don't offer it. The picker below is the way out.
-  const nowhere = !draft.propose && draft.targets.length === 0
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        <button onClick={onApprove} disabled={busy || nowhere}
-          className="mt-body-sm flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5"
-          style={{ fontWeight: 700, color: '#fff', background: hue, opacity: busy || nowhere ? 0.55 : 1, cursor: busy || nowhere ? 'default' : 'pointer', boxShadow: `0 8px 22px -10px ${hue}` }}>
-          {draft.propose ? 'Create & post' : draft.targets.length > 1 ? `Approve & post to ${draft.targets.length}` : 'Approve & post'}
-        </button>
-        <button onClick={onRegenerate} disabled={busy}
-          className="mt-body-sm inline-flex items-center gap-1.5 rounded-xl px-4 py-2.5"
-          style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)', opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer' }}
-          title="Regenerate - overwrites this draft">
-          <span aria-hidden>↻</span> Regenerate
-        </button>
-      </div>
-      <button onClick={onPick} disabled={busy}
-        className="mt-body-sm w-full rounded-lg px-3 py-2"
-        style={{ color: 'var(--t-muted)', border: '1px solid var(--t-hair)', fontSize: 12.5, opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer' }}>
-        {draft.propose || draft.targets.length === 0
-          ? 'Match to one of my tickets instead'
-          : draft.targets.length > 1
-            ? 'Post to just one ticket instead'
-            : 'Match to a different ticket'}
-      </button>
-    </div>
-  )
-}
-
-/** Draft ready, user is confirming the post. */
-function ConfirmPost({ draft, busy, approving, onApprove, onCancel }: {
-  draft: DayTaskWorklogDraft; busy: boolean; approving: boolean; onApprove: () => void; onCancel: () => void
-}) {
-  // Name every ticket, not a count: this is the last screen before a comment goes
-  // on someone else's board, and "post to 3 tickets?" is not something you can
-  // meaningfully say yes to.
-  const where = draft.targets.map((t) => t.task_key).join(', ')
-  return (
-    <div className="space-y-2">
-      <p className="mt-body-sm text-center" style={{ color: 'var(--t-muted)', fontSize: 12.5 }}>
-        {draft.propose
-          // Names the board too: creating a ticket is outward-facing and can't be
-          // undone, and with two trackers connected "a new Task" doesn't say where.
-          ? `Create a new ${draft.propose.issue_type} in ${providerName(draft.provider)} and post this update?`
-          : `Post this update to ${where || 'the tracker'}?`}
-      </p>
-      <div className="flex items-center gap-2">
-        <button onClick={onApprove} disabled={busy}
-          className="mt-body-sm flex-1 rounded-xl px-4 py-2.5"
-          style={{ fontWeight: 700, color: '#fff', background: 'var(--color-state-approved)', opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer' }}>
-          {approving ? 'Posting…' : 'Yes, post'}
-        </button>
-        <button onClick={onCancel} disabled={busy}
-          className="mt-body-sm rounded-xl px-4 py-2.5"
-          style={{ color: 'var(--t-faint)', border: '1px solid var(--t-hair)', opacity: busy ? 0.55 : 1, cursor: busy ? 'default' : 'pointer' }}>
-          Cancel
-        </button>
-      </div>
-    </div>
-  )
-}
-

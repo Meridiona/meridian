@@ -544,6 +544,103 @@ async fn plan_write_confirm_then_reopen_roundtrip() {
 }
 
 #[tokio::test]
+async fn adding_a_task_commits_the_day_so_the_dashboard_shows_it() {
+    // `add` is what `meridian plan-task-create` runs, i.e. the planner's task
+    // composer. It used to write `daily_plan` and leave `daily_plan_meta`
+    // untouched, so `confirmed` stayed false - and every reader gates on that
+    // (the dashboard renders `plan.confirmed ? plan.plan : []`). The row existed
+    // and was shown nowhere.
+    //
+    // That is the ONLY way a solo/no-tracker user can build a plan, and it is the
+    // path the onboarding walkthrough drives, so it broke precisely the first-run
+    // experience: "Saved - today's tasks are in", followed by an empty dashboard.
+    let pool = make_plan_pool().await;
+    let today = chrono::Local::now().date_naive();
+    let date = today.format("%Y-%m-%d").to_string();
+    seed_task(&pool, "PROJ-A", "Backlog", Some(&date), 0).await;
+    let now = chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+
+    let add = meridian_core::plan::PlanBody {
+        action: "add".to_string(),
+        date: Some(date.clone()),
+        task_key: Some("PROJ-A".to_string()),
+        task_keys: None,
+    };
+    let resp = meridian_core::plan::apply_plan_action(&pool, &add, &date, today, &now, Vec::new())
+        .await
+        .unwrap();
+    assert!(
+        resp.confirmed,
+        "authoring a task for the day must commit the day, or it renders nowhere"
+    );
+    assert!(!resp.skipped);
+    let keys: Vec<&str> = resp.plan.iter().map(|p| p.task_key.as_str()).collect();
+    assert_eq!(keys, vec!["PROJ-A"]);
+
+    // A second add must NOT move the original commit time - the day was committed
+    // when it was first committed, and later edits are edits, not re-commits.
+    let first: Option<String> =
+        sqlx::query_scalar("SELECT confirmed_at FROM daily_plan_meta WHERE plan_date = ?")
+            .bind(&date)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    seed_task(&pool, "PROJ-B", "Backlog", Some(&date), 0).await;
+    let later = "2099-01-01T00:00:00Z";
+    let add_b = meridian_core::plan::PlanBody {
+        action: "add".to_string(),
+        date: Some(date.clone()),
+        task_key: Some("PROJ-B".to_string()),
+        task_keys: None,
+    };
+    meridian_core::plan::apply_plan_action(&pool, &add_b, &date, today, later, Vec::new())
+        .await
+        .unwrap();
+    let second: Option<String> =
+        sqlx::query_scalar("SELECT confirmed_at FROM daily_plan_meta WHERE plan_date = ?")
+            .bind(&date)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(first, second, "a later add must not restamp confirmed_at");
+}
+
+#[tokio::test]
+async fn adding_a_task_to_a_skipped_day_un_skips_it() {
+    // Authoring a task for a day you had skipped is an explicit change of mind.
+    // Leaving `skipped` set would hide the task behind the same gate that hid it
+    // before, which reads as the Add button doing nothing.
+    let pool = make_plan_pool().await;
+    let today = chrono::Local::now().date_naive();
+    let date = today.format("%Y-%m-%d").to_string();
+    seed_task(&pool, "PROJ-A", "Backlog", Some(&date), 0).await;
+    let now = chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+
+    let skip = meridian_core::plan::PlanBody {
+        action: "skip".to_string(),
+        date: Some(date.clone()),
+        task_key: None,
+        task_keys: None,
+    };
+    let resp = meridian_core::plan::apply_plan_action(&pool, &skip, &date, today, &now, Vec::new())
+        .await
+        .unwrap();
+    assert!(resp.skipped);
+
+    let add = meridian_core::plan::PlanBody {
+        action: "add".to_string(),
+        date: Some(date.clone()),
+        task_key: Some("PROJ-A".to_string()),
+        task_keys: None,
+    };
+    let resp = meridian_core::plan::apply_plan_action(&pool, &add, &date, today, &now, Vec::new())
+        .await
+        .unwrap();
+    assert!(!resp.skipped, "adding a task un-skips the day");
+    assert!(resp.confirmed);
+}
+
+#[tokio::test]
 async fn plan_write_rejects_missing_keys_and_unready_storage() {
     let pool = make_plan_pool().await;
     let today = chrono::Local::now().date_naive();
@@ -1768,6 +1865,17 @@ async fn make_worklog_pool() -> SqlitePool {
             reasoning TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT 'drafted',
             target_key TEXT, created_task_key TEXT, posted_comment_id TEXT, browse_url TEXT,
             last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            -- Migration 077: the task's measured minutes when the draft was
+            -- written, which is what staleness compares against.
+            drafted_minutes INTEGER,
+            PRIMARY KEY (day_local, task_id)
+        );
+        -- Migration 058. Every real DB carrying day_task_worklogs has this
+        -- (058 predates 060), and the draft read LEFT JOINs it for staleness -
+        -- so its absence here was a fixture gap, not a case to defend against.
+        CREATE TABLE day_tasks (
+            day_local TEXT NOT NULL, task_id TEXT NOT NULL, title TEXT NOT NULL,
+            minutes INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (day_local, task_id)
         );
         "#,
@@ -1985,4 +2093,140 @@ async fn set_draft_provider_errors_on_a_draft_that_does_not_exist() {
     .await
     .expect_err("no draft, no provider to set");
     assert!(err.to_string().contains("vanished"), "got: {err}");
+}
+
+// ── plan carry-over ───────────────────────────────────────────────────────────
+
+/// Put `key` on `day`'s committed plan, as a confirm would.
+async fn seed_planned(pool: &SqlitePool, day: &str, key: &str) {
+    sqlx::query(
+        "INSERT INTO daily_plan (plan_date, task_key, position, origin, created_at, updated_at) \
+         VALUES (?, ?, 0, 'manual', 't', 't')",
+    )
+    .bind(day)
+    .bind(key)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO daily_plan_meta (plan_date, confirmed_at, skipped, created_at, updated_at) \
+         VALUES (?, 't', 0, 't', 't') ON CONFLICT(plan_date) DO NOTHING",
+    )
+    .bind(day)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Build today's plan response the way the command does.
+async fn plan_for(pool: &SqlitePool, date: &str, today: chrono::NaiveDate) -> PlanResponse {
+    let (now_ms, recent_since) = plan_clock();
+    let avail = meridian_core::plan::build_available(pool, date, today, now_ms, &recent_since)
+        .await
+        .unwrap();
+    meridian_core::plan::build_plan_response(pool, date, today, avail)
+        .await
+        .unwrap()
+}
+
+use meridian_core::plan::PlanResponse;
+
+/// Unfinished work follows you into the next day without being asked for.
+///
+/// It also has to be VISIBLE, which is why `confirmed` is asserted alongside the rows:
+/// the timeline's "Today's focus" renders `confirmed ? plan : []`, so carrying tasks
+/// over without confirming would write rows only the plan modal shows — a modal listing
+/// today's tasks behind a panel insisting there are none.
+#[tokio::test]
+async fn yesterday_s_unfinished_work_becomes_today_s_plan() {
+    let pool = make_plan_pool().await;
+    let today = chrono::Local::now().date_naive();
+    let date = today.format("%Y-%m-%d").to_string();
+    let yesterday = (today - Duration::days(1)).format("%Y-%m-%d").to_string();
+
+    seed_task(&pool, "PROJ-OPEN", "In Progress", None, 0).await;
+    seed_task(&pool, "PROJ-DONE", "Done", None, 1).await;
+    seed_planned(&pool, &yesterday, "PROJ-OPEN").await;
+    seed_planned(&pool, &yesterday, "PROJ-DONE").await;
+
+    let resp = plan_for(&pool, &date, today).await;
+
+    let keys: Vec<&str> = resp.plan.iter().map(|p| p.task_key.as_str()).collect();
+    assert_eq!(
+        keys,
+        vec!["PROJ-OPEN"],
+        "only the task still open carries over - finishing something must not resurrect it"
+    );
+    assert!(
+        resp.confirmed,
+        "a carried-over plan the timeline cannot see is the split this fixes"
+    );
+    assert!(!resp.skipped);
+}
+
+/// The guard that matters more than the feature: carry-over must never put back work the
+/// user deliberately took out.
+///
+/// A `daily_plan_meta` row is the marker of "this day has been touched". Clearing the
+/// plan leaves one behind with no rows, which is a DECISION - as distinct from a day
+/// nobody has opened, which has no row at all. Without this distinction every read of the
+/// plan would re-add the tasks the user had just removed, permanently.
+#[tokio::test]
+async fn a_plan_the_user_emptied_stays_empty() {
+    let pool = make_plan_pool().await;
+    let today = chrono::Local::now().date_naive();
+    let date = today.format("%Y-%m-%d").to_string();
+    let yesterday = (today - Duration::days(1)).format("%Y-%m-%d").to_string();
+
+    seed_task(&pool, "PROJ-OPEN", "In Progress", None, 0).await;
+    seed_planned(&pool, &yesterday, "PROJ-OPEN").await;
+
+    // The user opened today, cleared it, and closed the modal: meta row, no plan rows.
+    sqlx::query(
+        "INSERT INTO daily_plan_meta (plan_date, confirmed_at, skipped, created_at, updated_at) \
+         VALUES (?, 't', 0, 't', 't')",
+    )
+    .bind(&date)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let resp = plan_for(&pool, &date, today).await;
+    assert!(
+        resp.plan.is_empty(),
+        "an emptied plan is a decision, not an empty day to fill in"
+    );
+
+    // A SKIPPED day is the same story told differently, and must be left alone too.
+    let pool2 = make_plan_pool().await;
+    seed_task(&pool2, "PROJ-OPEN", "In Progress", None, 0).await;
+    seed_planned(&pool2, &yesterday, "PROJ-OPEN").await;
+    sqlx::query(
+        "INSERT INTO daily_plan_meta (plan_date, confirmed_at, skipped, created_at, updated_at) \
+         VALUES (?, NULL, 1, 't', 't')",
+    )
+    .bind(&date)
+    .execute(&pool2)
+    .await
+    .unwrap();
+    assert!(plan_for(&pool2, &date, today).await.plan.is_empty());
+}
+
+/// A past date is a record of what was planned then, and the timeline renders past days
+/// from exactly these rows - so carry-over must never write into one.
+#[tokio::test]
+async fn carry_over_never_rewrites_a_past_day() {
+    let pool = make_plan_pool().await;
+    let today = chrono::Local::now().date_naive();
+    let two_ago = (today - Duration::days(2)).format("%Y-%m-%d").to_string();
+    let three_ago = (today - Duration::days(3)).format("%Y-%m-%d").to_string();
+
+    seed_task(&pool, "PROJ-OPEN", "In Progress", None, 0).await;
+    seed_planned(&pool, &three_ago, "PROJ-OPEN").await;
+
+    let resp = plan_for(&pool, &two_ago, today).await;
+    assert!(
+        resp.plan.is_empty(),
+        "a day that was left unplanned must still read as unplanned afterwards"
+    );
 }

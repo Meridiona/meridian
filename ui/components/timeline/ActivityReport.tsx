@@ -57,9 +57,9 @@ export function TldrPreview({ report }: { report: string }) {
   return (
     <div className="group rounded-md px-3 py-2.5 bg-box transition-colors">
       <div className="flex items-center justify-between gap-2 mb-1">
-        <span className="mt-label" style={{ color: 'var(--color-state-proposal)' }}>✦ Summary</span>
+        <span className="mt-label" style={{ color: 'var(--t-accent)' }}>✦ Summary</span>
         <span className="mt-chip shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-          style={{ color: 'var(--color-state-proposal)' }}>
+          style={{ color: 'var(--t-accent)' }}>
           Full report ›
         </span>
       </div>
@@ -105,7 +105,7 @@ export function ActivityReport({ report, compact = false }: { report: string; co
     ),
     a: ({ href, children }) => (
       <a href={href} target="_blank" rel="noopener noreferrer" className="underline"
-        style={{ color: 'var(--color-state-proposal)' }}>
+        style={{ color: 'var(--t-accent)' }}>
         {children}
       </a>
     ),

@@ -30,9 +30,16 @@ export default function UninstallWizard() {
   const [phase, setPhase] = useState<Phase>('loading')
   const [plan, setPlan] = useState<UninstallPlan>(EMPTY_PLAN)
   const [result, setResult] = useState<UninstallResult | null>(null)
-  const [removeData, setRemoveData] = useState(false)
-  const [removeRuntime, setRemoveRuntime] = useState(false)
-  const [removeModels, setRemoveModels] = useState(false)
+  // All three default to CHECKED: "uninstall" means remove the product, and
+  // leaving them off shipped an uninstall that kept the activity database, the
+  // tracker credentials and the signed-in account - so the app was gone but the
+  // user's data, and their Jira/Linear tokens, quietly stayed on the machine.
+  // Every item is still listed and individually unticked, so the narrower
+  // "remove the app, keep my data" path is one click away rather than the
+  // silent default.
+  const [removeData, setRemoveData] = useState(true)
+  const [removeRuntime, setRemoveRuntime] = useState(true)
+  const [removeModels, setRemoveModels] = useState(true)
   const [runErr, setRunErr] = useState('')
 
   useEffect(() => {
@@ -158,7 +165,7 @@ function OptionRow({ checked, onToggle, title, subtitle, items }: {
         className="flex items-center justify-center shrink-0"
         style={{
           width: 20, height: 20, borderRadius: 6, marginTop: 1,
-          background: checked ? 'var(--color-state-proposal)' : 'transparent',
+          background: checked ? 'var(--btn-primary-bg)' : 'transparent',
           border: checked ? 'none' : '1px solid var(--t-card-border)',
         }}
       >
@@ -192,7 +199,7 @@ function SelectStep({
       <OptionRow
         checked={removeData} onToggle={() => setRemoveData(!removeData)}
         title="Meridian data"
-        subtitle="Activity database, tracker credentials, settings, logs, and telemetry"
+        subtitle="Activity database and its encryption key, your sign-in, tracker credentials, settings, logs, and telemetry"
         items={plan.data}
       />
       <OptionRow

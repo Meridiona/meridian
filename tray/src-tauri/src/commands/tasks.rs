@@ -20,6 +20,12 @@ use meridian_core::proc_ext::NoWindow;
 use serde::Serialize;
 use std::time::Duration;
 
+/// How long `meridian tasks-sync` gets before the command gives up and reports
+/// a timeout. Named so the log field, the user-facing message and the timer can
+/// never disagree — they were three independent literals, and a `30` that drifts
+/// in one place turns a support report into a wrong-duration red herring.
+const SYNC_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Success payload — mirrors the route's `{ ok, detail }` (the CLI's stdout).
 #[derive(Debug, Clone, Serialize)]
 pub struct SyncResult {
@@ -28,7 +34,7 @@ pub struct SyncResult {
 }
 
 /// Re-sync the board from the tracker (the ported /api/tasks/sync POST). Spawns
-/// `meridian tasks-sync` with a 30 s timeout; returns its trimmed stdout as
+/// `meridian tasks-sync` with a `SYNC_TIMEOUT` budget; returns its trimmed stdout as
 /// `detail` on success, or an `Err` carrying stderr (the route's 500 body.error)
 /// on timeout / spawn failure / non-zero exit.
 #[tauri::command]
@@ -58,10 +64,25 @@ pub async fn sync_tasks() -> Result<SyncResult, String> {
         .no_window()
         .output();
 
-    let output = match tokio::time::timeout(Duration::from_secs(30), child).await {
+    let output = match tokio::time::timeout(SYNC_TIMEOUT, child).await {
         Err(_) => {
-            tracing::warn!("tasks-sync timed out");
-            return Err("tasks-sync timed out after 30s".to_string());
+            // `kill_on_drop` reaps the child here, taking its stderr with it, so
+            // this log is the ONLY record a timeout ever leaves. Emitting a bare
+            // "tasks-sync timed out" (as it did) makes the two cases that matter
+            // indistinguishable in a support bundle: a genuinely slow tracker
+            // sync vs. a `meridian` binary that never got past opening a corrupt
+            // meridian.db. WHICH binary and WHICH cwd is what separates them —
+            // the same two facts the spawn/non-zero arms below already log.
+            tracing::warn!(
+                bin = %bin,
+                cwd = %cwd.display(),
+                timeout_s = SYNC_TIMEOUT.as_secs(),
+                "tasks-sync timed out"
+            );
+            return Err(format!(
+                "tasks-sync timed out after {}s",
+                SYNC_TIMEOUT.as_secs()
+            ));
         }
         Ok(Err(e)) => {
             tracing::warn!(bin = %bin, error = %e, "tasks-sync spawn failed");

@@ -331,11 +331,17 @@ pub async fn check_update(app: tauri::AppHandle) -> crate::update::UpdateStatus 
 }
 
 /// Download + install the available DMG update, then relaunch. Emits
-/// `update-progress` events the banners render as a bar. Returns `Err(String)`
-/// only on a pre-relaunch failure (success never returns — the app re-execs).
+/// `update-progress` events the banners render as a bar. Returns `Err` only on
+/// a pre-relaunch outcome (success never returns — the app re-execs).
+///
+/// The error is [`crate::update::UpdateError`], not a bare string, because the
+/// banners must tell a real failure from `kind: "inProgress"` — the
+/// single-flight refusal raised when the *other* surface already started this
+/// install. Rendering the two the same way is what put "Update failed" on
+/// screen during a download that was working.
 #[tauri::command]
 #[tracing::instrument(skip(app))]
-pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn install_update(app: tauri::AppHandle) -> Result<(), crate::update::UpdateError> {
     crate::update::download_and_apply(&app).await
 }
 

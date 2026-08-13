@@ -24,7 +24,7 @@ const state = (over: Partial<ComposerState> = {}): ComposerState => ({
   note: '', title: '', description: '', issueType: 'Task',
   target: LOCAL_PROVIDER, boardProvider: null, phase: 'idle',
   titleDrafted: false, descriptionDrafted: false,
-  error: null, note_after: null, created: null,
+  error: null, errorSource: null, providerDown: false, note_after: null, created: null,
   ...over,
 })
 

@@ -173,12 +173,48 @@ fn has_unresolved_failure(
     )
 }
 
+/// Record that `provider` answered a call made specifically to re-establish truth.
+///
+/// The difference from [`record_success`] is that this ALWAYS writes. `record_success` is
+/// on the hot path and deliberately writes only on a state change, deciding "was there
+/// anything to clear?" from [`has_unresolved_failure`] — which reads the RUNTIME record and
+/// nothing else. That is correct for its own callers and wrong here: the verdict a probe
+/// exists to overturn usually lives in the MANUAL TEST cache (a failed Settings → Test
+/// Connection), where `has_unresolved_failure` cannot see it. `record_success` would find no
+/// runtime failure, early-return, write nothing, and leave the failed test as the most
+/// recent word — so the probe would succeed and change nothing, and the next call would be
+/// refused by the same gate that let this one through. A manual test result carries no
+/// expiry, so "nothing" here means forever.
+///
+/// Writing unconditionally is safe precisely because the caller is rare: `resolver`'s probe
+/// exemption admits at most one call per provider per interval, so this cannot become the
+/// per-call disk write that `record_success`'s short circuit exists to avoid.
+pub fn record_probe_success(provider: LlmProvider) {
+    let id = provider.as_str().to_string();
+    clear_streak(&id);
+    tracing::info!(
+        provider = %id,
+        "llm provider answered a health probe - clearing the failed verdict"
+    );
+    persist(RuntimeObservation {
+        id,
+        outcome: ProviderTestOutcome::Ok,
+        observed_at: chrono::Utc::now().to_rfc3339(),
+    });
+    // `persist` alone is not enough to end the outage. `in_use_provider_health` memoises its
+    // verdict for `IN_USE_HEALTH_TTL` (5 min), and the gate reads that memo — so without
+    // this the recovered provider would keep being refused for up to another five minutes,
+    // by a cached copy of the verdict we just disproved.
+    super::detect::invalidate_in_use_health();
+}
+
 /// Record that `provider` answered a real call.
 ///
 /// Clears the failure streak and stamps an `Ok` observation, so a recovered provider drops
 /// the banner on the tray's next health poll rather than waiting for the user to re-test.
 /// Writes only on a state CHANGE (the first success after failures) — a healthy provider
-/// making an hourly call must not rewrite the file forever.
+/// making an hourly call must not rewrite the file forever. A call made to test a REFUSED
+/// provider uses [`record_probe_success`] instead, which has no such short circuit.
 pub fn record_success(provider: LlmProvider) {
     let id = provider.as_str().to_string();
     let was_failing = clear_streak(&id);
@@ -302,6 +338,17 @@ pub fn most_recent_outcome(
     });
     let test = last_test.and_then(|t| parse(&t.tested_at).map(|at| (at, &t.outcome)));
 
+    // An ASSERTED verdict outranks any measurement, whatever the timestamps say.
+    // `sticky` marks a state someone is deliberately holding - today only the
+    // dev-only Disconnect button, whose entire job is to pin the signed-out state
+    // so it can be worked on. A live call succeeding is exactly what that button
+    // is holding the line against, and on a machine being used one arrives within
+    // minutes, so without this the button reads as doing nothing at all. Only an
+    // explicit Test Connection or Rescan replaces the row and clears the flag.
+    if let Some(t) = last_test.filter(|t| t.sticky) {
+        return Some(t.outcome.clone());
+    }
+
     match (test, runtime) {
         (Some((t_at, t_out)), Some((r_at, r_out))) => Some(if r_at >= t_at {
             r_out.clone()
@@ -331,6 +378,7 @@ mod tests {
             outcome,
             elapsed_ms: 1,
             tested_at: tested_at.into(),
+            sticky: false,
         }
     }
 
@@ -453,6 +501,45 @@ mod tests {
 
     /// The regression the fix above almost introduced: an EXPIRED runtime observation (a
     /// parseable timestamp older than `OBSERVATION_MAX_AGE_HOURS`) must stay dropped even
+    /// An ASSERTED verdict is not evidence to be weighed - it outranks a measurement
+    /// however fresh the measurement is.
+    ///
+    /// `sticky` is set by exactly one thing, the dev-only Disconnect button, whose job
+    /// is to pin the signed-out state so it can be worked on. A live call succeeding is
+    /// precisely what it holds the line against, and on a developer's machine (background
+    /// folds, coding-agent summaries) one lands within minutes - so without this the
+    /// button reads as broken. This coverage moved here with the logic: it used to live
+    /// in `detect::note_live_call_success`, which this module replaced.
+    #[test]
+    fn an_asserted_verdict_outranks_a_newer_measurement() {
+        let held = ProviderTestResult {
+            sticky: true,
+            ..test_result(
+                ProviderTestOutcome::Failed {
+                    message: "not signed in".into(),
+                },
+                &(chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339(),
+            )
+        };
+        // A success observed AFTER it, which would otherwise win on recency.
+        let fresh = observation(ProviderTestOutcome::Ok, chrono::Utc::now().to_rfc3339());
+
+        assert!(matches!(
+            most_recent_outcome(Some(&held), Some(&fresh)),
+            Some(ProviderTestOutcome::Failed { .. })
+        ));
+
+        // Without the flag the same pair resolves the ordinary way: newest wins.
+        let ordinary = ProviderTestResult {
+            sticky: false,
+            ..held.clone()
+        };
+        assert!(matches!(
+            most_recent_outcome(Some(&ordinary), Some(&fresh)),
+            Some(ProviderTestOutcome::Ok)
+        ));
+    }
+
     /// with no competing test - the `(None, None)` fallback must not resurrect it just
     /// because there's nothing to lose to. Only a genuinely unparseable timestamp should
     /// fall back to the observation's outcome.

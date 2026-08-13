@@ -274,6 +274,28 @@ export interface DayTask {
   posted_browse_url: string | null
 }
 
+/** Where one day-task's worklog stands, from `get_day_draft_states`.
+ *
+ *  Deliberately not the whole `DayTaskWorklogDraft`: this renders a badge on a row in
+ *  a list, and the full shape carries the update text, the reasoning and every target.
+ *  A task with NO draft has no entry at all, so a caller can tell "nothing generated"
+ *  from "ready and waiting" - which the old fixed "draft ready" sub-line could not. */
+export interface DayDraftState {
+  task_id: string
+  /** `drafted` | `approved` | `posted` | `error`. */
+  state: string
+  /** Measured minutes worked since the draft was written. Null on a pre-077 row. */
+  stale_minutes: number | null
+  /** Whether that growth is worth acting on, by the one definition
+   *  (`WORKLOG_STALE_MINUTES`, 15) the daemon's notifier and this UI both read.
+   *
+   *  Read this rather than thresholding `stale_minutes` here. A local threshold is
+   *  a second definition of "stale", and it disagreed with the notification the
+   *  user had already been shown - a toast saying the draft had fallen behind,
+   *  linking to a summary that said it had not. */
+  stale: boolean
+}
+
 export interface DayTasksResponse {
   day: string
   tasks: DayTask[]
@@ -372,6 +394,19 @@ export interface DayTaskWorklogDraft {
   /** When this draft was last written (generated OR regenerated) — RFC-3339, UTC.
    *  "As of", not "first generated at" — a Regenerate click bumps it. */
   updated_at: string
+  /** Measured minutes worked on this task SINCE the draft was written, or null
+   *  when that cannot be known (drafted before migration 077, or the task has
+   *  since gone). Deterministic — measured spans, no model. */
+  stale_minutes: number | null
+  /** Whether that growth is worth acting on, by the single definition
+   *  (`WORKLOG_STALE_MINUTES`, 15) the daemon's notifier and this UI both read.
+   *  Never true once the draft leaves `drafted`: a posted update is a record of
+   *  what went out, and offering to rewrite it offers to lose it.
+   *
+   *  Read this rather than thresholding `stale_minutes` here — a second
+   *  definition in TypeScript is a second definition that can disagree with the
+   *  notification the user already received. */
+  stale: boolean
 }
 
 /** The tray's escalate-command reply (`escalate_personal_task_create` /
@@ -565,6 +600,10 @@ export interface PlanTaskDraft {
   description: string
   issue_type: string        // 'Task' | 'Bug'
   error: string | null      // soft: "couldn't draft - write it yourself"
+  /** The ENGINE failed, not the answer - unreachable, refused, or empty. The composer
+   *  routes this to the AI picker instead of offering a retry that would fail the same
+   *  way. Absent from an older CLI, which reads as false. */
+  provider_down?: boolean
 }
 
 export interface CreatePlanTaskBody {
@@ -739,6 +778,19 @@ export interface UpdateProgress {
   contentLength: number | null
 }
 
+// What `install_update` rejects with — mirrors `update.rs`'s `UpdateError`.
+//
+// `kind` exists so a banner can tell a broken update from a busy one. Both
+// surfaces can be open at once and both call the same command, so clicking the
+// second while the first downloads hits the Rust single-flight guard and gets
+// `inProgress` back. That is not a failure: the install is running and will
+// relaunch the app. Rendering it as one (and inviting a retry that can only be
+// refused again) is the bug `update-in-progress.test.ts` guards.
+export interface UpdateError {
+  kind: 'inProgress' | 'failed'
+  message: string
+}
+
 // ── What's New (`get_whats_new`) ───────────────────────────────────────────────
 
 export interface ReleaseNote {
@@ -817,13 +869,20 @@ export interface Adherence {
  *
  *  The plan side (`plan`, `adherence`) is resolved deterministically in Rust from
  *  the worklog matches - never from the model - so it holds even on the fallback
- *  path. The model only writes `headline` and `insights`. */
+ *  path. The model only writes `headline`, `insights` and `standup`. */
 export interface DaySummary {
   day: string
   /** A short warm line above everything. Empty on the fallback path. */
   headline: string
   /** The three insight cards. Empty on the fallback path. */
   insights: DaySummaryInsight[]
+  /** The day as three to five lines you could read out at standup - one string per
+   *  bullet, so the Copy button joins them with newlines rather than the screen
+   *  guessing where the model meant to break a paragraph.
+   *
+   *  Empty on the fallback path and on rows written before migration 080; the block
+   *  simply does not render. */
+  standup: string[]
   /** One verdict per planned ticket; empty when the day had no plan. */
   plan: PlanVerdict[]
   adherence: Adherence
@@ -949,6 +1008,39 @@ export interface InstallOutcome {
   path: string | null
   /** The command that was actually run, for display and debugging. */
   command: string
+}
+
+/** `get_health` (Rust `HealthResponse`, `tray/src-tauri/src/commands/health.rs`) - the
+ *  daemon/provider status behind the global banner.
+ *
+ *  Lives here because FOUR copies of this shape had grown in components: a private
+ *  `interface HealthStatus` in `HealthBanner.tsx` plus three inline
+ *  `{ llm_provider_ok?: boolean }` literals at the call sites that only care about the
+ *  provider. Inline literals are the drift risk this file exists to prevent - each one
+ *  silently decides its own optionality, and none of them changes when the Rust struct
+ *  does.
+ *
+ *  Every field is optional: the command resolves an empty response on error rather than
+ *  rejecting (its "silent-resolve contract"), so a consumer can never assume presence.
+ *
+ *  # Who reads this
+ *  `HealthBanner` (all of it), and `TaskComposer` / `SummaryTaskView` /
+ *  `WorklogDraftDialog` (the `llm_provider_ok` gate only). */
+export interface HealthStatus {
+  a11y_helper_trusted?: boolean
+  database_ready?: boolean
+  daemon_running?: boolean
+  error?: string
+  /** Whether the in-use LLM provider is usable. `false` → the provider is missing or
+   *  failing, so summaries are paused/degraded. `llm_provider_name`/`_detail` fill the
+   *  banner copy. */
+  llm_provider_ok?: boolean
+  /** `true` → the provider is usable but rate-limited: a softer "catching up" notice,
+   *  not the "unavailable" alarm (it clears on its own). Only meaningful when
+   *  `llm_provider_ok !== false`. */
+  llm_provider_rate_limited?: boolean
+  llm_provider_name?: string
+  llm_provider_detail?: string
 }
 
 /** `preview_repair` - what a database repair would face, for the confirmation copy. */

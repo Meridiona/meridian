@@ -22,6 +22,7 @@ import { readFileSync } from 'fs'
 const uiRoot = import.meta.dir + '/..'
 const composer = readFileSync(`${uiRoot}/components/plan/TaskComposer.tsx`, 'utf8')
 const store = readFileSync(`${uiRoot}/components/plan/useTaskComposer.ts`, 'utf8')
+const notice = readFileSync(`${uiRoot}/components/plan/AiEngineNotice.tsx`, 'utf8')
 
 /** The real predicate, mirrored (the source is the contract; this pins its shape). */
 const MIN_TITLE_WORDS = 4
@@ -75,9 +76,77 @@ describe('the composer never blocks on the AI', () => {
   it('a failed draft sets an error and leaves the fields alone', () => {
     // The draft path's failure arms must never touch title/description — that is
     // what makes a dead model a slow suggestion rather than a lost task.
+    //
+    // Checked by what the arms CONTAIN rather than by their exact text: they carry
+    // an `errorSource` now (so the composer can tell a dead engine from a failed
+    // create), and pinning the literal string made adding that look like a
+    // regression when the invariant it guards was untouched.
     const fn = store.slice(store.indexOf('export function draftFromNote'), store.indexOf('export function createTask'))
-    expect(fn.includes("patch({ phase: 'idle', error: d.error })")).toBe(true)
-    expect(fn.includes("patch({ phase: 'idle', error: errMsg(e) })")).toBe(true)
+    for (const arm of ['error: d.error', 'error: errMsg(e)']) {
+      const at = fn.indexOf(arm)
+      expect(at).toBeGreaterThan(-1)
+      // The whole `patch({...})` the arm sits in, and nothing of the field-setting
+      // success path above it.
+      const call = fn.slice(fn.lastIndexOf('patch({', at), fn.indexOf('}', at) + 1)
+      expect(call).toContain("phase: 'idle'")
+      for (const field of ['title', 'description', 'issueType']) {
+        expect(call.includes(field)).toBe(false)
+      }
+    }
+  })
+
+  // A draft can fail for two completely different reasons, and until now the
+  // composer treated them the same: a red line of text with no way forward. The
+  // pre-flight only ran on the hero (first-run) surface, so on the board column a
+  // missing engine produced "Couldn't draft that - write it below." and nothing
+  // else. These pin the two halves of the fix.
+  it('probes for an AI engine on every mount, not just the first-run one', () => {
+    // `if (hero)` here is the bug: the board column's composer is the same form for
+    // the same person, and it is where a signed-out engine actually gets hit.
+    expect(composer).toContain('useEffect(() => { void probeProviders() }, [probeProviders])')
+    expect(/if\s*\(hero\)\s*void probeProviders/.test(composer)).toBe(false)
+  })
+
+  it('a draft that fails on a dead engine offers the connect route, not just text', () => {
+    // The pre-flight cannot catch an engine that is configured but signed out - that
+    // only surfaces when the call is made. So a draft failure re-asks health, and a
+    // bad answer raises the same notice the pre-flight does.
+    expect(composer).toContain("s.errorSource !== 'draft'")
+    expect(composer).toContain('setShowAiNotice(true)')
+    // And the raw failure is not printed underneath the notice that supersedes it.
+    expect(composer).toContain('s.error && !showAiNotice')
+  })
+
+  it('a live engine failure beats what health remembers', () => {
+    // The dead end this closes: health scores the LAST RECORDED TEST, so a provider
+    // whose key tested fine reads `llm_provider_ok: true` while every real call fails.
+    // The failure branch asked health, health said fine, no notice was raised, and the
+    // user got "Try again" on a button that could only fail identically - with no route
+    // to the picker from anywhere on the screen.
+    //
+    // So the draft call reports whether the ENGINE failed, and that answer wins outright
+    // rather than being second-guessed by a remembered success.
+    expect(store).toContain('providerDown: !!d.provider_down')
+    expect(composer).toContain('if (s.providerDown) { setShowAiNotice(true)')
+    // Ahead of the health probe, not after it - the whole point is not to ask.
+    expect(composer.indexOf('if (s.providerDown)')).toBeLessThan(composer.indexOf('void probeProviders().then(ok =>'))
+  })
+
+  it('the engine says WHY, and the user sees it', () => {
+    // Every model failure used to collapse to one fixed sentence, so an expired key, a
+    // wrong model name and an exhausted quota were indistinguishable - three different
+    // fixes behind identical words. The reason now rides the notice's headline.
+    expect(composer).toContain('reason={s.providerDown ? s.error ?? undefined : undefined}')
+    expect(notice).toContain("{reason ?? 'Meridian needs an AI engine'}")
+    // …and the button stops telling someone who HAS a provider to connect one.
+    expect(notice).toContain("reason ? 'Check your provider' : 'Connect a provider'")
+  })
+
+  it('only a DRAFT failure is treated as an AI problem', () => {
+    // A create that fails on tracker permissions has nothing to do with the model;
+    // offering to connect a provider there sends the user to the wrong screen.
+    expect(store).toContain("errorSource: 'create'")
+    expect(store).toContain("errorSource: 'draft'")
   })
 
   it('the title/description fields are not rendered behind a draft conditional', () => {
@@ -101,7 +170,16 @@ describe('composer state survives the plan modal closing mid-draft', () => {
   })
 
   it('the component holds no useState for composer fields', () => {
-    expect(composer.includes('useState')).toBe(false)
+    // The point of this guard is that the fields the user has TYPED INTO survive
+    // the component unmounting mid-flow — so it names them, rather than banning
+    // useState outright. Ephemeral UI state that SHOULD reset on reopen (the
+    // "is any AI provider installed" probe) is not what this protects, and
+    // blanket-banning the hook pushed such state into the shared store, where a
+    // stale value would then outlive the composer it belonged to.
+    for (const field of ['title', 'description', 'note', 'issueType', 'target']) {
+      const re = new RegExp(`useState[^\\n]*\\b${field}\\b|\\[\\s*${field}\\s*,\\s*set`, 'i')
+      expect(re.test(composer)).toBe(false)
+    }
   })
 
   it('personal is the default target - filing on a shared board is a deliberate click', () => {
@@ -121,5 +199,53 @@ describe('nothing calls the plan-task commands outside the store', () => {
     }
     expect(store.includes('draft_plan_task')).toBe(true)
     expect(store.includes('create_plan_task')).toBe(true)
+  })
+})
+
+// A new user pressing "Draft with AI" with no provider connected used to get a
+// red error string, then (briefly) an instant jump into Settings. Both are the
+// same failure: the app changing state without saying why. These pin the shape
+// of the replacement, all of which is invisible to a type checker.
+describe('drafting with no AI provider connected', () => {
+  const notice = readFileSync(`${uiRoot}/components/plan/AiEngineNotice.tsx`, 'utf8')
+  const modalShell = readFileSync(`${uiRoot}/components/timeline/ModalShell.tsx`, 'utf8')
+
+  it('explains before navigating - the jump is never the button\'s own doing', () => {
+    // draftOrConnect may only OPEN THE NOTICE. If it dispatches the navigation
+    // itself, the user is back to being teleported by a click on "Draft".
+    const fn = composer.slice(composer.indexOf('const draftOrConnect'))
+    const body = fn.slice(0, fn.indexOf('\n  const '))
+    expect(body).toContain('setShowAiNotice(true)')
+    expect(body).not.toContain('meridian:connect-ai')
+    expect(notice.length).toBeGreaterThan(0)
+  })
+
+  it('is one line and one action - no second way to do nothing', () => {
+    // The card has exactly one button. A dismiss would be a second control that
+    // does what ignoring the card already does: the fields below stay editable
+    // the whole time and "Add to today" never depended on a model, so there is
+    // nothing to dismiss. Two buttons here spent the card's one clear call to
+    // action arguing with itself.
+    const buttons = notice.match(/<button/g) ?? []
+    expect(buttons.length).toBe(1)
+    expect(notice.replace(/\s+/g, ' ')).toMatch(/Meridian needs an AI engine/i)
+    expect(notice).toContain('onConnect')
+  })
+
+  it('leaves the manual path untouched while it is showing', () => {
+    // The notice renders inline, above the divider - never in place of the
+    // title/description fields, which is what makes having no dismiss safe.
+    const at = (s: string) => composer.indexOf(s)
+    expect(at('showAiNotice &&')).toBeLessThan(at('value={s.title}'))
+    expect(at('value={s.title}')).toBeGreaterThan(0)
+  })
+
+  it('a locked modal drops every INCIDENTAL exit but keeps a labelled one', () => {
+    // Escape and the backdrop go; the corner button stays and is renamed. A lock
+    // that removed the last way out would be a trap, which is never the intent.
+    expect(modalShell).toContain('if (lock) return')          // no Escape handler
+    expect(modalShell).toContain('onClick={lock ? undefined : onClose}')  // no backdrop
+    expect(modalShell).toContain('{lock ? lock.label :')      // labelled, not an ×
+    expect(modalShell).toContain('data-tour="modal-close"')   // still ends the tour beat
   })
 })

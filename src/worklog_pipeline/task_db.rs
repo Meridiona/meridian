@@ -50,16 +50,37 @@ pub struct DayTaskRow {
     pub created_at: String,
 }
 
+/// Task id reserved for the onboarding walkthrough's "Setting up Meridian" card.
+///
+/// That row is written once by the walkthrough rather than by a fold, and it
+/// describes work the user genuinely did — installing and configuring Meridian —
+/// so it is the one day-task the model neither authors nor owns. It is therefore
+/// excluded from BOTH sides of the fold's read/write cycle:
+///
+/// - [`fetch_state`] hides it, so the model never receives it as prior state and
+///   cannot rename it, merge it into a workstream, or drop it.
+/// - [`replace_day_tasks`]'s prune skips it, so the day's first fold cannot delete
+///   it for the crime of being absent from the model's returned set.
+///
+/// Both halves are load-bearing. With only the prune exemption the model can still
+/// rewrite the row's title out from under it; with only the read exemption the
+/// prune deletes it at the next HH:03. Either way a brand-new user watches their
+/// one and only card vanish, which is worse than never having shown it.
+pub const SETUP_TASK_ID: &str = "setup";
+
 /// Read the current day-task state, oldest task first. A missing table (pre-058
 /// DB) or read error degrades to an empty Vec — the fold then seeds fresh.
+///
+/// Excludes [`SETUP_TASK_ID`] — see that constant for why the fold must not see it.
 pub async fn fetch_state(pool: &SqlitePool, day_local: &str) -> Vec<DayTaskRow> {
-    let res = sqlx::query(
+    let res = sqlx::query(&format!(
         "SELECT task_id, title, summary, hours_json, \
                 COALESCE(segments_json, '[]') AS segments_json, \
                 CAST(COALESCE(minutes, 0) AS INTEGER) AS minutes, \
                 COALESCE(status, 'active') AS status, linked_ticket, created_at \
-         FROM day_tasks WHERE day_local = ? ORDER BY task_id",
-    )
+         FROM day_tasks WHERE day_local = ? AND task_id != '{SETUP_TASK_ID}' \
+         ORDER BY task_id"
+    ))
     .bind(day_local)
     .fetch_all(pool)
     .instrument(tracing::debug_span!("worklog.tasks.read.state"))
@@ -152,15 +173,20 @@ pub async fn replace_day_tasks(
         }
     }
 
-    // Delete rows for the day the fold no longer names (a merge dropped them).
+    // Delete rows for the day the fold no longer names (a merge dropped them),
+    // except the walkthrough's reserved setup card — the fold never authored it and
+    // never sees it (fetch_state hides it), so it would otherwise be pruned here on
+    // the day's very first fold. See SETUP_TASK_ID.
     let keep: Vec<&str> = tasks.iter().map(|t| t.task_id.as_str()).collect();
     let placeholders = if keep.is_empty() {
         "''".to_string() // NOT IN ('') deletes every row for the day
     } else {
         vec!["?"; keep.len()].join(",")
     };
-    let del_sql =
-        format!("DELETE FROM day_tasks WHERE day_local = ? AND task_id NOT IN ({placeholders})");
+    let del_sql = format!(
+        "DELETE FROM day_tasks WHERE day_local = ? AND task_id != '{SETUP_TASK_ID}' \
+         AND task_id NOT IN ({placeholders})"
+    );
     let mut q = sqlx::query(&del_sql).bind(day_local);
     for id in &keep {
         q = q.bind(*id);
@@ -336,6 +362,75 @@ mod tests {
         assert_eq!(got.len(), 1, "T2 pruned");
         assert_eq!(got[0].created_at, "orig", "created_at preserved on upsert");
         assert_eq!(got[0].hours.len(), 2);
+    }
+
+    /// The walkthrough's setup card must survive a fold that never mentions it —
+    /// including the `empty_task_set_clears_the_day` case, which is the day's first
+    /// fold for a user whose first hour produced no workstreams at all. That is
+    /// exactly the new-user path the card exists to cover, so it is the one that
+    /// must not delete it.
+    #[tokio::test]
+    async fn the_setup_card_survives_folds_that_do_not_name_it() {
+        let pool = fresh().await;
+        sqlx::query(
+            "INSERT INTO day_tasks (day_local, task_id, title, summary, hours_json, \
+             segments_json, minutes, status, created_at, updated_at) \
+             VALUES ('2026-07-15', 'setup', 'Setting up Meridian', 'Granted access.', \
+             '[]', '[]', 2, 'active', 'c0', 'c0')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // A normal fold naming only its own tasks…
+        replace_day_tasks(
+            &pool,
+            "2026-07-15",
+            &[row("T1", &["2026-07-15T08"], "t0")],
+            "w1",
+        )
+        .await
+        .unwrap();
+        // …and the empty fold, which prunes via NOT IN ('').
+        replace_day_tasks(&pool, "2026-07-15", &[], "w2")
+            .await
+            .unwrap();
+
+        let still: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM day_tasks WHERE day_local='2026-07-15' AND task_id='setup'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(still, 1, "the setup card must outlive every fold");
+    }
+
+    /// The other half: the fold must never RECEIVE the setup card as prior state,
+    /// or the model can rename or absorb it even though the prune spares it.
+    #[tokio::test]
+    async fn the_setup_card_is_hidden_from_fold_state() {
+        let pool = fresh().await;
+        sqlx::query(
+            "INSERT INTO day_tasks (day_local, task_id, title, summary, hours_json, \
+             segments_json, minutes, status, created_at, updated_at) \
+             VALUES ('2026-07-15', 'setup', 'Setting up Meridian', '', '[]', '[]', 2, \
+             'active', 'c0', 'c0')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        replace_day_tasks(
+            &pool,
+            "2026-07-15",
+            &[row("T1", &["2026-07-15T08"], "t0")],
+            "w1",
+        )
+        .await
+        .unwrap();
+
+        let state = fetch_state(&pool, "2026-07-15").await;
+        assert_eq!(state.len(), 1, "only the fold's own task is state");
+        assert_eq!(state[0].task_id, "T1");
     }
 
     #[tokio::test]

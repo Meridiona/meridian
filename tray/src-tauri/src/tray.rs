@@ -95,6 +95,27 @@ pub(crate) fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
 /// Drafts), independent of the popover's own `invoke('open_dashboard')` button,
 /// so it needs the same fix to avoid leaving the popover stuck on screen.
 pub(crate) fn open_native_dashboard(app: &tauri::AppHandle) {
+    // SETUP COMES FIRST ON A FRESH INSTALL.
+    //
+    // The wizard auto-opens 800 ms after launch, but nothing stopped the user
+    // reaching the dashboard before or instead of it — the tray menu's "Open
+    // Dashboard" and "Review Drafts" are both live from the first second, and
+    // the tray icon is the most obvious thing on screen while the wizard is
+    // still coming up.
+    //
+    // What they got was the real timeline against a database with no capture
+    // permissions granted, no AI provider, and no tracker: an empty product that
+    // looks broken rather than unconfigured, on the one screen that decides
+    // whether they keep it.
+    //
+    // Redirect rather than refuse. The wizard IS what they wanted — a way into
+    // the app — so open it; a disabled menu item or a silent no-op would just
+    // read as the app being broken instead.
+    if !crate::onboarding_complete() {
+        tracing::info!("dashboard requested before onboarding finished; opening the wizard");
+        open_wizard_window(app);
+        return;
+    }
     crate::commands::system::dismiss_popover(app);
     if let Some(win) = app.get_webview_window("dashboard") {
         let _ = win.show();
@@ -176,30 +197,34 @@ pub(crate) fn open_wizard_window(app: &tauri::AppHandle) {
         let _ = win.set_focus();
         return;
     }
-    // The wizard renders the "A · Rail" shell — a fixed 948×628 card centred on a
-    // full-bleed backdrop; size the host window to fit it with a little breathing
-    // room. Resizable (with a floor at the design size) so the user can grow it or
-    // enter macOS full-screen — the card stays centred and the backdrop just widens,
-    // so the layout never breaks.
+    // The wizard's first screen (Welcome) renders a shorter 948×520 card than
+    // the step flow's 948×628 (`ui/app/setup/page.tsx`) — open the window
+    // sized for Welcome so it doesn't start with a big empty backdrop margin;
+    // the frontend calls `resize_setup_window` to grow it back once the user
+    // leaves Welcome for step 1 (`onBegin` in page.tsx). Resizable (with a
+    // floor at whichever card is currently showing) so the user can still grow
+    // it or enter macOS full-screen — the card stays centred and the backdrop
+    // just widens, so the layout never breaks.
     let builder = WebviewWindowBuilder::new(app, "setup", WebviewUrl::App("setup".into()))
         .title("Meridian - Setup")
-        .inner_size(1000.0, 680.0)
-        .min_inner_size(1000.0, 680.0)
+        .inner_size(1000.0, 572.0)
+        .min_inner_size(1000.0, 572.0)
         .resizable(true)
         .zoom_hotkeys_enabled(true);
     // Transparent title bar so the webview fills the *whole* window and the
     // centred card gets equal backdrop margins on all four sides. With a
     // normal (opaque) title bar the bar sits above the webview, so the top
     // gap reads larger than the sides/bottom. The size above is chosen so the
-    // 948×628 card keeps ~26px margins all round — enough clearance for the
-    // overlaid traffic lights + title to sit in the top backdrop, not on the card.
+    // 948×520 Welcome card keeps ~26px margins all round — enough clearance
+    // for the overlaid traffic lights + title to sit in the top backdrop, not
+    // on the card.
     //
     // Applied as a separate statement rather than inline in the chain because
     // both `title_bar_style` and `tauri::TitleBarStyle` are macOS-only in Tauri
     // — a `#[cfg]` on the method call alone would still leave the unresolvable
     // type in a Windows build. Off macOS the window keeps its standard title
     // bar; since `inner_size` sizes the CLIENT area, the webview is still
-    // 1000×680 and the card still centres within it — only the outer window
+    // 1000×572 and the card still centres within it — only the outer window
     // grows by the title-bar height. No layout change, just a taller frame.
     #[cfg(target_os = "macos")]
     let builder = builder.title_bar_style(tauri::TitleBarStyle::Transparent);

@@ -57,6 +57,22 @@ export interface ComposerState {
   descriptionDrafted: boolean
   /** A hard failure that stopped a create. */
   error: string | null
+  /** WHICH step produced `error`. The composer reacts to the two very differently:
+   *  a failed DRAFT is usually "there is no AI to draft with", which has a fix the
+   *  user can be walked to, while a failed CREATE is about the task or the tracker
+   *  and has nothing to do with the model. Without this the composer had to guess
+   *  from the error text, and guessed wrong in both directions - offering to connect
+   *  a provider after a Jira permissions failure, and offering nothing at all after
+   *  a draft died on a signed-out CLI. */
+  errorSource: 'draft' | 'create' | null
+  /** The draft failed because the ENGINE failed, straight from the draft call.
+   *
+   *  This exists because health cannot answer it. `llm_provider_ok` scores the last
+   *  RECORDED test, so a provider that connected fine a minute ago still reads healthy
+   *  while every real call is failing - and the composer, which asked health, offered a
+   *  Try again that failed identically every time with no route to the picker. The call
+   *  that just failed is the only witness to that, so it is the one that says so. */
+  providerDown: boolean
   /** A soft caveat from a successful create (e.g. filed but not yet on your board). */
   note_after: string | null
   /** Set when a create succeeded - the caller closes the composer and refreshes. */
@@ -77,6 +93,8 @@ const EMPTY: ComposerState = Object.freeze({
   titleDrafted: false,
   descriptionDrafted: false,
   error: null,
+  errorSource: null,
+  providerDown: false,
   note_after: null,
   created: null,
 })
@@ -138,6 +156,35 @@ export const resetComposer = () => {
   listeners.forEach((l) => l())
 }
 
+// ── Resuming after a detour ───────────────────────────────────────────────────
+//
+// `resetComposer` runs on every mount, which is right: a half-typed task from an hour ago
+// is never what the user wants back. But there is exactly one case where the composer is
+// remounted MID-FLOW rather than reopened - pressing "Draft with AI" with no provider
+// connected sends the user to Settings, which replaces the plan modal in the shell's single
+// modal slot, and the composer unmounts with the note they had just typed.
+//
+// The module store survives that unmount. The reset did not, so the note came back blank
+// and the tour told them it was still there. This flag is how the two are told apart: the
+// connect flow arms it before reopening the planner, and the composer consumes it once.
+//
+// Deliberately NOT part of ComposerState - it is a one-shot instruction to the next mount,
+// not a field anything renders, and putting it in the rendered state invites a component to
+// branch on "are we resuming" long after the answer stopped being true.
+let resumePending = false
+
+/** Tell the next composer mount to KEEP what is in the store and pick the flow back up.
+ *  Call it before reopening the planner - see `TaskComposer`'s mount effect. */
+export const armResume = () => { resumePending = true }
+
+/** Read and clear the resume flag. One-shot by construction: a second mount after the same
+ *  detour is a fresh open and must reset like any other. */
+export const consumeResume = (): boolean => {
+  const was = resumePending
+  resumePending = false
+  return was
+}
+
 /** Fewest words a title may have. A short title ("Roadmap", "Login bug") names a
  *  SUBJECT and omits the work - it's a label, and on a board tomorrow it tells you
  *  nothing you didn't already know. The same floor is written into the draft prompt
@@ -172,12 +219,12 @@ export function draftFromNote() {
   if (state.phase !== 'idle') return
   const note = state.note.trim()
   if (!note) return
-  patch({ phase: 'drafting', error: null })
+  patch({ phase: 'drafting', error: null, errorSource: null, providerDown: false })
   invoke<PlanTaskDraft>('draft_plan_task', { note })
     .then((d) => {
       if (d.error) {
         // A soft failure: no fields, but the user is not blocked.
-        patch({ phase: 'idle', error: d.error })
+        patch({ phase: 'idle', error: d.error, errorSource: 'draft', providerDown: !!d.provider_down })
         return
       }
       patch({
@@ -188,9 +235,14 @@ export function draftFromNote() {
         titleDrafted: !!d.title,
         descriptionDrafted: !!d.description,
         error: null,
+        errorSource: null,
+        providerDown: false,
       })
     })
-    .catch((e) => patch({ phase: 'idle', error: errMsg(e) }))
+    // The command itself threw - the CLI could not be run or its answer was not JSON.
+    // Not attributable to the engine, so it stays a retryable error rather than sending
+    // the user to reconfigure a provider that was never reached.
+    .catch((e) => patch({ phase: 'idle', error: errMsg(e), errorSource: 'draft', providerDown: false }))
 }
 
 /** Create the task and add it to `day`'s plan, then refresh the shared plan store so
@@ -201,7 +253,7 @@ export function draftFromNote() {
  *  retyping. */
 export function createTask(day: string) {
   if (!canCreate(state)) return
-  patch({ phase: 'creating', error: null })
+  patch({ phase: 'creating', error: null, errorSource: null })
   mutate<CreatedTask>(API, 'create_plan_task', {
     title: state.title.trim(),
     description: state.description.trim(),
@@ -213,7 +265,7 @@ export function createTask(day: string) {
       patch({ phase: 'idle', created, note_after: created.note })
       refreshPlan(day)
     })
-    .catch((e) => patch({ phase: 'idle', error: errMsg(e) }))
+    .catch((e) => patch({ phase: 'idle', error: errMsg(e), errorSource: 'create' }))
 }
 
 /** Rewrite a task's title/description, wherever it lives (a personal task is written

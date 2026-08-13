@@ -80,6 +80,7 @@ export function Toolbar({
         {/* Daily summary — sits with the date nav because it is about the day
             being viewed, not about the app. */}
         <button onClick={onOpenSummary}
+          data-tour="summary-pill"
           className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 bg-ctrl shrink-0 transition-transform hover:-translate-y-px"
           style={{ border: '1px solid var(--t-ctrl-border)' }}
           title="How this day went">
@@ -113,7 +114,7 @@ export function Toolbar({
                 {connectedProviderIds.map(id => <ProviderIcon key={id} provider={id} size={12} />)}
               </span>
             : <span className="inline-block w-1.5 h-1.5 rounded-full"
-                style={{ background: isSolo ? 'var(--t-faint)' : 'var(--color-state-proposal)' }} />}
+                style={{ background: isSolo ? 'var(--t-faint)' : 'var(--t-accent)' }} />}
           <span className="mt-body-sm" style={{ color: 'var(--t-muted)' }}>{connectionLabel}</span>
         </span>
 

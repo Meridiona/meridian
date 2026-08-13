@@ -28,6 +28,20 @@ use tauri_plugin_opener::OpenerExt;
 /// caller (popover, tray menu, notification click) triggered this.
 #[tauri::command]
 pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
+    // Same gate as the tray-menu path — see `tray::open_native_dashboard` for the
+    // full reasoning. It is repeated rather than shared because these are two
+    // independent entry points into the same window: this one serves the
+    // popover's button and a notification click, and a fresh install can reach
+    // either while the wizard is still opening.
+    //
+    // Returns Ok, not Err: the caller's request was honoured, just routed to the
+    // window that actually helps. An Err here would surface as a failed action in
+    // the popover for a user who is being sent somewhere useful.
+    if !crate::onboarding_complete() {
+        tracing::info!("dashboard requested before onboarding finished; opening the wizard");
+        crate::tray::open_wizard_window(&app);
+        return Ok(());
+    }
     dismiss_popover(&app);
     if let Some(win) = app.get_webview_window("dashboard") {
         let _ = win.show();
@@ -91,6 +105,49 @@ pub async fn open_worklogs(app: tauri::AppHandle) -> Result<(), String> {
 pub async fn open_setup(app: tauri::AppHandle) -> Result<(), String> {
     crate::tray::open_wizard_window(&app);
     Ok(())
+}
+
+/// Resize the setup wizard window's client area (a no-op if the window isn't
+/// open). The wizard's card is a different fixed height on the Welcome screen
+/// than in the step flow (see `ui/app/setup/page.tsx`) - the window was
+/// previously one static size for both, which left a big empty backdrop
+/// margin around the shorter Welcome card. The frontend calls this once, when
+/// leaving Welcome for step 1, to grow the window back to the step-flow size;
+/// [`crate::tray::open_wizard_window`] opens it small (sized for Welcome) in
+/// the first place. Also raises the min size to match, so the user can't
+/// resize the window smaller than whichever card is currently showing.
+///
+/// Window sizing is one of the few things here that genuinely differs by platform and by
+/// window manager, so a failure is logged rather than only handed back to the frontend -
+/// which shows nothing for it, since a wizard at the wrong size is awkward but not broken.
+/// Without a log a Windows-only resize failure would surface as "the wizard looks wrong on
+/// my machine" and nothing else.
+#[tauri::command]
+#[tracing::instrument(skip(app))]
+pub async fn resize_setup_window(
+    app: tauri::AppHandle,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let Some(win) = app.get_webview_window("setup") else {
+        // Not an error: the frontend fires this on a step transition, and the window can
+        // legitimately be gone (user closed it mid-animation).
+        tracing::debug!("setup window not open - resize skipped");
+        return Ok(());
+    };
+    let resize = win
+        .set_min_size(Some(tauri::LogicalSize::new(width, height)))
+        .and_then(|()| win.set_size(tauri::LogicalSize::new(width, height)));
+    match resize {
+        Ok(()) => {
+            tracing::debug!(width, height, "setup window resized");
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, width, height, "setup window resize failed");
+            Err(e.to_string())
+        }
+    }
 }
 
 /// Fetch-and-clear the pending dashboard navigation target (e.g. "/plan") —

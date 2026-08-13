@@ -45,12 +45,20 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(90);
 /// `error` is a SOFT failure: the model was unreachable or unparseable, the fields are
 /// empty, and the composer shows them for manual entry. It is never a reason to fail
 /// the command — creation must not depend on the AI.
+///
+/// `provider_down` splits that soft failure in two, because the composer offers opposite
+/// affordances for them — the AI picker for a broken engine, a retry for a bad answer.
+/// `#[serde(default)]` so an older `meridian` CLI on the machine (the binary is resolved
+/// at runtime, not bundled) still deserializes; a missing flag means "not known to be the
+/// engine", which is the safe read.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskDraft {
     pub title: String,
     pub description: String,
     pub issue_type: String,
     pub error: Option<String>,
+    #[serde(default)]
+    pub provider_down: bool,
 }
 
 /// POST body for [`create_plan_task`] — `mutate` wraps args in `{body}`.

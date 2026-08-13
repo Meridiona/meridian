@@ -144,9 +144,22 @@ export function subscribe<T = unknown>(
     // visible in DevTools rather than silently swallowed.
     prime().catch(() => setTimeout(() => { if (!cancelled) prime().catch((e) => console.warn(`subscribe('${apiPath}') snapshot prime failed:`, e)) }, 2000))
   }
+  // `drop` is called at most ONCE for a given `un`, on either path below.
+  //
+  // Tauri's unlisten is not idempotent: it reaches into its own `listeners` map
+  // and reads `listeners[eventId].handlerId`, so a second call on an already-
+  // removed id throws "undefined is not an object". React runs an effect's
+  // cleanup more than once as a matter of course - StrictMode double-invokes it
+  // in dev, and any caller that unsubscribes explicitly and then unmounts does
+  // it twice for real - so an unsubscribe that is not idempotent will throw
+  // eventually. It surfaced as a runtime overlay in dev with no useful stack,
+  // pointing into the Tauri shim rather than at the component that caused it.
+  const drop = () => { const un = unlisten; unlisten = null; if (un) un() }
   t.event
     .listen<T>(eventName, (e) => { if (!cancelled) onData(e.payload) })
-    .then((un) => { if (cancelled) un(); else unlisten = un })
+    // Cancelled before the listener even registered: register-then-immediately-
+    // remove, since there is no way to withdraw the pending `listen`.
+    .then((un) => { unlisten = un; if (cancelled) drop() })
     .catch(() => {})
-  return () => { cancelled = true; if (unlisten) unlisten() }
+  return () => { cancelled = true; drop() }
 }

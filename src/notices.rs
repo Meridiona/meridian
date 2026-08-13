@@ -35,10 +35,18 @@ pub async fn raise(
     detail: &str,
     remedy: Option<&str>,
 ) -> Result<()> {
+    // A tracker fault is fixed by reconnecting the tracker, which is what this
+    // notice's own `remedy` tells the user ("Reconnect X in Settings →
+    // Integrations") — so the click-through goes there. It used to point at
+    // `/tasks?integrations=1`, the pre-fold Next route, which the shell stopped
+    // resolving when that route was deleted and silently opened the default
+    // view instead. Everything else has no specific destination, so it goes to
+    // the Support ID / Export Diagnostics section (see `deep_links::LOGS`).
+    use meridian_core::notifications::deep_links;
     let link = if id.starts_with("pm.") {
-        Some("/tasks?integrations=1")
+        Some(deep_links::INTEGRATIONS)
     } else {
-        Some("/logs")
+        Some(deep_links::LOGS)
     };
     raise_typed(
         pool,
@@ -214,7 +222,7 @@ mod tests {
                 detail: "Tap to check what happened.",
                 remedy: None,
                 event_key: "system.health",
-                deep_link: Some("/logs"),
+                deep_link: Some(meridian_core::notifications::deep_links::LOGS),
             },
         )
         .await
@@ -252,7 +260,7 @@ mod tests {
                 detail: "Tap to check what happened.",
                 remedy: None,
                 event_key: "system.health",
-                deep_link: Some("/logs"),
+                deep_link: Some(meridian_core::notifications::deep_links::LOGS),
             },
         )
         .await

@@ -3,9 +3,15 @@ name: Release (prepare)
 # DECIDES THE VERSION AND PUSHES THE TAG. BUILDS NOTHING.
 #
 # This is one half of a two-workflow release. Its entire job is to run
-# semantic-release, bump the version manifests, and push a `v*` tag. Pushing
-# that tag is what triggers release-build.yml, which does all the compiling,
-# signing, notarizing and publishing.
+# semantic-release, bump the version manifests, push a `v*` tag, and then
+# DISPATCH release-build.yml against `main` with that tag as an input.
+# release-build does all the compiling, signing, notarizing and publishing.
+#
+# The dispatch is not decoration: release-build used to fire on the tag PUSH,
+# and because GitHub scopes the Actions cache by `github.ref` — and tags may
+# only read the DEFAULT BRANCH's cache — every release compiled from scratch.
+# Dispatching against main gives the build main's cache scope while it checks
+# out the immutable tag. See release-build.yml's `on:` block.
 #
 # WHY THE SPLIT EXISTS — this is not tidiness, it fixes a real failure we hit.
 #
@@ -41,10 +47,11 @@ name: Release (prepare)
 #   * The only place branch state matters is THIS workflow, whose window is
 #     ~60 seconds instead of ~30 minutes. Losing the race now costs a minute of
 #     ubuntu time and is simply re-runnable.
-#   * release-build.yml triggers on the TAG — an immutable ref. pre-main can
-#     move a hundred times mid-build and nothing notices, because there is no
-#     branch-state check left to fail. The tag<->binary correspondence the old
-#     pinned-SHA checkout was reaching for now holds BY CONSTRUCTION.
+#   * release-build.yml builds the TAG — an immutable ref, handed to it as an
+#     input. pre-main can move a hundred times mid-build and nothing notices,
+#     because there is no branch-state check left to fail. The tag<->binary
+#     correspondence the old pinned-SHA checkout was reaching for now holds BY
+#     CONSTRUCTION.
 #   * "Which version am I building" has exactly one answer, committed to the
 #     repo. No plan job, no second semantic-release run, no assert step.
 #
@@ -104,6 +111,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # pushes the version-bump commit and the tag
+      actions: write # dispatches release-build.yml once the tag exists
     # No `if:` gate. The job runs on every push to main and on manual dispatch
     # (e.g. against pre-main for a staging cut); semantic-release itself
     # decides whether the commits warrant a release. There is deliberately no
@@ -127,16 +135,13 @@ jobs:
           # checkout stores THIS token as the git credential, and semantic-release
           # reuses it to push the version tag. GitHub deliberately does NOT
           # re-trigger workflows for refs pushed with GITHUB_TOKEN (the recursion
-          # guard) — so a tag pushed with the default token lands silently and
-          # release-build.yml (its ONLY trigger is `push: tags: v*-staging*`)
-          # never fires. That is exactly the "tagged, but nothing built" failure
-          # we hit on v1.72.0-staging.6. A push made with the org PAT is
-          # attributed to a user, so the tag-push event fires normally and the
-          # build runs.
-          #
-          # Still load-bearing now that release-build.yml also lives on main: the
-          # tag push is what carries the version, and a GITHUB_TOKEN push would
-          # tag correctly and then silently build nothing.
+          # guard). The build is no longer triggered by that push — this job
+          # dispatches it explicitly below — but the PAT is still load-bearing
+          # for the dispatch itself, which is subject to the same guard, and for
+          # the version-bump commit on main. The historical failure it prevents
+          # (v1.72.0-staging.6: tagged with GITHUB_TOKEN, nothing ever built) is
+          # now caught loudly by the dispatch step's warning instead of being
+          # silent.
           token: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-node@v4
@@ -277,6 +282,73 @@ jobs:
             echo "→ no releasable commits; nothing tagged"
           fi
 
+      - name: Dispatch the build against main
+        if: ${{ steps.run.outputs.released == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.run.outputs.tag }}
+        # *** `--ref main` IS THE POINT. IT IS NOT A DEFAULT. ***
+        #
+        # release-build.yml used to fire on the tag push. That is the obvious
+        # shape and it silently cost ~25 minutes a release, because GitHub
+        # scopes the Actions cache by `github.ref` and tags can only ever read
+        # the DEFAULT BRANCH's cache — never a sibling tag's, never pre-main's.
+        # Every release cut a brand-new tag, so every release started cold.
+        #
+        # Dispatching instead makes `github.ref` the branch chosen here, while
+        # `tag` travels as an INPUT that release-build checks out. main's cache
+        # scope, the tag's source tree. release-build's `prepare` job hard-fails
+        # if this is ever dispatched from anywhere else, so the two halves of
+        # that arrangement cannot drift apart.
+        #
+        # Note the asymmetry: `--ref main` is fixed, but ${TAG} may well point
+        # at a `pre-main` commit (that is exactly what a staging cut is). Main's
+        # copy of release-build.yml builds pre-main's source — intended, and
+        # spelled out in that file's `on:` block.
+        #
+        # The PAT matters here for the same reason it matters for the tag push
+        # above: a workflow dispatched with the default GITHUB_TOKEN is subject
+        # to the recursion guard. The fallback is kept so a missing PAT degrades
+        # to "tagged, dispatch it by hand" rather than failing the tag itself —
+        # the summary below prints that command either way.
+        run: |
+          set -euo pipefail
+
+          # ── DOES THE TAG PUSH ALREADY BUILD? ASK THE TAG, NOT main. ──────────
+          #
+          # The only question here is whether pushing ${TAG} a moment ago ALREADY
+          # started a build, because then dispatching would start a second one
+          # against the same draft release and the loser dies on "already
+          # published" after a full macOS + Windows compile.
+          #
+          # GitHub answers that from the workflow files AT THE PUSHED REF — for a
+          # tag, the tag's own tree, which is this checkout. NOT the default
+          # branch's copy. So the file to inspect is the local one.
+          #
+          # An earlier version of this step read main's copy over the API, on the
+          # reasoning that `gh workflow run --ref main` executes main's file so
+          # main's file must be what matters. That conflates two different
+          # questions. It made this step skip the dispatch precisely when the tag
+          # had NOT auto-built — this branch is dispatch-only, so its tags start
+          # nothing — leaving a tagged release with no build at all: the exact
+          # silent failure this pipeline keeps being bitten by.
+          #
+          # Local file still tag-triggered  -> the push started it; do not double up.
+          # Local file dispatch-only        -> nothing started; dispatch (always).
+          #
+          # Self-deleting: once no release branch carries a `push:` trigger, this
+          # never matches again.
+          if grep -qE '^\s{2}push:' .github/workflows/release-build.yml; then
+            echo "::warning::this branch's release-build.yml is still tag-triggered, so pushing ${TAG} already started the build. Skipping the dispatch to avoid building it twice."
+            exit 0
+          fi
+
+          if gh workflow run release-build.yml --ref main -f tag="${TAG}"; then
+            echo "→ dispatched release-build.yml against main for ${TAG}"
+          else
+            echo "::warning::could not dispatch release-build.yml; ${TAG} is tagged but NOTHING IS BUILDING. Run: gh workflow run release-build.yml --ref main -f tag=${TAG}"
+          fi
+
       - name: Summary
         if: always()
         # Bound through env, not interpolated into `run:` — same reason as the
@@ -292,7 +364,13 @@ jobs:
             if [ "${RELEASED}" = "true" ]; then
               echo "Tagged \`${TAG}\`."
               echo ""
-              echo "\`release-build.yml\` builds and publishes it."
+              echo "\`release-build.yml\` was dispatched against \`main\` to build and publish it."
+              echo "If that dispatch failed (see the step above), run it by hand -"
+              echo "the branch MUST be \`main\` or the build starts from a cold cache:"
+              echo ""
+              echo "\`\`\`bash"
+              echo "gh workflow run release-build.yml --ref main -f tag=${TAG}"
+              echo "\`\`\`"
             else
               echo "No release cut."
             fi

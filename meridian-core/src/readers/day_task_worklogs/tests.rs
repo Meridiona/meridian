@@ -20,6 +20,7 @@ async fn seeded() -> SqlitePool {
             reasoning TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT 'drafted', \
             created_task_key TEXT, last_error TEXT, create_attempt_at TEXT, \
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL, \
+            drafted_minutes INTEGER, \
             PRIMARY KEY (day_local, task_id))",
     )
     .execute(&pool)
@@ -41,7 +42,32 @@ async fn seeded() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
+    // Mirrors migrations 058 + 059, less the columns none of this reads. The
+    // staleness join needs `minutes`; `title` is what the notifier names.
+    sqlx::query(
+        "CREATE TABLE day_tasks (\
+            day_local TEXT NOT NULL, task_id TEXT NOT NULL, title TEXT NOT NULL, \
+            minutes INTEGER NOT NULL DEFAULT 0, \
+            PRIMARY KEY (day_local, task_id))",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     pool
+}
+
+/// Put a task on the day with `minutes` measured against it.
+async fn put_task(pool: &SqlitePool, task_id: &str, minutes: i64) {
+    sqlx::query(
+        "INSERT INTO day_tasks (day_local, task_id, title, minutes) VALUES ('2026-08-07', ?, ?, ?) \
+         ON CONFLICT(day_local, task_id) DO UPDATE SET minutes = excluded.minutes",
+    )
+    .bind(task_id)
+    .bind(format!("Task {task_id}"))
+    .bind(minutes)
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 fn target(key: &str, confidence: f64) -> TargetInput {
@@ -1078,4 +1104,412 @@ async fn a_successful_create_resolves_its_claim() {
         .unwrap(),
         "a recorded create is never re-claimed"
     );
+}
+
+// ── Staleness: a draft falling behind the work it describes ─────────────────
+//
+// The whole feature rests on ONE comparison - the task's measured minutes now
+// against the same figure captured when the draft was written - so these pin
+// each way that comparison can be wrong, including the two that fail silently
+// (no baseline, and a task whose minutes were revised down).
+
+const DAY: &str = "2026-08-07";
+
+#[tokio::test]
+async fn a_fresh_draft_is_not_stale() {
+    let pool = seeded().await;
+    put_task(&pool, "T1", 40).await;
+    let d = upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    // Written against 40 minutes, read back against the same 40.
+    assert_eq!(d.stale_minutes, Some(0));
+    assert!(!d.stale);
+}
+
+#[tokio::test]
+async fn work_since_the_draft_shows_as_minutes_behind() {
+    let pool = seeded().await;
+    put_task(&pool, "T1", 40).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    put_task(&pool, "T1", 62).await;
+
+    let d = get_day_task_worklog(&pool, DAY, "T1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(d.stale_minutes, Some(22));
+    assert!(d.stale);
+}
+
+#[tokio::test]
+async fn a_little_more_work_is_not_worth_a_warning() {
+    // Below the threshold the draft is still an accurate summary, and flagging
+    // it would train the user to ignore the flag.
+    let pool = seeded().await;
+    put_task(&pool, "T1", 40).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    put_task(&pool, "T1", 40 + WORKLOG_STALE_MINUTES - 1).await;
+
+    let d = get_day_task_worklog(&pool, DAY, "T1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(d.stale_minutes, Some(WORKLOG_STALE_MINUTES - 1));
+    assert!(!d.stale, "under the threshold must not flag");
+    assert!(stale_drafts(&pool, DAY).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn regenerating_resets_the_baseline() {
+    // The entire point of the warning: acting on it must clear it.
+    let pool = seeded().await;
+    put_task(&pool, "T1", 40).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    put_task(&pool, "T1", 90).await;
+    assert!(
+        get_day_task_worklog(&pool, DAY, "T1")
+            .await
+            .unwrap()
+            .unwrap()
+            .stale
+    );
+
+    let d = upsert_draft(&pool, DAY, "T1", match_upsert(), "t1")
+        .await
+        .unwrap();
+    assert_eq!(d.stale_minutes, Some(0));
+    assert!(!d.stale);
+}
+
+#[tokio::test]
+async fn a_row_with_no_baseline_is_never_stale() {
+    // Drafted before migration 079. NULL reads as "cannot know" - the
+    // alternative (DEFAULT 0) declares every pre-upgrade draft stale by its
+    // task's whole duration on the first read after the update lands.
+    let pool = seeded().await;
+    put_task(&pool, "T1", 200).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    sqlx::query("UPDATE day_task_worklogs SET drafted_minutes = NULL")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let d = get_day_task_worklog(&pool, DAY, "T1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(d.stale_minutes, None);
+    assert!(!d.stale);
+    assert!(stale_drafts(&pool, DAY).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn minutes_revised_down_do_not_read_as_negative_work() {
+    // The fold can move a segment to another workstream, so a task's minutes
+    // genuinely go down. "-8 minutes of new work" is not a thing to show.
+    let pool = seeded().await;
+    put_task(&pool, "T1", 90).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    put_task(&pool, "T1", 55).await;
+
+    let d = get_day_task_worklog(&pool, DAY, "T1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(d.stale_minutes, Some(0));
+    assert!(!d.stale);
+}
+
+#[tokio::test]
+async fn a_posted_update_is_history_not_a_stale_draft() {
+    // It is a record of what went out. Calling it out of date invites the user
+    // to overwrite the only copy of something already live on a ticket.
+    let pool = seeded().await;
+    put_task(&pool, "T1", 40).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    sqlx::query("UPDATE day_task_worklogs SET state = 'posted'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    put_task(&pool, "T1", 300).await;
+
+    let d = get_day_task_worklog(&pool, DAY, "T1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!d.stale, "a posted update is never a stale draft");
+    // It still reports the growth - the dashboard may want to say "you kept
+    // working on this" - but nothing offers to overwrite it.
+    assert_eq!(d.stale_minutes, Some(260));
+    assert!(stale_drafts(&pool, DAY).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_sweep_names_the_task_and_the_amount() {
+    let pool = seeded().await;
+    put_task(&pool, "T1", 10).await;
+    put_task(&pool, "T2", 10).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    upsert_draft(&pool, DAY, "T2", propose_upsert(), "t0")
+        .await
+        .unwrap();
+    put_task(&pool, "T1", 10 + WORKLOG_STALE_MINUTES + 3).await;
+
+    let stale = stale_drafts(&pool, DAY).await.unwrap();
+    assert_eq!(stale.len(), 1, "only the task that grew");
+    assert_eq!(stale[0].task_id, "T1");
+    assert_eq!(stale[0].title, "Task T1");
+    assert_eq!(stale[0].stale_minutes, WORKLOG_STALE_MINUTES + 3);
+}
+
+#[tokio::test]
+async fn a_draft_whose_task_is_gone_still_reads() {
+    // LEFT JOIN, not INNER: the user may still want to read or delete it.
+    let pool = seeded().await;
+    put_task(&pool, "T1", 40).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM day_tasks")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let d = get_day_task_worklog(&pool, DAY, "T1").await.unwrap();
+    assert!(d.is_some(), "the draft must not vanish with its task");
+    let d = d.unwrap();
+    assert_eq!(d.stale_minutes, None);
+    assert!(!d.stale);
+}
+
+// ── day_draft_states: the same staleness maths, for a whole day at once ──────
+//
+// `day_draft_states` and `stale_drafts` compute `stale_minutes` from a
+// byte-identical SQL expression over the same two tables, so every way that
+// comparison can go wrong applies to both. Only `stale_drafts` had tests. These
+// pin the shared edge cases on the other side of the pair - a change to one
+// query that quietly breaks the other now fails here rather than in a summary.
+//
+// The two differ deliberately in two ways, and those are pinned too: this one
+// returns EVERY state (not just `drafted`), and LEFT-JOINs so a draft outlives
+// its task.
+
+#[tokio::test]
+async fn day_draft_states_reports_every_task_with_a_draft() {
+    let pool = seeded().await;
+    put_task(&pool, "T1", 40).await;
+    put_task(&pool, "T2", 25).await;
+    put_task(&pool, "T3", 10).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    upsert_draft(&pool, DAY, "T2", propose_upsert(), "t0")
+        .await
+        .unwrap();
+    // T3 has no draft at all - the row it backs renders without a badge.
+
+    let states = day_draft_states(&pool, DAY).await.unwrap();
+    assert_eq!(states.len(), 2, "only tasks that actually have a draft");
+    assert_eq!(states[0].task_id, "T1");
+    assert_eq!(states[1].task_id, "T2", "ordered by task_id");
+    assert!(states.iter().all(|s| s.state == "drafted"));
+}
+
+#[tokio::test]
+async fn day_draft_states_counts_work_done_since_the_draft() {
+    let pool = seeded().await;
+    put_task(&pool, "T1", 40).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    put_task(&pool, "T1", 62).await;
+
+    let states = day_draft_states(&pool, DAY).await.unwrap();
+    assert_eq!(states[0].stale_minutes, Some(22));
+}
+
+/// The summary's staleness line and the daemon's notification must agree, because the
+/// notification is what sends the user to the summary in the first place.
+///
+/// The reader now carries the verdict rather than the raw number alone. The summary
+/// used to re-threshold `stale_minutes` in TypeScript at 25 minutes against the
+/// daemon's [`WORKLOG_STALE_MINUTES`] of 15 — so a draft between those two numbers
+/// produced a toast saying it had fallen behind and a summary row, reached by
+/// following that toast, saying nothing was wrong.
+#[tokio::test]
+async fn day_draft_states_carries_the_same_verdict_the_notifier_sends() {
+    let pool = seeded().await;
+    put_task(&pool, "T1", 40).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+
+    // One minute under the threshold: real growth, not yet worth acting on.
+    put_task(&pool, "T1", 40 + WORKLOG_STALE_MINUTES - 1).await;
+    let states = day_draft_states(&pool, DAY).await.unwrap();
+    assert!(!states[0].stale, "under the threshold is not stale");
+
+    // Exactly at it: stale. This is the value the notifier fires on, and it sits well
+    // inside the 15-25 window where the two definitions used to disagree.
+    put_task(&pool, "T1", 40 + WORKLOG_STALE_MINUTES).await;
+    let states = day_draft_states(&pool, DAY).await.unwrap();
+    assert!(
+        states[0].stale,
+        "at the threshold the user has been notified"
+    );
+    assert_eq!(states[0].stale_minutes, Some(WORKLOG_STALE_MINUTES));
+
+    // The same rows the notifier would pick up, from the sibling reader — the two
+    // must not be able to disagree about the same draft.
+    let notified = stale_drafts(&pool, DAY).await.unwrap();
+    assert_eq!(
+        notified.len(),
+        1,
+        "the notifier and the summary disagree about this draft"
+    );
+}
+
+/// Staleness is about a draft going out of date, so a draft that has already gone out
+/// stops being stale. Offering to rewrite a posted update offers to lose it.
+#[tokio::test]
+async fn a_posted_update_is_never_stale_however_much_work_follows_it() {
+    let pool = seeded().await;
+    put_task(&pool, "T1", 10).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    sqlx::query("UPDATE day_task_worklogs SET state = 'posted' WHERE task_id = 'T1'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    put_task(&pool, "T1", 10 + WORKLOG_STALE_MINUTES * 10).await;
+
+    let states = day_draft_states(&pool, DAY).await.unwrap();
+    assert!(
+        !states[0].stale,
+        "a posted update is a record of what went out, not a draft going stale"
+    );
+}
+
+#[tokio::test]
+async fn day_draft_states_clamps_minutes_revised_down() {
+    // The fold can move a segment to another workstream, so a task's minutes
+    // genuinely go down. "-35 minutes of new work" is not a thing to show.
+    let pool = seeded().await;
+    put_task(&pool, "T1", 90).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    put_task(&pool, "T1", 55).await;
+
+    let states = day_draft_states(&pool, DAY).await.unwrap();
+    assert_eq!(states[0].stale_minutes, Some(0), "clamped, never negative");
+}
+
+#[tokio::test]
+async fn day_draft_states_reports_no_baseline_as_unknown_not_zero() {
+    // Drafted before migration 079. NULL must survive as None: reading it as 0
+    // would claim the draft is perfectly current, which is a stronger statement
+    // than the data supports.
+    let pool = seeded().await;
+    put_task(&pool, "T1", 200).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    sqlx::query("UPDATE day_task_worklogs SET drafted_minutes = NULL")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let states = day_draft_states(&pool, DAY).await.unwrap();
+    assert_eq!(states[0].stale_minutes, None);
+}
+
+#[tokio::test]
+async fn day_draft_states_keeps_posted_and_approved_rows() {
+    // The divergence from `stale_drafts`, which filters to `drafted` only. This
+    // read backs a badge that has to be able to say "posted" - filtering those
+    // out would make a posted update indistinguishable from no draft at all.
+    let pool = seeded().await;
+    put_task(&pool, "T1", 40).await;
+    put_task(&pool, "T2", 40).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    upsert_draft(&pool, DAY, "T2", match_upsert(), "t0")
+        .await
+        .unwrap();
+    sqlx::query("UPDATE day_task_worklogs SET state = 'posted' WHERE task_id = 'T1'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let states = day_draft_states(&pool, DAY).await.unwrap();
+    assert_eq!(states.len(), 2);
+    assert_eq!(states[0].state, "posted");
+    assert_eq!(states[1].state, "drafted");
+}
+
+#[tokio::test]
+async fn day_draft_states_survives_a_draft_whose_task_is_gone() {
+    // LEFT JOIN, not INNER - the same choice `get_day_task_worklog` makes. With
+    // an inner join the row would disappear from the summary entirely.
+    let pool = seeded().await;
+    put_task(&pool, "T1", 40).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM day_tasks")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let states = day_draft_states(&pool, DAY).await.unwrap();
+    assert_eq!(states.len(), 1, "the draft must not vanish with its task");
+    assert_eq!(states[0].stale_minutes, None, "no task, nothing to compare");
+}
+
+#[tokio::test]
+async fn day_draft_states_is_scoped_to_its_day() {
+    let pool = seeded().await;
+    put_task(&pool, "T1", 40).await;
+    upsert_draft(&pool, DAY, "T1", match_upsert(), "t0")
+        .await
+        .unwrap();
+
+    assert!(day_draft_states(&pool, "2026-08-06")
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(day_draft_states(&pool, DAY).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn day_draft_states_degrades_to_empty_on_a_missing_table() {
+    // A pre-060 DB has no table and a pre-079 one has no `drafted_minutes`.
+    // Neither is worth failing a whole day summary over.
+    let pool = seeded().await;
+    sqlx::query("DROP TABLE day_task_worklogs")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let states = day_draft_states(&pool, DAY).await;
+    assert!(states.is_ok(), "a missing table must not fail the read");
+    assert!(states.unwrap().is_empty());
 }

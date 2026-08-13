@@ -194,7 +194,7 @@ function DetailBody({ item, actions, onEdit }: { item: WorklogItem; actions?: Wo
           )}
           <button onClick={onEdit} disabled={busy || !onEdit}
             className="mt-body-sm px-3 py-1.5 rounded-md"
-            style={{ color: 'var(--color-state-proposal)', border: '1px solid var(--color-state-proposal)' }}>
+            style={{ color: 'var(--t-accent)', border: '1px solid var(--t-accent)' }}>
             Edit ✎
           </button>
           {item.task_url && (

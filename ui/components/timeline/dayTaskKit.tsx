@@ -8,14 +8,13 @@
 // layout math (that stays in dayTaskLayout.ts) and no worklog state (that lives
 // in useWorklog.ts).
 
-import { openExternal } from '@/lib/bridge'
 
 // ── Palette ──────────────────────────────────────────────────────────────────
 // A stable-ish hue per task so workstreams read as distinct, both as the card's
 // accent rail and as the detail panel's accent. Threaded as a prop from the card
 // (which owns task order) into the panel, so a given task is always the same hue.
 export const TASK_HUES = [
-  'var(--color-state-proposal)',
+  'var(--t-accent)',
   '#3B82F6',
   '#D946EF',
   '#8b7cf6',
@@ -69,20 +68,3 @@ export function Field({ label, children }: { label: string; children: React.Reac
   )
 }
 
-/** The "Linked to KAN-12 ↗" chip. Opens the issue on the tracker when a URL is
- *  known; inert (no arrow, default cursor) until the post resolves one. */
-export function LinkChip({ label, url }: { label: string; url: string | null | undefined }) {
-  return (
-    <button onClick={() => url && openExternal(url)}
-      className="mt-mono-sm inline-flex items-center gap-1 rounded-md px-1.5 py-0.5"
-      style={{
-        fontSize: 11,
-        color: 'var(--color-state-approved)',
-        border: '1px solid color-mix(in srgb, var(--color-state-approved) 40%, transparent)',
-        cursor: url ? 'pointer' : 'default',
-      }}
-      title={url ? 'Open on your tracker' : undefined}>
-      Linked to {label}{url ? ' ↗' : ''}
-    </button>
-  )
-}

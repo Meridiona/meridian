@@ -35,7 +35,7 @@ export function CaptureSection({ settings, patch, save }: {
   return (
     <div className="max-w-[640px] flex flex-col gap-5">
       <div>
-        <p className="mt-label" style={{ color: 'var(--color-state-proposal)' }}>Privacy</p>
+        <p className="mt-label" style={{ color: 'var(--t-accent)' }}>Privacy</p>
         <h1 className="mt-title-lg mt-1.5" style={{ color: 'var(--t-title)' }}>Capture &amp; Privacy</h1>
         <p className="mt-body-sm mt-2 max-w-[520px]" style={{ color: 'var(--t-muted)' }}>
           Control when Meridian watches your screen. Everything stays on your Mac until you

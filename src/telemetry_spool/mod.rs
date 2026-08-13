@@ -198,6 +198,26 @@ impl std::fmt::Display for ShipError {
     }
 }
 
+/// Render an error together with its whole `source()` chain, as
+/// `"outer: inner: root"`.
+///
+/// `reqwest::Error`'s own `Display` stops at `"error sending request for url
+/// (https://…)"` and keeps the part that actually identifies the fault — DNS
+/// failure vs. TLS rejection vs. connection refused vs. timeout — in
+/// `source()`. A field report from 1.83.2 showed the ship leg failing that way
+/// for three days straight across every tick, and because the cause had been
+/// dropped it was impossible to tell from the diagnostics bundle whether the
+/// gateway was down, the machine was offline, or TLS was being intercepted.
+///
+/// `anyhow::Error`'s alternate formatter already walks a source chain, so the
+/// conversion borrows it rather than re-implementing the walk.
+fn with_causes<E>(e: E) -> String
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    format!("{:#}", anyhow::Error::from(e))
+}
+
 /// POST one OTLP payload to `endpoint`, classifying any failure so the caller can
 /// quarantine a permanently-rejected payload without stalling the whole queue.
 ///
@@ -219,7 +239,7 @@ pub async fn ship_one(
         .body(bytes)
         .send()
         .await
-        .map_err(|e| ShipError::Retryable(format!("send OTLP request: {e}")))?;
+        .map_err(|e| ShipError::Retryable(format!("send OTLP request: {}", with_causes(e))))?;
 
     let status = resp.status();
     if status.is_success() {
@@ -244,6 +264,56 @@ mod tests {
     // Rust runs tests in parallel threads by default, so any two tests here
     // that set them concurrently would race. Serialize this module's tests.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// A two-level error shaped like the `reqwest` failure the ship leg hits:
+    /// a generic outer message plus the cause that actually names the fault.
+    #[derive(Debug)]
+    struct Outer(Inner);
+    #[derive(Debug)]
+    struct Inner;
+
+    impl std::fmt::Display for Outer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "error sending request for url (https://telemetry.example/v1/logs)"
+            )
+        }
+    }
+    impl std::fmt::Display for Inner {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "dns error: failed to lookup address information")
+        }
+    }
+    impl std::error::Error for Outer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+    impl std::error::Error for Inner {}
+
+    /// Regression guard for the 1.83.2 field incident: the ship leg warned
+    /// `send OTLP request: error sending request for url (…)` on every tick for
+    /// days, and the cause — which is the only part that says whether to fix
+    /// DNS, TLS, the network, or the gateway — was silently discarded.
+    #[test]
+    fn with_causes_keeps_the_root_cause() {
+        let rendered = super::with_causes(Outer(Inner));
+        assert!(
+            rendered.contains("dns error"),
+            "root cause was dropped: {rendered}"
+        );
+        assert!(
+            rendered.contains("error sending request"),
+            "outer message was dropped: {rendered}"
+        );
+    }
+
+    /// Pins why the helper exists: plain `Display` is NOT equivalent.
+    #[test]
+    fn plain_display_drops_the_root_cause() {
+        assert!(!format!("{}", Outer(Inner)).contains("dns error"));
+    }
 
     #[test]
     fn build_export_bundle_archives_pending_and_sent_otlp_files() {

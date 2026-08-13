@@ -28,6 +28,11 @@ export function DraggableCard({
     <Draggable draggableId={task.key} index={index} isDragDisabled={!draggable}>
       {(provided: DraggableProvided, snapshot: DraggableStateSnapshot) => (
         <div ref={provided.innerRef} {...provided.draggableProps}
+          // An inert hook, like the `data-tour` markers elsewhere in the planner.
+          // The walkthrough's demonstration drag needs to find A card in the board
+          // column and clone it, and it cannot know any real ticket's key - the
+          // board is whatever the user's tracker returned. See `Stage.demoDrag`.
+          data-plan-card={task.key}
           style={{
             ...provided.draggableProps.style,
             borderColor: 'var(--t-card-border)',

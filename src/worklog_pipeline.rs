@@ -39,6 +39,7 @@ pub(crate) mod hour;
 pub(crate) mod hour_db;
 pub(crate) mod hour_input;
 pub(crate) mod segment;
+pub(crate) mod stale;
 pub(crate) mod task_db;
 pub(crate) mod workstream;
 pub(crate) mod workstream_parse;

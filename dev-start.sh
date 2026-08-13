@@ -78,15 +78,11 @@ pkill -f 'next dev --turbopack -p 3939' 2>/dev/null || true   # orphaned Next.js
 # then pkill the installed binary BY PATH as a backstop (the dev pkills above only
 # match `target/debug/meridian`, never `~/.meridian/bin/meridian`). Re-enable the
 # installed daemon later with `meridian start`.
-DAEMON_LABEL="gui/$(id -u)/com.meridiona.daemon"
-launchctl disable "$DAEMON_LABEL" 2>/dev/null || true
-launchctl bootout "$DAEMON_LABEL" 2>/dev/null || true
-pkill -f '\.meridian/bin/meridian$' 2>/dev/null || true   # DMG-staged installed daemon
-if pgrep -f '\.meridian/bin/meridian$' >/dev/null 2>&1; then
-    echo "  ⚠ an installed daemon (~/.meridian/bin/meridian) is STILL running — quit the Meridian app and re-run" >&2
-else
-    echo "  ✓ canonical launchd daemon stopped + disabled (re-enable later with: meridian start)"
-fi
+# Lives in scripts/dev-claim-daemon.sh rather than inline, because the DAEMON
+# TAB spawned below has to run it too — see that file's header. Doing it only
+# here fixed nothing the moment the tab was re-run on its own (Up-Enter, or
+# Terminal reopening it at login), which is the common case.
+bash "${REPO_ROOT}/scripts/dev-claim-daemon.sh" || true
 # Also stops the legacy launchd-managed a11y-helper, if present. Capture now runs
 # in-process inside the dev tray binary, so a lingering a11y-helper would be a
 # second, independent capture writer into the same meridian.db capture tables.
@@ -127,15 +123,52 @@ fi
 # Editing daemon code still kills an in-flight hour; this stops everything else from.
 DAEMON_WATCH="--watch src --watch meridian-core/src --watch meridian-oauth/src --watch build.rs --watch Cargo.toml"
 
+# ---------------------------------------------------------------------------
+# Forward MERIDIAN_DB into both windows
+# ---------------------------------------------------------------------------
+# `do script` opens a fresh Terminal LOGIN shell, which inherits Terminal.app's
+# environment — not this script's. So `MERIDIAN_DB=… meridian dev` used to be
+# silently ignored: both services came up on the default ~/.meridian/meridian.db
+# while the caller believed they were pointed somewhere else. That failure is
+# invisible until real data shows up in what was meant to be a clean run, so the
+# override is passed through the command string explicitly, and the summary
+# below always names the DB actually in use.
+#
+# The tilde is expanded here rather than passed along: this script's caller may
+# quote the value (`MERIDIAN_DB="~/x/y.db"`), and while the daemon's
+# Config::from_env expands `~`, the tray's install.rs::meridian_db_path returns
+# the env var verbatim — so an unexpanded tilde would point the two halves of
+# the app at two different databases.
+DB_ENV=""
+if [ -n "${MERIDIAN_DB:-}" ]; then
+    case "${MERIDIAN_DB}" in
+        "~/"*) MERIDIAN_DB="${HOME}/${MERIDIAN_DB#\~/}" ;;
+    esac
+    DB_ENV="MERIDIAN_DB='${MERIDIAN_DB}' "
+fi
+
 osascript <<APPLESCRIPT
 tell application "Terminal"
     activate
 
     -- 1. Rust daemon (cargo watch)
-    do script "echo '=== Rust daemon (cargo watch) ===' && cd '${REPO_ROOT}' && cargo watch ${DAEMON_WATCH} ${FORK_WATCH_FLAG} -x 'run --bin meridian'"
+    -- The claim step runs INSIDE the tab, chained with &&, so it re-runs every
+    -- time this command does — including when the tab is restarted by hand or
+    -- reopened at login, long after this script exited. Without it the dev
+    -- daemon silently exits 0 against an installed daemon that took the socket
+    -- back. `&&` (not `;`) on purpose: if the socket cannot be freed, stop
+    -- rather than start a watcher that can only no-op.
+    do script "echo '=== Rust daemon (cargo watch) ===' && cd '${REPO_ROOT}' && bash scripts/dev-claim-daemon.sh && ${DB_ENV}cargo watch ${DAEMON_WATCH} ${FORK_WATCH_FLAG} -x 'run --bin meridian'"
 
     -- 2. Tauri tray (hot reload — also starts Next.js dev server automatically via beforeDevCommand)
-    do script "echo '=== Tauri tray (tauri dev) ===' && cd '${REPO_ROOT}/tray' && npm run tauri dev"
+    -- MERIDIAN_DEV_DAEMON=1 tells the tray that a DEV daemon owns
+    -- ~/.meridian/daemon.sock, so its launch-time restore stands down
+    -- (daemon_lifecycle::restore_unless_paused). Without it this tab's tray
+    -- reached the dev/source bail-out in ensure_backend_installed, re-registered
+    -- and kickstarted the INSTALLED launchd daemon, and that daemon took the
+    -- socket back from the tab above - which then exited on the single-instance
+    -- guard with status 0, looking healthy while running nothing.
+    do script "echo '=== Tauri tray (tauri dev) ===' && cd '${REPO_ROOT}/tray' && MERIDIAN_DEV_DAEMON=1 ${DB_ENV}npm run tauri dev"
 end tell
 APPLESCRIPT
 
@@ -144,6 +177,16 @@ echo "✓ Dev services starting in 2 Terminal windows:"
 echo ""
 echo "  1. Rust daemon  — rebuilds automatically on .rs save"
 echo "  2. Tauri tray   — hot reload (Next.js dev server starts automatically)"
+echo ""
+# Always name the database. A scratch run and a real run look identical from
+# the outside, and mistaking one for the other means either demoing over real
+# work or believing a clean run wrote nothing when it wrote to the real DB.
+if [ -n "${MERIDIAN_DB:-}" ]; then
+    echo "  ⚠ DB override: ${MERIDIAN_DB}"
+    echo "    (your normal ~/.meridian/meridian.db is untouched)"
+else
+    echo "  DB: ~/.meridian/meridian.db (default)"
+fi
 echo ""
 echo "  Dashboard: open the Meridian tray icon → Open Dashboard"
 echo "  Capture runs in-process inside the tray — no separate agent needed."

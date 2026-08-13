@@ -1202,7 +1202,7 @@ async fn main() -> Result<()> {
                                     "Quit Meridian, then run 'meridian db repair' in a terminal",
                                 ),
                                 event_key: DB_CORRUPT_NOTICE,
-                                deep_link: Some("/logs"),
+                                deep_link: Some(meridian_core::notifications::deep_links::LOGS),
                             },
                         )
                         .await;
@@ -1517,7 +1517,7 @@ async fn etl_tick(meridian: &meridian::db::SqlitePool) -> bool {
                     detail: &e.to_string(),
                     remedy: Some("Quit Meridian, then run 'meridian db repair' in a terminal"),
                     event_key: DB_CORRUPT_NOTICE,
-                    deep_link: Some("/logs"),
+                    deep_link: Some(meridian_core::notifications::deep_links::LOGS),
                 },
             )
             .await;

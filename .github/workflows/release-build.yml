@@ -2,11 +2,14 @@ name: Release (build & publish)
 
 # BUILDS, SIGNS, NOTARIZES AND PUBLISHES A TAGGED RELEASE. DECIDES NOTHING.
 #
-# Triggered by the `v*` tag that release-prepare.yml pushes. Read that file's
-# header first — it explains why version-deciding and building are separate
-# workflows (short version: semantic-release demands branch HEAD, an immutable
-# build ref demands the opposite, and a 30-minute build makes the conflict
-# certain rather than theoretical).
+# Dispatched by release-prepare.yml after it pushes the `v*` tag — ALWAYS with
+# branch = main, and the tag as an INPUT. It is deliberately not triggered by
+# the tag push itself; see the `on:` block for why that one detail was the
+# difference between an 8-minute release and a 35-minute one. Read
+# release-prepare.yml's header first — it explains why version-deciding and
+# building are separate workflows (short version: semantic-release demands
+# branch HEAD, an immutable build ref demands the opposite, and a long build
+# makes the conflict certain rather than theoretical).
 #
 # THIS FILE REPLACES BOTH release-staging.yml AND the old monolithic
 # release.yml, which have been deleted. It is now the ONLY build path, for both
@@ -121,35 +124,112 @@ name: Release (build & publish)
 # goes through the CLI as before; only the compile step needed the env-var
 # equivalent.
 
+# ── DISPATCHED AGAINST `main`, BUILDS A TAG. NOT TRIGGERED BY THE TAG PUSH. ──
+#
+# This used to be `push: tags: ["v*"]`, which is the obvious shape and was the
+# single reason the release pipeline was slow for its entire existence.
+#
+# GitHub scopes the Actions cache by `github.ref`, and its rule for tags has no
+# workaround: "tags only have access to caches created in default branch"
+# (docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching).
+# A tag-triggered build therefore cannot read `pre-main`'s cache, and cannot
+# read a sibling tag's — and every release cuts a brand-new tag, so whatever it
+# saved was scoped to a ref nothing would ever restore from again.
+#
+# The old answer to that was cache-warm.yml: a second ~380-line workflow that
+# recompiled the whole app on `main`, nightly and on every push, purely to
+# manufacture a cache this one could read. It had to mirror this file's runner,
+# toolchain, target, cargo invocation, shared-key AND environment byte for byte,
+# through a contract nothing enforced. That contract broke over a single
+# variable (`CARGO_NET_RETRY`, set there and not here) and every release built
+# stone cold — 21 min macOS, 36 min Windows — while the warm job dutifully wrote
+# a cache under a key nothing ever asked for. Silent the whole time: green
+# checks, correct binaries, "No cache found." in a collapsed log group.
+#
+# THE FIX IS THE TRIGGER, NOT MORE MACHINERY.
+#
+# Cache scope follows `github.ref`, which for a `workflow_dispatch` is THE
+# BRANCH IT WAS DISPATCHED AGAINST — not what the job checks out. So dispatching
+# against `main` while checking out the tag gives both properties at once:
+#
+#     github.ref = refs/heads/main   -> cache scope is the default branch
+#     checkout ref = inputs.tag      -> the built tree is still immutable
+#
+# Consequences worth stating plainly, because they are the whole point:
+#
+#   * Every release READS main's cache and WRITES it back (`save-if` below is
+#     now naturally true). Each release warms the next one. The cache maintains
+#     itself, with no second workflow and no nightly compile.
+#   * cache-warm.yml is DELETED, along with the byte-match contract and the
+#     ci.yml parity guard that existed only to police it.
+#   * The tag<->binary correspondence is unchanged — `prepare` still resolves a
+#     real `v*` tag and every job checks it out by name.
+#
+# THE ONE REAL TRADE-OFF: the workflow LOGIC now comes from `main` while the
+# SOURCE comes from the tag. A staging tag cut from `pre-main` is therefore
+# built by main's copy of this file. That is the same coupling as before (main's
+# cache-warm.yml had to match the tag's release-build.yml) reduced to one file
+# on one branch, and made visible — but it does mean a change to the BUILD STEPS
+# only takes effect for releases once it has reached `main`.
+#
+# `release-prepare.yml` does the dispatch automatically after it pushes the tag,
+# so cutting a release is still one action.
+#
+# ── WHERE THE TIME ACTUALLY GOES (measured, v1.84.0-staging.9, first warm run) ─
+#
+# macOS 7m31s. Windows 12m41s (its upload was a 60s network outlier; 3-11s is
+# typical across the last six releases, so ~11m50s is the honest Windows
+# number). The release is as slow as Windows, and Windows breaks down as:
+#
+#   412s  compiling the 4 workspace crates      <- the wall
+#    56s  index refresh + fingerprinting 1167 deps
+#    54s  npm ci (now concurrent, see below)
+#    49s  rust-cache restore
+#    49s  NSIS bundling
+#    27s  next build
+#    ~55s runner setup, toolchain, node, checkout, upload, post steps
+#
+# THE 412s IS IRREDUCIBLE HERE, and the dead ends are worth recording so nobody
+# re-runs this investigation:
+#
+#   * rust-cache PRUNES workspace members by design, so meridian / meridian-core
+#     / meridian-oauth / meridian-tray recompile on every build even on a
+#     perfect cache hit. Caching them is pointless anyway — their source is what
+#     changed.
+#   * `meridian-tray` alone is ~54% of the work and is a SINGLE serial unit, so
+#     it sets a floor no amount of parallelism goes under.
+#   * Profile tuning does almost nothing, measured locally on 14 cores:
+#     opt-level 3 -> 2 was 76.4s -> 76.8s (noise), opt-level 1 on the tray alone
+#     72s -> 69s, and codegen-units 256 changed nothing. Of the tray's ~63s,
+#     only ~16s is the frontend; the rest is LINKING, which ignores opt-level.
+#     Windows already links with rust-lld (.cargo/config.toml).
+#   * sccache was removed rather than tuned: it measured a 0.00% hit rate on
+#     BOTH platforms and structurally always will, because the only crates that
+#     ever compile here are the workspace crates whose source just changed.
+#
+# WHAT WOULD ACTUALLY FIX IT: an 8-core larger runner, which roughly halves the
+# compile. Larger runners need a GitHub Team plan and are billed per-minute even
+# on public repos (they are NOT covered by the free public-repo minutes), and
+# this org is on the free plan — `/orgs/Meridiona/actions/hosted-runners` returns
+# "GitHub hosted runners are not supported for this organization". So sub-10-min
+# Windows is a billing decision, not a workflow one. Everything cheap has been
+# taken; what is left costs either money or product quality (a lower opt-level
+# on shipped binaries, or weaker NSIS compression for a fatter installer).
 on:
-  push:
-    # EVERY release tag, both channels. `v1.75.0` builds stable, `v1.75.0-staging.3`
-    # builds staging; the channel is derived from the tag string in `prepare`, so
-    # one pipeline serves both and they cannot drift apart.
-    #
-    # This was `v*-staging*` while the pipeline was being proven on staging and
-    # the old monolithic release.yml still owned `main` — matching `v*` then
-    # would have made BOTH pipelines fire on the same production tag. That
-    # workflow has since been deleted, so `v*` is now unambiguous.
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing v*-staging* tag to (re)build and publish (or to compile against, if cache_warm_only)"
+        description: "Existing v* tag to build and publish (e.g. v1.84.0 or v1.84.0-staging.7). ALWAYS dispatch with branch = main, or the build starts from a cold cache."
         required: true
         type: string
       cache_warm_only:
-        # For seeding the `main`-scoped rust-cache entries the macos/windows
-        # jobs' `save-if` conditions require (see their rust-cache steps) —
-        # a tag push can only ever restore a cache saved on that SAME tag or
-        # on `main`, never a sibling tag, so a `main`-scoped entry has to
-        # exist before any tag build can warm-start. Dispatching this
-        # workflow with branch context = `main` and this input set to true
-        # compiles + saves the cache exactly like a real release build would,
-        # but skips creating/publishing anything — no draft release, no
-        # signing, no notarization, no asset upload. Safe to run against an
-        # already-published tag for exactly that reason.
-        description: "Compile + warm the release rust-cache only. Skips creating/publishing a release entirely. Run with branch context = main."
+        # Still useful, and now it is specifically the BOOTSTRAP tool. The very
+        # first dispatch-on-main build after this lands has no main-scoped cache
+        # under the new key and compiles cold (~36 min) before saving one; every
+        # release after it starts warm. Running this against any existing tag,
+        # with branch = main, pays that one-time cost without creating a draft
+        # release, signing, notarizing or uploading anything.
+        description: "Compile + save the main-scoped rust-cache only. Creates and publishes nothing. Run with branch = main."
         required: false
         type: boolean
         default: false
@@ -164,16 +244,33 @@ concurrency:
 permissions:
   contents: read
 
+# *** THIS BLOCK IS PART OF THE CACHE KEY. ***
+#
+# Swatinem/rust-cache hashes the NAMES AND VALUES of every env var matching
+# CARGO_*/RUSTC_*/RUST_* into the first component of its cache key, and its only
+# fallback restore key is `<shared-key>-<runner>-<that hash>`. So a var that
+# cannot possibly affect a compiled byte still decides whether a release build
+# starts warm or compiles ~1100 crates from scratch.
+#
+# That is not a caution, it is history: `CARGO_NET_RETRY` was set in the old
+# cache-warm.yml and not here — nothing else differed, same toolchain, same
+# Cargo.lock (both keys ended `-049b9ef7`) — and that alone moved the hash from
+# `92908ebe` to `11b475d7`, so no release build ever restored anything.
+#
+# Since this workflow is now the ONLY thing that writes these cache keys (it
+# both reads and writes main's entry — see the `on:` block), a change here can
+# no longer desynchronise two files. It still costs exactly one cold build:
+# editing any CARGO_*/RUSTC_* var below changes the key, so the next release
+# compiles from scratch and reseeds. That is a fair price for a real change and
+# a pointless one for a cosmetic var, which is why CARGO_TERM_COLOR and
+# CARGO_NET_RETRY are pinned here rather than left to whatever a runner image
+# or a toolchain action happens to set.
 env:
   SQLX_OFFLINE: "true"
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  CARGO_NET_RETRY: "3"
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  # sccache — see the "Set up sccache" step comment in each compile job for
-  # why this runs alongside rust-cache rather than replacing it. Harmless on
-  # jobs that never invoke cargo (prepare, publish).
-  RUSTC_WRAPPER: sccache
-  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   # ── Stage 1: cheap validation + a draft release for everyone to upload into ──
@@ -188,16 +285,44 @@ jobs:
       channel: ${{ steps.ctx.outputs.channel }}
       prerelease: ${{ steps.ctx.outputs.prerelease }}
     steps:
+      # *** THE DISPATCH BRANCH IS LOAD-BEARING. IT IS NOT COSMETIC. ***
+      #
+      # `github.ref` is what GitHub scopes the Actions cache by, and for a
+      # workflow_dispatch that is the branch chosen in the "Use workflow from"
+      # dropdown — NOT `inputs.tag`, and not what any job checks out. Dispatch
+      # this from `pre-main`, or from a tag, and every compile job below silently
+      # restores nothing and saves to a scope no future run can read: a ~36
+      # minute build that looks completely normal and leaves the cache no better
+      # than it found it.
+      #
+      # That silence is the entire failure mode this pipeline was rebuilt to
+      # remove, so it fails here instead — before a single runner-minute of
+      # compiling, signing or notarizing is spent. `release-prepare.yml`
+      # dispatches with `--ref main` automatically; this only ever trips on a
+      # hand-run dispatch with the wrong dropdown value.
+      - name: Refuse a dispatch from anywhere but main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "${REF}" != "refs/heads/main" ]; then
+            echo "::error::dispatched from ${REF}, but the release build must run with branch = main. GitHub scopes the Actions cache by github.ref, so this run would restore nothing (a full cold compile, ~36 min) and save to a scope nothing can read. Re-dispatch with 'Use workflow from' set to main - the tag you are building is the `tag` INPUT, not the branch."
+            exit 1
+          fi
+          echo "→ dispatched from main; the cache scope is the default branch"
+
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          # The TAG, from the input — immutable, and deliberately unrelated to
+          # the branch this was dispatched from (see the guard above).
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Derive the release context from the tag
         id: ctx
         env:
-          RAW_TAG: ${{ inputs.tag || github.ref_name }}
+          RAW_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           tag="${RAW_TAG}"
@@ -302,7 +427,11 @@ jobs:
     timeout-minutes: 60 # a hung `notarytool --wait` otherwise burns 10x-billed minutes indefinitely
     permissions:
       contents: write # uploads assets into the draft
-      actions: write # sccache's GHA cache backend needs this to SAVE entries, not just read
+      # No `actions: write` — that grant existed ONLY for sccache's GHA cache
+      # backend, which this job no longer uses (see the note above the
+      # rust-cache step). actions/cache saves via ACTIONS_RUNTIME_TOKEN and
+      # needs no such permission, so dropping it costs nothing and keeps a job
+      # that holds the signing key at least privilege.
     strategy:
       # One flaky architecture must not kill the other's artifacts — and we want
       # its timing either way.
@@ -365,26 +494,31 @@ jobs:
           toolchain: "1.93.1"
           targets: ${{ matrix.target }}
 
-      # Complements rust-cache below, doesn't replace it. rust-cache restores
-      # a whole target/ tarball keyed on Cargo.lock — great when it matches
-      # exactly, but a tag-triggered build can only ever restore from ITS OWN
-      # ref or `main` (GitHub's cache scoping), never from `pre-main` directly.
-      # A staging release cut from a `pre-main` that has drifted from `main`
-      # (routine — pre-main accumulates merges between releases) gets a
-      # partially-stale target/, and rust-cache's fingerprint mismatch forces
-      # full recompilation of anything that LOOKS different, even crates whose
-      # actual compiled output would be identical. sccache intercepts at the
-      # individual rustc-invocation level regardless of why cargo decided to
-      # invoke it, so it can still return a hit there. Free GHA cache backend
-      # (SCCACHE_GHA_ENABLED below) — same underlying service as rust-cache,
-      # so still ref-scoped in principle, but per-object rather than
-      # per-tarball, which degrades far more gracefully on drift. Does NOT
-      # cover the vendored-OpenSSL C compile or the Swift static-lib build
-      # (tauri-plugin-notifications) — that's still rust-cache's job via its
-      # cache-directories entry below.
-      - name: Set up sccache
-        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
-
+      # *** DO NOT RE-ADD sccache HERE. IT MADE RELEASES SLOWER, MEASURABLY. ***
+      #
+      # A `Set up sccache` step (mozilla-actions/sccache-action, GHA backend)
+      # used to sit here, on the theory that it degrades more gracefully than
+      # rust-cache when a tag build's target/ is partially stale — per-object
+      # instead of per-tarball. The theory was sound; the accounting was not.
+      #
+      # sccache's GHA backend writes ONE CACHE ENTRY PER COMPILED OBJECT, into
+      # the same 10 GB repo-wide pool rust-cache lives in, which GitHub evicts
+      # by LRU. Measured directly against the cache API: 5288 sccache entries
+      # holding ~3 GB of an 8.8 GB total, against 20 entries for everything
+      # else — and by then the `macos-release-aarch64-apple-darwin` tarball had
+      # ALREADY been evicted, hours after a warm run wrote it. So the fallback
+      # was evicting the primary.
+      #
+      # And it did not even pay for itself: on that same release build sccache
+      # reported `Cache hits rate (Rust) 0.00%` on both platforms — 942 Rust
+      # compilations, zero hits. Its only real hits were C/C++ (vendored
+      # OpenSSL/SQLCipher), which rust-cache's target/ + `~/.cargo/registry/src`
+      # entry already covers once it actually restores.
+      #
+      # It also broke the prune job below: listing caches by ref had to paginate
+      # 50+ pages, and `Prune superseded caches` logged "failed to list caches
+      # for v0-rust-macos-release-aarch64-apple-darwin" — so stale entries
+      # stopped being reaped too, feeding the same eviction.
       - uses: Swatinem/rust-cache@v2
         with:
           # shared-key REPLACES rust-cache's automatic job-based key. That
@@ -407,22 +541,26 @@ jobs:
           # on every run; caching the source directory removes the cause.
           cache-directories: |
             ~/.cargo/registry/src
-          # Only ever save from `main`. A run restores from its own ref OR the
-          # default branch — nothing else — so a save on a tag ref is only
-          # ever restorable by a byte-identical re-run of that SAME tag, which
-          # in practice never happens (every release is a brand-new tag).
-          # `startsWith(refs/tags/v)` used to be in this condition on the
-          # theory that "main must write its own copy or releases can never
-          # warm from staging's" — but staging never had one to warm FROM in
-          # the first place, and every tag build was quietly writing a
-          # ~1.5 GB entry nothing could ever read back, which is what pushed
-          # the repo's cache quota (10 GiB, evicted globally by LRU once
-          # crossed) to the point of evicting entries other jobs actually
-          # need. `refs/heads/pre-main` was dead for the same underlying
-          # reason from a different angle: this workflow only ever triggers
-          # on a `v*` tag push or `workflow_dispatch` (see the `on:` block),
-          # never on a push to `pre-main` itself, so that branch of the
-          # condition could never evaluate true.
+          # THIS IS WHAT MAKES THE CACHE SELF-MAINTAINING, and it is the whole
+          # payoff of dispatching against main (see the `on:` block).
+          #
+          # The condition is unchanged from when this workflow was triggered by
+          # a tag push — but back then it could NEVER be true, because
+          # `github.ref` was always `refs/tags/v…`. Nothing here ever saved.
+          # A separate workflow (cache-warm.yml, now deleted) existed solely to
+          # write the entry this job could not.
+          #
+          # Dispatched from main, `github.ref` IS `refs/heads/main`, so every
+          # release now writes the cache it just used back to the default
+          # branch — the one scope every future tag build can read. Each
+          # release warms the next one, from its own real workload, with no
+          # nightly compile and no second file to keep in step.
+          #
+          # Keep the condition rather than hardcoding `true`: the guard in
+          # `prepare` already rejects a non-main dispatch, and if that guard is
+          # ever loosened this must not start writing entries scoped to a ref
+          # nothing can restore from — which is exactly how the repo's 10 GiB
+          # quota filled up and began evicting caches other jobs needed.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: actions/setup-node@v4
@@ -459,8 +597,22 @@ jobs:
         # it would move ~1 minute out of three PARALLEL jobs into one SERIAL
         # one. We are optimising wall clock.
         run: |
-          (cd ui && npm ci --no-audit --no-fund)
-          (cd tray && npm ci --no-audit --no-fund)
+          # Concurrent, not back to back. The two installs write disjoint
+          # node_modules trees and npm's cache takes its own locks (cacache is
+          # built for concurrent access), so there is nothing to serialise for.
+          # Measured serial on the Windows runner: 54s, all of it on the
+          # critical path of the slowest job in the release.
+          #
+          # Each pid is waited on SEPARATELY and the result OR-ed into rc: a
+          # bare `wait` returns the status of only the last pid, which would
+          # let a failed `ui` install pass silently and surface much later as a
+          # confusing "Build the UI" error.
+          (cd ui && npm ci --no-audit --no-fund) & ui=$!
+          (cd tray && npm ci --no-audit --no-fund) & tray=$!
+          rc=0
+          wait "$ui" || rc=1
+          wait "$tray" || rc=1
+          exit "$rc"
 
       - name: Build the UI
         # `tauri build`'s `beforeBuildCommand` used to do this automatically.
@@ -689,7 +841,11 @@ jobs:
     timeout-minutes: 60 # same cap as macos — bound a hung build instead of falling back to GitHub's 360-minute default
     permissions:
       contents: write # uploads assets into the draft
-      actions: write # sccache's GHA cache backend needs this to SAVE entries, not just read
+      # No `actions: write` — that grant existed ONLY for sccache's GHA cache
+      # backend, which this job no longer uses (see the note above the
+      # rust-cache step). actions/cache saves via ACTIONS_RUNTIME_TOKEN and
+      # needs no such permission, so dropping it costs nothing and keeps a job
+      # that holds the signing key at least privilege.
     env:
       # Same compile-time constants the macOS job bakes in (see its `env:`
       # comment) — these are cross-platform values (OAuth client ids, public
@@ -771,30 +927,21 @@ jobs:
           # produces it — unlike the macOS job, which cross-arch-targets a
           # single shared runner.
 
-      # See the macOS job's "Set up sccache" step for the full reasoning —
-      # identical here, complements rust-cache rather than replacing it.
-      - name: Set up sccache
-        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
-
+      # sccache was removed here too — see the macOS job's note above the
+      # equivalent step for the measurement (5288 cache entries evicting the
+      # tarball that actually matters, for a 0.00% Rust hit rate).
       - uses: Swatinem/rust-cache@v2
         with:
           # Keyed by triple only, same reasoning as the macOS job — one warm
           # cache shared across every workflow that compiles this target.
           add-job-id-key: false
           shared-key: windows-release-x86_64-pc-windows-msvc
-          # Only ever save from `main` — see the macOS job's rust-cache step
-          # for the full reasoning. This one in particular had NEVER once
-          # saved to `main` (confirmed via the cache API: every
-          # windows-release-* entry that ever existed was tag-scoped), so
-          # every tag-triggered Windows release build restored nothing and
-          # compiled OpenSSL-from-source + SQLCipher + the daemon/tray from a
-          # stone-cold cache — every single time, not just once. Restoring
-          # `main`'s cache instead of a dead tag copy is what actually makes
-          # this job fast; dropping the tag-ref save alone would only make it
-          # cold forever instead of cold most of the time, so this job's
-          # `main`-scoped cache needs to exist before this change helps —
-          # currently seeded via a one-off `workflow_dispatch` run with branch
-          # context set to `main`.
+          # Same self-maintaining save as the macOS job — see the full note
+          # there. This is the job that needed it most: every
+          # `windows-release-*` entry that ever existed was tag-scoped
+          # (confirmed via the cache API), so every Windows release build
+          # compiled OpenSSL-from-source + SQLCipher + the daemon and tray from
+          # a stone-cold cache, 35.7 min of a 37 min job, every single time.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: actions/setup-node@v4
@@ -823,8 +970,22 @@ jobs:
         # compiles (frontendDist is embedded at compile time by generate_context!),
         # so it is not hoisted into `prepare` and shared as an artifact.
         run: |
-          (cd ui && npm ci --no-audit --no-fund)
-          (cd tray && npm ci --no-audit --no-fund)
+          # Concurrent, not back to back. The two installs write disjoint
+          # node_modules trees and npm's cache takes its own locks (cacache is
+          # built for concurrent access), so there is nothing to serialise for.
+          # Measured serial on the Windows runner: 54s, all of it on the
+          # critical path of the slowest job in the release.
+          #
+          # Each pid is waited on SEPARATELY and the result OR-ed into rc: a
+          # bare `wait` returns the status of only the last pid, which would
+          # let a failed `ui` install pass silently and surface much later as a
+          # confusing "Build the UI" error.
+          (cd ui && npm ci --no-audit --no-fund) & ui=$!
+          (cd tray && npm ci --no-audit --no-fund) & tray=$!
+          rc=0
+          wait "$ui" || rc=1
+          wait "$tray" || rc=1
+          exit "$rc"
 
       - name: Build the UI
         # Same reasoning as the macOS job's "Build the UI" step: compiling via

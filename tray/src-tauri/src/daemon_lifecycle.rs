@@ -430,7 +430,24 @@ pub(crate) async fn resume_from_pause() -> Result<(), String> {
     .await
 }
 
-/// The launch-time restore, refusing while the daemon is deliberately paused.
+/// Whether a local dev daemon owns this data dir, set by `dev-start.sh` in the
+/// tabs it spawns.
+///
+/// An explicit opt-in env var rather than sniffing for a `target/debug/meridian`
+/// process: the tray and the dev daemon race at startup (both tabs open at
+/// once), so a process probe would report "no dev daemon" purely because it ran
+/// a second too early — the same timing bug this exists to close. It is also
+/// inert in packaged builds, which never set it, so the shipped restore
+/// behaviour cannot change.
+fn dev_daemon_owns_data_dir() -> bool {
+    matches!(
+        std::env::var("MERIDIAN_DEV_DAEMON").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
+/// The launch-time restore, refusing while the daemon is deliberately paused
+/// **or** while a dev daemon owns the data dir.
 ///
 /// Every bail-out in [`crate::backend_install::ensure_backend_installed`] calls
 /// this rather than `ensure_daemon_running` directly. Both halves matter:
@@ -451,6 +468,29 @@ pub(crate) async fn restore_unless_paused(home: &std::path::Path) {
         if DAEMON_PAUSED.load(Ordering::Relaxed) {
             s.record("outcome", "skipped_paused");
             tracing::info!("skipping the launch-time daemon restore - the user paused it");
+            return;
+        }
+        // A DEV DAEMON OWNS THIS DATA DIR — do not resurrect the installed one.
+        //
+        // `dev-start.sh` opens two Terminal tabs at once: one claims
+        // ~/.meridian/daemon.sock for a `cargo run` daemon, the other starts
+        // `tauri dev`. This tray then reached the dev/source bail-out in
+        // `ensure_backend_installed`, which calls straight through to here, and
+        // re-registered + kickstarted the INSTALLED launchd daemon seconds
+        // later. That daemon took the socket back, and the dev daemon exited on
+        // the single-instance guard with status 0 — so `cargo watch` printed
+        // "Exit status: 0" and looked healthy while running nothing.
+        //
+        // Checked HERE rather than in `ensure_daemon_running`, which is the
+        // shared choke point but is also what the tray menu's Resume calls: a
+        // user who explicitly resumes must still get a daemon. This is only the
+        // automatic launch-time restore, which is the one that must stand down.
+        if dev_daemon_owns_data_dir() {
+            s.record("outcome", "skipped_dev_daemon");
+            tracing::info!(
+                "skipping the launch-time daemon restore - MERIDIAN_DEV_DAEMON is set, \
+                 so a dev daemon owns this data dir"
+            );
             return;
         }
         s.record("outcome", "restored");

@@ -20,7 +20,7 @@ import type { TaskStatusTarget, StatusListResponse, TaskStatusOption } from '@/l
 function categoryColor(category: string, isTerminal: boolean): string {
   if (isTerminal || category === 'done') return 'var(--color-state-approved)'
   if (category === 'cancelled') return 'var(--t-faint)'
-  if (category === 'in_progress' || category === 'in_review') return 'var(--color-state-proposal)'
+  if (category === 'in_progress' || category === 'in_review') return 'var(--t-accent)'
   if (category === 'todo') return 'var(--color-state-pending)'
   return 'var(--t-faint)'
 }

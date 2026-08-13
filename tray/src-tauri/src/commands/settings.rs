@@ -110,6 +110,7 @@ pub async fn get_settings() -> Result<Value, String> {
 #[tauri::command]
 #[tracing::instrument(skip(pool, app_state, body))]
 pub async fn update_settings(
+    app: tauri::AppHandle,
     pool: State<'_, Option<meridian_core::SqlitePool>>,
     app_state: State<'_, Arc<Mutex<AppState>>>,
     body: Value,
@@ -185,10 +186,8 @@ pub async fn update_settings(
     // shown can hold a schema. An unenforced fold doesn't fail loudly — it drops the hour.
     enforce_custom_provider_gate(&updated)?;
 
-    meridian_core::settings::write_settings_value(&updated).map_err(|e| {
-        tracing::warn!(error = %e, "update_settings: write failed");
-        e.to_string()
-    })?;
+    meridian_core::settings::write_settings_value(&updated)
+        .map_err(|e| crate::cmd_err!(e, "update_settings: write failed"))?;
 
     // Refresh the live capture ignore list so a Settings change takes effect on
     // the very next captured frame — no capture restart. The frame + UI-event
@@ -203,6 +202,15 @@ pub async fn update_settings(
         ignored_urls = urls.len(),
         "update_settings: capture ignore list refreshed"
     );
+
+    // Switching AI provider changes `llm_provider_ok` the moment this write lands - the new
+    // provider may be signed out, or the old failure may no longer apply. The banner is
+    // push-only, so without this it keeps naming the PREVIOUS provider until the poll loop's
+    // next 60 s health tick. Only on the keys that can move it; every other setting leaves
+    // provider health alone and shouldn't pay for a health check.
+    if body_obj.contains_key("llm_provider") || body_obj.contains_key("llm_provider_custom_id") {
+        crate::commands::health::push_health_update(&app).await;
+    }
 
     redact_password(&mut updated);
     redact_custom_keys(&mut updated);

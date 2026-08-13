@@ -53,10 +53,7 @@ pub async fn get_triage(
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     meridian_core::triage::get_triage(pool, &now)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "get_triage failed");
-            e.to_string()
-        })
+        .map_err(|e| crate::cmd_err!(e, "get_triage failed"))
 }
 
 /// POST body for [`triage_decision`] (`{ task_key, decision, snooze_days? }`).
@@ -116,10 +113,7 @@ pub async fn triage_decision(
         &now_iso(),
     )
     .await
-    .map_err(|e| {
-        tracing::warn!(error = %e, "triage_decision failed");
-        e.to_string()
-    })?;
+    .map_err(|e| crate::cmd_err!(e, "triage_decision failed"))?;
 
     Ok(TriageDecisionAck {
         ok: true,
@@ -170,10 +164,7 @@ pub async fn triage_ignore(
         body.undo.unwrap_or(false),
     )
     .await
-    .map_err(|e| {
-        tracing::warn!(error = %e, "triage_ignore failed");
-        e.to_string()
-    })?;
+    .map_err(|e| crate::cmd_err!(e, "triage_ignore failed"))?;
 
     Ok(TriageIgnoreAck {
         ok: true,

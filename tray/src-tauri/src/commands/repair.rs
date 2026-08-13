@@ -56,10 +56,7 @@ pub async fn preview_repair() -> Result<RepairPreview, String> {
     let (_problems, scan) =
         meridian::db::repair::inspect(std::path::Path::new(&db_path), key.as_deref())
             .await
-            .map_err(|e| {
-                tracing::warn!(error = %e, "repair preview failed");
-                format!("{e:#}")
-            })?;
+            .map_err(|e| crate::cmd_err!(e, "repair preview failed"))?;
 
     Ok(RepairPreview {
         damaged: !scan.is_healthy(),
@@ -88,14 +85,16 @@ pub async fn request_repair(app: tauri::AppHandle) -> Result<(), String> {
     let db_path = install::meridian_db_path();
     let db_path = std::path::Path::new(&db_path);
 
-    meridian::db::repair::marker::request(db_path).map_err(|e| {
-        tracing::error!(error = %e, "could not write the repair marker");
-        format!("{e:#}")
-    })?;
+    meridian::db::repair::marker::request(db_path)
+        .map_err(|e| crate::cmd_err!(level: error, e, "could not write the repair marker"))?;
 
     // Best-effort. `launchctl stop` does not hold a KeepAlive job down (see
     // the marker module), so this only shortens the wait - the marker is what
     // actually keeps the daemon out, and `repair_boot` waits for it regardless.
+    //
+    // Deliberately NOT `cmd_err!`: `set_running` returns `Result<(), String>`,
+    // so there is no source chain to walk and `{:#}` would render identically.
+    // The macro would add the appearance of a fix and recover nothing.
     if let Err(e) = super::daemon_control::set_running(false).await {
         tracing::warn!(error = %e, "could not stop the daemon before repairing - the marker will hold it off instead");
     }
