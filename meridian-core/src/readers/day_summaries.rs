@@ -230,7 +230,7 @@ struct RawSummaryRow {
     plan_json: String,
     adherence_json: String,
     themes_json: String,
-    /// `Option` purely as belt-and-braces, like `evidence_at` above. Migration 078
+    /// `Option` purely as belt-and-braces, like `evidence_at` above. Migration 080
     /// declares this `NOT NULL DEFAULT '[]'`, so a migrated DB never yields NULL and
     /// an UN-migrated one fails the whole SELECT on the unknown column (which
     /// [`get_day_summary`] already degrades to `None`). It costs nothing and means a
@@ -396,7 +396,7 @@ mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
 
-    /// The post-078 table, as the migrations leave it.
+    /// The post-080 table, as the migrations leave it.
     async fn pool_with_summaries() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -501,7 +501,7 @@ mod tests {
         assert!(!got.fallback);
     }
 
-    /// Migration 078 backfills every existing row with `'[]'`, which is exactly what
+    /// Migration 080 backfills every existing row with `'[]'`, which is exactly what
     /// a pre-080 summary should read back as: no standup, so the block does not
     /// render. The same path covers a column whose JSON has rotted - one field
     /// degrades, never the row, matching this module's stated tolerance.

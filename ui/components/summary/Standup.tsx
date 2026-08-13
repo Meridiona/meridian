@@ -17,7 +17,7 @@
 //
 // It renders NOTHING when there are no lines, which covers the fallback path (the
 // LLM call failed, so the deterministic half of the screen is all that is true) and
-// every summary composed before migration 078. An empty bordered box captioned
+// every summary composed before migration 080. An empty bordered box captioned
 // "standup" would be a promise the screen could not keep.
 //
 // # Who calls this
