@@ -135,6 +135,20 @@ pub async fn resize_setup_window(
         tracing::debug!("setup window not open - resize skipped");
         return Ok(());
     };
+    // Skip while the window is in native full-screen. tao's `set_inner_size`
+    // calls `NSWindow::setContentSize:` unconditionally (verified in
+    // tao-0.35.3's macOS backend — no fullscreen check), and that call does
+    // not special-case a fullscreen style mask: it shrinks the window's
+    // rendered content to the requested design size while the macOS Space
+    // stays screen-sized, leaving a black backdrop around it until the user
+    // exits full-screen (a real resize back) and AppKit reconciles the two.
+    // There's nothing to fix here anyway while full-screen — the card's own
+    // `transform: scale(...)` in page.tsx already grows it to fill whatever
+    // size the window actually is.
+    if win.is_fullscreen().unwrap_or(false) {
+        tracing::debug!("setup window is full-screen - resize skipped");
+        return Ok(());
+    }
     let resize = win
         .set_min_size(Some(tauri::LogicalSize::new(width, height)))
         .and_then(|()| win.set_size(tauri::LogicalSize::new(width, height)));
