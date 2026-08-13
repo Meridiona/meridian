@@ -1,5 +1,82 @@
 # Changelog
 
+## [1.85.0](https://github.com/Meridiona/meridian/compare/v1.84.0...v1.85.0) (2026-08-13)
+
+### 🚀 Features
+
+* **dashboard:** invite contributors from the home page ([b25df7d](https://github.com/Meridiona/meridian/commit/b25df7d338b70956289d2e2f529a5b62f63334da))
+* **onboarding:** first-run walkthrough with a compulsory AI-connect step ([36c0847](https://github.com/Meridiona/meridian/commit/36c0847a57a8be370b343eff8b3bb0295e0ee650))
+* **onboarding:** fold the walkthrough's worklog beats onto the shipped UI ([4669060](https://github.com/Meridiona/meridian/commit/46690605acb5948d43c14d607ffbb5c16ea3867a))
+* **plan:** carry yesterday's unfinished work into today automatically ([fd97635](https://github.com/Meridiona/meridian/commit/fd976351f1968dd3d1678ec4016f12ee8fea9deb))
+* **summary:** give the real daily summary the walkthrough's layout ([196cad2](https://github.com/Meridiona/meridian/commit/196cad279d56860b64908cd0a609f521f7aa8331))
+* **worklog:** tell the user when a draft has fallen behind the work ([baeb6c8](https://github.com/Meridiona/meridian/commit/baeb6c8843a796c99ef4d8aed62ba89525571e36))
+
+### 🐛 Bug Fixes
+
+* **ci:** make the cache prune actually prune ([dda9e37](https://github.com/Meridiona/meridian/commit/dda9e3722644b8723460153396b201a0b5b94dc3))
+* **ci:** make the release build actually restore its warm cache ([6fc4281](https://github.com/Meridiona/meridian/commit/6fc428182fbb29ea26c942a7246cec0ad6a69f8f))
+* **dev:** make the dev daemon tab claim the socket before it starts ([9e46eff](https://github.com/Meridiona/meridian/commit/9e46effad0f51afef9fbf7d80f7740f597e3ddf9))
+* **dev:** stop the dev tray resurrecting the installed daemon ([1977c32](https://github.com/Meridiona/meridian/commit/1977c3250115a07b83fbdab51087ebc333021174))
+* **notifications:** address review - dead dismiss button, taxonomy, guard gaps ([1c31ec8](https://github.com/Meridiona/meridian/commit/1c31ec875375140b0103a5dc6e7ba086dcd1387c))
+* **notifications:** remove the board hygiene digest toast ([c588248](https://github.com/Meridiona/meridian/commit/c5882485a60106f7496d2ddf32b2708901ad69b1))
+* **notifications:** resolve every deep link, quiet the back-online toast ([161682a](https://github.com/Meridiona/meridian/commit/161682a3ec292b30d45fa7f5a6036b6eafbf0497))
+* **observability:** stop printing every dev warning and error twice ([efdfc8a](https://github.com/Meridiona/meridian/commit/efdfc8a6ad2f096077fdcf6537cd3b16e341519c))
+* **onboarding:** keep the walkthrough away from installs that predate it ([77c1131](https://github.com/Meridiona/meridian/commit/77c1131d1ba7d1c11126c82077e16bc569e2f0c5))
+* **onboarding:** let the walkthrough play after a re-onboard ([d7689fa](https://github.com/Meridiona/meridian/commit/d7689fac9cc7d646adf3fb4701a08260e736975c))
+* **onboarding:** take the skip out of the first-run walkthrough ([5e40fe0](https://github.com/Meridiona/meridian/commit/5e40fe0c57e8fd54dd9a1dde04becbb1a2386575))
+* **plan:** commit the day when a task is authored into it ([d871c10](https://github.com/Meridiona/meridian/commit/d871c1042c9daa09a2ec13c37cf5bea724b9bb32))
+* **plan:** route a failed AI draft to the fix instead of a dead end ([a8bd2eb](https://github.com/Meridiona/meridian/commit/a8bd2ebf41284f28945b41396525dfb677a75479))
+* **release:** ask the tag, not main, whether a build already started ([0700e5a](https://github.com/Meridiona/meridian/commit/0700e5ac0f75ba4d519b7b3853ad8607c3e74f61)), closes [#709](https://github.com/Meridiona/meridian/issues/709)
+* **report:** take the AI colour off the get-in-touch modal ([841962f](https://github.com/Meridiona/meridian/commit/841962f6a19e410a6fbb4aa1dd0ba23cdfb62c19))
+* **review:** close the PR [#706](https://github.com/Meridiona/meridian/issues/706) findings ([0fb1699](https://github.com/Meridiona/meridian/commit/0fb16995f455537c56e174113e40c5f023dbd563))
+* **setup:** carry install_command through the custom-provider status row ([226ba90](https://github.com/Meridiona/meridian/commit/226ba906e0b0e2ae86008b7f7bb988db44efba8b))
+* **setup:** drop the invented founding-user number ([e1ebb06](https://github.com/Meridiona/meridian/commit/e1ebb0661c94f1f3f9a0199ac10da6fb24b57252))
+* **telemetry:** keep the cause when an OTLP ship attempt fails ([8cfacb3](https://github.com/Meridiona/meridian/commit/8cfacb363b8541159cd8391ee5c3ace7d21442bf))
+* **timeline:** name the clock time on the live-hour card ([2aa42f2](https://github.com/Meridiona/meridian/commit/2aa42f2e5b647058728c0a38cf2b99a88e81cfd5))
+* **tray:** address PR [#704](https://github.com/Meridiona/meridian/issues/704) review - refresh sites, repair path, guard ([f8cb141](https://github.com/Meridiona/meridian/commit/f8cb1411dd8b56d465b2c922fa052224ec5695ce))
+* **tray:** harden the reload rate limit against the review findings ([fe27794](https://github.com/Meridiona/meridian/commit/fe277948da1f8850293930bb60941456dd2c45e2))
+* **tray:** keep the error cause when a command fails ([13eee40](https://github.com/Meridiona/meridian/commit/13eee40d4aa12a5942b834e752134b5434908f62))
+* **tray:** route two command error paths through cmd_err! ([235563d](https://github.com/Meridiona/meridian/commit/235563d2f453feea3052946cbfe06e4471803e43))
+* **tray:** send a fresh install to setup, not the dashboard ([5dc9504](https://github.com/Meridiona/meridian/commit/5dc95043adcde84b82ef6a1abe2ab4a95bc1cc5d))
+* **tray:** stop SIGHUPing the daemon into launchd's throttle window ([53e6595](https://github.com/Meridiona/meridian/commit/53e6595e64451ce2842e2a4347856a35e2b224d2))
+* **tutorial:** confirm the off-plan post as soon as it lands ([dcef689](https://github.com/Meridiona/meridian/commit/dcef68951708ff3b016da959a3a674ca1945627b))
+* **tutorial:** drop the off-switch rehearsal on a drawn tray ([ce7cb36](https://github.com/Meridiona/meridian/commit/ce7cb36b9bab305b04b45e552b4f7e7c2ca904c4))
+* **tutorial:** gate the worklog stretch on a connected board, and cut the narration back ([c7b99a3](https://github.com/Meridiona/meridian/commit/c7b99a3a03aaa3fb8c31799b8eed2be879af00f4))
+* **tutorial:** move the advance button to the end of the sentence ([df58e94](https://github.com/Meridiona/meridian/commit/df58e94c31fe1506e55a63ae1ab4caf810821391))
+* **tutorial:** put the narration back to body size on its inverted surface ([902d873](https://github.com/Meridiona/meridian/commit/902d87304c471398542f148fde3efcdb1a4fdba7))
+* **tutorial:** stop narrating a finished sync, remove stray ring, drop redundant closing card ([b3c121a](https://github.com/Meridiona/meridian/commit/b3c121a17aa9ea1ec5759b12a9a3e70e24c8bb9f))
+* **tutorial:** stop the walkthrough tests slicing to nowhere ([4bbba96](https://github.com/Meridiona/meridian/commit/4bbba96ff4497b433bcdbcb6ec87eb3fb78180d5)), closes [#725](https://github.com/Meridiona/meridian/issues/725)
+* **uninstall:** drop a redundant closure in the Windows branch ([b73391d](https://github.com/Meridiona/meridian/commit/b73391dac753c8a5f42aa9c1e3a9bf5c849b3d33))
+* **uninstall:** remove the data that survived every uninstall path ([86dda68](https://github.com/Meridiona/meridian/commit/86dda68aeb96dee23031b702efa597a39a2f5d82))
+* **update:** broadcast a terminal install failure so no surface wedges ([45575e2](https://github.com/Meridiona/meridian/commit/45575e26930ea9f2d995f1ee10651f28b740d8d6))
+* **update:** stop reporting a concurrent install as "Update failed" ([832331c](https://github.com/Meridiona/meridian/commit/832331ce874485dcb8f78c3f35f37f14baba4321))
+* **worklog:** make the update's sections readable and quiet the copy control ([aba27cb](https://github.com/Meridiona/meridian/commit/aba27cbeb1094320607915cc9db845ced608e715))
+* **worklog:** put the destination back at the top of the draft ([5cdf2e3](https://github.com/Meridiona/meridian/commit/5cdf2e3daf7890e90b9e977c705edccc84de1044))
+
+### ⚡ Performance
+
+* **ci:** install the ui and tray deps concurrently ([daa5726](https://github.com/Meridiona/meridian/commit/daa57261ab3d603ae92b040b6029750ca01ccfac))
+
+### ♻️ Refactoring
+
+* **notifications:** give deep links one vocabulary and a guard ([bb6d8b1](https://github.com/Meridiona/meridian/commit/bb6d8b1e1ac0a62f3ab0efbbe9466c36f36dad6d))
+* **release:** dispatch the build against main instead of the tag ([77234c9](https://github.com/Meridiona/meridian/commit/77234c95bf373a32f1279e80721ed77a4f179262))
+* **worklog:** give the draft card a hierarchy instead of three kickers ([8f76ea6](https://github.com/Meridiona/meridian/commit/8f76ea6e3a97f99d58e2346865144cc2fdb28afd))
+* **worklog:** rebuild the draft dialog around the document, not a card ([9fd4049](https://github.com/Meridiona/meridian/commit/9fd40496b866a53e3141b47baab7184801411963))
+
+### 📝 Documentation
+
+* **summary:** point the standup comments at migration 080, not 078 ([c973827](https://github.com/Meridiona/meridian/commit/c9738276253fbb76f49011326626c18bb3b736dd)), closes [#728](https://github.com/Meridiona/meridian/issues/728)
+
+### 🎨 Styles
+
+* **report:** lift the hero, give the CTA its own fill, darken the bug button ([c78c84f](https://github.com/Meridiona/meridian/commit/c78c84ff1e7f562a3ea3d39498697a12850d6cd8)), closes [#100D24](https://github.com/Meridiona/meridian/issues/100D24) [#191542](https://github.com/Meridiona/meridian/issues/191542)
+
+### 🔧 Chores
+
+* **ci:** reap caches no run can ever restore ([c77f1c3](https://github.com/Meridiona/meridian/commit/c77f1c35df447367a35451b48855446fc23b90cd))
+* productionise the daily-summary and onboarding branch ([2915770](https://github.com/Meridiona/meridian/commit/2915770741093b7ea6ec54ca46f0860cae4138aa)), closes [#DCCFFB](https://github.com/Meridiona/meridian/issues/DCCFFB)
+
 ## [1.84.0](https://github.com/Meridiona/meridian/compare/v1.83.2...v1.84.0) (2026-08-07)
 
 ### 🚀 Features
