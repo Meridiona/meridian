@@ -399,6 +399,41 @@ export function useTutorial(opts: {
         if (sig.aborted) throw new Aborted()
         return got
       },
+      value: (sel) => (tourTarget(sel) as HTMLInputElement | HTMLTextAreaElement | null)?.value ?? '',
+      waitForMinWords: async (sel, minWords, o) => {
+        const sig = signal()
+        const el = await waitForElement(sel, sig)
+        if (!el) return false
+        const words = (v: string) => v.trim().split(/\s+/).filter(Boolean).length
+        setAwaiting(true)
+        const got = await new Promise<boolean>((resolve) => {
+          let done = false
+          const settle = (v: boolean) => {
+            if (done) return
+            done = true
+            sig.removeEventListener('abort', onAbort)
+            clearTimeout(timer)
+            cancelAnimationFrame(raf)
+            resolve(v)
+          }
+          function onAbort() { settle(false) }
+          const timer = setTimeout(() => settle(false), o?.fallbackMs ?? 90000)
+          // Same target-vanished handling as waitForValue/waitForClick: the
+          // composer closing out from under this wait is the step ending, not
+          // a miss, so it counts as done rather than burning the fallback.
+          let raf = requestAnimationFrame(function tick() {
+            const node = tourTarget(sel) as HTMLInputElement | HTMLTextAreaElement | null
+            if (!node) { settle(true); return }
+            if (words(node.value) >= minWords) { settle(true); return }
+            raf = requestAnimationFrame(tick)
+          })
+          sig.addEventListener('abort', onAbort, { once: true })
+        })
+        setAwaiting(false)
+        parkCursor()
+        if (sig.aborted) throw new Aborted()
+        return got
+      },
       appeared: async (sel, timeoutMs = 3000) => !!(await waitForElement(sel, signal(), timeoutMs)),
       demoDrag: async (from, to) => {
         const sig = signal()
