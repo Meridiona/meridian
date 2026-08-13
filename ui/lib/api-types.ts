@@ -880,7 +880,7 @@ export interface DaySummary {
    *  bullet, so the Copy button joins them with newlines rather than the screen
    *  guessing where the model meant to break a paragraph.
    *
-   *  Empty on the fallback path and on rows written before migration 078; the block
+   *  Empty on the fallback path and on rows written before migration 080; the block
    *  simply does not render. */
   standup: string[]
   /** One verdict per planned ticket; empty when the day had no plan. */

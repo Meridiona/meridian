@@ -464,7 +464,7 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
                 happened, and what you will say about it tomorrow - and reading one
                 straight after the other is what makes the second believable.
                 The standup renders nothing when the model gave no lines (the
-                fallback path, or a pre-078 row), so the grid collapses to the list
+                fallback path, or a pre-080 row), so the grid collapses to the list
                 alone rather than leaving an empty captioned box beside it. */}
             <div
               className="grid gap-3 mt-6"
