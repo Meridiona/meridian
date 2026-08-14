@@ -1,0 +1,19 @@
+# Default owner for everything in the repo.
+@Akarsh-Hegde
+
+# Release, signing, and CI machinery - a bad change here ships to every installed
+# app, so it always gets maintainer review.
+/.github/workflows/  @Akarsh-Hegde
+/.releaserc.json     @Akarsh-Hegde
+/.releaserc.staging.json @Akarsh-Hegde
+/scripts/            @Akarsh-Hegde
+
+# Privacy and security surface. Changes here alter what leaves a user's machine
+# or what we promise about it.
+/SECURITY.md                     @Akarsh-Hegde
+/docs/privacy.md                 @Akarsh-Hegde
+/src/telemetry_spool/redact.rs   @Akarsh-Hegde
+/src/observability/              @Akarsh-Hegde
+
+# Schema migrations are append-only and irreversible once released.
+/src/migrations/  @Akarsh-Hegde

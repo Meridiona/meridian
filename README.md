@@ -17,9 +17,21 @@ It runs quietly on your Mac or PC, understands what you're working on, and keeps
 
 Not a time tracker you fill out. It's a private timeline of your day - browse it anytime to see what you actually did, task by task - plus a background layer that keeps your project management honest while you stay in the work.
 
+> **Early access.** Meridian is young and shipping fast. The core loop — capture, classify, draft, approve — works every day on real projects, but you will hit rough edges. [Bug reports](https://github.com/Meridiona/meridian/issues/new?template=bug_report.yml) are genuinely welcome, and they get fixed quickly.
+
 ## Demo
 
 https://github.com/user-attachments/assets/501f41e6-aa89-404b-b430-a0b8b59c198e
+
+<!-- SCREENSHOTS: uncomment once docs/images/timeline.png and docs/images/approval.png exist.
+     See docs/images/README.md for what to capture. Do not uncomment before the files land -
+     GitHub renders a missing image as broken alt text.
+|  |  |
+|---|---|
+| ![Your day as a timeline](docs/images/timeline.png) | ![Review and approve each worklog](docs/images/approval.png) |
+| **Your day, reconstructed** - every session bounded and labelled, no timers. | **Nothing posts without you** - every draft waits for your approval. |
+-->
+
 
 ---
 
@@ -83,27 +95,21 @@ Connect one or more trackers and Meridian maps captured work sessions to tasks, 
 | **Trello** | Browser OAuth | Card comment (no native time-tracking API) | Cloud only |
 | **Azure DevOps** | Personal Access Token (PAT) with Work Items Read & write scope | Work item comment (no native time-tracking API) | Cloud (`dev.azure.com`) + legacy (`*.visualstudio.com`) + on-premises (TFS/Azure DevOps Server) |
 
-### Azure DevOps quick-start
+Connecting a tracker takes a couple of minutes each — step-by-step instructions for all five are in [SETUP.md](SETUP.md#connect-your-tracker-jira-linear-github-trello-or-azure-devops), or run `meridian setup` to be prompted interactively.
 
-Just two variables — paste your project URL from the browser and your PAT:
+## Where your data lives
 
-```bash
-# Add to .env (or run meridian setup to be prompted interactively)
-AZURE_DEVOPS_URL=https://dev.azure.com/your-org/your-project
-AZURE_DEVOPS_PAT=your-pat-here
-```
+Everything Meridian records stays in `~/.meridian/`:
 
-`AZURE_DEVOPS_URL` works for all three URL shapes: `dev.azure.com/org/project`, `org.visualstudio.com/project`, and on-premises servers — meridian auto-extracts the org and project.
+| Path | What's in it |
+|---|---|
+| `~/.meridian/meridian.db` | Your activity sessions and captured text. Encrypted at rest (SQLCipher); the key is generated on first run and kept in your OS keychain. |
+| `~/.meridian/oauth/` | Tracker OAuth tokens, mode `0600`. |
+| `~/.meridian/.env` | Tracker API keys and daemon configuration, mode `0600`. |
+| `~/.meridian/telemetry/` | Local logs and traces. Read them with `meridian logs`. |
 
-To create a PAT: **User settings → Personal access tokens → New token**, scope: **Work Items → Read & write**.
+Raw captured frames are pruned automatically after 30 days. To remove everything, run `meridian uninstall`.
 
-```bash
-# Verify tasks synced
-meridian force-pm-sync
-sqlite3 ~/.meridian/meridian.db "SELECT task_key, title FROM pm_tasks WHERE provider='azure_devops';"
-```
-
-## Data location
 👉 **Full walkthrough — permissions, tracker setup, configuration, troubleshooting: [SETUP.md](SETUP.md).**
 
 ## Quickstart
@@ -123,16 +129,24 @@ Open the dashboard from the Meridian tray icon in the menu bar. Stop everything 
 
 Meridian is built to keep your data yours:
 
-- **Capture and session structuring run on-device** — screen capture, OCR, and categorization happen locally; your screen content is not sent to Meridiana.
-- **Meridiana, the company, never receives your data.** There are no analytics servers and no default telemetry.
-- **The only outbound traffic is yours, and you control it:** approved ticket updates go directly from your machine to the trackers *you* connect (Jira, GitHub, Linear), and integration tokens are stored locally.
+- **Capture and session structuring run on-device** — screen capture, OCR, and categorization happen locally, and the resulting database is encrypted at rest with a key held in your OS keychain. Your screen content, window titles, and captured text are never sent to Meridiana.
+- **Approved ticket updates go straight from your machine** to the trackers *you* connect (Jira, GitHub, Linear, Trello, Azure DevOps). Integration tokens stay local; nothing is proxied through us.
 - **AI summaries use the provider you choose:** matching work to tickets and drafting worklogs run through the coding-agent CLI you already use (Claude, Codex, Cursor, Copilot) or a cloud LLM you configure, so session text is sent to that provider. There is no on-device generative model.
+- **Error reports are the one thing we receive, and you can switch them off.** Packaged builds send error-level diagnostics to help us fix crashes — **on by default**, off in one click at **Settings → Capture & Privacy**. Only WARN-and-above logs and failed traces qualify; content-bearing fields are stripped on your device before anything is sent, and your hostname is replaced by a one-way pseudonym. Screen content, OCR text, window titles, URLs, and LLM prompts never leave your machine either way. Builds compiled from source send nothing at all.
+- **No analytics, no usage metrics, no cross-device tracking.**
 
-Full detail: [docs/privacy.md](docs/privacy.md).
+Full detail, including exactly what an error report can and cannot contain: [docs/privacy.md](docs/privacy.md).
 
 ## Contributing
 
-Meridian is open source and contributions are welcome — bug reports, fixes, docs, and features. See **[CONTRIBUTING.md](CONTRIBUTING.md)** to get a dev environment running, and **[CLAUDE.md](CLAUDE.md)** for architecture and conventions. By participating you agree to our [Code of Conduct](CODE_OF_CONDUCT.md).
+Meridian is open source and contributions are welcome — bug reports, fixes, docs, and features.
+
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — get a dev environment running and open your first PR.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — how the system fits together, and why it's built this way.
+- **[Good first issues](https://github.com/Meridiona/meridian/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)** — scoped starting points.
+- **[Discussions](https://github.com/Meridiona/meridian/discussions)** — questions, ideas, and how you're using it.
+
+By participating you agree to our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Build from source
 
