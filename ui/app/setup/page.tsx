@@ -10,7 +10,7 @@
 
 import { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react'
 import type { ReactNode } from 'react'
-import { invoke, load, mutate, tauri } from '@/lib/bridge'
+import { invoke, load, mutate, nudgeWindowRepaint, tauri } from '@/lib/bridge'
 import { buildSteps, Welcome } from './steps'
 import type { Wiz } from './steps'
 import type { NotifState } from './data'
@@ -297,6 +297,18 @@ export default function SetupWizard() {
   useEffect(() => {
     invoke('resize_setup_window', { width: 1000, height: cardHeight + 52 }).catch(() => {})
   }, [cardHeight])
+
+  // Each of these swaps the whole card's content (Welcome ↔ Rail steps) —
+  // exactly the kind of heavy reflow that can trip a WKWebView/wry compositor
+  // bug on macOS when the window is already in native full-screen: the
+  // webview's drawable gets pinned to a stale size and the rest of the
+  // (genuinely full-screen) window renders black. `resize_setup_window` above
+  // already guards its own resize against this (`is_fullscreen()` in
+  // system.rs), but that only covers transitions where `cardHeight` actually
+  // changes AND the window isn't full-screen; this covers every transition,
+  // full-screen or not, by forcing a real (same-size) window frame-set that
+  // makes WebKit recompute the compositing surface. See nudgeWindowRepaint.
+  useEffect(() => { nudgeWindowRepaint() }, [welcome, step])
 
   return (
     <div style={{
