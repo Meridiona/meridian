@@ -28,13 +28,16 @@ For anything beyond a small fix, **open an issue first**.
 | `tray/` | Tauri menu-bar app — in-process capture, dashboard webview, live event streams |
 | `tests/` | Rust integration tests |
 
-See **[CLAUDE.md](CLAUDE.md)** for the full architecture and per-task recipes.
+Start with **[ARCHITECTURE.md](ARCHITECTURE.md)** for how these fit together and why.
+**[CLAUDE.md](CLAUDE.md)** is the deeper reference - conventions, per-task recipes, and
+the failure modes that have already bitten someone. It's written for AI coding agents,
+so it reads as a list of directives, but it's the most complete document in the repo.
 
 ---
 
 ## Development setup
 
-**Requirements:** macOS (Apple Silicon or Intel) or Windows 10/11, Rust 1.93.1 (pinned via `rust-toolchain.toml`), Node 20+.
+**Requirements:** macOS (Apple Silicon or Intel) or Windows 10/11, Rust 1.93.1 (pinned via `rust-toolchain.toml`), Node 20+, and [bun](https://bun.sh) (the dashboard test runner).
 
 ### First-time setup
 
@@ -108,13 +111,20 @@ rm -rf ~/.meridian/models/bge-small-en-v1.5
 Run the same checks CI runs — all must pass:
 
 ```bash
-cargo fmt                          # format
-cargo clippy -- -D warnings        # lint — warnings are errors
-cargo test                         # Rust unit + integration tests
-cargo build --release              # verify release build
+cargo fmt                                              # format
+cargo clippy --workspace --all-targets -- -D warnings  # lint — warnings are errors
+cargo test --workspace                                 # Rust unit + integration tests
+cargo build --release                                  # verify release build
 
-cd ui && npm ci && npm run build   # dashboard builds
+cd ui && npm ci && npm run build                       # dashboard builds
+cd ui && bun test                                      # dashboard tests (bun, not npm)
 ```
+
+> **`--workspace` is not optional.** The repo root is itself a package, so a bare
+> `cargo test` or `cargo clippy` runs against the daemon **alone** and silently skips
+> `meridian-core`, `meridian-oauth`, and the tray. They still compile, which is what
+> makes the omission so convincing - they are simply never tested. CI and the git hooks
+> pass `--workspace` for exactly this reason.
 
 The git hooks enforce most of this automatically:
 
@@ -139,7 +149,7 @@ Read **[TESTING.md](TESTING.md)** first. The integration tests in `tests/integra
 - **Target `pre-main`, not `main`.** All feature and fix PRs go against `pre-main` — the staging branch. Only a maintainer opens the `pre-main → main` release PR, and only after everything on `pre-main` has been tested end-to-end on staging.
 - **Do not mention Claude as co-author in commit messages.**
 
-Releases are automated by release-please from the commit history, so accurate types matter.
+Releases are automated by semantic-release from the commit history, so accurate types matter — `feat` and `fix` drive the version bump and land in the published release notes.
 
 ### File-header convention
 
@@ -179,4 +189,7 @@ Full rationale in [CLAUDE.md](CLAUDE.md).
 
 ## Questions?
 
-Open a [discussion or issue](https://github.com/Meridiona/meridian/issues) or email **akarsh@meridiona.com**.
+Open a [discussion](https://github.com/Meridiona/meridian/discussions), file an
+[issue](https://github.com/Meridiona/meridian/issues), or email **akarsh@meridiona.com**.
+For anything security-related, see [SECURITY.md](SECURITY.md) instead — please don't
+open a public issue.
