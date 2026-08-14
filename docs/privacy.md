@@ -13,8 +13,11 @@ Meridian does make network calls. There are exactly three kinds, and you control
 1. **Ticket updates you approve** — sent directly from your machine to the trackers you connect.
 2. **AI summarisation** — session text sent to the LLM provider you choose.
 3. **Error reports** — redacted, error-only diagnostics sent to Meridiana. **On by default in packaged installs; one switch turns it off.**
+4. **Product analytics** — two events, and only once you sign in: that you installed, and a daily count of hours and drafts. **No screen content. Currently no off switch** — see [Product analytics](#product-analytics).
+5. **A public counter ping** — one anonymous "+1" to meridiona.com each time you post a worklog, powering the counter on the landing page. No payload.
 
-Each is described in full below. If you only read one section, read [Error reporting](#error-reporting).
+Each is described in full below. If you only read two sections, read
+[Error reporting](#error-reporting) and [Product analytics](#product-analytics).
 
 ---
 
@@ -94,6 +97,46 @@ Packaged builds also send crash reports (via Sentry) so we learn about crashes t
 
 ---
 
+## Product analytics
+
+Meridian sends two product-analytics events to PostHog Cloud, so we can see how many
+people install it and whether they keep using it.
+
+**Nothing is sent until you sign in.** Signed out, this path is entirely inactive.
+
+| Event | When | What it contains |
+|---|---|---|
+| `app_installed` | Once per device, per signed-in account | Nothing beyond the shared properties below. |
+| `daily_usage` | Once per completed calendar day | Focus hours, coding hours, logged hours, and number of drafts - the same four numbers the dashboard's Today card shows you. |
+
+Both carry: your app version, your OS name (`macos` / `windows`), the release channel,
+and a random per-device UUID. Location lookup is explicitly disabled on every event.
+
+**These events identify you by your account email.** It is used directly as the PostHog
+`distinct_id`, which is why nothing is sent before sign-in. This is a real trade-off and
+we would rather state it plainly than bury it: this path is identified, not
+pseudonymous, and unlike error reporting it **does not currently have an off switch**.
+An opt-out is planned - if you want it sooner, say so on
+[the issue tracker](https://github.com/Meridiona/meridian/issues) and it will move up.
+
+**What it never contains:** screen content, OCR text, window titles, browser URLs,
+application names, ticket keys, ticket contents, file paths, or anything about *what*
+you worked on. The four daily numbers are totals, not a description of your day.
+
+Analytics are captured through a single plain HTTPS request. Meridian does not embed
+PostHog's browser SDK, so session replay, autocapture, surveys, and feature flags are
+never active.
+
+### The public counter
+
+When you post a worklog or update a personal task, Meridian sends a single anonymous
+"+1" to `meridiona.com/api/counter/increment`. It carries **no payload** - not who,
+not what, not when beyond the moment of the request. It exists only to increment the
+"updates logged and counting" number on the landing page, and it is sent only from
+release builds.
+
+---
+
 ## Third-party integrations
 
 Meridian can connect to **Jira**, **GitHub**, **Linear**, **Trello**, and **Azure DevOps** to post worklogs and ticket updates.
@@ -130,8 +173,8 @@ Signing in is optional and is currently used to gate the invite-only alpha. Your
 - **Access** — your data is in SQLite on your own disk; inspect or export it any time.
 - **Delete** — `meridian uninstall` removes Meridian's local data and services. Deleting `~/.meridian/` by hand does the same for data alone.
 - **Portability** — export your activity data and switch tools; there is no lock-in.
-- **Opt out** — one switch at Settings → Capture & Privacy → Error reporting stops everything Meridiana would otherwise receive.
-- **No tracking** — Meridian does not track you across devices, sites, or sessions, and there are no analytics or usage-metrics servers.
+- **Opt out of error reporting** — one switch at Settings → Capture & Privacy. Product analytics does not yet have an equivalent switch; staying signed out disables it entirely.
+- **No behavioural tracking** — Meridian does not follow you across websites, does not record sessions, and sells or shares nothing with anyone. The only usage data collected is the two events described under [Product analytics](#product-analytics).
 
 ---
 

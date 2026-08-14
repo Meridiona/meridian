@@ -133,7 +133,7 @@ Meridian is built to keep your data yours:
 - **Approved ticket updates go straight from your machine** to the trackers *you* connect (Jira, GitHub, Linear, Trello, Azure DevOps). Integration tokens stay local; nothing is proxied through us.
 - **AI summaries use the provider you choose:** matching work to tickets and drafting worklogs run through the coding-agent CLI you already use (Claude, Codex, Cursor, Copilot) or a cloud LLM you configure, so session text is sent to that provider. There is no on-device generative model.
 - **Error reports are the one thing we receive, and you can switch them off.** Packaged builds send error-level diagnostics to help us fix crashes — **on by default**, off in one click at **Settings → Capture & Privacy**. Only WARN-and-above logs and failed traces qualify; content-bearing fields are stripped on your device before anything is sent, and your hostname is replaced by a one-way pseudonym. Screen content, OCR text, window titles, URLs, and LLM prompts never leave your machine either way. Builds compiled from source send nothing at all.
-- **No analytics, no usage metrics, no cross-device tracking.**
+- **Product analytics are two events, and only after you sign in:** that you installed, and a daily count of hours and drafts. No screen content, app names, or ticket data — and none of it at all while signed out. Details, including the trade-off we made and what's still missing, are in [docs/privacy.md](docs/privacy.md#product-analytics).
 
 Full detail, including exactly what an error report can and cannot contain: [docs/privacy.md](docs/privacy.md).
 

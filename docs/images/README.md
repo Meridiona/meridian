@@ -1,8 +1,18 @@
-# README images
+# Repo images
 
 Screenshots referenced by the root `README.md`. The reference block there is commented
 out until these files exist - GitHub renders a missing image as broken alt text, so add
 the files first, then uncomment.
+
+## `social-card.png` (already here)
+
+The GitHub social preview - 1280x640, the size GitHub renders link cards at. Committed
+so the asset is versioned, but **the repo file is not what GitHub serves**: it has to be
+uploaded by hand at Settings - Options - Social preview. Re-upload after any change here.
+
+Corners are deliberately flat. The source art had rounded corners over transparency,
+which GitHub composites against its own background - so the card was cropped slightly
+inward and the alpha channel dropped.
 
 ## What to capture
 
