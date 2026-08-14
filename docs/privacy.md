@@ -37,8 +37,8 @@ Meridian does not capture audio.
 | What | Where | Protection |
 |---|---|---|
 | Activity sessions, captured frames, OCR and accessibility text | `~/.meridian/meridian.db` | **Encrypted at rest** (SQLCipher). The key is generated on first run and held in your OS keychain - macOS Keychain or Windows Credential Manager. |
-| OAuth tokens (Jira, Trello) | `~/.meridian/oauth/<provider>.json` | File mode `0600` - readable only by your user account. |
-| API keys and tracker credentials | `~/.meridian/.env` | File mode `0600`. |
+| OAuth tokens (Jira, GitHub, Trello) | `~/.meridian/oauth/<provider>.json` | File mode `0600` - readable only by your user account. |
+| API keys and personal access tokens (Linear, Azure DevOps, and the non-OAuth options for Jira and GitHub) | `~/.meridian/.env` | File mode `0600`. |
 | Logs and traces | `~/.meridian/telemetry/` | Local only, full fidelity. Read them with `meridian logs`. |
 | Crash safety-net logs | `~/.meridian/logs/` | Raw stdout/stderr captured by the OS service manager, size-capped. |
 
