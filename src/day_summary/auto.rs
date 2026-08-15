@@ -372,15 +372,38 @@ mod tests {
         assert_eq!(after_fallback, 0, "a fallback must not notify");
 
         notify_ready(&pool, "2026-08-15", &summary(false)).await;
-        let row: (String, String, Option<String>, Option<String>) =
-            sqlx::query_as("SELECT dedup_key, event_key, deep_link, category FROM notifications")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let row: (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT dedup_key, event_key, deep_link, category, channels, expires_at \
+                 FROM notifications",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(row.0, "day_summary.ready:2026-08-15");
         assert_eq!(row.1, "day_summary.ready");
         assert_eq!(row.2.as_deref(), Some("/summary"));
         assert_eq!(row.3.as_deref(), Some("generic_link"));
+        // Both channels, pinned rather than inherited from `event()`'s default.
+        // The banner half is the one worth stating: it is what reaches a user
+        // whose toast was suppressed by quiet hours (banners are not gated by
+        // them) or by Windows having no action buttons at all.
+        assert_eq!(row.4, "native,banner");
+        // And it must carry an expiry, because the banner is a persistent
+        // surface. `active_banners` filters on `expires_at`, so a row with one
+        // self-clears at midnight; a row WITHOUT one sits in the dashboard until
+        // someone clicks it away - which is how 22 dead `board.hygiene` banners
+        // ended up needing migration 077 to remove them.
+        assert!(
+            row.5.is_some(),
+            "a banner-channel row must expire on its own"
+        );
     }
 
     /// Scoped per day, so the pass running every hour from the chosen time to
