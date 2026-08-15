@@ -85,27 +85,53 @@ const WALKTHROUGH_MARKER: &str = "walkthrough_armed";
 /// Write `~/.meridian/onboarded` (RFC-3339 timestamp) to mark wizard completion,
 /// and arm the dashboard walkthrough that follows it.
 /// Future tray launches skip the auto-open. Idempotent — safe to call more than once.
+///
+/// Also stamps `~/.meridian/last_seen_version` with the running version, so the
+/// "What's New" modal starts with the *next* release instead of announcing the
+/// one the user just installed (see [`write_completion_markers`]). Note this
+/// applies to Settings → Account → Re-run Setup too: re-running the wizard
+/// marks the current release's notes as seen, which is the intended reading —
+/// they have just been walked through the product on that version.
 #[tauri::command]
-#[tracing::instrument]
-pub async fn mark_setup_complete() -> Result<(), String> {
-    let dir = meridian_core::paths::meridian_dir()
+#[tracing::instrument(skip(app))]
+pub async fn mark_setup_complete(app: tauri::AppHandle) -> Result<(), String> {
+    let home = meridian_core::paths::home_dir()
         .ok_or_else(|| "could not resolve home directory".to_string())?;
-    tokio::fs::create_dir_all(&dir)
-        .await
-        .map_err(|e| format!("create ~/.meridian: {e}"))?;
-    tokio::fs::write(dir.join("onboarded"), chrono::Local::now().to_rfc3339())
-        .await
-        .map_err(|e| format!("write onboarded: {e}"))?;
+    // Read the version off the AppHandle rather than `env!("CARGO_PKG_VERSION")`
+    // so it is byte-identical to what `poll::whats_new_auto_open` compares the
+    // marker against — the two are only equal by construction, and a marker
+    // written in a format the reader never matches would silently do nothing.
+    let version = app.package_info().version.to_string();
+    write_completion_markers(&home, &version).map_err(|e| format!("write setup markers: {e}"))?;
+    tracing::info!(version = %version, "setup: onboarded flag written, walkthrough armed");
+    Ok(())
+}
+
+/// The filesystem half of [`mark_setup_complete`], split out so it is reachable
+/// from a test without an `AppHandle` (see this module's tests).
+///
+/// `home` is the HOME directory, not `~/.meridian` — matching
+/// [`crate::commands::whats_new`]'s readers, which do their own `.meridian`
+/// join. Sync `std::fs` rather than `tokio::fs`: three small writes, and it
+/// matches the sibling marker helpers in `whats_new`, which are already called
+/// straight from the async poll loop.
+fn write_completion_markers(home: &std::path::Path, version: &str) -> std::io::Result<()> {
+    let dir = home.join(".meridian");
+    std::fs::create_dir_all(&dir)?;
+    let now = chrono::Local::now().to_rfc3339();
+    std::fs::write(dir.join("onboarded"), &now)?;
     // The walkthrough is the second half of onboarding, so finishing the wizard is
     // what earns it. See [`walkthrough_is_armed`] for why it needs its own marker
     // rather than reading `onboarded`.
-    tokio::fs::write(
-        dir.join(WALKTHROUGH_MARKER),
-        chrono::Local::now().to_rfc3339(),
-    )
-    .await
-    .map_err(|e| format!("write {WALKTHROUGH_MARKER}: {e}"))?;
-    tracing::info!("setup: onboarded flag written, walkthrough armed");
+    std::fs::write(dir.join(WALKTHROUGH_MARKER), &now)?;
+    // Stamp the running version as already seen, so "What's New" starts
+    // announcing the NEXT release rather than firing the instant the wizard
+    // closes. `has_unseen_release_notes` reads a missing marker as unseen —
+    // right for an update, wrong for a first run, where the notes describe a
+    // release the user has never not been on. `poll::whats_new_auto_open`'s
+    // `onboarded` gate only defers that to the moment onboarding ends, so the
+    // suppression has to be a written marker, not another gate.
+    crate::commands::whats_new::mark_whats_new_seen(home, version)?;
     Ok(())
 }
 
@@ -559,11 +585,55 @@ pub async fn test_all_llm_providers(
 
 #[cfg(test)]
 mod tests {
-    use super::{log_install_outcome, log_signin_outcome, notification_state_label};
+    use super::{
+        log_install_outcome, log_signin_outcome, notification_state_label,
+        write_completion_markers, WALKTHROUGH_MARKER,
+    };
+    use crate::commands::whats_new::has_unseen_release_notes;
     use meridian::llm::detect::InstallOutcome;
     use std::sync::{Arc, Mutex};
     use tauri_plugin_notifications::PermissionState;
     use tracing_subscriber::{layer::SubscriberExt, registry, Layer};
+
+    // A fresh install has no `last_seen_version`, and `has_unseen_release_notes`
+    // reads a missing marker as "unseen" (`Err(_) => true`) — correct for an
+    // update, wrong for a first run. `poll::whats_new_auto_open`'s only other
+    // guard is the `onboarded` flag, so the modal was suppressed for exactly as
+    // long as the wizard was open and then fired the moment it closed: a brand
+    // new user's first sight of the dashboard was a changelog for a release
+    // they had never run.
+    //
+    // Finishing the wizard is therefore what stamps the running version as
+    // seen. This asserts the whole three-way contract, because getting the
+    // version string right matters as much as writing the file at all.
+    #[test]
+    fn finishing_the_wizard_marks_the_running_version_as_already_seen() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path();
+
+        // Fresh install: nothing seen yet, so the auto-open would fire.
+        assert!(
+            has_unseen_release_notes(home, "1.85.1"),
+            "precondition: a fresh install has no last_seen_version marker"
+        );
+
+        write_completion_markers(home, "1.85.1").expect("write markers");
+
+        // 1. The version they onboarded on is NOT new to them.
+        assert!(
+            !has_unseen_release_notes(home, "1.85.1"),
+            "What's New must not auto-open for the version the user just onboarded on"
+        );
+        // 2. The NEXT release still is — this is the whole point of the modal,
+        //    and a fix that suppressed it forever would pass assertion 1 too.
+        assert!(
+            has_unseen_release_notes(home, "1.86.0"),
+            "the next release must still auto-open"
+        );
+        // 3. The markers this function already owned are untouched.
+        assert!(home.join(".meridian").join("onboarded").exists());
+        assert!(home.join(".meridian").join(WALKTHROUGH_MARKER).exists());
+    }
 
     // The wizard's card branches on these exact strings (grant button action:
     // prompt → request dialog, denied → System Settings pane), so the mapping
