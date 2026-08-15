@@ -179,6 +179,16 @@ export function useTutorial(opts: {
     setActiveModal(null)
     setShowWorklogSchedule(false)
     try { localStorage.setItem(SEEN_KEY, new Date().toISOString()) } catch { /* private mode */ }
+    // The same answer, written where the TRAY can read it. `SEEN_KEY` lives in
+    // localStorage, which no Rust code can see, so without this the tray cannot
+    // tell an install that is owed the tour from one that took it months ago -
+    // and its auto-opens stand down for anything that looks owed. Deliberately
+    // adjacent to the line above so the two can never drift.
+    //
+    // Reached on completion, on skip, and on an unexpected throw; all three are
+    // "done". A mid-tour quit unwinds through `Aborted` and never gets here, so
+    // the entitlement survives it - which is the intended asymmetry.
+    invoke('disarm_walkthrough').catch(() => {})
   }, [setActiveModal])
 
   // A real click on the awaited target resolves the beat. Capture phase so the
@@ -565,13 +575,11 @@ export function useTutorial(opts: {
   // would make the control dead on the only machines it matters on.
   const explicitRef = useRef(false)
 
-  // The same fact as `explicitRef`, but readable during RENDER — a ref is not,
-  // and the overlay needs it to decide whether to show the Skip control at all.
-  //
-  // Set in one place (the start effect, next to `setRunning(true)`) rather than
-  // in each of the three entry points: that is the single moment the answer is
-  // final, so the two can't disagree about the run that is actually starting.
-  const [explicit, setExplicit] = useState(false)
+  // There was a render-readable `explicit` state mirroring the ref here, for the
+  // overlay to decide whether a Skip control existed for this run. Removed with
+  // that distinction: every run has one now (see the `onSkip` call site).
+  // `explicitRef` stays - it still answers the entitlement question below, which
+  // is a different one and is only ever read inside an effect.
 
   // Replay hook. The walkthrough is a once-ever surface gated on a marker, so
   // without this the only way to see it again is deleting that key from the
@@ -683,9 +691,6 @@ export function useTutorial(opts: {
           .catch(() => false)
         if (!armed || ctrl.signal.aborted) return
       }
-      // Captured at the one moment it is settled, and read by the overlay to
-      // decide whether a Skip control exists for this run. See `explicit` above.
-      setExplicit(explicitRef.current)
       setRunning(true)
       // Mirrored into the module flag so screens BELOW the shell can tell they are
       // being demonstrated rather than used - see `isTutorialRunning`.
@@ -764,21 +769,28 @@ export function useTutorial(opts: {
           ghost={ghost} clicking={clicking}
           spotlight={spotlight} spotlightDim={spotlightDim} awaiting={awaiting}
           choices={choices} onChoose={(v) => choiceRef.current?.(v)}
-          // NO SKIP ON THE FIRST RUN. `null` here removes the control entirely
-          // rather than hiding or disabling it.
+          // EVERY run gets a skip, first run included.
           //
-          // The onboarding walkthrough is the one pass where the product gets to
-          // explain itself, and it is three minutes long. An out placed in the
-          // corner of the very first screen is read as the recommended action by
-          // anyone who is unsure - which is everyone, at that exact moment - so
-          // it was costing the explanation to the users who most needed it.
+          // REVERSED DECISION, recorded rather than quietly dropped. This was
+          // `explicit ? finish : null` - replays only - on the argument that an
+          // out in the corner of the very first screen reads as the recommended
+          // action to anyone unsure, which is everyone at that moment, and so
+          // costs the explanation to the users who most need it. That argument
+          // still holds for the run it imagined: one that begins seconds after
+          // the wizard, for someone who just asked to be set up.
           //
-          // A REPLAY keeps it. That run is one the user asked for out loud
-          // (Settings, `?tour=1`, or the console hook), by someone who has
-          // already seen the product, so trapping them for three minutes would
-          // be a different bug and not the one being fixed here. `explicit` is
-          // exactly that distinction, captured where the run starts.
-          onSkip={explicit ? finish : null}
+          // It assumed that is the only way the tour can arrive. It is not. The
+          // entitlement is a marker on disk and the tour is delivered on the next
+          // dashboard mount, which can be a relaunch days later - in the reported
+          // case, an app update. Someone who did not ask for a tour got one they
+          // could not leave, the only exit being to close the window. A tour with
+          // no out is only defensible when the user opened the door themselves,
+          // and we cannot guarantee that at the point this prop is set.
+          //
+          // The narrower fix (never arm it except on a genuine first run) shipped
+          // alongside this and removes the known way in. This is the backstop for
+          // the ways we have not thought of.
+          onSkip={finish}
           // Null in a packaged build, so the pill is not rendered at all. This
           // jumps PAST the compulsory AI-connect step, which the whole product
           // needs - it is a shortcut for whoever is editing part two, not a way
