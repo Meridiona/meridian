@@ -224,6 +224,17 @@ mod tests {
     /// Deliberately raw bytes rather than a server crate: the cases under test
     /// are malformed-at-the-wire (a body that stops short of its declared
     /// `Content-Length`), which a well-behaved server will not produce.
+    ///
+    /// # The request MUST be drained before answering
+    /// Closing a socket that still has unread bytes in its receive buffer is an
+    /// ABORTIVE close on Windows — the peer gets an RST and the client fails
+    /// with `WSAECONNABORTED (10053)` at `.send()`, before it can read a single
+    /// byte of the canned response. POSIX is more forgiving and delivers the
+    /// buffered response first, so an undrained fixture passes on macOS/Linux
+    /// and fails only on the Windows runner. Reading the request first, then
+    /// shutting down gracefully, is what makes the close a FIN on every
+    /// platform — and a FIN is precisely what the truncated case needs, since
+    /// an RST would fail the whole request instead of cutting the body short.
     async fn serve_once(raw: &'static [u8]) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -231,11 +242,20 @@ mod tests {
         let addr = listener.local_addr().expect("local addr");
         tokio::spawn(async move {
             if let Ok((mut stream, _)) = listener.accept().await {
-                use tokio::io::AsyncWriteExt;
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                // Drain the request. These are single small GETs, so stop at the
+                // end of the headers rather than waiting for a close the client
+                // has no reason to send.
+                let mut buf = [0u8; 4096];
+                while let Ok(n) = stream.read(&mut buf).await {
+                    if n == 0 || buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
                 let _ = stream.write_all(raw).await;
                 let _ = stream.flush().await;
-                // Close immediately — for the truncated case this is what makes
-                // the body read fail rather than hang until the timeout.
+                // Graceful FIN rather than a drop — see the note above.
+                let _ = stream.shutdown().await;
             }
         });
         format!("http://{addr}/")
