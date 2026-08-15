@@ -723,7 +723,7 @@ describe('the tour overlay draws what it means to', () => {
     expect(overlay.match(/\.\.\.CAPTION_SURFACE/g)?.length).toBe(2)
   })
 
-  it('keeps the narration inverted, at body size', () => {
+  it('keeps the narration inverted, above body size', () => {
     // The tour speaks on its OWN surface: a light card here is a white box on a
     // white page, and inside a modal - which is `--t-card` itself - it vanishes.
     // Tried the other way round once, on the reasoning that light type on a dark
@@ -731,10 +731,27 @@ describe('the tour overlay draws what it means to', () => {
     // reading as the guide and started reading as content, which is worse.
     expect(overlay).toContain("background: 'var(--t-title)'")
     expect(overlay).toContain("color: 'var(--t-card)'")
-    // Body weight and size, not something larger. At 15px/600 the bubble
-    // competes with the headings it is pointing at - and heavier inverted type
-    // is exactly what softens.
-    expect(overlay).toContain("font: '500 13px/1.5 var(--font-sans)'")
+    // ABOVE body size, and this reverses an earlier decision on purpose.
+    //
+    // This used to assert 500 13px, on the reasoning that at 15px/600 the
+    // bubble competes with the headings it points at, and that heavier
+    // inverted type is exactly what softens under macOS font smoothing. Both
+    // observations still hold. The judgement changed: at body weight and body
+    // size the narration read as a caption ON the interface rather than as
+    // someone talking the user through it, and it lost the contest for
+    // attention against real UI text that is denser and that the user is also
+    // reading for the first time. Competing with the headings is the point -
+    // a tour that does not win that contest is not worth taking the window
+    // for.
+    //
+    // So the bloom is a known, accepted cost, not an oversight. If the type
+    // ever looks mushy on a non-Retina display, the lever is the WEIGHT, not
+    // the size - drop toward 600 before giving back any px.
+    expect(overlay).toContain("font: '650 16px/1.45 var(--font-sans)'")
+    // Centred within the bubble. NOT centred on the screen: the bubble stays
+    // parked on its target, because an instruction read in one place and acted
+    // on in another is the failure the anchored variant exists to avoid.
+    expect(overlay).toContain("textAlign: 'center'")
     // Set once, on the shared constant - never per bubble, which is how the two
     // variants ended up disagreeing.
     //

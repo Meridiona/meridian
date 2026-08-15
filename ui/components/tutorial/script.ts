@@ -72,8 +72,17 @@ export function fmtSetupElapsed(secs: number): string {
  *  the user who has Jira open in the next tab and the one chasing an admin for
  *  approval. A promise a first-run screen visibly breaks costs more trust than
  *  the number ever bought. */
+// Opens on the OFFER, not on the transition. "Let's get started" says a thing
+// is beginning without saying what, which spends the first line of the tour on
+// the fact that there is a tour. Naming the day instead frames everything that
+// follows - the first real beat asks what they are working on today, so the
+// opening line is the question that beat answers.
+//
+// Line two is unchanged and load-bearing: a tour that takes the whole window
+// has to say it ends. See the intro tests for why it promises "quick" rather
+// than a number.
 export const INTRO_LINES = [
-  "Let's get started.",
+  'Let me help you with your day.',
   "We'll take you around - it's quick.",
 ]
 

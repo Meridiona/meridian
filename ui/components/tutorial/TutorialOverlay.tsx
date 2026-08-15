@@ -53,8 +53,21 @@ const CAPTION_H = 130
  *  Held in one constant because the two variants (anchored beside a target, or
  *  parked at the top) are the same voice and drifted apart once already - one
  *  inverted, one not, at different sizes. */
+// Bigger, heavier, and centred than it was (500 13px, left-aligned). At body
+// weight and body size the tour's narration read as a caption on the UI rather
+// than as someone talking the user through it, and it was competing for
+// attention with the real interface text around it - which is denser, and
+// which the user is also trying to read for the first time. The tour has to
+// win that contest to be worth showing at all.
+//
+// Centred within the bubble, NOT moved to the centre of the screen. The bubble
+// stays parked on its target on purpose (see the anchored variant below): an
+// instruction read in one place and acted on in another is the failure this
+// layout already exists to avoid.
 const CAPTION_FONT: React.CSSProperties = {
-  font: '500 13px/1.5 var(--font-sans)',
+  font: '650 16px/1.45 var(--font-sans)',
+  letterSpacing: '-.011em',
+  textAlign: 'center',
   color: 'var(--t-card)',
 }
 
@@ -247,7 +260,12 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
         <div className="absolute" style={{
           left: ringBox.left - 6, top: ringBox.top - 6,
           width: ringBox.width + 12, height: ringBox.height + 12,
-          borderRadius: 18,
+          // Rounder than the 18 it was. The ring sits 6px outside its target,
+          // so matching the target's own radius leaves the corners visibly
+          // tighter than the thing they enclose - which reads as a box drawn
+          // around the card rather than as the card being lit up. A radius
+          // above the card's own is what makes the two look like one shape.
+          borderRadius: 24,
           border: `2px solid var(--t-accent)`,
           boxShadow: '0 0 0 4px color-mix(in srgb, var(--t-accent) 22%, transparent)',
           opacity: ringLive ? 1 : 0,
