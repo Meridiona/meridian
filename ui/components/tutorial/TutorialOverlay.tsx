@@ -475,11 +475,15 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
         </div>
       )}
 
-      {/* Skip — REPLAYS ONLY. `onSkip` is null on the first run, and this
-          renders nothing at all then: the onboarding walkthrough has no out.
-          An escape hatch on the first screen a new user ever sees reads as the
-          recommended action to anyone unsure, which is everyone at that moment.
-          See the call site in useTutorial for the full reasoning.
+      {/* Skip — on EVERY run, first run included. This used to be replays only,
+          on the argument that an escape hatch on the first screen a new user
+          ever sees reads as the recommended action to anyone unsure. That was
+          reversed once a tour proved able to arrive unrequested, on a mount days
+          after it was armed, with closing the window as the only way out. The
+          full reasoning for the reversal is at the call site in useTutorial.
+
+          Still conditional rather than unconditional: the prop is the seam, and
+          a caller that has a reason to withhold it should be able to.
 
           When it IS shown it is its own control, NOT inside the caption bubble.
           It used to live in there, which meant it vanished on any beat with an

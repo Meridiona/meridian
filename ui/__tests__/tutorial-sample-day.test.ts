@@ -951,35 +951,43 @@ describe('finishing setup entitles this onboarding to the walkthrough', () => {
   })
 })
 
-describe('a first run cannot be skipped, a replay can', () => {
+// REVERSED. This block used to assert the opposite - that the automatic first
+// run got no Skip control - and it is kept, rewritten, rather than deleted, so
+// the reversal is on the record where the old assertion was.
+//
+// The original reasoning: an out on the first screen a new user ever sees reads
+// as the recommended action to anyone unsure, so it cost the product's only
+// self-explanation to exactly the people who needed it. That holds for the run
+// it had in mind. It does not hold for a tour that arrives unrequested on a
+// mount days after it was armed, where the only exit was closing the window.
+// Every run gets a skip now; `__tests__/tutorial-skip.test.ts` pins that.
+describe('a replay is still told apart from a first run', () => {
   const hook = readFileSync(new URL('../components/tutorial/useTutorial.tsx', import.meta.url), 'utf8')
   const overlay = readFileSync(new URL('../components/tutorial/TutorialOverlay.tsx', import.meta.url), 'utf8')
-
-  it('gives the automatic first run no Skip control at all', () => {
-    // An out on the first screen a new user ever sees reads as the recommended
-    // action to anyone unsure - which is everyone at that moment - so it cost
-    // the product's only self-explanation to exactly the people who needed it.
-    expect(hook).toContain('onSkip={explicit ? finish : null}')
-  })
 
   it('removes the button rather than hiding or disabling it', () => {
     // Hidden-but-present is how a control comes back by accident, and a disabled
     // button still tells the user there is a way out and it is denied to them.
+    // The prop stays nullable for that reason even though nothing passes null
+    // today - the seam is the point.
     expect(overlay).toContain('{onSkip && (')
     expect(overlay).toContain('onSkip: (() => void) | null')
   })
 
-  it('settles `explicit` at the one moment the run actually starts', () => {
-    // Not in each entry point: three writes can disagree about which run is
-    // starting. One write, next to setRunning, cannot.
-    expect(hook).toContain('setExplicit(explicitRef.current)')
-    expect(hook.indexOf('setExplicit(explicitRef.current)'))
-      .toBeLessThan(hook.indexOf('setRunning(true)\n      // Mirrored'))
+  it('no longer mirrors `explicit` into render state', () => {
+    // The mirror existed solely so the overlay could branch the Skip control on
+    // it. With no branch left, a second copy of the same fact is just something
+    // to keep in sync. `explicitRef` remains - it answers the ENTITLEMENT
+    // question, which is read in an effect and never during render.
+    expect(hook).not.toContain('setExplicit(')
+    expect(hook).toContain('const explicitRef = useRef(false)')
   })
 
-  it('still lets a replay out', () => {
+  it('still lets a replay past the entitlement check', () => {
     // A replay is asked for out loud by someone who has already seen the
-    // product. Trapping them for three minutes is a different bug.
+    // product - and on an install predating the walkthrough, which is never
+    // armed, that check is the only thing standing between them and a dead
+    // button.
     expect(hook).toMatch(/const replay = useCallback\(\(\) => \{\s*explicitRef\.current = true/)
     expect(hook.match(/explicitRef\.current = true/g)?.length).toBe(3)
   })
@@ -1811,12 +1819,31 @@ describe('the walkthrough does not ambush an install that predates it', () => {
     expect(hook).toContain('.catch(() => false)')
   })
 
-  it('only the wizard arms it, so no upgrade can back-fill the marker', () => {
-    expect(setup).toContain('const WALKTHROUGH_MARKER: &str = "walkthrough_armed"')
+  it('only a FIRST RUN arms it, so neither an upgrade nor a re-run can', () => {
+    // The marker name is owned by commands/walkthrough.rs, which does the other
+    // two reads and the clear; setup.rs only writes it. Asserted as the aliasing
+    // FACT rather than the whole import line - a bun test that pins a Rust
+    // `use` statement's exact path and position fails confusingly the first time
+    // anyone reorders imports.
+    expect(setup).toContain('ARMED_MARKER as WALKTHROUGH_MARKER')
     // Touched in exactly two places - written by completion, read by the gate.
     // A third would mean something other than finishing the wizard can arm it,
     // and "absent means this install predates the walkthrough" stops being true.
     expect(setup.match(/dir\.join\(WALKTHROUGH_MARKER\)/g)?.length).toBe(2)
+
+    // And the write is INSIDE the first-run branch. Settings -> Account -> Re-run
+    // Setup opens the same wizard, so without this an existing user re-checking a
+    // permission re-arms a first-run tour - which is not delivered then (the hook
+    // runs once per dashboard mount and the dashboard is already up) but waits on
+    // disk and ambushes the next fresh mount, i.e. the next app update. That is
+    // the exact ambush this whole describe block is named after, coming in
+    // through the one door it did not cover.
+    const write = setup.indexOf('std::fs::write(dir.join(WALKTHROUGH_MARKER)')
+    expect(write).toBeGreaterThan(-1)
+    const guard = setup.indexOf('let first_run = !dir.join("onboarded").exists();')
+    expect(guard).toBeGreaterThan(-1)
+    expect(guard).toBeLessThan(write)
+    expect(setup.slice(guard, write)).toContain('if first_run {')
   })
 
   it('still lets someone ASK for it - the control exists for exactly these installs', () => {

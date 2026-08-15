@@ -11,6 +11,14 @@
 //!
 //! # Related
 //! - [`crate::commands::system::open_permission_pane`] — opens System Settings panes
+//! - [`crate::commands::walkthrough`] — owns the walkthrough's markers; this
+//!   module writes one of them and reads it back, nothing else.
+
+// Name of the marker that ARMS the dashboard walkthrough — written here when a
+// FIRST RUN completes the wizard, read back by `walkthrough_is_armed`. Owned by
+// `commands::walkthrough`, which does the other read and the clear, so the name
+// cannot drift between writer and readers.
+use crate::commands::walkthrough::ARMED_MARKER as WALKTHROUGH_MARKER;
 
 /// Returns `true` on the first launch — no `~/.meridian/onboarded` flag exists.
 /// The wizard auto-opens when `true` and is skipped on subsequent launches.
@@ -78,20 +86,20 @@ pub async fn setup_elapsed_secs() -> Option<u64> {
     u64::try_from(secs).ok()
 }
 
-/// Name of the marker that ARMS the dashboard walkthrough — written when the wizard
-/// completes, read by [`walkthrough_is_armed`].
-const WALKTHROUGH_MARKER: &str = "walkthrough_armed";
-
-/// Write `~/.meridian/onboarded` (RFC-3339 timestamp) to mark wizard completion,
-/// and arm the dashboard walkthrough that follows it.
+/// Write `~/.meridian/onboarded` (RFC-3339 timestamp) to mark wizard completion.
 /// Future tray launches skip the auto-open. Idempotent — safe to call more than once.
 ///
-/// Also stamps `~/.meridian/last_seen_version` with the running version, so the
-/// "What's New" modal starts with the *next* release instead of announcing the
-/// one the user just installed (see [`write_completion_markers`]). Note this
-/// applies to Settings → Account → Re-run Setup too: re-running the wizard
-/// marks the current release's notes as seen, which is the intended reading —
-/// they have just been walked through the product on that version.
+/// # Setup is not onboarding
+///
+/// The same wizard serves two different events: a first run, and Settings →
+/// Account → Re-run Setup. Only the first is ONBOARDING, and only it writes the
+/// two markers that belong to onboarding rather than to configuration — the
+/// walkthrough entitlement (`walkthrough_armed`) and the "you have effectively
+/// read this release's notes" stamp (`last_seen_version`). A re-run refreshes
+/// `onboarded` and nothing else.
+///
+/// The two are told apart by reading `onboarded` before overwriting it; see
+/// [`write_completion_markers`], where that single line is the whole separation.
 #[tauri::command]
 #[tracing::instrument(skip(app))]
 pub async fn mark_setup_complete(app: tauri::AppHandle) -> Result<(), String> {
@@ -102,8 +110,17 @@ pub async fn mark_setup_complete(app: tauri::AppHandle) -> Result<(), String> {
     // marker against — the two are only equal by construction, and a marker
     // written in a format the reader never matches would silently do nothing.
     let version = app.package_info().version.to_string();
-    write_completion_markers(&home, &version).map_err(|e| format!("write setup markers: {e}"))?;
-    tracing::info!(version = %version, "setup: onboarded flag written, walkthrough armed");
+    let first_run = write_completion_markers(&home, &version)
+        .map_err(|e| format!("write setup markers: {e}"))?;
+    // `first_run` is the whole story of this call and is not derivable after the
+    // fact — the marker it keys off has just been overwritten — so it goes on the
+    // log line. Without it, a re-run and a genuine first run are indistinguishable
+    // in the trace, which is exactly the confusion this change exists to end.
+    tracing::info!(
+        version = %version,
+        first_run,
+        "setup: onboarded flag written"
+    );
     Ok(())
 }
 
@@ -115,24 +132,47 @@ pub async fn mark_setup_complete(app: tauri::AppHandle) -> Result<(), String> {
 /// join. Sync `std::fs` rather than `tokio::fs`: three small writes, and it
 /// matches the sibling marker helpers in `whats_new`, which are already called
 /// straight from the async poll loop.
-fn write_completion_markers(home: &std::path::Path, version: &str) -> std::io::Result<()> {
+///
+/// Returns whether this was a FIRST RUN — the caller logs it, and it is not
+/// recoverable afterwards because the marker it is read from has by then been
+/// overwritten.
+fn write_completion_markers(home: &std::path::Path, version: &str) -> std::io::Result<bool> {
     let dir = home.join(".meridian");
     std::fs::create_dir_all(&dir)?;
+    // Read BEFORE the write below overwrites it. This is the ONE moment "setup"
+    // and "onboarding" are distinguishable, and everything that separates them
+    // hangs off this line — see the two `first_run` branches below.
+    let first_run = !dir.join("onboarded").exists();
     let now = chrono::Local::now().to_rfc3339();
     std::fs::write(dir.join("onboarded"), &now)?;
-    // The walkthrough is the second half of onboarding, so finishing the wizard is
-    // what earns it. See [`walkthrough_is_armed`] for why it needs its own marker
-    // rather than reading `onboarded`.
-    std::fs::write(dir.join(WALKTHROUGH_MARKER), &now)?;
-    // Stamp the running version as already seen, so "What's New" starts
-    // announcing the NEXT release rather than firing the instant the wizard
-    // closes. `has_unseen_release_notes` reads a missing marker as unseen —
-    // right for an update, wrong for a first run, where the notes describe a
-    // release the user has never not been on. `poll::whats_new_auto_open`'s
-    // `onboarded` gate only defers that to the moment onboarding ends, so the
-    // suppression has to be a written marker, not another gate.
-    crate::commands::whats_new::mark_whats_new_seen(home, version)?;
-    Ok(())
+    if first_run {
+        // The walkthrough is the second half of ONBOARDING, so a first run is what
+        // earns it. See [`walkthrough_is_armed`] for why it needs its own marker
+        // rather than reading `onboarded`.
+        //
+        // Deliberately NOT written on a re-run (Settings → Account → Re-run
+        // Setup), which is configuration, not onboarding. Arming there does not
+        // even show the tour at the time — the hook that reads this marker runs
+        // once per dashboard mount and the dashboard is already mounted — so the
+        // entitlement just waits on disk and ambushes the next fresh mount, which
+        // in practice is a relaunch after an app update. That is the exact
+        // scenario this marker was introduced to prevent, arriving through the
+        // one door nobody checked. See `rerunning_setup_does_not_rearm_the_walkthrough`.
+        std::fs::write(dir.join(WALKTHROUGH_MARKER), &now)?;
+        // Stamp the running version as already seen, so "What's New" starts
+        // announcing the NEXT release rather than firing the instant the wizard
+        // closes. `has_unseen_release_notes` reads a missing marker as unseen —
+        // right for an update, wrong for a first run, where the notes describe a
+        // release the user has never not been on. `poll::whats_new_auto_open`'s
+        // `onboarded` gate only defers that to the moment onboarding ends, so the
+        // suppression has to be a written marker, not another gate.
+        //
+        // Also first-run only, and for the mirror-image reason: someone re-running
+        // setup on a release whose notes they have NOT read is owed that
+        // announcement, and swallowing it here would be silent.
+        crate::commands::whats_new::mark_whats_new_seen(home, version)?;
+    }
+    Ok(first_run)
 }
 
 /// Whether this install finished the wizard on a build that has the walkthrough —
@@ -150,8 +190,13 @@ fn write_completion_markers(home: &std::path::Path, version: &str) -> std::io::R
 /// existed", which is exactly the population that must not see it.
 ///
 /// Deliberately NOT consumed on read. Clearing it here would mean quitting mid-tour
-/// loses the walkthrough for good; the once-ever guarantee is the localStorage
-/// marker's job, written when the user finishes or skips.
+/// loses the walkthrough for good.
+///
+/// It IS cleared elsewhere — by [`crate::commands::walkthrough::disarm_walkthrough`],
+/// invoked from the same place the frontend writes its localStorage seen key, so
+/// the marker is not write-once and must not be assumed to be. The distinction
+/// that matters is *where*: on finish or skip, never on a read and never on an
+/// abort, which is what preserves the mid-tour-quit guarantee above.
 #[tauri::command]
 #[tracing::instrument]
 pub async fn walkthrough_is_armed() -> bool {
@@ -633,6 +678,84 @@ mod tests {
         // 3. The markers this function already owned are untouched.
         assert!(home.join(".meridian").join("onboarded").exists());
         assert!(home.join(".meridian").join(WALKTHROUGH_MARKER).exists());
+    }
+
+    /// THE ONE THAT MATTERS. Settings → Account → Re-run Setup opens the same
+    /// wizard as the first run, so its completion used to write the same three
+    /// markers — including the one that ENTITLES the dashboard to take the
+    /// screen over with a first-run tour.
+    ///
+    /// The tour is not delivered at that moment: the hook that reads the marker
+    /// is guarded to run once per dashboard mount, and re-running setup happens
+    /// with the dashboard already mounted. So the entitlement sat on disk and
+    /// was cashed in on the next FRESH mount — in the reported case a relaunch
+    /// after an app update, which is precisely the "months-old install gets
+    /// handed a full-screen tour" scenario the entitlement marker exists to
+    /// prevent.
+    ///
+    /// `onboarded` already carries the answer; it just has to be read before it
+    /// is overwritten.
+    #[test]
+    fn rerunning_setup_does_not_rearm_the_walkthrough() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path();
+        let meridian = home.join(".meridian");
+        std::fs::create_dir_all(&meridian).expect("mkdir");
+
+        // An install that onboarded some time ago, has already taken the tour
+        // (so no armed marker), and is now re-running setup to fix a permission.
+        std::fs::write(meridian.join("onboarded"), "2026-01-01T00:00:00+00:00").expect("seed");
+
+        let first_run = write_completion_markers(home, "1.86.0").expect("write markers");
+
+        assert!(
+            !first_run,
+            "an install with an onboarded marker is not a first run"
+        );
+        assert!(
+            !meridian.join(WALKTHROUGH_MARKER).exists(),
+            "re-running setup must not arm the first-run walkthrough"
+        );
+        // Setup still did its own job — the onboarded stamp is refreshed.
+        assert!(meridian.join("onboarded").exists());
+    }
+
+    /// The companion to the test above, and the reason it cannot simply drop the
+    /// arming: a genuine first run is the one case that MUST arm it.
+    #[test]
+    fn a_first_run_still_arms_the_walkthrough() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path();
+
+        let first_run = write_completion_markers(home, "1.86.0").expect("write markers");
+
+        assert!(first_run, "nothing on disk yet - this is the first run");
+        assert!(
+            home.join(".meridian").join(WALKTHROUGH_MARKER).exists(),
+            "a first run is exactly who the walkthrough is for"
+        );
+    }
+
+    /// `last_seen_version` is stamped for the same reason and on the same terms:
+    /// a first-run user has never *not* been on the release the notes describe,
+    /// so announcing it is noise. Someone re-running setup on a version they
+    /// have not yet read the notes for is in the opposite position — suppressing
+    /// What's New there silently eats a release announcement, and setup is
+    /// configuration, not a changelog.
+    #[test]
+    fn rerunning_setup_leaves_unread_release_notes_alone() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path();
+        let meridian = home.join(".meridian");
+        std::fs::create_dir_all(&meridian).expect("mkdir");
+        std::fs::write(meridian.join("onboarded"), "2026-01-01T00:00:00+00:00").expect("seed");
+
+        write_completion_markers(home, "1.86.0").expect("write markers");
+
+        assert!(
+            has_unseen_release_notes(home, "1.86.0"),
+            "re-running setup must not mark an unread release as seen"
+        );
     }
 
     // The wizard's card branches on these exact strings (grant button action:

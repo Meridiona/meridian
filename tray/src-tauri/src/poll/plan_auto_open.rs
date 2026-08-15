@@ -72,8 +72,12 @@ pub(crate) async fn maybe_auto_open_plan(app: &tauri::AppHandle, pool: &meridian
     //     sized for a real OAuth round trip), looking hung. Deferred, not
     //     skipped: the marker is not written here, so this retries next tick
     //     and the planner opens as soon as the tour is done.
-    if crate::commands::walkthrough::walkthrough_in_progress(&home) {
-        tracing::debug!("plan auto-open: walkthrough on screen - deferring");
+    //
+    //     Reads `tour_owed` rather than `walkthrough_in_progress` so an
+    //     entitlement that has not been cashed in yet also counts - see that
+    //     function for why "on screen" is checked too late to help.
+    if crate::commands::walkthrough::tour_owed(&home) {
+        tracing::debug!("plan auto-open: walkthrough owed or on screen - deferring");
         return;
     }
 

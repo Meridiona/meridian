@@ -63,7 +63,7 @@ export function AccountSection({ onReplayTour, onReplayTourFromDay }: {
         <p className="mt-label" style={{ color: 'var(--t-accent)' }}>Account</p>
         <h1 className="mt-title-lg mt-1.5" style={{ color: 'var(--t-title)' }}>Account</h1>
         <p className="mt-body-sm mt-2 max-w-[520px]" style={{ color: 'var(--t-muted)' }}>
-          Re-run onboarding to reconfigure permissions, integrations, or the local model.
+          Re-run setup to reconfigure permissions, integrations, or the local model.
         </p>
       </div>
 
@@ -81,7 +81,14 @@ export function AccountSection({ onReplayTour, onReplayTourFromDay }: {
 
       <SectionCard>
         <SectionHeader>Setup &amp; Onboarding</SectionHeader>
-        <FieldRow label="Re-run Setup" description="Return to the onboarding wizard to reconfigure permissions, update integrations, or re-check the local model.">
+        {/* Setup, NOT onboarding - and the copy says so, because the two used to
+            be the same act. Finishing this wizard once armed the first-run
+            walkthrough whatever the reason for opening it, so re-checking a
+            permission entitled you to a tour you had already taken; it was then
+            delivered on some later dashboard mount, typically an app update.
+            Completing it from here now refreshes the onboarded stamp and nothing
+            else (tray/src-tauri/src/commands/setup.rs). */}
+        <FieldRow label="Re-run Setup" description="Return to the setup wizard to reconfigure permissions, update integrations, or re-check the local model. This will not replay the first-run walkthrough.">
           <SettingsButton onClick={() => {
             mutate('/api/setup', 'open_setup', {}).catch(err => console.error('Failed to open setup wizard', err))
           }}>
