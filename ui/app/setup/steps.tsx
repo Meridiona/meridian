@@ -33,6 +33,10 @@ export interface Wiz {
   // Step 2 — integrations (live connected-state from get_integrations)
   integrations: IntegrationsResponse | null
   refetchIntegrations: () => void
+  // Whether sign-in is required — false only in a dev build with no Clerk key
+  // configured. When false, the sign-in step shows a notice instead of the form,
+  // and never blocks wizard progression.
+  signInRequired: boolean | null
   // Step 3 — sign in (Clerk email one-time-code — see ui/app/setup/signin.tsx).
   // The step body owns its own form/busy/error state; `onSignedIn` is just
   // how it reports a completed sign-in back up to the wizard.
@@ -284,7 +288,32 @@ function IntegrationsBody({ wiz }: { wiz: Wiz }) {
 // see SignInWidget.tsx/EmailCodeForm.tsx) — importing it here stays safe for the
 // static-export build because signin.tsx itself has no @clerk/react imports at
 // the top level.
+//
+// When sign-in is disabled in a dev build (no Clerk key configured), this shows
+// a notice instead of the form and the wizard can proceed past this step without
+// signing in.
 function SignInBody({ wiz }: { wiz: Wiz }) {
+  // Dev mode with no Clerk key: sign-in is unavailable, show a notice.
+  if (wiz.signInRequired === false) {
+    return (
+      <div className="flex flex-col items-center" style={{ width: '100%', maxWidth: 340, margin: '0 auto' }}>
+        <div className="w-full flex flex-col items-center mer-pop" style={{
+          gap: 10, borderRadius: 16, padding: '26px 26px 22px', textAlign: 'center',
+          border: '0.5px solid var(--t-card-border)',
+          background: 'color-mix(in srgb, var(--t-warning) 4%, var(--t-card))',
+        }}>
+          <div>
+            <p style={{ fontSize: 14.5, fontWeight: 600, color: 'var(--t-title)' }}>Sign-in disabled</p>
+            <p style={{ fontSize: 12, color: 'var(--t-muted)', marginTop: 3 }}>
+              This is a source build with no Clerk publishable key configured.<br />
+              Set <code style={{ fontFamily: 'monospace', fontSize: 11 }}>CLERK_PUBLISHABLE_KEY</code> in <code style={{ fontFamily: 'monospace', fontSize: 11 }}>.env</code> to enable sign-in.
+            </p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   if (wiz.signedInEmail) {
     return (
       <div className="flex flex-col items-center" style={{ width: '100%', maxWidth: 340, margin: '0 auto' }}>
@@ -526,8 +555,8 @@ const SIGNIN_STEP: StepMeta = {
   title: 'Sign in to Meridian',
   subtitle: "So we know who's using Meridian.",
   Body: SignInBody,
-  status: (s) => s.signedInEmail ?? 'Not signed in',
-  canNext: (s) => !!s.signedInEmail,
+  status: (s) => s.signInRequired === false ? 'Disabled in dev' : (s.signedInEmail ?? 'Not signed in'),
+  canNext: (s) => s.signInRequired === false || !!s.signedInEmail,
 }
 
 // ── Steps the WIZARD no longer runs — owned by the post-setup walkthrough ─────

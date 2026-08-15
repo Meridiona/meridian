@@ -57,6 +57,16 @@ mod tray_icon;
 mod update;
 mod window_panel;
 
+// Gated to match the ONLY thing that uses these — the `RunEvent::Reopen` arm at
+// the bottom of `run()`, which is `#[cfg(target_os = "macos")]` because Reopen is
+// a Dock/Finder activation that no other platform emits. `reopen.rs` already
+// carries `cfg_attr(not(target_os = "macos"), allow(dead_code))` on all three
+// items, so the definitions were covered; only this import was left unconditional,
+// and an unused import is an ERROR under `-D warnings`.
+//
+// `onboarding_complete` below is deliberately NOT gated: it is called on every
+// platform (the `capture`-gated startup path in `run()`).
+#[cfg(target_os = "macos")]
 use reopen::{is_onboarded, reopen_target, ReopenTarget};
 // Re-exported at the crate root so `tray.rs` and `commands::system` keep calling
 // `crate::onboarding_complete()` — the exact string `reopen::reopen_tests`'
@@ -1220,6 +1230,7 @@ pub fn run() {
             commands::get_platform,
             commands::save_account_email,
             commands::get_account_email,
+            commands::sign_in_required,
             commands::clear_account_email,
             commands::check_accessibility,
             commands::check_screen_recording,

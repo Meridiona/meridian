@@ -18,6 +18,7 @@ import type { IntegrationsResponse } from '@/lib/api-types'
 import type { RuntimeSettings } from '@/lib/settings'
 import { DEFAULT_LLM_PROVIDER, providerChoiceFields, type LlmProviderId } from '@/lib/llm-providers'
 import { useLlmProviderDetection } from '@/components/LlmProviderPicker'
+import { useSignInRequired } from '@/lib/signin-required'
 import { Btn, DISPLAY, Kicker } from './atoms'
 
 /** Where the wizard stores how far the user got, so quitting mid-setup resumes
@@ -113,6 +114,12 @@ export default function SetupWizard() {
   // Step 3 — sign in (Clerk email one-time-code — see ./signin.tsx). The
   // widget owns its own form/busy/error state; this just holds the result.
   const [signedInEmail, setSignedInEmail] = useState<string | null>(null)
+
+  // Whether sign-in is required at all — false ONLY in a debug build with no
+  // Clerk publishable key configured, the fresh-clone contributor case. See
+  // `@/lib/signin-required`; the wizard step treats `null` as "required" so a
+  // slow answer never opens the step early.
+  const signInRequired = useSignInRequired()
 
   // Step 4 — intelligence. The provider the whole prose pipeline obeys. Persisted to
   // settings.json immediately on pick (not batched to Finish): if the user quits the
@@ -256,7 +263,7 @@ export default function SetupWizard() {
     platform,
     perms, openPane, grantScreen, grantNotifications,
     integrations, refetchIntegrations,
-    signedInEmail, onSignedIn,
+    signedInEmail, onSignedIn, signInRequired,
     provider, providerCustomId, setProvider, providers, scanningProviders,
     testingProviderIds, installingProviderIds, signingProviderIds,
     testProvider, installProvider, signInProvider, rescanProviders,
