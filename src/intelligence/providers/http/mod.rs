@@ -63,7 +63,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 mod classify;
-pub use classify::{chain, classify, is_transient, HttpStatusError, SyncFault};
+pub use classify::{chain, classify, is_transient, HttpStatusError, SyncFault, TruncatedBodyError};
 
 /// Total deadline for one provider request, from connect to body complete.
 ///
@@ -130,6 +130,58 @@ fn build_client(request_timeout: Duration, connect_timeout: Duration) -> reqwest
         })
 }
 
+/// Read a provider response body, rejecting a non-success status first and an
+/// incomplete transfer second.
+///
+/// Every provider fetch path repeats this dance — capture the status, read the
+/// body, turn a non-2xx into a typed [`HttpStatusError`] — and each hand-rolled
+/// copy is a place the classification can silently regress. `endpoint` is the
+/// human label both typed errors carry.
+///
+/// # Why the body read is not `unwrap_or_default()`
+/// That is what every call site did, and it is a silent evidence-destroying
+/// step: a reset connection, an HTTP/2 GOAWAY, or the request deadline firing
+/// mid-body all produce a `reqwest::Error` that was replaced with `""`, which
+/// then reached `serde_json` and failed as "EOF while parsing a value at line 1
+/// column 0". By then nothing in the chain identified the failure as a network
+/// one, so [`classify`] reported it terminally and the user was told to
+/// reconnect a working GitHub token. The error is preserved as a
+/// [`TruncatedBodyError`] instead — and an empty body on a 2xx gets the same
+/// treatment, because a provider that returns no bytes at all has not answered.
+///
+/// **On a non-2xx the body read is still best-effort.** The status is what
+/// classifies there, and a status error with an unread body is strictly better
+/// than losing the status to a body-read failure.
+///
+/// # Only for endpoints that MUST return a body
+/// The empty check treats no bytes as a failure, so this is wrong for anything
+/// that can legitimately answer `204 No Content` — which several of the
+/// `ticket_update` write paths can. Those need a variant that tolerates an
+/// empty success; adopt this one only on reads that always expect a payload.
+///
+/// # Who calls this
+/// [`crate::intelligence::providers::github::fetch`]'s viewer and project-item
+/// walks. The other provider fetch paths still inline the same steps, complete
+/// with `unwrap_or_default()`, and should adopt this.
+pub async fn read_success_body(resp: reqwest::Response, endpoint: &str) -> anyhow::Result<String> {
+    let status = resp.status();
+    let code = status.as_u16();
+
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(HttpStatusError::new(code, endpoint, &body).into());
+    }
+
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| TruncatedBodyError::unreadable(code, endpoint, e))?;
+    if text.is_empty() {
+        return Err(TruncatedBodyError::empty(code, endpoint).into());
+    }
+    Ok(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +217,98 @@ mod tests {
             is_transient(&err),
             "a timeout must be retried, not reported"
         );
+    }
+
+    /// Serve one canned HTTP/1.1 response on loopback and return its URL.
+    ///
+    /// Deliberately raw bytes rather than a server crate: the cases under test
+    /// are malformed-at-the-wire (a body that stops short of its declared
+    /// `Content-Length`), which a well-behaved server will not produce.
+    async fn serve_once(raw: &'static [u8]) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::AsyncWriteExt;
+                let _ = stream.write_all(raw).await;
+                let _ = stream.flush().await;
+                // Close immediately — for the truncated case this is what makes
+                // the body read fail rather than hang until the timeout.
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    /// THE regression. GitHub answered 200 with nothing in it, and the sync
+    /// raised a terminal "Reconnect GitHub in Settings - Integrations" banner
+    /// for a credential that was never broken.
+    ///
+    /// The empty body reached `serde_json::from_str`, which failed with "EOF
+    /// while parsing a value at line 1 column 0" — an error chain carrying
+    /// neither a status nor a transport error, so [`is_transient`] fell through
+    /// to its `false` default and [`classify`] reported it. An empty 2xx is a
+    /// truncated transfer; it must retry.
+    #[tokio::test]
+    async fn an_empty_body_on_success_is_transient() {
+        let url = serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
+        let resp = client().get(&url).send().await.expect("request");
+        let err = read_success_body(resp, "GitHub GraphQL")
+            .await
+            .expect_err("an empty 200 body must not be handed back as success");
+        assert!(
+            is_transient(&err),
+            "an empty 200 must retry, not raise a credentials banner: {err:#}"
+        );
+    }
+
+    /// The other half, and the one a plain `?` does not fix: the connection
+    /// dies part-way through the body. `reqwest` reports that as `Kind::Decode`,
+    /// which `classify::reqwest_is_transient` excludes ON PURPOSE — a
+    /// body we cannot PARSE is a contract mismatch worth surfacing. A body we
+    /// could not READ is not; it is the same truncated transfer as above.
+    #[tokio::test]
+    async fn a_truncated_body_on_success_is_transient() {
+        let url = serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\n{\"data\":").await;
+        let resp = client().get(&url).send().await.expect("request");
+        let err = read_success_body(resp, "GitHub GraphQL")
+            .await
+            .expect_err("a body that stops short of Content-Length must fail");
+        assert!(
+            is_transient(&err),
+            "a truncated body read must retry: {err:#}"
+        );
+    }
+
+    /// The status path must be untouched by the above: a dead credential still
+    /// has to reach the user, and its body still has to reach the banner.
+    #[tokio::test]
+    async fn a_non_success_status_still_reports_with_its_body() {
+        let url =
+            serve_once(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 15\r\n\r\nBad credentials")
+                .await;
+        let resp = client().get(&url).send().await.expect("request");
+        let err = read_success_body(resp, "GitHub GraphQL viewer")
+            .await
+            .expect_err("a 401 must not be handed back as success");
+        assert!(!is_transient(&err), "a 401 must stay terminal: {err:#}");
+        let detail = chain(&err);
+        assert!(detail.contains("401"), "status lost: {detail}");
+        assert!(detail.contains("Bad credentials"), "body lost: {detail}");
+    }
+
+    /// An ordinary 200 is still just its body — the empty/truncated guards must
+    /// not start rejecting healthy responses.
+    #[tokio::test]
+    async fn a_normal_success_body_is_returned_verbatim() {
+        let url =
+            serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\n{\"data\":{\"x\":1}}").await;
+        let resp = client().get(&url).send().await.expect("request");
+        let body = read_success_body(resp, "GitHub GraphQL")
+            .await
+            .expect("a healthy 200 must be returned");
+        assert_eq!(body, "{\"data\":{\"x\":1}}");
     }
 
     /// The timeouts must stay bounded and ordered. A zero value disables the
