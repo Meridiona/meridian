@@ -114,6 +114,19 @@ export default function SetupWizard() {
   // widget owns its own form/busy/error state; this just holds the result.
   const [signedInEmail, setSignedInEmail] = useState<string | null>(null)
 
+  // Whether sign-in is required at all — false ONLY in a debug build with no
+  // Clerk publishable key configured (`commands::account::sign_in_required`),
+  // which is the fresh-clone contributor case. `null` while resolving; the
+  // sign-in step treats null as "required" so the gate is never skipped by a
+  // slow answer. Failing CLOSED on error for the same reason: an unreachable
+  // command must not become a way past the step.
+  const [signInRequired, setSignInRequired] = useState<boolean | null>(null)
+  useEffect(() => {
+    invoke<boolean>('sign_in_required')
+      .then(setSignInRequired)
+      .catch(() => setSignInRequired(true))
+  }, [])
+
   // Step 4 — intelligence. The provider the whole prose pipeline obeys. Persisted to
   // settings.json immediately on pick (not batched to Finish): if the user quits the
   // wizard halfway, the choice they made should still be the choice that runs.
@@ -256,7 +269,7 @@ export default function SetupWizard() {
     platform,
     perms, openPane, grantScreen, grantNotifications,
     integrations, refetchIntegrations,
-    signedInEmail, onSignedIn,
+    signedInEmail, onSignedIn, signInRequired,
     provider, providerCustomId, setProvider, providers, scanningProviders,
     testingProviderIds, installingProviderIds, signingProviderIds,
     testProvider, installProvider, signInProvider, rescanProviders,

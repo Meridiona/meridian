@@ -13,7 +13,7 @@
 // `../signin.tsx` (as `RequireSignIn`) — never imported directly — for the
 // same static-export reason documented there.
 
-import type { ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { invoke } from '@/lib/bridge'
 import { useSignedInEmail } from './useSignedInEmail'
 import { ClerkGate } from './ClerkGate'
@@ -66,11 +66,29 @@ function Gate({ children }: { children: ReactNode }) {
   return <>{children}</>
 }
 
-/** Wrap the dashboard app in this to make sign-in compulsory. Outside the
- *  Tauri webview (a plain browser preview of the static export) there's no
- *  `tauri-plugin-clerk` bridge, so it degrades to a notice rather than
- *  hanging — the app only ever runs inside Tauri in practice. */
+/** Wrap the dashboard app in this to make sign-in compulsory, unless the app
+ *  is running in a dev mode with no Clerk key configured — in which case the
+ *  gate is skipped and the app is fully usable. A maintainer who wants to
+ *  exercise the real sign-in path in dev just sets `CLERK_PUBLISHABLE_KEY` in
+ *  `.env` and the gate returns to normal. Outside the Tauri webview (a plain
+ *  browser preview of the static export) there's no `tauri-plugin-clerk` bridge,
+ *  so it degrades to a notice rather than hanging — the app only ever runs
+ *  inside Tauri in practice. */
 export function RequireSignIn({ children }: { children: ReactNode }) {
+  const [signInRequired, setSignInRequired] = useState<boolean | null>(null)
+
+  // Fail CLOSED on a rejection: a command that can't be reached must land on the
+  // gate, never past it. Without the catch the promise also never settles, which
+  // left the whole dashboard on a blank surface rather than any screen at all.
+  useEffect(() => {
+    invoke<boolean>('sign_in_required')
+      .then(setSignInRequired)
+      .catch(() => setSignInRequired(true))
+  }, [])
+
+  if (signInRequired === null) return <FullScreenCenter>{null}</FullScreenCenter>
+  if (!signInRequired) return <>{children}</>
+
   return (
     <ClerkGate notInTauriMessage="Open Meridian to sign in." fallback={<FullScreenCenter>{null}</FullScreenCenter>}>
       {() => <Gate>{children}</Gate>}
