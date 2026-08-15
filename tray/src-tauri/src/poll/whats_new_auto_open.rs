@@ -57,6 +57,16 @@ pub(crate) async fn maybe_auto_open_whats_new(app: &tauri::AppHandle) {
         return;
     }
 
+    // 2b. …or over the WALKTHROUGH. Same reasoning as the sibling plan
+    //     auto-open: `onboarded` marks the end of the WIZARD, and the tour runs
+    //     after it, so this gate stops covering onboarding at the moment the
+    //     tour starts. Deferred, not skipped - the marker below is only written
+    //     on the fire path, so this retries once the tour is finished.
+    if crate::commands::walkthrough::walkthrough_in_progress(home) {
+        tracing::debug!("whats-new auto-open: walkthrough on screen - deferring");
+        return;
+    }
+
     // 3. Don't yank an already-open dashboard to a different view — covers
     //    both the sibling Plan auto-open (same tick) and any manual open.
     if app.get_webview_window("dashboard").is_some() {
