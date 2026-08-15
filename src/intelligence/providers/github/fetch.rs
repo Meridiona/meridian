@@ -165,21 +165,14 @@ pub(super) async fn fetch_viewer_login(github: &GitHubConfig) -> Result<String> 
         .send()
         .await
         .context("POST /graphql viewer")?;
-    // Check the status BEFORE parsing. A 500 or a 429 has no `data` field, so
-    // it used to fall through to the parse and surface as "GraphQL viewer
-    // response missing data" — a GitHub outage reported to the user as a
-    // credentials problem. The typed error carries the status so
+    // `read_success_body` checks the status BEFORE we parse. A 500 or a 429 has
+    // no `data` field, so it used to fall through to the parse and surface as
+    // "GraphQL viewer response missing data" — a GitHub outage reported to the
+    // user as a credentials problem. The typed error carries the status so
     // `http::is_transient` can tell an outage from a dead token.
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(crate::intelligence::providers::http::HttpStatusError::new(
-            status.as_u16(),
-            "GitHub GraphQL viewer",
-            &text,
-        )
-        .into());
-    }
+    let text =
+        crate::intelligence::providers::http::read_success_body(resp, "GitHub GraphQL viewer")
+            .await?;
     let parsed: GqlResponse<ViewerData> =
         serde_json::from_str(&text).context("deserialising viewer response")?;
     parsed
@@ -247,16 +240,8 @@ pub(super) async fn fetch_project_items(
             .await
             .context("POST /graphql project items")?;
 
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            return Err(crate::intelligence::providers::http::HttpStatusError::new(
-                status.as_u16(),
-                "GitHub GraphQL",
-                &text,
-            )
-            .into());
-        }
+        let text =
+            crate::intelligence::providers::http::read_success_body(resp, "GitHub GraphQL").await?;
 
         // Parse once as a Value so each raw item node survives verbatim for
         // the canonical adapter (CDM Stage 3b), then deserialise the typed
