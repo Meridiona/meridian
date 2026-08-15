@@ -188,7 +188,7 @@ export const consumeResume = (): boolean => {
 /** Fewest words a title may have. A short title ("Roadmap", "Login bug") names a
  *  SUBJECT and omits the work - it's a label, and on a board tomorrow it tells you
  *  nothing you didn't already know. The same floor is written into the draft prompt
- *  (`services/prompts/plan-task-draft.md`), so the AI and the manual path agree; no
+ *  (`assets/prompts/plan-task-draft.md`), so the AI and the manual path agree; no
  *  tracker enforces this for us (Jira caps summaries at 255 chars, GitHub at 256, and
  *  neither has a minimum), which is exactly why it lives here. */
 export const MIN_TITLE_WORDS = 4
