@@ -6,15 +6,17 @@ REPO_ROOT="${REPO_ROOT:-$(cd "${TESTS_DIR}/../.." && pwd)}"
 # shellcheck source=lib.sh
 source "${TESTS_DIR}/lib.sh"
 
+# NOTE: uninstall-screenpipe-daemon.sh is still here on purpose. Capture has run
+# in-process since v1.64.0 and the *install* side is gone, but meridian-cli.sh
+# still calls the uninstaller to evict a leftover launchd agent when an old
+# install upgrades. The install-ui-daemon.sh / uninstall-ui-daemon.sh entries
+# were removed with the standalone Node UI server.
 SCRIPTS=(
     "${REPO_ROOT}/install.sh"
     "${REPO_ROOT}/scripts/meridian-cli.sh"
     "${REPO_ROOT}/scripts/install-daemon.sh"
     "${REPO_ROOT}/scripts/uninstall-daemon.sh"
-    "${REPO_ROOT}/scripts/install-screenpipe-daemon.sh"
     "${REPO_ROOT}/scripts/uninstall-screenpipe-daemon.sh"
-    "${REPO_ROOT}/scripts/install-ui-daemon.sh"
-    "${REPO_ROOT}/scripts/uninstall-ui-daemon.sh"
 )
 
 _have_shellcheck=0

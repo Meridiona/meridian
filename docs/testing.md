@@ -162,7 +162,7 @@ bash tests/install/run.sh
 Coverage:
 
 - **Syntax** — `bash -n` and (if available) `shellcheck` on every shell script.
-- **Plist linting** — `plutil -lint` on `com.meridiona.daemon.plist` and `com.meridiona.screenpipe.plist`.
+- **Plist linting** — `plutil -lint` on `com.meridiona.daemon.plist`. (The screenpipe plist was removed with the in-process capture cutover; only the *uninstaller* survives, to evict leftover agents from pre-v1.64.0 installs, and it needs no template.)
 - **install.sh dry-run** — `./install.sh --dry-run --skip-permissions --skip-env --no-ui --no-daemon` exits 0.
 - **install.sh --help** — prints usage including all flags (`--no-ui`, `--dry-run`, `--no-daemon`, `--skip-permissions`, `--skip-env`).
 - **meridian CLI** — `--help`, `status`, `doctor`, and unknown-command paths all exit cleanly.
@@ -170,5 +170,14 @@ Coverage:
 - **Env collection** — calls the `get_env_value` / `set_env_value` helpers in isolation; verifies idempotency (re-setting the same key replaces in place, doesn't append duplicates).
 
 The suite does NOT actually install or load launchd agents — it stays within the cloned repo and uses temp directories. Run time is under 30 seconds.
+
+> **This suite is not wired into CI or the git hooks — run it by hand.** Because
+> nothing runs it automatically it rots quietly: it was found in August 2026 still
+> listing `install-ui-daemon.sh` and `uninstall-ui-daemon.sh`, deleted with the
+> standalone Node UI server, so several checks had been failing on a missing file for
+> months without anyone noticing. There is currently one known failure
+> (`doctor output prints a final summary`) that reproduces on a clean checkout.
+> Wiring it into CI is worth doing; until then, run it after touching `install.sh`,
+> `meridian-cli.sh`, or any plist.
 
 Pre-push hook integration: not currently wired (the test suite is opt-in). If you want to gate pushes on the install tests, append `bash tests/install/run.sh` to your `.git/hooks/pre-push`.

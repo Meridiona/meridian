@@ -118,7 +118,7 @@ excluded from session duration. The in-progress block lives in a single-row
 `active_session` table until something closes it.
 
 These rules are pinned by integration tests in `tests/integration_etl.rs`, which run
-against in-memory SQLite. **If you change ETL logic, read [TESTING.md](TESTING.md)
+against in-memory SQLite. **If you change ETL logic, read [docs/testing.md](docs/testing.md)
 first** - the invariants listed there are load-bearing.
 
 ### 3. Coding-agent ingest (`src/coding_agent_session_ingest/`)
@@ -223,8 +223,8 @@ and the attribute allowlist - are documented in
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** - dev environment, build, test, PR workflow.
 - **[CLAUDE.md](CLAUDE.md)** - the deep reference: conventions, per-task recipes, and
   the failure modes that have already bitten someone.
-- **[TESTING.md](TESTING.md)** - required reading before touching ETL or migrations.
+- **[docs/testing.md](docs/testing.md)** - required reading before touching ETL or migrations.
 - **[SETUP.md](SETUP.md)** - installing and configuring a real deployment.
 - **[docs/privacy.md](docs/privacy.md)** - exactly what does and does not leave the
   machine.
-- **[VISION.md](VISION.md)** - what the product is trying to be, for product decisions.
+- **[docs/vision.md](docs/vision.md)** - what the product is trying to be, for product decisions.
