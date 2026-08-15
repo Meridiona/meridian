@@ -2,8 +2,6 @@
   <a href="https://meridiona.com/download">DOWNLOAD MERIDIAN</a>
 </h1>
 
-<p align="center">macOS and Windows</p>
-
 <br>
 
 ---
