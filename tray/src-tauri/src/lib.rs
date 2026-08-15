@@ -2101,6 +2101,32 @@ mod reopen_tests {
         assert!(include_str!("commands/system.rs").contains("open_wizard_window(&app);"));
     }
 
+    /// Both dashboard openers must size the window to the monitor work area
+    /// after building it.
+    ///
+    /// `.maximized(true)` is on both builders and is NOT enough on macOS: tao's
+    /// `set_maximized` early-returns when `is_zoomed()` already equals the
+    /// requested state, so the zoom is skipped with no error, the flag still
+    /// set, and `is_maximized()` still reporting `true`. That is why this
+    /// shipped looking correct. `sys::fill_work_area` is the deterministic
+    /// half; the builder flag alone must never be trusted to satisfy this.
+    ///
+    /// Source-scanned for the same reason as the test above - both functions
+    /// build a real webview and cannot be driven from a unit test.
+    #[test]
+    fn every_dashboard_path_fills_the_work_area() {
+        for (name, src) in [
+            ("tray.rs", include_str!("tray.rs")),
+            ("commands/system.rs", include_str!("commands/system.rs")),
+        ] {
+            assert!(
+                src.contains("crate::sys::fill_work_area(&win);"),
+                "{name} opens the dashboard without calling fill_work_area - \
+                 `.maximized(true)` alone is a silent no-op on macOS"
+            );
+        }
+    }
+
     #[test]
     fn is_onboarded_reflects_the_marker_file() {
         // Use a unique temp dir so parallel test runs don't collide.

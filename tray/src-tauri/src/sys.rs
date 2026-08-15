@@ -504,6 +504,73 @@ pub fn register_notification_categories(app: &tauri::AppHandle) {
 /// closure: [`crate::tray`]'s tray-menu opener and
 /// [`crate::commands::system::open_dashboard`].
 ///
+/// Size a freshly built window to fill the screen it opened on.
+///
+/// # Why not just `.maximized(true)` on the builder
+///
+/// Both dashboard openers already pass it, and the dashboard still opens as a
+/// 1100x760 window. The flag reaches tao's macOS `set_maximized`, which opens
+/// with:
+///
+/// ```ignore
+/// let is_zoomed = self.is_zoomed();
+/// if is_zoomed == maximized { return; }
+/// ```
+///
+/// and `is_zoomed` is answered by AppKit's `NSWindow.isZoomed`, which compares
+/// the frame against a *standard frame* AppKit derives on its own. A window
+/// whose frame already matches that derivation is reported as zoomed and the
+/// zoom is skipped — silently, with the builder flag still set and
+/// `is_maximized()` still reporting `true`. There is no error and nothing to
+/// log, which is why this looked like it worked.
+///
+/// The work area answers the same question deterministically: the screen minus
+/// the menu bar and the Dock, which is exactly the region a maximized window
+/// occupies. Setting position and size to it cannot be skipped by a state
+/// guard.
+///
+/// Native full-screen (`.fullscreen(true)`) is deliberately NOT what this
+/// does. That is the separate-Space, auto-hiding-chrome mode, and it is the
+/// mode that produced the black-screen setup wizard bug — a resize while the
+/// window carries the full-screen style mask shrinks the rendered content
+/// while the Space stays screen-sized. Filling the work area keeps an ordinary
+/// window that the user can still move, resize, and un-maximize.
+///
+/// Failures are logged and swallowed: a dashboard at its default size is worse
+/// than one filling the screen, but it is not a broken dashboard, and no user
+/// action should fail over window geometry.
+///
+/// # Who calls this
+/// Both dashboard openers, right after `build()`: [`crate::tray`]'s tray-menu
+/// opener and [`crate::commands::system::open_dashboard`].
+pub(crate) fn fill_work_area(win: &tauri::WebviewWindow) {
+    let monitor = match win.current_monitor() {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            tracing::warn!("dashboard: no current monitor - leaving the window at its built size");
+            return;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "dashboard: could not resolve the current monitor");
+            return;
+        }
+    };
+    let area = *monitor.work_area();
+    if let Err(e) = win.set_position(area.position) {
+        tracing::warn!(error = %e, "dashboard: could not move the window to the work area");
+        return;
+    }
+    if let Err(e) = win.set_size(area.size) {
+        tracing::warn!(error = %e, "dashboard: could not size the window to the work area");
+        return;
+    }
+    tracing::info!(
+        width = area.size.width,
+        height = area.size.height,
+        "dashboard: filled the monitor work area"
+    );
+}
+
 /// # Related
 /// - [`crate::commands::system::dismiss_popover_on_focus`] — the other
 ///   window-event hook the dashboard openers install.

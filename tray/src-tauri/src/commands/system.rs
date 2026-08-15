@@ -66,6 +66,11 @@ pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
         .build()
     {
         Ok(win) => {
+            // `.maximized(true)` above is not dependable on macOS — see
+            // `sys::fill_work_area` for the tao/AppKit early-return that makes
+            // it a silent no-op. Kept anyway so the window still reports the
+            // right state to the OS.
+            crate::sys::fill_work_area(&win);
             // Revert to Accessory (no dock icon) when the dashboard is closed
             // so the tray-only UX is restored.
             crate::sys::revert_to_accessory_on_close(&app, &win);
