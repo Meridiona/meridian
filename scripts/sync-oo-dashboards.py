@@ -79,7 +79,7 @@ def main() -> None:
     args = parser.parse_args()
 
     repo_root = Path(__file__).parent.parent
-    dash_dir = repo_root / "services" / "observability" / "dashboards"
+    dash_dir = repo_root / "ops" / "openobserve-dashboards"
     files = sorted(dash_dir.glob("*.json"))
     if not files:
         print(f"no dashboard JSON files found in {dash_dir}")
