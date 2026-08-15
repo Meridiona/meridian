@@ -33,20 +33,9 @@ assert_eq "0" "$_leftover_count" "no leftover placeholders"
 start_test "daemon plist: rendered plist passes plutil -lint"
 assert_ok "plutil -lint on rendered daemon plist" plutil -lint "$RENDERED_DAEMON"
 
-# --- screenpipe plist ---
-SCREENPIPE_PLIST="${REPO_ROOT}/scripts/com.meridiona.screenpipe.plist"
-RENDERED_SCREENPIPE="${TMPDIR_RENDER}/com.meridiona.screenpipe.rendered.plist"
-
-sed \
-    -e "s|{{HOME}}|/tmp/test-home|g" \
-    -e "s|{{SCREENPIPE_BIN}}|/opt/homebrew/bin/screenpipe|g" \
-    "$SCREENPIPE_PLIST" > "$RENDERED_SCREENPIPE"
-
-start_test "screenpipe plist: no leftover {{placeholders}} after render"
-_leftover_count="$(grep -c '{{' "$RENDERED_SCREENPIPE" || true)"
-assert_eq "0" "$_leftover_count" "no leftover placeholders"
-
-start_test "screenpipe plist: rendered plist passes plutil -lint"
-assert_ok "plutil -lint on rendered screenpipe plist" plutil -lint "$RENDERED_SCREENPIPE"
+# The screenpipe plist render check was removed along with the template it
+# rendered: capture has run in-process inside the tray since v1.64.0, so nothing
+# installs a screenpipe launchd agent anymore. Only the uninstaller survives, to
+# evict leftovers from pre-v1.64.0 installs, and it needs no template.
 
 exit "$FAIL_COUNT"

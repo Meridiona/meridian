@@ -12,7 +12,17 @@ type UnlistenFn = () => void
 
 type TauriBridge = {
   core: { invoke: InvokeFn; convertFileSrc: (path: string, protocol?: string) => string }
-  window: { getCurrentWindow: () => { close: () => Promise<void> } }
+  window: {
+    getCurrentWindow: () => {
+      close: () => Promise<void>
+      innerSize: () => Promise<{ width: number; height: number }>
+      setSize: (size: unknown) => Promise<void>
+    }
+    // Constructor for the PhysicalSize argument setSize expects — matches
+    // what innerSize() returns, so nudgeWindowRepaint never has to reason
+    // about logical/physical DPI conversion.
+    PhysicalSize: new (width: number, height: number) => unknown
+  }
   // From withGlobalTauri — the event module (listen returns a promise of the
   // unlisten fn). Used by `subscribe` for the ported SSE streams.
   event: {
@@ -33,6 +43,33 @@ export function tauri(): TauriBridge | undefined {
 
 export function isTauri(): boolean {
   return !!tauri()
+}
+
+/** Nudge the current window by a 1-physical-pixel resize and back. Works
+ *  around a WKWebView/wry compositor bug on macOS: a heavy DOM swap (e.g. a
+ *  wizard step change) that happens while the window is already in native
+ *  full-screen can leave the webview's drawable pinned to its pre-full-screen
+ *  size — content renders correctly within that stale rect, and the rest of
+ *  the (genuinely full-screen) NSWindow shows as a black CALayer background
+ *  rather than page content. Only a real NSWindow frame-set forces WebKit to
+ *  recompute the compositing surface against the window's actual bounds;
+ *  confirmed live that exiting full-screen (a real resize) self-heals it.
+ *  Two physical pixels, immediately reverted, is enough to trigger that
+ *  without a perceptible flash. No-op outside Tauri; failures are swallowed
+ *  since this is a cosmetic repaint fix, not something a user action should
+ *  ever fail on. */
+export async function nudgeWindowRepaint(): Promise<void> {
+  const t = tauri()
+  if (!t) return
+  try {
+    const win = t.window.getCurrentWindow()
+    const { width, height } = await win.innerSize()
+    const { PhysicalSize } = t.window
+    await win.setSize(new PhysicalSize(width + 1, height))
+    await win.setSize(new PhysicalSize(width, height))
+  } catch {
+    // cosmetic only
+  }
 }
 
 /** Invoke a Rust command directly. Throws outside a Tauri window — use for

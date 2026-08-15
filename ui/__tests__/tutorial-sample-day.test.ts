@@ -18,6 +18,36 @@ const SCRIPT_SRC =
   readFileSync(new URL('../components/tutorial/script.ts', import.meta.url), 'utf8')
   + readFileSync(new URL('../components/tutorial/scriptDay.ts', import.meta.url), 'utf8')
 
+// Slice a source file from a marker, and FAIL IF THE MARKER IS NOT THERE.
+//
+// Every assertion in this file that narrows to one beat does it by slicing from
+// a section comment, and the bare form is a trap:
+//
+//   src.slice(src.indexOf('── 11. Running'))   // marker deleted → -1 → last CHARACTER
+//
+// `indexOf` returns -1 for a marker that no longer exists and `slice(-1)` reads
+// that as "one character from the end", so the assertion runs against a
+// one-character string instead of the beat it names. That is a test whose
+// failure message points at its own expectation rather than at the deleted
+// marker - and one whose PASS means nothing at all if the expectation happens to
+// be short. It shipped for real: #725 removed beat 11 and this file kept
+// checking its copy against a single character.
+//
+// Marker-not-found is now its own failure, named as such.
+function after(text: string, marker: string): string {
+  const at = text.indexOf(marker)
+  if (at < 0) throw new Error(`marker not found: ${marker}`)
+  return text.slice(at)
+}
+
+/** `after`, bounded at `end` - which must also exist. */
+function between(text: string, start: string, end: string): string {
+  const body = after(text, start)
+  const at = body.indexOf(end, start.length)
+  if (at < 0) throw new Error(`end marker not found after ${start}: ${end}`)
+  return body.slice(0, at)
+}
+
 // The example day is fed to the REAL DayTaskColumn via its `tasks` prop, so a
 // shape mismatch does not fail loudly — it renders a subtly broken timeline in
 // front of a brand-new user, during the one run where the product is trying to
@@ -316,7 +346,7 @@ describe('walkthrough structure', () => {
       // The probe runs first…
       expect(c.indexOf('askingAlready')).toBeLessThan(c.indexOf(`s.spotlight('[data-tour="task-draft"]')`))
       // …and the whole draft ring is inside its negation.
-      const ring = c.slice(c.indexOf('if (!askingAlready)'), c.indexOf('await s.appeared(\'[data-tour="ai-connect"]\', 4000)'))
+      const ring = between(c, 'if (!askingAlready)', 'await s.appeared(\'[data-tour="ai-connect"]\', 4000)')
       expect(ring).toContain('data-tour="task-draft"')
       // …while the detour still runs on either route into it.
       expect(c).toMatch(/if \(askingAlready \|\| await s\.appeared/)
@@ -468,7 +498,7 @@ describe('the tracker branch, moved to the front', () => {
     // the PLANNER meant that in between, the tour was still saying "pick your tool
     // and sign in" to someone who had just said they do not have one - instruction
     // contradicting the decision, while the app was busy agreeing with it.
-    const beat = src.slice(src.indexOf('Pick your tool and sign in'))
+    const beat = after(src, 'Pick your tool and sign in')
     const handback = beat.indexOf('lock-handback')
     const planner = beat.indexOf('plan-today')
     expect(handback).toBeGreaterThan(-1)
@@ -521,7 +551,7 @@ describe('the tracker branch, moved to the front', () => {
     // across is genuinely in their plan - and so this cannot drift from the add
     // path when that changes.
     const hook = readFileSync(new URL('../components/tutorial/useTutorial.tsx', import.meta.url), 'utf8')
-    const drag = hook.slice(hook.indexOf('demoDrag: async'), hook.indexOf('pause: (ms) =>'))
+    const drag = between(hook, 'demoDrag: async', 'pause: (ms) =>')
     expect(drag).toContain('button[aria-label^="Add "]')
     // …and the click lands BEFORE the ghost clears. The other order leaves the
     // column empty for a frame, which reads as the drop having missed.
@@ -534,7 +564,7 @@ describe('the tracker branch, moved to the front', () => {
     // fourth filter. Solid accent puts it in the same class as "Add to today",
     // which is right: they are the two controls on this screen that CREATE.
     const board = readFileSync(new URL('../components/plan/PlanBoardColumn.tsx', import.meta.url), 'utf8')
-    const btn = board.slice(board.indexOf('data-tour="plan-new-task"'), board.indexOf('New task', board.indexOf('data-tour="plan-new-task"')))
+    const btn = between(board, 'data-tour="plan-new-task"', 'New task')
     expect(btn).toContain("background: 'var(--btn-primary-bg)'")
     expect(btn).toContain("color: '#fff'")
     expect(btn).not.toContain('14%')
@@ -675,15 +705,19 @@ describe('the tour aims at the replica, not the dashboard behind it', () => {
 })
 
 describe('the tour overlay draws what it means to', () => {
-  const overlay = code(readFileSync(new URL('../components/tutorial/TutorialOverlay.tsx', import.meta.url), 'utf8'))
+  // Two views of the same file. `overlay` is comment-stripped, which is what
+  // makes "this string is not in the code" mean anything - but it also removes
+  // every JSX comment, so a section marker that lives in one is unfindable
+  // there. The raw copy is only for slicing to such a marker.
+  const overlayRaw = readFileSync(new URL('../components/tutorial/TutorialOverlay.tsx', import.meta.url), 'utf8')
+  const overlay = code(overlayRaw)
   const screen = code(readFileSync(new URL('../components/tutorial/TutorialScreen.tsx', import.meta.url), 'utf8'))
 
   it('speaks in one voice, on its own surface, wherever it speaks', () => {
     // Both bubbles take the SAME surface constant, and neither styles its own.
     // They drifted apart once already - one inverted, one not, at different
     // sizes - which is how the tour ended up with two voices.
-    const anchored = overlay.slice(overlay.indexOf('function AnchoredCaption'),
-      overlay.indexOf('function DimCutout'))
+    const anchored = between(overlay, 'function AnchoredCaption', 'function DimCutout')
     expect(anchored).toContain('...CAPTION_SURFACE')
     expect(anchored).not.toContain('background:')
     expect(overlay.match(/\.\.\.CAPTION_SURFACE/g)?.length).toBe(2)
@@ -703,7 +737,13 @@ describe('the tour overlay draws what it means to', () => {
     expect(overlay).toContain("font: '500 13px/1.5 var(--font-sans)'")
     // Set once, on the shared constant - never per bubble, which is how the two
     // variants ended up disagreeing.
-    const bubbles = overlay.slice(overlay.indexOf('Narration, pinned bottom-centre'))
+    //
+    // Sliced from the RAW file: the marker is a JSX comment, so it does not
+    // survive `code()`. Against the stripped copy this found nothing, and the
+    // old bare `slice(indexOf(...))` turned that into the file's last character
+    // - so the assertion below has been passing against one character rather
+    // than against the bubbles it names.
+    const bubbles = after(overlayRaw, 'Narration, pinned bottom-centre')
     expect(bubbles).not.toContain("className=\"mt-body\"")
   })
 
@@ -810,11 +850,10 @@ describe('a gated settings section does not title itself', () => {
 
   it('drops the integrations heading under gate', () => {
     const s = gated('../components/timeline/settings/IntegrationsSection.tsx')
-    const guard = s.indexOf('{!gate && (')
-    expect(guard).toBeGreaterThan(-1)
     // The heading must sit INSIDE that guard - between it and its closing `)}`,
-    // not merely somewhere later in the file.
-    const block = s.slice(guard, s.indexOf(')}', guard))
+    // not merely somewhere later in the file. `between` fails if either marker
+    // is missing, so a renamed guard reads as a renamed guard.
+    const block = between(s, '{!gate && (', ')}')
     expect(block).toContain('Connect your board')
     expect(block).toContain('Project management')
   })
@@ -852,7 +891,7 @@ describe('the plan saves itself', () => {
   it('keeps the plan cap on the one write path', () => {
     // Every add still funnels through commit, so the guard cannot be bypassed by
     // the route that now also persists.
-    const commit = view.slice(view.indexOf('const commit = useCallback'), view.indexOf('const editable'))
+    const commit = between(view, 'const commit = useCallback', 'const editable')
     expect(commit).toContain('MAX_PLAN_TASKS')
     expect(commit).toContain('setCapHit(true)')
     // The refusal must return BEFORE the write.
@@ -971,7 +1010,7 @@ describe('the first-run journey holds together on every branch', () => {
     // Every read in the SECOND half runs after the decline can have downgraded
     // it. (An earlier read exists in part one, inside the branch that sets it -
     // hence the slice rather than a bare indexOf.)
-    const afterDecline = src.slice(src.indexOf("if (declined) usesTracker = 'solo'"))
+    const afterDecline = after(src, "if (declined) usesTracker = 'solo'")
     expect(afterDecline).toContain("usesTracker === 'tracker'")
 
     // And the worklog demonstration is GATED on it, not merely worded around it:
@@ -979,7 +1018,7 @@ describe('the first-run journey holds together on every branch', () => {
     // WHERE Generate would be, so the beat would have no button to point at.
     // Anchored on a CODE line: `code()` has stripped the beat headers, which are
     // comments.
-    const dayHalf = src.slice(src.indexOf('data-tour="detail-done"'))
+    const dayHalf = after(src, 'data-tour="detail-done"')
     expect(dayHalf.indexOf("if (usesTracker === 'tracker') {"))
       .toBeLessThan(dayHalf.indexOf('data-tour="wl-open"'))
   })
@@ -1081,10 +1120,10 @@ describe('the day replay - the timeline taught by building it', () => {
     // whole answer to "where did my day go". Going straight from the last hour to
     // "open the big one in the afternoon" spends the payoff on an errand, while
     // the thing the user just watched get built is still being taken in.
-    const after = src.slice(src.indexOf('await s.replayDay(['))
-    const showcase = after.indexOf('s.spotlight(\'[data-tour="day-view"]\')')
+    const afterReplay = after(src, 'await s.replayDay([')
+    const showcase = afterReplay.indexOf('s.spotlight(\'[data-tour="day-view"]\')')
     expect(showcase).toBeGreaterThan(-1)
-    expect(showcase).toBeLessThan(after.indexOf('That is the day.'))
+    expect(showcase).toBeLessThan(afterReplay.indexOf('That is the day.'))
     // The WHOLE view, right-hand breakdown included - the claim is about the day
     // as one finished thing, and the hours/apps/categories are half the answer.
     expect(screen).toContain('data-tour="day-view"')
@@ -1123,7 +1162,7 @@ describe('the day replay - the timeline taught by building it', () => {
     // described, and then watched the real control get pressed for them. One
     // ring, one short line, and they press it.
     expect(src).not.toContain('That was one task.')
-    const open = src.slice(src.indexOf('data-tour="summary-pill"'))
+    const open = after(src, 'data-tour="summary-pill"')
     expect(open).toContain('await s.waitForClick(\'[data-tour="summary-pill"]\', 60000)')
     // The pill in the tutorial toolbar is an inert replica, so the script still
     // owns the render - but only AFTER the user's click, never instead of it.
@@ -1186,7 +1225,7 @@ describe('the day replay - the timeline taught by building it', () => {
   it('says it is an example on the hour the first card lands', () => {
     // The one moment someone might mistake the replay for their own day - and the
     // tour has just spent two minutes on their real screen, so the risk is real.
-    const marks = src.slice(src.indexOf('await s.replayDay(['), src.indexOf('])', src.indexOf('await s.replayDay([')))
+    const marks = between(src, 'await s.replayDay([', '])')
     expect(marks).toMatch(/\{ hour: 9, say: '[^']*example day, not your data/)
   })
 
@@ -1298,8 +1337,7 @@ describe('user-facing copy never names a tracker you cannot connect', () => {
 
 describe('the OAuth wait has a way out that looks like one', () => {
   const src = readFileSync(new URL('../components/IntegrationConnect.tsx', import.meta.url), 'utf8')
-  const start = src.indexOf('Waiting for authorization…')
-  const block = src.slice(start, src.indexOf("status === 'done'", start))
+  const block = between(src, 'Waiting for authorization…', "status === 'done'")
 
   it('offers retry as well as cancel', () => {
     // Two ways this stalls, so two exits. A provider-side rejection never
@@ -1357,7 +1395,7 @@ describe('deleting a personal task actually removes it from the plan', () => {
     // `paused` exists so a background poll cannot reshuffle a board mid-drag. A
     // delete is a user action whose result must be visible, and a drag cannot be
     // in progress while a modal dialog has the pointer.
-    const listener = store.slice(store.indexOf("addEventListener('meridian:task-deleted'"))
+    const listener = after(store, "addEventListener('meridian:task-deleted'")
     expect(listener).toContain('paused = false')
     expect(listener).toContain('.finally(() => { paused = wasPaused })')
   })
@@ -1365,7 +1403,7 @@ describe('deleting a personal task actually removes it from the plan', () => {
   it('is fixed in the store, not by threading a callback through each opener', () => {
     // Every plan-reading surface has the same problem and there is no bound on how
     // many there will be - the shell's dialog deliberately stays callback-free.
-    const dlg = shell.slice(shell.indexOf('<TaskDetailDialog'), shell.indexOf('/>', shell.indexOf('<TaskDetailDialog')))
+    const dlg = between(shell, '<TaskDetailDialog', '/>')
     expect(dlg).not.toContain('onDeleted')
   })
 })
@@ -1417,7 +1455,7 @@ describe('the daily summary the tour teaches', () => {
     // Two failures in one: the beat that flies a cursor into it and clicks looked
     // like the summary opening by itself, and it taught the wrong corner - the
     // real control sits on the LEFT, beside the day label (see Toolbar.tsx).
-    const bar = screen.slice(screen.indexOf('function TutorialToolbar'))
+    const bar = after(screen, 'function TutorialToolbar')
     expect(bar).toContain('<button data-tour="summary-pill"')
     expect(bar).not.toContain('<span data-tour="summary-pill"')
     // Same treatment as the real one, so it is recognised afterwards.
@@ -1530,7 +1568,7 @@ describe('the daily summary the tour teaches', () => {
     // file a comment on somebody's board against issue keys from a day that never
     // happened - so it does not, and the beat says so rather than letting the
     // tick be found out later by checking the board.
-    const flow = src.slice(src.indexOf('── 5. The worklog, end to end'))
+    const flow = after(src, '── 5. The worklog, end to end')
     expect(flow).toContain('nothing really went out')
   })
 
@@ -1539,7 +1577,7 @@ describe('the daily summary the tour teaches', () => {
     // planned as. How a tool handles the other kind - the thing that came up - is
     // what decides whether it gets trusted, and a demo that only ever shows a
     // match teaches that the other outcome does not exist.
-    const flow = src.slice(src.indexOf('── 7. The work that was NOT on the plan'))
+    const flow = after(src, '── 7. The work that was NOT on the plan')
     for (const step of ['sum-offplan', 'sum-offplan-row', 'sum-where', 'wl-rematch',
       'wl-pick', 'wl-approve', 'wl-confirm', 'wl-posted']) {
       expect(flow).toContain(step)
@@ -1557,7 +1595,7 @@ describe('the daily summary the tour teaches', () => {
     // The beats must follow the layout rather than setting their own sequence:
     // a ring that jumps down the card and back up reads as the tour having lost
     // its place. Destination band first, then the update beneath it.
-    const flow = src.slice(src.indexOf('── 7. The work that was NOT on the plan'))
+    const flow = after(src, '── 7. The work that was NOT on the plan')
     expect(flow.indexOf('sum-where')).toBeLessThan(flow.indexOf('sum-update'))
   })
 
@@ -1598,7 +1636,7 @@ describe('the daily summary the tour teaches', () => {
     expect(view).toContain("from '@/components/timeline/WorklogActions'")
     // And `DraftActions` is what puts them on one row - override beside primary.
     const acts = readFileSync(new URL('../components/timeline/WorklogActions.tsx', import.meta.url), 'utf8')
-    const row = acts.slice(acts.indexOf('export function DraftActions'))
+    const row = after(acts, 'export function DraftActions')
     expect(row.indexOf('data-tour="wl-rematch"')).toBeLessThan(row.indexOf('data-tour="wl-approve"'))
     // One ticket list for both demos, not two that can disagree.
     expect(view).toContain('demoBoardTickets')
@@ -1715,8 +1753,7 @@ describe('the closing asks: a delivery time, and the off switch', () => {
     // Where it lives is worth knowing - "how do I stop it recording" is the
     // question an ambient tool answers before it is trusted, not after. It is
     // the rehearsal against a picture that was the problem, not the fact.
-    const close = src.slice(src.indexOf('── 13. Handoff'))
-    expect(close).toContain('pause it there any time')
+    expect(after(src, '── 13. Handoff')).toContain('pause it there any time')
   })
 
   it('ends by saying nothing more is required', () => {
@@ -1725,13 +1762,12 @@ describe('the closing asks: a delivery time, and the off switch', () => {
     // Short on purpose. This is the last thing said before the off switch, and
     // a paragraph here is a paragraph nobody finishes.
     //
-    // A standalone "you are set up, close this window" card used to carry this
-    // line, one beat before the Handoff below - which already says the same
-    // thing at the actual moment it becomes true. That card is gone (see
-    // section 11's "GONE" comment in scriptDay.ts); the reassurance now opens
-    // Handoff itself, so this test moved with it.
-    const close = src.slice(src.indexOf('── 13. Handoff'))
-    expect(close).toContain('That is everything.')
+    // It used to be its own card at beat 11 ("Close this window - Meridian keeps
+    // going"), one beat ahead of the handoff. That card is GONE: it said "you are
+    // done" at a moment when the example day was still on screen, and then the
+    // handoff said it again for real - a tour that finishes twice. The line the
+    // handoff opens with now carries it, at the moment it is actually true.
+    expect(after(src, '── 13. Handoff')).toContain('That is everything.')
   })
 })
 

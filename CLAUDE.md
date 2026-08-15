@@ -47,7 +47,7 @@ meridian/
     main.rs              # daemon entry point — tokio::main, signal handling, poll loop
     lib.rs               # public crate root
     config.rs            # Config::from_env() — reads env vars, expands ~
-    notifications.rs     # notification outbox producer API — enqueue/retract (see NOTIFICATIONS.md)
+    notifications.rs     # notification outbox producer API — enqueue/retract (see docs/notifications.md)
     notification_responses.rs # consumer for interactive-toast answers (snooze, …)
     db/
       mod.rs
@@ -305,7 +305,7 @@ JSON columns (`window_titles`, `ocr_samples`, `elements_samples`, `audio_snippet
 
 ### ETL logic, DB schema, or migrations
 
-Read `TESTING.md` first. Integration tests live in `tests/integration_etl.rs` and use in-memory SQLite — they must continue to pass after any ETL or schema change. Run `cargo test` before committing.
+Read `docs/testing.md` first. Integration tests live in `tests/integration_etl.rs` and use in-memory SQLite — they must continue to pass after any ETL or schema change. Run `cargo test` before committing.
 
 Key invariants the tests enforce:
 
@@ -319,7 +319,7 @@ Key invariants the tests enforce:
 
 ### Product decisions
 
-Read `VISION.md` first.
+Read `docs/vision.md` first.
 
 ---
 
@@ -527,7 +527,7 @@ applies to both `pending/` and `sent/`, regardless of shipping status.
 
 ### Add a notification (plain toast or interactive nudge)
 
-Read `NOTIFICATIONS.md` first — it is the integration guide for the
+Read `docs/notifications.md` first — it is the integration guide for the
 notification service (outbox → deliver → respond → consume lifecycle, category
 registry, response handlers, expiry/persistence semantics, plugin gotchas, and
 the packaged-build test recipe). In short:
@@ -540,7 +540,7 @@ the packaged-build test recipe). In short:
    `.category()/.actions()`, and handle the answer with a match arm in
    `src/notification_responses.rs` (handlers must be idempotent).
 3. Interactive toasts only work in packaged builds (`UNUserNotificationCenter`
-   needs a `.app` bundle) — test per the recipe in `NOTIFICATIONS.md`.
+   needs a `.app` bundle) — test per the recipe in `docs/notifications.md`.
 
 ### Add a new MCP tool
 

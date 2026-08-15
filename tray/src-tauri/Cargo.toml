@@ -229,7 +229,7 @@ cidre = { version = "0.13", features = ["ax"], optional = true }
 # no action buttons or inline reply, which is exactly why macOS keeps the Swift
 # UNUserNotificationCenter layer instead. Interactive toasts on Windows need a
 # `windows-rs` Windows.UI.Notifications implementation behind the existing
-# `sys.rs` facade; tracked as a follow-up, documented in NOTIFICATIONS.md.
+# `sys.rs` facade; tracked as a follow-up, documented in docs/notifications.md.
 tauri-plugin-notifications = { version = "=0.4.6", default-features = false, features = ["notify-rust"] }
 # Real notification-permission read for the Windows probe (`sys::notification_permission_state`).
 # The plugin's notify-rust backend has no permission API of its own — `permission_state()` /

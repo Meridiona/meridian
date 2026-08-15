@@ -187,9 +187,11 @@ meridian uninstall          # stop services and remove the CLI
 
 | | Path |
 |---|---|
-| Config | `~/.meridian/app/.env` |
-| Database | `~/.meridian/meridian.db` |
-| Logs | `~/.meridian/logs/` |
+| Config and credentials | `~/.meridian/.env` |
+| Database | `~/.meridian/meridian.db` (encrypted at rest) |
+| OAuth tokens | `~/.meridian/oauth/` |
+| Logs and traces | `~/.meridian/telemetry/` — read with `meridian logs` |
+| Crash safety-net logs | `~/.meridian/logs/` |
 | App bundle | `~/.meridian/app/` |
 
 ---
@@ -206,7 +208,7 @@ meridian uninstall          # stop services and remove the CLI
 
 ## Configuration
 
-All settings are environment variables in `~/.meridian/app/.env`; defaults work out of the box. The installer collects the credential-bearing ones interactively.
+All settings are environment variables in `~/.meridian/.env`; defaults work out of the box. The installer collects the credential-bearing ones interactively. After editing the file by hand, run `meridian restart` for the daemon to pick it up.
 
 | Variable | Default | Description |
 |---|---|---|

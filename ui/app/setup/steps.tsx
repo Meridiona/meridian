@@ -316,7 +316,7 @@ export function Welcome({ onBegin, ready, error, onRetry }: {
   // Three short benefit clauses, not feature labels - one voice, one payoff
   // each, no tracker brand names (those mean nothing until step 2).
   const pillars = [
-    { icon: 'shield', label: 'Never leaves this device' },
+    { icon: 'shield', label: 'Your screen never leaves this device' },
     { icon: 'power', label: 'Understands your day automatically' },
     { icon: 'mail', label: 'Drafts updates, ready to post' },
   ]
@@ -462,7 +462,7 @@ export interface StepMeta {
 const PERMISSIONS_STEP: StepMeta = {
   id: 'permissions', n: '01', label: 'Permissions', kicker: 'Access',
   title: 'Help Meridian reconstruct your day',
-  subtitle: "That's what these permissions are for - your data stays local, and Meridian never collects it.",
+  subtitle: "That's what these permissions are for - what Meridian captures stays on this device and is never uploaded.",
   Body: PermissionsBody,
   status: (s) => { const g = [s.perms.accessibility, s.perms.screen].filter(Boolean).length; return g ? `${g} granted` : 'Not granted' },
   canNext: (s) => !!(s.perms.accessibility && s.perms.screen),

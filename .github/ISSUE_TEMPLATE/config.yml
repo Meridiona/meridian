@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Questions & ideas
+    url: https://github.com/Meridiona/meridian/discussions
+    about: Ask a question, share how you use Meridian, or float an idea before filing it
   - name: Setup & configuration help
     url: https://github.com/Meridiona/meridian/blob/main/SETUP.md
     about: Installation, permissions, tracker setup, troubleshooting

@@ -36,6 +36,7 @@
 // - `./scriptDay.ts` — part two, which this hands off to at the seam
 
 import { availableTrackerNames } from '@/lib/integrations'
+import { MIN_TITLE_WORDS, titleWords } from '@/components/plan/useTaskComposer'
 import { consumeLockOutcome, type Stage } from './engine'
 import { runDayHalf } from './scriptDay'
 
@@ -554,35 +555,62 @@ export async function runScript(s: Stage): Promise<void> {
       await s.pause(500)
       s.spotlight(null)
 
-      // 2d. WHERE IT GOES - the one decision on this form with a consequence
-      // outside Meridian, and the only one the tour stops for.
-      //
-      // Renders only with a tracker connected (TaskComposer's `boardProvider`), so
-      // it is probed rather than assumed - a solo user has no choice to make and
-      // gets no beat. Left undiscovered, this is how someone files a real ticket
-      // onto a shared board by accident, or writes three days of personal notes
-      // wondering why their team never sees them. Both are cheap to prevent here
-      // and expensive to explain afterwards.
-      //
-      // No spotlight on either option and no recommendation: which one is right
-      // depends entirely on what they just wrote, and the tour has no view on it.
-      if (await s.appeared('[data-tour="task-where"]', 1200)) {
-        s.say('One choice: keep it to yourself, or file it as a real ticket your team can see. Pick either - you can change it per task.')
-        s.spotlight('[data-tour="task-where"]')
-        await s.point('[data-tour="task-where"]')
-        await s.waitForClick('[data-tour="task-where"] [role="radio"]', 120000)
+      // 2c-2. EDGE CASE: a drafted title can still land short. `canCreate` in
+      // useTaskComposer.ts requires MIN_TITLE_WORDS regardless of whether the
+      // title got there by hand or by the model, and the model - however well
+      // its prompt is worded - is not guaranteed to hit that floor on a terse
+      // note ("Testing onboarding" drafted down to the two-word "Test
+      // onboarding" is what surfaced this). The beat below used to skip
+      // straight to "That is the task. Add it to today." and point at a
+      // button that stays disabled for the rest of its 90s fallback, then
+      // said "Saved." regardless of whether anything was. Checked explicitly
+      // instead: name what's missing, and wait on the real gate rather than
+      // assume the draft cleared it.
+      let titleReady = titleWords(s.value('[data-tour="task-title"]')) >= MIN_TITLE_WORDS
+      if (!titleReady) {
+        s.spotlight('[data-tour="task-title"]')
+        s.say("This title's a little thin - add a few more words about the work before you can save it.")
+        await s.point('[data-tour="task-title"]')
+        titleReady = await s.waitForMinWords('[data-tour="task-title"]', MIN_TITLE_WORDS, { fallbackMs: 120000 })
         s.spotlight(null)
-        await s.pause(600)
       }
 
-      // 2e. Commit it.
-      s.say('That is the task. Add it to today.')
-      s.spotlight('[data-tour="task-add"]')
-      await s.point('[data-tour="task-add"]')
-      await s.waitForClick('[data-tour="task-add"]', 90000)
-      s.spotlight(null)
-      await s.pause(700)
-      s.say('Saved. Add as many as you like - each one saves itself - then close this when you are done.')
+      if (titleReady) {
+        // 2d. WHERE IT GOES - the one decision on this form with a consequence
+        // outside Meridian, and the only one the tour stops for.
+        //
+        // Renders only with a tracker connected (TaskComposer's `boardProvider`), so
+        // it is probed rather than assumed - a solo user has no choice to make and
+        // gets no beat. Left undiscovered, this is how someone files a real ticket
+        // onto a shared board by accident, or writes three days of personal notes
+        // wondering why their team never sees them. Both are cheap to prevent here
+        // and expensive to explain afterwards.
+        //
+        // No spotlight on either option and no recommendation: which one is right
+        // depends entirely on what they just wrote, and the tour has no view on it.
+        if (await s.appeared('[data-tour="task-where"]', 1200)) {
+          s.say('One choice: keep it to yourself, or file it as a real ticket your team can see. Pick either - you can change it per task.')
+          s.spotlight('[data-tour="task-where"]')
+          await s.point('[data-tour="task-where"]')
+          await s.waitForClick('[data-tour="task-where"] [role="radio"]', 120000)
+          s.spotlight(null)
+          await s.pause(600)
+        }
+
+        // 2e. Commit it.
+        s.say('That is the task. Add it to today.')
+        s.spotlight('[data-tour="task-add"]')
+        await s.point('[data-tour="task-add"]')
+        await s.waitForClick('[data-tour="task-add"]', 90000)
+        s.spotlight(null)
+        await s.pause(700)
+        s.say('Saved. Add as many as you like - each one saves itself - then close this when you are done.')
+      } else {
+        // They never lengthened it. Same honesty as the "never typed" branch
+        // below: say what's true and let them close it, rather than claim a
+        // save that never happened.
+        s.say('No rush - finish it whenever you like. Close this when you are ready.')
+      }
     } else {
       // They never typed. Say what the form was for and let them close it;
       // pressing on with "now click Draft" would point at a disabled button.
