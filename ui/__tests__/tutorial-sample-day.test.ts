@@ -717,7 +717,7 @@ describe('the tour overlay draws what it means to', () => {
     // Both bubbles take the SAME surface constant, and neither styles its own.
     // They drifted apart once already - one inverted, one not, at different
     // sizes - which is how the tour ended up with two voices.
-    const anchored = between(overlay, 'function AnchoredCaption', 'function DimCutout')
+    const anchored = between(overlay, 'function AnchoredCaption', 'function Cutout')
     expect(anchored).toContain('...CAPTION_SURFACE')
     expect(anchored).not.toContain('background:')
     expect(overlay.match(/\.\.\.CAPTION_SURFACE/g)?.length).toBe(2)
