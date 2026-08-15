@@ -244,7 +244,27 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
       {/* The dimmed variant: four blurred panels fenced around the target,
           leaving it sharp, lit and the only clickable thing on screen.
           Rendered BEFORE the ring and cursor so those stay crisp on top. */}
-      {ring && spotlightDim && <DimCutout rect={ring} />}
+      {/* THE FENCE. While the tour is waiting on one specific click, everything
+          outside the spotlight stops taking clicks.
+
+          Without it the only beat that protected itself was the dimmed one,
+          because blocking was a side effect of the blur rather than a thing
+          anyone had asked for. Every other beat left the whole app live behind
+          a ring - including the close X on whatever modal the tour had just
+          opened. Clicking it does not fail: the modal closes, the tour keeps
+          waiting for a click on a target that is no longer on screen, and the
+          user is left reading an instruction about a window they cannot see.
+
+          Gated on `awaiting` on purpose. A fence that stands during narration
+          beats would make the app feel frozen for reasons the user cannot see;
+          one that stands only while the tour is genuinely blocked on them is
+          the difference between guiding and trapping.
+
+          Rendered BEFORE the caption, the choice buttons and Skip, so those
+          later siblings paint on top and keep their own `pointerEvents:'auto'`.
+          The way out is always one click away. */}
+      {ring && spotlightDim && <Cutout rect={ring} dim />}
+      {ring && !spotlightDim && awaiting && <Cutout rect={ring} dim={false} />}
 
       {/* Spotlight — a ring around the real control. On its own (the default)
           it adds no scrim at all: the target stays fully interactive because
@@ -591,8 +611,11 @@ function AnchoredCaption({ rect, children }: { rect: DOMRect; children: React.Re
  *
  *  These DO take pointer events, which is half the point — while the tour is
  *  waiting on one specific click, a stray click into the blurred area should
- *  land on nothing rather than on some control the user cannot see clearly. */
-function DimCutout({ rect }: { rect: DOMRect }) {
+ *  land on nothing rather than on some control the user cannot see clearly.
+ *
+ *  `dim: false` renders the same four panes completely invisible — see
+ *  [`Cutout`]'s note on why the fence and the blur are one component. */
+function Cutout({ rect, dim }: { rect: DOMRect; dim: boolean }) {
   const PAD = 8
   const l = Math.max(0, rect.left - PAD)
   const t = Math.max(0, rect.top - PAD)
@@ -605,14 +628,16 @@ function DimCutout({ rect }: { rect: DOMRect }) {
     // gradient, so a `color-mix` against it is invalid and drops the declaration
     // outright. This read as "blur only, no dimming" for as long as it has
     // existed - the panes were doing half their job silently.
-    background: 'rgba(20,16,40,0.42)',
-    backdropFilter: 'blur(5px)',
-    WebkitBackdropFilter: 'blur(5px)',
+    ...(dim ? {
+      background: 'rgba(20,16,40,0.42)',
+      backdropFilter: 'blur(5px)',
+      WebkitBackdropFilter: 'blur(5px)',
+      animation: 'mer-tour-dim .45s ease both',
+    } : null),
     // The panes travel with the hole rather than being re-laid instantly, so a
     // dimmed beat handing over to the next one reads as the light moving.
     transition: 'left .5s cubic-bezier(.22,1,.32,1), top .5s cubic-bezier(.22,1,.32,1),'
       + ' width .5s cubic-bezier(.22,1,.32,1), height .5s cubic-bezier(.22,1,.32,1)',
-    animation: 'mer-tour-dim .45s ease both',
   }
   return (
     <>
