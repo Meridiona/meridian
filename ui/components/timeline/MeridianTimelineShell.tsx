@@ -209,6 +209,17 @@ export default function MeridianTimelineShell() {
           // The dashboard itself — close whatever is covering it.
           setActiveModal(null)
           break
+        case '/summary':
+          // `DaySummaryOverlay` reads the shell's own `day`, so the day is reset
+          // here rather than left as-is. The push half of this listener targets a
+          // dashboard that is ALREADY open, where the user may have shifted back
+          // to an earlier day — opening the summary on that day would show them a
+          // different day's review than the one the toast was about. The only
+          // producer (`day_summary.ready`) is scoped to the current local day and
+          // its row expires at local midnight, so today is always what it meant.
+          setDay(dayString(0))
+          setActiveModal('summary')
+          break
         case '/settings':
           openSettings()
           break
