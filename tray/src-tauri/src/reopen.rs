@@ -154,6 +154,43 @@ mod reopen_tests {
         );
     }
 
+    /// `lib.rs`'s import of these three must stay `#[cfg(target_os = "macos")]`.
+    ///
+    /// Their only use site is the `RunEvent::Reopen` arm, which is macOS-only
+    /// because no other platform emits Reopen. The definitions above already
+    /// carry `cfg_attr(not(target_os = "macos"), allow(dead_code))`, so they are
+    /// covered - but an *import* has no such escape hatch: unused, it is an
+    /// ERROR under `-D warnings`, and it broke the Windows clippy AND test jobs
+    /// while every macOS gate stayed green.
+    ///
+    /// That asymmetry is the whole reason this test exists. A macOS developer
+    /// running the full local suite cannot see this class of mistake; it
+    /// surfaces only after a push, on a runner, ~15 minutes later. Scanning the
+    /// source makes it fail here instead.
+    ///
+    /// Checks the preceding line rather than a fixed block of text, so
+    /// reordering the symbols or rewriting the comment above it does not
+    /// produce a spurious failure.
+    #[test]
+    fn the_macos_only_reopen_import_stays_gated() {
+        let lines: Vec<&str> = include_str!("lib.rs").lines().collect();
+        let idx = lines
+            .iter()
+            .position(|l| l.trim_start().starts_with("use reopen::{"))
+            .expect(
+                "lib.rs no longer imports symbols from `reopen` - if the Reopen \
+                     handler moved, move this guard with it",
+            );
+        assert_eq!(
+            lines[idx - 1].trim(),
+            "#[cfg(target_os = \"macos\")]",
+            "lib.rs:{} imports macOS-only `reopen` symbols without a cfg gate - \
+             this compiles on macOS and fails the Windows build with \
+             `unused imports`",
+            idx + 1
+        );
+    }
+
     #[test]
     fn is_onboarded_reflects_the_marker_file() {
         // Use a unique temp dir so parallel test runs don't collide.
