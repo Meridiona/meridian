@@ -48,7 +48,6 @@ use events::{
     emit_clerk_auth_event, ClerkAuthEvent, ClerkAuthEventPayload, CLERK_AUTH_EVENT_NAME,
     RUST_EVENT_SOURCE,
 };
-use log::debug;
 use parking_lot::RwLock;
 use std::sync::Arc;
 use tauri::{
@@ -175,7 +174,16 @@ impl<R: Runtime, T: Manager<R>> crate::ClerkExt<R> for T {
                     }
                 };
                 if payload.source != RUST_EVENT_SOURCE {
-                    debug!("Received ClerkAuthEvent: {payload:?}");
+                    // MERIDIAN PATCH: was `debug!("Received ClerkAuthEvent:
+                    // {payload:?}")`, which renders the session JWT. See the
+                    // note in `events::emit_clerk_auth_event` for why presence
+                    // is the only thing this may say.
+                    tracing::debug!(
+                        source = %payload.source,
+                        has_session = payload.payload.session.is_some(),
+                        has_user = payload.payload.user.is_some(),
+                        "clerk: received auth event"
+                    );
                     if let Err(e) = app_handle
                         .clerk()
                         .set_client(payload.payload.client.clone())

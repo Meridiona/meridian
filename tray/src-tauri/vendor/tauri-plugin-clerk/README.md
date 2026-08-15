@@ -1,5 +1,17 @@
 # Clerk Tauri SDK
 
+> **Meridian note - this is a vendored, patched copy of upstream 0.1.1, not the
+> crates.io release.** It carries a fix for
+> [issue #7](https://github.com/Nipsuli/tauri-plugin-clerk/issues/7), without
+> which a signed-in session is never written to the offline cache and the app
+> shows signed-out after a relaunch. `tray/src-tauri/Cargo.toml` therefore
+> depends on it by path (`tauri-plugin-clerk = { path =
+> "vendor/tauri-plugin-clerk" }`) - **do not follow the `cargo add` line below,
+> and do not swap the path dependency back to a registry version until a
+> release contains that fix**, or the bug returns silently. See
+> `src/lib.rs`'s module doc for the full writeup and the un-vendor plan. The
+> rest of this file is upstream's, unedited.
+
 Community maintained Clerk SDK for Tauri apps.
 
 There's also platform agnostic Rust implementations of

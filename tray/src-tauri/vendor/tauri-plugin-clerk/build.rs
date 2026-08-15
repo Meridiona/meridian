@@ -1,3 +1,4 @@
+//ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 const COMMANDS: &[&str] = &[
     "initialize",
     "set_client_authorization_header",
