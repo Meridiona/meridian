@@ -4,6 +4,19 @@ Screenshots referenced by the root `README.md`. The reference block there is com
 out until these files exist - GitHub renders a missing image as broken alt text, so add
 the files first, then uncomment.
 
+## `banner.png` (already here)
+
+The README header - mark, wordmark and tagline in one image, 818x432. Displayed at
+`width="720"` so it downscales slightly rather than upscaling, which keeps the type
+crisp on Retina.
+
+The background is opaque `#F2EDFB`, not transparent, so it renders as a pale panel in
+GitHub's dark theme rather than adapting to it. That is deliberate and fine, but it does
+mean the tagline colour has to stay legible on light only.
+
+The tagline baked into the image must match the repo About description. Changing one
+without the other leaves the two surfaces disagreeing.
+
 ## `social-card.png` (already here)
 
 The GitHub social preview - 1280x640, the size GitHub renders link cards at. Committed
