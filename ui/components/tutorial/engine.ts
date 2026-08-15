@@ -85,8 +85,11 @@ export interface Stage {
   /** Hand control to the user and resolve once the input/textarea at
    *  `selector` holds at least `minWords` whitespace-separated words —
    *  checked on arrival, then on every change, until it clears the floor or
-   *  `fallbackMs` elapses. Resolves `false` on timeout, same contract as
-   *  `waitForClick`/`waitForValue`.
+   *  `fallbackMs` elapses. Resolves `false` on timeout, and also `false` if the
+   *  field disappears (the composer closed) - same contract as
+   *  `waitForClick`/`waitForValue`, which answer `false` for a target that is
+   *  not there. Only a title that actually cleared the floor resolves `true`,
+   *  because callers gate "the task can be saved" on this.
    *
    *  `waitForValue`'s `settled` only asks "is there SOMETHING here" — the
    *  composer's `canCreate` asks "is there ENOUGH here" (`MIN_TITLE_WORDS`),

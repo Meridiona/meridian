@@ -114,15 +114,19 @@ Run the same checks CI runs — all must pass:
 cargo fmt                                              # format
 cargo clippy --workspace --all-targets -- -D warnings  # lint — warnings are errors
 cargo test --workspace                                 # Rust unit + integration tests
-cargo build --release                                  # verify release build
+cargo build --workspace --release                      # verify release build
 
-cd ui && npm ci && npm run build                       # dashboard builds
-cd ui && bun test                                      # dashboard tests (bun, not npm)
+(cd ui && npm ci && npm run build)                     # dashboard builds
+(cd ui && bun test)                                    # dashboard tests (bun, not npm)
 ```
+
+The two `ui` lines are wrapped in subshells so the block can be pasted as a whole - a
+bare `cd ui` on both would put the second one in `ui/ui`.
 
 > **`--workspace` is not optional.** The repo root is itself a package, so a bare
 > `cargo test` or `cargo clippy` runs against the daemon **alone** and silently skips
-> `meridian-core`, `meridian-oauth`, and the tray. They still compile, which is what
+> `meridian-core`, `meridian-oauth`, the tray, and the vendored `tauri-plugin-clerk`
+> (a workspace member so its regression tests run). They still compile, which is what
 > makes the omission so convincing - they are simply never tested. CI and the git hooks
 > pass `--workspace` for exactly this reason.
 

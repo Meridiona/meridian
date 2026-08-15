@@ -181,13 +181,28 @@ fn disarm(home: &Path) -> std::io::Result<()> {
 /// unseen" from "armed and long since taken", and [`tour_owed`] would hold both
 /// auto-opens back until [`ARMED_MAX_AGE_SECS`] expired.
 #[tauri::command]
-#[tracing::instrument]
+#[tracing::instrument(fields(otel.status_code = tracing::field::Empty))]
 pub async fn disarm_walkthrough() -> Result<(), String> {
-    let home = meridian_core::paths::home_dir()
-        .ok_or_else(|| "could not resolve home directory".to_string())?;
-    disarm(&home).map_err(|e| format!("clear {ARMED_MARKER}: {e}"))?;
-    tracing::info!("walkthrough: entitlement cleared - the tour is done");
-    Ok(())
+    use anyhow::Context;
+
+    let result = meridian_core::paths::home_dir()
+        .context("resolve the home directory")
+        .and_then(|home| disarm(&home).with_context(|| format!("clear the {ARMED_MARKER} marker")));
+
+    match result {
+        Ok(()) => {
+            tracing::info!("walkthrough: entitlement cleared - the tour is done");
+            Ok(())
+        }
+        Err(e) => {
+            tracing::Span::current().record("otel.status_code", "ERROR");
+            Err(crate::cmd_err!(
+                level: error,
+                e,
+                "walkthrough: could not clear the entitlement"
+            ))
+        }
+    }
 }
 
 /// Raise or clear the walkthrough marker.
@@ -195,24 +210,51 @@ pub async fn disarm_walkthrough() -> Result<(), String> {
 /// Called with `true` as the tour starts and `false` as it finishes, skips, or
 /// unwinds. Clearing a marker that is not there is not an error.
 #[tauri::command]
-#[tracing::instrument]
+#[tracing::instrument(fields(otel.status_code = tracing::field::Empty))]
 pub async fn set_walkthrough_running(running: bool) -> Result<(), String> {
-    let dir = meridian_core::paths::meridian_dir()
-        .ok_or_else(|| "could not resolve home directory".to_string())?;
+    write_running_marker(running).await.map_err(|e| {
+        tracing::Span::current().record("otel.status_code", "ERROR");
+        crate::cmd_err!(
+            level: error,
+            e,
+            running,
+            "walkthrough: could not update the running marker"
+        )
+    })
+}
+
+/// The filesystem half of [`set_walkthrough_running`], as `anyhow` so each step
+/// carries its own context.
+///
+/// Split out for one reason: `Result<(), String>` has to stay at the Tauri
+/// boundary (it is what crosses IPC), but a `String` built with `{e}` renders
+/// only the outermost message. Keeping the work in `anyhow` and rendering once,
+/// at the boundary, with `cmd_err!` is what preserves the chain — the same
+/// failure this repo already hit when a corrupt-database error reached the
+/// dashboard as a bare `tasks: today presence`.
+///
+/// Clearing a marker that is not there stays a success: the frontend calls this
+/// with `false` on every unwind path, including ones where the tour never
+/// started, and those are not failures.
+async fn write_running_marker(running: bool) -> anyhow::Result<()> {
+    use anyhow::Context;
+
+    let dir = meridian_core::paths::meridian_dir().context("resolve the Meridian directory")?;
     let path = dir.join(RUNNING_MARKER);
+
     if running {
         tokio::fs::create_dir_all(&dir)
             .await
-            .map_err(|e| format!("create ~/.meridian: {e}"))?;
+            .with_context(|| format!("create {}", dir.display()))?;
         tokio::fs::write(&path, chrono::Local::now().to_rfc3339())
             .await
-            .map_err(|e| format!("write {RUNNING_MARKER}: {e}"))?;
+            .with_context(|| format!("write {}", path.display()))?;
         tracing::info!("walkthrough: started - auto-opens held back");
     } else {
         match tokio::fs::remove_file(&path).await {
             Ok(()) => tracing::info!("walkthrough: finished - auto-opens released"),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("clear {RUNNING_MARKER}: {e}")),
+            Err(e) => return Err(e).with_context(|| format!("clear {}", path.display())),
         }
     }
     Ok(())
