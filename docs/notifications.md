@@ -274,7 +274,7 @@ on. That is why all six `system.update` toasts stay.
 | event_key | class | category | buttons | consumer arm |
 |---|---|---|---|---|
 | `plan.nudge` | Ask | `plan_nudge` | Open Plan · Snooze 1h | snooze → re-enqueue +1h |
-| `worklog.ready` | Ask | `worklog_ready` | Open Worklogs · Snooze 1h | snooze → re-enqueue +1h — **registered but no producer fires it yet** (needs its own scoping: worklog generation is currently on-demand/user-clicked, not scheduled) |
+| `worklog.ready` | Ask | `worklog_ready` | Open Worklogs · Snooze 1h | snooze → re-enqueue +1h — **registered but no producer fires it yet**. The reason recorded here used to be "worklog generation is on-demand/user-clicked, not scheduled"; that stopped being true when `pm_worklog::auto_generate` started drafting at `worklog_auto_generate_time`, which `day_summary.ready` below now notifies off the back of. What is still missing is the scoping decision — which drafts are worth a toast, and whether it should be one per day or per draft — not a schedule to hang it on |
 | `system.fault` | Fault | `system_fault` | View | — (stamp only) |
 | `system.pause` | Fault\*\* | `system_fault` | View | — (stamp only) — pause/resume, folded off the `sys::notify` bypass. \*\*The pause notice is a live condition (tracking is off — a Fault). Its "Resumed" toast (`commands/pause.rs`) is structurally identical to the removed back-online toast — one-shot, timestamp dedup, native — but fires ONLY on a manual resume, so it is a response to a click, not unsolicited Status |
 | `system.health` | Fault | `system_fault` | View | — (stamp only) — daemon went quiet, or the tray couldn't finish installing the backend. The paired **"Back online." recovery toast was removed** (Status: it confirmed a recovery the user often never knew about, and fired on Meridian's own restarts); the banner clearing is the recovery signal |
@@ -285,6 +285,7 @@ on. That is why all six `system.update` toasts stay.
 | `pm_worklog.{provider}` | Fault | `system_fault` | View | — (stamp only) — a worklog post to the tracker failed permanently |
 | `summariser.dead_letter` | Fault | `generic_link` | Open | — (stamp only) — daily digest of permanently-failed coding-agent summarisation, `dedup_key` scoped per day. Body asks the user to check their coding-agent CLIs are signed in, so it is a Fault needing action, not Status |
 | `worklog.stale` | Ask | `generic_link` | Open | — (stamp only) — a draft has drifted from the work it describes; links to the worklog review surface |
+| `day_summary.ready` | Ask | `generic_link` | Open | — (stamp only) — today's summary was auto-composed at the user's chosen end-of-day time (`worklog_auto_generate_time`), `dedup_key` scoped per local day, expires at local midnight. Ask rather than Status because the user picked the hour and the thing announced is an artefact to read, not an internal transition — `src/day_summary/auto.rs`'s header argues it in full. **Only a real summary notifies**: a fallback carries no prose, and since `enqueue` dedups per day, announcing one would suppress the notification for the real summary the retry composes an hour later |
 | *(reserved)* | Ask | `verify_switch` | Yes · No · Reply… | — (PR 2: task-switch verification) |
 | *(generic)* | — | `generic_link` | Open | — (stamp only) |
 

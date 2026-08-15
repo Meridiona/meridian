@@ -141,9 +141,15 @@ pub mod deep_links {
     /// and quoting the Support ID. The `/logs` spelling predates that being
     /// true and is kept only because outbox rows carry it.
     pub const LOGS: &str = "/logs";
+    /// The end-of-day summary, for TODAY. There is no day parameter in this
+    /// vocabulary, so the shell's arm resets the viewed day rather than opening
+    /// the summary over whatever day the dashboard happened to be showing. The
+    /// only producer (`day_summary.ready`) fires for the current local day and
+    /// expires at local midnight, so "today" is always the day it meant.
+    pub const SUMMARY: &str = "/summary";
 
     /// Every link a producer may emit.
-    pub const ALL: [&str; 7] = [
+    pub const ALL: [&str; 8] = [
         PLAN,
         WORKLOGS,
         WHATS_NEW,
@@ -151,6 +157,7 @@ pub mod deep_links {
         SETTINGS,
         INTEGRATIONS,
         LOGS,
+        SUMMARY,
     ];
 
     /// Spellings retired from the producer side but still resolvable, because
