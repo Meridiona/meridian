@@ -1155,6 +1155,7 @@ pub fn run() {
             commands::get_app_icon,
             commands::get_whats_new,
             commands::mark_whats_new_seen_cmd,
+            commands::set_walkthrough_running,
             // DB writes (ported /api/* POSTs/PATCH/DELETE)
             commands::plan_action,
             commands::get_board_tickets,

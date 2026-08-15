@@ -107,6 +107,53 @@ mod reopen_tests {
         assert!(include_str!("commands/system.rs").contains("open_wizard_window(&app);"));
     }
 
+    /// Both dashboard openers must take the window full-screen after building
+    /// it.
+    ///
+    /// `.maximized(true)` is on both builders and is NOT enough on macOS: tao's
+    /// `set_maximized` early-returns when `is_zoomed()` already equals the
+    /// requested state, so the zoom is skipped with no error, the flag still
+    /// set, and `is_maximized()` still reporting `true`. That is why this
+    /// shipped looking correct. `sys::open_full_screen` is the explicit half;
+    /// the builder flag alone must never be trusted to satisfy this.
+    ///
+    /// Source-scanned for the same reason as the test above - both functions
+    /// build a real webview and cannot be driven from a unit test.
+    #[test]
+    fn every_dashboard_path_opens_full_screen() {
+        for (name, src) in [
+            ("tray.rs", include_str!("tray.rs")),
+            ("commands/system.rs", include_str!("commands/system.rs")),
+        ] {
+            assert!(
+                src.contains("crate::sys::open_full_screen(&win);"),
+                "{name} opens the dashboard without calling open_full_screen - \
+                 a builder flag alone is a silent no-op on macOS"
+            );
+        }
+    }
+
+    /// Nothing may resize the dashboard window without checking `is_fullscreen`
+    /// first.
+    ///
+    /// The dashboard now carries the full-screen style mask, and tao's
+    /// `set_inner_size` calls `NSWindow::setContentSize:` unconditionally
+    /// against it - shrinking the rendered content while the Space stays
+    /// screen-sized and leaving a black surround. That is exactly the setup
+    /// wizard bug, and `resize_setup_window` guards against it by name.
+    ///
+    /// This pins that the guard is still there, because the wizard's guard is
+    /// now also the pattern the dashboard depends on being copied.
+    #[test]
+    fn window_resizes_check_for_full_screen_first() {
+        let src = include_str!("commands/system.rs");
+        assert!(
+            src.contains("win.is_fullscreen().unwrap_or(false)"),
+            "resize_setup_window lost its full-screen guard - a setContentSize: \
+             against a full-screen style mask renders black around the content"
+        );
+    }
+
     #[test]
     fn is_onboarded_reflects_the_marker_file() {
         // Use a unique temp dir so parallel test runs don't collide.

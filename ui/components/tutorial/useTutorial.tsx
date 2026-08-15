@@ -23,7 +23,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SettingsSection } from '@/components/timeline/settings/types'
 import type { DayTaskDetail } from '@/components/timeline/DayTaskDetailPanel'
-import { load } from '@/lib/bridge'
+import { invoke, load } from '@/lib/bridge'
 import { connectedTrackers } from '@/lib/integrations'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import {
@@ -156,6 +156,11 @@ export function useTutorial(opts: {
     setIntro(null)
     setRunning(false)
     setTutorialRunning(false)
+    // Release the tray's auto-opens. This is the fast path, not the only one -
+    // the marker carries its start time and goes stale on its own, so quitting
+    // or crashing mid-tour cannot suppress the daily planner forever (see
+    // commands/walkthrough.rs).
+    invoke('set_walkthrough_running', { running: false }).catch(() => {})
     setCaption('')
     setCentered(false)
     setCursorAt(null)
@@ -685,6 +690,15 @@ export function useTutorial(opts: {
       // Mirrored into the module flag so screens BELOW the shell can tell they are
       // being demonstrated rather than used - see `isTutorialRunning`.
       setTutorialRunning(true)
+      // And mirrored to the TRAY, which has its own opinions about which window
+      // should be in front: the daily-plan and What's New auto-opens both fire
+      // on a 30 s tick and were gated only on `onboarded` - which is written
+      // when the WIZARD finishes, i.e. the moment this tour starts. One of them
+      // landing mid-beat takes the screen away from the target the tour is
+      // waiting on, and the tour then waits out a timeout measured in minutes.
+      // Fire-and-forget: failing to raise the marker costs a possible
+      // interruption, never the tour.
+      invoke('set_walkthrough_running', { running: true }).catch(() => {})
       try {
         await runScript(stageRef.current)
       } catch (e) {
