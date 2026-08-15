@@ -99,6 +99,54 @@ pub fn clerk_publishable_key() -> String {
     DEFAULT_CLERK_PUBLISHABLE_KEY.to_string()
 }
 
+/// Whether the app must be signed in to be usable — the single switch behind
+/// BOTH sign-in gates (`RequireSignIn`, which hides the whole dashboard, and
+/// the setup wizard's sign-in step, whose Next button is otherwise dead).
+/// They read one answer rather than each re-deriving it, so the two can never
+/// disagree and strand a user in a wizard they cannot leave.
+///
+/// **False only in a DEBUG build with no publishable key configured.** That is
+/// the contributor case: `git clone` → `dev-start.sh` with no `.env`, where
+/// requiring sign-in means requiring a Clerk key we cannot ship, and the app is
+/// simply unusable.
+///
+/// # Why `debug_assertions` and not [`crate::install::detect_install_mode`]
+///
+/// The obvious-looking `InstallMode::Dev` check is WRONG here, and quietly so:
+/// `detect_install_mode` returns `Dev` only when a `.env` **already exists**, so
+/// a fresh clone — precisely the case this exists for — is `Bare`, and `Bare` is
+/// also what a real install with no `.env` reports. Keying on it would both miss
+/// the contributor and hand a shipped build a path to unlock itself.
+///
+/// `debug_assertions` cannot do either. A packaged build is compiled in release,
+/// so this whole branch is compiled OUT of the shipped binary — sign-in there is
+/// not "enforced at runtime", it is the only code that exists. There is no
+/// setting, env var, or file a user can reach that turns it off.
+///
+/// Setting `CLERK_PUBLISHABLE_KEY` in a dev `.env` flips this back to `true`, so
+/// a maintainer's dev build exercises the real production sign-in path end to
+/// end. The key's presence IS the mode switch — nothing else to remember.
+#[tauri::command]
+#[tracing::instrument]
+pub async fn sign_in_required() -> bool {
+    sign_in_required_for(&clerk_publishable_key())
+}
+
+/// The decision itself, taking the resolved key rather than looking it up.
+///
+/// Split this way ON PURPOSE: [`clerk_publishable_key`] consults the process env
+/// AND the checkout's `.env`, so a test calling it would answer differently on a
+/// maintainer's machine (key present) than in CI (absent) — the "no key" case
+/// would silently stop being tested by whoever most needs it to hold. Passing
+/// the key in makes both branches deterministic everywhere.
+fn sign_in_required_for(key: &str) -> bool {
+    // Release builds compile this out entirely — see [`sign_in_required`].
+    if !cfg!(debug_assertions) {
+        return true;
+    }
+    !key.trim().is_empty()
+}
+
 /// Persisted account state — deliberately its own file (`~/.meridian/account.json`),
 /// never merged into `settings.json` (which the dashboard reads/writes/displays),
 /// same rationale as `analytics.rs`'s `analytics_state.json`.
@@ -238,5 +286,51 @@ pub async fn clear_account_email() -> Result<(), String> {
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("remove account file: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod sign_in_gate_tests {
+    use super::sign_in_required_for;
+
+    /// A key configured means the real gate, even in dev — this is how a
+    /// maintainer exercises the production sign-in path locally.
+    #[test]
+    fn a_configured_key_always_requires_sign_in() {
+        assert!(sign_in_required_for("pk_test_abc123"));
+        assert!(sign_in_required_for("pk_live_abc123"));
+    }
+
+    /// The contributor case, and the ONLY case that may bypass: a debug build
+    /// with nothing configured. Whitespace counts as nothing — a `.env` line
+    /// left as `CLERK_PUBLISHABLE_KEY= ` must not register as a real key and
+    /// lock a contributor out of a gate they have no way to satisfy.
+    #[test]
+    fn an_unset_key_bypasses_only_in_debug() {
+        let expected = !cfg!(debug_assertions);
+        assert_eq!(sign_in_required_for(""), expected);
+        assert_eq!(sign_in_required_for("   "), expected);
+        assert_eq!(sign_in_required_for("\t\n"), expected);
+    }
+
+    /// THE SHIPPING INVARIANT. A release build gates unconditionally — no key
+    /// state, env var, or file can unlock it. If this ever fails, a packaged
+    /// build can be opened without an account.
+    ///
+    /// Only meaningful under `cargo test --release`; in a debug run it asserts
+    /// the (true) claim that the release branch is compiled out. The guard is
+    /// deliberate rather than `#[cfg(not(debug_assertions))]` so the test is
+    /// visible in both modes instead of silently vanishing from the default run.
+    #[test]
+    fn a_release_build_can_never_bypass() {
+        if cfg!(debug_assertions) {
+            return;
+        }
+        for key in ["", "   ", "pk_test_abc123"] {
+            assert!(
+                sign_in_required_for(key),
+                "release build bypassed sign-in for key {key:?}"
+            );
+        }
     }
 }

@@ -1229,6 +1229,7 @@ pub fn run() {
             commands::get_platform,
             commands::save_account_email,
             commands::get_account_email,
+            commands::sign_in_required,
             commands::clear_account_email,
             commands::check_accessibility,
             commands::check_screen_recording,
