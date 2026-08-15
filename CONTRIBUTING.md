@@ -136,7 +136,7 @@ The git hooks enforce most of this automatically:
 
 ### Touching ETL, DB schema, or migrations?
 
-Read **[TESTING.md](TESTING.md)** first. The integration tests in `tests/integration_etl.rs` encode invariants (session boundaries, gap detection, cursor advancement). Add a test for any new behaviour.
+Read **[docs/testing.md](docs/testing.md)** first. The integration tests in `tests/integration_etl.rs` encode invariants (session boundaries, gap detection, cursor advancement). Add a test for any new behaviour.
 
 ---
 

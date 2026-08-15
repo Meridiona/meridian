@@ -10,8 +10,7 @@ start_test "plutil -lint: com.meridiona.daemon.plist"
 assert_ok "plutil -lint: com.meridiona.daemon.plist" \
     plutil -lint "${REPO_ROOT}/scripts/com.meridiona.daemon.plist"
 
-start_test "plutil -lint: com.meridiona.screenpipe.plist"
-assert_ok "plutil -lint: com.meridiona.screenpipe.plist" \
-    plutil -lint "${REPO_ROOT}/scripts/com.meridiona.screenpipe.plist"
+# The screenpipe plist was removed with the in-process capture cutover (v1.64.0).
+# Nothing installs that agent anymore, so there is no template left to lint.
 
 exit "$FAIL_COUNT"

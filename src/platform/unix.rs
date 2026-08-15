@@ -228,7 +228,7 @@ mod tests {
     /// A deterministic accept error cannot be provoked through a real
     /// `UnixListener` from a test, so this pins the policy at the source
     /// level: the error arm of the accept loop must `continue`, never `break`
-    /// (same convention as the UI's source-scanning guards, per TESTING.md's
+    /// (same convention as the UI's source-scanning guards, per docs/testing.md's
     /// "test what units cannot reach" rule).
     #[test]
     fn an_accept_error_must_not_end_the_health_listener() {
