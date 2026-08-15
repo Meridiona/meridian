@@ -529,21 +529,55 @@ pub fn register_notification_categories(app: &tauri::AppHandle) {
 /// occupies. Setting position and size to it cannot be skipped by a state
 /// guard.
 ///
-/// Native full-screen (`.fullscreen(true)`) is deliberately NOT what this
-/// does. That is the separate-Space, auto-hiding-chrome mode, and it is the
-/// mode that produced the black-screen setup wizard bug — a resize while the
-/// window carries the full-screen style mask shrinks the rendered content
-/// while the Space stays screen-sized. Filling the work area keeps an ordinary
-/// window that the user can still move, resize, and un-maximize.
+/// Then it enters **native macOS full-screen** — own Space, auto-hiding menu
+/// bar and Dock — which is the requested behaviour for the dashboard.
 ///
-/// Failures are logged and swallowed: a dashboard at its default size is worse
-/// than one filling the screen, but it is not a broken dashboard, and no user
-/// action should fail over window geometry.
+/// The work-area fill is not redundant once full-screen is requested: macOS
+/// restores the PRE-full-screen frame when the user leaves full-screen, so
+/// without it the green button would drop them back to a 1100x760 window. The
+/// fill is what makes that exit land on a screen-filling window instead.
+///
+/// # The hazard this mode carries
+///
+/// A window in native full-screen carries the full-screen style mask, and
+/// tao's `set_inner_size` calls `NSWindow::setContentSize:` unconditionally
+/// against it — shrinking the rendered content while the Space stays
+/// screen-sized, leaving a black surround. That is the setup-wizard bug
+/// (`commands::system::resize_setup_window` guards against it explicitly).
+///
+/// The dashboard is safe today because nothing resizes it: `nudgeWindowRepaint`
+/// in `ui/lib/bridge.ts` is the only frontend caller of `setSize`, and it runs
+/// only from the setup wizard. **Anything that starts resizing the dashboard
+/// window must check `is_fullscreen()` first**, the same way the wizard's
+/// resize command does.
+///
+/// Failures are logged and swallowed: a dashboard that opened windowed is
+/// worse than one that opened full-screen, but it is not a broken dashboard,
+/// and no user action should fail over window geometry.
 ///
 /// # Who calls this
 /// Both dashboard openers, right after `build()`: [`crate::tray`]'s tray-menu
 /// opener and [`crate::commands::system::open_dashboard`].
-pub(crate) fn fill_work_area(win: &tauri::WebviewWindow) {
+pub(crate) fn open_full_screen(win: &tauri::WebviewWindow) {
+    fill_work_area(win);
+    // Requested AFTER the window exists rather than via the builder's
+    // `.fullscreen(true)`, for the same reason `.maximized(true)` is not
+    // trusted above: a builder flag that does nothing fails silently, while an
+    // explicit call has a Result to log. It also avoids asking AppKit to
+    // animate a window into a new Space before that window is on screen.
+    if let Err(e) = win.set_fullscreen(true) {
+        tracing::warn!(error = %e, "dashboard: could not enter full-screen - staying windowed");
+        return;
+    }
+    tracing::info!("dashboard: entered native full-screen");
+}
+
+/// Size a window to fill the screen it opened on, as an ordinary window.
+///
+/// Kept separate from [`open_full_screen`] because it is also the fallback
+/// geometry: see that function for why the frame is set before full-screen is
+/// requested.
+fn fill_work_area(win: &tauri::WebviewWindow) {
     let monitor = match win.current_monitor() {
         Ok(Some(m)) => m,
         Ok(None) => {
