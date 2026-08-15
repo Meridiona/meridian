@@ -95,6 +95,8 @@ meridian/
         install.rs       # install-mode detection + meridian_db_path / .env resolution
         state.rs         # app state and health tracking
         format.rs        # duration formatting helpers (with unit tests)
+        reopen.rs        # re-activation routing + onboarding_complete gate (pure, tested)
+        window_panel.rs  # popover placement + macOS NSPanel behaviour
         poll/            # background poll loop
           mod.rs         # loop + tick cadence + tray-sync (emit/tooltip/menu)
           refresh.rs     # refresh_health/active/today/worklogs
