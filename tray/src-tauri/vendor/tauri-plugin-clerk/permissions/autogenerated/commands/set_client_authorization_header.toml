@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-set-client-authorization-header"
+description = "Enables the set_client_authorization_header command without any pre-configured scope."
+commands.allow = ["set_client_authorization_header"]
+
+[[permission]]
+identifier = "deny-set-client-authorization-header"
+description = "Denies the set_client_authorization_header command without any pre-configured scope."
+commands.deny = ["set_client_authorization_header"]
