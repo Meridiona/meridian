@@ -76,6 +76,18 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
   const notifHidden = isWin && wiz.perms.notifications === 'unavailable'
   const notifCard = PERMISSIONS.find((p) => p.id === 'notifications')!
   const requiredCards = PERMISSIONS.filter((p) => p.id !== 'notifications')
+  // Which card is "up next". Three equally-weighted cards, each with its own
+  // Open Settings button, gave no sense of order - so people opened all three
+  // panes at once, lost track of which they had actually granted, and came
+  // back to a step that looked identical to when they left. One ring at a
+  // time turns it into a sequence.
+  //
+  // The ring only MARKS the next one; every card stays clickable. Gating the
+  // later two behind the earlier ones was the other option and is a trap:
+  // macOS grants routinely need a relaunch before the probe sees them, so a
+  // lagging read would lock the user out of the rest of the step with nothing
+  // to click.
+  const currentId = [...requiredCards, notifCard].find((p) => !permGranted(p, wiz) && !permHidden(p, wiz))?.id ?? null
   return (
     // Sized to its own content (no flex:1 stretch) - this step's cards are
     // short, and forcing them to fill the whole card height (as a prior pass
@@ -97,8 +109,8 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
          separate full-width row below them. */}
       {!isWin && (
         <div className="flex items-stretch" style={{ gap: 12 }}>
-          {requiredCards.map((p) => <PermCard key={p.id} p={p} wiz={wiz} />)}
-          <PermCard p={notifCard} wiz={wiz} />
+          {requiredCards.map((p) => <PermCard key={p.id} p={p} wiz={wiz} current={p.id === currentId} />)}
+          <PermCard p={notifCard} wiz={wiz} current={notifCard.id === currentId} />
         </div>
       )}
       {/* Windows only ever shows Notifications (no TCC analogue for the other
@@ -117,7 +129,7 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
             </div>
           </Row>
         ) : (
-          <PermCard p={notifCard} wiz={wiz} />
+          <PermCard p={notifCard} wiz={wiz} current={notifCard.id === currentId} />
         )
       )}
       <p className="flex items-start" style={{ gap: 7, fontSize: 11, lineHeight: 1.5, color: 'var(--t-muted)', marginTop: 3 }}>
@@ -136,12 +148,30 @@ function PermissionsBody({ wiz }: { wiz: Wiz }) {
 // side (see PermissionsBody) and stretch to fill the step, and a vertical
 // card is what gives the preview room to grow into that height instead of
 // squeezing everything onto one row.
-function PermCard({ p, wiz }: { p: PermissionMeta; wiz: Wiz }) {
+/** Whether `p` has been granted.
+ *
+ *  Extracted so [`PermissionsBody`]'s "which card is next" walk and the card's
+ *  own styling read the same predicate. Two copies of this would drift, and
+ *  the failure is silent and confusing: a ring sitting on an already-green
+ *  card while the genuinely pending one looks finished. */
+function permGranted(p: PermissionMeta, wiz: Wiz): boolean {
+  return p.id === 'notifications' ? wiz.perms.notifications === 'granted' : !!wiz.perms[p.id]
+}
+
+/** Whether `p` renders no card at all - an unbundled run (`tauri dev`) has no
+ *  notification plugin, so there is nothing to grant. Kept next to
+ *  [`permGranted`] because the "next card" walk must skip these: pointing the
+ *  ring at a card that does not exist stalls the sequence on an empty slot. */
+function permHidden(p: PermissionMeta, wiz: Wiz): boolean {
+  return p.id === 'notifications' && wiz.perms.notifications === 'unavailable'
+}
+
+function PermCard({ p, wiz, current }: { p: PermissionMeta; wiz: Wiz; current: boolean }) {
   const notif = p.id === 'notifications'
   // Unbundled runs (`tauri dev`) have no notification plugin at all — nothing
   // to grant, so the card hides rather than dead-ends.
-  if (notif && wiz.perms.notifications === 'unavailable') return null
-  const granted = notif ? wiz.perms.notifications === 'granted' : !!wiz.perms[p.id]
+  if (permHidden(p, wiz)) return null
+  const granted = permGranted(p, wiz)
   const isMac = wiz.platform !== 'windows'
   // The reconstructed macOS pane already carries its own title + description,
   // lifted from the real System Settings copy - repeating our own title/desc
@@ -167,8 +197,12 @@ function PermCard({ p, wiz }: { p: PermissionMeta; wiz: Wiz }) {
       // Granted turns the whole card green - a clear at-a-glance "this one's
       // done", not just a faint accent tint (which used to still read as
       // pending at a glance).
-      border: `0.5px solid ${granted ? 'color-mix(in srgb, var(--color-state-approved) 40%, var(--t-card-border))' : 'var(--t-card-border)'}`,
+      border: `0.5px solid ${granted ? 'color-mix(in srgb, var(--color-state-approved) 40%, var(--t-card-border))' : current ? 'var(--t-accent)' : 'var(--t-card-border)'}`,
       background: granted ? 'color-mix(in srgb, var(--color-state-approved) 9%, var(--t-card))' : 'var(--t-card)',
+      // The ring that says "this one next". A box-shadow, not a thicker
+      // border, so turning it on cannot change the card's box size and shunt
+      // the other two sideways as the sequence advances.
+      boxShadow: current ? '0 0 0 2px color-mix(in srgb, var(--t-accent) 32%, transparent)' : undefined,
     }}>
       {selfDescribing ? (
         <div className="flex justify-end">{badgeEl}</div>
@@ -207,8 +241,12 @@ function PermCard({ p, wiz }: { p: PermissionMeta; wiz: Wiz }) {
             // 'denied' → the OS won't re-prompt, so it opens the Notifications
             // pane directly (grantNotifications skips the pointless re-request
             // when told it's already denied).
-            ? <Btn size="sm" variant="secondary" onClick={() => wiz.grantNotifications(wiz.perms.notifications === 'denied')} style={{ width: '100%' }}>{wiz.perms.notifications === 'denied' ? 'Open Settings' : 'Allow'}</Btn>
-            : <Btn size="sm" variant="secondary" onClick={() => p.id === 'screen' ? wiz.grantScreen() : wiz.openPane(p.pane)} style={{ width: '100%' }}>Open Settings</Btn>}
+            // The current card's action is the solid variant, the rest stay
+            // secondary - so the sequence reads off the buttons themselves and
+            // not just the ring around the card. Still only styling: every
+            // button here is live whether or not it is the current one.
+            ? <Btn size="sm" variant={current ? 'primary' : 'secondary'} onClick={() => wiz.grantNotifications(wiz.perms.notifications === 'denied')} style={{ width: '100%' }}>{wiz.perms.notifications === 'denied' ? 'Open Settings' : 'Allow'}</Btn>
+            : <Btn size="sm" variant={current ? 'primary' : 'secondary'} onClick={() => p.id === 'screen' ? wiz.grantScreen() : wiz.openPane(p.pane)} style={{ width: '100%' }}>Open Settings</Btn>}
         </div>
       )}
     </div>
