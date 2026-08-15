@@ -10,9 +10,14 @@ The GitHub social preview - 1280x640, the size GitHub renders link cards at. Com
 so the asset is versioned, but **the repo file is not what GitHub serves**: it has to be
 uploaded by hand at Settings - Options - Social preview. Re-upload after any change here.
 
-Corners are deliberately flat. The source art had rounded corners over transparency,
-which GitHub composites against its own background - so the card was cropped slightly
-inward and the alpha channel dropped.
+The light treatment - spirograph mark, wordmark, tagline. It is **generated**, not a
+pasted export: `tray/src-tauri/icons/meridiona-mark.png` (1024x1024) is composited onto
+the gradient and the type is set in SF Pro at final size, so everything is rendered at
+1280x640 rather than upscaled from a smaller comp. Regenerate rather than resize if the
+wording or mark changes; upscaling a 629px comp to card size visibly softens the type.
+
+No alpha channel - GitHub composites the card against its own background, so any
+transparency would show through as the viewer's theme colour.
 
 ## What to capture
 
