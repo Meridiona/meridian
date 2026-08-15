@@ -21,7 +21,7 @@ Not a time tracker you fill out. It's a private timeline of your day - browse it
 
 ## Demo
 
-https://github.com/user-attachments/assets/501f41e6-aa89-404b-b430-a0b8b59c198e
+https://github.com/user-attachments/assets/5cc26036-3842-4748-85c8-097a8b71f20d
 
 <!-- SCREENSHOTS: uncomment once docs/images/timeline.png and docs/images/approval.png exist.
      See docs/images/README.md for what to capture. Do not uncomment before the files land -
