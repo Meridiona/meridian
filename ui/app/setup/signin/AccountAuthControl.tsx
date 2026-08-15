@@ -15,9 +15,9 @@
 // had nothing to do with configuration. useClerk()/useSignedInEmail() below
 // read from RequireSignIn's already-live provider instead.
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useClerk } from '@clerk/react'
-import { invoke } from '@/lib/bridge'
+import { useSignInRequired } from '@/lib/signin-required'
 import { Btn, Spinner } from '../atoms'
 import { useSignedInEmail } from './useSignedInEmail'
 import { GateLoading, AccountIdentityRow } from './identity'
@@ -107,16 +107,11 @@ export function AccountAuthControl({ onSignedIn, onSignedOut }: {
   onSignedIn: (email: string) => void
   onSignedOut: () => void
 }) {
-  const [signInRequired, setSignInRequired] = useState<boolean | null>(null)
-
-  // Defaults to REQUIRED on a failed invoke, matching `RequireSignIn`'s own
-  // fail-closed default. The two must agree: if that one gated, a provider is
-  // mounted and `AccountStatus` is safe to render.
-  useEffect(() => {
-    invoke<boolean>('sign_in_required')
-      .then(setSignInRequired)
-      .catch(() => setSignInRequired(true))
-  }, [])
+  // Same hook, so this can never disagree with `RequireSignIn` — including on
+  // the fail-closed default. That agreement is what keeps this safe: if that
+  // gate decided sign-in was required, a ClerkProvider is mounted above and
+  // `AccountStatus` has one to borrow.
+  const signInRequired = useSignInRequired()
 
   if (signInRequired === null) return <GateLoading />
 

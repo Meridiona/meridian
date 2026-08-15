@@ -13,8 +13,9 @@
 // `../signin.tsx` (as `RequireSignIn`) — never imported directly — for the
 // same static-export reason documented there.
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { type ReactNode } from 'react'
 import { invoke } from '@/lib/bridge'
+import { useSignInRequired } from '@/lib/signin-required'
 import { useSignedInEmail } from './useSignedInEmail'
 import { ClerkGate } from './ClerkGate'
 import { EmailCodeForm } from './EmailCodeForm'
@@ -75,17 +76,11 @@ function Gate({ children }: { children: ReactNode }) {
  *  so it degrades to a notice rather than hanging — the app only ever runs
  *  inside Tauri in practice. */
 export function RequireSignIn({ children }: { children: ReactNode }) {
-  const [signInRequired, setSignInRequired] = useState<boolean | null>(null)
+  const signInRequired = useSignInRequired()
 
-  // Fail CLOSED on a rejection: a command that can't be reached must land on the
-  // gate, never past it. Without the catch the promise also never settles, which
-  // left the whole dashboard on a blank surface rather than any screen at all.
-  useEffect(() => {
-    invoke<boolean>('sign_in_required')
-      .then(setSignInRequired)
-      .catch(() => setSignInRequired(true))
-  }, [])
-
+  // `null` is "not known yet", never "no sign-in needed" — flashing the
+  // dashboard open for a frame before the answer lands would show signed-out
+  // content to a user who has to sign in.
   if (signInRequired === null) return <FullScreenCenter>{null}</FullScreenCenter>
   if (!signInRequired) return <>{children}</>
 
