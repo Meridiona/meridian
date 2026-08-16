@@ -16,6 +16,7 @@ import { useState } from 'react'
 import { Droppable } from '@hello-pangea/dnd'
 import { DraggableCard } from '@/components/plan/DraggableCard'
 import { TaskComposer } from '@/components/plan/TaskComposer'
+import { isResumePending } from '@/components/plan/useTaskComposer'
 import type { CardTask } from '@/components/plan/TaskCard'
 import { FOCUS } from '@/components/plan/planStyles'
 import { MAX_PLAN_TASKS } from '@/lib/api-types'
@@ -49,7 +50,18 @@ export function PlanBoardColumn({
   /** A task was created and is already in the plan - refresh the board. */
   onCreated: () => void
 }) {
-  const [composing, setComposing] = useState(false)
+  // OPEN ON A RESUME, not just on a click. Pressing "Draft with AI" with no provider
+  // connected sends the user to Settings, which takes the shell's single modal slot and
+  // unmounts this column - taking `composing` with it. The note itself survived (the
+  // composer's store is a module store for exactly this), but the user was handed back the
+  // BOARD LIST and had to press ＋ New task again to find it, which reads as having lost
+  // the work whether or not it did. During the walkthrough it also stranded the tour: the
+  // next beat points at fields that only exist inside the composer.
+  //
+  // `isResumePending` PEEKS. The flag is `TaskComposer`'s to spend - its mount effect reads
+  // it to know it must keep the note instead of resetting - so consuming it here would
+  // reopen the composer onto a box this call had just emptied.
+  const [composing, setComposing] = useState(isResumePending)
 
   return (
     <div className="rounded-xl flex flex-col min-h-0 bg-card p-4" style={{ border: '1px solid var(--t-card-border)' }}>
