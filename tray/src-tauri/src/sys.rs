@@ -529,15 +529,26 @@ pub fn register_notification_categories(app: &tauri::AppHandle) {
 /// occupies. Setting position and size to it cannot be skipped by a state
 /// guard.
 ///
-/// Then it enters **native macOS full-screen** — own Space, auto-hiding menu
-/// bar and Dock — which is the requested behaviour for the dashboard.
+/// **On macOS only**, it then enters native full-screen — own Space, auto-hiding
+/// menu bar and Dock — which is the requested behaviour for the dashboard.
 ///
 /// The work-area fill is not redundant once full-screen is requested: macOS
 /// restores the PRE-full-screen frame when the user leaves full-screen, so
 /// without it the green button would drop them back to a 1100x760 window. The
 /// fill is what makes that exit land on a screen-filling window instead.
 ///
-/// # The hazard this mode carries
+/// # Windows stops at the fill, deliberately
+///
+/// The same `set_fullscreen(true)` there means `Fullscreen::Borderless`, which
+/// strips the title bar (and with it minimize/maximize/close), sizes to the full
+/// monitor rect rather than the work area so the taskbar is covered, and marks
+/// the window full-screen to the shell. macOS supplies an exit for that state;
+/// Windows does not, and nothing here binds F11 or Escape — so it shipped as a
+/// dashboard the user could only leave with Alt+F4. The fill alone gives Windows
+/// the intended result, because `work_area()` already excludes the taskbar.
+/// Pinned by `reopen::reopen_tests::full_screen_is_requested_on_macos_only`.
+///
+/// # The hazard this mode carries (macOS)
 ///
 /// A window in native full-screen carries the full-screen style mask, and
 /// tao's `set_inner_size` calls `NSWindow::setContentSize:` unconditionally
@@ -559,17 +570,38 @@ pub fn register_notification_categories(app: &tauri::AppHandle) {
 /// Both dashboard openers, right after `build()`: [`crate::tray`]'s tray-menu
 /// opener and [`crate::commands::system::open_dashboard`].
 pub(crate) fn open_full_screen(win: &tauri::WebviewWindow) {
+    // Every platform gets the geometry. On Windows this is the WHOLE answer -
+    // `work_area()` already excludes the taskbar, so the window fills the usable
+    // screen while keeping its title bar.
     fill_work_area(win);
+
+    // macOS ONLY, and the gate is the point.
+    //
+    // Here, full-screen is a first-class window mode that comes with its own way
+    // out: the menu bar drops down on hover, the green button is in it,
+    // `Ctrl+Cmd+F` works. On Windows the identical call means
+    // `Fullscreen::Borderless`, and tao (`platform_impl/windows/window.rs`) then
+    // does three things that together have no counterpart here — it sets
+    // `MARKER_BORDERLESS_FULLSCREEN`, which strips the title bar and with it
+    // minimize/maximize/close; it sizes to `monitor.size()`, the full monitor
+    // rect rather than the work area, so the taskbar is covered; and it calls
+    // `taskbar_mark_fullscreen(hwnd, true)` to ask the shell to yield. Nothing
+    // in this app binds F11 or Escape on the dashboard window, so a Windows user
+    // was left in a screen they could only leave with Alt+F4.
+    //
     // Requested AFTER the window exists rather than via the builder's
     // `.fullscreen(true)`, for the same reason `.maximized(true)` is not
     // trusted above: a builder flag that does nothing fails silently, while an
     // explicit call has a Result to log. It also avoids asking AppKit to
     // animate a window into a new Space before that window is on screen.
-    if let Err(e) = win.set_fullscreen(true) {
-        tracing::warn!(error = %e, "dashboard: could not enter full-screen - staying windowed");
-        return;
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(e) = win.set_fullscreen(true) {
+            tracing::warn!(error = %e, "dashboard: could not enter full-screen - staying windowed");
+            return;
+        }
+        tracing::info!("dashboard: entered native full-screen");
     }
-    tracing::info!("dashboard: entered native full-screen");
 }
 
 /// Size a window to fill the screen it opened on, as an ordinary window.
