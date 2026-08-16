@@ -47,9 +47,9 @@ Meridian writes your worklog update and gets it ready to post. You just review i
   <img src="docs/images/worklog-draft.gif" alt="Meridian drafting a worklog update and ticket, waiting for approval before posting to Jira" width="560" />
 </p>
 
-## What Gets in the Way
+## What You Get With Meridian
 
-| The moment | What Meridian does about it |
+| The moment | What you get instead |
 |---|---|
 | It's 5pm and you genuinely can't remember what you worked on today. | Meridian already knows. Every session, timestamped and named. |
 | Standup's in five minutes and you're scrolling through commits trying to piece together yesterday. | Your standup was already written overnight, ready to paste. |
