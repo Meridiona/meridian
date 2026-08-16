@@ -74,6 +74,25 @@ export interface Stage {
    *  reacting to. Same fallback contract as `waitForClick`: resolves `false`
    *  rather than stranding anyone. */
   waitForValue(selector: string, opts?: { fallbackMs?: number; settled?: boolean }): Promise<boolean>
+  /** TYPE `text` into the input/textarea at `selector`, a character at a time,
+   *  as though the tour were at the keyboard. Resolves `false` if the field is
+   *  not on screen - same contract as every other primitive that targets one.
+   *
+   *  For the beats where waiting on the user costs more than it teaches. The
+   *  planner's first beat used to hand over a blank box and wait: a first-time
+   *  user who has not yet seen the product do anything is asked to invent an
+   *  example of a thing they have not been shown, in a field whose format they
+   *  are guessing at, before the tour will move. Typing it instead spends four
+   *  seconds and leaves them with a filled form and a button to press.
+   *
+   *  IT DRIVES THE REAL FIELD, not the store behind it. React owns `value`, so a
+   *  plain assignment is discarded on the next render and no `onChange` fires -
+   *  hence the prototype's native setter plus a bubbling `input` event, which is
+   *  the pair React's synthetic layer actually reads. Going around it to the
+   *  composer's own `setNote` would be shorter and would quietly stop being a
+   *  demonstration: the same reasoning as `demoDrag`, which presses the product's
+   *  real "+ Add" rather than reaching into the plan. */
+  type(selector: string, text: string): Promise<boolean>
   /** Synchronous read of the input/textarea at `selector`'s current value, or
    *  `''` if it is not on screen.
    *

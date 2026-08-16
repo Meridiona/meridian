@@ -91,6 +91,37 @@ export const INTRO_LINES = [
  *  addresses it structurally. */
 const BOARD_CARD = '[data-tour="plan-board"] [data-plan-card]'
 
+/** The first task the tour writes into the planner on the user's behalf.
+ *
+ *  DELIBERATELY THE THING THEY ARE DOING. This lands in their REAL plan - part
+ *  one runs against their own day, not the example - so it cannot be a fiction
+ *  like "fix the flaky login test" without leaving a made-up task on a real
+ *  board. Setting Meridian up is what this person is genuinely spending the
+ *  next few minutes on, which makes it the one sentence that is both a good
+ *  demonstration and true.
+ *
+ *  Written the way the field asks to be written - lowercase, unpunctuated, the
+ *  shape of something said rather than filed - because the beat after it is the
+ *  model turning exactly that into a titled task. A tidy sentence here would
+ *  make the draft look like formatting.
+ *
+ *  AND IT IS LOAD-BEARING ON `MIN_TITLE_WORDS`. Beat 2c-2 exists because a
+ *  drafted title can land under the four-word floor `canCreate` enforces, and
+ *  the example recorded there is an onboarding note ("Testing onboarding" →
+ *  "Test onboarding") - the same subject as this one. While every user wrote
+ *  their own note that was a per-user lottery; with one sentence feeding every
+ *  first run, whatever the model does with THIS input it does for everyone. A
+ *  terse note would put the whole fleet on the "this title's a little thin"
+ *  branch, which asks for exactly the typing this beat removed, at a worse
+ *  moment.
+ *
+ *  So it carries two verbs and two objects on purpose - enough for a faithful
+ *  title to clear the floor without padding. Shortening it is not a copy edit;
+ *  check the drafted title still clears four words first. The branch degrades
+ *  gracefully either way (it names what is missing and waits on the real gate),
+ *  so this is a quality floor, not a correctness one. */
+const FIRST_TASK_NOTE = 'setting up meridian and going through onboarding'
+
 /**
  * Wait for the user's tickets to land in the planner, narrating the wait.
  *
@@ -435,13 +466,34 @@ export async function runScript(s: Stage): Promise<void> {
     // teaches nothing and delays the one that does. Every beat in here points at
     // exactly one thing to type or press, and says only what that thing is for.
     //
-    // 2a. The note. `waitForValue`, not `waitForClick`: nothing here is
-    // clickable until they have typed something, so a click wait would sit
-    // silently through the one part of the tour they are meant to do.
-    s.say("Write your first task here - however you'd say it out loud.")
+    // 2a. The note. THE TOUR TYPES IT, and this is a reversal worth recording.
+    //
+    // It used to ring the empty box and wait (`waitForValue`, up to three
+    // minutes) for the user to write their own first task. The reasoning was
+    // that a plan made of their real work is worth more than a demo of one, and
+    // that is true - but it asked for the wrong thing at the wrong moment.
+    // Nothing has happened yet: the user has not seen Meridian draft anything,
+    // has no idea what "however you'd say it out loud" buys them over a title,
+    // and is being asked to invent an example in a field whose format they are
+    // guessing at, before the tour will move at all. The commonest outcomes are
+    // a placeholder-shaped non-answer and a three-minute stall.
+    //
+    // So the tour writes one, and it writes the task the user is ACTUALLY doing:
+    // they are setting Meridian up, right now, and that is a real first task
+    // rather than a fiction. The beats that follow are unchanged and the user
+    // still presses every button - what changes is that they now watch the
+    // product turn one scruffy line into a titled task, which is the thing this
+    // stretch exists to show and which no amount of waiting was going to teach.
+    //
+    // The field is theirs afterwards: it is a textarea holding text, and every
+    // later beat edits rather than dictates.
+    s.say('Your first task goes here - one line, however you would say it out loud.')
     s.spotlight('[data-tour="task-note"]')
     await s.point('[data-tour="task-note"]')
-    const typed = await s.waitForValue('[data-tour="task-note"]', { fallbackMs: 180000 })
+    const typed = await s.type('[data-tour="task-note"]', FIRST_TASK_NOTE)
+    // A moment to read it back before the next ring moves. Typing that lands and
+    // is immediately covered by the next instruction reads as a flicker.
+    if (typed) await s.pause(900)
 
     if (typed) {
       // 2b. The AI draft — the first time they see the model do anything.
