@@ -57,17 +57,6 @@ Meridian writes your worklog update and gets it ready to post. You just review i
 | It's worklog day and you're estimating how many hours went where. | Every hour was already logged, from what you actually did, not a guess. |
 | You finish the work, then have to go type it all into Jira by hand. | The ticket's already drafted. You just approve it. |
 
-## What Meridian Does
-
-| Feature | How it works | Why it's useful |
-|---|---|---|
-| Automatic timeline | Turns raw screen activity into named, timestamped sessions, no timer, no manual notes. | You get an accurate record of your day for free. |
-| Daily summary | Every evening, Meridian writes what you finished, what pulled you off plan, and a standup ready to paste. | You stop reconstructing yesterday from memory every morning. |
-| Ticket and worklog drafts | Drafts the update and the ticket from what you actually did, then waits for you to approve, edit, or match it to an existing ticket. | Nothing posts to Jira, Linear, or GitHub without you seeing it first. |
-| Multi provider sync | Works with Jira, Linear, and GitHub Issues, whichever your team already uses. | No new tool for your team to adopt. |
-| Coding agent aware | Picks up sessions from Claude Code, Codex, Copilot, and Cursor, folded into the same daily picture as everything else you did. | Your AI assisted work gets tracked as work, not lost between tools. |
-| Local first | Everything lives in one encrypted database on your machine. | You control it, and it keeps working offline. |
-
 ## Privacy
 
 Your activity stays in one encrypted database on your machine. Analysis runs through whichever AI provider you connect, and only what a summary needs is sent to it. Diagnostics are opt-out and stripped of anything identifying before they ever leave your device.
