@@ -106,7 +106,16 @@ export default function PlanView() {
     // A failed read = real backend failure (not an empty day) → surface, don't
     // render empty. `refreshPlan` publishes to the store, so `data` arrives via
     // usePlan rather than local state.
-    return refreshPlan(todayKey).then(d => {
+    //
+    // `initial` reads FORCE past the store's drag hold-off. This guard above
+    // only covers THIS component's own drag ref; the hold-off is module-global
+    // and can be held by anything (another planner instance, a drag whose
+    // `onDragEnd` has not run yet). A paused store answered `null`, which is
+    // the same value a genuinely failed read returns - so the Refresh chip drew
+    // "Sync failed" over a sync that succeeded, and the first load raised
+    // `loadFailed` on a backend that was fine. Both are "nothing was attempted"
+    // reported as "something broke".
+    return refreshPlan(todayKey, initial).then(d => {
       if (!initial) return d != null
       if (d) { setLoadFailed(false); derive(d); return true }
       setLoadFailed(true)

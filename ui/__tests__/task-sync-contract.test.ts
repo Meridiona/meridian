@@ -66,3 +66,45 @@ describe('PlanView reads the outcome instead of catching', () => {
     expect(PLAN_VIEW).toContain("'Sync failed'")
   })
 })
+
+// A SUCCESSFUL sync must never draw "Sync failed".
+//
+// Observed in a real run: the planner showed `⚠ Sync failed` while the daemon's
+// own logs recorded the Jira fetch completing, and re-running `meridian
+// tasks-sync` by hand synced 74 issues in 4s. Nothing had failed.
+//
+// The path: `handleSync` is `syncTasks().then(synced => load(true).then(loaded =>
+// ...))` and raises the chip when EITHER is false. `load(true)` calls
+// `refreshPlan`, which answers `null` when the store's drag hold-off is on - the
+// same `null` a genuinely failed read returns. So a paused store made a
+// successful sync report as a failure.
+//
+// The hold-off is module-global (`pausePlanRefresh`), so PlanView's own
+// `draggingRef` guard does not cover it: another planner instance, or a drag
+// whose `onDragEnd` has not run yet, holds the same flag. `initial` reads are
+// user-initiated and now force past it.
+describe('a paused store is not a sync failure', () => {
+  const PLAN_STORE = read('components/plan/planStore.ts')
+
+  test('refreshPlan can be forced past the drag hold-off', () => {
+    expect(PLAN_STORE).toContain(
+      'export function refreshPlan(date: string, force = false): Promise<PlanResponse | null>',
+    )
+    expect(PLAN_STORE).toContain('if (paused && !force) return Promise.resolve(null)')
+  })
+
+  test('the user-initiated read forces, so a held flag cannot read as a failure', () => {
+    // `initial` is exactly the user-initiated case: the first load and every
+    // `handleSync` call pass it, while the 30s background poll does not.
+    expect(PLAN_VIEW).toContain('return refreshPlan(todayKey, initial).then(d => {')
+    // The chip's own call must stay on that path.
+    expect(PLAN_VIEW).toContain('load(true).then(loaded =>')
+  })
+
+  test('the background poll still yields to a drag', () => {
+    // The hold-off must survive this fix - it is what stops a poll reshuffling
+    // the board mid-drag, which is a real bug in the other direction.
+    expect(PLAN_VIEW).toContain('const id = setInterval(() => load(false), 30_000)')
+    expect(PLAN_STORE).toContain('export function pausePlanRefresh(next: boolean)')
+  })
+})

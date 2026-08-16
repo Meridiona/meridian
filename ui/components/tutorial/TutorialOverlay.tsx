@@ -330,16 +330,44 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
           waiting for a click on a target that is no longer on screen, and the
           user is left reading an instruction about a window they cannot see.
 
-          Gated on `awaiting` on purpose. A fence that stands during narration
-          beats would make the app feel frozen for reasons the user cannot see;
-          one that stands only while the tour is genuinely blocked on them is
-          the difference between guiding and trapping.
-
           Rendered BEFORE the caption, the choice buttons and Skip, so those
           later siblings paint on top and keep their own `pointerEvents:'auto'`.
           The way out is always one click away. */}
-      {ring && spotlightDim && <Cutout rect={ring} dim />}
-      {ring && !spotlightDim && awaiting && <Cutout rect={ring} dim={false} />}
+      {/* THE FENCE STANDS FOR THE WHOLE RUN, not only while `awaiting`.
+          `awaiting` is true ONLY inside `waitForClick` / `waitForValue` /
+          `waitForMinWords` (see `useTutorial`), so it is FALSE during every
+          narration beat - `say`, `sleep`, and the pauses between steps, which
+          is most of the walkthrough's wall-clock time. During those the app
+          behind the tour took clicks normally.
+
+          That is not a cosmetic gap. The narration beats are exactly the ones
+          that run while a modal the tour opened is on screen: the integrations
+          step narrates over a live Jira OAuth panel, and the planner step
+          narrates over the composer. A stray click there hits Cancel, closes
+          the modal, or starts an OAuth flow the tour is not expecting, and the
+          walkthrough carries on narrating a screen that is no longer in the
+          state it describes. Reported from a real run twice.
+
+          The earlier reasoning was that a fence during narration "would make
+          the app feel frozen for reasons the user cannot see". The dim scrim
+          IS the visible reason, and the tour's own controls stay live: Skip,
+          the choice buttons and the caption are later siblings with their own
+          `pointerEvents:'auto'`, so the way out never depends on this. A
+          walkthrough is a modal experience; the honest thing is to look like
+          one. `awaiting` still drives the ring's pulse, which is what actually
+          signals "your turn" - that is the cue the user reads, not whether a
+          background panel happens to accept clicks.
+
+          `spotlightDim` still chooses whether the fence is BLURRED or clear.
+          The dimmed beats keep their blur; every other beat now gets the same
+          panes with nothing drawn on them. */}
+      {ring && <Cutout rect={ring} dim={spotlightDim} />}
+      {/* No ring on this beat (pure narration, or a target that never
+          rendered): fence the whole viewport instead. There is no target to
+          leave live, so there is nothing to cut a hole for - and this is the
+          case the `ring &&` guard above used to drop on the floor, leaving the
+          entire app clickable behind a caption. */}
+      {!ring && <FullFence />}
 
       {/* Spotlight — a ring around the real control. On its own (the default)
           it adds no scrim at all: the target stays fully interactive because
@@ -766,6 +794,27 @@ function Cutout({ rect, dim }: { rect: DOMRect; dim: boolean }) {
       )}
     </>
   )
+}
+
+/** The fence for a beat with no ring at all - a pure narration step, or one
+ *  whose target never rendered.
+ *
+ *  [`Cutout`] fences everything AROUND a target, so with no target there is
+ *  nothing for it to build panes from and it renders nothing. That left the
+ *  whole app clickable behind the caption on exactly the beats where the tour
+ *  is talking rather than pointing - which, over a run, is most of them.
+ *
+ *  One inert-looking sheet rather than four panes: with no hole to leave, the
+ *  geometry collapses to the viewport. It draws NOTHING (no dim, no blur) -
+ *  the narration beats already have their own scrim where they want one
+ *  (`caption && centered`), and stacking a second one would darken the app
+ *  twice. Its only job is to take the click.
+ *
+ *  Rendered at the same point in the sibling order as [`Cutout`], so the
+ *  caption, the choice buttons and Skip still paint on top with their own
+ *  `pointerEvents:'auto'`. */
+function FullFence() {
+  return <div className="absolute inset-0" style={{ pointerEvents: 'auto' }} />
 }
 
 /** One answer button. `primary` is the styled-forward one — not a
