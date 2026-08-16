@@ -41,8 +41,10 @@ UNIQUE      native_at    + response_   consumed_at
 | Response consumer (acts on answers) | `src/notification_responses.rs` |
 | Tray delivery + retraction facade | `tray/src-tauri/src/sys.rs` |
 | Tray drain + expiry sweep (poll tick, ~30 s) | `tray/src-tauri/src/poll/notifications.rs` |
-| Answer write command (`record_notification_response`) | `tray/src-tauri/src/commands/notifications.rs` |
-| Toast action listener (plugin event → command) | `tray/src/app.js` (`armNotificationActions`) |
+| Windows interactive delivery (WinRT: buttons, reply, retraction) | `tray/src-tauri/src/win_toast.rs` |
+| Windows toast XML (escaping, button cap, ordering — tested everywhere) | `tray/src-tauri/src/toast_actions.rs` |
+| Answer write (`record_notification_response` → `apply_response`) | `tray/src-tauri/src/commands/notifications.rs` |
+| Toast action listener, **macOS only** (plugin event → command) | `tray/src/app.js` (`armNotificationActions`) |
 | Schema | migrations `042` (outbox) + `057` (actions/response columns) |
 
 ## Add a plain notification
@@ -156,8 +158,8 @@ macOS has **no per-notification duration API**. What we have:
    `cfg(target_os = "windows")` block: the plugin's backend exists only under
    `cfg(all(desktop, feature = "notify-rust"))` or
    `cfg(all(target_os = "macos", not(feature = "notify-rust")))`, so a Windows
-   build without it matches neither arm and has no backend at all. See #7 for
-   what that costs.
+   build without it matches neither arm and has no backend at all. What that
+   costs, and why the outbox path no longer relies on it, is #7.
 2. The Swift layer needs `-Wl,-rpath,/usr/lib/swift` (tray `build.rs`) or the
    packaged app dies at launch on `libswift_Concurrency.dylib`.
 3. **Extras don't round-trip**: the toast's notification identifier (= outbox
@@ -166,27 +168,52 @@ macOS has **no per-notification duration API**. What we have:
 4. The plugin's init **hard-fails outside a `.app` bundle** — it is registered
    only when bundled; `tauri dev` runs have no toasts at all. Interactive
    behaviour is testable only in packaged builds.
-5. Action events only fire for toasts shown by the **current tray process**
-   (in-memory map) — an answer after a tray restart is dropped; expiry cleans
-   those up.
+5. Action events only fire for toasts shown by the **current tray process** —
+   an in-memory map on macOS, per-process WinRT handlers on Windows — so an
+   answer after a tray restart is dropped on both; expiry cleans those up.
+   (Surviving a restart on Windows would need a COM activator registered
+   against a CLSID, which is exactly the machinery this constraint lets us
+   skip.)
 6. Banners collapse buttons behind a hover "Options" affordance; that's macOS.
-7. **Windows gets plain toasts only — title and body, no buttons, no inline
-   reply, no action events.** That follows from #1: `notify-rust` has no
-   action-button API, which is the whole reason macOS runs the Swift
-   `UNUserNotificationCenter` layer instead.
+7. **Windows outbox toasts do NOT go through the plugin** — they are built and
+   shown against `Windows.UI.Notifications` directly, in
+   `tray/src-tauri/src/win_toast.rs`. This is the fix for what #1 costs, and
+   the reason for it is that `notify-rust` has no action API at all: both
+   `set_click_listener_active` and `remove_active` return a hard
+   `Err("… not supported with notify-rust")`.
 
-   The practical consequence: an **interactive** notification still
-   *delivers* on Windows, but the user has no way to answer it, so its outbox
-   row is only ever resolved by expiry. Producers need no change — policy
-   lives at drain time — but do not design a flow whose only path forward is a
-   toast button and assume every platform can take it.
+   Before that, Windows *delivered* interactive notifications the user could
+   not answer (their rows resolved only by expiry) and could not retract
+   (every expiry logged `toast retraction failed` and left the toast in Action
+   Center with live buttons). Both are closed: buttons, inline reply, taps,
+   dismissals and retraction all work, and answers land on the outbox row
+   through the same `commands::notifications::apply_response` the macOS path
+   uses, so the two platforms write identically.
 
-   Closing this means implementing Windows toasts against
-   `windows-rs`' `Windows.UI.Notifications` (toast XML *does* support actions),
-   behind the existing `notify`/`notify_outbox`/`retract_toast`/
-   `register_notification_categories` facade in `tray/src-tauri/src/sys.rs`.
-   That facade is already the abstraction boundary — no caller in `poll/` or
-   `commands/` would change.
+   Three things to know before touching it:
+
+   - **Plain `sys::notify` toasts still use the plugin.** Only the outbox path
+     moved. Windows therefore runs two toast stacks under the same AUMID (the
+     Tauri bundle identifier), which is why the permission read governs both.
+   - **The category registry is macOS-only.** A Windows toast carries its
+     buttons inline in its own XML, so `register_notification_categories` is a
+     no-op there and `win_toast` reads the same descriptors at delivery time.
+     (Calling the plugin there used to log a `notification category
+     registration failed` ERROR on every launch.)
+   - **Everything runs on the main thread.** WinRT needs an initialised COM
+     apartment and an STA message pump to deliver callbacks; the poll-loop
+     tokio workers have neither, so delivery *and* retraction hop via
+     `run_on_main_thread`.
+
+   Verification is awkward and worth knowing: the WinRT half cannot be
+   compiled from macOS (`cargo check --target x86_64-pc-windows-msvc` on the
+   tray dies in `aws-lc-sys`, whose build needs `windows.h`). So everything
+   with a possible logic bug — escaping, the 5-button cap, `<input>`-before-
+   `<action>` ordering, `hint-inputId` wiring — lives in
+   `tray/src-tauri/src/toast_actions.rs`, which is compiled on every platform
+   and unit-tested by `cargo test -p meridian-tray`. The WinRT call sequence
+   itself is type-checked by mirroring it into a scratch crate that depends
+   only on `windows` and checking *that* for the msvc target.
 8. `is_bundled()` gates plugin registration and means "packaged install, not a
    dev build". On macOS that is a literal `.app` layout check (the Swift layer
    genuinely requires a bundle). Windows has no bundle concept, so it detects

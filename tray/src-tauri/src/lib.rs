@@ -52,9 +52,15 @@ mod reopen;
 mod repair_boot;
 mod state;
 mod sys;
+// Toast-XML construction for the Windows interactive path. Compiled on every
+// platform on purpose so its escaping/ordering/cap logic is unit-tested from a
+// macOS dev machine; only `win_toast`'s WinRT calls are Windows-gated.
+mod toast_actions;
 mod tray;
 mod tray_icon;
 mod update;
+#[cfg(target_os = "windows")]
+mod win_toast;
 mod window_panel;
 
 // Gated to match the ONLY thing that uses these — the `RunEvent::Reopen` arm at
