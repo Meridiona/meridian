@@ -174,6 +174,45 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
   // synchronously, before React has re-rendered.
   const composing = useRef(false)
 
+  // Re-read which rows still have a worklog waiting. Cheap (one local DB read, no
+  // model call), so it is worth doing on every return from the task view rather than
+  // trying to guess from the outcome which rows moved.
+  //
+  // THIS USED TO HAPPEN ONCE. The map was read inside the day-change effect and
+  // nowhere else, but every path that changes a draft's state - approve, post,
+  // dismiss, retarget - is in `SummaryTaskView`, which opens over this screen and
+  // returns to it. So the user posted an update, came back, and the row they had just
+  // filed still read DRAFT READY TO POST in the loud treatment reserved for work that
+  // needs them. The write was fine; the screen never asked again.
+  //
+  // Guarded on `dayRef` for the same reason the compose paths are: the user can page
+  // days while this is in flight, and one day's badges under another day's rows is a
+  // worse answer than the stale ones.
+  //
+  // And guarded on a request number, which `dayRef` does NOT cover: two refreshes for
+  // the SAME day can be in flight at once (close a task, open another, act on it,
+  // close it - all faster than one DB read resolving), and nothing makes them resolve
+  // in the order they were sent. The older response landing last would restore exactly
+  // the badges the newer one had just corrected, which is the bug this file is fixing,
+  // reappearing through a different door.
+  const draftRequest = useRef(0)
+  const refreshDrafts = useCallback(async () => {
+    const req = ++draftRequest.current
+    const rows = await load<DayDraftState[]>(API, 'get_day_draft_states', { day }).catch(() => null)
+    if (dayRef.current !== day || req !== draftRequest.current) return
+    // A failed read leaves the previous map alone rather than clearing every badge:
+    // on a refresh we already have an answer, and last known beats none.
+    if (rows) setDrafts(new Map(rows.map((r) => [r.task_id, r])))
+  }, [day])
+
+  // The one way out of the task view, because there are two ways INTO leaving it -
+  // the Back button and Escape - and only routing both through here keeps the
+  // keyboard path from being exactly as stale as the bug above.
+  const closeTask = useCallback(() => {
+    setSelected(null)
+    void refreshDrafts()
+  }, [refreshDrafts])
+
   // Escape closes, as it does on every other overlay here (ModalShell's own
   // convention). When the nested ticket-detail dialog is open, Escape backs out of
   // THAT first (it has no Escape handling of its own) rather than closing the whole
@@ -181,12 +220,12 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== 'Escape') return
-      if (selected) { setSelected(null); return }
+      if (selected) { closeTask(); return }
       onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, selected])
+  }, [onClose, selected, closeTask])
 
   // Recompose the prose only (Regenerate on an existing summary, and the quiet
   // staleness refresh). The deterministic ledger binds to whatever worklogs are
@@ -255,6 +294,12 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
       // fetched alongside the rest rather than after, so the badges are on the rows in
       // the first paint - arriving late would move the list under someone reading it.
       // Failure is not fatal: no map means no badges, and the rows are still correct.
+      //
+      // Deliberately not `refreshDrafts()`, which is the same read with the opposite
+      // failure rule: this is the FIRST answer for a day, so a failure must leave the
+      // rows badgeless rather than showing the previous day's states, and it has to
+      // sit in this batch to land with everything else. The refresh already has an
+      // answer on screen and keeps it. One read, two honest behaviours.
       load<DayDraftState[]>(API, 'get_day_draft_states', { day }),
     ]).then(([s, d, t, w]) => {
       if (cancelled) return
@@ -395,7 +440,7 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
             {selected ? (
               <SummaryTaskView
                 detail={selected}
-                onBack={() => setSelected(null)}
+                onBack={closeTask}
                 onOpenSettings={onOpenSettings}
                 onOpenTask={onOpenTask}
               />
