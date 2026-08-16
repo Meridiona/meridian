@@ -43,6 +43,14 @@ native resolution. The file is deliberately kept at full quality rather than rec
 so it's a heavier download than the repo's other images - don't shrink it without checking
 first.
 
+## `worklog-draft.gif` (already here)
+
+The clip under "Drafts, Never Surprises" - the worklog draft modal, showing a generated
+ticket plus its description and the Create & Post control, 884x956, 663 KB. Displayed at
+`width="560"`, narrower than the other media in this README: the source is portrait
+(near-square, taller than wide), not landscape like the rest, so matching the usual
+`width="900"` would make it dominate the page vertically.
+
 ## `daily-summary.png` (already here)
 
 The screenshot under "Your Day, Summarised" - the end-of-day summary modal, showing

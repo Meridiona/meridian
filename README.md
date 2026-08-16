@@ -37,3 +37,11 @@ At the end of the day, Meridian tells you what you actually got done, what pulle
 <p align="center">
   <img src="docs/images/daily-summary.png" alt="Meridian's end-of-day summary, with completed tasks, an unexpected fix, and a ready-to-paste standup" width="900" />
 </p>
+
+## Drafts, Never Surprises
+
+Meridian writes the ticket update in your own words, from what you actually did, then waits. Rewrite it, match it to an existing ticket, or post it as is, nothing goes to Jira until you hit the button.
+
+<p align="center">
+  <img src="docs/images/worklog-draft.gif" alt="Meridian drafting a worklog update and ticket, waiting for approval before posting to Jira" width="560" />
+</p>
