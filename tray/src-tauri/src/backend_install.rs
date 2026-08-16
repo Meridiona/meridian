@@ -743,7 +743,7 @@ pub(crate) async fn stop_running_daemon_before_stage(daemon_bin: &Path) -> Resul
         .output()
         .await;
 
-    kill_daemon_pids(daemon_bin).await;
+    kill_pids(&matching_daemon_pids(daemon_bin).await, daemon_bin).await;
 
     // Poll until the staged daemon's own processes are gone (the file handle
     // lingers briefly after the kill), then require an empty set — a still-alive
@@ -790,7 +790,15 @@ pub(crate) async fn stop_running_daemon_before_stage(daemon_bin: &Path) -> Resul
                     // daemon by hand. Re-killing a pid that is already dying is
                     // harmless (`taskkill` just reports it gone), and the loop
                     // still terminates on the same attempt budget.
-                    kill_daemon_pids(daemon_bin).await;
+                    //
+                    // Kills the pids THIS probe just enumerated rather than
+                    // re-querying: `matching_daemon_pids` spawns a whole
+                    // `powershell -Command Get-CimInstance`, which costs far
+                    // more than the `taskkill`s it feeds. Re-querying here
+                    // would pay that twice on every one of the up-to-40
+                    // attempts, stretching the stop on exactly the slow,
+                    // loaded machines where this path is reached at all.
+                    kill_pids(&pids, daemon_bin).await;
                 }
                 pids
             }
@@ -813,7 +821,14 @@ pub(crate) async fn stop_running_daemon_before_stage(daemon_bin: &Path) -> Resul
     ))
 }
 
-/// `taskkill /F` every process currently running the staged daemon binary.
+/// `taskkill /F` each of `pids`. `daemon_bin` is only for the log lines.
+///
+/// Takes an already-enumerated pid list rather than looking one up itself:
+/// both callers have just run [`matching_daemon_pids`], and that spawns an
+/// entire `powershell -Command Get-CimInstance`, which dwarfs the `taskkill`s
+/// it feeds. Re-querying inside here would pay it twice per poll attempt, up
+/// to 40 times, on precisely the loaded machines slow enough to reach the
+/// later attempts at all.
 ///
 /// Killing by PID — not by `/IM` image name — is what keeps an unrelated
 /// `meridian.exe` (an interactive CLI run, a different tool sharing the image
@@ -824,8 +839,8 @@ pub(crate) async fn stop_running_daemon_before_stage(daemon_bin: &Path) -> Resul
 /// Called both before the wait and on every probe inside it — see the re-kill
 /// note in [`stop_running_daemon_before_stage`].
 #[cfg(target_os = "windows")]
-async fn kill_daemon_pids(daemon_bin: &Path) {
-    for pid in matching_daemon_pids(daemon_bin).await {
+async fn kill_pids(pids: &[u32], daemon_bin: &Path) {
+    for &pid in pids {
         let out = tokio::process::Command::new("taskkill")
             .args(["/F", "/PID", &pid.to_string()])
             .no_window()

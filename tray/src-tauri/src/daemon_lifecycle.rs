@@ -642,7 +642,6 @@ mod tests {
         assert!(bails_out().is_err());
         assert!(!is_staging(), "an early return must still clear it");
 
-        // Panic — the install runs on a spawned task, so this unwinds.
         // Panic — the install runs on a spawned task, so this unwinds. The hook
         // is muted around it so a deliberate panic doesn't print a scary
         // backtrace into an otherwise-passing test run.
