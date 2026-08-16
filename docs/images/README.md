@@ -37,6 +37,15 @@ native resolution. The file is deliberately kept at full quality rather than rec
 so it's a heavier download than the repo's other images - don't shrink it without checking
 first.
 
+## `daily-summary.png` (already here)
+
+The screenshot under "Your Day, Summarised" - the end-of-day summary modal, showing
+completed tasks, a caught-unexpected-work callout, and the ready-to-paste standup.
+Displayed at `width="900"`. Downscaled from a 3480x2022 source to 1800x1046 (2x retina at
+the display width) with `sips -Z 1800`, which took it from 1.9 MB to 740 KB - still over
+the ~500 KB guideline below since no PNG-specific compressor (`pngquant`/`oxipng`) was
+available in that pass; recompress with one of those if this file is touched again.
+
 ## `social-card.png` (already here)
 
 The GitHub social preview - 1280x640, the size GitHub renders link cards at. Committed

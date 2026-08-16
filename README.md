@@ -27,3 +27,11 @@ Meridian rebuilds your day from what actually happened on screen, so you can scr
     <img src="docs/images/meridian-reconstruction.gif" alt="Meridian reconstructing a day from screen activity" width="900" />
   </a>
 </p>
+
+## Your Day, Summarised
+
+At the end of the day, Meridian tells you what you actually got done, what pulled you off plan, and hands you a standup already written and ready to paste into Jira.
+
+<p align="center">
+  <img src="docs/images/daily-summary.png" alt="Meridian's end-of-day summary, with completed tasks, an unexpected fix, and a ready-to-paste standup" width="900" />
+</p>
