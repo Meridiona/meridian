@@ -27,6 +27,12 @@ and it can't be regenerated from source - if the video needs to change, re-uploa
 swap the URL in `README.md`. The previous version of this section linked out to a YouTube
 thumbnail instead; that approach is why `demo-thumb.jpg` no longer exists here.
 
+The `<video>` tag's `width` must be a pixel value, not `width="100%"` - GitHub's renderer
+ignores the percentage and falls back to the source file's native encoded resolution
+instead (640x360 for the current upload, well short of the readme's content column). A
+pixel width wider than that column, currently `width="960"`, clamps down to fill it the
+same way an oversized `<img>` does.
+
 ## `meridian-reconstruction.gif` (already here)
 
 The clip under "Reconstruct Any Day" - a screen recording of the timeline reconstructing
