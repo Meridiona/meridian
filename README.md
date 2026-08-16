@@ -15,11 +15,7 @@
 
 See how Meridian turns a day of screen activity into a timeline, a daily summary, and updated tickets, without anything typed in by hand.
 
-<div align="center">
-
-<video src="https://github.com/user-attachments/assets/2ac97a47-c08f-4905-87e7-201b42c08e4b" width="960" controls></video>
-
-</div>
+https://github.com/user-attachments/assets/501f41e6-aa89-404b-b430-a0b8b59c198e
 
 ## Meridian automatically reconstructs your day
 
@@ -49,17 +45,27 @@ Meridian writes your worklog update and gets it ready to post. You just review i
 
 ## Questions Meridian Already Answers
 
-| You ask | Meridian already has the answer |
+| You ask | What Meridian does |
 |---|---|
-| "What did I actually do on this ticket?" | Here's the update, drafted and ready to post. |
-| "What was I even working on three months ago today?" | Here's that whole day, saved and ready to look back on. |
-| "What did I get done yesterday?" | Here's your standup, already written. |
-| "Why did this take five days when we estimated two?" | Here's what actually happened, so you can see where the estimate missed. |
-| "Where does my time actually go?" | Here's the real data behind every day, not a guess. |
+| "What did I actually do on this ticket?" | Drafts the update from what you actually did, ready to post. |
+| "What was I even working on three months ago today?" | Saves every day as it happens, so you can pull any of them back up. |
+| "What did I get done yesterday?" | Writes your standup overnight from what you actually did. |
+| "Why did this take five days when we estimated two?" | Logs what actually happened, so you can see exactly where the estimate went wrong. |
+| "Where does my time actually go?" | Tracks where every hour actually went, so you're looking at data, not a guess. |
 
 ## Privacy
 
 Your activity stays in one encrypted database on your machine. Analysis runs through whichever AI provider you connect, and only what a summary needs is sent to it. Diagnostics are opt-out and stripped of anything identifying before they ever leave your device.
+
+## System Requirements
+
+| | |
+|---|---|
+| **Platform** | macOS (Apple Silicon only, Intel is not supported) or Windows 10/11 |
+| **CPU** | 5 to 10% average, running quietly in the background |
+| **Memory** | 0.5 to 3 GB |
+| **Storage** | About 20 GB a month, older capture is pruned automatically after 30 days |
+| **Database** | Encrypted at rest |
 
 ## Build from Source
 
@@ -84,8 +90,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines, maintainers, and how to s
 
 Thanks to all contributors:
 
-<a href="https://github.com/Akarsh-Hegde"><img src="https://avatars.githubusercontent.com/u/79705687?v=4" width="50" height="50" alt="Akarsh-Hegde" style="border-radius: 50%;" /></a>
-<a href="https://github.com/adityaharishch"><img src="https://avatars.githubusercontent.com/u/116435941?v=4" width="50" height="50" alt="adityaharishch" style="border-radius: 50%;" /></a>
+<a href="https://github.com/Meridiona/meridian/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Meridiona/meridian" />
+</a>
 
 ## License
 

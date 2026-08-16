@@ -6,16 +6,20 @@ the files first, then uncomment.
 
 ## `download-button.png` (already here)
 
-The "Download Meridian" link below the banner, 760x164, opaque, no alpha channel.
-Displayed at `width="280"` inside the same `?ref=github-readme#download` deep link the
-plain-text version used - only the visual changed, not the destination.
+The "Download Meridian" link below the banner, 760x164, RGBA with the rounded corners
+still cut out via alpha. Displayed at `width="280"` inside the same
+`?ref=github-readme#download` deep link the plain-text version used - only the visual
+changed, not the destination.
 
 The original export had a nearly-transparent fill (`rgba(128,64,242,20)`, about 8%
-opacity), which read as a barely-visible pill on GitHub's dark theme. Flattened onto an
-opaque `#F2EDFB` canvas, the same colour as `banner.png`'s background, so the button
-reads as a solid extension of the banner rather than a translucent tint that shifts with
-the page theme. Re-flatten the same way if this asset is regenerated - don't reintroduce
-alpha in the fill.
+opacity), which read as a barely-visible pill on GitHub's dark theme. Fixed by
+compositing only the pixels with `alpha > 0` onto opaque `#F2EDFB` (the same colour as
+`banner.png`'s background), leaving the fully-transparent corner pixels (`alpha == 0`)
+untouched. The first attempt at this flattened the *entire* canvas onto the opaque
+background, including those corner pixels, which erased the rounded-corner cutout
+entirely and left a plain rectangle - the fix has to skip `alpha == 0` pixels, not
+composite everything uniformly. Re-do it this same way (skip fully-transparent pixels) if
+this asset is regenerated.
 
 ## `banner.png` (already here)
 
@@ -32,19 +36,22 @@ without the other leaves the two surfaces disagreeing.
 
 ## Demo video (not a repo file)
 
-The "Watch the Demo" section plays inline via GitHub's own attachment hosting, not a
-committed file: `<video src="https://github.com/user-attachments/assets/...">`. GitHub
-only accepts these through the web UI (drag the file onto an issue or PR comment box,
-copy the resulting `user-attachments` URL), so there is nothing to check into the repo,
-and it can't be regenerated from source - if the video needs to change, re-upload and
-swap the URL in `README.md`. The previous version of this section linked out to a YouTube
-thumbnail instead; that approach is why `demo-thumb.jpg` no longer exists here.
+The "Watch how it works" section plays inline via GitHub's own attachment hosting, not a
+committed file - just the bare URL `https://github.com/user-attachments/assets/...` on
+its own line. GitHub only accepts these through the web UI (drag the file onto an issue
+or PR comment box, copy the resulting `user-attachments` URL), so there is nothing to
+check into the repo, and it can't be regenerated from source - if the video needs to
+change, re-upload and swap the URL in `README.md`.
 
-The `<video>` tag's `width` must be a pixel value, not `width="100%"` - GitHub's renderer
-ignores the percentage and falls back to the source file's native encoded resolution
-instead (640x360 for the current upload, well short of the readme's content column). A
-pixel width wider than that column, currently `width="960"`, clamps down to fill it the
-same way an oversized `<img>` does.
+Use the bare URL on its own line, not a hand-written `<video>` tag. An explicit
+`<video src="..." width="...">` was tried first and never sized correctly: `width="100%"`
+was ignored in favour of the source file's native encoded resolution, and a pixel width
+still left it narrower than GitHub's own auto-embed. The bare URL is what `main`'s README
+already uses and is the version GitHub actually renders full-width and reliably, so this
+branch was switched to match it, including reusing that same uploaded video
+(`501f41e6-aa89-404b-b430-a0b8b59c198e`) rather than the branch's own separately-uploaded
+one. The previous version of this section linked out to a YouTube thumbnail instead; that
+approach is why `demo-thumb.jpg` no longer exists here.
 
 ## `meridian-reconstruction.gif` (already here)
 
