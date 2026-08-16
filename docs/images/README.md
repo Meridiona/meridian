@@ -4,6 +4,86 @@ Screenshots referenced by the root `README.md`. The reference block there is com
 out until these files exist - GitHub renders a missing image as broken alt text, so add
 the files first, then uncomment.
 
+## `download-button.png` (already here)
+
+The "Download Meridian" link below the banner, 760x164, RGBA with the rounded corners
+still cut out via alpha. Displayed at `width="280"` inside the same
+`?ref=github-readme#download` deep link the plain-text version used - only the visual
+changed, not the destination.
+
+The original export had a nearly-transparent fill (`rgba(128,64,242,20)`, about 8%
+opacity), which read as a barely-visible pill on GitHub's dark theme. Fixed by
+compositing only the pixels with `alpha > 0` onto opaque `#F2EDFB` (the same colour as
+`banner.png`'s background), leaving the fully-transparent corner pixels (`alpha == 0`)
+untouched. The first attempt at this flattened the *entire* canvas onto the opaque
+background, including those corner pixels, which erased the rounded-corner cutout
+entirely and left a plain rectangle - the fix has to skip `alpha == 0` pixels, not
+composite everything uniformly. Re-do it this same way (skip fully-transparent pixels) if
+this asset is regenerated.
+
+## `banner.png` (already here)
+
+The README header - mark, wordmark and tagline in one image, 818x432. Displayed at
+`width="420"` so it downscales rather than upscaling, which keeps the type crisp on
+Retina.
+
+The background is opaque `#F2EDFB`, not transparent, so it renders as a pale panel in
+GitHub's dark theme rather than adapting to it. That is deliberate and fine, but it does
+mean the tagline colour has to stay legible on light only.
+
+The tagline baked into the image must match the repo About description. Changing one
+without the other leaves the two surfaces disagreeing.
+
+## Demo video (not a repo file)
+
+The "Watch how it works" section plays inline via GitHub's own attachment hosting, not a
+committed file - just the bare URL `https://github.com/user-attachments/assets/...` on
+its own line. GitHub only accepts these through the web UI (drag the file onto an issue
+or PR comment box, copy the resulting `user-attachments` URL), so there is nothing to
+check into the repo, and it can't be regenerated from source - if the video needs to
+change, re-upload and swap the URL in `README.md`.
+
+Use the bare URL on its own line, not a hand-written `<video>` tag. An explicit
+`<video src="..." width="...">` was tried first and never sized correctly: `width="100%"`
+was ignored in favour of the source file's native encoded resolution, and a pixel width
+still left it narrower than GitHub's own auto-embed. The bare URL is what `main`'s README
+already uses and is the version GitHub actually renders full-width and reliably, so this
+branch was switched to match it.
+
+The specific video reused is `main`'s current one, `5cc26036-3842-4748-85c8-097a8b71f20d`
+(the "Product Hunt cut" - `main` swapped to this after this branch had already grabbed an
+older upload, `501f41e6-...`, which is why that older ID showed up here briefly). Check
+what `main`/`pre-main` currently link before reusing this ID again - it has already moved
+once. The previous version of this section linked out to a YouTube thumbnail instead;
+that approach is why `demo-thumb.jpg` no longer exists here.
+
+## `meridian-reconstruction.gif` (already here)
+
+The clip under "Reconstruct Any Day" - a screen recording of the timeline reconstructing
+a day, 1156x676, 200 frames at 12.5fps, kept uncompressed at 13.4 MB. Displayed at
+`width="900"`, which downscales rather than upscales, so it reads sharp inline; the image
+also links to itself (`docs/images/meridian-reconstruction.gif`), which GitHub opens at
+native resolution. The file is deliberately kept at full quality rather than recompressed,
+so it's a heavier download than the repo's other images - don't shrink it without checking
+first.
+
+## `worklog-draft.gif` (already here)
+
+The clip under "Drafts, Never Surprises" - the worklog draft modal, showing a generated
+ticket plus its description and the Create & Post control, 884x956, 663 KB. Displayed at
+`width="560"`, narrower than the other media in this README: the source is portrait
+(near-square, taller than wide), not landscape like the rest, so matching the usual
+`width="900"` would make it dominate the page vertically.
+
+## `daily-summary.png` (already here)
+
+The screenshot under "Your Day, Summarised" - the end-of-day summary modal, showing
+completed tasks, a caught-unexpected-work callout, and the ready-to-paste standup.
+Displayed at `width="900"`. Downscaled from a 3480x2022 source to 1800x1046 (2x retina at
+the display width) with `sips -Z 1800`, which took it from 1.9 MB to 740 KB - still over
+the ~500 KB guideline below since no PNG-specific compressor (`pngquant`/`oxipng`) was
+available in that pass; recompress with one of those if this file is touched again.
+
 ## `social-card.png` (already here)
 
 The GitHub social preview - 1280x640, the size GitHub renders link cards at. Committed
