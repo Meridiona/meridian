@@ -1,5 +1,66 @@
 # Changelog
 
+## [1.86.0](https://github.com/Meridiona/meridian/compare/v1.85.0...v1.86.0) (2026-08-16)
+
+### 🚀 Features
+
+* **auth:** let a source checkout run without a Clerk key ([f4a0cf3](https://github.com/Meridiona/meridian/commit/f4a0cf3015a7c3424a53bcc665f252764df24a69))
+* **day-summary:** tell the user when the daily summary is composed ([516b489](https://github.com/Meridiona/meridian/commit/516b4898840607f7311446f06081e0987a631f82))
+* **setup:** resume the wizard where the user left off ([813c659](https://github.com/Meridiona/meridian/commit/813c659cce2a3209e0a7d25f03168fa92296b7af))
+* **tray:** open the dashboard in native full screen ([a9b664d](https://github.com/Meridiona/meridian/commit/a9b664d270ab850c1810d7c266b9fe7077116cf0))
+
+### 🐛 Bug Fixes
+
+* address the review on the 1.86 release PR ([f22f978](https://github.com/Meridiona/meridian/commit/f22f97880c9c54d30d6928a56eb384bcda886645)), closes [#704](https://github.com/Meridiona/meridian/issues/704)
+* address the second review pass on the 1.86 release PR ([5a86bcf](https://github.com/Meridiona/meridian/commit/5a86bcfb5e3026bf0a371997ca66e0bb1d8802a1))
+* **auth:** stop Clerk sessions from being silently dropped every relaunch ([63e133e](https://github.com/Meridiona/meridian/commit/63e133e756fa51e31fce127d57cf3de7caeaf70a))
+* **auth:** stop Settings crashing when sign-in is off ([9dd4c85](https://github.com/Meridiona/meridian/commit/9dd4c85b7e0d635c75873a51ca02b31b5a6ca976))
+* **auth:** stop the vendored Clerk plugin logging session JWTs, and gate it ([d1812f0](https://github.com/Meridiona/meridian/commit/d1812f043b2e4b891cf56d72f2401ea6830ab1fb))
+* **config:** correct the Clerk fallback claim in .env.example ([13895e7](https://github.com/Meridiona/meridian/commit/13895e785bb448e12a47064c2052cd7ba548a809))
+* **onboarding:** separate setup from onboarding, and give the tour a way out ([3a07aa1](https://github.com/Meridiona/meridian/commit/3a07aa1272a35ac567cdcee447cbd3516ecd3f39)), closes [#747](https://github.com/Meridiona/meridian/issues/747)
+* **onboarding:** stop What's New firing at the end of first-run setup ([44dbc84](https://github.com/Meridiona/meridian/commit/44dbc84caa467abff62cfd502d01a064c4e15f2f))
+* **providers:** retry a truncated GitHub response instead of blaming the token ([1cfd91c](https://github.com/Meridiona/meridian/commit/1cfd91cd51c57766748212dcf3036e204d6b78e0))
+* **setup:** correct the wizard's privacy claim to match what ships ([9cb94f4](https://github.com/Meridiona/meridian/commit/9cb94f4803afb53405f622bce48281319a2535a0))
+* **setup:** draw the real Notifications pane on its permission card ([910af2b](https://github.com/Meridiona/meridian/commit/910af2ba83f6f0f2319cc02ec169108c10a33fa3)), closes [#742](https://github.com/Meridiona/meridian/issues/742) [#742](https://github.com/Meridiona/meridian/issues/742) [#741](https://github.com/Meridiona/meridian/issues/741) [#741](https://github.com/Meridiona/meridian/issues/741) [#742](https://github.com/Meridiona/meridian/issues/742) [#742](https://github.com/Meridiona/meridian/issues/742) [#742](https://github.com/Meridiona/meridian/issues/742)
+* **setup:** highlight the permission cards one at a time ([38ce6da](https://github.com/Meridiona/meridian/commit/38ce6da0b6407b5b7763e320081eebdc7f923461))
+* **setup:** stop the wizard rendering black in native full-screen ([267afcb](https://github.com/Meridiona/meridian/commit/267afcb07cff7b2e0b54d8358320fe05a2ddbff8))
+* **tray:** actually open the dashboard filling the screen ([ce0311f](https://github.com/Meridiona/meridian/commit/ce0311f92ba4e26a881719455c0bd7f3a7bf6ef2)), closes [#732](https://github.com/Meridiona/meridian/issues/732)
+* **tray:** cfg-gate the macOS-only reopen import so Windows builds ([a84782b](https://github.com/Meridiona/meridian/commit/a84782b33067c4115ea6d40871e3f84c75ebc2cb))
+* **tutorial:** handle a drafted task title landing under MIN_TITLE_WORDS ([ac0766e](https://github.com/Meridiona/meridian/commit/ac0766ecf14620ea8d648ffe18e4136010cae055))
+* **tutorial:** update stale closing-card test to the current Handoff copy ([c581da2](https://github.com/Meridiona/meridian/commit/c581da2621bf8df3c379b889da2cfecf0944929c))
+* **walkthrough:** give the narration a voice, and round the spotlight ([b807a4b](https://github.com/Meridiona/meridian/commit/b807a4bbc3e4ed3e370d5157d4744871a29ea075))
+* **walkthrough:** stop stray clicks breaking the tour ([7f1ef6b](https://github.com/Meridiona/meridian/commit/7f1ef6b3d4e108997cc8f47d8a0d5617176fd4f6)), closes [#746](https://github.com/Meridiona/meridian/issues/746) [#746](https://github.com/Meridiona/meridian/issues/746) [#745](https://github.com/Meridiona/meridian/issues/745) [#745](https://github.com/Meridiona/meridian/issues/745) [#746](https://github.com/Meridiona/meridian/issues/746) [#746](https://github.com/Meridiona/meridian/issues/746) [#746](https://github.com/Meridiona/meridian/issues/746)
+* **walkthrough:** stop the tray's auto-opens interrupting the tour ([f42ca4d](https://github.com/Meridiona/meridian/commit/f42ca4df7f5c6d919ead6c85f87de53e8b01b047))
+
+### ♻️ Refactoring
+
+* **auth:** one hook for the sign-in gate, with tests ([deaae00](https://github.com/Meridiona/meridian/commit/deaae00c0ff8f81abc1b4727664959ca5a984114))
+* **tray:** split window placement and reopen routing out of lib.rs ([3c1cea5](https://github.com/Meridiona/meridian/commit/3c1cea53b5609865052f181a80679dd20e24473f))
+
+### ✅ Tests
+
+* **day-summary:** pin the channels and expiry the banner leg depends on ([04dc918](https://github.com/Meridiona/meridian/commit/04dc918dc29a88e35a63be8f58134d5ef88e18ed)), closes [1/#7](https://github.com/1/meridian/issues/7)
+* **providers:** drain the request in the loopback fixture so Windows passes ([aac360f](https://github.com/Meridiona/meridian/commit/aac360f3db5519eaecc02fd13fe38a085383113a))
+
+### 📝 Documentation
+
+* correct privacy claims and meet open-source repo standards ([d436530](https://github.com/Meridiona/meridian/commit/d436530a1817f0b27d47052a824af1b23533f3c3)), closes [#727](https://github.com/Meridiona/meridian/issues/727)
+* disclose PostHog product analytics and the public counter ping ([2bc1c92](https://github.com/Meridiona/meridian/commit/2bc1c92f7c5a1048ed406387d25235ea616b688b))
+* **readme:** swap the demo video for the Product Hunt cut ([0d9b31d](https://github.com/Meridiona/meridian/commit/0d9b31d30ba83343fabef7e8268f7fc7bb0bf48a)), closes [#287](https://github.com/Meridiona/meridian/issues/287)
+
+### 🔧 Chores
+
+* **brand:** use the light treatment for the GitHub social card ([7e137e7](https://github.com/Meridiona/meridian/commit/7e137e76619d52ad6d9c82cdbc84f3d93d9433c9))
+* **config:** cut .env.example to what a dev build actually needs ([2b1cca3](https://github.com/Meridiona/meridian/commit/2b1cca3b54b152d3568e3d4a4c72d450d9d6b4c8))
+* **config:** drop the tracker keys from .env.example ([5a2978c](https://github.com/Meridiona/meridian/commit/5a2978c8e40d36776978981d934c30c2fe50685b))
+* **config:** rebuild .env.example from what the code actually reads ([7a3a331](https://github.com/Meridiona/meridian/commit/7a3a3314417708680f15ec431ec53f81645d0525))
+* **config:** reduce .env.example to the 4 keys the UI cannot provide ([35b139c](https://github.com/Meridiona/meridian/commit/35b139c7d7ddecc7d7b03876d30516ddee78969a))
+* **config:** trim .env.example to the 12 keys with no working default ([d8d289e](https://github.com/Meridiona/meridian/commit/d8d289efb681adac8e11b0a3d3a8f9c98a969ca5))
+* remove dead scripts and move internal docs out of the root ([de95f69](https://github.com/Meridiona/meridian/commit/de95f69ae6753da3607e9d5486671aa5f348653a))
+* **repo:** purge dead references to the removed Python services/ tree ([c34cc5b](https://github.com/Meridiona/meridian/commit/c34cc5bed25cecb348dbfa6d5887775eb6ea02e9))
+* **scripts:** add dev-reset-onboarding for iterating on the setup wizard ([6d16d43](https://github.com/Meridiona/meridian/commit/6d16d43e5196091dbab0bf64373767690703f7db))
+* untrack .mcp.json and drop dead MLX/Python config from .env.example ([2f03a89](https://github.com/Meridiona/meridian/commit/2f03a8916d56a2e650ca34f9f5ed950dc99e3698))
+
 ## [1.85.0](https://github.com/Meridiona/meridian/compare/v1.84.0...v1.85.0) (2026-08-13)
 
 ### 🚀 Features
