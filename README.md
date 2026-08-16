@@ -1,5 +1,5 @@
 <h1 align="center">
-  <a href="https://meridiona.com">DOWNLOAD MERIDIAN</a>
+  <a href="https://meridiona.com/?ref=github-readme#download">DOWNLOAD MERIDIAN</a>
 </h1>
 
 <br>
