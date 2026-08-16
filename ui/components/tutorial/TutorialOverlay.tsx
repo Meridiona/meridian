@@ -252,27 +252,43 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
   //
   // Measured, not derived: the bar is one to three lines depending on the beat,
   // and `big` changes its font and padding, so a constant would be wrong for
-  // most captions. Re-measured on every caption change because that is the only
-  // thing that resizes it.
+  // most captions.
+  //
+  // OBSERVED rather than re-measured on a dependency list, because the caption
+  // is not the only thing that changes this height and the other two are the
+  // easy ones to forget. The bar is capped at `maxWidth: big ? 760 : 540`, so a
+  // window narrower than that re-wraps the text on a resize with no prop
+  // changing at all; and `choices` render INSIDE this bar, so a beat that adds
+  // buttons under an unchanged caption grows it too. Either way the published
+  // value would stay stale until the next `say()` - and a stale value is worse
+  // than none, because `ModalShell` pads to it and would hold a gap that no
+  // longer matches anything on screen. A `ResizeObserver` covers all three
+  // sources and the first measurement, so nothing has to be enumerated.
   const sayRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     const root = document.documentElement
-    if (!unanchored) {
-      root.style.removeProperty('--mer-tour-say-bottom')
+    const clear = () => root.style.removeProperty('--mer-tour-say-bottom')
+    const el = sayRef.current
+    if (!unanchored || !el) {
+      clear()
       return
     }
-    // After paint, so the bubble has its final height. The tour is the only
-    // writer of this property, so a stale value cannot outlive it - the cleanup
-    // below runs on unmount and on every caption change.
-    const id = requestAnimationFrame(() => {
-      const box = sayRef.current?.getBoundingClientRect()
-      if (box) root.style.setProperty('--mer-tour-say-bottom', `${Math.round(box.bottom)}px`)
-    })
-    return () => {
-      cancelAnimationFrame(id)
-      root.style.removeProperty('--mer-tour-say-bottom')
+    // `bottom`, not `height`: the property names where the bar ENDS in the
+    // viewport, which is what a modal has to clear. The bar's top is fixed by
+    // CSS, so a size change is the only thing that can move it.
+    const publish = () => {
+      const box = el.getBoundingClientRect()
+      root.style.setProperty('--mer-tour-say-bottom', `${Math.round(box.bottom)}px`)
     }
-  }, [unanchored, caption, big])
+    const ro = new ResizeObserver(publish)
+    ro.observe(el) // fires once immediately, so this is also the initial read
+    return () => {
+      ro.disconnect()
+      // The tour is the only writer of this property, so clearing on the way
+      // out is what stops a finished walkthrough leaving every modal padded.
+      clear()
+    }
+  }, [unanchored])
 
   return (
     <div className="fixed inset-0" style={{ zIndex: 9000, pointerEvents: 'none' }}>

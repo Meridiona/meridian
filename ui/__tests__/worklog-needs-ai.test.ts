@@ -65,7 +65,15 @@ describe('the walkthrough does not demo a draft the user cannot get', () => {
     // a beat ringing `wl-generate` still has something to ring.
     const at = dialog.indexOf('const attemptGenerate')
     expect(at).toBeGreaterThan(-1)
-    const fn = dialog.slice(at, dialog.indexOf('\n  }', at))
+    // Both ends asserted before anything is read out of the slice. `\n  }` is a
+    // heuristic for where the function closes, and a heuristic that silently
+    // misses turns `slice(at, -1)` into most of the file - which would make the
+    // negative assertion below fire on an `if (isDemo)` belonging to some other
+    // function. A negative assertion over an unverified range is the one shape
+    // that can pass while testing nothing, so the range is checked first.
+    const end = dialog.indexOf('\n  }', at)
+    expect(end).toBeGreaterThan(at)
+    const fn = dialog.slice(at, end)
     expect(fn).not.toMatch(/if \(isDemo\)/)
     expect(fn).toContain("load<HealthStatus>('/api/health', 'get_health')")
     expect(fn).toContain('llm_provider_ok === false')

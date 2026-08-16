@@ -303,6 +303,35 @@ pub async fn run_daemon_watchdog() {
                 }
             }
             Action::Start => {
+                // RE-READ the flag at the last instant before acting.
+                //
+                // `decide` was handed a value sampled at the top of this tick,
+                // and between then and here the loop has awaited a socket probe
+                // and, on the path that reaches `Start`, forked a subprocess for
+                // the liveness check - hundreds of milliseconds during which an
+                // install can begin. That is a check-then-act window on the one
+                // decision that must not be wrong, and it is invisible from
+                // `decide`, which is pure and cannot know its input went stale.
+                //
+                // A re-read rather than [`crate::daemon_lifecycle::LIFECYCLE`]:
+                // the mutex would serialise properly, but the watchdog would
+                // then block for the length of an install and start the daemon
+                // the instant it was released, and a 5 s-budgeted `stop_for_quit`
+                // would queue behind the same install. The reasoning is recorded
+                // on `begin_staging`; this closes the window that reasoning left
+                // open rather than reversing it.
+                //
+                // Not airtight, and deliberately so: `begin_staging` can still
+                // land during `start_if_stopped` itself. The installer's own
+                // re-kill loop (`stop_running_daemon_before_stage`) is the
+                // backstop for that residue - it kills anything that appears
+                // mid-wait, which is exactly what this would be.
+                if crate::daemon_lifecycle::is_staging() {
+                    tracing::debug!(
+                        "daemon watchdog: install started during this tick - standing down"
+                    );
+                    continue;
+                }
                 async {
                     tracing::info!("daemon watchdog: daemon not running, starting it");
                     if let Err(e) = crate::commands::daemon_control::start_if_stopped().await {
@@ -416,6 +445,48 @@ mod tests {
                 "no amount of downtime turns an install-held daemon into an outage"
             );
         }
+    }
+
+    /// The half `decide` structurally cannot cover: the flag going true AFTER
+    /// its input was sampled.
+    ///
+    /// `decide` is pure, so it can only ever judge a snapshot. The loop takes
+    /// that snapshot at the top of the tick and then awaits a socket probe,
+    /// plus (on exactly the path that reaches `Start`) a forked subprocess for
+    /// the liveness check - ample time for an install to begin. A verdict of
+    /// `Start` computed before `begin_staging` is therefore not evidence that
+    /// starting is still safe, and nothing inside `decide` can tell.
+    ///
+    /// Source-scanned because the window is between two awaits in
+    /// `run_daemon_watchdog`, which polls a real socket forever - there is no
+    /// seam to drive it through. Truncated at the first `#[cfg(test)]` so the
+    /// needles cannot match their own literals in this module.
+    #[test]
+    fn the_start_arm_re_reads_the_flag_before_acting() {
+        let whole = include_str!("watchdog.rs");
+        let src = &whole[..whole
+            .find("#[cfg(test)]")
+            .expect("watchdog.rs lost its test module marker")];
+        let arm = src
+            .split_once("Action::Start => {")
+            .expect("the Start arm is gone")
+            .1;
+        let arm = &arm[..arm.find("Action::GiveUp").unwrap_or(arm.len())];
+        assert!(
+            arm.contains("if crate::daemon_lifecycle::is_staging() {"),
+            "the Start arm acts on a staging value sampled before two awaits - \
+             an install that begins mid-tick starts the daemon it just killed"
+        );
+        // Standing down must SKIP the start, not merely log before it.
+        let gate = arm
+            .split_once("if crate::daemon_lifecycle::is_staging() {")
+            .expect("gate")
+            .1;
+        let gate = &gate[..gate.find("start_if_stopped").unwrap_or(gate.len())];
+        assert!(
+            gate.contains("continue;"),
+            "the re-read does not skip the start, so it only narrates the race"
+        );
     }
 
     /// Staging is a few seconds inside one install, so the rule must not

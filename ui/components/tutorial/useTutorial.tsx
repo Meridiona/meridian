@@ -446,8 +446,19 @@ export function useTutorial(opts: {
       },
       type: async (sel, text) => {
         const sig = signal()
-        const el = await waitForElement(sel, sig) as HTMLInputElement | HTMLTextAreaElement | null
+        const el = await waitForElement(sel, sig)
         if (!el) return false
+        // NARROWED, not cast. A cast here was unchecked, and the failure it let
+        // through was not a wrong value - it was a `TypeError` out of
+        // `setValue.call` below when the selector resolved to something that is
+        // not a field. That throw is not `Aborted`, so it unwinds past
+        // `runScript` and the catch there tears the ENTIRE walkthrough down over
+        // one mistargeted beat. Every sibling primitive returns `false` for a
+        // target it cannot operate, which is also what `Stage.type` promises in
+        // engine.ts; this restores that contract and removes the cast at once.
+        if (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) {
+          return false
+        }
         // THE NATIVE SETTER, not `el.value =`. React tracks the last value it
         // rendered and compares against the DOM node's own property; a plain
         // assignment updates neither its tracker nor its state, so the character

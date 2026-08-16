@@ -35,17 +35,36 @@ describe("the tour's narration bar does not cover a modal's body", () => {
     // Measured from the live element. A constant would be wrong for most beats:
     // the bar runs one to three lines depending on the caption, and `big`
     // changes its font and padding.
-    expect(src).toMatch(/sayRef\.current\?\.getBoundingClientRect\(\)/)
+    expect(src).toMatch(/el\.getBoundingClientRect\(\)/)
     expect(src).toContain('<div ref={sayRef}')
+  })
+
+  it('and keeps measuring it, rather than only on a caption change', () => {
+    // The caption is NOT the only thing that resizes this bar, and the other
+    // two do not touch a prop: a window narrower than the bar's max-width
+    // re-wraps the text on a plain resize, and `choices` render inside the bar
+    // so a beat can add buttons under an unchanged caption. Keying the
+    // measurement off `[unanchored, caption, big]` published a value that then
+    // went stale until the next say() - and `ModalShell` holds a gap to that
+    // value, so stale is worse than absent.
+    const src = readSrc('components/tutorial/TutorialOverlay.tsx')
+    expect(src).toContain('new ResizeObserver(')
+    expect(src).toContain('ro.observe(el)')
+    expect(src).toContain('ro.disconnect()')
+    // The dependency list must NOT re-acquire the enumeration the observer
+    // exists to replace.
+    expect(src).toContain('}, [unanchored])')
   })
 
   it('and withdraws it, so a stale value cannot outlive the bar', () => {
     const src = readSrc('components/tutorial/TutorialOverlay.tsx')
-    // Twice: the not-showing branch, and the effect cleanup that covers unmount
-    // and every caption change. A published value that survives the tour would
-    // leave every modal in the app permanently padded.
-    const removals = src.split(`removeProperty('${VAR}')`).length - 1
-    expect(removals).toBeGreaterThanOrEqual(2)
+    // Two paths must withdraw it: the not-showing branch, and the effect
+    // cleanup that covers unmount and the bar going away. A published value
+    // that survives the tour would leave every modal in the app permanently
+    // padded, on a screen with no tour running to explain the gap.
+    expect(src).toContain(`const clear = () => root.style.removeProperty('${VAR}')`)
+    const withdrawals = src.split('clear()').length - 1
+    expect(withdrawals).toBeGreaterThanOrEqual(2)
   })
 
   it('ModalShell pads BOTH body branches past it', () => {

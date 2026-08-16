@@ -840,29 +840,55 @@ pub(crate) async fn stop_running_daemon_before_stage(daemon_bin: &Path) -> Resul
 /// note in [`stop_running_daemon_before_stage`].
 #[cfg(target_os = "windows")]
 async fn kill_pids(pids: &[u32], daemon_bin: &Path) {
+    // Imported in-body rather than at module scope: this fn is
+    // `cfg(target_os = "windows")` and the trait has no other user here, so a
+    // top-level `use` would be an unused import on macOS - which is a hard
+    // error under `-D warnings`, from a file the macOS build otherwise
+    // compiles fine.
+    use tracing::Instrument;
     for &pid in pids {
-        let out = tokio::process::Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
-            .no_window()
-            .output()
-            .await;
-        match out {
-            Ok(o) if o.status.success() => {
-                tracing::info!(pid, path = %daemon_bin.display(), "backend_install: stopped staged daemon process");
-            }
-            Ok(o) => {
-                tracing::warn!(
-                    pid,
-                    path = %daemon_bin.display(),
-                    status = %o.status,
-                    stderr = %String::from_utf8_lossy(&o.stderr).trim(),
-                    "backend_install: taskkill did not stop staged daemon process"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(pid, path = %daemon_bin.display(), error = %e, "backend_install: taskkill spawn failed");
+        // One span PER PID rather than one for the loop: this runs on the
+        // update path, where the interesting question is never "did the stop
+        // work" but "which of these processes refused to die" - and a failure
+        // here is what surfaces later as "cannot overwrite a locked binary",
+        // several steps removed from its cause.
+        async {
+            let out = tokio::process::Command::new("taskkill")
+                .args(["/F", "/PID", &pid.to_string()])
+                .no_window()
+                .output()
+                .await;
+            let s = tracing::Span::current();
+            match out {
+                Ok(o) if o.status.success() => {
+                    tracing::info!(pid, path = %daemon_bin.display(), "backend_install: stopped staged daemon process");
+                }
+                Ok(o) => {
+                    // Span status, not only the log line: the ship leg is
+                    // error-only, so a WARN with no ERROR span is the shape
+                    // that reaches central OO stripped of the context needed
+                    // to act on it.
+                    s.record("otel.status_code", "ERROR");
+                    tracing::warn!(
+                        pid,
+                        path = %daemon_bin.display(),
+                        status = %o.status,
+                        stderr = %String::from_utf8_lossy(&o.stderr).trim(),
+                        "backend_install: taskkill did not stop staged daemon process"
+                    );
+                }
+                Err(e) => {
+                    s.record("otel.status_code", "ERROR");
+                    tracing::warn!(pid, path = %daemon_bin.display(), error = %e, "backend_install: taskkill spawn failed");
+                }
             }
         }
+        .instrument(tracing::debug_span!(
+            "backend_install.taskkill",
+            pid,
+            otel.status_code = tracing::field::Empty,
+        ))
+        .await;
     }
 }
 

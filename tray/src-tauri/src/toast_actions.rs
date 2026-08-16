@@ -190,10 +190,40 @@ fn escape_xml(s: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
-            _ => out.push(c),
+            c if is_xml_char(c) => out.push(c),
+            // DROPPED, not escaped. There is no escape for these: `&#1;` is
+            // just as illegal as a literal U+0001, so a numeric entity would
+            // fail identically. See [`is_xml_char`] for why they get this far.
+            _ => {}
         }
     }
     out
+}
+
+/// Whether a character may appear in an XML 1.0 document at all.
+///
+/// Escaping the five metacharacters is not sufficient on its own. XML 1.0 §2.2
+/// forbids most C0 control characters OUTRIGHT - there is no representation for
+/// them, escaped or otherwise - and `XmlDocument::LoadXml` rejects the whole
+/// document if one appears. That failure looks exactly like the `&` case this
+/// module already guards: **the toast silently never shows**, on a machine no
+/// one can attach a debugger to.
+///
+/// It is reachable because toast text is assembled from the user's own data.
+/// Task titles and worklog bodies come from tracker APIs, editor buffers and
+/// pasted terminal output, all of which carry stray control bytes often enough
+/// to matter - a `\u{1}` in a Jira summary is not exotic, it is what a bad
+/// copy-paste leaves behind.
+///
+/// Tab, newline and carriage return ARE legal and are kept: Windows renders a
+/// newline inside a `<text>` element, and stripping them would reflow a body
+/// the daemon deliberately laid out.
+fn is_xml_char(c: char) -> bool {
+    matches!(c,
+        '\u{9}' | '\u{A}' | '\u{D}'
+        | '\u{20}'..='\u{D7FF}'
+        | '\u{E000}'..='\u{FFFD}'
+        | '\u{10000}'..='\u{10FFFF}')
 }
 
 #[cfg(test)]
@@ -293,6 +323,54 @@ mod tests {
         assert!(xml.contains(r#"arguments="a&amp;b""#), "{xml}");
         // Nothing raw survives past the markup we intended.
         assert!(!xml.contains("R&D"), "{xml}");
+    }
+
+    /// The SAME invisible failure as the `&` case above, from the half of it
+    /// escaping cannot reach.
+    ///
+    /// XML 1.0 has no representation for most C0 controls - `&#1;` is as
+    /// illegal as a literal `\u{1}` - so `LoadXml` rejects the document and the
+    /// toast silently never shows. They arrive with the user's own text: a
+    /// title pasted out of a terminal or returned by a tracker API carries
+    /// stray control bytes often enough to matter.
+    #[test]
+    fn control_characters_cannot_reach_the_document() {
+        let xml = build_toast_xml(
+            "ship \u{1}it\u{7}",
+            "log \u{1b}[31mred\u{1b}[0m",
+            &[plain("go\u{c}", "Do \u{b}it")],
+        );
+        for bad in ['\u{1}', '\u{7}', '\u{b}', '\u{c}', '\u{1b}'] {
+            assert!(!xml.contains(bad), "{bad:?} survived into {xml}");
+        }
+        // Dropped, not mangled into an entity that would fail identically.
+        assert!(!xml.contains("&#"), "{xml}");
+        // The readable text is intact around the hole.
+        assert!(xml.contains("<text>ship it</text>"), "{xml}");
+        assert!(xml.contains(r#"content="Do it""#), "{xml}");
+        assert!(xml.contains(r#"arguments="go""#), "{xml}");
+    }
+
+    /// Tab, newline and carriage return are LEGAL XML and must survive.
+    ///
+    /// Windows renders a newline inside `<text>`, and the daemon lays some
+    /// bodies out deliberately - stripping every control character wholesale
+    /// would reflow them, which is a real regression traded for a fix.
+    #[test]
+    fn the_three_legal_whitespace_controls_survive() {
+        let xml = build_toast_xml("t", "one\ntwo\tthree\r", &[]);
+        assert!(xml.contains("one\ntwo\tthree\r"), "{xml:?}");
+    }
+
+    /// Above the BMP, so the surrogate-range hole in [`is_xml_char`] is
+    /// expressed as a range check rather than as an accidental cut-off. An
+    /// emoji in a task title is ordinary, and dropping it would be a visible
+    /// bug introduced by the fix for an invisible one.
+    #[test]
+    fn astral_characters_are_not_collateral() {
+        let xml = build_toast_xml("done 🎉", "café 日本語", &[]);
+        assert!(xml.contains("done 🎉"), "{xml}");
+        assert!(xml.contains("café 日本語"), "{xml}");
     }
 
     /// The row's own column wins when it has content; the category registry
