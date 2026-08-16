@@ -51,7 +51,7 @@ incremental   = false
 
 [package]
 name = "meridian"
-version = "1.85.0"
+version = "1.86.0"
 edition = "2021"
 description = "Meridian — ambient developer-efficiency tool that keeps Jira, GitHub, and Linear in sync"
 authors = ["Meridiona"]
