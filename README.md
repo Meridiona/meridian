@@ -25,5 +25,5 @@ See how Meridian turns a day of screen activity into a timeline, a daily summary
 Meridian rebuilds your day from what actually happened on screen, so you can scrub back through it like a recording instead of trying to remember.
 
 <p align="center">
-  <img src="docs/images/meridian-reconstruction.gif" alt="Meridian reconstructing a day from screen activity" width="440" />
+  <img src="docs/images/meridian-reconstruction.gif" alt="Meridian reconstructing a day from screen activity" width="720" />
 </p>
