@@ -4,6 +4,14 @@ Screenshots referenced by the root `README.md`. The reference block there is com
 out until these files exist - GitHub renders a missing image as broken alt text, so add
 the files first, then uncomment.
 
+## `download-button.png` (already here)
+
+The "Download Meridian" link at the very top of the README, 760x164 with real
+transparency (so it sits correctly on GitHub's light and dark themes, unlike
+`banner.png` below). Displayed at `width="280"` inside the same
+`?ref=github-readme#download` deep link the plain-text version used - only the visual
+changed, not the destination. Replaces a plain-text `<h1>` link.
+
 ## `banner.png` (already here)
 
 The README header - mark, wordmark and tagline in one image, 818x432. Displayed at

@@ -1,6 +1,8 @@
-<h1 align="center">
-  <a href="https://meridiona.com/?ref=github-readme#download">DOWNLOAD MERIDIAN</a>
-</h1>
+<p align="center">
+  <a href="https://meridiona.com/?ref=github-readme#download">
+    <img src="docs/images/download-button.png" alt="Download Meridian" width="280" />
+  </a>
+</p>
 
 <br>
 
