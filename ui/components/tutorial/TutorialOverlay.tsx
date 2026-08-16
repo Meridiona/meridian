@@ -38,6 +38,29 @@ const HEADER_CLEAR = 116
 const CAPTION_GAP = 16
 const CAPTION_H = 130
 
+/** Spotlight geometry — the ring and the fence hole it encloses, kept in one
+ *  place because they are two drawings of the same shape and drifted apart
+ *  once already, with nothing failing.
+ *
+ *  `RING_RADIUS` is deliberately rounder than the target's own corners. The
+ *  ring sits `RING_INSET` outside its target, so matching the target's radius
+ *  leaves the corners visibly tighter than the thing they enclose — which reads
+ *  as a box drawn around the card rather than as the card being lit up.
+ *
+ *  `FENCE_PAD` is `Cutout`'s hole. It is the LARGER offset of the two, which is
+ *  what made the corners a bug rather than a footnote: the hole was never under
+ *  the ring, it stuck out past it, so its square corners showed as sharp
+ *  un-dimmed nubs around a rounded card. The fix is `HOLE_RADIUS` — the dim now
+ *  rounds itself instead of borrowing the ring's rounding. */
+const RING_INSET = 6
+const RING_RADIUS = 24
+const FENCE_PAD = 8
+/** Parallel to the ring rather than merely round: the hole sits
+ *  `FENCE_PAD - RING_INSET` further out, so its radius grows by the same amount
+ *  to keep the two curves concentric. Guarded by
+ *  `__tests__/tutorial-spotlight-corners.test.ts`. */
+const HOLE_RADIUS = RING_RADIUS + (FENCE_PAD - RING_INSET)
+
 /** The tour's speaking voice, wherever it speaks.
  *
  *  `mt-body`'s spec, written out rather than worn as a class. It was briefly set
@@ -278,14 +301,9 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
           target is on the other side of the window. */}
       {ringBox && (
         <div className="absolute" style={{
-          left: ringBox.left - 6, top: ringBox.top - 6,
-          width: ringBox.width + 12, height: ringBox.height + 12,
-          // Rounder than the 18 it was. The ring sits 6px outside its target,
-          // so matching the target's own radius leaves the corners visibly
-          // tighter than the thing they enclose - which reads as a box drawn
-          // around the card rather than as the card being lit up. A radius
-          // above the card's own is what makes the two look like one shape.
-          borderRadius: 24,
+          left: ringBox.left - RING_INSET, top: ringBox.top - RING_INSET,
+          width: ringBox.width + RING_INSET * 2, height: ringBox.height + RING_INSET * 2,
+          borderRadius: RING_RADIUS,
           border: `2px solid var(--t-accent)`,
           boxShadow: '0 0 0 4px color-mix(in srgb, var(--t-accent) 22%, transparent)',
           opacity: ringLive ? 1 : 0,
@@ -609,9 +627,26 @@ function AnchoredCaption({ rect, children }: { rect: DOMRect; children: React.Re
  *  A single pane with an SVG-masked hole is the tidier construction, but
  *  `backdrop-filter` under a mask is exactly the combination WebKit has been
  *  unreliable about, and this ships inside a WKWebView on macOS. Four plain
- *  rectangles are boring and render identically everywhere. The hole's corners
- *  come out square; the spotlight ring drawn on top is rounded and reads as the
- *  frame, so it does not show.
+ *  rectangles are boring and render identically everywhere.
+ *
+ *  The cost is that the hole comes out square. This file used to claim that did
+ *  not matter, because "the spotlight ring drawn on top is rounded and reads as
+ *  the frame" — but the ring is drawn at `RING_INSET` and the hole at the LARGER
+ *  `FENCE_PAD`, so the hole was never under the ring to begin with. Each corner
+ *  sat ~13px outside the ring's arc and showed as a sharp un-dimmed nub around a
+ *  rounded card.
+ *
+ *  So the dim no longer rides on the panes. It is a separate scrim laid over the
+ *  hole with a `box-shadow` spread big enough to reach past any viewport, which
+ *  is the one construction that gives a rounded hole without a mask:
+ *  `box-shadow` honours `border-radius`, and its overflow is ink rather than
+ *  layout, so a spread far outside the parent costs nothing and scrolls nothing.
+ *
+ *  The BLUR boundary stays square — `backdrop-filter` is clipped to the pane's
+ *  own box. That is deliberate and not a residual bug: blur is only visible
+ *  where there is detail to smear, and the corner nubs are a few pixels of the
+ *  window's background gradient. One beat in the whole script dims at all
+ *  (`script.ts`'s `plan-open`), so this was checked rather than assumed.
  *
  *  These DO take pointer events, which is half the point — while the tour is
  *  waiting on one specific click, a stray click into the blurred area should
@@ -620,28 +655,28 @@ function AnchoredCaption({ rect, children }: { rect: DOMRect; children: React.Re
  *  `dim: false` renders the same four panes completely invisible — see
  *  [`Cutout`]'s note on why the fence and the blur are one component. */
 function Cutout({ rect, dim }: { rect: DOMRect; dim: boolean }) {
-  const PAD = 8
-  const l = Math.max(0, rect.left - PAD)
-  const t = Math.max(0, rect.top - PAD)
-  const r = rect.right + PAD
-  const b = rect.bottom + PAD
+  const l = Math.max(0, rect.left - FENCE_PAD)
+  const t = Math.max(0, rect.top - FENCE_PAD)
+  const r = rect.right + FENCE_PAD
+  const b = rect.bottom + FENCE_PAD
+  // The panes travel with the hole rather than being re-laid instantly, so a
+  // dimmed beat handing over to the next one reads as the light moving. The
+  // scrim below has to carry the SAME easing and duration, or the dim snaps
+  // while the blur slides after it.
+  const glide = 'left .5s cubic-bezier(.22,1,.32,1), top .5s cubic-bezier(.22,1,.32,1),'
+    + ' width .5s cubic-bezier(.22,1,.32,1), height .5s cubic-bezier(.22,1,.32,1)'
   const pane: React.CSSProperties = {
     position: 'absolute',
     pointerEvents: 'auto',
-    // Literal rgba for the same reason as the centred scrim: `--win-bg` is a
-    // gradient, so a `color-mix` against it is invalid and drops the declaration
-    // outright. This read as "blur only, no dimming" for as long as it has
-    // existed - the panes were doing half their job silently.
     ...(dim ? {
-      background: 'rgba(20,16,40,0.42)',
       backdropFilter: 'blur(5px)',
       WebkitBackdropFilter: 'blur(5px)',
+      // The same fade the scrim uses. The blur and the dim are one effect to
+      // the eye, so they have to arrive together - splitting the animation off
+      // with the colour would snap the blur in and then darken it.
       animation: 'mer-tour-dim .45s ease both',
     } : null),
-    // The panes travel with the hole rather than being re-laid instantly, so a
-    // dimmed beat handing over to the next one reads as the light moving.
-    transition: 'left .5s cubic-bezier(.22,1,.32,1), top .5s cubic-bezier(.22,1,.32,1),'
-      + ' width .5s cubic-bezier(.22,1,.32,1), height .5s cubic-bezier(.22,1,.32,1)',
+    transition: glide,
   }
   return (
     <>
@@ -649,6 +684,34 @@ function Cutout({ rect, dim }: { rect: DOMRect; dim: boolean }) {
       <div style={{ ...pane, left: 0, top: b, right: 0, bottom: 0 }} />
       <div style={{ ...pane, left: 0, top: t, width: l, height: b - t }} />
       <div style={{ ...pane, left: r, top: t, right: 0, height: b - t }} />
+      {/* The dim, as a rounded hole. Inert - the four panes above are what
+          catch stray clicks, and this must not take the click the beat is
+          waiting for.
+
+          Literal rgba for the same reason as the centred scrim: `--win-bg` is a
+          gradient, so a `color-mix` against it is invalid and drops the
+          declaration outright. This read as "blur only, no dimming" for as long
+          as it lived on the panes - they were doing half their job silently. */}
+      {/* Deliberately NOT the clamped `l`/`t` the panes use. The clamp exists
+          because a pane sized `height: t` cannot take a negative number; the
+          scrim has no such problem, and applying the clamp to it would matter
+          in a way it never did to the panes. A target within `FENCE_PAD` of
+          the top or left edge would pull one side of the scrim inside the ring
+          while it kept its rounding - a dimmed notch cutting into the lit area,
+          which is the same class of artifact this whole change removes. Letting
+          it run off-screen instead keeps the curve concentric everywhere; the
+          part outside the viewport simply is not painted. */}
+      {dim && (
+        <div style={{
+          position: 'absolute', pointerEvents: 'none',
+          left: rect.left - FENCE_PAD, top: rect.top - FENCE_PAD,
+          width: rect.width + FENCE_PAD * 2, height: rect.height + FENCE_PAD * 2,
+          borderRadius: HOLE_RADIUS,
+          boxShadow: '0 0 0 9999px rgba(20,16,40,0.42)',
+          animation: 'mer-tour-dim .45s ease both',
+          transition: glide,
+        }} />
+      )}
     </>
   )
 }
