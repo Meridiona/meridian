@@ -95,7 +95,11 @@ describe('the DMG tells the user to open the app', () => {
     // re-render always changes the bytes, so the recorded digest is what ties
     // the two together: change the copy without re-running and the digest no
     // longer matches, which is exactly the mistake being guarded.
-    const png = readFileSync(join(repo, 'tray', 'src-tauri', 'dmg', 'background.png'))
+    // `new Uint8Array(...)` around the read: with bun-types in scope, node's
+    // `Buffer` no longer satisfies `createHash().update`'s `BinaryLike` (its
+    // backing store widens to `ArrayBufferLike`, which admits SharedArrayBuffer).
+    // A plain view sidesteps the mismatch without casting the type away.
+    const png = new Uint8Array(readFileSync(join(repo, 'tray', 'src-tauri', 'dmg', 'background.png')))
     const digest = createHash('sha256').update(png).digest('hex')
     // Update this line WITH the PNG, in the same commit, after re-running
     // `python3 scripts/make-dmg-background.py`. The failure message says so.
