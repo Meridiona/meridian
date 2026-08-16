@@ -21,6 +21,11 @@ fi
 
 export SQLX_OFFLINE=true
 echo "Running cargo fmt check..."
-cargo fmt --check || { echo "Run 'cargo fmt' before committing"; exit 1; }
+cargo fmt --all --check || { echo "Run 'cargo fmt --all' before committing"; exit 1; }
+# --workspace, matching pre-push and CI. The repo root is itself a package, so a
+# bare `cargo clippy` lints the daemon ALONE and silently skips meridian-core,
+# meridian-oauth, the tray and the vendored tauri-plugin-clerk - the exact trap
+# CONTRIBUTING.md warns about, which this hook was quietly falling into while
+# that document claimed the hooks covered it.
 echo "Running cargo clippy..."
-cargo clippy -- -D warnings || { echo "Fix clippy warnings before committing"; exit 1; }
+cargo clippy --workspace --all-targets -- -D warnings || { echo "Fix clippy warnings before committing"; exit 1; }

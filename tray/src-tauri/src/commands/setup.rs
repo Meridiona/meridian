@@ -110,8 +110,9 @@ pub async fn mark_setup_complete(app: tauri::AppHandle) -> Result<(), String> {
     // marker against — the two are only equal by construction, and a marker
     // written in a format the reader never matches would silently do nothing.
     let version = app.package_info().version.to_string();
-    let first_run = write_completion_markers(&home, &version)
-        .map_err(|e| format!("write setup markers: {e}"))?;
+    let first_run = write_completion_markers(&home, &version).map_err(
+        |e| crate::cmd_err!(level: error, e, "setup: could not write the completion markers"),
+    )?;
     // `first_run` is the whole story of this call and is not derivable after the
     // fact — the marker it keys off has just been overwritten — so it goes on the
     // log line. Without it, a re-run and a genuine first run are indistinguishable
@@ -136,15 +137,29 @@ pub async fn mark_setup_complete(app: tauri::AppHandle) -> Result<(), String> {
 /// Returns whether this was a FIRST RUN — the caller logs it, and it is not
 /// recoverable afterwards because the marker it is read from has by then been
 /// overwritten.
-fn write_completion_markers(home: &std::path::Path, version: &str) -> std::io::Result<bool> {
+fn write_completion_markers(home: &std::path::Path, version: &str) -> anyhow::Result<bool> {
+    use anyhow::Context;
+
     let dir = home.join(".meridian");
-    std::fs::create_dir_all(&dir)?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     // Read BEFORE the write below overwrites it. This is the ONE moment "setup"
     // and "onboarding" are distinguishable, and everything that separates them
     // hangs off this line — see the two `first_run` branches below.
     let first_run = !dir.join("onboarded").exists();
     let now = chrono::Local::now().to_rfc3339();
-    std::fs::write(dir.join("onboarded"), &now)?;
+    // ORDER IS LOAD-BEARING: the first-run markers are written BEFORE `onboarded`,
+    // and `onboarded` only once they have all succeeded.
+    //
+    // `onboarded` is the flag that makes the NEXT call read `first_run == false`.
+    // Writing it first meant a partial failure here — a full disk, a permission
+    // fault, anything — left the install permanently marked as onboarded while the
+    // two markers that first run owed it were never written. The next attempt then
+    // looks like a re-run and takes neither branch, so the user never gets the
+    // walkthrough and What's New fires the moment the wizard closes: both of the
+    // bugs these markers exist to prevent, arriving together and silently.
+    //
+    // Written last, a failure leaves `onboarded` absent, the run is still a first
+    // run next time, and the whole thing retries.
     if first_run {
         // The walkthrough is the second half of ONBOARDING, so a first run is what
         // earns it. See [`walkthrough_is_armed`] for why it needs its own marker
@@ -158,7 +173,8 @@ fn write_completion_markers(home: &std::path::Path, version: &str) -> std::io::R
         // in practice is a relaunch after an app update. That is the exact
         // scenario this marker was introduced to prevent, arriving through the
         // one door nobody checked. See `rerunning_setup_does_not_rearm_the_walkthrough`.
-        std::fs::write(dir.join(WALKTHROUGH_MARKER), &now)?;
+        std::fs::write(dir.join(WALKTHROUGH_MARKER), &now)
+            .with_context(|| format!("write {WALKTHROUGH_MARKER}"))?;
         // Stamp the running version as already seen, so "What's New" starts
         // announcing the NEXT release rather than firing the instant the wizard
         // closes. `has_unseen_release_notes` reads a missing marker as unseen —
@@ -170,8 +186,12 @@ fn write_completion_markers(home: &std::path::Path, version: &str) -> std::io::R
         // Also first-run only, and for the mirror-image reason: someone re-running
         // setup on a release whose notes they have NOT read is owed that
         // announcement, and swallowing it here would be silent.
-        crate::commands::whats_new::mark_whats_new_seen(home, version)?;
+        crate::commands::whats_new::mark_whats_new_seen(home, version)
+            .context("stamp the running version as seen")?;
     }
+    // Last, and only once every first-run marker above landed. See the comment on
+    // `first_run` for why this ordering is the whole point of the function.
+    std::fs::write(dir.join("onboarded"), &now).context("write the onboarded marker")?;
     Ok(first_run)
 }
 

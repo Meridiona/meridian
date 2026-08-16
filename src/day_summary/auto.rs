@@ -90,6 +90,10 @@ pub async fn maybe_auto_summarise(pool: &SqlitePool, day_local: &str) {
         day = day_local,
         chosen_time = Empty,
         gate = Empty,
+        // Every failure on this path is swallowed by design - a background nicety
+        // must not fail its caller. That makes the span the ONLY place a failed run
+        // is distinguishable from a skipped one, since the return type cannot say.
+        otel.status_code = Empty,
     );
     run(pool, day_local).instrument(span).await
 }
@@ -123,6 +127,8 @@ async fn run(pool: &SqlitePool, day_local: &str) {
         }
         Ok(_) => {}
         Err(e) => {
+            cur.record("gate", "summary_read_failed");
+            cur.record("otel.status_code", "ERROR");
             tracing::warn!(day = day_local, error = %e, "day summary: auto existing-check failed - skipping");
             return;
         }
@@ -137,6 +143,8 @@ async fn run(pool: &SqlitePool, day_local: &str) {
         }
         Ok(_) => {}
         Err(e) => {
+            cur.record("gate", "day_task_read_failed");
+            cur.record("otel.status_code", "ERROR");
             tracing::warn!(day = day_local, error = %e, "day summary: auto day-task read failed - skipping");
             return;
         }
@@ -154,10 +162,13 @@ async fn run(pool: &SqlitePool, day_local: &str) {
             );
             notify_ready(pool, day_local, &s).await;
         }
-        Err(e) => tracing::warn!(
-            day = day_local, error = %e,
-            "day summary: auto-compose failed - the user can still compose it manually"
-        ),
+        Err(e) => {
+            cur.record("otel.status_code", "ERROR");
+            tracing::warn!(
+                day = day_local, error = %e,
+                "day summary: auto-compose failed - the user can still compose it manually"
+            );
+        }
     }
 }
 
@@ -175,14 +186,20 @@ async fn run(pool: &SqlitePool, day_local: &str) {
 /// Best-effort, like everything else on this path - a failed enqueue is logged and
 /// swallowed, because the summary itself was composed successfully and that is the
 /// part that matters.
-#[tracing::instrument(skip(pool, s))]
+#[tracing::instrument(
+    skip(pool, s),
+    fields(dedup_key = Empty, expires_at = Empty, outcome = Empty, otel.status_code = Empty)
+)]
 async fn notify_ready(pool: &SqlitePool, day_local: &str, s: &DaySummary) {
+    let cur = tracing::Span::current();
     if s.fallback {
+        cur.record("outcome", "skipped_fallback");
         tracing::debug!(day = day_local, "day summary: fallback - not notifying");
         return;
     }
 
     let dedup = format!("day_summary.ready:{day_local}");
+    cur.record("dedup_key", dedup.as_str());
     let body = summary_body(s.adherence.done, s.adherence.planned);
     let mut n = NewNotification::event(
         &dedup,
@@ -193,26 +210,40 @@ async fn notify_ready(pool: &SqlitePool, day_local: &str, s: &DaySummary) {
     .link(meridian_core::notifications::deep_links::SUMMARY)
     .interactive(meridian_core::notifications::categories::GENERIC_LINK);
 
-    // Expiry is the next local midnight - the moment the day it reviews stops
-    // being today. `None` only on a calendar edge; the enqueue still goes out
-    // without one, since a summary notification that outlives its day is a far
-    // smaller problem than one that never arrives.
+    // Expiry is the next local midnight - the moment the day it reviews stops being
+    // today. `next_local_midnight_utc` walks a DST gap rather than surrendering to it,
+    // so `None` here means the calendar itself ran out (the last representable date).
+    // The enqueue still goes out: a notification that outlives its day is a smaller
+    // problem than one that never arrives. It is recorded on the span, because the
+    // banner half of this row only self-clears if an expiry is present.
     let expires = next_local_midnight_utc(&Local::now());
-    if let Some(exp) = expires.as_deref() {
-        n = n.expiring(exp);
+    match expires.as_deref() {
+        Some(exp) => {
+            cur.record("expires_at", exp);
+            n = n.expiring(exp);
+        }
+        None => tracing::warn!(
+            day = day_local,
+            "day summary: no expiry could be computed - the banner will need dismissing"
+        ),
     }
 
     match notifications::enqueue(pool, n).await {
         // Logged at INFO because "was the user actually told?" is the first
         // question any report about this feature raises, and the answer is
         // otherwise only visible as a row in the outbox.
-        Ok(()) => tracing::info!(
-            day = day_local,
-            expires = expires.as_deref().unwrap_or(""),
-            "day summary: ready notification enqueued"
-        ),
+        Ok(()) => {
+            cur.record("outcome", "enqueued");
+            tracing::info!(
+                day = day_local,
+                expires = expires.as_deref().unwrap_or(""),
+                "day summary: ready notification enqueued"
+            );
+        }
         Err(e) => {
-            tracing::warn!(day = day_local, error = %e, "day summary: ready notification failed to enqueue")
+            cur.record("outcome", "enqueue_failed");
+            cur.record("otel.status_code", "ERROR");
+            tracing::warn!(day = day_local, error = %e, "day summary: ready notification failed to enqueue");
         }
     }
 }
@@ -246,17 +277,46 @@ fn utc_iso(t: &DateTime<Local>) -> String {
         .to_string()
 }
 
-/// First instant of the next local day, as a UTC ISO string. `None` only on
-/// calendar edges (last representable date, a DST transition swallowing midnight).
+/// First instant of the next local day, as a UTC ISO string.
 ///
 /// A deliberate local twin of `daily_plan.rs`'s same-named helper rather than a
 /// shared one: both producers happen to expire at midnight today, but that is a
 /// per-notification policy choice, and hoisting it would make a later change to one
 /// silently retime the other.
+///
+/// # Midnight does not exist everywhere
+/// Several zones start DST at 00:00, so the clock jumps 23:59:59 → 01:00:00 and the
+/// local time `00:00` simply has no instant that night (Chile, Cuba, Iran, Lord Howe,
+/// parts of Brazil historically). `from_local_datetime(...).earliest()` correctly
+/// answers `None` there, and the old code let that `None` fall through to "no expiry".
+///
+/// That is the worst possible outcome for this producer rather than a harmless edge:
+/// the row also goes to the BANNER channel, `active_banners` only filters rows whose
+/// `expires_at` has passed, and a NULL never passes — so on those nights the summary
+/// banner would sit in the dashboard forever, exactly the `board.hygiene` failure that
+/// needed migration 077 to clean up. So the gap is walked instead of surrendered to.
 fn next_local_midnight_utc(now: &DateTime<Local>) -> Option<String> {
     let midnight = now.date_naive().succ_opt()?.and_hms_opt(0, 0, 0)?;
-    let local = Local.from_local_datetime(&midnight).earliest()?;
+    let local = first_existing_local(midnight, |n| Local.from_local_datetime(&n).earliest())?;
     Some(utc_iso(&local))
+}
+
+/// Step forward from `from` until `resolve` yields an instant that actually exists.
+///
+/// Generic over the resolver purely so the DST gap is testable: `Local` reads the
+/// host's zone, and this repo has no `chrono-tz`, so a real spring-forward cannot be
+/// reproduced in a unit test without mutating process-global `TZ`. A stub resolver
+/// exercises the identical walk deterministically.
+///
+/// 15-minute steps over a 6-hour window: every real transition is 30 or 60 minutes and
+/// aligned to a quarter hour, so this lands exactly on the instant the clock jumps to.
+/// Bounded rather than unbounded because "no valid time in the next six hours" means
+/// something is wrong with the zone data, and a loop is a worse answer than `None`.
+fn first_existing_local<T>(
+    from: chrono::NaiveDateTime,
+    resolve: impl Fn(chrono::NaiveDateTime) -> Option<T>,
+) -> Option<T> {
+    (0..=24).find_map(|step| resolve(from + chrono::Duration::minutes(15 * step)))
 }
 
 #[cfg(test)]
@@ -311,6 +371,46 @@ mod tests {
         );
         assert!(expiry.ends_with('Z') && !expiry.contains('.'), "{expiry}");
         assert_eq!(expiry.len(), 20, "{expiry} is not YYYY-MM-DDTHH:MM:SSZ");
+    }
+
+    /// A zone that starts DST at midnight has no 00:00 that night, and the naive
+    /// answer (`earliest()` -> `None` -> no expiry) is the worst one available: this
+    /// row also goes to the banner channel, `active_banners` only drops rows whose
+    /// `expires_at` has passed, and a NULL never passes - so the banner would sit in
+    /// the dashboard forever.
+    ///
+    /// Driven through a stub resolver rather than a real zone: `Local` reads the host
+    /// timezone, and with no `chrono-tz` in the workspace a genuine spring-forward
+    /// cannot be reproduced without mutating process-global `TZ`, which would leak
+    /// into every other test in this binary.
+    #[test]
+    fn a_skipped_midnight_still_yields_an_expiry() {
+        let midnight = chrono::NaiveDate::from_ymd_opt(2026, 9, 6)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        // Chile-style: the clock jumps 23:59:59 -> 01:00:00, so nothing in
+        // [00:00, 01:00) exists.
+        let gap_of_one_hour = |n: chrono::NaiveDateTime| {
+            (n.time() >= chrono::NaiveTime::from_hms_opt(1, 0, 0).unwrap()).then_some(n)
+        };
+
+        let resolved = first_existing_local(midnight, gap_of_one_hour)
+            .expect("the walk must clear a one-hour gap");
+        assert_eq!(
+            resolved.time(),
+            chrono::NaiveTime::from_hms_opt(1, 0, 0).unwrap(),
+            "must land on the instant the clock jumps to, not later"
+        );
+
+        // The ordinary case is untouched: a midnight that exists resolves to itself.
+        assert_eq!(first_existing_local(midnight, Some), Some(midnight));
+
+        // And it gives up rather than looping when nothing in the window resolves.
+        assert_eq!(
+            first_existing_local(midnight, |_: chrono::NaiveDateTime| None::<()>),
+            None
+        );
     }
 
     /// An in-memory stand-in for the outbox: `enqueue` needs `dedup_key` UNIQUE for

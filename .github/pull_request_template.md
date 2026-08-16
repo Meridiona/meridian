@@ -6,9 +6,9 @@
 
 <!-- What did you run? Paste relevant output, screenshots, or test results. -->
 
-- [ ] `cargo test` passes
-- [ ] `cargo clippy -- -D warnings` passes
-- [ ] `cargo fmt --check` passes
+- [ ] `cargo test --workspace` passes
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes
+- [ ] `cargo fmt --all --check` passes
 - [ ] UI builds (`cd ui && npm run build`)
 - [ ] Manually tested the relevant flow
 

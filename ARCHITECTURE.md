@@ -26,8 +26,14 @@ worse than no feature at all.
 ## The pieces
 
 Meridian is two long-running processes plus two libraries, all on your machine. There
-is no remote server - nothing of yours is hosted anywhere. The MCP server below is a
-local process an AI client starts on demand over stdio; it listens on no port.
+is no remote server: your activity database, captured text, and credentials live on
+disk and are never uploaded. Diagnostics are the exception - a packaged build ships
+redacted, error-level telemetry unless you turn it off, and the summarisation you
+configure sends session text to your chosen LLM provider. `docs/privacy.md` lists
+every outbound path in full.
+
+The MCP server below is a local process an AI client starts on demand over stdio; it
+listens on no port.
 
 ```text
 ┌──────────────────────────────┐        ┌──────────────────────────────┐
