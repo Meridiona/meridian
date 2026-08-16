@@ -27,30 +27,45 @@ import { join } from 'path'
 
 const uiRoot = join(import.meta.dir, '..')
 
-// Source we ship. `__tests__` is excluded so this file's own mention of the
-// loader does not trip its own rule.
-const SCANNED = ['app', 'components', 'lib']
+// Directories that are NOT shipped source, and why each is skipped. Everything
+// else under `ui/` is scanned.
+//
+// DISCOVERED RATHER THAN LISTED. This used to name the three source directories
+// that exist today (`app`, `components`, `lib`), which meant a fourth one added
+// later was silently outside the rule - and the failure it guards against
+// (`next build` fetching a font from Google, 404ing on cold CI, taking the whole
+// build with it) is one nobody would connect back to an unscanned directory.
+// Inverting it means new source is covered the day it lands.
+const NOT_SHIPPED_SOURCE = new Set([
+  'node_modules',
+  '.next', // build output
+  'out', // static export
+  'public', // assets, not compiled source
+  '__tests__', // this file mentions the loader by name; it must not trip its own rule
+])
 
+/** Every compiled source file under `dir`. Includes `.js`/`.mjs` as well as
+ *  TypeScript: a plain-JS module is just as capable of importing the loader,
+ *  and `postcss.config.mjs` sits at this root today. */
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
-    if (entry === 'node_modules' || entry === '.next' || entry === 'out') continue
+    if (NOT_SHIPPED_SOURCE.has(entry) || entry.startsWith('.')) continue
     const full = join(dir, entry)
     if (statSync(full).isDirectory()) walk(full, out)
-    else if (/\.(ts|tsx)$/.test(entry)) out.push(full)
+    else if (/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(entry)) out.push(full)
   }
   return out
 }
 
 describe('the production build never fetches fonts', () => {
   it('does not import next/font/google anywhere', () => {
-    const offenders: string[] = []
-    for (const root of SCANNED) {
-      for (const file of walk(join(uiRoot, root))) {
-        if (/from ['"]next\/font\/google['"]/.test(readFileSync(file, 'utf8'))) {
-          offenders.push(file.slice(uiRoot.length + 1))
-        }
-      }
-    }
+    const scanned = walk(uiRoot)
+    // The scan finding nothing to scan would pass silently, which is the usual
+    // way a source-scan stops testing anything without anyone noticing.
+    expect(scanned.length).toBeGreaterThan(50)
+    const offenders = scanned
+      .filter(f => /from ['"]next\/font\/google['"]/.test(readFileSync(f, 'utf8')))
+      .map(f => f.slice(uiRoot.length + 1))
     expect(offenders).toEqual([])
   })
 

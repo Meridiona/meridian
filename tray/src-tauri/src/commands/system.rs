@@ -158,9 +158,25 @@ pub async fn resize_setup_window(
     // guard exists to prevent, while guessing "full-screen" skips a resize
     // that was never needed anyway (the card's `transform: scale(...)` fills
     // whatever size the window is). Same reasoning on both guards below.
-    if win.is_fullscreen().unwrap_or(true) {
-        tracing::debug!("setup window is full-screen or unreadable - resize skipped");
-        return Ok(());
+    //
+    // The Err arm is SEPARATED from the true arm rather than folded in by
+    // `unwrap_or`, so the two reasons for skipping are distinguishable in a
+    // trace. Collapsing them emits the same debug line for "the window is
+    // genuinely full-screen" (routine, every wizard step) and "the query
+    // failed" (never expected, and the only clue if this ever misbehaves on a
+    // window manager we have not seen). The BEHAVIOUR is identical - skip
+    // either way, still fail closed - only the reporting differs.
+    match win.is_fullscreen() {
+        Ok(true) => {
+            tracing::debug!("setup window is full-screen - resize skipped");
+            return Ok(());
+        }
+        Ok(false) => {}
+        Err(e) => {
+            tracing::Span::current().record("otel.status_code", "ERROR");
+            tracing::warn!(error = %e, "full-screen state unreadable - resize skipped");
+            return Ok(());
+        }
     }
     // Same reasoning for a MAXIMIZED window, which is the shape the hazard
     // actually takes on Windows: `is_fullscreen()` is false there for a
@@ -173,9 +189,17 @@ pub async fn resize_setup_window(
     // un-maximized itself. Nothing needs resizing while maximized anyway: the
     // card's own `transform: scale(...)` in page.tsx already fills whatever
     // size the window is.
-    if win.is_maximized().unwrap_or(true) {
-        tracing::debug!("setup window is maximized or unreadable - resize skipped");
-        return Ok(());
+    match win.is_maximized() {
+        Ok(true) => {
+            tracing::debug!("setup window is maximized - resize skipped");
+            return Ok(());
+        }
+        Ok(false) => {}
+        Err(e) => {
+            tracing::Span::current().record("otel.status_code", "ERROR");
+            tracing::warn!(error = %e, "maximized state unreadable - resize skipped");
+            return Ok(());
+        }
     }
     let resize = win
         .set_min_size(Some(tauri::LogicalSize::new(width, height)))
@@ -449,16 +473,32 @@ mod tests {
             let at = body
                 .find(query)
                 .unwrap_or_else(|| panic!("the {query} guard is gone"));
-            let tail = &body[at..];
+            // The Err arm must RETURN, which is what "fail closed" means here.
+            // Each guard is an explicit `match` rather than an `unwrap_or(true)`
+            // so an unreadable state is reported distinctly from a genuinely
+            // full-screen one - same behaviour, different diagnosis. The scan
+            // follows that shape: the arm, then a return before the next guard.
+            let arm = &body[at..];
+            let err_at = arm
+                .find("Err(e) =>")
+                .unwrap_or_else(|| panic!("the {query} guard has no Err arm"));
+            let err_arm = &arm[err_at..];
+            let end = err_arm.find("\n        }").unwrap_or(err_arm.len());
             assert!(
-                tail.starts_with(&format!("{query}.unwrap_or(true)")),
+                err_arm[..end].contains("return Ok(())"),
                 "{query} must fail closed: an errored query has to skip the \
                  resize, not perform the one action the guard exists to stop"
             );
+            assert!(
+                err_arm[..end].contains("tracing::warn!"),
+                "{query}'s failure is invisible - an unreadable window state \
+                 must be distinguishable from a genuinely full-screen one"
+            );
         }
         assert!(
-            !body.contains(".unwrap_or(false)"),
-            "a window-state query in resize_setup_window still fails open"
+            !body.contains(".unwrap_or("),
+            "a window-state query in resize_setup_window collapses its Result - \
+             the Err case must be handled explicitly, not folded into a default"
         );
     }
 

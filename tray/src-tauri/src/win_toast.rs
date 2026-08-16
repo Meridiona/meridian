@@ -293,7 +293,17 @@ fn record(app: &tauri::AppHandle, id: i64, action: String, text: Option<String>)
     // `notifications.respond` span; `.instrument` is what makes that span a
     // child of the toast's rather than an orphan root, so a lost answer can be
     // followed from the button press to the write in one trace.
-    let span = tracing::info_span!("notifications.toast.answer", id, action);
+    //
+    // `has_text` rather than the text itself: an inline reply IS the user's own
+    // writing and must never egress - whether one was supplied is the
+    // diagnostic, its content is not. Same rule as `apply_response`'s own span.
+    let span = tracing::info_span!(
+        "notifications.toast.answer",
+        id,
+        action,
+        has_text = text.is_some(),
+        otel.status_code = tracing::field::Empty,
+    );
     tauri::async_runtime::spawn(
         async move {
             if let Err(e) = crate::commands::notifications::apply_response(
@@ -305,6 +315,11 @@ fn record(app: &tauri::AppHandle, id: i64, action: String, text: Option<String>)
             )
             .await
             {
+                // The answer is now lost - the user pressed a button and
+                // nothing recorded it. Marked on the span as well as logged, so
+                // it is findable by span status rather than only by grepping
+                // WARN bodies.
+                tracing::Span::current().record("otel.status_code", "ERROR");
                 tracing::warn!(error = %e, id, action, "toast answer could not be recorded");
             }
         }
