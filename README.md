@@ -15,7 +15,7 @@
 
 See how Meridian turns a day of screen activity into a timeline, a daily summary, and updated tickets, without anything typed in by hand.
 
-https://github.com/user-attachments/assets/5cc26036-3842-4748-85c8-097a8b71f20d
+https://github.com/user-attachments/assets/501f41e6-aa89-404b-b430-a0b8b59c198e
 
 ## Meridian automatically reconstructs your day
 
@@ -61,7 +61,7 @@ Your activity stays in one encrypted database on your machine. Analysis runs thr
 
 | | |
 |---|---|
-| **Platform** | macOS (Apple Silicon only, Intel is not supported) or Windows 10/11 |
+| **Platform** | macOS (Apple Silicon) and Windows 10/11 |
 | **CPU** | 5 to 10% average, running quietly in the background |
 | **Memory** | 0.5 to 3 GB |
 | **Storage** | About 20 GB a month, older capture is pruned automatically after 30 days |
