@@ -102,6 +102,12 @@ function decodeGrayRows(png: Uint8Array): { width: number; rows: number[][] } {
         const p = a + b - c
         const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c)
         v += pa <= pb && pa <= pc ? a : pb <= pc ? b : c
+      } else if (filter !== 0) {
+        // Same rule as the IHDR assertions: fail loudly rather than decode to
+        // garbage. Without this an unknown byte falls through every branch and
+        // is silently treated as filter 0, so the rows are nonsense and the
+        // line count is an arbitrary number rather than an error.
+        throw new Error(`unknown PNG scanline filter ${filter} on row ${y}`)
       }
       cur[i] = v & 0xff
     }
@@ -141,6 +147,14 @@ describe('the DMG tells the user to open the app', () => {
     // Numbered rather than one sentence on purpose: "and then open it" appended
     // to the drag instruction reads as a description of what the drag does,
     // which is exactly the misreading that leaves the app unopened.
+    //
+    // TWO is a product decision, not an incidental count: a DMG window is read
+    // in a second and a half, and a third instruction is where people stop
+    // reading any of them. So adding one should have to come here and argue for
+    // itself. That is why this assertion is fixed while the pixel check below
+    // derives its count from the generator - they are answering different
+    // questions ("should there be three?" vs "is what we ship what we wrote?"),
+    // and only the first is a judgement call.
     expect(steps()).toHaveLength(2)
   })
 
@@ -202,16 +216,23 @@ describe('the DMG tells the user to open the app', () => {
     //
     // So the PNG is measured directly. Rasterised text cannot be grepped, but
     // it can be COUNTED: scan the caption band for rows containing dark pixels
-    // and count the runs of them. Two runs = two lines of text. The old
-    // one-line caption gives one, which is exactly the state being guarded, and
-    // no hand-maintained value stands between the check and the artefact.
+    // and count the runs of them. One run per line of text. The old one-line
+    // caption gives one, which is exactly the state being guarded, and no
+    // hand-maintained value stands between the check and the artefact.
     const png = new Uint8Array(readFileSync(join(repo, 'tray', 'src-tauri', 'dmg', 'background.png')))
     const { width, rows } = decodeGrayRows(png)
 
-    // The caption band at 2x: the steps are drawn from 252pt, the icon row
-    // above ends at 234pt, and 300pt clears both lines with margin.
-    const lines = countTextLines(rows.slice(480, 600), width)
-    expect(lines).toBe(2)
+    // The band and the expected count both come FROM the generator, so adding a
+    // third step and re-rendering correctly still passes. Hard-coding `2` would
+    // fail on a correct change and point at the artefact rather than at the
+    // stale expectation - which is the wrong place to send the reader.
+    const top = Number(gen.match(/\((\d+) \+ n \* (\d+)\) \* SCALE/)![1])
+    const pitch = Number(gen.match(/\((\d+) \+ n \* (\d+)\) \* SCALE/)![2])
+    const expected = steps().length
+    // 2x scale; one pitch of slack past the last line so a added line is inside
+    // the band rather than clipped by it (which would read as "not drawn").
+    const band = rows.slice(top * 2 - 8, (top + pitch * expected) * 2 + 8)
+    expect(countTextLines(band, width)).toBe(expected)
   })
 
   it('is a real image, not a placeholder or an LFS pointer', () => {

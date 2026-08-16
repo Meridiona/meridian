@@ -22,7 +22,7 @@
 // the loader and passes on the vendored file.
 
 import { describe, expect, it } from 'bun:test'
-import { readdirSync, readFileSync, statSync } from 'fs'
+import { readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 
 const uiRoot = join(import.meta.dir, '..')
@@ -36,23 +36,35 @@ const uiRoot = join(import.meta.dir, '..')
 // (`next build` fetching a font from Google, 404ing on cold CI, taking the whole
 // build with it) is one nobody would connect back to an unscanned directory.
 // Inverting it means new source is covered the day it lands.
-const NOT_SHIPPED_SOURCE = new Set([
-  'node_modules',
-  '.next', // build output
-  'out', // static export
-  'public', // assets, not compiled source
-  '__tests__', // this file mentions the loader by name; it must not trip its own rule
-])
+//
+// These are TOP-LEVEL paths under `ui/`, and are matched as such. Matching the
+// bare name at every depth would skip a nested directory that merely shares one
+// of these names - `ui/app/(dashboard)/out/` would go unscanned - which is the
+// same silent coverage hole this rewrite exists to close, arrived at from a
+// different direction.
+const NOT_SHIPPED_SOURCE = new Set(
+  [
+    'node_modules',
+    '.next', // build output
+    'out', // static export
+    'public', // assets, not compiled source
+    '__tests__', // this file mentions the loader by name; it must not trip its own rule
+  ].map(name => join(uiRoot, name)),
+)
 
 /** Every compiled source file under `dir`. Includes `.js`/`.mjs` as well as
  *  TypeScript: a plain-JS module is just as capable of importing the loader,
- *  and `postcss.config.mjs` sits at this root today. */
+ *  and `postcss.config.mjs` sits at this root today.
+ *
+ *  `withFileTypes` rather than a `statSync` per entry - one syscall instead of
+ *  two, and `isDirectory()` on a Dirent is false for a symlink, so the walk
+ *  cannot be sent out of the tree (or into a cycle) by one. */
 function walk(dir: string, out: string[] = []): string[] {
-  for (const entry of readdirSync(dir)) {
-    if (NOT_SHIPPED_SOURCE.has(entry) || entry.startsWith('.')) continue
-    const full = join(dir, entry)
-    if (statSync(full).isDirectory()) walk(full, out)
-    else if (/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(entry)) out.push(full)
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (NOT_SHIPPED_SOURCE.has(full) || entry.name.startsWith('.')) continue
+    if (entry.isDirectory()) walk(full, out)
+    else if (entry.isFile() && /\.(ts|tsx|js|jsx|mjs|cjs)$/.test(entry.name)) out.push(full)
   }
   return out
 }
@@ -63,8 +75,13 @@ describe('the production build never fetches fonts', () => {
     // The scan finding nothing to scan would pass silently, which is the usual
     // way a source-scan stops testing anything without anyone noticing.
     expect(scanned.length).toBeGreaterThan(50)
+    // The SPECIFIER in any import form, not just a static `from` clause.
+    // `import('next/font/google')` and `require('next/font/google')` trigger the
+    // identical build-time fetch, and the walk now covers `.cjs`/`.mjs` where
+    // those two are the normal spelling - so matching only `from` would scan
+    // files using a pattern that cannot appear in them.
     const offenders = scanned
-      .filter(f => /from ['"]next\/font\/google['"]/.test(readFileSync(f, 'utf8')))
+      .filter(f => /['"]next\/font\/google['"]/.test(readFileSync(f, 'utf8')))
       .map(f => f.slice(uiRoot.length + 1))
     expect(offenders).toEqual([])
   })
