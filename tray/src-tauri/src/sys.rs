@@ -30,6 +30,15 @@
 
 use tauri::Manager;
 use tauri_plugin_notifications::Notifications;
+// Gated to match its ONLY user: `.instrument` is called from
+// `notify_outbox_via_plugin`, which is `cfg(not(target_os = "windows"))` — the
+// Windows delivery path lives in `crate::win_toast` and imports its own. An
+// ungated import is therefore unused on Windows, which `-D warnings` turns into
+// a hard build failure that a macOS `cargo clippy --workspace` cannot see. Same
+// cfg-vs-cfg_attr trap as `backend_install.rs`; `cfg_attr(allow(unused))` would
+// also silence it, but keeping the gate identical to the consumer's is what
+// makes the coupling obvious at the import.
+#[cfg(not(target_os = "windows"))]
 use tracing::Instrument;
 
 /// The current user's numeric uid as a string (for `launchctl gui/<uid>/…`
