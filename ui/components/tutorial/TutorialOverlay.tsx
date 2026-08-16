@@ -20,7 +20,11 @@
 import { useEffect, useState } from 'react'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { availableTrackers } from '@/lib/integrations'
-import { centreOf, tourTarget, type GhostCard, type StageChoice } from './engine'
+import {
+  CHAPTERS, centreOf, tourTarget,
+  type AwaitKind, type ChapterId, type GhostCard, type StageChoice,
+} from './engine'
+import { useTypewriter } from './useTypewriter'
 
 /** Where the un-anchored narration bar sits, measured from the top of the viewport.
  *
@@ -169,7 +173,7 @@ function useRect(selector: string | null): { rect: DOMRect | null; live: boolean
   return state
 }
 
-export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, cursorPoint, ghost, clicking, spotlight, spotlightDim, awaiting, choices, onChoose, onSkip, onSkipToDay = null }: {
+export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, cursorPoint, ghost, clicking, spotlight, spotlightDim, awaiting, chapter, choices, onChoose, onSkip, onSkipToDay = null }: {
   caption: string
   /** Render the top narration bar at headline size. Set for the whole of the day
    *  replay, which is the one stretch of the tour the user WATCHES rather than
@@ -201,7 +205,9 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
   spotlightDim: boolean
   /** True while a beat has handed control over — drives the "your turn" cue on
    *  the spotlight so a waiting user knows the app expects something of them. */
-  awaiting: boolean
+  awaiting: AwaitKind
+  /** Which chapter the progress row is on. */
+  chapter: ChapterId
   /** Answers to the question in `caption`, when a beat is asking one. Always
    *  rendered with the caption, never as a detached dialog — the question and its
    *  answers are one thing, and separating them puts two focal points on screen.
@@ -418,12 +424,8 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
               words swapped in place between beats - the bubble stayed put and its
               contents simply became different, which is the change the eye is
               least likely to notice and most likely to find abrupt. */}
-          <p key={caption} style={{
-            ...CAPTION_FONT, textWrap: 'pretty',
-            animation: 'mer-tour-say .3s cubic-bezier(.2,.8,.25,1) both',
-          }}>
-            {caption}
-          </p>
+          <CaptionBody key={caption} text={caption} />
+          {awaiting === 'click' && <ClickHint />}
           {choices && choices.length > 0 && (
             // AT THE END OF THE READING PATH, not under the first word. The
             // button that advances is what you reach for AFTER the sentence, so
@@ -472,13 +474,7 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
           padding: big ? '18px 28px' : '13px 18px', borderRadius: big ? 19 : 15,
           ...CAPTION_SURFACE,
         }}>
-          <p key={caption} style={{
-            ...CAPTION_FONT, textWrap: 'pretty',
-            animation: 'mer-tour-say .3s cubic-bezier(.2,.8,.25,1) both',
-            ...(big ? { font: '700 21px/1.35 var(--font-sans)', letterSpacing: '-.015em', textAlign: 'center' } : null),
-          }}>
-            {caption}
-          </p>
+          <CaptionBody key={caption} text={caption} big={big} />
           {choices && choices.length > 0 && (
             // AT THE END OF THE READING PATH, not under the first word. The
             // button that advances is what you reach for AFTER the sentence, so
@@ -510,14 +506,21 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
           user reaches for it, is not an escape hatch. Fixed top-right, present
           for the entire run. */}
       {onSkip && (
-        <button onClick={onSkip} className="absolute mt-body-sm" style={{
-          top: 14, right: 16, pointerEvents: 'auto',
-          color: 'var(--t-muted)', cursor: 'pointer',
-          padding: '6px 13px', borderRadius: 99,
-          background: 'var(--t-card)',
-          border: '0.5px solid var(--t-card-border)',
-          boxShadow: 'var(--pop-shadow)',
-        }}>Skip tour</button>
+        // The dots ride WITH Skip rather than sitting somewhere of their own.
+        // Both answer the same question - "how much longer is this, and how do I
+        // get out" - and a progress row parked elsewhere is one more thing on a
+        // screen the tour is already asking a lot of.
+        <div className="absolute flex items-center gap-3" style={{ top: 14, right: 16 }}>
+          <ChapterDots chapter={chapter} />
+          <button onClick={onSkip} className="mt-body-sm" style={{
+            pointerEvents: 'auto',
+            color: 'var(--t-muted)', cursor: 'pointer',
+            padding: '6px 13px', borderRadius: 99,
+            background: 'var(--t-card)',
+            border: '0.5px solid var(--t-card-border)',
+            boxShadow: 'var(--pop-shadow)',
+          }}>Skip tour</button>
+        </div>
       )}
 
       {/* DEV ONLY - `null` in a packaged build, so this is not rendered at all.
@@ -570,6 +573,11 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
           from { opacity: 0; transform: translateY(4px) }
           to   { opacity: 1; transform: none }
         }
+        /* The caret at the end of a line still being typed. useTypewriter
+           already refuses to type at all under reduced motion, so this only
+           ever renders where blinking is wanted. (No backticks in here - this
+           block is a template literal, and one would end it.) */
+        @keyframes mer-tour-blink { 0%,49% { opacity: 1 } 50%,100% { opacity: 0 } }
         @media (prefers-reduced-motion: reduce) {
           [style*="mer-tour-say"] { animation: none !important }
         }
@@ -595,6 +603,81 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
  *  the beat has not got to yet rather than the title of what it is discussing.
  *  Controls near the bottom of the window still flip up, since below genuinely
  *  does not fit there. */
+/** One narration line, typed.
+ *
+ *  SHARED BY BOTH BUBBLES on purpose - they are the same voice in two positions,
+ *  and they drifted apart once already, one inverted and one not, at different
+ *  sizes. The typing itself lives in `useTypewriter`, which the takeover uses
+ *  too, so the whole tour reads at one pace.
+ *
+ *  Clicking the line lands the rest of it. Same reasoning as the takeover's
+ *  click-anywhere: a line typed at reading speed is a pace, not a gate. */
+function CaptionBody({ text, big }: { text: string; big?: boolean }) {
+  const { shown, done, finish } = useTypewriter(text)
+  return (
+    <p onClick={finish} style={{
+      ...CAPTION_FONT, textWrap: 'pretty',
+      // The fade still runs on arrival - the typing replaces the words appearing
+      // all at once, not the bubble itself settling into place.
+      animation: 'mer-tour-say .3s cubic-bezier(.2,.8,.25,1) both',
+      cursor: 'default',
+      ...(big ? { font: '700 21px/1.35 var(--font-sans)', letterSpacing: '-.015em', textAlign: 'center' } : null),
+    }}>
+      {shown}
+      {!done && (
+        <span aria-hidden style={{
+          display: 'inline-block', width: 2, height: '.9em', marginLeft: 3,
+          verticalAlign: '-.1em', background: 'currentColor', opacity: .75,
+          animation: 'mer-tour-blink 1s step-end infinite',
+        }} />
+      )}
+    </p>
+  )
+}
+
+/** Says why the ring is pulsing.
+ *
+ *  The ring has always pulsed while a beat was blocked on the user, and nothing
+ *  said what it wanted - so a waiting beat and a stuck one looked identical, and
+ *  the difference is exactly what a first-time user cannot infer. Rendered only
+ *  for `awaiting === 'click'`: the other kind of wait is a field to type in, and
+ *  telling someone to click it would be a confidently wrong instruction. */
+function ClickHint() {
+  return (
+    <div className="flex items-center gap-2 mt-2.5">
+      <span aria-hidden style={{
+        width: 7, height: 7, borderRadius: 999, background: 'var(--t-accent)',
+        animation: 'mer-tour-pulse 1.8s ease-out infinite',
+      }} />
+      <span className="mt-label" style={{ color: 'var(--t-accent)', letterSpacing: '.1em' }}>
+        Click the highlighted card to continue
+      </span>
+    </div>
+  )
+}
+
+/** Where the tour has got to, as one dot per chapter.
+ *
+ *  NO DENOMINATOR IS PRINTED - see `CHAPTERS` for why a "step N of M" would be a
+ *  promise this tour cannot keep. Rendered small and low-contrast: it answers
+ *  "how much more of this is there" for someone who thought to ask, and is not
+ *  supposed to compete with the sentence above it. */
+function ChapterDots({ chapter }: { chapter: ChapterId }) {
+  const at = CHAPTERS.findIndex((c) => c.id === chapter)
+  return (
+    <div className="flex items-center gap-1.5" aria-hidden>
+      {CHAPTERS.map((c, i) => (
+        <span key={c.id} style={{
+          width: 5, height: 5, borderRadius: 999,
+          background: i <= at ? 'var(--t-accent)' : 'var(--t-hair)',
+          opacity: i === at ? 1 : i < at ? 0.4 : 1,
+          transition: 'background .3s ease, opacity .3s ease',
+        }} />
+      ))}
+    </div>
+  )
+}
+
 function AnchoredCaption({ rect, children }: { rect: DOMRect; children: React.ReactNode }) {
   const W = 330
   const GAP = CAPTION_GAP
@@ -759,7 +842,7 @@ function ChoiceButton({ choice, primary, onChoose }: {
  *  own. Each one's throw is derived from its index, not randomised, so the burst
  *  is identical on every run and on a replay: a first-run screen that looks
  *  different each time it is seen is a first-run screen that looks unfinished. */
-function Confetti() {
+export function Confetti() {
   const HUES = ['var(--t-accent)', 'var(--color-state-approved)', 'var(--color-state-pending)']
   return (
     <span className="relative block mx-auto mb-4" style={{ width: 74, height: 62 }} aria-hidden>

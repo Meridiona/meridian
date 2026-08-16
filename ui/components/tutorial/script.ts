@@ -37,7 +37,7 @@
 
 import { availableTrackerNames } from '@/lib/integrations'
 import { MIN_TITLE_WORDS, titleWords } from '@/components/plan/useTaskComposer'
-import { consumeLockOutcome, type Stage } from './engine'
+import { consumeLockOutcome, type Stage, type TakeoverBeat } from './engine'
 import { runDayHalf } from './scriptDay'
 
 /** Human "2m 14s" / "47s" from whole seconds.
@@ -52,39 +52,75 @@ export function fmtSetupElapsed(secs: number): string {
   return s ? `${m}m ${s}s` : `${m}m`
 }
 
-/** The two lines under the wordmark in the title sequence — an opening and its
- *  footnote, revealed a word at a time.
+/** The two story beats the tour opens on, before any product is on screen.
  *
  *  Copy lives here with every other line the walkthrough says, rather than in
  *  the component that animates it — the tour's whole script should be readable
  *  in one file, and the wording is reviewed far more often than the animation.
  *
- *  Two facts, no more: that this is a tour, and that it is short. What Meridian
- *  actually does is the first narration beat's job, said over the user's own
- *  screen where it means something; stacking it here turned the open into a
- *  four-card slideshow in front of someone who has not seen the product yet.
+ *  OPENS ON THE PROBLEM, NOT ON ITSELF. The old title sequence said a tour was
+ *  starting and that it was quick - two true facts about the tour, told to
+ *  someone with no reason yet to care about it. These name the day they just
+ *  had and what it cost them, and hand over at the point where "there is another
+ *  way" is worth hearing. What Meridian actually DOES is still the first
+ *  narration beat's job, said over their own screen where it means something.
  *
- *  NO MINUTE COUNT. It said "about 2 minutes", which was true of the old flow
- *  and stopped being true once the tour took over connecting a tracker and an AI
- *  CLI: an OAuth round-trip through a browser, a board to pick, an install that
- *  may or may not already be there. Most of that time is spent outside our
- *  window, on someone else's site, so no number we print can be right for both
- *  the user who has Jira open in the next tab and the one chasing an admin for
- *  approval. A promise a first-run screen visibly breaks costs more trust than
- *  the number ever bought. */
-// Opens on the OFFER, not on the transition. "Let's get started" says a thing
-// is beginning without saying what, which spends the first line of the tour on
-// the fact that there is a tour. Naming the day instead frames everything that
-// follows - the first real beat asks what they are working on today, so the
-// opening line is the question that beat answers.
-//
-// Line two is unchanged and load-bearing: a tour that takes the whole window
-// has to say it ends. See the intro tests for why it promises "quick" rather
-// than a number.
-export const INTRO_LINES = [
-  'Let me help you with your day.',
-  "We'll take you around - it's quick.",
+ *  THE SECOND SUB IS LOAD-BEARING, not scene-setting: a tour that takes the
+ *  whole window has to say it ends. It survives verbatim from the old opening,
+ *  and `tutorial-sample-day` pins it.
+ *
+ *  NO MINUTE COUNT, in that line or anywhere else. It once said "about 2
+ *  minutes", which was true of the old flow and stopped being true when the tour
+ *  took over connecting a tracker and an AI CLI: an OAuth round-trip through a
+ *  browser, a board to pick, an install that may or may not already be there.
+ *  Most of that time is spent outside our window, on someone else's site, so no
+ *  number we print can be right for both the user who has Jira open in the next
+ *  tab and the one chasing an admin for approval. A promise a first-run screen
+ *  visibly breaks costs more trust than the number ever bought - which is also
+ *  why the progress row shows dots and never a denominator (see `CHAPTERS`). */
+export const OPENING: TakeoverBeat[] = [
+  {
+    kicker: 'Meridian',
+    // Illustrative, and written to be recognisable rather than accurate - the
+    // tour cannot know what they did yesterday. The shape of the day is the
+    // point, and the second line is what makes it land.
+    line: "Yesterday you fixed a bug, reviewed a teammate's change, and sat in two meetings.",
+    sub: "By tonight you'll remember about half of it.",
+    // The mark and wordmark ride this beat only. Everywhere else they would be
+    // branding for its own sake, in front of someone already using the product.
+    mark: true,
+    // No button. See `Stage.takeover`.
+    hold: 2600,
+  },
+  {
+    kicker: 'The part nobody likes',
+    line: 'Then you spend the last twenty minutes writing it all down.',
+    sub: 'Digging back through commits, tabs and Slack to reconstruct a day you already lived. '
+      + "We'll take you around - it's quick.",
+    cta: "There's another way",
+  },
 ]
+
+/** The seam: everything before it was the user giving Meridian something, and
+ *  everything after is Meridian showing what it does back.
+ *
+ *  The script already treated this as its turning point - it is where the
+ *  confetti used to be, and was removed from for marking the wrong thing (the
+ *  finish line is the last beat of `scriptDay`, not this). A takeover is what
+ *  that moment actually wanted: a pause, a change of surface, and one line
+ *  saying the asking is over.
+ *
+ *  It does NOT stand in front of the replay. `scriptDay` argues, correctly, that
+ *  the nine-hours-in-twelve-seconds build narrates itself and that anything
+ *  placed before it is a step between the user and the one thing that half
+ *  exists to show. This sits on the near side of the seam - after the planner
+ *  closes, before the example day begins. */
+export const SEAM: TakeoverBeat = {
+  kicker: 'Six hours later',
+  line: 'You just worked.',
+  sub: 'Here is what Meridian wrote down while you did.',
+  cta: 'Show me the day',
+}
 
 /** A card in the board column. The tour cannot name a ticket - the board is
  *  whatever the user's own tracker returned - so every beat that needs one
@@ -235,26 +271,23 @@ export async function runScript(s: Stage): Promise<void> {
   // condition they are about to leave. Demonstrating on a fake populated day
   // first would make the real one, seen thirty seconds later, read as broken.
 
-  // ── 1. Title sequence ───────────────────────────────────────────────────
-  // Named as a tour up front. An earlier version dropped the user mid-gesture
-  // ("click this card") with no frame for what was happening or how long it
-  // would take, which reads as the app seizing control rather than offering
-  // something.
+  // ── 1. The opening, as a story rather than a title card ─────────────────
+  // TWO STORY BEATS BEFORE ANY PRODUCT. This used to be a title sequence - the
+  // mark, the name, and two lines saying a tour was starting. That framed the
+  // tour but sold nothing: it told a first-time user what was about to happen to
+  // them, at the one moment they have no reason yet to care.
   //
-  // This is the ONLY beat that advances on a timer, and it is the only one that
-  // should: there is nothing on screen to point at yet, so there is nothing for
-  // a slower reader to lose. From beat 2 on, every narration line waits on Next,
-  // because a voiceover plays over them and cannot be synced to hardcoded
-  // millisecond guesses. `pause` survives only for mechanical gaps (a modal
-  // finishing its open transition).
+  // These say what the day they just had cost them, and hand over at the point
+  // the answer is worth hearing. Everything after is the same tour it always
+  // was; what changed is that it now opens on the problem instead of on itself.
   //
-  // It survives while the REPLAY's opening line did not, and the difference is
-  // what is behind them. That one sat in front of a deliberately blank timeline
-  // explaining what was about to happen there - a step between the user and the
-  // only thing that half exists to show. This one runs before there is any
-  // product on screen at all, so it stands in front of nothing, and it is what
-  // says "this is a tour" before the tour takes the window.
-  await s.intro(INTRO_LINES)
+  // They stand in front of nothing - there is no product on screen yet - which
+  // is why the first advances on a `hold` while the second waits on its button.
+  // A button on the very first card makes the product ask permission to start
+  // something the user just asked for. From the second beat onward, advance is
+  // under their thumb, where reading speed is theirs to set.
+  s.chapter('intro')
+  for (const beat of OPENING) await s.takeover(beat)
 
   // ── 2. The daily plan — the first thing it needs ────────────────────────
   // Straight from the title card into a hand on the wheel. There are no
@@ -270,6 +303,10 @@ export async function runScript(s: Stage): Promise<void> {
   // matching work against them. A user who wanders off here gets a tour about a
   // plan they never made. Everywhere else the spotlight is a ring only — see
   // `Stage.spotlight` — and Skip is still one click away in the corner.
+  // The tracker connect lives inside this chapter rather than being one of its
+  // own - a user who says "solo" would otherwise watch the progress row lose a
+  // step. See `CHAPTERS`.
+  s.chapter('plan')
   s.say("First: tell Meridian what you're working on today. Go ahead and click here.")
   s.spotlight('[data-tour="plan-open"]', { dim: true })
   await s.point('[data-tour="plan-open"]')
@@ -739,5 +776,10 @@ export async function runScript(s: Stage): Promise<void> {
   // demonstrates what it gives BACK, on a pre-built example day. Both halves grew
   // past the point where one file could be read top to bottom, which is the whole
   // reason the script is written as narrative in the first place.
+  //
+  // The seam gets a beat of its own, on the near side: the planner has closed,
+  // the example day has not begun, and there is nothing on screen worth pointing
+  // at. See `SEAM`.
+  await s.takeover(SEAM)
   await runDayHalf(s, { ai, usesTracker })
 }

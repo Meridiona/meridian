@@ -42,12 +42,43 @@
 import { load } from '@/lib/bridge'
 import { connectedTrackers } from '@/lib/integrations'
 import type { IntegrationsResponse } from '@/lib/api-types'
-import type { Stage } from './engine'
+import type { Stage, TakeoverBeat } from './engine'
 import { FOCUS_TASK_ID, OFFPLAN_TASK_ID } from './sampleDay'
 
 /** Selector for a day-task card, matching the `data-task-id` DayTaskColumn
  *  stamps on each `TaskBand`. */
 const card = (id: string) => `[data-task-id="${id}"]`
+
+/** The last screen of a first run, and the only moment where "you are done" is
+ *  literally true.
+ *
+ *  ANSWERS THE OPENING. `script.ts`'s first beat says that by tonight they will
+ *  remember about half of the day they just had; this is the reply to that, in
+ *  the same register and on the same surface. A tour whose close does not answer
+ *  its open is a demo with cards on either end.
+ *
+ *  THE ONE CELEBRATION lives here. It used to fire mid-tour, at the seam where
+ *  the user stops giving Meridian things and starts being shown what it does
+ *  back - a real milestone, but not the finish line, and a tour that throws
+ *  confetti twice has thrown it at nothing.
+ *
+ *  Where the off switch lives rides along in the sub rather than getting a beat
+ *  of its own: it is worth knowing, and a rehearsal against a picture of a tray
+ *  menu is not. */
+const CLOSING: TakeoverBeat = {
+  kicker: "That's Meridian",
+  line: 'Tomorrow, just work.',
+  // THREE FACTS, and each one is load-bearing enough to have its own test.
+  // Who stays in charge (the tour's answer to "is this thing writing for me?"),
+  // where the off switch is (the question an ambient tool is trusted on, asked
+  // before it is trusted rather than after), and why any of this was built. That
+  // last one is the only place in the whole tour the product says so.
+  sub: "We'll keep the notes - you'll still be the one who signs them off. "
+    + 'Meridian runs from your tray; pause it there any time. '
+    + 'Here is hoping your work stops going unnoticed.',
+  cta: 'Start my day',
+  celebrate: true,
+}
 
 /** What part one learned, and part two has to stay consistent with. */
 export interface DayHalfContext {
@@ -88,6 +119,7 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   const { ai, usesTracker } = ctx
   const board = await hasBoard(usesTracker)
 
+  s.chapter('day')
   // ── 3. The timeline, BUILT rather than shown ────────────────────────────
   // The half of the product that happens while the user is not looking, which is
   // precisely why it cannot be taught with a finished screenshot. A full day
@@ -146,6 +178,7 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   await s.next('A whole day, written up while you worked - and you typed none of it.')
   s.spotlight(null)
 
+  s.chapter('task')
   // ── 4. One task, opened — the first real "how did it know that" ─────────
   // FOCUS_TASK_ID is the card everything from here to the post happens on: two
   // segments (so the folding claim is visible) AND a ticket that is on the day's
@@ -189,6 +222,7 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   await s.next('What you did, written from the work itself.')
   s.spotlight(null)
 
+  s.chapter('worklog')
   // ── 5. The worklog, end to end, on the card they just opened ────────────
   // THE FEATURE THE PRODUCT IS BOUGHT FOR, and the tour drives it rather than
   // describing it: Generate, a match with a number on it, Approve, Posted - four
@@ -328,6 +362,7 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   s.selectTask(null)
   await s.pause(500)
 
+  s.chapter('summary')
   // ── 6. The daily summary, SECTION BY SECTION ────────────────────────────
   // This used to be two lines over a card with a headline and three numbers on
   // it: open it, say "it says what you finished and what slipped", close it. The
@@ -465,6 +500,10 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   await s.pause(200)
   await s.next('Filed and written up, from work that was never on a ticket. Example day - nothing went out.')
 
+  // The AI ask and the end-of-day time both live in this last chapter rather
+  // than being chapters - each is conditional, and a row that lost a dot when a
+  // user already had a provider would be counting something other than progress.
+  s.chapter('wrap')
   // ── 8. Out of the summary, and WHEN it arrives ──────────────────────────
   // NO BEAT SAYING "you do not have to build any of this". The question it
   // answered - "do I come here and do that every evening?" - is answered better
@@ -570,9 +609,14 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   //
   // AND THE LINE IS ADDRESSED TO THEM, not to the product. Every other beat in
   // the tour describes what Meridian does; this one is the only place it says why
-  // it was built, and "your work stops going unnoticed" is the whole of it.
-  await s.next(
-    'That is everything. Meridian runs from your tray - pause it there any time. Here is hoping your work stops going unnoticed.',
-    'Finish', { center: true, celebrate: true })
+  // it was built, and "you will still be the one who signs them off" is the whole
+  // of it - the promise is that the writing stops being your job, not that the
+  // judgement does.
+  //
+  // A TAKEOVER, matching the two the tour opened on. The close answers the
+  // opening directly ("by tonight you'll remember about half of it" → "tomorrow,
+  // just work"), and answering it from the same surface is what makes the tour
+  // feel like one thing rather than a demo bracketed by cards.
+  await s.takeover(CLOSING)
   s.say('')
 }

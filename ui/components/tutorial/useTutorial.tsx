@@ -28,11 +28,12 @@ import { connectedTrackers } from '@/lib/integrations'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import {
   Aborted, setTutorialRunning, sleep, tourTarget, tween, waitForElement,
-  type GhostCard, type Stage, type StageChoice, type StageModal,
+  type AwaitKind, type ChapterId, type GhostCard, type Stage, type StageChoice, type StageModal,
+  type TakeoverBeat,
 } from './engine'
 import { runScript } from './script'
 import { sampleOverview, sampleTasks } from './sampleDay'
-import { TutorialIntro } from './TutorialIntro'
+import { TutorialTakeover } from './TutorialTakeover'
 import { TutorialOverlay } from './TutorialOverlay'
 import { TutorialScreen } from './TutorialScreen'
 
@@ -139,7 +140,11 @@ export function useTutorial(opts: {
   const [clicking, setClicking] = useState(false)
   const [spotlight, setSpotlight] = useState<string | null>(null)
   const [spotlightDim, setSpotlightDim] = useState(false)
-  const [awaiting, setAwaiting] = useState(false)
+  // WHAT the tour is waiting for, not merely THAT it is. The overlay tells the
+  // user which it is - "click the highlighted card" over a field they are
+  // meant to type in would be a confidently wrong instruction, which is worse
+  // than the silence it replaced.
+  const [awaiting, setAwaiting] = useState<AwaitKind>(false)
   const [choices, setChoices] = useState<StageChoice[] | null>(null)
   // The surface's own state — all of it lives here rather than in the shell,
   // which is what keeps the shell free of walkthrough concerns.
@@ -160,8 +165,14 @@ export function useTutorial(opts: {
   // DURING the tour, so a value threaded in at mount would still be null by the
   // time the post beat needs to name their board.
   const [provider, setProvider] = useState<{ id: string; name: string } | null>(null)
-  // Non-null only while the title sequence is playing.
-  const [intro, setIntro] = useState<string[] | null>(null)
+  // Non-null only while a story beat owns the window. The opening is one of
+  // these too - it is a takeover with a mark and a hold, which is why there is
+  // no separate title-sequence state any more.
+  const [takeover, setTakeover] = useState<TakeoverBeat | null>(null)
+  // Which chapter the progress row is on. Never resets backwards: the row only
+  // fills forwards, and a beat that re-enters an earlier surface (the AI detour
+  // returning to the planner) is still further through the tour than it was.
+  const [chapter, setChapter] = useState<ChapterId>('intro')
 
   const abortRef = useRef<AbortController | null>(null)
   // The click a beat is currently waiting on. A ref (not state) because the
@@ -171,8 +182,10 @@ export function useTutorial(opts: {
   // Resolver for an open `ask`/`next`, settled from outside the render that
   // created it — same reasoning as `pendingRef`.
   const choiceRef = useRef<((v: string | null) => void) | null>(null)
-  // Resolver for the title sequence, settled by the component when it finishes.
-  const introRef = useRef<(() => void) | null>(null)
+  // Resolver for an open takeover, settled by the component when the user moves
+  // on (a CTA press, or a `hold` expiring). Same reasoning as `choiceRef`: it is
+  // settled from outside the render that created it.
+  const takeoverRef = useRef<(() => void) | null>(null)
 
   const finish = useCallback(() => {
     abortRef.current?.abort()
@@ -180,10 +193,17 @@ export function useTutorial(opts: {
     pendingRef.current = null
     choiceRef.current?.(null)
     choiceRef.current = null
-    introRef.current?.()
-    introRef.current = null
+    takeoverRef.current?.()
+    takeoverRef.current = null
     setReplayNote(null)
-    setIntro(null)
+    setTakeover(null)
+    // BACK TO THE START, and this is not optional. The hook is not unmounted
+    // between runs - the shell keeps it mounted and `replay` re-arms in place -
+    // so a chapter left where the last run stopped is where the NEXT one begins.
+    // Someone who skips at the worklog and replays from Settings would open on
+    // the first story beat with five dots already filled, which is the one thing
+    // the row cannot say. It only ever fills forwards WITHIN a run.
+    setChapter('intro')
     setRunning(false)
     setTutorialRunning(false)
     // Release the tray's auto-opens. This is the fast path, not the only one -
@@ -336,21 +356,30 @@ export function useTutorial(opts: {
         // user cannot see.
         ;(tourTarget(`[data-task-id="${id}"]`) as HTMLElement | null)?.click()
       },
-      intro: async (lines) => {
+      takeover: async (beat) => {
+        // The cursor and any ring belong to the beat that just ended; this
+        // surface covers them, and leaving them running underneath means they
+        // are mid-glide when it lifts.
+        parkCursor()
         const sig = signal()
-        setIntro(lines)
+        setTakeover(beat)
         await new Promise<void>((resolve) => {
+          // Guarded against firing twice: `finish` settles this on abort AND the
+          // component calls it when the user moves on. Whichever lands first
+          // clears the ref, so the second is a no-op rather than a resolve on a
+          // promise nobody is holding.
           const settle = () => {
-            introRef.current = null
+            takeoverRef.current = null
             sig.removeEventListener('abort', settle)
             resolve()
           }
           sig.addEventListener('abort', settle, { once: true })
-          introRef.current = settle
+          takeoverRef.current = settle
         })
-        setIntro(null)
+        setTakeover(null)
         if (sig.aborted) throw new Aborted()
       },
+      chapter: (id) => setChapter(id),
       next: async (text, label = 'Next', o) => { await stageAsk(text, [{ label, value: 'next' }], o?.center, o?.celebrate) },
       replayDay: async (marks) => {
         const sig = signal()
@@ -403,7 +432,7 @@ export function useTutorial(opts: {
         const sig = signal()
         const el = await waitForElement(sel, sig)
         if (!el) return false
-        setAwaiting(true)
+        setAwaiting('input')
         const SETTLE_MS = 700
         const got = await new Promise<boolean>((resolve) => {
           let done = false
@@ -480,7 +509,7 @@ export function useTutorial(opts: {
         const el = await waitForElement(sel, sig)
         if (!el) return false
         const words = (v: string) => v.trim().split(/\s+/).filter(Boolean).length
-        setAwaiting(true)
+        setAwaiting('input')
         const got = await new Promise<boolean>((resolve) => {
           let done = false
           const settle = (v: boolean) => {
@@ -593,7 +622,7 @@ export function useTutorial(opts: {
         // Target never rendered — do not strand the user waiting for something
         // that cannot be clicked.
         if (!el) return false
-        setAwaiting(true)
+        setAwaiting('click')
         const clicked = await new Promise<boolean>((resolve) => {
           let done = false
           const settle = (v: boolean) => {
@@ -834,7 +863,7 @@ export function useTutorial(opts: {
           caption={caption} centered={centered} big={captionBig} celebrate={celebrate}
           cursorAt={cursorAt} cursorPoint={cursorPoint}
           ghost={ghost} clicking={clicking}
-          spotlight={spotlight} spotlightDim={spotlightDim} awaiting={awaiting}
+          spotlight={spotlight} spotlightDim={spotlightDim} awaiting={awaiting} chapter={chapter}
           choices={choices} onChoose={(v) => choiceRef.current?.(v)}
           // EVERY run gets a skip, first run included.
           //
@@ -864,10 +893,14 @@ export function useTutorial(opts: {
           // out for a real first run.
           onSkipToDay={TOUR_DEV_TOOLS ? skipToDay : null}
         />
-        {/* Above the overlay, opaque: the title sequence owns the screen
-            outright, so nothing from the tour or the dashboard shows through
-            underneath it while it plays. */}
-        {intro && <TutorialIntro lines={intro} onDone={() => introRef.current?.()} />}
+        {/* Above the overlay, opaque: a story beat owns the screen outright, so
+            nothing from the tour or the dashboard shows through underneath it.
+            It carries its own Skip for exactly that reason - it covers the
+            overlay's. */}
+        {takeover && (
+          <TutorialTakeover beat={takeover} chapter={chapter} skipLabel="Skip tour"
+            onNext={() => takeoverRef.current?.()} onSkip={finish} />
+        )}
       </>
     ) : null,
   }

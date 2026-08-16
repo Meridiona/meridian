@@ -207,14 +207,35 @@ export interface Stage {
    *  timeout — unlike `waitForClick`, nothing sensible can be assumed on the
    *  user's behalf here, and the walkthrough is skippable at any moment anyway. */
   ask(question: string, options: StageChoice[]): Promise<string | null>
-  /** Play the full-screen title sequence and resolve when it is done.
+  /** Take the whole window for one line, and resolve when the user moves on.
    *
-   *  The one beat that advances on its own. It used to be two centred cards
-   *  behind a "Let's go" button, which made the product ask permission to start
-   *  something the user had just asked for, and put a click between them and a
-   *  voiceover that begins the moment the tour does. Everything AFTER this is
-   *  back on Next, where reading speed is the user's to set. */
-  intro(lines: string[]): Promise<void>
+   *  THE STORY BEATS. Between the hands-on stretches the tour steps back and
+   *  says what all of it is FOR - and that cannot be done from a bubble parked
+   *  beside a button, because there is nothing to point at. A takeover has no
+   *  target, no cursor and no ring: it is the tour talking rather than
+   *  instructing, and the change of surface is what tells the user which of the
+   *  two is happening.
+   *
+   *  Used three times, at the points the script already treats as structural:
+   *  the opening, the seam where the tour stops asking for things and starts
+   *  showing them, and the close.
+   *
+   *  `hold` is the opening's escape from a CTA. A button on the very first card
+   *  makes the product ask permission to start something the user just asked
+   *  for, and puts a click between them and a voiceover that begins when the
+   *  tour does - so the opening advances itself, and everything after it is back
+   *  under the user's thumb where reading speed is theirs to set. */
+  takeover(beat: TakeoverBeat): Promise<void>
+  /** Mark which chapter of the tour is running, for the progress row.
+   *
+   *  Chapters, not beats. The tour BRANCHES - board or solo, a provider already
+   *  connected or not, the planner opened or skipped - so the number of beats a
+   *  given user sees is not knowable in advance, and a row built from them would
+   *  gain and lose steps as they went. [`CHAPTERS`] is fixed for everyone and the
+   *  branches live INSIDE its entries, so the row only ever fills forwards.
+   *
+   *  Deliberately no denominator is ever printed from this - see [`CHAPTERS`]. */
+  chapter(id: ChapterId): void
   /** Narrate `text` and wait for the user to press Next.
    *
    *  This is the walkthrough's default way to move between beats, replacing the
@@ -257,6 +278,66 @@ export interface Stage {
   /** True once the user has skipped; every beat should bail on it. */
   readonly aborted: boolean
 }
+
+/** One full-screen story beat - see [`Stage.takeover`]. */
+export interface TakeoverBeat {
+  /** The small label above the line. Names the moment ("The part nobody
+   *  likes"), rather than numbering it. */
+  kicker: string
+  /** The hero, typed a character at a time. One sentence: this is the register
+   *  where the tour is talking, and a paragraph in 76px type is a wall. */
+  line: string
+  /** The footnote, revealed once the hero has landed. Optional because the
+   *  opening's second line IS its hero. */
+  sub?: string
+  /** Label for the button that moves on. Omit together with `hold`. */
+  cta?: string
+  /** Advance automatically this many milliseconds after the line lands, instead
+   *  of waiting on a button. The opening only - see [`Stage.takeover`]. */
+  hold?: number
+  /** Show the app mark and wordmark above the kicker. The opening only: this is
+   *  the title sequence, and everywhere else it would be branding for its own
+   *  sake in front of someone already using the product. */
+  mark?: boolean
+  /** Throw the confetti. The CLOSE only - a tour that celebrates every step
+   *  celebrates nothing, and this is the one screen where "you are done" is
+   *  literally true. */
+  celebrate?: boolean
+}
+
+/** The tour's chapters, in order, as the progress row draws them.
+ *
+ *  FIXED FOR EVERY USER, which is the whole point. Conditional asks (the tracker
+ *  connect, the AI provider) live INSIDE an entry rather than being entries, so
+ *  a user who declines one does not watch the row lose a dot half way through.
+ *
+ *  NO DENOMINATOR IS EVER PRINTED FROM THIS. The design this was ported from
+ *  shows "Step 4 of 12"; the tour branches, so for some users that number would
+ *  be a claim the screen visibly breaks - and this file has already made that
+ *  call once, when `INTRO_LINES` dropped "about 2 minutes" for the same reason.
+ *  Dots say "roughly this much left" and promise nothing. */
+export const CHAPTERS = [
+  { id: 'intro', label: 'Welcome' },
+  { id: 'plan', label: 'Your plan' },
+  { id: 'day', label: 'Your day' },
+  { id: 'task', label: 'One task' },
+  { id: 'worklog', label: 'The write-up' },
+  { id: 'summary', label: 'Your summary' },
+  { id: 'wrap', label: 'Wrapping up' },
+] as const
+
+export type ChapterId = (typeof CHAPTERS)[number]['id']
+
+/** What the tour is currently waiting on the user for, or `false` if it is
+ *  narrating.
+ *
+ *  The KIND matters, not just the fact. A ringed control with "click the
+ *  highlighted card to continue" under it is exactly right for `waitForClick`
+ *  and confidently wrong for `waitForMinWords`, which rings a field the user has
+ *  to type more words into. A wrong instruction is worse than the silence it
+ *  replaced, so the two are told apart at the source rather than guessed at from
+ *  what happens to be on screen. */
+export type AwaitKind = false | 'click' | 'input'
 
 /** One narration line during [`Stage.replayDay`], pinned to the wall-clock hour
  *  it should appear on (9 = 9 AM … 18 = 6 PM). Keyed to the hour rather than to
