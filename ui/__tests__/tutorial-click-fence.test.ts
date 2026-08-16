@@ -32,7 +32,11 @@ describe('the walkthrough fences off stray clicks', () => {
     // One fence for every ringed beat. `spotlightDim` chooses whether it is
     // BLURRED, never whether it exists - the dimmed beat keeps its blur and
     // every other beat gets the same panes with nothing drawn on them.
-    expect(overlay).toContain('{ring && <Cutout rect={ring} dim={spotlightDim} />}')
+    //
+    // `!handover` is the one exception, and it is the subject of a test file of
+    // its own (`tutorial-handover-unfences.test.ts`): while the tour is waiting
+    // on the user to drive the app themselves, a fence is what stops them.
+    expect(overlay).toContain('{ring && !handover && <Cutout rect={ring} dim={spotlightDim} />}')
   })
 
   it('fences narration beats too, which have no ring to build panes around', () => {
@@ -43,7 +47,7 @@ describe('the walkthrough fences off stray clicks', () => {
     // stray click hit Cancel or started a flow the tour was not expecting and
     // the walkthrough carried on describing a screen that no longer existed.
     // Reported from real runs twice.
-    expect(overlay).toContain('{!ring && <FullFence />}')
+    expect(overlay).toContain('{!ring && !handover && !awaiting && <FullFence />}')
     expect(overlay).toContain('function FullFence()')
   })
 
@@ -102,7 +106,7 @@ describe('the walkthrough fences off stray clicks', () => {
     // The full-viewport fence needs the SAME guarantee, and needs it more: it
     // covers the entire screen, so if it ever painted over Skip the user would
     // have no way out of the walkthrough at all.
-    const fullFence = overlay.indexOf('{!ring && <FullFence />}')
+    const fullFence = overlay.indexOf('<FullFence />}')
     expect(fullFence).toBeGreaterThan(-1)
     expect(caption).toBeGreaterThan(fullFence)
     expect(skip).toBeGreaterThan(fullFence)
