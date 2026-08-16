@@ -151,8 +151,15 @@ pub async fn resize_setup_window(
     // There's nothing to fix here anyway while full-screen — the card's own
     // `transform: scale(...)` in page.tsx already grows it to fill whatever
     // size the window actually is.
-    if win.is_fullscreen().unwrap_or(false) {
-        tracing::debug!("setup window is full-screen - resize skipped");
+    //
+    // `unwrap_or(TRUE)`, deliberately: the guards fail CLOSED. An errored query
+    // tells us nothing about the window, and the two outcomes are not
+    // symmetric - guessing "not full-screen" performs the very resize the
+    // guard exists to prevent, while guessing "full-screen" skips a resize
+    // that was never needed anyway (the card's `transform: scale(...)` fills
+    // whatever size the window is). Same reasoning on both guards below.
+    if win.is_fullscreen().unwrap_or(true) {
+        tracing::debug!("setup window is full-screen or unreadable - resize skipped");
         return Ok(());
     }
     // Same reasoning for a MAXIMIZED window, which is the shape the hazard
@@ -166,8 +173,8 @@ pub async fn resize_setup_window(
     // un-maximized itself. Nothing needs resizing while maximized anyway: the
     // card's own `transform: scale(...)` in page.tsx already fills whatever
     // size the window is.
-    if win.is_maximized().unwrap_or(false) {
-        tracing::debug!("setup window is maximized - resize skipped");
+    if win.is_maximized().unwrap_or(true) {
+        tracing::debug!("setup window is maximized or unreadable - resize skipped");
         return Ok(());
     }
     let resize = win
@@ -403,6 +410,56 @@ mod tests {
         assert!(!is_openable_url(""));
         // Multibyte content must not panic the scheme check.
         assert!(!is_openable_url("héllo→"));
+    }
+
+    /// `resize_setup_window`'s two skip-guards must fail CLOSED.
+    ///
+    /// They need a live window to exercise, so this is source-scanned - the
+    /// defect is in which way the `Result` collapses, which is visible in the
+    /// text and nowhere a unit test can reach.
+    ///
+    /// THE BUG: both guards read `.unwrap_or(false)`. A failed query therefore
+    /// meant "not maximized, not full-screen" and the resize went ahead - and
+    /// the resize IS the hazard the guards exist to prevent (on Win32,
+    /// `SetWindowPos` on a `WS_MAXIMIZE` window clears the maximized state, so
+    /// the wizard un-maximizes itself mid-step). Guessing wrong in that
+    /// direction costs the exact bug; guessing wrong the other way costs
+    /// nothing, because the card's own `transform: scale(...)` already fills
+    /// whatever size the window is. An unknown window state is not a licence
+    /// to resize it.
+    #[test]
+    fn the_resize_guards_fail_closed_when_the_window_state_is_unknown() {
+        // Truncated at the test module so this scan cannot match its own
+        // literals and pass forever (that trap has been hit here before).
+        let whole = include_str!("system.rs");
+        let src = &whole[..whole
+            .find("#[cfg(test)]")
+            .expect("system.rs lost its test module marker")];
+        let body = src
+            .split_once("pub async fn resize_setup_window(")
+            .expect("resize_setup_window is gone")
+            .1;
+        // Bounded at the function's closing brace. Scanning to end-of-file would
+        // drag in every later fn - `dismiss_popover`'s `is_visible().unwrap_or(false)`
+        // is next, and it gates only a debug log (the `hide()` runs either way), so a
+        // whole-file scan would fail on code that has no such hazard.
+        let body = &body[..body.find("\n}\n").expect("resize_setup_window has no end")];
+
+        for query in ["is_fullscreen()", "is_maximized()"] {
+            let at = body
+                .find(query)
+                .unwrap_or_else(|| panic!("the {query} guard is gone"));
+            let tail = &body[at..];
+            assert!(
+                tail.starts_with(&format!("{query}.unwrap_or(true)")),
+                "{query} must fail closed: an errored query has to skip the \
+                 resize, not perform the one action the guard exists to stop"
+            );
+        }
+        assert!(
+            !body.contains(".unwrap_or(false)"),
+            "a window-state query in resize_setup_window still fails open"
+        );
     }
 
     #[cfg(target_os = "windows")]
