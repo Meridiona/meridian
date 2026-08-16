@@ -47,16 +47,46 @@ Meridian writes your worklog update and gets it ready to post. You just review i
   <img src="docs/images/worklog-draft.gif" alt="Meridian drafting a worklog update and ticket, waiting for approval before posting to Jira" width="560" />
 </p>
 
-## What You Get With Meridian
+## Questions Meridian Already Answers
 
-| The moment | What you get instead |
+| You ask | Meridian already has the answer |
 |---|---|
-| Updating Jira, or whatever your team uses, is the part of the job everyone puts off. | Meridian writes the update for you. You just check it and post. |
-| Ask yourself what you did on some random day three months ago, you probably can't say. | Meridian already wrote it down. Every day is saved, so you can look back whenever you need to. |
-| Standup's in five minutes and you're trying to piece together yesterday from memory. | It's already written. Open Meridian, copy it, done. |
-| A task was estimated at two days and took five, and nobody can really say why. | Meridian shows what actually happened, so you can see where the estimate went wrong instead of guessing. |
-| You want to get better at estimating, or just see where your time really goes, but all you have is a feeling. | Meridian has the real data behind every day, so you can see the pattern instead of guessing at it. |
+| "What did I actually do on this ticket?" | Here's the update, drafted and ready to post. |
+| "What was I even working on three months ago today?" | Here's that whole day, saved and ready to look back on. |
+| "What did I get done yesterday?" | Here's your standup, already written. |
+| "Why did this take five days when we estimated two?" | Here's what actually happened, so you can see where the estimate missed. |
+| "Where does my time actually go?" | Here's the real data behind every day, not a guess. |
 
 ## Privacy
 
 Your activity stays in one encrypted database on your machine. Analysis runs through whichever AI provider you connect, and only what a summary needs is sent to it. Diagnostics are opt-out and stripped of anything identifying before they ever leave your device.
+
+## Build from Source
+
+**Requirements:** macOS (Apple Silicon or Intel) or Windows 10/11, [Rust 1.93.1](https://www.rust-lang.org/tools/install) (pinned via `rust-toolchain.toml`, installs automatically), Node 20+, and [bun](https://bun.sh).
+
+```bash
+git clone https://github.com/Meridiona/meridian
+cd meridian
+cp .env.example .env
+bash install-dev.sh          # builds all dependencies
+bash scripts/setup-hooks.sh  # install git hooks, run this before your first commit
+bash dev-start.sh            # starts the daemon and the tray in watch mode
+```
+
+`dev-start.sh` opens two terminal windows, the Rust daemon and the Tauri tray, both of which rebuild automatically when you save a file. Capture runs in-process inside the tray, so nothing else needs to be installed or registered separately.
+
+Full setup details, including how to reset onboarding, re-download the embedder, and the exact checks CI runs before a pull request, are in **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines, maintainers, and how to submit PRs.
+
+Thanks to all contributors:
+
+<a href="https://github.com/Akarsh-Hegde"><img src="https://avatars.githubusercontent.com/u/79705687?v=4" width="50" height="50" alt="Akarsh-Hegde" style="border-radius: 50%;" /></a>
+<a href="https://github.com/adityaharishch"><img src="https://avatars.githubusercontent.com/u/116435941?v=4" width="50" height="50" alt="adityaharishch" style="border-radius: 50%;" /></a>
+
+## License
+
+Meridian is licensed under the MIT License.
