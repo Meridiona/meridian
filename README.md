@@ -51,11 +51,11 @@ Meridian writes your worklog update and gets it ready to post. You just review i
 
 | The moment | What you get instead |
 |---|---|
-| It's 5pm and you genuinely can't remember what you worked on today. | Meridian already knows. Every session, timestamped and named. |
-| Standup's in five minutes and you're scrolling through commits trying to piece together yesterday. | Your standup was already written overnight, ready to paste. |
-| A production fire eats your afternoon, and the ticket you meant to finish never got touched. | The fire gets logged too. Nothing you actually worked on goes unrecorded. |
-| It's worklog day and you're estimating how many hours went where. | Every hour was already logged, from what you actually did, not a guess. |
-| You do update your tickets, but from memory, after the fact, so the details that mattered are already gone. | Meridian was watching the whole time. The update carries the real context, including how the work ties back to what you did on that ticket days ago. |
+| Updating Jira, or whatever your team uses, is the part of the job everyone puts off. | Meridian writes the update for you. You just check it and post. |
+| Ask yourself what you did on some random day three months ago, you probably can't say. | Meridian already wrote it down. Every day is saved, so you can look back whenever you need to. |
+| Standup's in five minutes and you're trying to piece together yesterday from memory. | It's already written. Open Meridian, copy it, done. |
+| A task was estimated at two days and took five, and nobody can really say why. | Meridian shows what actually happened, so you can see where the estimate went wrong instead of guessing. |
+| You want to get better at estimating, or just see where your time really goes, but all you have is a feeling. | Meridian has the real data behind every day, so you can see the pattern instead of guessing at it. |
 
 ## Privacy
 
