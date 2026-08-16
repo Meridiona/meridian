@@ -76,6 +76,9 @@ const MAC_PANE_COPY: Record<'accessibility' | 'screen' | 'notifications', { titl
     blurb: 'Allow the applications below to record the content of your screen.',
     others: ['Terminal', 'Google Chrome'],
   },
+  // Kept for the shape of the record, but macOS Notifications no longer renders
+  // through MacSettingsPanePreview - see MacNotificationsPanePreview for why the
+  // app-list layout was the wrong pane entirely.
   notifications: {
     title: 'Notifications',
     blurb: 'Allow the applications below to send notifications.',
@@ -106,7 +109,13 @@ function MacToggleOn() {
  *  equal height (`items-stretch` in PermissionsBody), so without this the
  *  pane itself would end up a different visible size in each card depending
  *  on how much text its title/blurb wrapped to. */
-function MacSettingsPanePreview({ permissionId }: { permissionId: 'accessibility' | 'screen' | 'notifications' }) {
+// The union deliberately EXCLUDES 'notifications'. That pane is a different
+// screen in System Settings and has its own component; routing it here is the
+// exact defect this split fixed, and a type that still accepted it would let a
+// future edit reintroduce it silently. Narrowing it means the compiler rejects
+// that call instead - and `PermissionPreview`'s ternary narrows `permissionId`
+// to the remaining two for free.
+function MacSettingsPanePreview({ permissionId }: { permissionId: 'accessibility' | 'screen' }) {
   const copy = MAC_PANE_COPY[permissionId]
   return (
     <div className="w-full flex flex-col" style={{
@@ -167,8 +176,100 @@ function MacSettingsPanePreview({ permissionId }: { permissionId: 'accessibility
   )
 }
 
+/** Reconstructed macOS **Notifications** pane - the per-app detail view.
+ *
+ *  Notifications does not live in the same shape as Accessibility and Screen
+ *  Recording. Those two are one flat allow-list of apps, so a row per app with
+ *  a toggle is a faithful picture of them. Notifications is two levels deep:
+ *  the list only gets you to an app, and the switch the user actually has to
+ *  flip lives on that app's OWN page, under the heading `Allow notifications`.
+ *  Rendering it as another app list sent people looking for a row that is not
+ *  on the screen they land on.
+ *
+ *  So this mirrors the real page: the `Allow notifications` header row carrying
+ *  the one meaningful toggle, then the alert-style block and the settings rows
+ *  underneath it - blurred, exactly like the other pane's non-Meridian rows,
+ *  because they are scenery. They earn their place by being the landmarks that
+ *  make the screenshot recognisable as *that* page; without them the header row
+ *  alone could be any toggle in any settings app.
+ *
+ *  Sharp-vs-blurred does different work here than in the sibling pane. There it
+ *  separates Meridian from other apps; here there are no other apps, so it
+ *  separates the control that matters from the ones that do not. */
+function MacNotificationsPanePreview() {
+  // The three alert-placement thumbnails, the most recognisable landmark on
+  // the real page. Labels are omitted at this size - they render as unreadable
+  // 6px text - so these are shape only.
+  const placements = ['Desktop', 'Notification Center', 'Lock Screen']
+  return (
+    <div className="w-full flex flex-col" style={{
+      height: '100%', borderRadius: 10, overflow: 'hidden',
+      border: '0.5px solid var(--t-card-border)', background: '#fff',
+    }}>
+      <div className="flex items-center shrink-0" style={{ gap: 7, padding: '6px 10px', background: '#F0F0F1' }}>
+        <span style={{
+          width: 16, height: 16, borderRadius: 99, background: '#fff', border: '0.5px solid #d2d2d7',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#1d1d1f', lineHeight: 1,
+        }}>‹</span>
+        <span style={{
+          width: 16, height: 16, borderRadius: 99, background: '#fff', border: '0.5px solid #e5e5e7',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#c7c7cc', lineHeight: 1,
+        }}>›</span>
+      </div>
+
+      {/* THE control. Same sharp + accent-tinted treatment the sibling pane
+         gives its Meridian row, for the same reason: it is the one thing on
+         this picture the user has to act on. */}
+      <div className="flex items-center shrink-0" style={{
+        gap: 9, margin: '6px 8px 0', padding: '7px 10px', borderRadius: 8,
+        background: 'color-mix(in srgb, var(--t-accent) 11%, #fff)',
+        boxShadow: 'inset 0 0 0 1.5px color-mix(in srgb, var(--t-accent) 50%, transparent)',
+      }}>
+        <Logo size={19} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{ fontSize: 12.5, fontWeight: 700, color: '#1d1d1f', lineHeight: 1.2 }}>Allow notifications</p>
+          <p style={{ fontSize: 10, color: '#6e6e73', lineHeight: 1.2, marginTop: 1 }}>Meridian</p>
+        </div>
+        <MacToggleOn />
+      </div>
+
+      {/* Scenery below - blurred for the same reason the other pane blurs its
+         non-Meridian rows: recognisable as the real page, never mistakable for
+         something to click.
+
+         `aria-hidden` because blur is a purely visual "ignore this" and a
+         screen reader gets none of it. `PermCard` sets `selfDescribing = isMac`,
+         so on macOS the card renders no title or description of its own and
+         this preview carries the only text in it - which means "Badge
+         application icon" and "Play sound for notification" were being read out
+         as if they were the instruction. They are decoration for a pane the user
+         is not even on yet. The sharp "Allow notifications" row above stays
+         readable: that one IS the instruction. Matches `SimpleTogglePreview`,
+         which already hides its decorative toggle. */}
+      <div aria-hidden="true" className="flex flex-col" style={{ flex: 1, gap: 5, margin: '6px 8px 8px', filter: 'blur(2px)', opacity: 0.5 }}>
+        <div className="flex items-start" style={{ gap: 6, padding: '6px 8px', borderRadius: 8, background: '#F0F0F1' }}>
+          {placements.map((name) => (
+            <div key={name} className="flex flex-col items-center" style={{ flex: 1, gap: 3 }}>
+              <span style={{ width: '100%', height: 22, borderRadius: 3, background: 'linear-gradient(160deg,#6b5b95,#8f7fb8)' }} />
+              <span style={{ width: 7, height: 7, borderRadius: 2, background: '#0A84FF' }} />
+            </div>
+          ))}
+        </div>
+        {['Badge application icon', 'Play sound for notification'].map((label) => (
+          <div key={label} className="flex items-center" style={{
+            gap: 8, padding: '4px 8px', borderRadius: 6, background: '#F0F0F1',
+          }}>
+            <span style={{ flex: 1, fontSize: 9.5, color: '#1d1d1f' }}>{label}</span>
+            <span style={{ width: 20, height: 12, borderRadius: 99, background: '#0A84FF', flexShrink: 0 }} />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 /** The simple single-row preview - used for Notifications on Windows only now
- *  (macOS Notifications uses `MacSettingsPanePreview` like the other two).
+ *  (macOS Notifications uses `MacNotificationsPanePreview`).
  *  Also fills its container height, centering the row vertically, so it
  *  matches whatever height the (equal-height, `items-stretch`) sibling cards
  *  end up at. */
@@ -210,7 +311,11 @@ export function PermissionPreview({ os, permissionId }: {
   permissionId: 'accessibility' | 'screen' | 'notifications'
 }) {
   if (os === 'macos') {
-    return <MacSettingsPanePreview permissionId={permissionId} />
+    // Notifications is a DIFFERENT pane in System Settings, not another entry
+    // in the same list - see MacNotificationsPanePreview.
+    return permissionId === 'notifications'
+      ? <MacNotificationsPanePreview />
+      : <MacSettingsPanePreview permissionId={permissionId} />
   }
   return <SimpleTogglePreview os={os} />
 }

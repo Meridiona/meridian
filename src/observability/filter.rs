@@ -53,13 +53,30 @@ pub(super) static FILTER_HANDLE: OnceLock<FilterHandle> = OnceLock::new();
 /// **Re-audit if the fork's revision is bumped** — this is exactly the class of
 /// change that could start shipping captured content.
 ///
+/// `tauri_plugin_clerk` was added alongside its `vendor/tauri-plugin-clerk`
+/// session-persistence fix (`tray/src-tauri/vendor/tauri-plugin-clerk`) so the
+/// new `tracing::warn!` sites that replaced a swallowed deserialize error are
+/// actually visible in `meridian logs`/OpenObserve instead of only the local
+/// terminal. Audited every event site in that crate, not only the ones this
+/// change added — the `warn!`/`error!` sites interpolate only
+/// `serde_json::Error`'s and the Tauri emit error's `Display` (schema-mismatch
+/// messages — field names, not field values), and the two `DEBUG` sites that
+/// upstream wrote as `{payload:?}` were rewritten to log presence booleans.
+/// That rewrite is load-bearing, not tidying: `ClientSession` carries
+/// `last_active_token.jwt`, so a `Debug`-rendered payload is a live bearer
+/// token, and naming the crate here is exactly what would route it into the
+/// full-fidelity local spool. Nothing in this crate may interpolate the Clerk
+/// payload (email, JWT, name). **Re-audit alongside the vendored crate** — on
+/// any upstream re-sync, and if it's ever un-vendored back to a crates.io
+/// release (see that crate's module doc for the un-vendor plan).
+///
 /// # Adding to this list
 /// Add the bare target (crate) name here and every log level picks it up
 /// automatically. It is deliberately a list of names rather than a formatted
 /// directive string: the level varies per branch in [`build_default_filter`],
 /// and hardcoding the pairs in each branch is how a new entry silently ends up
 /// with no coverage at one level.
-const CAPTURE_TARGETS: &[&str] = &["screenpipe_screen", "screenpipe_a11y"];
+const CAPTURE_TARGETS: &[&str] = &["screenpipe_screen", "screenpipe_a11y", "tauri_plugin_clerk"];
 
 /// Render [`CAPTURE_TARGETS`] as `EnvFilter` directives at `level`.
 fn capture_directives(level: &str) -> String {

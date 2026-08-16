@@ -138,6 +138,12 @@ pub(crate) fn open_native_dashboard(app: &tauri::AppHandle) {
             .build()
         {
             Ok(win) => {
+                // Fills the screen, then enters native full-screen. The
+                // builder's `.maximized(true)` above is a silent no-op on
+                // macOS — see `sys::open_full_screen` for the tao/AppKit
+                // early-return behind that, and for the resize hazard the
+                // full-screen style mask carries.
+                crate::sys::open_full_screen(&win);
                 // Revert to Accessory (no dock icon) when the dashboard is closed
                 // so the tray-only UX is restored.
                 crate::sys::revert_to_accessory_on_close(app, &win);

@@ -92,11 +92,11 @@ export function TutorialIntro({ lines, onDone }: {
       // is deliberately unlabelled: naming an escape hatch on the opening card
       // invites the user to treat the tour itself as something to get out of.
       //
-      // That reasoning now runs all the way through. This used to add "and the
-      // overlay's Skip control is visible from the very next frame anyway",
-      // which stopped being true when the first-run walkthrough lost its Skip
-      // (see TutorialOverlay). So on a first run this click only skips the
-      // titles and lands on the walkthrough proper.
+      // This click only skips the TITLES and lands on the walkthrough proper.
+      // Leaving the tour itself is the overlay's labelled Skip control, which is
+      // on screen from the very next frame - on every run, first run included
+      // (see TutorialOverlay). Unlabelled here, labelled there, is the split:
+      // the opening card should not be advertising an exit, but one must exist.
       onClick={() => setOut(true)}
       className="fixed inset-0 flex flex-col items-center justify-center"
       style={{

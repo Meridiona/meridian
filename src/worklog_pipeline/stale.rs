@@ -33,7 +33,7 @@
 // - `meridian-core/src/readers/day_task_worklogs/mod.rs` — `stale_drafts`, and
 //   the `WORKLOG_STALE_MINUTES` definition both sides read
 // - `src/migrations/079_worklog_stale.sql` — why the baseline is minutes
-// - `NOTIFICATIONS.md` — the outbox lifecycle this produces into
+// - `docs/notifications.md` — the outbox lifecycle this produces into
 
 use meridian_core::day_task_worklogs::{stale_drafts, WORKLOG_STALE_MINUTES};
 use sqlx::SqlitePool;

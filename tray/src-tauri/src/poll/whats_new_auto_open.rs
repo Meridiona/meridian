@@ -57,6 +57,22 @@ pub(crate) async fn maybe_auto_open_whats_new(app: &tauri::AppHandle) {
         return;
     }
 
+    // 2b. …or over the WALKTHROUGH. Same reasoning as the sibling plan
+    //     auto-open: `onboarded` marks the end of the WIZARD, and the tour runs
+    //     after it, so this gate stops covering onboarding at the moment the
+    //     tour starts. Deferred, not skipped - the marker below is only written
+    //     on the fire path, so this retries once the tour is finished.
+    //
+    //     THIS one has to read `tour_owed`, not `walkthrough_in_progress`: this
+    //     function is what OPENS the window the tour mounts in, so "is the tour
+    //     on screen" is necessarily false at the moment it is asked here. It was
+    //     measured losing that race by 2.1 s and drawing the changelog under a
+    //     live tour. The entitlement marker is on disk before the window exists.
+    if crate::commands::walkthrough::tour_owed(home) {
+        tracing::debug!("whats-new auto-open: walkthrough owed or on screen - deferring");
+        return;
+    }
+
     // 3. Don't yank an already-open dashboard to a different view — covers
     //    both the sibling Plan auto-open (same tick) and any manual open.
     if app.get_webview_window("dashboard").is_some() {

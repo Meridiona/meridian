@@ -62,6 +62,25 @@ pub(crate) async fn maybe_auto_open_plan(app: &tauri::AppHandle, pool: &meridian
         return;
     }
 
+    // 2b. …or over the WALKTHROUGH, which is the half of onboarding that runs
+    //     immediately after the wizard. `onboarded` above is written when the
+    //     wizard completes, so it stops covering onboarding at exactly the
+    //     moment the tour begins - and within one tick this would take the
+    //     screen away from the beat the tour was waiting on. Because the tour
+    //     waits on a DOM target rather than a timer, it then sat on a stale
+    //     instruction until the beat timed out (minutes - those timeouts are
+    //     sized for a real OAuth round trip), looking hung. Deferred, not
+    //     skipped: the marker is not written here, so this retries next tick
+    //     and the planner opens as soon as the tour is done.
+    //
+    //     Reads `tour_owed` rather than `walkthrough_in_progress` so an
+    //     entitlement that has not been cashed in yet also counts - see that
+    //     function for why "on screen" is checked too late to help.
+    if crate::commands::walkthrough::tour_owed(&home) {
+        tracing::debug!("plan auto-open: walkthrough owed or on screen - deferring");
+        return;
+    }
+
     // 3. Day already planned (confirmed or skipped, e.g. via the notification
     //    nudge) — settle the day without opening.
     if meridian_core::plan::plan_handled(pool, &today).await {

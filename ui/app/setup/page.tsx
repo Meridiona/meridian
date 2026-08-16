@@ -10,7 +10,7 @@
 
 import { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react'
 import type { ReactNode } from 'react'
-import { invoke, load, mutate, tauri } from '@/lib/bridge'
+import { invoke, load, mutate, nudgeWindowRepaint, tauri } from '@/lib/bridge'
 import { buildSteps, Welcome } from './steps'
 import type { Wiz } from './steps'
 import type { NotifState } from './data'
@@ -18,7 +18,18 @@ import type { IntegrationsResponse } from '@/lib/api-types'
 import type { RuntimeSettings } from '@/lib/settings'
 import { DEFAULT_LLM_PROVIDER, providerChoiceFields, type LlmProviderId } from '@/lib/llm-providers'
 import { useLlmProviderDetection } from '@/components/LlmProviderPicker'
+import { useSignInRequired } from '@/lib/signin-required'
 import { Btn, DISPLAY, Kicker } from './atoms'
+
+/** Where the wizard stores how far the user got, so quitting mid-setup resumes
+ *  rather than restarting. Holds a step ID (see the restore effect for why an
+ *  index would be wrong), and is cleared on finish so a later Re-run Setup
+ *  opens on Welcome instead of resuming a run that is already over.
+ *
+ *  Versioned in the key, matching `meridian.walkthrough.seen.v1`: the stored
+ *  shape is read by a build that may not be the one that wrote it, and a `.v2`
+ *  is how that gets changed without having to parse a legacy shape. */
+const PROGRESS_KEY = 'meridian.setup.progress.v1'
 
 export default function SetupWizard() {
   const [welcome, setWelcome] = useState(true)
@@ -42,6 +53,49 @@ export default function SetupWizard() {
   useEffect(() => { resolvePlatform() }, [resolvePlatform])
   const steps = useMemo(() => buildSteps(platform), [platform])
 
+  // ── Resume where they left off ───────────────────────────────────────────
+  // Quitting mid-setup used to drop the user back on Welcome, re-reading a
+  // screen they had already read and re-walking steps that were already done
+  // (permissions granted, tracker connected - the work survives, only the
+  // position in the flow was lost).
+  //
+  // The step's ID is what gets stored, never its index. `buildSteps` is
+  // platform-dependent and the list can change between builds, so an index is
+  // only meaningful against the exact list that produced it - restoring `2`
+  // could land on a different step entirely, silently. An id that no longer
+  // exists simply fails to match and starts from the top.
+  //
+  // Restore is gated on `platform` having resolved, which preserves the
+  // invariant the Welcome screen exists to hold (see `platform` above): the
+  // step list must never change shape underneath a `step` index that has
+  // already been navigated to. Doing this before the platform resolves would
+  // reintroduce exactly that bug through the back door.
+  const restoredProgress = useRef(false)
+  useEffect(() => {
+    if (restoredProgress.current || platform === null) return
+    restoredProgress.current = true
+    let savedStepId: string | null = null
+    try {
+      const raw = localStorage.getItem(PROGRESS_KEY)
+      savedStepId = raw ? (JSON.parse(raw) as { stepId?: string }).stepId ?? null : null
+    } catch { return /* private mode, or a hand-mangled value - start fresh */ }
+    if (!savedStepId) return
+    const at = steps.findIndex((s) => s.id === savedStepId)
+    if (at < 0) return
+    setWelcome(false)
+    setStep(at)
+  }, [platform, steps])
+
+  // Written on every move once past Welcome. Welcome itself is deliberately
+  // not stored: it is the zero state, and "resuming" onto it is the same as
+  // not resuming.
+  useEffect(() => {
+    if (welcome || platform === null) return
+    const stepId = steps[step]?.id
+    if (!stepId) return
+    try { localStorage.setItem(PROGRESS_KEY, JSON.stringify({ stepId })) } catch { /* private mode */ }
+  }, [welcome, step, steps, platform])
+
   // Stamp when onboarding BEGAN. Completion has always been timestamped
   // (`~/.meridian/onboarded`) but the start was not, so the elapsed time — shown
   // as "Setup complete in Ns" and as the time span on the "Setting up Meridian"
@@ -60,6 +114,12 @@ export default function SetupWizard() {
   // Step 3 — sign in (Clerk email one-time-code — see ./signin.tsx). The
   // widget owns its own form/busy/error state; this just holds the result.
   const [signedInEmail, setSignedInEmail] = useState<string | null>(null)
+
+  // Whether sign-in is required at all — false ONLY in a debug build with no
+  // Clerk publishable key configured, the fresh-clone contributor case. See
+  // `@/lib/signin-required`; the wizard step treats `null` as "required" so a
+  // slow answer never opens the step early.
+  const signInRequired = useSignInRequired()
 
   // Step 4 — intelligence. The provider the whole prose pipeline obeys. Persisted to
   // settings.json immediately on pick (not batched to Finish): if the user quits the
@@ -203,7 +263,7 @@ export default function SetupWizard() {
     platform,
     perms, openPane, grantScreen, grantNotifications,
     integrations, refetchIntegrations,
-    signedInEmail, onSignedIn,
+    signedInEmail, onSignedIn, signInRequired,
     provider, providerCustomId, setProvider, providers, scanningProviders,
     testingProviderIds, installingProviderIds, signingProviderIds,
     testProvider, installProvider, signInProvider, rescanProviders,
@@ -245,6 +305,10 @@ export default function SetupWizard() {
     // of re-running onboarding (and matches `mark_setup_started`, which likewise
     // treats a re-run as a fresh run rather than preserving the original).
     try { localStorage.removeItem('meridian.walkthrough.seen.v1') } catch { /* private mode */ }
+    // Onboarding is over, so there is no position left to resume to. Without
+    // this, Settings → Re-run Setup would open on the last step of the run
+    // that just completed rather than at the beginning.
+    try { localStorage.removeItem(PROGRESS_KEY) } catch { /* private mode */ }
     try {
       await invoke('open_dashboard')
     } catch { /* ignore if dashboard fails to open */ }
@@ -297,6 +361,18 @@ export default function SetupWizard() {
   useEffect(() => {
     invoke('resize_setup_window', { width: 1000, height: cardHeight + 52 }).catch(() => {})
   }, [cardHeight])
+
+  // Each of these swaps the whole card's content (Welcome ↔ Rail steps) —
+  // exactly the kind of heavy reflow that can trip a WKWebView/wry compositor
+  // bug on macOS when the window is already in native full-screen: the
+  // webview's drawable gets pinned to a stale size and the rest of the
+  // (genuinely full-screen) window renders black. `resize_setup_window` above
+  // already guards its own resize against this (`is_fullscreen()` in
+  // system.rs), but that only covers transitions where `cardHeight` actually
+  // changes AND the window isn't full-screen; this covers every transition,
+  // full-screen or not, by forcing a real (same-size) window frame-set that
+  // makes WebKit recompute the compositing surface. See nudgeWindowRepaint.
+  useEffect(() => { nudgeWindowRepaint() }, [welcome, step])
 
   return (
     <div style={{

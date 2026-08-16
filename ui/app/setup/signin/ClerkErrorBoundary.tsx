@@ -4,12 +4,17 @@
 import { Component } from 'react'
 import type { ReactNode } from 'react'
 
-/** Catches `initClerk()` rejecting inside `ClerkGate`'s `use()` call — e.g.
- *  the Rust side never registered the Clerk plugin (no publishable key
- *  configured on this build; see `lib.rs`'s conditional registration) — and
- *  shows a message instead of leaving Suspense's child throw uncaught, which
- *  would otherwise blank the sign-in surface. `use()`/Suspense need a real
- *  error boundary; there is no hook equivalent, hence the class component. */
+/** Catches `initClerk()` rejecting inside `ClerkGate`'s `use()` call and shows a
+ *  message instead of leaving Suspense's child throw uncaught, which would
+ *  otherwise blank the sign-in surface. `use()`/Suspense need a real error
+ *  boundary; there is no hook equivalent, hence the class component.
+ *
+ *  NOTE the "no key at all" case does NOT reach here: `sign_in_required`
+ *  (`commands::account`) reports false for a debug build with no key, and the
+ *  gates skip Clerk entirely rather than mounting a `ClerkGate` that is certain
+ *  to fail. So what lands here is a key that IS configured and still didn't
+ *  init — malformed, or the wrong instance — which is why the copy points at
+ *  the value being bad rather than missing. */
 export class ClerkErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state: { failed: boolean } = { failed: false }
 
@@ -26,7 +31,7 @@ export class ClerkErrorBoundary extends Component<{ children: ReactNode }, { fai
     if (this.state.failed) {
       return (
         <p style={{ fontSize: 12.5, color: 'var(--t-muted)' }}>
-          Sign-in isn&apos;t configured for this build - set CLERK_PUBLISHABLE_KEY and restart.
+          Sign-in couldn&apos;t start - check CLERK_PUBLISHABLE_KEY and restart.
         </p>
       )
     }

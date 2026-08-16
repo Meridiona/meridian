@@ -53,8 +53,21 @@ const CAPTION_H = 130
  *  Held in one constant because the two variants (anchored beside a target, or
  *  parked at the top) are the same voice and drifted apart once already - one
  *  inverted, one not, at different sizes. */
+// Bigger, heavier, and centred than it was (500 13px, left-aligned). At body
+// weight and body size the tour's narration read as a caption on the UI rather
+// than as someone talking the user through it, and it was competing for
+// attention with the real interface text around it - which is denser, and
+// which the user is also trying to read for the first time. The tour has to
+// win that contest to be worth showing at all.
+//
+// Centred within the bubble, NOT moved to the centre of the screen. The bubble
+// stays parked on its target on purpose (see the anchored variant below): an
+// instruction read in one place and acted on in another is the failure this
+// layout already exists to avoid.
 const CAPTION_FONT: React.CSSProperties = {
-  font: '500 13px/1.5 var(--font-sans)',
+  font: '650 16px/1.45 var(--font-sans)',
+  letterSpacing: '-.011em',
+  textAlign: 'center',
   color: 'var(--t-card)',
 }
 
@@ -231,7 +244,27 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
       {/* The dimmed variant: four blurred panels fenced around the target,
           leaving it sharp, lit and the only clickable thing on screen.
           Rendered BEFORE the ring and cursor so those stay crisp on top. */}
-      {ring && spotlightDim && <DimCutout rect={ring} />}
+      {/* THE FENCE. While the tour is waiting on one specific click, everything
+          outside the spotlight stops taking clicks.
+
+          Without it the only beat that protected itself was the dimmed one,
+          because blocking was a side effect of the blur rather than a thing
+          anyone had asked for. Every other beat left the whole app live behind
+          a ring - including the close X on whatever modal the tour had just
+          opened. Clicking it does not fail: the modal closes, the tour keeps
+          waiting for a click on a target that is no longer on screen, and the
+          user is left reading an instruction about a window they cannot see.
+
+          Gated on `awaiting` on purpose. A fence that stands during narration
+          beats would make the app feel frozen for reasons the user cannot see;
+          one that stands only while the tour is genuinely blocked on them is
+          the difference between guiding and trapping.
+
+          Rendered BEFORE the caption, the choice buttons and Skip, so those
+          later siblings paint on top and keep their own `pointerEvents:'auto'`.
+          The way out is always one click away. */}
+      {ring && spotlightDim && <Cutout rect={ring} dim />}
+      {ring && !spotlightDim && awaiting && <Cutout rect={ring} dim={false} />}
 
       {/* Spotlight — a ring around the real control. On its own (the default)
           it adds no scrim at all: the target stays fully interactive because
@@ -247,7 +280,12 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
         <div className="absolute" style={{
           left: ringBox.left - 6, top: ringBox.top - 6,
           width: ringBox.width + 12, height: ringBox.height + 12,
-          borderRadius: 18,
+          // Rounder than the 18 it was. The ring sits 6px outside its target,
+          // so matching the target's own radius leaves the corners visibly
+          // tighter than the thing they enclose - which reads as a box drawn
+          // around the card rather than as the card being lit up. A radius
+          // above the card's own is what makes the two look like one shape.
+          borderRadius: 24,
           border: `2px solid var(--t-accent)`,
           boxShadow: '0 0 0 4px color-mix(in srgb, var(--t-accent) 22%, transparent)',
           opacity: ringLive ? 1 : 0,
@@ -437,11 +475,15 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
         </div>
       )}
 
-      {/* Skip — REPLAYS ONLY. `onSkip` is null on the first run, and this
-          renders nothing at all then: the onboarding walkthrough has no out.
-          An escape hatch on the first screen a new user ever sees reads as the
-          recommended action to anyone unsure, which is everyone at that moment.
-          See the call site in useTutorial for the full reasoning.
+      {/* Skip — on EVERY run, first run included. This used to be replays only,
+          on the argument that an escape hatch on the first screen a new user
+          ever sees reads as the recommended action to anyone unsure. That was
+          reversed once a tour proved able to arrive unrequested, on a mount days
+          after it was armed, with closing the window as the only way out. The
+          full reasoning for the reversal is at the call site in useTutorial.
+
+          Still conditional rather than unconditional: the prop is the seam, and
+          a caller that has a reason to withhold it should be able to.
 
           When it IS shown it is its own control, NOT inside the caption bubble.
           It used to live in there, which meant it vanished on any beat with an
@@ -573,8 +615,11 @@ function AnchoredCaption({ rect, children }: { rect: DOMRect; children: React.Re
  *
  *  These DO take pointer events, which is half the point — while the tour is
  *  waiting on one specific click, a stray click into the blurred area should
- *  land on nothing rather than on some control the user cannot see clearly. */
-function DimCutout({ rect }: { rect: DOMRect }) {
+ *  land on nothing rather than on some control the user cannot see clearly.
+ *
+ *  `dim: false` renders the same four panes completely invisible — see
+ *  [`Cutout`]'s note on why the fence and the blur are one component. */
+function Cutout({ rect, dim }: { rect: DOMRect; dim: boolean }) {
   const PAD = 8
   const l = Math.max(0, rect.left - PAD)
   const t = Math.max(0, rect.top - PAD)
@@ -587,14 +632,16 @@ function DimCutout({ rect }: { rect: DOMRect }) {
     // gradient, so a `color-mix` against it is invalid and drops the declaration
     // outright. This read as "blur only, no dimming" for as long as it has
     // existed - the panes were doing half their job silently.
-    background: 'rgba(20,16,40,0.42)',
-    backdropFilter: 'blur(5px)',
-    WebkitBackdropFilter: 'blur(5px)',
+    ...(dim ? {
+      background: 'rgba(20,16,40,0.42)',
+      backdropFilter: 'blur(5px)',
+      WebkitBackdropFilter: 'blur(5px)',
+      animation: 'mer-tour-dim .45s ease both',
+    } : null),
     // The panes travel with the hole rather than being re-laid instantly, so a
     // dimmed beat handing over to the next one reads as the light moving.
     transition: 'left .5s cubic-bezier(.22,1,.32,1), top .5s cubic-bezier(.22,1,.32,1),'
       + ' width .5s cubic-bezier(.22,1,.32,1), height .5s cubic-bezier(.22,1,.32,1)',
-    animation: 'mer-tour-dim .45s ease both',
   }
   return (
     <>

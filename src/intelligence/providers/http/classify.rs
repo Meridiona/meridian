@@ -73,6 +73,75 @@ impl std::fmt::Display for HttpStatusError {
 
 impl std::error::Error for HttpStatusError {}
 
+/// A provider answered 2xx, but the body never arrived intact.
+///
+/// A typed error for the same reason [`HttpStatusError`] is one: the fact that
+/// decides transient vs terminal — "the transfer was cut short" — is not
+/// recoverable from the `serde_json` error it would otherwise become. An empty
+/// body parses as `EOF while parsing a value at line 1 column 0`, whose chain
+/// carries neither a status nor a `reqwest::Error`, so [`is_transient`] fell
+/// through to its `false` default and the user was told to reconnect a
+/// credential that was fine.
+///
+/// This is NOT a relaxation of the "a response we could not parse is a contract
+/// mismatch" stance in [`reqwest_is_transient`]. That stance is about a body we
+/// received and could not understand. This is about a body we never received.
+#[derive(Debug)]
+pub struct TruncatedBodyError {
+    /// Human label for the endpoint, e.g. `"GitHub GraphQL"`.
+    endpoint: String,
+    /// The success status the response carried before its body was cut off.
+    status: u16,
+    /// The transport failure, when the read itself errored. `None` when the
+    /// read succeeded and simply returned nothing.
+    source: Option<reqwest::Error>,
+}
+
+impl TruncatedBodyError {
+    /// A 2xx whose body read returned successfully but was empty.
+    pub fn empty(status: u16, endpoint: impl Into<String>) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            status,
+            source: None,
+        }
+    }
+
+    /// A 2xx whose body read failed part-way — a reset connection, an HTTP/2
+    /// GOAWAY, a gzip stream that stopped short, or the request deadline
+    /// firing during the body.
+    pub fn unreadable(status: u16, endpoint: impl Into<String>, source: reqwest::Error) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            status,
+            source: Some(source),
+        }
+    }
+}
+
+impl std::fmt::Display for TruncatedBodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.source {
+            Some(e) => write!(
+                f,
+                "{} returned {} but its body could not be read: {e}",
+                self.endpoint, self.status
+            ),
+            None => write!(
+                f,
+                "{} returned {} with an empty body",
+                self.endpoint, self.status
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TruncatedBodyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.as_ref().map(|e| e as &dyn std::error::Error)
+    }
+}
+
 /// What a provider sync should DO about a failure.
 ///
 /// Both variants carry `detail` already formatted with `{err:#}` — the full
@@ -141,6 +210,14 @@ pub fn is_transient(err: &anyhow::Error) -> bool {
     for cause in err.chain() {
         if let Some(status) = cause.downcast_ref::<HttpStatusError>() {
             return status.is_transient();
+        }
+        // BEFORE the `reqwest::Error` arm, and deliberately so: a body read cut
+        // short surfaces as `Kind::Decode`, which `reqwest_is_transient` answers
+        // `false` for. That answer is right for its own question (a body we
+        // parsed and did not understand) and wrong for this one (a body that
+        // never finished arriving), so this arm has to win.
+        if cause.downcast_ref::<TruncatedBodyError>().is_some() {
+            return true;
         }
         if let Some(e) = cause.downcast_ref::<reqwest::Error>() {
             return reqwest_is_transient(e);

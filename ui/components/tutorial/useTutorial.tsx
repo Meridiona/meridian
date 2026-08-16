@@ -23,7 +23,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SettingsSection } from '@/components/timeline/settings/types'
 import type { DayTaskDetail } from '@/components/timeline/DayTaskDetailPanel'
-import { load } from '@/lib/bridge'
+import { invoke, load } from '@/lib/bridge'
 import { connectedTrackers } from '@/lib/integrations'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import {
@@ -44,6 +44,28 @@ import { TutorialScreen } from './TutorialScreen'
  *  could claim it), and the failure mode of losing it is a repeated walkthrough,
  *  not lost user data. */
 const SEEN_KEY = 'meridian.walkthrough.seen.v1'
+
+/** Raise or clear the tray's "walkthrough is on screen" marker, in call order.
+ *
+ *  Serialised through one chain rather than fired independently, because the two
+ *  callers can run back to back within a single tick: `skipToDay` calls `finish`
+ *  (which clears the marker) and then `replayFromDay`, whose new run raises it.
+ *  Two independent `invoke()` calls have no ordering guarantee, so the older
+ *  CLEAR could land after the newer RAISE and delete the marker belonging to the
+ *  run that had just started - handing the tray's auto-opens permission to open
+ *  the daily planner over a live tour, which is the exact interruption the marker
+ *  exists to prevent.
+ *
+ *  Still fire-and-forget from the caller's side, and still swallowing failures:
+ *  losing this marker costs a possible interruption, never the tour. */
+let walkthroughMarkerQueue: Promise<void> = Promise.resolve()
+
+function setWalkthroughRunning(running: boolean): void {
+  const send = () => invoke('set_walkthrough_running', { running }).then(() => {}, () => {})
+  // `then(send, send)`: the next update must go out whether or not the previous
+  // one settled cleanly, and must not inherit its rejection.
+  walkthroughMarkerQueue = walkthroughMarkerQueue.then(send, send)
+}
 
 /** DEV ONLY: set to `'day'` to start the walkthrough at part two. Read by
  *  `runScript`'s `devDayHalfOnly`, which is itself gated on a non-production
@@ -156,6 +178,11 @@ export function useTutorial(opts: {
     setIntro(null)
     setRunning(false)
     setTutorialRunning(false)
+    // Release the tray's auto-opens. This is the fast path, not the only one -
+    // the marker carries its start time and goes stale on its own, so quitting
+    // or crashing mid-tour cannot suppress the daily planner forever (see
+    // commands/walkthrough.rs).
+    setWalkthroughRunning(false)
     setCaption('')
     setCentered(false)
     setCursorAt(null)
@@ -174,6 +201,16 @@ export function useTutorial(opts: {
     setActiveModal(null)
     setShowWorklogSchedule(false)
     try { localStorage.setItem(SEEN_KEY, new Date().toISOString()) } catch { /* private mode */ }
+    // The same answer, written where the TRAY can read it. `SEEN_KEY` lives in
+    // localStorage, which no Rust code can see, so without this the tray cannot
+    // tell an install that is owed the tour from one that took it months ago -
+    // and its auto-opens stand down for anything that looks owed. Deliberately
+    // adjacent to the line above so the two can never drift.
+    //
+    // Reached on completion, on skip, and on an unexpected throw; all three are
+    // "done". A mid-tour quit unwinds through `Aborted` and never gets here, so
+    // the entitlement survives it - which is the intended asymmetry.
+    invoke('disarm_walkthrough').catch(() => {})
   }, [setActiveModal])
 
   // A real click on the awaited target resolves the beat. Capture phase so the
@@ -399,6 +436,48 @@ export function useTutorial(opts: {
         if (sig.aborted) throw new Aborted()
         return got
       },
+      value: (sel) => (tourTarget(sel) as HTMLInputElement | HTMLTextAreaElement | null)?.value ?? '',
+      waitForMinWords: async (sel, minWords, o) => {
+        const sig = signal()
+        const el = await waitForElement(sel, sig)
+        if (!el) return false
+        const words = (v: string) => v.trim().split(/\s+/).filter(Boolean).length
+        setAwaiting(true)
+        const got = await new Promise<boolean>((resolve) => {
+          let done = false
+          const settle = (v: boolean) => {
+            if (done) return
+            done = true
+            sig.removeEventListener('abort', onAbort)
+            clearTimeout(timer)
+            cancelAnimationFrame(raf)
+            resolve(v)
+          }
+          function onAbort() { settle(false) }
+          const timer = setTimeout(() => settle(false), o?.fallbackMs ?? 90000)
+          // A vanished target settles FALSE, not true. It settles immediately
+          // either way - the point of noticing is to avoid burning the fallback
+          // on a field that is gone - but the answer this returns is "did the
+          // title clear the floor", and a composer that closed did not. `true`
+          // there made the script take its titleReady branch and narrate
+          // "Saved." over a task that was never created: the exact false claim
+          // the word-count check was added to stop, coming back through a
+          // different door. `false` is also what `waitForClick` answers when its
+          // target never rendered, so this is the sibling primitives' contract
+          // rather than a special case.
+          let raf = requestAnimationFrame(function tick() {
+            const node = tourTarget(sel) as HTMLInputElement | HTMLTextAreaElement | null
+            if (!node) { settle(false); return }
+            if (words(node.value) >= minWords) { settle(true); return }
+            raf = requestAnimationFrame(tick)
+          })
+          sig.addEventListener('abort', onAbort, { once: true })
+        })
+        setAwaiting(false)
+        parkCursor()
+        if (sig.aborted) throw new Aborted()
+        return got
+      },
       appeared: async (sel, timeoutMs = 3000) => !!(await waitForElement(sel, signal(), timeoutMs)),
       demoDrag: async (from, to) => {
         const sig = signal()
@@ -525,13 +604,11 @@ export function useTutorial(opts: {
   // would make the control dead on the only machines it matters on.
   const explicitRef = useRef(false)
 
-  // The same fact as `explicitRef`, but readable during RENDER — a ref is not,
-  // and the overlay needs it to decide whether to show the Skip control at all.
-  //
-  // Set in one place (the start effect, next to `setRunning(true)`) rather than
-  // in each of the three entry points: that is the single moment the answer is
-  // final, so the two can't disagree about the run that is actually starting.
-  const [explicit, setExplicit] = useState(false)
+  // There was a render-readable `explicit` state mirroring the ref here, for the
+  // overlay to decide whether a Skip control existed for this run. Removed with
+  // that distinction: every run has one now (see the `onSkip` call site).
+  // `explicitRef` stays - it still answers the entitlement question below, which
+  // is a different one and is only ever read inside an effect.
 
   // Replay hook. The walkthrough is a once-ever surface gated on a marker, so
   // without this the only way to see it again is deleting that key from the
@@ -643,13 +720,19 @@ export function useTutorial(opts: {
           .catch(() => false)
         if (!armed || ctrl.signal.aborted) return
       }
-      // Captured at the one moment it is settled, and read by the overlay to
-      // decide whether a Skip control exists for this run. See `explicit` above.
-      setExplicit(explicitRef.current)
       setRunning(true)
       // Mirrored into the module flag so screens BELOW the shell can tell they are
       // being demonstrated rather than used - see `isTutorialRunning`.
       setTutorialRunning(true)
+      // And mirrored to the TRAY, which has its own opinions about which window
+      // should be in front: the daily-plan and What's New auto-opens both fire
+      // on a 30 s tick and were gated only on `onboarded` - which is written
+      // when the WIZARD finishes, i.e. the moment this tour starts. One of them
+      // landing mid-beat takes the screen away from the target the tour is
+      // waiting on, and the tour then waits out a timeout measured in minutes.
+      // Fire-and-forget: failing to raise the marker costs a possible
+      // interruption, never the tour.
+      setWalkthroughRunning(true)
       try {
         await runScript(stageRef.current)
       } catch (e) {
@@ -715,21 +798,28 @@ export function useTutorial(opts: {
           ghost={ghost} clicking={clicking}
           spotlight={spotlight} spotlightDim={spotlightDim} awaiting={awaiting}
           choices={choices} onChoose={(v) => choiceRef.current?.(v)}
-          // NO SKIP ON THE FIRST RUN. `null` here removes the control entirely
-          // rather than hiding or disabling it.
+          // EVERY run gets a skip, first run included.
           //
-          // The onboarding walkthrough is the one pass where the product gets to
-          // explain itself, and it is three minutes long. An out placed in the
-          // corner of the very first screen is read as the recommended action by
-          // anyone who is unsure - which is everyone, at that exact moment - so
-          // it was costing the explanation to the users who most needed it.
+          // REVERSED DECISION, recorded rather than quietly dropped. This was
+          // `explicit ? finish : null` - replays only - on the argument that an
+          // out in the corner of the very first screen reads as the recommended
+          // action to anyone unsure, which is everyone at that moment, and so
+          // costs the explanation to the users who most need it. That argument
+          // still holds for the run it imagined: one that begins seconds after
+          // the wizard, for someone who just asked to be set up.
           //
-          // A REPLAY keeps it. That run is one the user asked for out loud
-          // (Settings, `?tour=1`, or the console hook), by someone who has
-          // already seen the product, so trapping them for three minutes would
-          // be a different bug and not the one being fixed here. `explicit` is
-          // exactly that distinction, captured where the run starts.
-          onSkip={explicit ? finish : null}
+          // It assumed that is the only way the tour can arrive. It is not. The
+          // entitlement is a marker on disk and the tour is delivered on the next
+          // dashboard mount, which can be a relaunch days later - in the reported
+          // case, an app update. Someone who did not ask for a tour got one they
+          // could not leave, the only exit being to close the window. A tour with
+          // no out is only defensible when the user opened the door themselves,
+          // and we cannot guarantee that at the point this prop is set.
+          //
+          // The narrower fix (never arm it except on a genuine first run) shipped
+          // alongside this and removes the known way in. This is the backstop for
+          // the ways we have not thought of.
+          onSkip={finish}
           // Null in a packaged build, so the pill is not rendered at all. This
           // jumps PAST the compulsory AI-connect step, which the whole product
           // needs - it is a shortcut for whoever is editing part two, not a way

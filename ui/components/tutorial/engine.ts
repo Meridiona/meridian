@@ -74,6 +74,33 @@ export interface Stage {
    *  reacting to. Same fallback contract as `waitForClick`: resolves `false`
    *  rather than stranding anyone. */
   waitForValue(selector: string, opts?: { fallbackMs?: number; settled?: boolean }): Promise<boolean>
+  /** Synchronous read of the input/textarea at `selector`'s current value, or
+   *  `''` if it is not on screen.
+   *
+   *  A one-off peek for a beat that needs to BRANCH on what a field already
+   *  holds rather than wait on it — e.g. checking whether a drafted title
+   *  already clears a length floor before deciding whether to say anything
+   *  about it. Not a substitute for `waitForValue`: this never waits. */
+  value(selector: string): string
+  /** Hand control to the user and resolve once the input/textarea at
+   *  `selector` holds at least `minWords` whitespace-separated words —
+   *  checked on arrival, then on every change, until it clears the floor or
+   *  `fallbackMs` elapses. Resolves `false` on timeout, and also `false` if the
+   *  field disappears (the composer closed) - same contract as
+   *  `waitForClick`/`waitForValue`, which answer `false` for a target that is
+   *  not there. Only a title that actually cleared the floor resolves `true`,
+   *  because callers gate "the task can be saved" on this.
+   *
+   *  `waitForValue`'s `settled` only asks "is there SOMETHING here" — the
+   *  composer's `canCreate` asks "is there ENOUGH here" (`MIN_TITLE_WORDS`),
+   *  and the two can disagree: a drafted title is non-empty the moment it
+   *  lands, but the model is not guaranteed to hit the word floor its own
+   *  prompt asks for. Pointing at "Add to today" over a title that is short
+   *  rings a button a click can never satisfy. This waits on the actual gate
+   *  instead — polling rather than an input-event listener for the same
+   *  reason `waitForValue` does: a programmatic edit (the model still
+   *  revising) does not reliably fire the same event a keystroke does. */
+  waitForMinWords(selector: string, minWords: number, opts?: { fallbackMs?: number }): Promise<boolean>
   /** Resolve true if `selector` shows up within `timeoutMs`, false if it never
    *  does.
    *

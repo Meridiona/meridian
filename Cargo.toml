@@ -1,5 +1,22 @@
 [workspace]
-members = [".", "meridian-core", "meridian-oauth", "tray/src-tauri"]
+# The last entry is the vendored, patched fork of tauri-plugin-clerk (see
+# tray/src-tauri/Cargo.toml's dependency comment + vendor/tauri-plugin-clerk's
+# module doc). It is a MEMBER, not an `exclude`, on purpose: it is where the
+# session-persistence fix and its regression tests live, and excluding it —
+# the obvious call for vendored third-party code — takes it out of
+# `cargo test --workspace`, `clippy --workspace`, `fmt --check`, CI and the
+# pre-push hook in one move. That is the same shape as the trap documented
+# below (`.` being a package, so a bare `cargo test` skips the rest): every
+# gate green while the tests guarding the fix never ran. It costs nothing —
+# upstream 0.1.1 is already clippy- and fmt-clean — and if a future upstream
+# re-sync isn't, that is worth finding out at the re-sync rather than never.
+members = [
+    ".",
+    "meridian-core",
+    "meridian-oauth",
+    "tray/src-tauri",
+    "tray/src-tauri/vendor/tauri-plugin-clerk",
+]
 resolver = "2"
 
 # Release profile — every value here is cargo's DEFAULT, stated explicitly so
