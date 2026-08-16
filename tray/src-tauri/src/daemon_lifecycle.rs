@@ -265,6 +265,76 @@ pub(crate) fn is_paused() -> bool {
     DAEMON_PAUSED.load(Ordering::Relaxed)
 }
 
+/// Set while the installer is stopping the daemon in order to replace its
+/// binary — see [`begin_staging`].
+static DAEMON_STAGING: AtomicBool = AtomicBool::new(false);
+
+/// Whether the installer is mid-swap of the daemon binary. Read by
+/// [`crate::poll::watchdog`] and [`crate::poll::refresh`], both of which start a
+/// daemon they find stopped and must not do so while the installer is
+/// deliberately holding it down.
+///
+/// SEPARATE FROM [`is_paused`] on purpose, though both make the watchdog stand
+/// down. Pause is the user's instruction and persists until they revoke it;
+/// this is a few seconds of internal exclusion the user never sees, and
+/// borrowing the pause flag for it would surface "Paused" in the tray menu
+/// during every update — and, worse, leave the daemon genuinely paused if the
+/// installer died before clearing it.
+pub(crate) fn is_staging() -> bool {
+    DAEMON_STAGING.load(Ordering::Relaxed)
+}
+
+/// Claim the staging window, clearing it when the returned guard drops.
+///
+/// # Why this exists
+///
+/// The tray is BOTH the daemon's installer and — on Windows, where there is no
+/// launchd `KeepAlive` — its only supervisor, and the two halves used to fight
+/// each other with no interlock at all:
+///
+/// 1. `ensure_backend_installed` kills the running daemon so it can overwrite
+///    `~/.meridian/bin/meridian.exe` (Windows keeps a running exe's pages
+///    mapped, so the copy fails with os error 32 otherwise).
+/// 2. Roughly 10 s later — [`crate::poll::watchdog`]'s `TICK` × `STRIKES` — the
+///    watchdog notices the endpoint has gone silent and starts the daemon back
+///    up, from the very path being staged.
+/// 3. The installer's post-kill poll then finds a live process holding the
+///    binary, and fails the whole install with "still running after stop
+///    attempts (pids: […]) - cannot overwrite a locked binary".
+///
+/// The daemon it reported as un-killable was its own supervisor's child,
+/// spawned seconds earlier. The watchdog's existing liveness guard does not
+/// help: `process_alive()` is `None` on Windows, which [`crate::poll::watchdog::decide`]
+/// treats as non-blocking by design.
+///
+/// This only bites on an UPDATE — a first install has no running daemon to
+/// stop, returns immediately, and never wakes the watchdog. That is why the
+/// failure looked intermittent while being, on the update path, reliable.
+///
+/// # Shape
+///
+/// An `AtomicBool` + RAII guard rather than [`LIFECYCLE`]. The mutex would also
+/// serialise the two, but the watchdog would then block on it for the length of
+/// an install and start the daemon the instant it was released — correct, but it
+/// makes a 5 s-budgeted [`stop_for_quit`] queue behind a multi-second install,
+/// and a flag keeps [`crate::poll::watchdog::decide`] a pure function that can
+/// be tested for this exact case. The guard is what makes an early `?` return
+/// or a panic mid-install clear the flag rather than wedging the watchdog off
+/// for the rest of the session.
+pub(crate) fn begin_staging() -> StagingGuard {
+    DAEMON_STAGING.store(true, Ordering::Relaxed);
+    StagingGuard
+}
+
+/// Clears the [`begin_staging`] flag on drop.
+pub(crate) struct StagingGuard;
+
+impl Drop for StagingGuard {
+    fn drop(&mut self) {
+        DAEMON_STAGING.store(false, Ordering::Relaxed);
+    }
+}
+
 /// Take the daemon down because the app is quitting.
 ///
 /// Bounded by [`QUIT_STOP_BUDGET`] and **infallible by design**: every failure
@@ -540,6 +610,74 @@ async fn stop_daemon() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The staging flag must be self-clearing on EVERY exit from the install,
+    /// not just the happy one.
+    ///
+    /// `install()` bails with `?` on a failed stop, a failed copy, and a failed
+    /// registration, and it runs on a spawned task where a panic unwinds rather
+    /// than aborting. A flag left set by any of those paths disables the
+    /// watchdog for the rest of the session — and on Windows the watchdog is
+    /// the only supervisor there is, so the daemon would stay down until the
+    /// next launch with nothing reporting why. That is a strictly worse
+    /// outcome than the install race this flag was added to fix, which is why
+    /// it is an RAII guard rather than a set/clear pair.
+    #[test]
+    fn the_staging_flag_clears_on_every_exit_path() {
+        assert!(!is_staging(), "must start clear");
+
+        // Normal scope exit.
+        {
+            let _g = begin_staging();
+            assert!(is_staging(), "the guard sets it for its lifetime");
+        }
+        assert!(!is_staging(), "dropping the guard clears it");
+
+        // Early return — the `?` bail-outs in `install()`.
+        fn bails_out() -> Result<(), ()> {
+            let _g = begin_staging();
+            assert!(is_staging());
+            Err(())
+        }
+        assert!(bails_out().is_err());
+        assert!(!is_staging(), "an early return must still clear it");
+
+        // Panic — the install runs on a spawned task, so this unwinds.
+        // Panic — the install runs on a spawned task, so this unwinds. The hook
+        // is muted around it so a deliberate panic doesn't print a scary
+        // backtrace into an otherwise-passing test run.
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let panicked = std::panic::catch_unwind(|| {
+            let _g = begin_staging();
+            panic!("install blew up");
+        });
+        std::panic::set_hook(hook);
+        assert!(panicked.is_err());
+        assert!(!is_staging(), "unwinding must still clear it");
+
+        // Pause and staging both make the watchdog stand down, but they must
+        // stay SEPARATE flags: staging is internal and lasts seconds, pause is
+        // the user's instruction and persists. Reusing the pause flag for
+        // staging would show "Paused" in the tray during every update, and
+        // would leave the daemon genuinely paused if an install died mid-swap.
+        //
+        // Asserted in THIS test rather than its own: both touch the same
+        // process-global, and `cargo test` runs test fns on parallel threads,
+        // so two functions racing over `DAEMON_STAGING` would flake. One test
+        // owns the flag.
+        let paused_before = is_paused();
+        {
+            let _g = begin_staging();
+            assert!(is_staging());
+            assert_eq!(
+                is_paused(),
+                paused_before,
+                "staging must not move the user-visible pause flag"
+            );
+        }
+        assert!(!is_staging());
+    }
 
     /// The bug this module exists for: quitting from the tray menu, or via
     /// Cmd+Q once the dashboard has switched the activation policy to

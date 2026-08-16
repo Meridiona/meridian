@@ -105,6 +105,32 @@ pub(super) async fn refresh_health(
     // restart needs no DB pool, so it runs even when `pool` is None; only the
     // user-facing notice below does. Best-effort: the result feeds the notice
     // detail when we also notify.
+    // A daemon that is down because the INSTALLER stopped it is not an outage.
+    //
+    // Both halves are suppressed, and they have to move together. The restart,
+    // because it would start the process the installer just killed and re-lock
+    // the binary mid-swap — the same hazard the fast watchdog now stands down
+    // for, on the slower 30 s tick (see `daemon_lifecycle::begin_staging`). The
+    // notice, because "Meridian went quiet - tried starting it automatically"
+    // is both alarming and false during a routine update: nothing tried, and
+    // nothing was wrong.
+    //
+    // Gating only the restart would ALSO trip the `notify_down` ⇒
+    // `restart_result.is_some()` debug assert below, which is exactly the
+    // tripwire that invariant was written to be.
+    //
+    // Losing this episode's went-quiet notice costs nothing: if the install
+    // fails it raises `tray.backend_install_failed`, which says more than the
+    // generic notice would, and if it succeeds the daemon is back within
+    // seconds. Applied here rather than inside `decide_health_notice` so the
+    // health state machine keeps advancing normally - only the two outward
+    // actions are held.
+    let staging = crate::daemon_lifecycle::is_staging();
+    let attempt_restart = attempt_restart && !staging;
+    let notify_down = notify_down && !staging;
+    if staging {
+        tracing::debug!("daemon health: install in progress - not restarting or notifying");
+    }
     let restart_result = if attempt_restart {
         // Wrap the restart attempt in a span so the health-path recovery is
         // traceable end-to-end, matching the fast watchdog's span.
