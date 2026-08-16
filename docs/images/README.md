@@ -48,10 +48,14 @@ Use the bare URL on its own line, not a hand-written `<video>` tag. An explicit
 was ignored in favour of the source file's native encoded resolution, and a pixel width
 still left it narrower than GitHub's own auto-embed. The bare URL is what `main`'s README
 already uses and is the version GitHub actually renders full-width and reliably, so this
-branch was switched to match it, including reusing that same uploaded video
-(`501f41e6-aa89-404b-b430-a0b8b59c198e`) rather than the branch's own separately-uploaded
-one. The previous version of this section linked out to a YouTube thumbnail instead; that
-approach is why `demo-thumb.jpg` no longer exists here.
+branch was switched to match it.
+
+The specific video reused is `main`'s current one, `5cc26036-3842-4748-85c8-097a8b71f20d`
+(the "Product Hunt cut" - `main` swapped to this after this branch had already grabbed an
+older upload, `501f41e6-...`, which is why that older ID showed up here briefly). Check
+what `main`/`pre-main` currently link before reusing this ID again - it has already moved
+once. The previous version of this section linked out to a YouTube thumbnail instead;
+that approach is why `demo-thumb.jpg` no longer exists here.
 
 ## `meridian-reconstruction.gif` (already here)
 

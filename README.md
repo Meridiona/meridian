@@ -15,7 +15,7 @@
 
 See how Meridian turns a day of screen activity into a timeline, a daily summary, and updated tickets, without anything typed in by hand.
 
-https://github.com/user-attachments/assets/501f41e6-aa89-404b-b430-a0b8b59c198e
+https://github.com/user-attachments/assets/5cc26036-3842-4748-85c8-097a8b71f20d
 
 ## Meridian automatically reconstructs your day
 
