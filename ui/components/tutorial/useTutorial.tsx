@@ -45,6 +45,18 @@ import { TutorialScreen } from './TutorialScreen'
  *  not lost user data. */
 const SEEN_KEY = 'meridian.walkthrough.seen.v1'
 
+/** How long an `appeared()` wait has to be before it counts as handing the
+ *  screen back to the user, rather than probing what the app just did.
+ *
+ *  The two uses look identical at the call site and need opposite treatment from
+ *  the fence, so the timeout is the discriminator - it already encodes the
+ *  author's answer to "am I waiting on the app, or on a person". Well above the
+ *  longest probe in the script (4000ms, "did the connect card come up?") and far
+ *  below the shortest real handover (600000ms, a browser sign-in). Anything
+ *  landing in between is a new kind of wait and should pick its side
+ *  deliberately rather than inherit one. */
+const HANDOVER_WAIT_MS = 30_000
+
 /** Raise or clear the tray's "walkthrough is on screen" marker, in call order.
  *
  *  Serialised through one chain rather than fired independently, because the two
@@ -140,6 +152,17 @@ export function useTutorial(opts: {
   const [spotlight, setSpotlight] = useState<string | null>(null)
   const [spotlightDim, setSpotlightDim] = useState(false)
   const [awaiting, setAwaiting] = useState(false)
+  // The tour has handed the screen back and is waiting on the user to drive the
+  // app themselves - connect a tracker, work through a provider's sign-in. The
+  // fence must come DOWN for these, and only the script knows they are happening.
+  //
+  // Distinct from `awaiting`, which means the opposite thing: `awaiting` is the
+  // tour blocked on one specific click it is pointing at, where fencing the rest
+  // of the app is the protection. `handover` is the tour blocked on a sequence
+  // it is NOT pointing at, where a fence is the one thing that guarantees the
+  // user cannot finish it. Both are "the tour is waiting"; they need opposite
+  // treatment, which is why one flag could not serve.
+  const [handover, setHandover] = useState(false)
   const [choices, setChoices] = useState<StageChoice[] | null>(null)
   // The surface's own state — all of it lives here rather than in the shell,
   // which is what keeps the shell free of walkthrough concerns.
@@ -199,6 +222,7 @@ export function useTutorial(opts: {
     setSpotlight(null)
     setSpotlightDim(false)
     setAwaiting(false)
+    setHandover(false)
     setChoices(null)
     setExample(false)
     setReplayMin(null)
@@ -527,7 +551,40 @@ export function useTutorial(opts: {
         if (sig.aborted) throw new Aborted()
         return got
       },
-      appeared: async (sel, timeoutMs = 3000) => !!(await waitForElement(sel, signal(), timeoutMs)),
+      // WAIT FOR THE APP TO REACH A STATE THE TOUR IS NOT DRIVING - which, when
+      // the wait is long enough to be waiting on a PERSON, is a handover, and
+      // the fence has to come down for the duration.
+      //
+      // Set HERE rather than at each call site on purpose. The deadlock this
+      // fixes was two beats deep in the script (the tracker step's ten-minute
+      // wait on `lock-handback`, and the AI step's on `task-note`), and nothing
+      // at either call site looked wrong - the fence is drawn three files away
+      // from the wait it blocks. Tying it to the verb means the next long wait
+      // someone adds is safe by construction rather than by remembering.
+      //
+      // BUT NOT EVERY `appeared` IS A HANDOVER. Most are PROBES: "is the connect
+      // card up?" (250ms), "did the where-picker render?" (1200ms), "is a ticket
+      // already in?" (0ms). Those run mid-narration, often with a ring up, and
+      // resolve before a person could react to anything - unfencing for them
+      // would punch a brief hole in the protection `tutorial-click-fence` exists
+      // to guarantee, for no benefit at all. The timeout is what separates the
+      // two, because it already encodes the author's answer to "am I waiting on
+      // the app or on a human".
+      //
+      // `finally`, because a handover left raised would leave the app unfenced
+      // for the rest of the run - the bug the fence exists for, arrived at from
+      // the other side. `waitForElement` resolves rather than throws on timeout,
+      // but it does throw on abort (Skip mid-wait), and that path has to clear
+      // it too.
+      appeared: async (sel, timeoutMs = 3000) => {
+        const handsOver = timeoutMs >= HANDOVER_WAIT_MS
+        if (handsOver) setHandover(true)
+        try {
+          return !!(await waitForElement(sel, signal(), timeoutMs))
+        } finally {
+          if (handsOver) setHandover(false)
+        }
+      },
       demoDrag: async (from, to) => {
         const sig = signal()
         const src = await waitForElement(from, sig)
@@ -846,6 +903,7 @@ export function useTutorial(opts: {
           cursorAt={cursorAt} cursorPoint={cursorPoint}
           ghost={ghost} clicking={clicking}
           spotlight={spotlight} spotlightDim={spotlightDim} awaiting={awaiting}
+          handover={handover}
           choices={choices} onChoose={(v) => choiceRef.current?.(v)}
           // EVERY run gets a skip, first run included.
           //
