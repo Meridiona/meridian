@@ -199,8 +199,14 @@ mod reopen_tests {
     #[test]
     fn window_resizes_check_for_full_screen_first() {
         let src = include_str!("commands/system.rs");
+        // The QUERY is what this test is about - that something asks before it
+        // resizes. Which way the query's `Result` collapses is a separate
+        // question, owned by `system.rs`'s own
+        // `the_resize_guards_fail_closed_when_the_window_state_is_unknown`;
+        // pinning the whole expression here meant this test failed when that
+        // one was fixed, on a change it has no stake in.
         assert!(
-            src.contains("win.is_fullscreen().unwrap_or(false)"),
+            src.contains("win.is_fullscreen()"),
             "resize_setup_window lost its full-screen guard - a setContentSize: \
              against a full-screen style mask renders black around the content"
         );
