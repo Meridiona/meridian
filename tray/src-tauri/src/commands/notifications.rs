@@ -9,7 +9,10 @@
 //! - [`record_notification_response`] — the interactive-toast answer write: the
 //!   popover's `actionPerformed` listener forwards each button press / tap /
 //!   inline reply here, which stamps it on the outbox row for the daemon's
-//!   response consumer and routes foreground actions to the dashboard.
+//!   response consumer and routes foreground actions to the dashboard. That
+//!   listener is **macOS only**; Windows toasts are WinRT
+//!   ([`crate::win_toast`]) and their handlers call [`apply_response`] in Rust,
+//!   with no webview hop. Both platforms therefore share one write path.
 //!
 //! The sibling *delivered* ack (`/api/notifications/:id/delivered`) is NOT a
 //! command — it's an internal poll-loop write now (see [`crate::poll`]'s
@@ -96,8 +99,31 @@ pub async fn record_notification_response(
     let Some(pool) = pool.inner() else {
         return Err("meridian.db is not open yet".to_string());
     };
+    apply_response(app, pool, id, &action, text.as_deref()).await
+}
+
+/// The body of [`record_notification_response`], factored out because it has
+/// **two** callers on Windows.
+///
+/// macOS answers arrive as a plugin event the popover JS forwards back through
+/// the command. Windows has no such event: [`crate::win_toast`] registers a
+/// WinRT `Activated`/`Dismissed` handler and is handed the answer directly, in
+/// Rust, with no webview in the loop. Routing both through one function is what
+/// keeps the two platforms' write, logging, and click-through behaviour
+/// identical — the alternative is a second copy of this logic that drifts the
+/// first time either half changes.
+///
+/// Errors are returned as a `String` because the `#[tauri::command]` caller
+/// needs one; the WinRT caller logs it.
+pub(crate) async fn apply_response(
+    app: tauri::AppHandle,
+    pool: &meridian_core::SqlitePool,
+    id: i64,
+    action: &str,
+    text: Option<&str>,
+) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    meridian_core::notifications::record_response(pool, id, &action, text.as_deref(), &now)
+    meridian_core::notifications::record_response(pool, id, action, text, &now)
         .await
         .map_err(|e| crate::cmd_err!(e, id, action, "record_notification_response failed"))?;
     tracing::info!(
@@ -113,7 +139,7 @@ pub async fn record_notification_response(
     // parked for a fresh window's mount-time pull, or emitted to an
     // already-open one) so the click actually lands on the linked view (e.g.
     // the Plan modal), not just the default timeline.
-    if matches!(action.as_str(), "tap" | "open" | "view") {
+    if matches!(action, "tap" | "open" | "view") {
         if let Some(link) = meridian_core::notifications::notification_deep_link(pool, id).await {
             crate::deep_link::navigate_dashboard(&app, &link);
             if let Err(e) = crate::commands::open_dashboard(app).await {

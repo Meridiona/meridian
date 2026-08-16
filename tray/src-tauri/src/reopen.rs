@@ -156,8 +156,13 @@ mod reopen_tests {
     #[test]
     fn full_screen_is_requested_on_macos_only() {
         let src = include_str!("sys.rs");
+        // Anchor on the CALL (`win.` prefixed), not the bare name: the first
+        // bare occurrence in the file is a doc comment explaining what the call
+        // means on Windows, so scanning from there measured the distance from a
+        // paragraph of prose and passed or failed on whichever functions
+        // happened to sit in between.
         let at = src
-            .find("set_fullscreen(true)")
+            .find("win.set_fullscreen(true)")
             .expect("sys.rs no longer requests full-screen at all");
         // The gate must be the nearest thing above the call, not merely present
         // somewhere in the file.
@@ -166,7 +171,9 @@ mod reopen_tests {
             .rfind("#[cfg(target_os = \"macos\")]")
             .expect("set_fullscreen(true) is not behind a macOS cfg gate");
         assert!(
-            !before[gate..].contains("\nfn ") && !before[gate..].contains("\npub(crate) fn "),
+            !before[gate..].contains("\nfn ")
+                && !before[gate..].contains("\npub fn ")
+                && !before[gate..].contains("\npub(crate) fn "),
             "the nearest macOS cfg gate is on a different item, so set_fullscreen \
              still runs on Windows and traps the user in a borderless window"
         );

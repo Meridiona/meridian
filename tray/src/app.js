@@ -514,11 +514,15 @@ function armNotificationActions() {
         text: msg.inputValue == null ? null : String(msg.inputValue),
       }).catch((e) => dbg(`notification response failed: ${e}`))
     }
-    // Plugin absent in an unbundled run (tauri dev) — interactive toasts are
-    // packaged-only, so a registration failure is expected there, not an error.
+    // Two expected non-failures here, neither an error:
+    //   - an unbundled run (tauri dev) has no plugin at all — interactive
+    //     toasts are packaged-only;
+    //   - Windows never registers this listener, because its toasts are WinRT
+    //     (tray/src-tauri/src/win_toast.rs) and their handlers record answers
+    //     in Rust without a webview hop.
     invoke('plugin:notifications|register_listener', { event: 'actionPerformed', handler: ch })
       .then(() => dbg('notification action listener registered'))
-      .catch(() => dbg('notification action listener not registered (unbundled run?)'))
+      .catch(() => dbg('notification action listener not registered (dev run, or Windows/WinRT)'))
   } catch (e) { dbg(`notification listener threw: ${e}`) }
 }
 
