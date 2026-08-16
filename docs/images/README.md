@@ -84,7 +84,7 @@ available in that pass; recompress with one of those if this file is touched aga
 
 The GitHub social preview - 1280x640, the size GitHub renders link cards at. Committed
 so the asset is versioned, but **the repo file is not what GitHub serves**: it has to be
-uploaded by hand at Settings - Options - Social preview. Re-upload after any change here.
+uploaded by hand at Settings - General - Social preview. Re-upload after any change here.
 
 The light treatment - spirograph mark, wordmark, tagline. It is **generated**, not a
 pasted export: `tray/src-tauri/icons/meridiona-mark.png` (1024x1024) is composited onto

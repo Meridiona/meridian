@@ -128,8 +128,11 @@ meridian/
 > live in `ui/lib/api-types.ts` (moved out of the deleted routes). **Asset layout:** `frontendDist` →
 > `../../ui/out`; the build copies the tray popover into `out/popover/` and the main window loads
 > `popover/index.html`; dashboard/setup windows load `WebviewUrl::App("today"/"setup")` → `out/<route>/index.html`
-> (`trailingSlash: true`). **Known limitation:** the popover 404s under `tauri dev` (next dev doesn't serve
-> `popover/`); it renders in a packaged build. **When adding a route, follow the playbook in Coding
+> (`trailingSlash: true`). The popover works in BOTH profiles: `tauri.conf.json`'s
+> `beforeDevCommand` runs `node scripts/sync-popover.mjs dev`, which copies `tray/src/` into
+> `ui/public/popover/` for `next dev` to serve, and the build does the same into `out/popover/`.
+> (This used to be a documented "404s under `tauri dev`" limitation; the sync script closed it.)
+> **When adding a route, follow the playbook in Coding
 > Conventions → "Porting a dashboard route to Rust"**; exemplars: `meridian-core/src/readers/triage.rs`,
 > `tray/src-tauri/src/commands/parents.rs`. The dashboard ships **embedded in the tray binary** (`tauri
 > build` → `generate_context!` bundles `ui/out`); the standalone-Node-server release machinery (the
@@ -354,7 +357,7 @@ The fold replaces every `ui/app/api/*` route with a Rust command the frontend ca
 - UI API routes live in `ui/app/api/`; keep them thin — query, transform, return JSON
 - No `any` types unless unavoidable and justified with a comment
 - **NEVER `window.confirm` / `window.alert` / `window.prompt` — they do nothing in the packaged tray.** WKWebView routes JS dialogs through the host app's `WKUIDelegate`, and nothing in the stack installs one (`wry`, `tauri-runtime-wry`, `tauri`, `tauri-utils` were each grepped for `ConfirmPanel|AlertPanel|WKUIDelegate` — all empty), so `confirm()` always returns `false` and `alert()` is a no-op. The damage is silence: a falsy `confirm()` is indistinguishable from the user clicking Cancel, so the gated action quietly never runs while every log, gate and test still passes. That is how the `db.corrupt` **Repair Database** button shipped dead in 1.83.0 — recovery had to be driven by hand from a terminal. Use `@/components/ConfirmDialog` (`ConfirmDialog` for consent, `AlertDialog` for failures). `__tests__/no-native-dialogs.test.ts` fails the build if they come back. `tauri-plugin-dialog` would also work but is not a dependency, and adding one costs a capability grant for a box the webview can render itself.
-- **Spawning the `meridian` binary from a UI route: ALWAYS use `selectMeridianBinary(meridianCandidates())` from `@/lib/meridian-bin`.** Never spawn a bare `'meridian'` (relies on `$PATH`), and never hand-roll a candidate list. The dashboard runs under **launchd**, whose PATH lacks Homebrew's `node`, so the `#!/usr/bin/env node` wrapper at `~/.local/bin/meridian` dies with `env: node: No such file or directory`. The helper probes the **native binary first** (`~/.meridian/app/bin/meridian`, no runtime deps → works under launchd), so it behaves identically in dev and installed. This bug is invisible in `dev-start` (dev installs a bash wrapper, not a node one) — it only surfaces on bundle/npm installs. `__tests__/meridian-bin.test.ts` guards the ordering. The one sanctioned exception is launching `meridian` in a user Terminal (`open -a Terminal …`, e.g. `api/update`), where an interactive login shell *does* have node/PATH.
+- **Spawning the `meridian` binary: ALWAYS use `crate::install::meridian_bin()` (Rust), never a bare `"meridian"` and never a hand-rolled candidate list.** This moved: `@/lib/meridian-bin` and its `selectMeridianBinary(meridianCandidates())` no longer exist — the dashboard is a static export with no server-side process spawning, so every shell-out is a tray command now. The ordering rationale carried over intact and is why the helper exists: a process started under **launchd** has a minimal PATH without Homebrew's `node`, so the `#!/usr/bin/env node` wrapper at `~/.local/bin/meridian` dies with `env: node: No such file or directory`. `meridian_bin()` therefore probes the **native staged binary first** (`~/.meridian/bin/meridian`, no runtime deps), falls back to the user-local wrapper, and only then to bare `meridian` on `$PATH`. `MERIDIAN_BIN` overrides everything (logged; ignored with a warning if it points at nothing). On Windows the staged name is `meridian.exe` — the candidate list must match exactly or every shell-out silently falls through to the `$PATH` last resort, which is usually empty on a per-user install.
 
 ### SQL migrations
 
@@ -490,8 +493,13 @@ a `.tar.gz` the user hands to support, imported by hand with `meridian
 telemetry import <bundle> --endpoint <url> --auth <base64>`. The bundle also
 carries a synthesized `bundle-info.txt` (Support ID, version, channel, os,
 arch) so a hand-delivered archive can be joined to that machine's already-
-ingested rows; it deliberately contains nothing the automatic ship leg wouldn't
-already send. Retention (default 7 days, `MERIDIAN_TELEMETRY_RETENTION_DAYS`)
+ingested rows. **The bundle is NOT redacted, and it is a superset of what the
+automatic ship leg sends** — `build_export_bundle` copies `pending/` and `sent/`
+verbatim, and the spool is captured at full fidelity, so the archive carries
+INFO/DEBUG records and unredacted attributes that the WARN+-only, redacted ship
+leg strips. (An earlier version of this line claimed the opposite; it was wrong,
+and `docs/privacy.md` now tells users to inspect the archive before sending it.)
+Retention (default 7 days, `MERIDIAN_TELEMETRY_RETENTION_DAYS`)
 applies to both `pending/` and `sent/`, regardless of shipping status.
 
 - **Rust**: `tracing::info!/warn!/error!/debug!` with **structured fields** — never format data values into the message string (already enforced).
@@ -509,7 +517,7 @@ applies to both `pending/` and `sent/`, regardless of shipping status.
 1. Read `src/db/meridian.rs` or `src/db/screenpipe.rs`
 2. Follow the `sqlx::query_as` + `.context("description")` pattern
 3. Export from `src/db/mod.rs` if needed
-4. Run `cargo clippy -- -D warnings && cargo test`
+4. Run `cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
 
 ### Add a new ETL extraction signal
 
@@ -520,12 +528,24 @@ applies to both `pending/` and `sent/`, regardless of shipping status.
 5. Add a migration if the signal needs its own column; otherwise store as JSON in `signals`
 6. Add an integration test in `tests/integration_etl.rs`
 
-### Add a new UI API route
+### Add a new dashboard data source (there are no UI API routes)
 
-1. Create `ui/app/api/<name>/route.ts`
-2. Query `meridian.db` using `better-sqlite3` (see existing routes for the pattern)
-3. Return a typed JSON response; define the response type inline
-4. If the route shells out to the `meridian` binary, resolve it with `selectMeridianBinary(meridianCandidates())` from `@/lib/meridian-bin` — never a bare `'meridian'` or an ad-hoc candidate list (see the launchd/node-wrapper note under Coding Conventions → TypeScript / Next.js)
+**`ui/app/api/` does not exist.** The Next-fold deleted every route handler: the
+dashboard is a static export inside the tray webview, with no Node server to host
+them. There is nowhere to put a `route.ts`, and `better-sqlite3` is not a dependency
+of `ui/`.
+
+Follow **Coding Conventions → "Porting a dashboard route to Rust"** instead — the
+same playbook applies to a brand-new reader, not just a ported one. In short: a
+DB-backed read becomes a module under `meridian-core/src/readers/`; anything touching
+files, env, a process, or external HTTP becomes a `#[tauri::command]` under
+`tray/src-tauri/src/commands/`; the frontend reaches it through `ui/lib/bridge.ts`
+(`load`/`mutate`/`subscribe`), and its response type goes in `ui/lib/api-types.ts`.
+
+Spawning the `meridian` binary is a Rust concern now: use
+`crate::install::meridian_bin()`, never a bare `"meridian"`. It is the Rust port of the
+old Node helper and keeps the same ordering rationale (native staged binary first,
+because it has no runtime deps and survives launchd's minimal PATH).
 
 ### Add a notification (plain toast or interactive nudge)
 
@@ -665,7 +685,7 @@ fixtures that produce genuinely corrupt files live in `src/db/test_corrupt.rs`
 
 - Commit message style: `type(scope): short description` — e.g. `fix(etl): detect sleep gaps that span ETL run boundaries`
 - `commit-msg` hook validates conventional commits format — fix message before retrying
-- `pre-commit` hook runs `cargo fmt --check` and `cargo clippy -- -D warnings`
+- `pre-commit` hook runs `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings`
 - `pre-push` hook runs the full suite: `cargo fmt` + `cargo clippy --workspace` + UI build + UI tests + security audit (claude CLI) + `cargo test --workspace`
 - Never skip hooks with `--no-verify`
 - Install hooks after cloning: `bash scripts/setup-hooks.sh`

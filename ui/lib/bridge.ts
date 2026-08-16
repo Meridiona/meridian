@@ -57,18 +57,54 @@ export function isTauri(): boolean {
  *  Two physical pixels, immediately reverted, is enough to trigger that
  *  without a perceptible flash. No-op outside Tauri; failures are swallowed
  *  since this is a cosmetic repaint fix, not something a user action should
- *  ever fail on. */
-export async function nudgeWindowRepaint(): Promise<void> {
+ *  ever fail on.
+ *
+ *  Swallowing failures is not the same as leaking them. Two things this must
+ *  never do, both of which leave the window permanently WRONG rather than
+ *  merely un-repainted:
+ *
+ *  1. **Grow and not shrink back.** The grow and the restore are two awaits, and
+ *     the old shape put both in one `try` — so a restore that threw left the
+ *     window a pixel wider for the rest of the session, silently. The restore
+ *     now runs from `finally`, with its own catch.
+ *  2. **Restore a size another call is mid-way through changing.** Callers are
+ *     step transitions, which can overlap; two concurrent nudges could each read
+ *     `innerSize()` while the other had it grown, and then "restore" to that
+ *     inflated number. The window creeps a pixel wider every time. Calls are
+ *     therefore serialised through one chain, so a nudge always measures a
+ *     settled window. */
+let repaintQueue: Promise<void> = Promise.resolve()
+
+export function nudgeWindowRepaint(): Promise<void> {
+  // `then(run, run)` rather than `.finally(run)`: the next nudge must run whether
+  // or not the previous one settled cleanly, and must not inherit its rejection.
+  const next = repaintQueue.then(runWindowRepaint, runWindowRepaint)
+  repaintQueue = next
+  return next
+}
+
+async function runWindowRepaint(): Promise<void> {
   const t = tauri()
   if (!t) return
+  // Captured as a closure the moment the original size is known, so `finally`
+  // can restore without re-reading a size that is currently perturbed.
+  let restore: null | (() => Promise<void>) = null
   try {
     const win = t.window.getCurrentWindow()
-    const { width, height } = await win.innerSize()
     const { PhysicalSize } = t.window
+    const { width, height } = await win.innerSize()
+    restore = () => win.setSize(new PhysicalSize(width, height))
     await win.setSize(new PhysicalSize(width + 1, height))
-    await win.setSize(new PhysicalSize(width, height))
   } catch {
     // cosmetic only
+  } finally {
+    if (restore) {
+      try {
+        await restore()
+      } catch {
+        // cosmetic only
+      }
+    }
   }
 }
 

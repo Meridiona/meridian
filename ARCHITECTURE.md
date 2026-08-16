@@ -26,9 +26,16 @@ worse than no feature at all.
 ## The pieces
 
 Meridian is two long-running processes plus two libraries, all on your machine. There
-is no server.
+is no remote server: your activity database, captured text, and credentials live on
+disk and are never uploaded. Diagnostics are the exception - a packaged build ships
+redacted, error-level telemetry unless you turn it off, and the summarisation you
+configure sends session text to your chosen LLM provider. `docs/privacy.md` lists
+every outbound path in full.
 
-```
+The MCP server below is a local process an AI client starts on demand over stdio; it
+listens on no port.
+
+```text
 ┌──────────────────────────────┐        ┌──────────────────────────────┐
 │  Tray  (Tauri, Rust + web)   │        │  Daemon  (Rust, headless)    │
 │                              │        │                              │
@@ -58,7 +65,11 @@ is no server.
 | **MCP server** | `packages/meridian-mcp/` | TypeScript. Exposes the same data to AI clients over the Model Context Protocol. |
 | **OAuth** | `meridian-oauth/` | Browser-based OAuth flows for Jira and Trello. |
 
-The Rust workspace is `[".", "meridian-core", "meridian-oauth", "tray/src-tauri"]`.
+The Rust workspace is `[".", "meridian-core", "meridian-oauth", "tray/src-tauri",
+"tray/src-tauri/vendor/tauri-plugin-clerk"]`. That last one is a patched copy of a
+third-party crate, and it is a member rather than excluded precisely so its regression
+tests run - see `tray/src-tauri/vendor/tauri-plugin-clerk/README.md`.
+
 Because the repo root is itself a package, **`cargo test` and `cargo clippy` must be
 run with `--workspace`** or they silently test only the daemon. This is the single
 most common way to get a green run that proves nothing.

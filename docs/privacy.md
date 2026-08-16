@@ -6,15 +6,19 @@
 
 ## Overview
 
-Meridian is a local-first developer tool that turns your activity into structured work sessions and keeps your project management in sync. Screen capture, OCR, and session structuring run entirely on your machine and are stored in an encrypted local database. Your screen content, window titles, and captured text never leave your device.
+Meridian is a local-first developer tool that turns your activity into structured work sessions and keeps your project management in sync. Screen capture, OCR, and session structuring run entirely on your machine, and what they produce is stored in an encrypted local database. Meridiana never receives your screen content, your window titles, or the text captured from your screen.
 
-Meridian does make network calls. There are exactly three kinds, and you control all of them:
+Meridian does make network calls. There are **five kinds**, listed here in full:
 
 1. **Ticket updates you approve** — sent directly from your machine to the trackers you connect.
-2. **AI summarisation** — session text sent to the LLM provider you choose.
+2. **AI summarisation** — session text, including text captured from your screen, sent to the LLM provider you choose. **This is the one path on which your captured content leaves the device**, and it goes to a provider you pick and configure, never to Meridiana. It is described in [LLM provider](#llm-provider-summarisation--ticket-matching).
 3. **Error reports** — redacted, error-only diagnostics sent to Meridiana. **On by default in packaged installs; one switch turns it off.**
 4. **Product analytics** — two events, and only once you sign in: that you installed, and a daily count of hours and drafts. **No screen content. Currently no off switch** — see [Product analytics](#product-analytics).
-5. **A public counter ping** — one anonymous "+1" to meridiona.com each time you post a worklog, powering the counter on the landing page. No payload.
+5. **A public counter ping** — one anonymous "+1" to meridiona.com each time you post a worklog **or update a personal task**, powering the counter on the landing page. No payload. Sent only from release builds, and it has **no off switch** either.
+
+**How much of this you control:** 1 and 2 happen only because you connected a tracker
+and chose a provider; 3 has a switch in Settings. 4 and 5 do not currently have one.
+Saying "you control all of them" would be simpler and would not be true.
 
 Each is described in full below. If you only read two sections, read
 [Error reporting](#error-reporting) and [Product analytics](#product-analytics).
@@ -93,7 +97,9 @@ Packaged builds also send crash reports (via Sentry) so we learn about crashes t
 
 ### Sending diagnostics manually
 
-**Settings → Account → Export Diagnostics** (or `meridian telemetry export`) bundles your local logs into a `.tar.gz` you can inspect and send to support by hand. This is independent of the switch above, it only happens when you ask for it, and it contains nothing the automatic path would not already send.
+**Settings → Account → Export Diagnostics** (or `meridian telemetry export`) bundles your local logs into a `.tar.gz` you can inspect and send to support by hand. It is independent of the switch above and only happens when you ask for it.
+
+**Treat this archive as more sensitive than an automatic error report, and look inside before you send it.** The two are not the same content. Automatic reports are filtered to warnings and errors and are redacted on your machine before they leave; the export is a copy of your **raw local spool**, which is captured at full fidelity. That means it can contain `INFO` and `DEBUG` records, and diagnostic detail, that the automatic path deliberately strips or never sends. It is a `.tar.gz` of ordinary files - `meridian logs` renders the same data if you would rather read it that way first.
 
 ---
 

@@ -193,21 +193,26 @@ mod reopen_tests {
 
     #[test]
     fn is_onboarded_reflects_the_marker_file() {
-        // Use a unique temp dir so parallel test runs don't collide.
-        let dir = std::env::temp_dir().join(format!("meridian-reopen-{}", std::process::id()));
+        // `tempfile` rather than a PID-named directory. A PID is unique among
+        // LIVE processes, not over time: if a run panicked between the two
+        // assertions below, the `onboarded` marker it wrote survived, and the
+        // next run that happened to draw the same PID failed on the first
+        // assertion - because `create_dir_all` is happy with an existing
+        // directory and does not clear what is in it. `tempdir()` removes the
+        // whole tree on drop, panics included.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
         let meridian = dir.join(".meridian");
         std::fs::create_dir_all(&meridian).unwrap();
 
         // No marker yet → not onboarded → the reopen handler would open the wizard.
-        assert!(!is_onboarded(&dir));
-        assert_eq!(reopen_target(is_onboarded(&dir)), ReopenTarget::Wizard);
+        assert!(!is_onboarded(dir));
+        assert_eq!(reopen_target(is_onboarded(dir)), ReopenTarget::Wizard);
 
         // Marker present (mark_setup_complete writes an RFC-3339 stamp here) →
         // onboarded → the handler would open the dashboard.
         std::fs::write(meridian.join("onboarded"), "2026-07-07T00:00:00Z").unwrap();
-        assert!(is_onboarded(&dir));
-        assert_eq!(reopen_target(is_onboarded(&dir)), ReopenTarget::Dashboard);
-
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(is_onboarded(dir));
+        assert_eq!(reopen_target(is_onboarded(dir)), ReopenTarget::Dashboard);
     }
 }

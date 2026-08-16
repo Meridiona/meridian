@@ -61,10 +61,18 @@ describe('the walkthrough fences off stray clicks', () => {
     // If the fence ever moves below them it swallows Skip, and a user who
     // cannot reach the target also cannot leave.
     const fence = overlay.indexOf('<Cutout rect={ring} dim={false} />')
-    const skip = overlay.indexOf('onSkip')
+    // The RENDER site, not the prop. `indexOf('onSkip')` finds the destructuring
+    // in the component signature ~340 lines earlier, which sits before the fence
+    // no matter where the button is painted - so comparing against it would fail
+    // a correct file and pass a broken one. Anchor on the JSX that actually
+    // paints.
+    const skip = overlay.indexOf('<button onClick={onSkip}')
     const caption = overlay.indexOf("pointerEvents: 'auto', maxWidth:")
     expect(fence).toBeGreaterThan(-1)
     expect(caption).toBeGreaterThan(fence)
-    expect(skip).toBeGreaterThan(-1)
+    // Skip must paint AFTER the fence, not merely exist. The old `skip > -1` let
+    // the fence move below the Skip button - the one arrangement this test is
+    // here to forbid - without failing.
+    expect(skip).toBeGreaterThan(fence)
   })
 })
