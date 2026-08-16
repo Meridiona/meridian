@@ -1,6 +1,24 @@
 {
   "releases": [
     {
+      "version": "1.88.0",
+      "date": "2026-08-17",
+      "highlights": [
+        "The guided tour no longer blocks the very buttons it asks you to press. Choosing your project tool, answering the AI question, even typing a task title - the tour was covering all of it, so you could read the instruction but not follow it, and the step only moved on when it timed out minutes later.",
+        "The daily summary now updates a work log the moment you post it. A row you had just filed still said DRAFT READY TO POST, in the colour reserved for things that need you, until you closed the summary and opened it again.",
+        "The installer now says to open Meridian after dragging it. A disk image cannot start an app itself, so the app sat in Applications doing nothing while the window that put it there gave no hint a second step was left."
+      ],
+      "fixes": [
+        "Permission warnings no longer fire on launch when nothing is wrong. Rebuilding or updating the app made macOS report Screen Recording and Accessibility as off for a moment; the toast fired on that first read and then cleared itself. A permission now has to read off for five minutes before you hear about it.",
+        "The tour no longer leaves the app clickable while it narrates over a window it opened. A stray click could close the modal it was describing, after which it carried on explaining a screen that was no longer there.",
+        "The planner no longer reports Sync failed for a sync that worked.",
+        "The setup wizard's permission cards line up. The Screen Recording title wraps to two lines where Accessibility does not, which pushed everything below it a line lower in that one card, and the notifications card drew a different header from the two beside it.",
+        "The setup window no longer resizes itself when macOS or Windows cannot say whether it is maximized. On Windows a resize clears the maximized state, so the window would snap back to its old size mid-wizard when you pressed Continue.",
+        "The dashboard builds no longer depend on a font downloaded at build time, which had started failing and taking the build with it.",
+        "The open-source card fits its buttons at every width, and leads with starring the repo."
+      ]
+    },
+    {
       "version": "1.87.0",
       "date": "2026-08-16",
       "highlights": [
