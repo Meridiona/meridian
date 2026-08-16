@@ -425,13 +425,19 @@ export function Btn({ children, variant = 'primary', size = 'md', disabled, onCl
   const skins: Record<string, CSSProperties> = {
     primary: { fontWeight: 600 },
     secondary: { background: 'var(--t-card)', color: 'var(--t-title)', borderColor: 'var(--t-card-border)' },
-    ghost: { background: 'transparent', color: 'var(--t-faint)' },
+    ghost: { background: 'transparent', color: 'var(--t-muted)' },
     soft: { background: 'color-mix(in srgb, var(--t-accent) 12%, transparent)', color: 'var(--t-accent)' },
   }
   // The brand variant opts OUT of this: fading a dark fill AND its white label
   // toward a white card makes "Preparing setup…" unreadable. It has its own
   // disabled skin in `.mer-btn-cta:disabled` (desaturated, not faded).
-  const dim: CSSProperties | null = disabled && !brand ? { opacity: 0.4, filter: 'saturate(.6)' } : null
+  //
+  // 0.55, not the old 0.4. A disabled control has to still be READABLE - it is
+  // telling the user what the control is and that it is unavailable, and at 0.4
+  // over --t-muted the footer's "‹ Back" on step 1 had faded to roughly the
+  // card's own hairline. Muted enough to read as unavailable, dark enough to
+  // read as a word.
+  const dim: CSSProperties | null = disabled && !brand ? { opacity: 0.55, filter: 'saturate(.7)' } : null
   return (
     <button title={title} onClick={disabled ? undefined : onClick} disabled={disabled}
       className={brand ? 'mer-btn-cta' : undefined}

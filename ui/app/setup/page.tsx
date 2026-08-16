@@ -51,7 +51,37 @@ export default function SetupWizard() {
     invoke<string>('get_platform').then(setPlatform).catch(() => setPlatformError(true))
   }, [])
   useEffect(() => { resolvePlatform() }, [resolvePlatform])
-  const steps = useMemo(() => buildSteps(platform), [platform])
+
+  // ── Notifications precheck — decides whether the Alerts step exists at all ──
+  // On Windows the Permissions step is a single optional notifications toggle,
+  // and Windows grants toast notifications to most apps by default - so for most
+  // users it opened already GRANTED, an onboarding screen asking for something
+  // it already had. `buildSteps` drops it when this resolves 'granted'.
+  //
+  // This is a ONE-SHOT read, deliberately separate from the live 2 s poll below:
+  // the poll only runs while the Permissions step is already on screen, which is
+  // circular for a question that decides whether that step is on screen at all.
+  //
+  // Resolved ONCE and never rewritten - `notifPrecheck` is not updated by the
+  // poll, and the `.then` cannot fire twice. That is what keeps `steps` stable
+  // once the user has begun: the same invariant the `platform` note above
+  // describes, and it is why Welcome's "Get started" waits on this too. Someone
+  // who grants notifications mid-wizard (via the step itself) keeps the step
+  // they are standing on rather than having it vanish underfoot.
+  const [notifPrecheck, setNotifPrecheck] = useState<NotifState | null>(null)
+  useEffect(() => {
+    invoke<NotifState>('check_notifications')
+      // A failed probe is NOT a grant: fall through to 'unavailable', which
+      // keeps the step (the wizard's existing behaviour) rather than silently
+      // skipping notification onboarding because one IPC call went wrong.
+      .catch((): NotifState => 'unavailable')
+      .then(setNotifPrecheck)
+  }, [])
+
+  const steps = useMemo(
+    () => buildSteps(platform, notifPrecheck === 'granted'),
+    [platform, notifPrecheck],
+  )
 
   // ── Resume where they left off ───────────────────────────────────────────
   // Quitting mid-setup used to drop the user back on Welcome, re-reading a
@@ -72,7 +102,10 @@ export default function SetupWizard() {
   // reintroduce exactly that bug through the back door.
   const restoredProgress = useRef(false)
   useEffect(() => {
-    if (restoredProgress.current || platform === null) return
+    // Gated on `notifPrecheck` for the same reason as `platform`: it is the
+    // other input to `buildSteps`, so restoring a position before it lands
+    // could point `step` into a list that is about to lose a step.
+    if (restoredProgress.current || platform === null || notifPrecheck === null) return
     restoredProgress.current = true
     let savedStepId: string | null = null
     try {
@@ -84,7 +117,7 @@ export default function SetupWizard() {
     if (at < 0) return
     setWelcome(false)
     setStep(at)
-  }, [platform, steps])
+  }, [platform, notifPrecheck, steps])
 
   // Written on every move once past Welcome. Welcome itself is deliberately
   // not stored: it is the zero state, and "resuming" onto it is the same as
@@ -398,7 +431,9 @@ export default function SetupWizard() {
         {welcome ? (
           <Welcome
             onBegin={() => { setWelcome(false); setStep(0) }}
-            ready={platform !== null}
+            // Both inputs to `buildSteps` must have landed before the step list
+            // can be navigated - see the `platform` and `notifPrecheck` notes.
+            ready={platform !== null && notifPrecheck !== null}
             error={platformError}
             onRetry={resolvePlatform}
           />
@@ -434,8 +469,13 @@ function Footer({ step, last, canNext, err, onBack, onNext }: {
     <div className="flex items-center justify-between" style={{ padding: '16px 28px', borderTop: '1px solid var(--t-hair)', background: 'var(--t-box)' }}>
       <Btn variant="ghost" disabled={step === 0} onClick={onBack}><ArrowL />Back</Btn>
       <span style={{ fontSize: 11, color: 'var(--color-state-pending)', flex: 1, textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 12px' }}>{err}</span>
+      {/* "Open Dashboard", not "Finish setup". Both are true of the last step,
+          but only one of them names what happens when it is pressed - `finish()`
+          marks setup complete, opens the dashboard window, and closes this one.
+          "Finish setup" described the bookkeeping and left the user to guess
+          where they were about to land. */}
       <Btn variant="primary" disabled={!canNext} onClick={onNext}>
-        {last ? 'Finish setup' : 'Continue'}{!last && <ArrowR />}
+        {last ? 'Open Dashboard' : 'Continue'}{!last && <ArrowR />}
       </Btn>
     </div>
   )

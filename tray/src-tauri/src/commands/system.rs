@@ -155,6 +155,21 @@ pub async fn resize_setup_window(
         tracing::debug!("setup window is full-screen - resize skipped");
         return Ok(());
     }
+    // Same reasoning for a MAXIMIZED window, which is the shape the hazard
+    // actually takes on Windows: `is_fullscreen()` is false there for a
+    // maximized window (it tracks the borderless-fullscreen state, not the
+    // zoomed one), so the guard above never fired and every step transition
+    // that changed `cardHeight` called `set_size` on a maximized window. Win32
+    // has no "resize while staying maximized": SetWindowPos on a WS_MAXIMIZE
+    // window clears the maximized state, so the window visibly snapped back to
+    // its restored size mid-wizard - the user pressed Continue and the window
+    // un-maximized itself. Nothing needs resizing while maximized anyway: the
+    // card's own `transform: scale(...)` in page.tsx already fills whatever
+    // size the window is.
+    if win.is_maximized().unwrap_or(false) {
+        tracing::debug!("setup window is maximized - resize skipped");
+        return Ok(());
+    }
     let resize = win
         .set_min_size(Some(tauri::LogicalSize::new(width, height)))
         .and_then(|()| win.set_size(tauri::LogicalSize::new(width, height)));
