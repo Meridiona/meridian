@@ -1,5 +1,78 @@
 # Changelog
 
+## [1.87.0](https://github.com/Meridiona/meridian/compare/v1.86.0...v1.87.0) (2026-08-16)
+
+### 🚀 Features
+
+* **tray:** interactive toasts on Windows - buttons, inline reply, retraction ([366de7b](https://github.com/Meridiona/meridian/commit/366de7b3f3ae528eed74fdc52d81559c81895e86))
+* **walkthrough:** ship the replay control in packaged builds ([17b5980](https://github.com/Meridiona/meridian/commit/17b5980f7ff5d112384d2e28b7c5de646124f1ab))
+* **walkthrough:** type the first task instead of waiting for the user to invent one ([0f8c155](https://github.com/Meridiona/meridian/commit/0f8c15586d75cfe8f73e768e91b5f1c7779fe21b))
+
+### 🐛 Bug Fixes
+
+* address the CodeRabbit review on the 1.87 release PR ([89f69fc](https://github.com/Meridiona/meridian/commit/89f69fc36e7e85c9c54f4edbc3beb0b958b8d096)), closes [#1](https://github.com/Meridiona/meridian/issues/1)
+* **setup:** stop the wizard un-maximizing itself, and skip a step that has nothing to ask ([079fa10](https://github.com/Meridiona/meridian/commit/079fa10896d340427b210afb8189e1ec5b08e1b0)), closes [#8877E2](https://github.com/Meridiona/meridian/issues/8877E2) [#7C3AED](https://github.com/Meridiona/meridian/issues/7C3AED)
+* **summary:** open the worklog draft from Today's Plan rows ([da25a30](https://github.com/Meridiona/meridian/commit/da25a306a3e98fe4f514b3b41b7833c739c9389f))
+* **tray:** kill by the pids already found, and test the health-poll gate ([20656af](https://github.com/Meridiona/meridian/commit/20656afaa2be17fff530914a0c764d993e8abe88))
+* **tray:** stop the installer and the watchdog fighting over the daemon ([b61d915](https://github.com/Meridiona/meridian/commit/b61d91541582cab2d4ff92d85ccd179a03d1d57c))
+* **tray:** stop trapping Windows users in a borderless dashboard ([ec4f13a](https://github.com/Meridiona/meridian/commit/ec4f13a3e7dbbf89e6e8fd9f3e7f489fb097ba1e))
+* **tutorial:** keep the spotlight scrim concentric at the screen edges ([f774517](https://github.com/Meridiona/meridian/commit/f77451711bc61a7aec8a37bf99a997bbd1ee20e2))
+* **tutorial:** round the walkthrough spotlight's dim so its corners stop showing ([5144df1](https://github.com/Meridiona/meridian/commit/5144df1627aa1829c9af675b59e03714774c2212))
+* **ui:** don't ask the worklog time twice when the tour reached that beat ([25d3854](https://github.com/Meridiona/meridian/commit/25d3854dcb1c4f3c108b95ffd4a42c43253aeba0))
+* **ui:** reopen the composer after the AI-provider detour, and cut a stall ([0788c15](https://github.com/Meridiona/meridian/commit/0788c15993435c463b2b28b7b23e62ec6b10ec86))
+* **ui:** stop the tour's narration bar covering a modal's first heading ([4c42cca](https://github.com/Meridiona/meridian/commit/4c42cca6a1812c1513e3ff2bde7d16670901c4c2))
+* **worklog:** ask for a model when the user presses Generate, not after ([6aa1d77](https://github.com/Meridiona/meridian/commit/6aa1d77d829c0e22d7b179455b0db1711b595b58))
+
+### ♻️ Refactoring
+
+* **walkthrough:** name the worklog's model as the one Draft with AI already needed ([e2845f0](https://github.com/Meridiona/meridian/commit/e2845f051f0dda542b8cf3f46c9dd190e9a8007f))
+
+### 📝 Documentation
+
+* **readme:** add a relatable moments table instead of a feature list ([4554db8](https://github.com/Meridiona/meridian/commit/4554db811738fc6bc1eea6d87e60cf7e37a263da))
+* **readme:** add build-from-source, contributing, and license sections; reframe the table as questions ([b58d14c](https://github.com/Meridiona/meridian/commit/b58d14c997e1478cdbbebdbbc727f430fd5d6358))
+* **readme:** add the automated worklog draft section ([49f9c04](https://github.com/Meridiona/meridian/commit/49f9c045913d00f32b8a49513504fd5587fb1695))
+* **readme:** add the daily summary screenshot section ([7ffff13](https://github.com/Meridiona/meridian/commit/7ffff13c2964d579a9cd7a8b7e6fc9ec5bf16b1a))
+* **readme:** center the demo video with the proven div wrapper ([20fe2d1](https://github.com/Meridiona/meridian/commit/20fe2d12f9c9ee948f491fb967f0e7fa6a28185b))
+* **readme:** deep-link the download button into the site's download modal ([8a28b05](https://github.com/Meridiona/meridian/commit/8a28b05889ee106d0cde246f3d2e6f2f1bf429c2))
+* **readme:** display the reconstruction gif at native resolution ([14acb48](https://github.com/Meridiona/meridian/commit/14acb48edcaccb1ec243d897bd0b05bc0ac3cc5d))
+* **readme:** drop the platform line under the download link ([06509cc](https://github.com/Meridiona/meridian/commit/06509ccd9778c7ec13f9d7db9a54aa94852897de))
+* **readme:** embed the demo video inline instead of linking to YouTube ([66d1d06](https://github.com/Meridiona/meridian/commit/66d1d06b4f83429ae6d146b7420a5a1643b63058))
+* **readme:** fix button corners, reuse main's video embed, contrib.rocks grid, specs, table rewording ([df06fc9](https://github.com/Meridiona/meridian/commit/df06fc94f3be1f891a304b6106fa9f57d637f4ce))
+* **readme:** fix the demo video width, GitHub ignores percentage widths on video tags ([c82edf2](https://github.com/Meridiona/meridian/commit/c82edf2449f049815fcd66bf32a80856ecfd2911))
+* **readme:** lead with the download link, then banner and demo video ([71cd337](https://github.com/Meridiona/meridian/commit/71cd337dce2f91b42feab5a99c3b9c27846c1186))
+* **readme:** make the demo video span the full readme width ([20e8b54](https://github.com/Meridiona/meridian/commit/20e8b54252f46c0c945b034420deec584a5f048f))
+* **readme:** match the download button to the banner, move it below, reorder the relatable table, add privacy ([8a64457](https://github.com/Meridiona/meridian/commit/8a644576b03cfcf3a4aafb44509fc6bcde518575))
+* **readme:** merge pre-main, resolve conflict by keeping this branch's rewrite ([9a4e47e](https://github.com/Meridiona/meridian/commit/9a4e47e5b743babf54d0a2d55cf2794f9ec24792))
+* **readme:** plainly state that worklog updates are auto-drafted ([6e2dea7](https://github.com/Meridiona/meridian/commit/6e2dea729eae685f6dd5265baa5c3c2280ee92fd))
+* **readme:** point the download link at the tracked /dl redirect ([c08262a](https://github.com/Meridiona/meridian/commit/c08262a654cc0bdd64e87aacf333fb301ced4160))
+* **readme:** reframe the relatable table around the outcome, not the problem ([0d577e0](https://github.com/Meridiona/meridian/commit/0d577e0875dd615bc213b33b872469dd3636acd7))
+* **readme:** remove the what-it-does table ([b0d1b55](https://github.com/Meridiona/meridian/commit/b0d1b555143b931c245b60aa462d6df33cdc0340))
+* **readme:** rename the relatable table, fix the PM-updates row to reflect real context loss ([0c1aaeb](https://github.com/Meridiona/meridian/commit/0c1aaeb572d1eefe054cacad344ce33e8bb41854))
+* **readme:** restart with a centered logo and tagline header ([8a3734d](https://github.com/Meridiona/meridian/commit/8a3734d832738c384e40288dd037b365a00be191))
+* **readme:** rewrite the table rows around real, human moments ([f3ea34a](https://github.com/Meridiona/meridian/commit/f3ea34a36a358294b9157306b5a54dc7f87417c4))
+* **readme:** send the download link to the site's own download flow ([f039779](https://github.com/Meridiona/meridian/commit/f0397794495edf36990589f333c9f940226b4184))
+* **readme:** shrink privacy and move it to the bottom, add a what-it-does table above it ([fc2cd40](https://github.com/Meridiona/meridian/commit/fc2cd4011bd3f655a34fbadb7ee2cc1ec9d831a7))
+* **readme:** shrink the banner and add a Download Meridian button ([26dba17](https://github.com/Meridiona/meridian/commit/26dba17e67d7fc69c20757b4a7aa2dbe6c389aae))
+* **readme:** size the demo and reconstruction media up to 900px ([047abb4](https://github.com/Meridiona/meridian/commit/047abb41c3d20615bb2be600a404a2dbb6fa046c))
+* **readme:** size the reconstruction gif up and link it to full resolution ([12c70eb](https://github.com/Meridiona/meridian/commit/12c70ebfa93a180de7de57be6a1aa374e57e62d3))
+* **readme:** swap in a higher-resolution reconstruction gif ([b75df31](https://github.com/Meridiona/meridian/commit/b75df319b2dd5d27abd68a5c0e204b161391c4b4))
+* **readme:** swap in the full-quality reconstruction gif ([08cd23a](https://github.com/Meridiona/meridian/commit/08cd23a3da3f4c4e8f4950c8a429bc6f48e8cdb1))
+* **readme:** swap in the latest reconstruction gif recording ([d1574f3](https://github.com/Meridiona/meridian/commit/d1574f3ed17d3df8f6f854981bb45d558a2f5e38))
+* **readme:** swap in the new reconstruction gif at native resolution ([4a46a09](https://github.com/Meridiona/meridian/commit/4a46a09a7983bf0e06bfb9220912c2fd344b309d))
+* **readme:** sync main's README with pre-main ([f51621e](https://github.com/Meridiona/meridian/commit/f51621e3e247d5fa0fef07f8d041b6f9b7160562))
+* **readme:** tighten header spacing, add titled demo and reconstruction sections ([fa2a20d](https://github.com/Meridiona/meridian/commit/fa2a20ddfa28684f621d60f8792b6fe462f51803))
+* **readme:** update the demo video and system requirements line ([9271ec2](https://github.com/Meridiona/meridian/commit/9271ec2c61d7cac2ff5bf0ca86bef53caf77c691))
+* **readme:** use a styled download button instead of a text link ([81f7739](https://github.com/Meridiona/meridian/commit/81f77398a40e744af5550a4502e15c286187e612))
+* **readme:** use main's current demo video, not the one it already moved past ([498c3b8](https://github.com/Meridiona/meridian/commit/498c3b80fd71545b8a0295e91550212de15a2117))
+* **readme:** use the Meridian banner as the header ([c2c9404](https://github.com/Meridiona/meridian/commit/c2c940464daf8a6e997c21224d81d7b2d9af0ddb))
+* **tray:** add the What's New entry for 1.87.0 ([d5266d1](https://github.com/Meridiona/meridian/commit/d5266d14f1aea6deb695f372317c737b104e13f4))
+* **tray:** backfill the What's New entries for 1.85.0 and 1.86.0 ([a52b0e7](https://github.com/Meridiona/meridian/commit/a52b0e7224507cc12996fcdcf6fc532716373d97))
+
+### 🔧 Chores
+
+* **deps:** bump the actions group with 4 updates ([9121433](https://github.com/Meridiona/meridian/commit/9121433b4811b1b44704df08a3671380928f6ecd))
+
 ## [1.86.0](https://github.com/Meridiona/meridian/compare/v1.85.0...v1.86.0) (2026-08-16)
 
 ### 🚀 Features
