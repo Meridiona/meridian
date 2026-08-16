@@ -188,9 +188,18 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
   // Guarded on `dayRef` for the same reason the compose paths are: the user can page
   // days while this is in flight, and one day's badges under another day's rows is a
   // worse answer than the stale ones.
+  //
+  // And guarded on a request number, which `dayRef` does NOT cover: two refreshes for
+  // the SAME day can be in flight at once (close a task, open another, act on it,
+  // close it - all faster than one DB read resolving), and nothing makes them resolve
+  // in the order they were sent. The older response landing last would restore exactly
+  // the badges the newer one had just corrected, which is the bug this file is fixing,
+  // reappearing through a different door.
+  const draftRequest = useRef(0)
   const refreshDrafts = useCallback(async () => {
+    const req = ++draftRequest.current
     const rows = await load<DayDraftState[]>(API, 'get_day_draft_states', { day }).catch(() => null)
-    if (dayRef.current !== day) return
+    if (dayRef.current !== day || req !== draftRequest.current) return
     // A failed read leaves the previous map alone rather than clearing every badge:
     // on a refresh we already have an answer, and last known beats none.
     if (rows) setDrafts(new Map(rows.map((r) => [r.task_id, r])))

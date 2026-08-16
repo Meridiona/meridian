@@ -73,6 +73,27 @@ describe('the badge map is re-read after the user acts on a draft', () => {
     expect(refreshDrafts()).toContain('dayRef.current')
   })
 
+  it('refuses to let an older refresh land on top of a newer one', () => {
+    // `dayRef` does NOT cover this: two refreshes for the SAME day can overlap (close
+    // a task, open another, act on it, close it - all faster than one read resolving),
+    // and nothing orders the responses. The older one landing last would restore
+    // exactly the badges the newer one just corrected - this file's own bug, through
+    // a different door.
+    const body = refreshDrafts()
+    expect(body).toContain('++draftRequest.current')
+    expect(body).toContain('req !== draftRequest.current')
+  })
+
+  it('keeps the badges it already has when a refresh read fails', () => {
+    // The opposite of the first-paint rule, deliberately. On a refresh there is
+    // already an answer on screen, so a failed read must leave it: blanking every
+    // badge would tell the user their drafts had vanished. Only the day effect - the
+    // FIRST answer for a day - is allowed to render badgeless.
+    const body = refreshDrafts()
+    expect(body).toContain('.catch(() => null)')
+    expect(body).toContain('if (rows) setDrafts(')
+  })
+
   it('is called when the task view is left', () => {
     expect(closeTask()).toContain('refreshDrafts()')
     expect(closeTask()).toContain('setSelected(null)')
