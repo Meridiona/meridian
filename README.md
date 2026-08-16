@@ -11,7 +11,7 @@
 
 </div>
 
-## Watch the Demo
+## Watch how it works
 
 See how Meridian turns a day of screen activity into a timeline, a daily summary, and updated tickets, without anything typed in by hand.
 
@@ -39,9 +39,9 @@ At the end of the day, Meridian tells you what you actually got done, what pulle
   <img src="docs/images/daily-summary.png" alt="Meridian's end-of-day summary, with completed tasks, an unexpected fix, and a ready-to-paste standup" width="900" />
 </p>
 
-## Drafts, Never Surprises
+## Your Worklog Updates, Drafted for You
 
-Meridian writes the ticket update in your own words, from what you actually did, then waits. Rewrite it, match it to an existing ticket, or post it as is, nothing goes to Jira until you hit the button.
+Meridian writes your worklog update and gets it ready to post. You just review it and hit send.
 
 <p align="center">
   <img src="docs/images/worklog-draft.gif" alt="Meridian drafting a worklog update and ticket, waiting for approval before posting to Jira" width="560" />
