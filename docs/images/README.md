@@ -17,11 +17,15 @@ mean the tagline colour has to stay legible on light only.
 The tagline baked into the image must match the repo About description. Changing one
 without the other leaves the two surfaces disagreeing.
 
-## `demo-thumb.jpg` (already here)
+## Demo video (not a repo file)
 
-The clickable frame for the "Watch the Demo" section - a saved YouTube `maxres1.jpg`
-frame for the demo video, 1280x720. Saved locally rather than hotlinked so it can't
-silently change if the YouTube thumbnail is regenerated.
+The "Watch the Demo" section plays inline via GitHub's own attachment hosting, not a
+committed file: `<video src="https://github.com/user-attachments/assets/...">`. GitHub
+only accepts these through the web UI (drag the file onto an issue or PR comment box,
+copy the resulting `user-attachments` URL), so there is nothing to check into the repo,
+and it can't be regenerated from source - if the video needs to change, re-upload and
+swap the URL in `README.md`. The previous version of this section linked out to a YouTube
+thumbnail instead; that approach is why `demo-thumb.jpg` no longer exists here.
 
 ## `meridian-reconstruction.gif` (already here)
 
