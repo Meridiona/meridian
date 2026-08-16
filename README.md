@@ -22,6 +22,16 @@ See how Meridian turns a day of screen activity into a timeline, a daily summary
 
 </div>
 
+## Sound Familiar?
+
+| The moment | Already handled |
+|---|---|
+| It's 5pm and you genuinely can't remember what you worked on today. | Meridian already knows. Every session, timestamped and named. |
+| Standup's in five minutes and you're scrolling through commits trying to piece together yesterday. | Your standup was already written overnight, ready to paste. |
+| A production fire eats your afternoon, and the ticket you meant to finish never got touched. | The fire gets logged too. Nothing you actually worked on goes unrecorded. |
+| It's worklog day and you're estimating how many hours went where. | Every hour was already logged, from what you actually did, not a guess. |
+| You finish the work, then have to go type it all into Jira by hand. | The ticket's already drafted. You just approve it. |
+
 ## Reconstruct Any Day
 
 Meridian rebuilds your day from what actually happened on screen, so you can scrub back through it like a recording instead of trying to remember.
