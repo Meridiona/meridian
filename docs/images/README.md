@@ -7,8 +7,8 @@ the files first, then uncomment.
 ## `banner.png` (already here)
 
 The README header - mark, wordmark and tagline in one image, 818x432. Displayed at
-`width="720"` so it downscales slightly rather than upscaling, which keeps the type
-crisp on Retina.
+`width="420"` so it downscales rather than upscaling, which keeps the type crisp on
+Retina.
 
 The background is opaque `#F2EDFB`, not transparent, so it renders as a pale panel in
 GitHub's dark theme rather than adapting to it. That is deliberate and fine, but it does
@@ -16,6 +16,18 @@ mean the tagline colour has to stay legible on light only.
 
 The tagline baked into the image must match the repo About description. Changing one
 without the other leaves the two surfaces disagreeing.
+
+## `demo-thumb.jpg` (already here)
+
+The clickable frame for the "Watch the Demo" section - a saved YouTube `maxres1.jpg`
+frame for the demo video, 1280x720. Saved locally rather than hotlinked so it can't
+silently change if the YouTube thumbnail is regenerated.
+
+## `meridian-reconstruction.gif` (already here)
+
+The clip under "Reconstruct Any Day" - a screen recording of the timeline reconstructing
+a day, 440x255. Displayed at `width="720"` so it upscales slightly; re-record at a higher
+source resolution if the softness becomes noticeable.
 
 ## `social-card.png` (already here)
 
