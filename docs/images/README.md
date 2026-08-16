@@ -26,9 +26,10 @@ silently change if the YouTube thumbnail is regenerated.
 ## `meridian-reconstruction.gif` (already here)
 
 The clip under "Reconstruct Any Day" - a screen recording of the timeline reconstructing
-a day, 924x537, 60 frames at 10fps. Displayed at `width="900"`, just under native size, so
-it still reads sharp. An earlier 440x255 source was shown at `width="720"` and looked soft
-and blocky from the 1.6x upscale - keep any future re-record at or above 900px wide.
+a day, 400x215, 444 frames at ~33fps. Displayed at `width="400"` (native, no upscaling) to
+stay sharp. Two earlier sources (440x255 shown at 720, 924x537 shown at 900) had this
+right; this one is smaller, so re-record at 900px+ wide next time rather than raising the
+display width on this file.
 
 ## `social-card.png` (already here)
 
