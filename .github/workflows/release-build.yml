@@ -311,7 +311,7 @@ jobs:
           fi
           echo "→ dispatched from main; the cache scope is the default branch"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The TAG, from the input — immutable, and deliberately unrelated to
           # the branch this was dispatched from (see the guard above).
@@ -481,7 +481,7 @@ jobs:
       # Selects target/<triple>/release/bundle for every script below.
       MERIDIAN_TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The TAG — immutable. This is the property the old pipeline tried to
           # get with a pinned SHA and lost to semantic-release's branch check.
@@ -563,7 +563,7 @@ jobs:
           # quota filled up and began evicting caches other jobs needed.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: "npm"
@@ -875,7 +875,7 @@ jobs:
         # copy maintained in parallel.
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The TAG — same immutable ref every other job in this pipeline
           # builds from.
@@ -944,7 +944,7 @@ jobs:
           # a stone-cold cache, 35.7 min of a 37 min job, every single time.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: "npm"
@@ -1109,7 +1109,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.tag }}
           persist-credentials: false

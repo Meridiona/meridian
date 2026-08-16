@@ -122,7 +122,7 @@ jobs:
       version: ${{ steps.run.outputs.version }}
       tag: ${{ steps.run.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Branch HEAD by name, NOT a pinned SHA — the whole point of this job
           # is to be up to date with the remote so semantic-release is happy.
@@ -144,7 +144,7 @@ jobs:
           # silent.
           token: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: "npm"
@@ -441,7 +441,7 @@ jobs:
           fi
           echo "→ GH_TOKEN present"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true

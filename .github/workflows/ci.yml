@@ -80,12 +80,12 @@ jobs:
       ui: ${{ steps.f.outputs.ui }}
       migrations: ${{ steps.f.outputs.migrations }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Nothing in this workflow pushes; don't leave the token in .git/config
           # where any later step or third-party action could read it.
           persist-credentials: false
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: f
         with:
           # A change to ci.yml itself trips every filter.
@@ -150,7 +150,7 @@ jobs:
       matrix:
         task: [clippy, test]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Nothing in this workflow pushes; don't leave the token in .git/config
           # where any later step or third-party action could read it.
@@ -305,7 +305,7 @@ jobs:
         # see the note on that step for why.
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -369,14 +369,14 @@ jobs:
     if: needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Nothing in this workflow pushes; don't leave the token in .git/config
           # where any later step or third-party action could read it.
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -386,7 +386,7 @@ jobs:
         uses: oven-sh/setup-bun@v2
 
       - name: Cache Next.js build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ui/.next/cache
           key: nextjs-${{ hashFiles('ui/package-lock.json') }}-${{ hashFiles('ui/**/*.ts', 'ui/**/*.tsx') }}
@@ -435,7 +435,7 @@ jobs:
     if: github.event_name == 'pull_request' && needs.changes.outputs.migrations == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -474,7 +474,7 @@ jobs:
     name: Release trigger shape
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -549,7 +549,7 @@ jobs:
     name: screenpipe MIT pin
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Nothing in this workflow pushes; don't leave the token in .git/config
           # where any later step or third-party action could read it.
