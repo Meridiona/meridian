@@ -350,36 +350,40 @@ export default function SetupWizard() {
     tauri()?.window.getCurrentWindow().close()
   }
 
-  // Sign in is the one step that genuinely can't be pinned to a magic number
-  // (its content changes size - email phase vs. code phase vs. an error line
-  // appearing) and repeatedly guessing one (490 scrolled, 520 left whitespace,
-  // 512 as a compromise…) for Permissions already proved how brittle that is.
-  // So instead of another hardcoded height, the card measures its OWN actual
-  // rendered height on this step (`cardRef` + ResizeObserver below) and uses
-  // that - never a guess, and it re-measures live if the content inside it
-  // ever changes height.
+  // Sign in and Permissions both refuse to be pinned to a magic number. Sign in
+  // changes size as you move through it (email phase vs. code phase vs. an
+  // error line appearing); Permissions changes with the OS strings and with how
+  // its three panes wrap at the current width, and the guessing game there
+  // (490 scrolled, 520 left whitespace, 512 as a compromise that scrolled
+  // again) is exactly why it is measured now rather than guessed a fourth time.
+  // So on these steps the card is `height: auto`, measures its OWN rendered
+  // height (`cardRef` + ResizeObserver below), and the window follows it - the
+  // content is never the thing that has to fit, so there is nothing to scroll.
+  const autoSized = !welcome && (meta?.id === 'signin' || meta?.id === 'permissions')
   const isSignin = !welcome && meta?.id === 'signin'
   const cardRef = useRef<HTMLDivElement>(null)
-  const [signinHeight, setSigninHeight] = useState<number | null>(null)
+  const [measuredHeight, setMeasuredHeight] = useState<number | null>(null)
+  // Re-runs on every step change so a stale measurement from the previous
+  // auto-sized step can't size this one; `null` while unmeasured falls back to
+  // the neutral height below for the single frame before the observer fires.
   useLayoutEffect(() => {
-    if (!isSignin || !cardRef.current) return
+    setMeasuredHeight(null)
+    if (!autoSized || !cardRef.current) return
     const el = cardRef.current
     const observer = new ResizeObserver(([entry]) => {
-      setSigninHeight(Math.ceil(entry.contentRect.height))
+      setMeasuredHeight(Math.ceil(entry.contentRect.height))
     })
     observer.observe(el)
     return () => observer.disconnect()
-  }, [isSignin])
+  }, [autoSized, meta?.id])
 
-  // The card is a different fixed height depending on what's showing, each
-  // sized to that screen's actual content instead of one height shared by
-  // everything (which used to leave dead top/bottom whitespace on the
-  // shorter screens): Welcome (520, content only runs to ~372px), Sign in
-  // (measured live, see above), Permissions (512 - the true minimum sits
-  // somewhere between 490, which scrolled, and 520, which didn't; biased
-  // toward the known-safe end rather than re-clipping again), everything else
-  // (628, unchanged - Integrations/Intelligence all still need the room).
-  const cardHeight = welcome ? 520 : isSignin ? (signinHeight ?? 460) : meta?.id === 'permissions' ? 512 : 628
+  // The card is a different height depending on what's showing, each sized to
+  // that screen's actual content instead of one height shared by everything
+  // (which used to leave dead top/bottom whitespace on the shorter screens):
+  // Welcome (520, content only runs to ~372px), Sign in and Permissions
+  // (measured live, see above), everything else (628, unchanged -
+  // Integrations/Intelligence all still need the room).
+  const cardHeight = welcome ? 520 : autoSized ? (measuredHeight ?? 520) : 628
   // Height divisor scaled with the card (700 * cardHeight/628) to keep the
   // same ~26px margin ratio the window was sized for at any height.
   const heightDivisor = Math.round((700 * cardHeight) / 628)
@@ -418,7 +422,7 @@ export default function SetupWizard() {
       background: 'radial-gradient(130% 130% at 50% 0%, color-mix(in srgb, var(--t-card) 34%, var(--t-panel)) 0%, var(--t-panel) 62%)',
     }}>
       <div ref={cardRef} className="rise" style={{
-        width: 948, height: isSignin ? 'auto' : cardHeight, borderRadius: 18, background: 'var(--t-card)',
+        width: 948, height: autoSized ? 'auto' : cardHeight, borderRadius: 18, background: 'var(--t-card)',
         border: '0.5px solid var(--t-card-border)', overflow: 'hidden', color: 'var(--t-title)',
         boxShadow: 'var(--pop-shadow)',
         // Grow the whole card proportionally as the window grows (macOS
@@ -450,7 +454,12 @@ export default function SetupWizard() {
                 textWrap: 'pretty',
               }}>{meta.subtitle}</p>
             </div>
-            <div className="nice-scroll flex flex-col" style={{ flex: 1, overflowY: 'auto', padding: '4px 32px 22px' }}>
+            {/* Scrolls only on the FIXED-height steps. On an auto-sized step the
+               card already grew to whatever the body needs, so leaving this
+               `auto` would do nothing except let a sub-pixel rounding difference
+               between the measured height and the laid-out content produce a
+               1px scrollbar over content that fits. */}
+            <div className="nice-scroll flex flex-col" style={{ flex: 1, overflowY: autoSized ? 'visible' : 'auto', padding: '4px 32px 22px' }}>
               <meta.Body wiz={wiz} />
             </div>
             <Footer step={step} last={last} canNext={meta.canNext(wiz)} err={err}
