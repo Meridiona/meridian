@@ -133,6 +133,51 @@ mod reopen_tests {
         }
     }
 
+    /// …but `set_fullscreen` itself must be macOS-only.
+    ///
+    /// THE ONE THIS EXISTS FOR. On macOS full-screen is a first-class window
+    /// mode with its own exit: the menu bar drops down on hover, the green
+    /// button is there, `Ctrl+Cmd+F` works. On Windows the same call means
+    /// `Fullscreen::Borderless`, and tao does three separate things with it
+    /// (`platform_impl/windows/window.rs`): sets `MARKER_BORDERLESS_FULLSCREEN`,
+    /// which strips the title bar and with it minimize/maximize/close; sizes to
+    /// `monitor.size()`, the FULL monitor rect rather than the work area, so the
+    /// taskbar is covered; and calls `taskbar_mark_fullscreen(hwnd, true)` to ask
+    /// the shell to yield. Nothing in this app binds F11 or Escape on that
+    /// window, so the result is a dashboard a Windows user cannot leave except
+    /// with Alt+F4.
+    ///
+    /// `fill_work_area` stays on both platforms and is already right for
+    /// Windows - it reads `work_area()`, which excludes the taskbar.
+    ///
+    /// Source-scanned rather than unit-tested because the defect is a window
+    /// STATE on another OS: it compiles cleanly, passes every macOS test, and is
+    /// invisible until someone runs the build on Windows.
+    #[test]
+    fn full_screen_is_requested_on_macos_only() {
+        let src = include_str!("sys.rs");
+        let at = src
+            .find("set_fullscreen(true)")
+            .expect("sys.rs no longer requests full-screen at all");
+        // The gate must be the nearest thing above the call, not merely present
+        // somewhere in the file.
+        let before = &src[..at];
+        let gate = before
+            .rfind("#[cfg(target_os = \"macos\")]")
+            .expect("set_fullscreen(true) is not behind a macOS cfg gate");
+        assert!(
+            !before[gate..].contains("\nfn ") && !before[gate..].contains("\npub(crate) fn "),
+            "the nearest macOS cfg gate is on a different item, so set_fullscreen \
+             still runs on Windows and traps the user in a borderless window"
+        );
+        // And the geometry that Windows relies on is NOT gated with it.
+        assert!(
+            src.contains("fn open_full_screen")
+                && src[src.find("fn open_full_screen").unwrap()..].contains("fill_work_area(win);"),
+            "open_full_screen must still size the window on every platform"
+        );
+    }
+
     /// Nothing may resize the dashboard window without checking `is_fullscreen`
     /// first.
     ///
