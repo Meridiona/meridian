@@ -23,6 +23,44 @@
       ]
     },
     {
+      "version": "1.86.0",
+      "date": "2026-08-16",
+      "highlights": [
+        "Setup now picks up where you left off. Closing the wizard part-way through used to mean starting again from the first card.",
+        "Meridian tells you when your daily summary is ready, instead of leaving you to go and look.",
+        "The dashboard opens filling the screen rather than in a small window you have to resize every time."
+      ],
+      "fixes": [
+        "Signing in sticks. Your session was being quietly dropped every time Meridian restarted, so you had to sign in again each launch.",
+        "Settings no longer crashes on builds where sign-in is switched off.",
+        "The vendored sign-in component was writing your session token into Meridian's own logs. It no longer does, and that logging is now switched off by default regardless.",
+        "The wizard's privacy wording now matches what the app actually does. It said Meridian never collects anything - true of a build you compile yourself, but not of the installed app, which sends redacted error reports and product analytics you can switch off. The download page, the privacy document and the wizard all say the same thing now.",
+        "The Notifications permission card in setup now shows the real Notifications pane rather than a stand-in, and the permission cards are highlighted one at a time instead of all at once.",
+        "The setup wizard no longer renders black when the window is in full screen.",
+        "What's New no longer opens on top of you the moment first-run setup finishes.",
+        "The walkthrough survives a stray click, and the tray's own pop-ups no longer interrupt it half way through.",
+        "Connecting GitHub no longer blames your token when GitHub simply cut the response short. Meridian retries instead."
+      ]
+    },
+    {
+      "version": "1.85.0",
+      "date": "2026-08-13",
+      "highlights": [
+        "Meridian shows you around the first time you open it. A guided walkthrough covers planning a day, watching your work get picked up, and having a work log written for you - starting on your own day, then on an example day so you can see a full one end to end.",
+        "Yesterday's unfinished work now moves into today on its own, so you no longer start the morning rebuilding a list you already made.",
+        "Meridian now says when a draft work log has fallen behind the work it describes, rather than letting you post something that stopped being true an hour ago."
+      ],
+      "fixes": [
+        "Uninstalling now removes your data. Some of it survived every uninstall route the app offered, which is not what uninstall means.",
+        "An update already being installed is no longer reported as 'Update failed', and an install that genuinely fails now tells every screen, so nothing is left sitting on a spinner.",
+        "Restarting the background service no longer runs into the limit macOS puts on how often a service may restart, which used to leave it stopped for minutes at a time.",
+        "A work-log draft that the AI failed to produce now points you at the reason rather than ending the flow with nothing.",
+        "Every notification now opens the thing it is about. Some of them went nowhere. The board-hygiene digest, which fired at midnight and which nobody ever acted on, is gone.",
+        "A fresh install opens setup rather than dropping you on an empty dashboard.",
+        "The work-log draft is laid out as a document you can read, and the live hour on your timeline now says which hour it means."
+      ]
+    },
+    {
       "version": "1.84.0",
       "date": "2026-08-07",
       "highlights": [
