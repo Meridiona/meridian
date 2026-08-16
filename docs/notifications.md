@@ -305,7 +305,8 @@ exactly two notification controls: the master switch and quiet hours.
 Deferred (same rails, thin slices when needed): task-switch verify producer +
 rate cap (PR 2), goal check-in / distraction producers, LLM-generated copy
 (routed through the chosen CLI provider, `src/llm/`), APNs/phone delivery, a
-`worklog.ready` producer (needs a decision: build a real scheduler for
-unattended draft generation, or repoint the event at something already
-autonomous), an onboarding-stuck reminder (needs a resumable wizard-progress
+`worklog.ready` producer (the scheduler half is **done** — `pm_worklog::auto_generate`
+drafts unattended at `worklog_auto_generate_time`, and `day_summary.ready` already
+notifies off that same gate; what is left is purely the scoping decision: which drafts
+are worth a toast, and one per day or one per draft), an onboarding-stuck reminder (needs a resumable wizard-progress
 timestamp — today's `~/.meridian/onboarded` flag is one-shot).

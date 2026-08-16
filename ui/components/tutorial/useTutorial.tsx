@@ -45,6 +45,28 @@ import { TutorialScreen } from './TutorialScreen'
  *  not lost user data. */
 const SEEN_KEY = 'meridian.walkthrough.seen.v1'
 
+/** Raise or clear the tray's "walkthrough is on screen" marker, in call order.
+ *
+ *  Serialised through one chain rather than fired independently, because the two
+ *  callers can run back to back within a single tick: `skipToDay` calls `finish`
+ *  (which clears the marker) and then `replayFromDay`, whose new run raises it.
+ *  Two independent `invoke()` calls have no ordering guarantee, so the older
+ *  CLEAR could land after the newer RAISE and delete the marker belonging to the
+ *  run that had just started - handing the tray's auto-opens permission to open
+ *  the daily planner over a live tour, which is the exact interruption the marker
+ *  exists to prevent.
+ *
+ *  Still fire-and-forget from the caller's side, and still swallowing failures:
+ *  losing this marker costs a possible interruption, never the tour. */
+let walkthroughMarkerQueue: Promise<void> = Promise.resolve()
+
+function setWalkthroughRunning(running: boolean): void {
+  const send = () => invoke('set_walkthrough_running', { running }).then(() => {}, () => {})
+  // `then(send, send)`: the next update must go out whether or not the previous
+  // one settled cleanly, and must not inherit its rejection.
+  walkthroughMarkerQueue = walkthroughMarkerQueue.then(send, send)
+}
+
 /** DEV ONLY: set to `'day'` to start the walkthrough at part two. Read by
  *  `runScript`'s `devDayHalfOnly`, which is itself gated on a non-production
  *  build - so this key does nothing in a packaged app. Kept in localStorage
@@ -160,7 +182,7 @@ export function useTutorial(opts: {
     // the marker carries its start time and goes stale on its own, so quitting
     // or crashing mid-tour cannot suppress the daily planner forever (see
     // commands/walkthrough.rs).
-    invoke('set_walkthrough_running', { running: false }).catch(() => {})
+    setWalkthroughRunning(false)
     setCaption('')
     setCentered(false)
     setCursorAt(null)
@@ -710,7 +732,7 @@ export function useTutorial(opts: {
       // waiting on, and the tour then waits out a timeout measured in minutes.
       // Fire-and-forget: failing to raise the marker costs a possible
       // interruption, never the tour.
-      invoke('set_walkthrough_running', { running: true }).catch(() => {})
+      setWalkthroughRunning(true)
       try {
         await runScript(stageRef.current)
       } catch (e) {

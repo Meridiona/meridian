@@ -33,13 +33,17 @@ npm run typecheck  # tsc --noEmit
 bun test           # dashboard tests
 ```
 
-Two gotchas worth knowing before you debug either:
+Two things worth knowing before you debug either:
 
 - **Never run `next dev` with `NODE_ENV` set** - that is why the script is
-  `env -u NODE_ENV next dev`. A stale `ui/.next` after a branch or config switch
-  produces an `Invalid distDirRoot` panic; `rm -rf ui/.next` clears it.
-- **The popover 404s under `tauri dev`** (next dev does not serve `popover/`). It
-  renders correctly in a packaged build. This is expected, not a bug to chase.
+  `env -u NODE_ENV next dev`. A stale `.next` after a branch or config switch
+  produces an `Invalid distDirRoot` panic; `rm -rf .next` from `ui/` clears it.
+- **The popover works under `tauri dev` too.** `tauri.conf.json`'s
+  `beforeDevCommand` runs `node scripts/sync-popover.mjs dev`, which copies
+  `tray/src/` into `ui/public/popover/`, and `next dev` serves `public/` at the
+  root - so `/popover/index.html` resolves. The build does the same into
+  `out/popover/`. If it 404s, the sync step did not run: start the tray with
+  `npm run tauri dev` from `tray/` rather than starting `next dev` by hand.
 
 ## Reaching data: the bridge, never fetch
 
@@ -109,9 +113,11 @@ a source scan that matches nothing passes vacuously.
 ## Adding a component
 
 1. First line must be the file header:
+
    ```ts
    //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
    ```
+
 2. Typed props, no `any`.
 3. Data through `@/lib/bridge`, types from `@/lib/api-types`.
 4. User-facing strings use a plain hyphen `-`, never an em-dash - see the Hard Rules in
@@ -120,13 +126,22 @@ a source scan that matches nothing passes vacuously.
 ## Common issues
 
 ### `Invalid distDirRoot` panic in dev
-Stale cache after a branch or config switch: `rm -rf ui/.next`.
+
+Stale cache after a branch or config switch. From `ui/`:
+
+```bash
+rm -rf .next
+```
 
 ### An `invoke` silently does nothing
+
 The window label is probably missing from `tray/src-tauri/capabilities/default.json`.
 Un-permitted `invoke`s and events are denied without an error.
 
 ### Build type errors
+
+From `ui/`:
+
 ```bash
-cd ui && npm run typecheck
+npm run typecheck
 ```
