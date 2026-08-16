@@ -1201,9 +1201,16 @@ describe('the day replay - the timeline taught by building it', () => {
     expect(screen).toContain('data-tour="day-view"')
     // A ring that big cannot park a bubble beside it; the overlay has to fall
     // back to the top bar or the beat narrates off the bottom of the screen.
+    //
+    // The fallback condition is now named `unanchored` rather than repeated
+    // inline - the effect that publishes the bar's height to `ModalShell` has to
+    // agree with the render branch exactly, and two copies of a four-term
+    // boolean is how they stop agreeing. Asserted on the definition plus its use,
+    // which is the same guarantee the inline literal gave.
     const overlay = readFileSync(new URL('../components/tutorial/TutorialOverlay.tsx', import.meta.url), 'utf8')
     expect(overlay).toContain('{caption && !centered && ring && ringFits && (')
-    expect(overlay).toContain('{caption && !centered && !(ring && ringFits) && (')
+    expect(overlay).toContain('const unanchored = !!caption && !centered && !(ring && ringFits)')
+    expect(overlay).toContain('{unanchored && (')
   })
 
   it('parks the caption below its target, off the heading', () => {

@@ -17,7 +17,7 @@
 // # Related
 // - `./engine.ts` — the primitives whose state this draws
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { availableTrackers } from '@/lib/integrations'
 import { centreOf, tourTarget, type GhostCard, type StageChoice } from './engine'
@@ -237,6 +237,42 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
   // small to point at, and is exactly what a whole-screen ring is.
   const ringFits = ring !== null && (ring.top - CAPTION_GAP - CAPTION_H > 0
     || ring.bottom + CAPTION_GAP + CAPTION_H < window.innerHeight)
+  const unanchored = !!caption && !centered && !(ring && ringFits)
+
+  // TELL THE PAGE WHERE THIS BAR ENDS, so a modal under it can move its own
+  // content out of the way (`ModalShell`'s TOUR_BODY_PAD).
+  //
+  // The bar floats over the page at a fixed height picked to clear a modal's
+  // title row - which it does, and then lands on the first line of the body 28px
+  // below. Nothing here can fix that alone: the bar and the panel are both
+  // centred with overlapping max-widths, and the two modals this happens on are
+  // `scrollInside` ones that can fill the window, so there is no free space to
+  // move the bar into. Publishing the measurement lets the party that CAN make
+  // room do it.
+  //
+  // Measured, not derived: the bar is one to three lines depending on the beat,
+  // and `big` changes its font and padding, so a constant would be wrong for
+  // most captions. Re-measured on every caption change because that is the only
+  // thing that resizes it.
+  const sayRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const root = document.documentElement
+    if (!unanchored) {
+      root.style.removeProperty('--mer-tour-say-bottom')
+      return
+    }
+    // After paint, so the bubble has its final height. The tour is the only
+    // writer of this property, so a stale value cannot outlive it - the cleanup
+    // below runs on unmount and on every caption change.
+    const id = requestAnimationFrame(() => {
+      const box = sayRef.current?.getBoundingClientRect()
+      if (box) root.style.setProperty('--mer-tour-say-bottom', `${Math.round(box.bottom)}px`)
+    })
+    return () => {
+      cancelAnimationFrame(id)
+      root.style.removeProperty('--mer-tour-say-bottom')
+    }
+  }, [unanchored, caption, big])
 
   return (
     <div className="fixed inset-0" style={{ zIndex: 9000, pointerEvents: 'none' }}>
@@ -453,14 +489,14 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
           The ANCHORED variant above is untouched: it parks beside its target on
           purpose, and moving it up here would put the sentence and the thing it
           names at opposite ends of the screen. */}
-      {caption && !centered && !(ring && ringFits) && (
+      {unanchored && (
         // TWO divs, and they cannot be collapsed into one. `.mer-pop` animates
         // `transform` with fill `both`, so it OVERWRITES an inline
         // `translateX(-50%)` for the element's whole life - the bar rendered half
         // its own width to the right of centre, overlapping the modal beside it.
         // Centring lives on the outer div, the animation on the inner, so the two
         // transforms stop fighting over one property.
-        <div className="absolute" style={{
+        <div ref={sayRef} className="absolute" style={{
           // NARROWER THAN IT WAS (620). At body size a full-width line ran to
           // ~95 characters, well past the ~65 the eye tracks without losing its
           // place - so a two-sentence beat read as a paragraph even after the
