@@ -6,11 +6,16 @@ the files first, then uncomment.
 
 ## `download-button.png` (already here)
 
-The "Download Meridian" link at the very top of the README, 760x164 with real
-transparency (so it sits correctly on GitHub's light and dark themes, unlike
-`banner.png` below). Displayed at `width="280"` inside the same
-`?ref=github-readme#download` deep link the plain-text version used - only the visual
-changed, not the destination. Replaces a plain-text `<h1>` link.
+The "Download Meridian" link below the banner, 760x164, opaque, no alpha channel.
+Displayed at `width="280"` inside the same `?ref=github-readme#download` deep link the
+plain-text version used - only the visual changed, not the destination.
+
+The original export had a nearly-transparent fill (`rgba(128,64,242,20)`, about 8%
+opacity), which read as a barely-visible pill on GitHub's dark theme. Flattened onto an
+opaque `#F2EDFB` canvas, the same colour as `banner.png`'s background, so the button
+reads as a solid extension of the banner rather than a translucent tint that shifts with
+the page theme. Re-flatten the same way if this asset is regenerated - don't reintroduce
+alpha in the fill.
 
 ## `banner.png` (already here)
 
