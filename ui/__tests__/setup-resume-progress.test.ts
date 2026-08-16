@@ -20,6 +20,7 @@
 import { describe, it, expect } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
+import { buildSteps, resumeIndex } from '@/app/setup/steps'
 
 const page = readFileSync(join(import.meta.dir, '..', 'app', 'setup', 'page.tsx'), 'utf8')
 
@@ -27,8 +28,8 @@ describe('the setup wizard resumes where it left off', () => {
   it('stores the step ID, not its index', () => {
     expect(page).toContain('JSON.stringify({ stepId })')
     // Restoring resolves that id back to a position in the CURRENT list.
-    expect(page).toContain('steps.findIndex((s) => s.id === savedStepId)')
-    // An id that no longer exists starts from the top rather than guessing.
+    expect(page).toContain('resumeIndex(steps, savedStepId)')
+    // An id with no position to resume to starts from the top rather than guessing.
     expect(page).toMatch(/if \(at < 0\) return/)
   })
 
@@ -61,5 +62,50 @@ describe('the setup wizard resumes where it left off', () => {
     const guarded = page.match(/try \{[^}]*localStorage\.(getItem|setItem|removeItem)/g) ?? []
     expect(touches.length).toBeGreaterThan(0)
     expect(guarded.length).toBe(touches.length)
+  })
+})
+
+// A step that this build DROPS is not the same as a step it does not know, and
+// `findIndex` alone could not tell them apart. Windows drops the Alerts step
+// once notifications are granted - so the user who quits on that step, goes and
+// grants notifications, and comes back is exactly the person whose saved
+// position stopped resolving. Sending them to Welcome loses their place at the
+// one moment they did what the wizard asked.
+describe('resuming onto a step this run dropped', () => {
+  const winDropped = buildSteps('windows', true) // notifications already granted
+  const winFull = buildSteps('windows', false)
+  const mac = buildSteps('darwin', false)
+
+  it('the Alerts step really is dropped, or none of this is reachable', () => {
+    // Guards the premise. If buildSteps stops dropping it, these cases become
+    // vacuous rather than failing, and the whole block would quietly stop
+    // testing anything.
+    expect(winFull.some((s) => s.id === 'permissions')).toBe(true)
+    expect(winDropped.some((s) => s.id === 'permissions')).toBe(false)
+  })
+
+  it('resumes past the dropped step instead of restarting at Welcome', () => {
+    // -1 is the "stay on Welcome" signal in page.tsx. Anything >= 0 is a real
+    // position, which is the whole point.
+    expect(resumeIndex(winDropped, 'permissions')).toBeGreaterThanOrEqual(0)
+  })
+
+  it('and lands on the last step when nothing survives after it', () => {
+    // Permissions is last, so "the step after it" does not exist - the honest
+    // resume is the end of the wizard, whose footer offers Open Dashboard.
+    expect(resumeIndex(winDropped, 'permissions')).toBe(winDropped.length - 1)
+  })
+
+  it('still starts from the top for an id this build has never heard of', () => {
+    // The ORIGINAL behaviour, and the reason the id is stored rather than the
+    // index. A step removed in an older build has no position to infer.
+    expect(resumeIndex(mac, 'mlx-runtime')).toBe(-1)
+    expect(resumeIndex(mac, '')).toBe(-1)
+  })
+
+  it('and resolves a present step to its own position, unchanged', () => {
+    for (const steps of [mac, winFull, winDropped]) {
+      steps.forEach((s, i) => expect(resumeIndex(steps, s.id)).toBe(i))
+    }
   })
 })

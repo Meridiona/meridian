@@ -11,7 +11,7 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react'
 import type { ReactNode } from 'react'
 import { invoke, load, mutate, nudgeWindowRepaint, tauri } from '@/lib/bridge'
-import { buildSteps, Welcome } from './steps'
+import { buildSteps, resumeIndex, Welcome } from './steps'
 import type { Wiz } from './steps'
 import type { NotifState } from './data'
 import type { IntegrationsResponse } from '@/lib/api-types'
@@ -92,8 +92,10 @@ export default function SetupWizard() {
   // The step's ID is what gets stored, never its index. `buildSteps` is
   // platform-dependent and the list can change between builds, so an index is
   // only meaningful against the exact list that produced it - restoring `2`
-  // could land on a different step entirely, silently. An id that no longer
-  // exists simply fails to match and starts from the top.
+  // could land on a different step entirely, silently. An id this build has
+  // never heard of starts from the top; an id it knows but has DROPPED (the
+  // Windows Alerts step, once notifications are granted) resumes past it
+  // rather than throwing the position away - see `resumeIndex`.
   //
   // Restore is gated on `platform` having resolved, which preserves the
   // invariant the Welcome screen exists to hold (see `platform` above): the
@@ -113,7 +115,7 @@ export default function SetupWizard() {
       savedStepId = raw ? (JSON.parse(raw) as { stepId?: string }).stepId ?? null : null
     } catch { return /* private mode, or a hand-mangled value - start fresh */ }
     if (!savedStepId) return
-    const at = steps.findIndex((s) => s.id === savedStepId)
+    const at = resumeIndex(steps, savedStepId)
     if (at < 0) return
     setWelcome(false)
     setStep(at)

@@ -36,6 +36,7 @@
 //! - [`crate::poll`] — emits the `notifications-update` event off the same read.
 
 use tauri::State;
+use tracing::Instrument;
 
 /// The active banner-notification set (the ported /api/notifications/stream
 /// snapshot). Resolves `now` (seconds-precision UTC, matching the route's
@@ -122,10 +123,36 @@ pub(crate) async fn apply_response(
     action: &str,
     text: Option<&str>,
 ) -> Result<(), String> {
+    // Spanned because this is where the two platforms converge and where a lost
+    // answer has to be diagnosed from telemetry alone. `source` distinguishes
+    // them: macOS arrives via the plugin event the popover forwards, Windows
+    // direct from a WinRT handler with no webview in the loop, and "the answer
+    // never arrived" looks identical from the outbox row either way.
+    //
+    // `has_text` rather than the text: an inline reply IS the user's own
+    // writing, and the whole point of the redaction allowlist is that it never
+    // egresses. Whether one was supplied is the diagnostic; its content is not.
+    let span = tracing::info_span!(
+        "notifications.respond",
+        id,
+        action,
+        source = if cfg!(target_os = "windows") {
+            "winrt"
+        } else {
+            "plugin"
+        },
+        has_text = text.is_some(),
+        otel.status_code = tracing::field::Empty,
+    );
+    let _e = span.enter();
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     meridian_core::notifications::record_response(pool, id, action, text, &now)
+        .instrument(tracing::debug_span!("notifications.write.outbox"))
         .await
-        .map_err(|e| crate::cmd_err!(e, id, action, "record_notification_response failed"))?;
+        .map_err(|e| {
+            tracing::Span::current().record("otel.status_code", "ERROR");
+            crate::cmd_err!(e, id, action, "record_notification_response failed")
+        })?;
     tracing::info!(
         id,
         action,
