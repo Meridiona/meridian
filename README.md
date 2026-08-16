@@ -47,15 +47,15 @@ Meridian writes your worklog update and gets it ready to post. You just review i
   <img src="docs/images/worklog-draft.gif" alt="Meridian drafting a worklog update and ticket, waiting for approval before posting to Jira" width="560" />
 </p>
 
-## You Know the Feeling
+## What Gets in the Way
 
-| The moment | Already handled |
+| The moment | What Meridian does about it |
 |---|---|
 | It's 5pm and you genuinely can't remember what you worked on today. | Meridian already knows. Every session, timestamped and named. |
 | Standup's in five minutes and you're scrolling through commits trying to piece together yesterday. | Your standup was already written overnight, ready to paste. |
 | A production fire eats your afternoon, and the ticket you meant to finish never got touched. | The fire gets logged too. Nothing you actually worked on goes unrecorded. |
 | It's worklog day and you're estimating how many hours went where. | Every hour was already logged, from what you actually did, not a guess. |
-| You finish the work, then have to go type it all into Jira by hand. | The ticket's already drafted. You just approve it. |
+| You do update your tickets, but from memory, after the fact, so the details that mattered are already gone. | Meridian was watching the whole time. The update carries the real context, including how the work ties back to what you did on that ticket days ago. |
 
 ## Privacy
 
