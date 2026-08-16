@@ -261,10 +261,19 @@ export function WorklogDraftDialog({
   // button between one glance and the next. Ask for the thing you want, and be
   // told why it cannot happen yet.
   //
-  // SKIPPED WHEN THE WORKLOG IS SCRIPTED (the first-run walkthrough): that flow
-  // never reaches a model, so the user's real provider health says nothing about
-  // whether its Generate button can work, and letting it swap the control out
-  // would strand the tour on a beat waiting for one that is no longer rendered.
+  // RUN FOR THE SCRIPTED WORKLOG TOO (the first-run walkthrough). It used to be
+  // skipped there, on the reasoning that the tour never reaches a model so real
+  // provider health says nothing about whether its Generate button can work.
+  // True mechanically, and wrong for the user: the tour then demonstrated
+  // Generate producing a finished worklog on a machine with no AI set up at all,
+  // which is the one audience least able to tell that the flow they just watched
+  // cannot happen for them yet. The tour now meets the same card everyone else
+  // does and takes them to the picker from it - see `tutorial/scriptDay.ts`.
+  //
+  // The original worry - stranding a beat waiting on a control that is no longer
+  // rendered - belonged to the FIRST design, which swapped the button out. This
+  // one keeps the button and puts the reason underneath it, so a beat ringing
+  // `wl-generate` still has something to ring either way.
   const [checking, setChecking] = useState(false)
   const [providerDown, setProviderDown] = useState(false)
 
@@ -275,7 +284,6 @@ export function WorklogDraftDialog({
    *  notice below sends them to exactly that screen), and telling someone to set up
    *  a thing they just set up is worse than the original dead end. */
   const attemptGenerate = async () => {
-    if (isDemo) { generate(); return }
     setChecking(true)
     try {
       const h = await load<HealthStatus>('/api/health', 'get_health')
@@ -441,7 +449,24 @@ export function WorklogDraftDialog({
                 ? <ConnectTrackerCta hue={hue} onConnect={() => onOpenSettings('integrations')} />
                 : <GenerateCta hue={hue} trackers={trackers} checking={checking}
                     disabled={busy || phase === 'loading' || checking} onGenerate={attemptGenerate}
-                    blocked={providerDown} onConnectProvider={() => onOpenSettings('intelligence')} />
+                    blocked={providerDown}
+                    // CLOSES ITSELF FIRST, and the order is the whole point.
+                    // Settings renders inside `ModalShell` at `absolute inset-0
+                    // z-40`; this dialog is `fixed inset-0 z-50` portalled to
+                    // `document.body`, and the shell's root is `relative` with no
+                    // z-index, so it opens no stacking context and the two compete
+                    // directly. Opening Settings from under here put it BEHIND the
+                    // dialog the user was still looking at: the button appeared to
+                    // do nothing at all, which is the worst available answer to
+                    // "how do I fix this?" - and it was the answer on the one path
+                    // the product itself offers for connecting a model.
+                    //
+                    // Closing rather than raising a z-index: this dialog is about
+                    // one task's update and Settings is about the whole install, so
+                    // stacking them was never right even when it was visible. The
+                    // draft is one press away again afterwards, and nothing is lost
+                    // - there was no draft to lose, which is why this card is up.
+                    onConnectProvider={() => { onClose(); onOpenSettings('intelligence') }} />
             ) : picking ? (
               <WorklogTicketPicker current={draft.targets[0]?.task_key ?? null} busy={busy}
                 tickets={boardTickets} onPick={retarget} onCancel={() => setPicking(false)} />
