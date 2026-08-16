@@ -16,7 +16,6 @@ import { useEffect, useState } from 'react'
 import { invoke, load, mutate } from '@/lib/bridge'
 import type { AppInfo } from '@/lib/api-types'
 import { AccountAuthControl } from '@/app/setup/signin'
-import { TOUR_DEV_TOOLS } from '@/components/tutorial/useTutorial'
 import { SectionCard, SectionHeader, FieldRow, SettingsButton } from './fields'
 import { useExportDiagnostics } from './useExportDiagnostics'
 
@@ -100,20 +99,25 @@ export function AccountSection({ onReplayTour, onReplayTourFromDay }: {
             first — the walkthrough drives this very modal in two of its beats,
             so leaving it open would have it opening a modal already open.
 
-            DEV ONLY, same gate as the shortcut below. Replaying is an authoring
-            tool: it exists so the tour can be watched again while it is being
-            edited. For a real user it is a door back into a first-run experience
-            they have finished, over an example day that is not theirs - and it
-            drives their live Settings modal and their real integrations screen
-            on the way through. `window.__meridianTour()` remains for anyone who
-            genuinely needs it in a packaged build (see `useTutorial`). */}
-        {TOUR_DEV_TOOLS && (
-          <FieldRow label="Replay the walkthrough" description="Dev only. Take the guided tour of the timeline, daily summary, and worklog drafts again - shown over an example day, not your own.">
-            <SettingsButton onClick={onReplayTour}>
-              Show me around
-            </SettingsButton>
-          </FieldRow>
-        )}
+            THIS SHIPS. It was `TOUR_DEV_TOOLS &&` on the argument that replaying
+            is an authoring tool, with `window.__meridianTour()` named as the
+            escape hatch for a packaged build. That escape hatch does not exist:
+            the tray enables no `devtools` Cargo feature, so a release build has
+            no inspector to type it into, and the dashboard window has no URL bar
+            for `?tour=1` either. The gate did not make the replay developer-only,
+            it made it UNREACHABLE - a walkthrough with no door, on every build a
+            user actually runs.
+
+            The tradeoff it was protecting against is real and stays real: part
+            one runs on the user's own timeline, asks for a real daily plan and
+            drives their real integrations screen (see `script.ts`'s "PART ONE").
+            That is what the description below now says instead of promising an
+            example day, and Skip is one click away from the first frame. */}
+        <FieldRow label="Replay the walkthrough" description="Take the guided tour again. It starts on your own timeline and asks you to plan your day, the same as the first run, then moves to an example day for the rest. You can skip it at any point.">
+          <SettingsButton onClick={onReplayTour}>
+            Show me around
+          </SettingsButton>
+        </FieldRow>
         {/* DEV ONLY. Part one asks for a daily plan, a tracker connect (an OAuth
             round-trip through a browser) and possibly a CLI install before it
             reaches the example day - three or four minutes, most of it spent
