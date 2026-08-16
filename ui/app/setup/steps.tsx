@@ -600,11 +600,29 @@ const ALL_STEPS: StepMeta[] = [
 ]
 
 /** Platform-specific step list. On Windows the Permissions step is swapped for
- *  its notifications-only variant (same id, so the poll still fires); the count
- *  is unchanged. `n` is renumbered to position so the rail never shows a gap. */
-export function buildSteps(platform: string | null): StepMeta[] {
-  const steps = platform === 'windows'
-    ? ALL_STEPS.map((s) => (s.id === 'permissions' ? WINDOWS_NOTIFICATIONS_STEP : s))
+ *  its notifications-only variant (same id, so the poll still fires); `n` is
+ *  renumbered to position so the rail never shows a gap.
+ *
+ *  `notificationsGranted` is the ONE-SHOT precheck page.tsx runs before the user
+ *  leaves Welcome (not the live 2 s poll, which only runs while the step is
+ *  already on screen). When it is true on Windows the Alerts step is dropped
+ *  entirely: the whole step is a single optional toggle, and Windows enables
+ *  toast notifications for most apps by default, so the common case was a step
+ *  that opened already GRANTED with nothing to do but press Continue - an
+ *  onboarding screen asking for something it already has. macOS is deliberately
+ *  unaffected: its Permissions step also carries Accessibility and Screen
+ *  Recording, which capture genuinely cannot run without, so it always shows.
+ *
+ *  Dropping a step can leave a ONE-step wizard (sign-in only). That is fine and
+ *  is the intended shape - `page.tsx`'s footer keys "last step" off the list
+ *  length, so the single step correctly offers Open Dashboard. */
+export function buildSteps(platform: string | null, notificationsGranted: boolean): StepMeta[] {
+  const isWin = platform === 'windows'
+  const steps = isWin
+    ? ALL_STEPS.flatMap((s) => {
+        if (s.id !== 'permissions') return [s]
+        return notificationsGranted ? [] : [WINDOWS_NOTIFICATIONS_STEP]
+      })
     : ALL_STEPS
   return steps.map((s, i) => ({ ...s, n: String(i + 1).padStart(2, '0') }))
 }

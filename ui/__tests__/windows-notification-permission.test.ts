@@ -5,9 +5,12 @@ import { readFileSync } from 'fs'
 // Guards the Windows notification onboarding in the setup wizard. Windows has no
 // TCC-style consent for Accessibility/Screen Recording, so those cards are
 // macOS-only — but Notifications IS a real per-app setting on Windows (WinRT
-// ToastNotifier::Setting), so the Permissions step must NOT be dropped there.
-// It is swapped for a notifications-only variant that keeps id:'permissions' so
-// page.tsx's check_notifications poll (gated on that id) still fires. This test
+// ToastNotifier::Setting), so the Permissions step is swapped for a
+// notifications-only variant that keeps id:'permissions' (page.tsx's
+// check_notifications poll is gated on that id) rather than being dropped
+// wholesale. It IS dropped in exactly one case — notifications already granted,
+// where a step whose entire content is one satisfied toggle has nothing to ask —
+// and the assertions below pin that condition rather than the branch. This test
 // is a string-source guard (the same pattern as the Settings → Notifications
 // guard) because steps.tsx pulls in the whole React/Clerk import graph.
 //
@@ -47,12 +50,44 @@ describe('windows notification permission onboarding', () => {
     expect(winStep).toContain('canNext: () => true')
   })
 
-  it('swaps the permissions step for the Windows variant instead of dropping it', () => {
+  it('swaps the permissions step for the Windows variant rather than losing it', () => {
     const build = steps.slice(steps.indexOf('export function buildSteps'))
-    // The Windows branch must reference the variant (a swap)…
     expect(build).toContain('WINDOWS_NOTIFICATIONS_STEP')
-    // …and must NOT filter the step list — the old drop, in any formatting.
-    expect(build).not.toMatch(/\.filter\(/)
+  })
+
+  // The step IS dropped on Windows now — but only when notifications are
+  // ALREADY granted, which is the one case where it has nothing to ask for
+  // (Windows enables toasts for most apps by default). This used to assert the
+  // step could never be dropped at all; that was the right guard when the only
+  // alternative on the table was losing Windows notification onboarding
+  // entirely, and it is the wrong one now. What still must never happen is the
+  // UNCONDITIONAL drop, so this pins the condition instead of forbidding the
+  // branch: not-granted, unavailable, and unresolved all keep the step.
+  it('only drops the Windows step when notifications are already granted', () => {
+    const build = steps.slice(steps.indexOf('export function buildSteps'))
+    expect(build).toContain('notificationsGranted')
+    // The empty-list arm (the drop) must be reachable only through that flag.
+    expect(build).toMatch(/notificationsGranted \? \[\] : \[WINDOWS_NOTIFICATIONS_STEP\]/)
+  })
+
+  // The flag feeding that branch must be a ONE-SHOT read taken before the user
+  // leaves Welcome — not the 2 s poll, which only runs while the Permissions
+  // step is already on screen and so cannot answer whether it should be. And
+  // the wizard must not let the user past Welcome until it has landed, or the
+  // step list could reshape under a step index already navigated to.
+  it('decides from a precheck resolved before Welcome is dismissed', () => {
+    const page = readSrc('app/setup/page.tsx')
+    expect(page).toContain("invoke<NotifState>('check_notifications')")
+    expect(page).toContain('buildSteps(platform, notifPrecheck === \'granted\')')
+    expect(page).toContain('ready={platform !== null && notifPrecheck !== null}')
+  })
+
+  // A failed probe must not read as a grant — that would silently skip
+  // notification onboarding because one IPC call went wrong.
+  it('keeps the step when the precheck fails', () => {
+    const page = readSrc('app/setup/page.tsx')
+    const precheck = page.slice(page.indexOf("invoke<NotifState>('check_notifications')"))
+    expect(precheck.slice(0, 400)).toContain("'unavailable'")
   })
 
   it('keeps a notifications entry the Windows card can render', () => {

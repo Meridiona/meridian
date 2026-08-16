@@ -203,42 +203,44 @@ html.dark {
   --draft-card-bg:   var(--t-accent);
 }
 
-/* Setup wizard CTA — pale lavender, glowing on hover (app/setup/atoms.tsx `Btn`).
+/* Setup wizard CTA — the product accent, glowing on hover (app/setup/atoms.tsx `Btn`).
 
-   The fill is THE HEADLINE'S OWN COLOUR - the same value as --lavender-ink, so
-   the wizard's first sentence and its one action are literally the same lavender
-   rather than two near-misses. It is set as a literal here rather than as
-   var(--lavender-ink) on purpose: they are the same colour today by intent, but
-   they answer to different constraints (one is type on white, one is a fill
-   holding a label), so aliasing them would make any future correction to either
-   silently drag the other along with it.
+   THE FILL IS `--t-accent`'s VALUE (Violet 600, #7C3AED) - the same violet the
+   step's own kicker ("ACCOUNT", "ALERTS") is set in, and the same one every
+   primary action, link and focus ring in the dashboard uses. It is set as a
+   literal here rather than as var(--t-accent) on purpose: they are the same
+   colour today by intent, but they answer to different constraints (one is type
+   on a card, one is a fill holding a label), so aliasing them would make any
+   future correction to either silently drag the other along with it.
 
-   CONTRAST, HONESTLY: this fill sits in the dead zone where neither label colour
-   clears 4.5:1 at 14px - white is ~3.6:1, ink ~4.0:1. White is used because the
-   alternative is barely better and reads worse. Darkening the fill ~8% would
-   take white past 4.5:1 if that trade is ever wanted; it is the one-line fix.
+   It used to be #8877E2 (--lavender-ink, the Welcome headline's colour). Read
+   next to the kicker directly above it, that fill looked washed out - close
+   enough to the accent to read as a failed match rather than a deliberate
+   second tone, and pale enough that the primary action looked half-disabled.
 
-   WHAT WAS TRIED AND REJECTED, so it is not re-tried: a saturated violet fill
-   (#6B4CE8) read as machine-made - high-chroma violet is the note generated
-   interfaces hit. A multi-stop gradient across the face and an always-on
-   breathing halo went with it: a gradient baked into a button is one of the
-   loudest tells, and a halo that never switches off stops being a highlight and
-   just becomes the button's colour.
+   CONTRAST: white on #7C3AED is ~5.4:1, which clears 4.5:1 at 14px. The old
+   pale fill sat in the dead zone where neither label colour cleared it (white
+   ~3.6:1, ink ~4.0:1); this is the "darken the fill" fix that note pointed at.
+
+   WHAT WAS TRIED AND REJECTED, so it is not re-tried: a multi-stop gradient
+   across the face and an always-on breathing halo - a gradient baked into a
+   button is one of the loudest generated-interface tells, and a halo that never
+   switches off stops being a highlight and just becomes the button's colour.
 
    What survives is hover-triggered, and that is the distinction the design turns
    on - effects that ANSWER the pointer read as craft; the same effects running
-   unprompted read as decoration. Flat pale lavender at rest; halo blooms and a
-   sheen travels across on the way in.
+   unprompted read as decoration. Flat violet at rest; halo blooms and a sheen
+   travels across on the way in.
 
-   Theme-independent: a light chip holding ink, which works as-is on `ink`'s dark
-   surfaces (there it reads as a bright accent rather than a tint). */
+   Theme-independent: a saturated fill holding white, which works as-is on
+   `ink`'s dark surfaces. */
 :root {
-  --btn-cta-bg:     #8877E2;
-  --btn-cta-border: #9C8DE8;
+  --btn-cta-bg:     #7C3AED;
+  --btn-cta-border: #8B5CF6;
   --btn-cta-text:   #FFFFFF;
   /* The halo, at the fill's own hue - deep enough to read against a white card,
      which a glow the same value as the surface never would. */
-  --btn-cta-glow:   124, 104, 220;
+  --btn-cta-glow:   124, 58, 237;
   /* Lavender at a depth that can be READ rather than filled with - the setup
      headline. Never body copy: it clears 3:1 (the WCAG large-text threshold,
      >=24px or >=19px bold) and so covers display headings ONLY; at 14px it is

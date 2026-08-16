@@ -17,6 +17,11 @@ type TauriBridge = {
       close: () => Promise<void>
       innerSize: () => Promise<{ width: number; height: number }>
       setSize: (size: unknown) => Promise<void>
+      // Read by nudgeWindowRepaint to tell the two "bigger than normal" window
+      // states apart: native full-screen (where the repaint nudge is the whole
+      // point) from merely maximized (where any setSize un-maximizes it).
+      isFullscreen: () => Promise<boolean>
+      isMaximized: () => Promise<boolean>
     }
     // Constructor for the PhysicalSize argument setSize expects — matches
     // what innerSize() returns, so nudgeWindowRepaint never has to reason
@@ -92,6 +97,20 @@ async function runWindowRepaint(): Promise<void> {
   try {
     const win = t.window.getCurrentWindow()
     const { PhysicalSize } = t.window
+    // Never nudge a MAXIMIZED window. The nudge is a real frame-set, and Win32
+    // has no way to resize a WS_MAXIMIZE window without clearing the maximized
+    // state - so on Windows this fired on every wizard step transition and
+    // visibly restored the window down, which is a far worse defect than the
+    // stale-drawable repaint it exists to prevent. Full-screen is deliberately
+    // NOT excluded: that is the macOS case the nudge was written for, and a
+    // macOS window in native full-screen also reports isMaximized() true
+    // (tao maps it to `isZoomed`), so the check has to be the pair, not
+    // isMaximized alone - otherwise this silently disables the fix it guards.
+    const [fullscreen, maximized] = await Promise.all([
+      win.isFullscreen().catch(() => false),
+      win.isMaximized().catch(() => false),
+    ])
+    if (maximized && !fullscreen) return
     const { width, height } = await win.innerSize()
     restore = () => win.setSize(new PhysicalSize(width, height))
     await win.setSize(new PhysicalSize(width + 1, height))

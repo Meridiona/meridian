@@ -32,11 +32,15 @@ describe('the setup wizard resumes where it left off', () => {
     expect(page).toMatch(/if \(at < 0\) return/)
   })
 
-  it('waits for the platform before restoring', () => {
+  it('waits for every step-list input before restoring', () => {
     // The guard that keeps the step list from reshaping under a restored
     // index - the same invariant the Welcome screen holds for forward
-    // navigation.
-    expect(page).toMatch(/if \(restoredProgress\.current \|\| platform === null\) return/)
+    // navigation. It must cover EVERY input to buildSteps, not just the
+    // platform: the notifications precheck can drop a step, so restoring
+    // before it lands could point `step` into a list about to shrink.
+    expect(page).toMatch(
+      /if \(restoredProgress\.current \|\| platform === null \|\| notifPrecheck === null\) return/,
+    )
     // …and the writer is gated on it too, so a null-platform render cannot
     // persist a position derived from the wrong list.
     expect(page).toMatch(/if \(welcome \|\| platform === null\) return/)
