@@ -30,6 +30,16 @@
 
 use tauri::Manager;
 use tauri_plugin_notifications::Notifications;
+// Gated to match its ONLY user: `.instrument` is called from
+// `notify_outbox_via_plugin`, which is `cfg(not(target_os = "windows"))` — the
+// Windows delivery path lives in `crate::win_toast` and imports its own. An
+// ungated import is therefore unused on Windows, which `-D warnings` turns into
+// a hard build failure that a macOS `cargo clippy --workspace` cannot see. Same
+// cfg-vs-cfg_attr trap as `backend_install.rs`; `cfg_attr(allow(unused))` would
+// also silence it, but keeping the gate identical to the consumer's is what
+// makes the coupling obvious at the import.
+#[cfg(not(target_os = "windows"))]
+use tracing::Instrument;
 
 /// The current user's numeric uid as a string (for `launchctl gui/<uid>/…`
 /// domain targets). Falls back to `"501"` (the first macOS user) if `id -u`
@@ -276,16 +286,33 @@ fn notify_outbox_via_plugin(
     }
     let id = n.id;
     let category = n.category.clone();
-    tauri::async_runtime::spawn(async move {
-        match builder.show().await {
-            Ok(()) => {
-                tracing::info!(id, category = ?category, "outbox toast delivered")
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, id, "notify_outbox: toast delivery failed")
+    // Spanned + `.instrument`ed for the same reason as the Windows path
+    // ([`crate::win_toast::show`]): delivery is spawned, so without this the
+    // failure lands in telemetry with no link to the drain tick that caused it.
+    // The category is the diagnostic that matters here - macOS silently ignores
+    // an unknown `action_type_id` and shows a button-less toast, which is
+    // indistinguishable from a plain one after the fact.
+    let span = tracing::info_span!(
+        "notifications.toast.deliver",
+        id,
+        category = category.as_deref().unwrap_or("plain"),
+        otel.status_code = tracing::field::Empty,
+    );
+    tauri::async_runtime::spawn(
+        async move {
+            match builder.show().await {
+                Ok(()) => {
+                    tracing::Span::current().record("otel.status_code", "OK");
+                    tracing::info!(id, category = ?category, "outbox toast delivered")
+                }
+                Err(e) => {
+                    tracing::Span::current().record("otel.status_code", "ERROR");
+                    tracing::warn!(error = %e, id, "notify_outbox: toast delivery failed")
+                }
             }
         }
-    });
+        .instrument(span),
+    );
 }
 
 /// Withdraw a delivered outbox toast from the screen and Notification Center —
@@ -313,6 +340,16 @@ pub fn retract_toast(app: &tauri::AppHandle, id: i64) {
 
     #[cfg(not(target_os = "windows"))]
     {
+        // Synchronous here (the plugin's `remove_active` is not async), so this
+        // needs no `.instrument` - but it still gets a span, so an expiry that
+        // fails to withdraw is one queryable operation on both platforms rather
+        // than a bare log line on one and a span on the other.
+        let span = tracing::info_span!(
+            "notifications.toast.retract",
+            id,
+            otel.status_code = tracing::field::Empty,
+        );
+        let _e = span.enter();
         let Some(nf) = notifier(app) else {
             return; // unbundled run — nothing was ever shown
         };
@@ -320,8 +357,10 @@ pub fn retract_toast(app: &tauri::AppHandle, id: i64) {
             return; // uncorrelated delivery (see notify_outbox) — nothing to target
         };
         if let Err(e) = nf.remove_active(vec![toast_id]) {
+            span.record("otel.status_code", "ERROR");
             tracing::warn!(error = %e, id, "toast retraction failed");
         } else {
+            span.record("otel.status_code", "OK");
             tracing::info!(id, "expired toast retracted");
         }
     }

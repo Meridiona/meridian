@@ -86,10 +86,19 @@ export function publishPlan(date: string, data: PlanResponse) {
 }
 
 /** Re-read one day's plan and publish it. Resolves `null` when the read failed
- *  or was paused mid-drag — callers distinguish those by context (an initial
- *  load never races a drag). */
-export function refreshPlan(date: string): Promise<PlanResponse | null> {
-  if (paused) return Promise.resolve(null)
+ *  or was paused mid-drag.
+ *
+ *  `force` skips the drag hold-off for a read the USER asked for. The hold-off
+ *  exists so a BACKGROUND poll cannot reshuffle the board mid-drag; a
+ *  user-initiated read has no such problem and must not be silently dropped,
+ *  because a `null` here is indistinguishable from a failed read at the call
+ *  site. That conflation is a real bug: `PlanView`'s Refresh chip calls
+ *  `syncTasks()` then `load(true)`, and a `null` from a still-paused store made
+ *  it draw "Sync failed" over a sync that had actually succeeded. The
+ *  `meridian:task-deleted` listener below open-codes this same override for the
+ *  same reason; `force` is that intent named. */
+export function refreshPlan(date: string, force = false): Promise<PlanResponse | null> {
+  if (paused && !force) return Promise.resolve(null)
   return load<PlanResponse>(API, 'get_plan', { date })
     .then((d) => {
       publishPlan(date, d)
@@ -140,14 +149,17 @@ export function planAction(
 // than one day's plan, and the deletion is not scoped to one of them.
 if (typeof window !== 'undefined') {
   window.addEventListener('meridian:task-deleted', () => {
-    // Straight past the drag hold-off. `paused` exists so a background poll
-    // cannot reshuffle a board mid-drag; a delete is a user action whose result
-    // must be visible, and a drag cannot be in progress while a modal dialog has
-    // the pointer anyway.
-    const wasPaused = paused
-    paused = false
-    Promise.all([...store.keys()].map(d => refreshPlan(d)))
-      .finally(() => { paused = wasPaused })
+    // Straight past the drag hold-off, via `force`. `paused` exists so a
+    // background poll cannot reshuffle a board mid-drag; a delete is a user
+    // action whose result must be visible, and a drag cannot be in progress
+    // while a modal dialog has the pointer anyway.
+    //
+    // This used to toggle the module flag around the reads, which was a race
+    // with anything else reading `paused` in that window - and it restored
+    // `wasPaused` from a value captured before the awaits, so a drag STARTING
+    // mid-refresh would have its hold-off stamped back off. `force` is the same
+    // intent without touching shared state.
+    Promise.all([...store.keys()].map(d => refreshPlan(d, true)))
   })
 }
 
