@@ -105,6 +105,32 @@ pub(super) async fn refresh_health(
     // restart needs no DB pool, so it runs even when `pool` is None; only the
     // user-facing notice below does. Best-effort: the result feeds the notice
     // detail when we also notify.
+    // A daemon that is down because the INSTALLER stopped it is not an outage.
+    //
+    // Both halves are suppressed, and they have to move together. The restart,
+    // because it would start the process the installer just killed and re-lock
+    // the binary mid-swap — the same hazard the fast watchdog now stands down
+    // for, on the slower 30 s tick (see `daemon_lifecycle::begin_staging`). The
+    // notice, because "Meridian went quiet - tried starting it automatically"
+    // is both alarming and false during a routine update: nothing tried, and
+    // nothing was wrong.
+    //
+    // Gating only the restart would ALSO trip the `notify_down` ⇒
+    // `restart_result.is_some()` debug assert below, which is exactly the
+    // tripwire that invariant was written to be.
+    //
+    // Losing this episode's went-quiet notice costs nothing: if the install
+    // fails it raises `tray.backend_install_failed`, which says more than the
+    // generic notice would, and if it succeeds the daemon is back within
+    // seconds. Applied here rather than inside `decide_health_notice` so the
+    // health state machine keeps advancing normally - only the two outward
+    // actions are held.
+    let staging = crate::daemon_lifecycle::is_staging();
+    let attempt_restart = attempt_restart && !staging;
+    let notify_down = notify_down && !staging;
+    if staging {
+        tracing::debug!("daemon health: install in progress - not restarting or notifying");
+    }
     let restart_result = if attempt_restart {
         // Wrap the restart attempt in a span so the health-path recovery is
         // traceable end-to-end, matching the fast watchdog's span.
@@ -488,6 +514,59 @@ pub(super) async fn refresh_worklogs(pool: &SqlitePool, state: &Arc<Mutex<AppSta
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The install-in-progress suppression must hold BOTH outward actions, and
+    /// it must hold them together.
+    ///
+    /// `refresh_health` is the slow (30 s) half of the same interlock
+    /// [`super::watchdog::decide`] implements on the 5 s tick: while
+    /// `daemon_lifecycle::begin_staging` is held, the installer has deliberately
+    /// killed the daemon to overwrite its binary, and starting it back up
+    /// re-locks the file mid-swap and fails the install outright.
+    ///
+    /// Gating only `attempt_restart` would ALSO break the `notify_down` ⇒
+    /// `restart_result.is_some()` debug assert a few lines below the gate —
+    /// `restart_result` would be `None` while `notify_down` stayed true, so the
+    /// went-quiet notice would render the "tried starting it automatically"
+    /// copy for a restart that never happened. That invariant is asserted, not
+    /// merely documented, so the two lines have to move as a pair.
+    ///
+    /// Source-scanned rather than driven: the gate lives in `refresh_health`,
+    /// which needs a live `AppHandle` and DB pool, and the decision was
+    /// deliberately placed OUTSIDE the pure `decide_health_notice` so the
+    /// health state machine keeps advancing while only the outward actions are
+    /// held. Same reasoning as `reopen.rs`'s gate tests.
+    ///
+    /// **Scans only the production half of the file.** `include_str!` on the
+    /// module a test lives in also pulls in that test's own body, so the needles
+    /// below would match their own string literals and the assertions could
+    /// never fail — a test that is green whatever the code does. Truncating at
+    /// the first `#[cfg(test)]` (the real attribute, which precedes this module)
+    /// is what makes it actually load-bearing; verified by deleting a gate line
+    /// and watching this go red.
+    #[test]
+    fn an_install_in_progress_suppresses_both_the_restart_and_the_notice() {
+        let whole = include_str!("refresh.rs");
+        let src = &whole[..whole
+            .find("#[cfg(test)]")
+            .expect("refresh.rs lost its test module marker")];
+        assert!(
+            src.contains("let staging = crate::daemon_lifecycle::is_staging();"),
+            "refresh_health no longer reads the staging flag - its restart races \
+             the installer's binary swap, exactly as the watchdog's did"
+        );
+        for line in [
+            "let attempt_restart = attempt_restart && !staging;",
+            "let notify_down = notify_down && !staging;",
+        ] {
+            assert!(
+                src.contains(line),
+                "`{line}` is gone - suppressing only one of the two trips the \
+                 `notify_down` => `restart_result.is_some()` debug assert below \
+                 the gate, and makes the notice claim a restart that never ran"
+            );
+        }
+    }
 
     /// The exact bug this fix targets: a fresh tray process (all counters at
     /// their `AppState::default()` values) whose very first health check is
