@@ -433,12 +433,19 @@ export function useTutorial(opts: {
           }
           function onAbort() { settle(false) }
           const timer = setTimeout(() => settle(false), o?.fallbackMs ?? 90000)
-          // Same target-vanished handling as waitForValue/waitForClick: the
-          // composer closing out from under this wait is the step ending, not
-          // a miss, so it counts as done rather than burning the fallback.
+          // A vanished target settles FALSE, not true. It settles immediately
+          // either way - the point of noticing is to avoid burning the fallback
+          // on a field that is gone - but the answer this returns is "did the
+          // title clear the floor", and a composer that closed did not. `true`
+          // there made the script take its titleReady branch and narrate
+          // "Saved." over a task that was never created: the exact false claim
+          // the word-count check was added to stop, coming back through a
+          // different door. `false` is also what `waitForClick` answers when its
+          // target never rendered, so this is the sibling primitives' contract
+          // rather than a special case.
           let raf = requestAnimationFrame(function tick() {
             const node = tourTarget(sel) as HTMLInputElement | HTMLTextAreaElement | null
-            if (!node) { settle(true); return }
+            if (!node) { settle(false); return }
             if (words(node.value) >= minWords) { settle(true); return }
             raf = requestAnimationFrame(tick)
           })

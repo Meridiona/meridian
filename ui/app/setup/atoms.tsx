@@ -109,7 +109,13 @@ function MacToggleOn() {
  *  equal height (`items-stretch` in PermissionsBody), so without this the
  *  pane itself would end up a different visible size in each card depending
  *  on how much text its title/blurb wrapped to. */
-function MacSettingsPanePreview({ permissionId }: { permissionId: 'accessibility' | 'screen' | 'notifications' }) {
+// The union deliberately EXCLUDES 'notifications'. That pane is a different
+// screen in System Settings and has its own component; routing it here is the
+// exact defect this split fixed, and a type that still accepted it would let a
+// future edit reintroduce it silently. Narrowing it means the compiler rejects
+// that call instead - and `PermissionPreview`'s ternary narrows `permissionId`
+// to the remaining two for free.
+function MacSettingsPanePreview({ permissionId }: { permissionId: 'accessibility' | 'screen' }) {
   const copy = MAC_PANE_COPY[permissionId]
   return (
     <div className="w-full flex flex-col" style={{
@@ -229,8 +235,18 @@ function MacNotificationsPanePreview() {
 
       {/* Scenery below - blurred for the same reason the other pane blurs its
          non-Meridian rows: recognisable as the real page, never mistakable for
-         something to click. */}
-      <div className="flex flex-col" style={{ flex: 1, gap: 5, margin: '6px 8px 8px', filter: 'blur(2px)', opacity: 0.5 }}>
+         something to click.
+
+         `aria-hidden` because blur is a purely visual "ignore this" and a
+         screen reader gets none of it. `PermCard` sets `selfDescribing = isMac`,
+         so on macOS the card renders no title or description of its own and
+         this preview carries the only text in it - which means "Badge
+         application icon" and "Play sound for notification" were being read out
+         as if they were the instruction. They are decoration for a pane the user
+         is not even on yet. The sharp "Allow notifications" row above stays
+         readable: that one IS the instruction. Matches `SimpleTogglePreview`,
+         which already hides its decorative toggle. */}
+      <div aria-hidden="true" className="flex flex-col" style={{ flex: 1, gap: 5, margin: '6px 8px 8px', filter: 'blur(2px)', opacity: 0.5 }}>
         <div className="flex items-start" style={{ gap: 6, padding: '6px 8px', borderRadius: 8, background: '#F0F0F1' }}>
           {placements.map((name) => (
             <div key={name} className="flex flex-col items-center" style={{ flex: 1, gap: 3 }}>

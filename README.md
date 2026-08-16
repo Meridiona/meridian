@@ -55,7 +55,7 @@ But everything needed to do it already exists in what you just did — the code 
 
 1. **Capture** — Meridian bounds your activity into clean, app-based work sessions, accurate across sleep, idle, and restarts.
 2. **Classify** — Meridian labels each session and links it to the specific ticket it belongs to, using what's on screen, the branch you're on, and the tools in play. The matching runs through the AI CLI you already use (or a cloud LLM you configure).
-3. **Sync** — the matching ticket in Jira / GitHub Issues / Linear is updated for you. **Nothing posts without your approval.**
+3. **Sync** — the matching ticket in whichever tracker you connected is updated for you. **Nothing posts without your approval.**
 
 A dashboard inside the Meridian app (open it from the menu-bar tray icon) shows your day as a timeline and per-app breakdown. A built-in [MCP server](SETUP.md#mcp-server) makes the same data available to AI tools like Claude and Cursor.
 

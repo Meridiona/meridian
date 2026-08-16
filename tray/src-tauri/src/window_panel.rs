@@ -37,7 +37,8 @@
 /// setups) from placing the window past the monitor's right or bottom edge.
 ///
 /// Pure and platform-independent so it's unit-testable without a live window —
-/// same rationale as [`is_onboarded`] / [`reopen_target`] above.
+/// same rationale as [`crate::reopen::is_onboarded`] / [`crate::reopen::reopen_target`],
+/// which moved to their own module in the same split that created this one.
 pub(crate) fn tray_anchor_position(
     icon_pos: (i32, i32),
     icon_size: (i32, i32),

@@ -490,8 +490,13 @@ a `.tar.gz` the user hands to support, imported by hand with `meridian
 telemetry import <bundle> --endpoint <url> --auth <base64>`. The bundle also
 carries a synthesized `bundle-info.txt` (Support ID, version, channel, os,
 arch) so a hand-delivered archive can be joined to that machine's already-
-ingested rows; it deliberately contains nothing the automatic ship leg wouldn't
-already send. Retention (default 7 days, `MERIDIAN_TELEMETRY_RETENTION_DAYS`)
+ingested rows. **The bundle is NOT redacted, and it is a superset of what the
+automatic ship leg sends** — `build_export_bundle` copies `pending/` and `sent/`
+verbatim, and the spool is captured at full fidelity, so the archive carries
+INFO/DEBUG records and unredacted attributes that the WARN+-only, redacted ship
+leg strips. (An earlier version of this line claimed the opposite; it was wrong,
+and `docs/privacy.md` now tells users to inspect the archive before sending it.)
+Retention (default 7 days, `MERIDIAN_TELEMETRY_RETENTION_DAYS`)
 applies to both `pending/` and `sent/`, regardless of shipping status.
 
 - **Rust**: `tracing::info!/warn!/error!/debug!` with **structured fields** — never format data values into the message string (already enforced).
@@ -520,12 +525,23 @@ applies to both `pending/` and `sent/`, regardless of shipping status.
 5. Add a migration if the signal needs its own column; otherwise store as JSON in `signals`
 6. Add an integration test in `tests/integration_etl.rs`
 
-### Add a new UI API route
+### Add a new dashboard data source (there are no UI API routes)
 
-1. Create `ui/app/api/<name>/route.ts`
-2. Query `meridian.db` using `better-sqlite3` (see existing routes for the pattern)
-3. Return a typed JSON response; define the response type inline
-4. If the route shells out to the `meridian` binary, resolve it with `selectMeridianBinary(meridianCandidates())` from `@/lib/meridian-bin` — never a bare `'meridian'` or an ad-hoc candidate list (see the launchd/node-wrapper note under Coding Conventions → TypeScript / Next.js)
+**`ui/app/api/` does not exist.** The Next-fold deleted every route handler: the
+dashboard is a static export inside the tray webview, with no Node server to host
+them. There is nowhere to put a `route.ts`, and `better-sqlite3` is not a dependency
+of `ui/`.
+
+Follow **Coding Conventions → "Porting a dashboard route to Rust"** instead — the
+same playbook applies to a brand-new reader, not just a ported one. In short: a
+DB-backed read becomes a module under `meridian-core/src/readers/`; anything touching
+files, env, a process, or external HTTP becomes a `#[tauri::command]` under
+`tray/src-tauri/src/commands/`; the frontend reaches it through `ui/lib/bridge.ts`
+(`load`/`mutate`/`subscribe`), and its response type goes in `ui/lib/api-types.ts`.
+
+The `selectMeridianBinary(meridianCandidates())` rule still applies wherever the
+`meridian` binary is spawned — that code now lives in tray commands rather than route
+handlers.
 
 ### Add a notification (plain toast or interactive nudge)
 
