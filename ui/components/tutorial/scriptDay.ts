@@ -87,11 +87,6 @@ async function hasBoard(usesTracker: string | null): Promise<boolean> {
 export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   const { ai, usesTracker } = ctx
   const board = await hasBoard(usesTracker)
-  // What we know about their provider, which this half can now CHANGE: the
-  // worklog beat takes a user with no model to the picker on the spot, and the
-  // closing beat must not ask them again. `ctx.ai` is what part one observed and
-  // stays read-only; this is that plus anything learned since.
-  let aiState = ai
 
   // ── 3. The timeline, BUILT rather than shown ────────────────────────────
   // The half of the product that happens while the user is not looking, which is
@@ -227,24 +222,38 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
     s.spotlight(null)
     await s.appeared('[data-tour="wl-generate"]', 4000)
     await s.pause(400)
+    // NAMES THE MODEL AS THE ONE THEY ALREADY CONNECTED. Part one had them press
+    // "Draft with AI" on their own task, and that button raises the same connect
+    // card and runs the same provider - so by the time this beat is reached the
+    // requirement has been met, once, at the moment it first mattered. Saying so
+    // is worth a clause: without it this reads as a second, separate AI feature,
+    // and a user who found connecting one a chore braces for another round of it.
+    s.say('Same AI that drafted your task this morning - now on a whole afternoon of work.')
     s.spotlight('[data-tour="wl-generate"]')
     await s.point('[data-tour="wl-generate"]')
     await s.waitForClick('[data-tour="wl-generate"]', 120000)
     s.spotlight(null)
 
-    // 5-i. …except on a machine with no model, which is most first runs that got
-    // this far without one. The press runs the REAL provider check (the scripted
-    // worklog no longer bypasses it - see `WorklogDraftDialog`), so what comes
-    // back is the product's own "Connect an AI provider" card rather than a
-    // draft. Carrying on with "reading the work, writing the update" would be
-    // narrating a screen the user is not looking at, about a feature they cannot
-    // have yet.
+    // 5-i. …unless there is no model, in which case the press returns the
+    // product's own "Connect an AI provider" card instead of a draft. The
+    // scripted worklog no longer bypasses that check (see `WorklogDraftDialog`),
+    // so what is on screen here is the truth rather than a demo of it.
     //
-    // THE ORDER IS THE POINT. This ask used to sit at the very end of the tour,
-    // after the worklog had been demonstrated working - so the one thing the
-    // whole product is bought for was shown running on a machine that could not
-    // run it, and the requirement arrived as an afterthought. Asked here, it is
-    // the answer to a button the user just pressed.
+    // NO SECOND CONNECT DETOUR, and this is the correction worth recording. An
+    // earlier version of this beat ran the full flow again from here: ring the
+    // card, open Settings, pick a provider, come back, re-open the draft,
+    // re-press Generate. That duplicated a flow the tour already has. "Draft
+    // with AI" in part one needs the SAME provider, raises the SAME connect card
+    // (`ai-connect`), and already walks the user through picking one - and it
+    // happens first, on their own task, at the moment the requirement first
+    // means anything. Running it twice teaches that these are two separate AI
+    // features with two setups, which is the opposite of true.
+    //
+    // So the requirement is introduced where it is first hit, and this beat only
+    // has to be honest about what it is looking at. Reaching here blocked means
+    // they declined it in part one, or never opened the planner at all - asking
+    // a second time three beats later is nagging, and the closing beat asks
+    // once more anyway.
     //
     // ARMED ON THE CARD APPEARING, never on a flag. Predicting from what part one
     // observed strands the tour on both sides: a wait for a card that never came,
@@ -259,75 +268,13 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
     // narrate work that had already finished.
     await s.appeared('[data-tour="wl-connect-provider"], [data-tour="draft-targets"]', 15000)
     // Zero-ish: a "which one is on screen right now" probe, not a wait.
-    let blocked = await s.appeared('[data-tour="wl-connect-provider"]', 250)
-    if (blocked) {
-      // Recorded as connected EVEN IF THEY BACK OUT of the picker. This flag only
-      // decides whether the closing beat asks again, and a user who was just
-      // walked to the provider screen and chose not to finish has answered that
-      // question - asking a second time three beats later is nagging, not help.
-      aiState = 'connected-in-tour'
-      // Let the card arrive and be read first. They pressed a button and got an
-      // unexpected answer; a spotlight landing on it in the same second is a
-      // second surprise.
-      await s.pause(1200)
-      s.say('Writing the update needs an AI engine of your own - you pick which. Connect one and we will come straight back to this.')
-      s.spotlight('[data-tour="wl-connect-provider"]')
-      await s.point('[data-tour="wl-connect-provider"]')
-      await s.waitForClick('[data-tour="wl-connect-provider"]', 120000)
-      s.spotlight(null)
-      // The draft dialog closes ITSELF on that press (see `WorklogDraftDialog`),
-      // so Settings is not about to open behind it. Opening Settings is left to
-      // the script rather than the panel's own handler because in here that
-      // handler is deliberately inert - `TutorialScreen` passes a no-op, on the
-      // same reasoning as `onOpenPlan`: the script owns which surface is up.
-      s.openSettings('intelligence')
-      await s.pause(1000)
-      s.say('Pick a provider - Meridian installs it and signs you in here. Change it any time.')
-      await s.waitForClick('[data-tour="modal-close"]', 300000)
-      s.openModal(null)
-      await s.pause(700)
-      // BACK TO THE DRAFT, from the top. The dialog closed on the way out, so the
-      // entry row is what is on screen - ringing `wl-generate` here would ring a
-      // control that is not rendered, and the tour would sit on it until it timed
-      // out. Same two presses as the first time round, which is also the honest
-      // shape of doing this for real.
-      // NOT "connected" - nothing here knows that yet. Settings closing means the
-      // modal closed, not that a provider was picked: it is deliberately unlocked
-      // (the locked variant hands back to the PLANNER on success, which is the
-      // wrong place from here), so × is available the whole time. The press below
-      // is what finds out, and the line has to still be true if the answer is no.
-      s.say('Back to it - ask for that update again.')
-      s.spotlight('[data-tour="wl-open"]')
-      await s.point('[data-tour="wl-open"]')
-      await s.waitForClick('[data-tour="wl-open"]', 120000)
-      s.spotlight(null)
-      await s.appeared('[data-tour="wl-generate"]', 4000)
-      await s.pause(400)
-      s.spotlight('[data-tour="wl-generate"]')
-      await s.point('[data-tour="wl-generate"]')
-      await s.waitForClick('[data-tour="wl-generate"]', 120000)
-      s.spotlight(null)
+    const blocked = await s.appeared('[data-tour="wl-connect-provider"]', 250)
 
-      // DID IT ACTUALLY TAKE? Settings closing proves only that the modal closed.
-      // Someone who opened the picker, found the provider they wanted needs a CLI
-      // installed, and pressed × arrives back here with the same card - and
-      // without this probe the tour would carry straight on into "reading the
-      // work, comparing it against the tasks you planned", narrating a draft that
-      // does not exist, over a card that says the opposite. Then a 12s stall and a
-      // beat about a 90% match nobody can see. That is the precise failure this
-      // whole stretch of comments exists to prevent, landing on exactly the users
-      // this change is for.
-      await s.appeared('[data-tour="wl-connect-provider"], [data-tour="draft-targets"]', 15000)
-      blocked = await s.appeared('[data-tour="wl-connect-provider"]', 250)
-      // And the closing ask goes back on. Skipping it was right while the picker
-      // had been visited and answered; it is wrong once we can see that it was
-      // not - a tour that stays quiet here leaves them finished, with a Meridian
-      // that cannot write anything and nothing having said so.
-      if (blocked) aiState = null
-    }
-
-    // EVERYTHING FROM HERE DESCRIBES A DRAFT. It runs only when there is one -
-    // which is every user who had a model, plus everyone who just connected one.
+    // EVERYTHING FROM HERE DESCRIBES A DRAFT, so it runs only when there is one.
+    // Narrating "reading the work, comparing it against the tasks you planned"
+    // over a card saying the opposite is the single most confusing thing a
+    // walkthrough can do - and it would then stall 12s waiting for targets that
+    // never arrive, and describe a 90% match nobody can see.
     if (!blocked) {
       s.say('Reading the work, comparing it against the tasks you planned this morning, writing the update.')
       await s.appeared('[data-tour="draft-targets"]', 12000)
@@ -368,11 +315,12 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
       // most needs to have been straight with them.
       await s.next('Posted to the ticket, without opening your board. Example day, so nothing really went out.')
     } else {
-      // They went to the picker and came back without one. Said plainly and
-      // moved past: the rest of the tour does not need a draft, and stopping to
-      // press the point on someone who has just declined twice is the one thing
-      // that would make them close it. The closing beat asks again, once.
-      await s.next('No model connected, so there is nothing to write the update with yet. Connect one and this is the same two presses - ask, then approve.')
+      // No model. Said plainly, tied back to the button they already met, and
+      // moved past - the rest of the tour does not need a draft, and stopping to
+      // press the point on someone who has already declined it once is what
+      // makes them close the window. Nothing here touches `ctx.ai`, so the
+      // closing beat asks once more - the right number of times.
+      await s.next('This needs the same AI as "Draft with AI" earlier, and there is none connected yet. Set one up and this is two presses - ask, then approve.')
     }
   } else {
     await s.next('Connect a board and it writes the ticket update too - matched, and posted once you approve.')
@@ -541,9 +489,10 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   // touches our servers - a claim that reads as a claim, arriving at the point
   // in the tour where the user is counting the beats left. Nothing is being
   // asked of them, so there is nothing to stop for.
-  // `aiState`, not `ctx.ai`: the worklog beat may have taken them to this very
-  // screen already, in which case there is nothing left to ask.
-  if (aiState === null) {
+  // `ctx.ai`, straight from part one, because part two never changes it: the
+  // worklog beat deliberately does NOT run a second connect flow (see 5-i), so
+  // this stays the one place a user who declined earlier is asked again.
+  if (ai === null) {
     await s.next('Last thing: pick the AI that does the writing. It runs through your own CLI.', 'Pick a model')
     s.openSettings('intelligence')
     await s.pause(1000)

@@ -84,26 +84,39 @@ describe('the walkthrough does not demo a draft the user cannot get', () => {
   })
 })
 
-describe('the walkthrough routes a blocked Generate to the AI setup', () => {
-  const flow = scriptDay.slice(scriptDay.indexOf("s.spotlight('[data-tour=\"wl-open\"]')"))
+describe('the walkthrough leans on the AI step it already has', () => {
+  // BOUNDED to the worklog stretch. Slicing to the end of the file would sweep in
+  // beat 9 - the closing AI ask - whose `openSettings` is exactly the thing this
+  // block is here to say should happen ONCE, and somewhere else.
+  const flowStart = scriptDay.indexOf("s.spotlight('[data-tour=\"wl-open\"]')")
+  const flowEnd = scriptDay.indexOf('── 6. The daily summary', flowStart)
+  if (flowStart < 0 || flowEnd < flowStart) throw new Error('worklog stretch not found')
+  const flow = scriptDay.slice(flowStart, flowEnd)
 
-  it('detours between the press and the draft, not after the tour', () => {
-    // Order: they press Generate, they are told why it cannot run, they connect,
-    // and only then does the draft arrive. An AI ask parked at the end of the
-    // tour is an ask AFTER the feature it is required for has been demonstrated
-    // working - which is the thing that made this wrong.
+  it('runs no second connect flow of its own', () => {
+    // "Draft with AI" in part one needs the SAME provider and raises the SAME
+    // connect card (`ai-connect`), and it happens first - on the user's own task,
+    // at the moment the requirement first means anything. A second Settings trip
+    // here teaches that these are two separate AI features with two setups,
+    // which is the opposite of true.
+    expect(flow).not.toContain("s.openSettings('intelligence')")
+    // …and it does not ring the connect card either. DETECTING it is the point;
+    // making it the start of another picker walk is not.
+    expect(flow).not.toMatch(/spotlight\('\[data-tour="wl-connect-provider"\]'\)/)
+  })
+
+  it('names the model as the one they already connected', () => {
+    // Without this the beat reads as a second, separate AI feature - and a user
+    // who found connecting one a chore braces for another round of it.
     const press = flow.indexOf("await s.waitForClick('[data-tour=\"wl-generate\"]'")
-    const connect = flow.indexOf('wl-connect-provider')
-    const draft = flow.indexOf("s.appeared('[data-tour=\"draft-targets\"]'")
-    expect(press).toBeGreaterThan(-1)
-    expect(connect).toBeGreaterThan(press)
-    expect(draft).toBeGreaterThan(connect)
+    const same = flow.toLowerCase().indexOf('same ai')
+    expect(same).toBeGreaterThan(-1)
+    expect(same).toBeLessThan(press)   // said BEFORE the press, not after it
   })
 
   it('arms on the card actually appearing, never on a prediction', () => {
-    // The same shape the composer's detour uses. Predicting from a flag would
-    // strand the tour on both sides: a wait for a card that never came, or a
-    // silent skip past one that did.
+    // Predicting from what part one observed strands the tour on both sides: a
+    // wait for a card that never came, or a silent skip past one that did.
     expect(flow).toMatch(/await s\.appeared\('\[data-tour="wl-connect-provider"\]'/)
   })
 
@@ -119,59 +132,28 @@ describe('the walkthrough routes a blocked Generate to the AI setup', () => {
     expect(probe).toBeGreaterThan(both)
   })
 
-  it('comes back and presses Generate again', () => {
-    // The draft dialog closes itself on the way to Settings, so returning to a
-    // ringed `wl-generate` would ring a control that is no longer rendered.
-    const connect = flow.indexOf('wl-connect-provider')
-    const after = flow.slice(connect)
-    expect(after.indexOf('wl-open')).toBeGreaterThan(-1)
-    expect(after.indexOf('wl-open')).toBeLessThan(after.indexOf("s.appeared('[data-tour=\"draft-targets\"]'"))
-  })
-
-  it('checks the connect actually took, and does not claim it did', () => {
-    // Settings here is UNLOCKED on purpose - the locked variant hands back to the
-    // PLANNER on success, which is the wrong place to land from a worklog - so ×
-    // is available throughout and closing it proves nothing. Someone who opens
-    // the picker, finds their provider needs a CLI installed, and backs out comes
-    // back to the same card.
-    const connect = flow.indexOf('wl-connect-provider')
-    const after = flow.slice(connect)
-    // The re-probe exists, AFTER the second press.
-    const rePress = after.indexOf("await s.waitForClick('[data-tour=\"wl-generate\"]'")
-    expect(rePress).toBeGreaterThan(-1)
-    // Searched from AFTER the press: `let blocked = …` (the first probe, before
-    // the detour) contains this same text, so a plain indexOf would match that
-    // one and pass on a file with no re-probe at all.
-    const reProbe = after.indexOf('blocked = await s.appeared', rePress)
-    expect(reProbe).toBeGreaterThan(rePress)
-    // Nothing between the picker and that probe asserts a connection happened.
-    expect(after.slice(0, reProbe)).not.toContain('Connected.')
-  })
-
-  it('puts the closing ask back when the connect did not take', () => {
-    // Skipping it is right for someone who visited the picker and answered. It is
-    // wrong once the tour can SEE that they did not - that user would otherwise
-    // finish the walkthrough with a Meridian that cannot write anything, and
-    // nothing having said so.
-    expect(flow).toMatch(/if \(blocked\) aiState = null/)
-  })
-
   it('does not narrate a draft that is not there', () => {
     // The beats that follow all describe a document: reading the work, a 90%
-    // match, approve, posted. On a still-blocked dialog they narrate a screen
-    // saying the opposite, then stall waiting for targets that never arrive.
+    // match, approve, posted. On a blocked dialog they narrate a screen saying
+    // the opposite, then stall waiting for targets that never arrive.
     expect(flow).toMatch(/if \(!blocked\) \{/)
     const guard = flow.indexOf('if (!blocked) {')
     const narration = flow.indexOf("s.say('Reading the work")
     expect(narration).toBeGreaterThan(guard)
   })
 
-  it('does not march them into the picker a second time at the end', () => {
-    // The closing beat runs on "no evidence of a provider". Once the detour has
-    // taken them to the picker, that is no longer true, and asking again reads
-    // as the tour not having noticed what they just did.
-    expect(scriptDay).not.toMatch(/^\s*if \(ai === null\) \{/m)
-    expect(scriptDay).toMatch(/if \(aiState === null\) \{/)
-    expect(scriptDay).toMatch(/aiState = 'connected-in-tour'/)
+  it('points a blocked user back at the button they already met', () => {
+    // Not a fresh instruction - a pointer to the step they have already been
+    // through. That is what makes it one requirement rather than two.
+    const alt = flow.slice(flow.indexOf('} else {', flow.indexOf('if (!blocked) {')))
+    expect(alt).toContain('Draft with AI')
+  })
+
+  it('leaves the closing ask exactly where it was', () => {
+    // Part two changes nothing about what we know, so the gate stays `ctx.ai`.
+    // That closing beat is now the ONE place a user who declined in part one is
+    // asked again - which is the right number of times.
+    expect(scriptDay).toMatch(/if \(ai === null\) \{/)
+    expect(scriptDay).not.toMatch(/\baiState\b/)
   })
 })
