@@ -225,20 +225,32 @@ cidre = { version = "0.13", features = ["ax"], optional = true }
 # shared `default-features = false` and no Windows override, a Windows build
 # matches neither arm and has no notification backend at all.
 #
-# The cost is that Windows gets plain title+body toasts only — notify-rust has
-# no action buttons or inline reply, which is exactly why macOS keeps the Swift
-# UNUserNotificationCenter layer instead. Interactive toasts on Windows need a
-# `windows-rs` Windows.UI.Notifications implementation behind the existing
-# `sys.rs` facade; tracked as a follow-up, documented in docs/notifications.md.
+# notify-rust has no action buttons, no inline reply and no retraction, which
+# is exactly why macOS keeps the Swift UNUserNotificationCenter layer instead.
+# It is therefore NOT the outbox delivery path on Windows any more: `win_toast.rs`
+# drives Windows.UI.Notifications directly for every toast that needs a button
+# or a tag. What is still served from here is the plain title+body
+# `sys::notify` toast (pause/update/health), which has neither.
 tauri-plugin-notifications = { version = "=0.4.6", default-features = false, features = ["notify-rust"] }
-# Real notification-permission read for the Windows probe (`sys::notification_permission_state`).
-# The plugin's notify-rust backend has no permission API of its own — `permission_state()` /
-# `request_permission()` are hardcoded to return `Granted` (see the doc comment on the probe) —
-# so this queries WinRT directly via `ToastNotificationManager::CreateToastNotifierWithId` +
-# `ToastNotifier::Setting()`. Already a transitive dependency (pulled in by notify-rust's own
-# `tauri-winrt-notification` backend), so this adds no new dependency, just our own direct use of
-# it; version kept in the same 0.61 line Cargo already resolves so there's no duplicate build.
-windows = { version = "0.61", features = ["UI_Notifications"] }
+# Direct WinRT access, for two things the plugin cannot do on Windows:
+#  1. The notification-permission read (`sys::notification_permission_state`). The plugin's
+#     notify-rust backend has no permission API of its own — `permission_state()` /
+#     `request_permission()` are hardcoded to return `Granted` (see the doc comment on the
+#     probe) — so this queries `ToastNotificationManager::CreateToastNotifierWithId` +
+#     `ToastNotifier::Setting()`.
+#  2. Interactive toasts (`win_toast.rs`): buttons, inline reply, action events and
+#     retraction, none of which notify-rust exposes.
+# Already a transitive dependency (pulled in by notify-rust's own `tauri-winrt-notification`
+# backend), so this adds no new dependency, just our own direct use of it; version kept in the
+# same 0.61 line Cargo already resolves so there's no duplicate build.
+# The added features are what `win_toast.rs` needs beyond the permission read: the toast XML
+# document, the event handler + IPropertyValue (inline-reply text), and the ValueSet it lives in.
+windows = { version = "0.61", features = [
+    "UI_Notifications",
+    "Data_Xml_Dom",
+    "Foundation",
+    "Foundation_Collections",
+] }
 
 [features]
 # In-process screen capture is ON by default (Gap-2 Bucket 2 cutover): the

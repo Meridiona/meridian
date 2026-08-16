@@ -9,16 +9,23 @@
 //! (real `UNUserNotificationCenter` on macOS: action buttons + inline reply).
 //! Everything above this module talks only to [`notify`] /
 //! [`notify_outbox`], so if the plugin disappoints it can be swapped for
-//! in-house `objc2-user-notifications` bindings without touching callers.
-//! The plugin requires a packaged `.app` bundle ([`is_bundled`]); in an
-//! unbundled run (`tauri dev`, `cargo run`) it is not registered at all and
-//! both facades degrade to a logged no-op — interactive toasts are verified on
-//! packaged builds only.
+//! in-house bindings without touching callers — which is exactly what happened
+//! on Windows: the plugin's `notify-rust` backend there has no button, action
+//! or retraction API, so [`notify_outbox`] and [`retract_toast`] delegate to
+//! `Windows.UI.Notifications` via [`crate::win_toast`], while plain [`notify`]
+//! stays on the plugin. That split is the abstraction paying off; no caller in
+//! `poll/` or `commands/` knows about it.
+//!
+//! Delivery on both platforms is gated on [`is_bundled`] — the plugin's init
+//! hard-fails outside a `.app`, and Windows keeps the same gate for symmetry —
+//! so an unbundled run (`tauri dev`, `cargo run`) degrades to a logged no-op
+//! and interactive toasts are verified on packaged builds only.
 //!
 //! # Related
 //! - [`crate::poll`] — the loop that toasts via [`notify`] / [`notify_outbox`].
 //! - [`crate::commands::notifications`] — records the user's answer
 //!   (`record_notification_response`) that [`notify_outbox`]'s buttons produce.
+//! - [`crate::toast_actions`] — the Windows button/XML translation.
 //! - [`crate::install`] — install-mode + path resolution (a separate concern from these).
 
 use tauri::Manager;
@@ -208,11 +215,42 @@ pub fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
 /// resolves everything else (deep_link) from the DB row. It also means the OS
 /// collapses a re-delivered row onto the same toast instead of duplicating it.
 ///
-/// Known limitation: the plugin's `actionPerformed` only fires for toasts shown
-/// by the CURRENT tray process (its notification map is in-memory), so an
-/// answer given after a tray restart is dropped. Expiries keep stale
-/// interactive toasts rare; a v2 could reconcile via `notificationClicked`.
+/// Known limitation: action events only fire for toasts shown by the CURRENT
+/// tray process — the plugin's notification map is in-memory on macOS, and the
+/// WinRT handlers on Windows belong to this process — so an answer given after
+/// a tray restart is dropped. Expiries keep stale interactive toasts rare; a v2
+/// could reconcile via `notificationClicked`.
+///
+/// **Windows takes a different route entirely** ([`crate::win_toast`]): its
+/// plugin backend is `notify-rust`, which has no button, action-event or
+/// retraction API at all, so outbox toasts are built and shown against
+/// `Windows.UI.Notifications` directly. That path does not use the plugin and
+/// so must not be gated on it — it is gated on [`is_bundled`] instead, which is
+/// what the plugin's own registration is gated on in `lib.rs`, so a dev build
+/// stays silent on both platforms exactly as before.
 pub fn notify_outbox(
+    app: &tauri::AppHandle,
+    n: &meridian_core::notifications::PendingNotification,
+) {
+    #[cfg(target_os = "windows")]
+    {
+        if !is_bundled() {
+            tracing::debug!(id = n.id, "notify_outbox: dev build — toast dropped");
+            return;
+        }
+        crate::win_toast::show(app, n);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        notify_outbox_via_plugin(app, n);
+    }
+}
+
+/// The macOS delivery path: the plugin's Swift `UNUserNotificationCenter`
+/// layer, addressed by category id.
+#[cfg(not(target_os = "windows"))]
+fn notify_outbox_via_plugin(
     app: &tauri::AppHandle,
     n: &meridian_core::notifications::PendingNotification,
 ) {
@@ -257,17 +295,35 @@ pub fn notify_outbox(
 /// Same effect as the user pressing ✕, minus the user. Best-effort: a failure
 /// leaves a stale toast on screen but the row is stamped regardless, so it is
 /// never re-delivered.
+///
+/// **On Windows this used to be dead code that always failed**: the plugin's
+/// `notify-rust` backend answers `remove_active` with a hard
+/// `Err("Removing active notifications is not supported with notify-rust")`, so
+/// every expiry logged `toast retraction failed` and left the toast sitting in
+/// Action Center with live buttons. It now goes through [`crate::win_toast`],
+/// which removes it by tag + group + AUMID.
 pub fn retract_toast(app: &tauri::AppHandle, id: i64) {
-    let Some(nf) = notifier(app) else {
-        return; // unbundled run — nothing was ever shown
-    };
-    let Ok(toast_id) = i32::try_from(id) else {
-        return; // uncorrelated delivery (see notify_outbox) — nothing to target
-    };
-    if let Err(e) = nf.remove_active(vec![toast_id]) {
-        tracing::warn!(error = %e, id, "toast retraction failed");
-    } else {
-        tracing::info!(id, "expired toast retracted");
+    #[cfg(target_os = "windows")]
+    {
+        if !is_bundled() {
+            return; // dev build — nothing was ever shown
+        }
+        crate::win_toast::retract(app, id);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let Some(nf) = notifier(app) else {
+            return; // unbundled run — nothing was ever shown
+        };
+        let Ok(toast_id) = i32::try_from(id) else {
+            return; // uncorrelated delivery (see notify_outbox) — nothing to target
+        };
+        if let Err(e) = nf.remove_active(vec![toast_id]) {
+            tracing::warn!(error = %e, id, "toast retraction failed");
+        } else {
+            tracing::info!(id, "expired toast retracted");
+        }
     }
 }
 
@@ -449,7 +505,28 @@ pub fn screen_recording_trusted() -> bool {
 /// startup from `lib.rs` on bundled runs; a failure downgrades every
 /// interactive toast to plain title+body (macOS ignores an unknown
 /// `action_type_id`), so it's logged loudly but never fatal.
+///
+/// **Windows has no analogue and this is a no-op there.** A pre-registered
+/// category set is a `UNUserNotificationCenter` concept; a Windows toast
+/// carries its buttons inline in its own XML, so [`crate::win_toast`] reads the
+/// same descriptors at delivery time instead. Calling the plugin here on
+/// Windows was not merely useless — its `notify-rust` backend rejects the call
+/// ("Action types are not supported with notify-rust"), which surfaced as a
+/// `notification category registration failed` ERROR on every single launch.
 pub fn register_notification_categories(app: &tauri::AppHandle) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = app;
+        tracing::debug!("category registration is macOS-only — Windows carries actions per toast");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    register_categories_with_plugin(app);
+}
+
+/// The macOS half of [`register_notification_categories`].
+#[cfg(not(target_os = "windows"))]
+fn register_categories_with_plugin(app: &tauri::AppHandle) {
     use meridian_core::notifications::categories;
     let Some(nf) = notifier(app) else {
         tracing::debug!("category registration skipped — plugin absent (unbundled run)");
@@ -529,15 +606,26 @@ pub fn register_notification_categories(app: &tauri::AppHandle) {
 /// occupies. Setting position and size to it cannot be skipped by a state
 /// guard.
 ///
-/// Then it enters **native macOS full-screen** — own Space, auto-hiding menu
-/// bar and Dock — which is the requested behaviour for the dashboard.
+/// **On macOS only**, it then enters native full-screen — own Space, auto-hiding
+/// menu bar and Dock — which is the requested behaviour for the dashboard.
 ///
 /// The work-area fill is not redundant once full-screen is requested: macOS
 /// restores the PRE-full-screen frame when the user leaves full-screen, so
 /// without it the green button would drop them back to a 1100x760 window. The
 /// fill is what makes that exit land on a screen-filling window instead.
 ///
-/// # The hazard this mode carries
+/// # Windows stops at the fill, deliberately
+///
+/// The same `set_fullscreen(true)` there means `Fullscreen::Borderless`, which
+/// strips the title bar (and with it minimize/maximize/close), sizes to the full
+/// monitor rect rather than the work area so the taskbar is covered, and marks
+/// the window full-screen to the shell. macOS supplies an exit for that state;
+/// Windows does not, and nothing here binds F11 or Escape — so it shipped as a
+/// dashboard the user could only leave with Alt+F4. The fill alone gives Windows
+/// the intended result, because `work_area()` already excludes the taskbar.
+/// Pinned by `reopen::reopen_tests::full_screen_is_requested_on_macos_only`.
+///
+/// # The hazard this mode carries (macOS)
 ///
 /// A window in native full-screen carries the full-screen style mask, and
 /// tao's `set_inner_size` calls `NSWindow::setContentSize:` unconditionally
@@ -559,17 +647,38 @@ pub fn register_notification_categories(app: &tauri::AppHandle) {
 /// Both dashboard openers, right after `build()`: [`crate::tray`]'s tray-menu
 /// opener and [`crate::commands::system::open_dashboard`].
 pub(crate) fn open_full_screen(win: &tauri::WebviewWindow) {
+    // Every platform gets the geometry. On Windows this is the WHOLE answer -
+    // `work_area()` already excludes the taskbar, so the window fills the usable
+    // screen while keeping its title bar.
     fill_work_area(win);
+
+    // macOS ONLY, and the gate is the point.
+    //
+    // Here, full-screen is a first-class window mode that comes with its own way
+    // out: the menu bar drops down on hover, the green button is in it,
+    // `Ctrl+Cmd+F` works. On Windows the identical call means
+    // `Fullscreen::Borderless`, and tao (`platform_impl/windows/window.rs`) then
+    // does three things that together have no counterpart here — it sets
+    // `MARKER_BORDERLESS_FULLSCREEN`, which strips the title bar and with it
+    // minimize/maximize/close; it sizes to `monitor.size()`, the full monitor
+    // rect rather than the work area, so the taskbar is covered; and it calls
+    // `taskbar_mark_fullscreen(hwnd, true)` to ask the shell to yield. Nothing
+    // in this app binds F11 or Escape on the dashboard window, so a Windows user
+    // was left in a screen they could only leave with Alt+F4.
+    //
     // Requested AFTER the window exists rather than via the builder's
     // `.fullscreen(true)`, for the same reason `.maximized(true)` is not
     // trusted above: a builder flag that does nothing fails silently, while an
     // explicit call has a Result to log. It also avoids asking AppKit to
     // animate a window into a new Space before that window is on screen.
-    if let Err(e) = win.set_fullscreen(true) {
-        tracing::warn!(error = %e, "dashboard: could not enter full-screen - staying windowed");
-        return;
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(e) = win.set_fullscreen(true) {
+            tracing::warn!(error = %e, "dashboard: could not enter full-screen - staying windowed");
+            return;
+        }
+        tracing::info!("dashboard: entered native full-screen");
     }
-    tracing::info!("dashboard: entered native full-screen");
 }
 
 /// Size a window to fill the screen it opened on, as an ordinary window.
@@ -788,5 +897,44 @@ mod tests {
     fn non_macos_accessibility_and_screen_recording_are_not_applicable_so_report_true() {
         assert!(super::accessibility_trusted());
         assert!(super::screen_recording_trusted());
+    }
+
+    /// Source scan, because the behaviour it guards cannot be executed from a
+    /// macOS dev machine or a CI runner without a desktop session.
+    ///
+    /// The Windows outbox path MUST NOT be gated on the notification plugin.
+    /// `notifier()` returns the plugin state, and on Windows that plugin is the
+    /// `notify-rust` backend, which cannot show a button, report an action or
+    /// remove a toast — [`super::notify_outbox`] delegates to
+    /// [`crate::win_toast`] instead and is gated on [`super::is_bundled`].
+    ///
+    /// Re-introducing a `notifier()` gate there would compile, pass every test,
+    /// and silently stop interactive notifications on Windows — the exact class
+    /// of failure this whole module exists to end. So the delegation is pinned
+    /// as text.
+    #[test]
+    fn the_windows_outbox_path_bypasses_the_plugin() {
+        let src = include_str!("sys.rs");
+        for delegate in ["crate::win_toast::show", "crate::win_toast::retract"] {
+            assert!(
+                src.contains(delegate),
+                "the Windows outbox path no longer delegates to {delegate} — \
+                 notify-rust cannot show buttons or retract, so this silently \
+                 breaks interactive toasts on Windows"
+            );
+        }
+        // The delegation must sit behind is_bundled(), not notifier(): a dev
+        // build stays silent (as it always has), but an installed one must not
+        // depend on a plugin it no longer uses for this path.
+        let windows_arm = src
+            .split("#[cfg(target_os = \"windows\")]")
+            .find(|s| s.contains("crate::win_toast::show"))
+            .expect("no Windows arm around the win_toast delegation");
+        let arm = &windows_arm[..windows_arm.find("crate::win_toast::show").unwrap()];
+        assert!(arm.contains("is_bundled()"), "Windows arm lost its gate");
+        assert!(
+            !arm.contains("notifier("),
+            "the Windows outbox path was re-gated on the plugin"
+        );
     }
 }

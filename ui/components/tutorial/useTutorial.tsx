@@ -83,6 +83,14 @@ const SAMPLE_TASKS = sampleTasks()
 const SAMPLE_OVERVIEW = sampleOverview()
 const NO_TASKS: typeof SAMPLE_TASKS = []
 
+/** Milliseconds between characters when the tour types into a field.
+ *
+ *  Fast enough not to be a wait (a 33-character sentence lands in about a second
+ *  and a half), slow enough to read as typing rather than as a form that was
+ *  already filled in. The distinction is the whole reason it is not one
+ *  assignment: the user has to see WHERE the words go. */
+const TYPE_MS = 45
+
 export interface TutorialHandle {
   running: boolean
   /** The opaque tutorial surface (an example day), or null. Rendered by the
@@ -435,6 +443,47 @@ export function useTutorial(opts: {
         parkCursor()
         if (sig.aborted) throw new Aborted()
         return got
+      },
+      type: async (sel, text) => {
+        const sig = signal()
+        const el = await waitForElement(sel, sig)
+        if (!el) return false
+        // NARROWED, not cast. A cast here was unchecked, and the failure it let
+        // through was not a wrong value - it was a `TypeError` out of
+        // `setValue.call` below when the selector resolved to something that is
+        // not a field. That throw is not `Aborted`, so it unwinds past
+        // `runScript` and the catch there tears the ENTIRE walkthrough down over
+        // one mistargeted beat. Every sibling primitive returns `false` for a
+        // target it cannot operate, which is also what `Stage.type` promises in
+        // engine.ts; this restores that contract and removes the cast at once.
+        if (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) {
+          return false
+        }
+        // THE NATIVE SETTER, not `el.value =`. React tracks the last value it
+        // rendered and compares against the DOM node's own property; a plain
+        // assignment updates neither its tracker nor its state, so the character
+        // appears for one frame and is wiped by the next render, with `onChange`
+        // never firing. Reaching the prototype's setter writes the property React
+        // reads, and a bubbling `input` event is what its synthetic listener is
+        // attached to - together they are indistinguishable from a keystroke.
+        const proto = el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype
+        const setValue = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+        if (!setValue) return false
+        el.focus()
+        // Character at a time, because the point is that it reads as typing. A
+        // single assignment lands the whole sentence in one frame, which looks
+        // like the form was pre-filled - and a pre-filled form teaches nothing
+        // about where the words go.
+        for (let i = 1; i <= text.length; i++) {
+          setValue.call(el, text.slice(0, i))
+          el.dispatchEvent(new Event('input', { bubbles: true }))
+          // Rejects `Aborted` if the user skips mid-sentence, which unwinds the
+          // whole script exactly as every other await in here does.
+          await sleep(TYPE_MS, sig)
+        }
+        return true
       },
       value: (sel) => (tourTarget(sel) as HTMLInputElement | HTMLTextAreaElement | null)?.value ?? '',
       waitForMinWords: async (sel, minWords, o) => {

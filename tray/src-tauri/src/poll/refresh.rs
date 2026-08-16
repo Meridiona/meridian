@@ -74,6 +74,7 @@ pub(super) async fn refresh_health(
         let s = &mut *s;
         let decision = decide_health_notice(
             now_healthy,
+            crate::daemon_lifecycle::is_staging(),
             &mut s.consecutive_health_failures,
             &mut s.daemon_was_healthy,
             &mut s.startup_health_reconciled,
@@ -105,6 +106,20 @@ pub(super) async fn refresh_health(
     // restart needs no DB pool, so it runs even when `pool` is None; only the
     // user-facing notice below does. Best-effort: the result feeds the notice
     // detail when we also notify.
+    // A daemon that is down because the INSTALLER stopped it is not an outage -
+    // handled inside `decide_health_notice`, which does not count the failure at
+    // all rather than masking its outputs. See the comment there for why the
+    // difference matters: masking would consume the one-shot `== 2` edge and
+    // delete the recovery attempt instead of deferring it.
+    //
+    // Both outward actions move together either way. The restart, because it
+    // would start the process the installer just killed and re-lock the binary
+    // mid-swap — the same hazard the fast watchdog stands down for, on the
+    // slower 30 s tick (see `daemon_lifecycle::begin_staging`). The notice,
+    // because "Meridian went quiet - tried starting it automatically" is both
+    // alarming and false during a routine update. And structurally: gating only
+    // the restart trips the `notify_down` ⇒ `restart_result.is_some()` debug
+    // assert below, which is exactly the tripwire that invariant exists to be.
     let restart_result = if attempt_restart {
         // Wrap the restart attempt in a span so the health-path recovery is
         // traceable end-to-end, matching the fast watchdog's span.
@@ -299,10 +314,43 @@ struct HealthNoticeDecision {
 /// with that call site.
 fn decide_health_notice(
     now_healthy: bool,
+    staging: bool,
     consecutive_health_failures: &mut u32,
     daemon_was_healthy: &mut bool,
     startup_health_reconciled: &mut bool,
 ) -> HealthNoticeDecision {
+    // A FAILED tick during an install is not an observation - it is the state
+    // the installer asked for - so it is not counted at all.
+    //
+    // This has to suppress the COUNT, not just the outputs. Every outward action
+    // below keys off `*consecutive_health_failures == 2`, an edge that is
+    // consumed the moment it is reached: a tick that increments 1 → 2 and then
+    // has its actions masked leaves the counter at 2, and the next failure takes
+    // it to 3. The edge never comes back. So a suppressed episode did not delay
+    // the restart and the notice, it deleted them - and the case that matters is
+    // exactly the one where deleting them is wrong: `register_service` can
+    // report success on Windows while `/Run` or the fallback spawn quietly did
+    // not bring the daemon back, leaving a permanently down daemon that this
+    // loop had already spent its one recovery attempt on.
+    //
+    // Not counting instead means the episode is DEFERRED. When the guard drops,
+    // a daemon that is genuinely down fails one tick (1), then another (2), and
+    // recovery and the notice fire on their normal edge - at most ~60 s late,
+    // against an install that only needed a few seconds.
+    //
+    // A HEALTHY tick still runs the normal path even mid-install: it clears the
+    // counters and sets `daemon_was_healthy`, which is exactly right when the
+    // daemon comes back before the guard drops, and skipping it would strand a
+    // stale `tray.daemon_quiet` notice with nothing left to observe the
+    // recovery that would clear it.
+    if staging && !now_healthy {
+        return HealthNoticeDecision {
+            attempt_restart: false,
+            notify_down: false,
+            notify_back: false,
+            reconcile_stale: false,
+        };
+    }
     // The 2nd consecutive failure is the "confirmed outage" edge — one miss is a
     // transient blip. Both the recovery attempt and the down-notice key off it,
     // but they diverge on `daemon_was_healthy`: recovery always fires (a
@@ -489,6 +537,111 @@ pub(super) async fn refresh_worklogs(pool: &SqlitePool, state: &Arc<Mutex<AppSta
 mod tests {
     use super::*;
 
+    /// The `staging` argument for every case that is not about an install.
+    /// Named rather than a bare `false`, so a call site reads as "no install in
+    /// progress" instead of an unexplained second boolean.
+    const NOT_STAGING: bool = false;
+
+    /// The install-in-progress suppression must hold BOTH outward actions, and
+    /// it must hold them together.
+    ///
+    /// `refresh_health` is the slow (30 s) half of the same interlock
+    /// [`super::watchdog::decide`] implements on the 5 s tick: while
+    /// `daemon_lifecycle::begin_staging` is held, the installer has deliberately
+    /// killed the daemon to overwrite its binary, and starting it back up
+    /// re-locks the file mid-swap and fails the install outright.
+    ///
+    /// Gating only `attempt_restart` would ALSO break the `notify_down` ⇒
+    /// `restart_result.is_some()` debug assert a few lines below the gate —
+    /// `restart_result` would be `None` while `notify_down` stayed true, so the
+    /// went-quiet notice would render the "tried starting it automatically"
+    /// copy for a restart that never happened. That invariant is asserted, not
+    /// merely documented, so the two lines have to move as a pair.
+    ///
+    /// Driven, not source-scanned: `staging` is a parameter of the pure
+    /// decision, so the suppression is reachable without an `AppHandle` or a
+    /// DB pool. The one thing still scanned is that `refresh_health` actually
+    /// passes the live flag - a decision that takes the right argument and is
+    /// always called with `false` is the failure this cannot otherwise see.
+    #[test]
+    fn an_install_in_progress_suppresses_both_the_restart_and_the_notice() {
+        // Second consecutive failure - the confirmed-outage edge, and the only
+        // tick on which either action would fire.
+        let (mut fails, mut was_healthy, mut reconciled) = (1, true, true);
+        let d = decide_health_notice(false, true, &mut fails, &mut was_healthy, &mut reconciled);
+        assert!(!d.attempt_restart, "restart raced the installer's swap");
+        assert!(
+            !d.notify_down,
+            "notified a went-quiet the installer caused - and a notice without a \
+             restart trips the `notify_down` => `restart_result.is_some()` assert"
+        );
+    }
+
+    /// **The reason the suppression skips the COUNT rather than the outputs.**
+    ///
+    /// `attempt_restart` fires only on `consecutive_health_failures == 2`, an
+    /// edge consumed the moment it is passed. Masking the outputs of that tick
+    /// still advances 1 → 2, so the next failure reaches 3 and the edge never
+    /// returns: a daemon the install left genuinely down would never be
+    /// recovered by this loop again - and `register_service` CAN report success
+    /// on Windows while `/Run` and the fallback spawn both failed to bring it
+    /// back.
+    #[test]
+    fn a_suppressed_outage_is_deferred_not_deleted() {
+        let (mut fails, mut was_healthy, mut reconciled) = (0, true, true);
+        // Two failed ticks during the install: neither acts, neither counts.
+        for _ in 0..2 {
+            let d =
+                decide_health_notice(false, true, &mut fails, &mut was_healthy, &mut reconciled);
+            assert!(!d.attempt_restart && !d.notify_down);
+        }
+        assert_eq!(fails, 0, "a suppressed tick still burned the one-shot edge");
+
+        // Guard drops, daemon is still down: the normal edge arrives intact.
+        let first =
+            decide_health_notice(false, false, &mut fails, &mut was_healthy, &mut reconciled);
+        assert!(!first.attempt_restart, "one miss is a blip, not an outage");
+        let second =
+            decide_health_notice(false, false, &mut fails, &mut was_healthy, &mut reconciled);
+        assert!(
+            second.attempt_restart && second.notify_down,
+            "the deferred outage never recovered - the install deleted it"
+        );
+    }
+
+    /// A HEALTHY tick mid-install takes the normal path, deliberately.
+    ///
+    /// Suppressing it too would strand a `tray.daemon_quiet` notice raised
+    /// before the install with nothing left to observe the recovery that clears
+    /// it - the same stale-notice bug `reconcile_stale` exists to close.
+    #[test]
+    fn a_healthy_tick_during_an_install_still_clears_the_counters() {
+        let (mut fails, mut was_healthy, mut reconciled) = (2, true, true);
+        let d = decide_health_notice(true, true, &mut fails, &mut was_healthy, &mut reconciled);
+        assert!(d.notify_back, "recovery went unannounced");
+        assert_eq!(fails, 0);
+    }
+
+    /// The wiring. `decide_health_notice` is pure, so every test above passes
+    /// just as well against a caller that hardcodes `false`.
+    ///
+    /// **Scans only the production half of the file.** `include_str!` on the
+    /// module a test lives in also pulls in that test's own body, so the needle
+    /// would match its own string literal and the assertion could never fail.
+    /// Truncating at the first `#[cfg(test)]` is what makes it load-bearing.
+    #[test]
+    fn refresh_health_passes_the_live_staging_flag() {
+        let whole = include_str!("refresh.rs");
+        let src = &whole[..whole
+            .find("#[cfg(test)]")
+            .expect("refresh.rs lost its test module marker")];
+        assert!(
+            src.contains("crate::daemon_lifecycle::is_staging(),"),
+            "refresh_health no longer passes the staging flag - its restart \
+             races the installer's binary swap, exactly as the watchdog's did"
+        );
+    }
+
     /// The exact bug this fix targets: a fresh tray process (all counters at
     /// their `AppState::default()` values) whose very first health check is
     /// already healthy — e.g. the daemon recovered from an overnight sleep
@@ -501,7 +654,13 @@ mod tests {
         let mut was_healthy = false;
         let mut reconciled = false;
 
-        let d = decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+        let d = decide_health_notice(
+            true,
+            NOT_STAGING,
+            &mut failures,
+            &mut was_healthy,
+            &mut reconciled,
+        );
 
         assert!(!d.attempt_restart, "a healthy tick must not restart");
         assert!(!d.notify_down);
@@ -523,8 +682,20 @@ mod tests {
         let mut was_healthy = false;
         let mut reconciled = false;
 
-        decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
-        let second = decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+        decide_health_notice(
+            true,
+            NOT_STAGING,
+            &mut failures,
+            &mut was_healthy,
+            &mut reconciled,
+        );
+        let second = decide_health_notice(
+            true,
+            NOT_STAGING,
+            &mut failures,
+            &mut was_healthy,
+            &mut reconciled,
+        );
 
         assert!(!second.reconcile_stale);
         assert!(!second.notify_back);
@@ -539,18 +710,33 @@ mod tests {
         let mut was_healthy = true; // already established healthy earlier
         let mut reconciled = true; // startup reconciliation already happened
 
-        let first_fail =
-            decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
+        let first_fail = decide_health_notice(
+            false,
+            NOT_STAGING,
+            &mut failures,
+            &mut was_healthy,
+            &mut reconciled,
+        );
         assert!(!first_fail.notify_down); // only 1 consecutive failure so far
         assert!(!first_fail.attempt_restart); // one blip is not yet an outage
 
-        let second_fail =
-            decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
+        let second_fail = decide_health_notice(
+            false,
+            NOT_STAGING,
+            &mut failures,
+            &mut was_healthy,
+            &mut reconciled,
+        );
         assert!(second_fail.notify_down); // 2nd consecutive failure
         assert!(second_fail.attempt_restart); // …and the recovery attempt fires with it
 
-        let recovered =
-            decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+        let recovered = decide_health_notice(
+            true,
+            NOT_STAGING,
+            &mut failures,
+            &mut was_healthy,
+            &mut reconciled,
+        );
         assert!(recovered.notify_back);
         assert!(!recovered.reconcile_stale);
         assert!(!recovered.attempt_restart);
@@ -569,14 +755,26 @@ mod tests {
         let mut was_healthy = false; // never seen healthy this session
         let mut reconciled = false;
 
-        let f1 = decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
+        let f1 = decide_health_notice(
+            false,
+            NOT_STAGING,
+            &mut failures,
+            &mut was_healthy,
+            &mut reconciled,
+        );
         assert!(
             !f1.attempt_restart,
             "one failure is a blip, not yet a restart"
         );
         assert!(!f1.notify_down);
 
-        let f2 = decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
+        let f2 = decide_health_notice(
+            false,
+            NOT_STAGING,
+            &mut failures,
+            &mut was_healthy,
+            &mut reconciled,
+        );
         assert!(
             f2.attempt_restart,
             "a cold-down daemon MUST be auto-restarted on the 2nd failure"
@@ -587,7 +785,13 @@ mod tests {
         );
 
         // It fires exactly once per episode — no restart loop while it stays down.
-        let f3 = decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
+        let f3 = decide_health_notice(
+            false,
+            NOT_STAGING,
+            &mut failures,
+            &mut was_healthy,
+            &mut reconciled,
+        );
         assert!(
             !f3.attempt_restart,
             "must not re-fire every subsequent failed tick"
@@ -607,20 +811,43 @@ mod tests {
         let mut was_healthy = false; // cold start — never healthy this session
         let mut reconciled = false;
 
-        decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled); // 1
-        let f2 = decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled); // 2
+        decide_health_notice(
+            false,
+            NOT_STAGING,
+            &mut failures,
+            &mut was_healthy,
+            &mut reconciled,
+        ); // 1
+        let f2 = decide_health_notice(
+            false,
+            NOT_STAGING,
+            &mut failures,
+            &mut was_healthy,
+            &mut reconciled,
+        ); // 2
         assert!(f2.attempt_restart, "restart attempted at the 2nd failure");
         assert!(
             !f2.notify_down,
             "cold start stays silent on the went-quiet notice"
         );
         // Daemon stays down (restart failed); the counter keeps climbing.
-        decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled); // 3
+        decide_health_notice(
+            false,
+            NOT_STAGING,
+            &mut failures,
+            &mut was_healthy,
+            &mut reconciled,
+        ); // 3
 
         // Recovery: notify_back must fire so the cold-start-failure notice
         // (raised with the same `tray.daemon_quiet` id) gets cleared.
-        let recovered =
-            decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+        let recovered = decide_health_notice(
+            true,
+            NOT_STAGING,
+            &mut failures,
+            &mut was_healthy,
+            &mut reconciled,
+        );
         assert!(
             recovered.notify_back,
             "recovery must clear the cold-start failure notice"
@@ -637,8 +864,20 @@ mod tests {
         let mut was_healthy = false;
         let mut reconciled = false;
 
-        let f1 = decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
-        let f2 = decide_health_notice(false, &mut failures, &mut was_healthy, &mut reconciled);
+        let f1 = decide_health_notice(
+            false,
+            NOT_STAGING,
+            &mut failures,
+            &mut was_healthy,
+            &mut reconciled,
+        );
+        let f2 = decide_health_notice(
+            false,
+            NOT_STAGING,
+            &mut failures,
+            &mut was_healthy,
+            &mut reconciled,
+        );
         assert!(!f1.notify_down);
         assert!(
             !f2.notify_down,
@@ -648,8 +887,13 @@ mod tests {
         // `cold_down_daemon_is_restarted_even_though_notice_stays_silent`).
         assert!(f2.attempt_restart);
 
-        let recovered =
-            decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+        let recovered = decide_health_notice(
+            true,
+            NOT_STAGING,
+            &mut failures,
+            &mut was_healthy,
+            &mut reconciled,
+        );
         assert!(recovered.notify_back);
         assert!(!recovered.reconcile_stale);
     }
@@ -703,7 +947,13 @@ mod tests {
         let mut failures = 0u32;
         let mut was_healthy = false;
         let mut reconciled = false;
-        let decision = decide_health_notice(true, &mut failures, &mut was_healthy, &mut reconciled);
+        let decision = decide_health_notice(
+            true,
+            NOT_STAGING,
+            &mut failures,
+            &mut was_healthy,
+            &mut reconciled,
+        );
         assert!(
             decision.reconcile_stale,
             "a fresh process's first healthy tick must trigger reconciliation"

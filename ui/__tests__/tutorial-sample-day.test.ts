@@ -407,6 +407,10 @@ describe('walkthrough structure', () => {
       // Beat 9 now exists only for the case that still needs an answer.
       expect(src).toContain("ai = 'connected-in-tour'")   // connected during the draft beat
       expect(src).toContain("ai = 'already-working'")     // set up before the tour began
+      // Read straight from part one. Part two deliberately runs NO second connect
+      // flow - the worklog beat names the model as the one "Draft with AI"
+      // already needed rather than setting up another - so this stays the single
+      // place a user who declined earlier is asked again.
       expect(src).toContain('if (ai === null) {')
       expect(at('if (ai === null) {')).toBeGreaterThan(at('── 9. AI ask'))
       // The claim itself is gone, not relocated.
@@ -418,7 +422,9 @@ describe('walkthrough structure', () => {
       // successfully, so the connect card never appears and the old flag stayed
       // false - and the beat told someone already set up to go and pick one.
       const beat9 = src.slice(at('── 9. AI ask'), at('── 10.'))
-      expect(beat9.indexOf('openSettings')).toBeGreaterThan(beat9.indexOf('if (ai === null) {'))
+      const gate = beat9.indexOf('if (ai === null) {')
+      expect(gate).toBeGreaterThan(-1)   // not merely "not -1 < something"
+      expect(beat9.indexOf('openSettings')).toBeGreaterThan(gate)
     })
   })
 })
@@ -1020,6 +1026,47 @@ describe('the walkthrough points at the way out', () => {
     // both driving one stage and taking turns writing the caption.
     expect(hook).toMatch(/const skipToDay = useCallback\(\(\) => \{\s*finish\(\)\s*replayFromDay\(\)/)
   })
+
+  it('SHIPS the replay control, unlike the pill above', () => {
+    // The two used to share `TOUR_DEV_TOOLS`, and the test above reads as though
+    // that gate protects both. It does not, and the difference is the whole
+    // point: the pill skips a COMPULSORY step and leaves a product that
+    // generates nothing, while a replay just runs the tour again from the top.
+    //
+    // Shipped because a packaged build has no other way in. The button was the
+    // only one, `window.__meridianTour()` needs an inspector, and the tray
+    // enables no `devtools` feature - so a release build had a walkthrough with
+    // no door. Pinned here because deleting a gate is a one-character change
+    // that nothing else would notice.
+    const account = readFileSync(new URL('../components/timeline/settings/AccountSection.tsx', import.meta.url), 'utf8')
+    expect(account).toContain('Show me around')
+    expect(account).not.toContain('{TOUR_DEV_TOOLS && (')
+
+    // Indentation is the assertion, not decoration: the row must sit at the same
+    // depth as the shipped "Re-run Setup" beside it. ANY re-gate - this flag or a
+    // new one - wraps it in a conditional and pushes it two spaces right, so this
+    // catches the class rather than the one variable name. (Checking for the
+    // absence of the word itself does not work: the comment above the row
+    // explains why the gate was removed, and says its name to do so.)
+    expect(account).toContain('\n        <FieldRow label="Replay the walkthrough"')
+
+    // And the pill it sits next to must STILL be gated, by the prop being null
+    // rather than by anything in this file.
+    expect(account).toContain('{onReplayTourFromDay && (')
+  })
+
+  it('does not promise a replay stays off the real timeline', () => {
+    // The copy said "shown over an example day, not your own". That describes
+    // part TWO. Part one runs against the real timeline (script.ts's "PART ONE -
+    // on the user's OWN, empty day"), asks for a real daily plan and drives the
+    // real integrations screen. Fine as a dev note, a false promise once shipped
+    // - so the sentence must not survive the ungate.
+    const account = readFileSync(new URL('../components/timeline/settings/AccountSection.tsx', import.meta.url), 'utf8')
+    const row = account.slice(account.indexOf('Replay the walkthrough'))
+    const desc = row.slice(0, row.indexOf('</FieldRow>'))
+    expect(desc).not.toContain('not your own')
+    expect(desc).not.toContain('Dev only')
+  })
 })
 
 describe('the first-run journey holds together on every branch', () => {
@@ -1154,9 +1201,16 @@ describe('the day replay - the timeline taught by building it', () => {
     expect(screen).toContain('data-tour="day-view"')
     // A ring that big cannot park a bubble beside it; the overlay has to fall
     // back to the top bar or the beat narrates off the bottom of the screen.
+    //
+    // The fallback condition is now named `unanchored` rather than repeated
+    // inline - the effect that publishes the bar's height to `ModalShell` has to
+    // agree with the render branch exactly, and two copies of a four-term
+    // boolean is how they stop agreeing. Asserted on the definition plus its use,
+    // which is the same guarantee the inline literal gave.
     const overlay = readFileSync(new URL('../components/tutorial/TutorialOverlay.tsx', import.meta.url), 'utf8')
     expect(overlay).toContain('{caption && !centered && ring && ringFits && (')
-    expect(overlay).toContain('{caption && !centered && !(ring && ringFits) && (')
+    expect(overlay).toContain('const unanchored = !!caption && !centered && !(ring && ringFits)')
+    expect(overlay).toContain('{unanchored && (')
   })
 
   it('parks the caption below its target, off the heading', () => {

@@ -9,6 +9,37 @@
 
 import { useEffect } from 'react'
 
+/** Viewport y where a panel's BODY begins, in px.
+ *
+ *  The outer flex is `items-start` with `p-6 sm:p-10`, so the panel starts 40px
+ *  down; the header is `py-5` (20+20) around one line of `mt-modal-title` plus a
+ *  1px rule, ending near 105. Everything below this line is content.
+ *
+ *  Only [`TOUR_BODY_PAD`] uses it, and only to answer "has the walkthrough's
+ *  narration bar reached my content yet". A rough value is fine — being a few px
+ *  pessimistic adds a few px of gap; being optimistic is the bug. */
+const BODY_TOP = 105
+
+/** Padding that keeps the body clear of the walkthrough's un-anchored narration
+ *  bar, which floats over the modal rather than inside it.
+ *
+ *  `--mer-tour-say-bottom` is published by `TutorialOverlay` while that bar is on
+ *  screen and is its bottom edge in viewport px; it is absent otherwise, so the
+ *  fallback is the normal padding and nothing changes outside the tour.
+ *
+ *  THE MODAL MOVES, NOT THE BAR. The bar sits at a fixed height chosen to clear
+ *  a modal's title row and ×, which it does — but the body starts only 28px
+ *  below that row, so the first heading was rendered underneath it (the AI-gate
+ *  step's "Do you have a Claude, ChatGPT or Cursor subscription?" vanished
+ *  entirely). Moving the bar was the obvious fix and is the wrong one: both
+ *  modals with un-anchored beats are `scrollInside` and can reach `maxHeight`
+ *  92%, leaving no room above or below to move it TO, and the bar and the panel
+ *  are both centred with overlapping max-widths so they collide by construction.
+ *
+ *  @param base padding this branch uses when the tour is not running. */
+const TOUR_BODY_PAD = (base: string) =>
+  `max(${base}, calc(var(--mer-tour-say-bottom, 0px) + 12px - ${BODY_TOP}px))`
+
 export function ModalShell({ title, onClose, children, maxWidth = 720, scrollInside = false, lock }: {
   title: string
   onClose: () => void
@@ -91,8 +122,8 @@ export function ModalShell({ title, onClose, children, maxWidth = 720, scrollIns
           </button>
         </div>
         {scrollInside
-          ? <div className="flex-1 min-h-0 flex flex-col">{children}</div>
-          : <div className="overflow-y-auto nice-scroll p-7">{children}</div>}
+          ? <div className="flex-1 min-h-0 flex flex-col" style={{ paddingTop: TOUR_BODY_PAD('0px') }}>{children}</div>
+          : <div className="overflow-y-auto nice-scroll px-7 pb-7" style={{ paddingTop: TOUR_BODY_PAD('1.75rem') }}>{children}</div>}
       </div>
     </div>
   )

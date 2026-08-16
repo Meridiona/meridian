@@ -600,11 +600,66 @@ const ALL_STEPS: StepMeta[] = [
 ]
 
 /** Platform-specific step list. On Windows the Permissions step is swapped for
- *  its notifications-only variant (same id, so the poll still fires); the count
- *  is unchanged. `n` is renumbered to position so the rail never shows a gap. */
-export function buildSteps(platform: string | null): StepMeta[] {
-  const steps = platform === 'windows'
-    ? ALL_STEPS.map((s) => (s.id === 'permissions' ? WINDOWS_NOTIFICATIONS_STEP : s))
+ *  its notifications-only variant (same id, so the poll still fires); `n` is
+ *  renumbered to position so the rail never shows a gap.
+ *
+ *  `notificationsGranted` is the ONE-SHOT precheck page.tsx runs before the user
+ *  leaves Welcome (not the live 2 s poll, which only runs while the step is
+ *  already on screen). When it is true on Windows the Alerts step is dropped
+ *  entirely: the whole step is a single optional toggle, and Windows enables
+ *  toast notifications for most apps by default, so the common case was a step
+ *  that opened already GRANTED with nothing to do but press Continue - an
+ *  onboarding screen asking for something it already has. macOS is deliberately
+ *  unaffected: its Permissions step also carries Accessibility and Screen
+ *  Recording, which capture genuinely cannot run without, so it always shows.
+ *
+ *  Dropping a step can leave a ONE-step wizard (sign-in only). That is fine and
+ *  is the intended shape - `page.tsx`'s footer keys "last step" off the list
+ *  length, so the single step correctly offers Open Dashboard. */
+export function buildSteps(platform: string | null, notificationsGranted: boolean): StepMeta[] {
+  const isWin = platform === 'windows'
+  const steps = isWin
+    ? ALL_STEPS.flatMap((s) => {
+        if (s.id !== 'permissions') return [s]
+        return notificationsGranted ? [] : [WINDOWS_NOTIFICATIONS_STEP]
+      })
     : ALL_STEPS
   return steps.map((s, i) => ({ ...s, n: String(i + 1).padStart(2, '0') }))
+}
+
+/** Resolve a saved step ID back to a position in the CURRENT step list.
+ *
+ *  `-1` means "no position to resume to" - the caller stays on Welcome.
+ *
+ *  A plain `findIndex` is right for the case the stored ID was designed
+ *  against: the list changes shape between BUILDS, an ID from an older one
+ *  matches nothing, and starting from the top is the honest answer because we
+ *  cannot know where that step used to sit.
+ *
+ *  It is wrong for the case `buildSteps` introduced. On Windows the Alerts step
+ *  is dropped when notifications are already granted - so a user who quits ON
+ *  that step, grants notifications in Windows Settings, and comes back has a
+ *  saved ID that names a step this build knows perfectly well and has simply
+ *  finished with. `findIndex` returns -1 for that too, and the wizard restarts
+ *  at Welcome: the one flow whose entire purpose is not to lose your place,
+ *  losing it at the exact moment the user did the thing it asked for.
+ *
+ *  So a KNOWN id that is absent resumes at the first surviving step after it -
+ *  which is what "you finished that one" means - and falls back to the last
+ *  step when nothing survives it, because a wizard with every remaining step
+ *  behind you is one whose footer should read Open Dashboard. An id this build
+ *  has never heard of keeps the old behaviour exactly. */
+export function resumeIndex(steps: StepMeta[], savedStepId: string): number {
+  if (steps.length === 0) return -1
+  const at = steps.findIndex((s) => s.id === savedStepId)
+  if (at >= 0) return at
+  // Search the FULL list, not the built one - that is the difference between
+  // "dropped from this run" and "never existed".
+  const wasAt = ALL_STEPS.findIndex((s) => s.id === savedStepId)
+  if (wasAt < 0) return -1
+  for (let i = wasAt + 1; i < ALL_STEPS.length; i++) {
+    const next = steps.findIndex((s) => s.id === ALL_STEPS[i].id)
+    if (next >= 0) return next
+  }
+  return steps.length - 1
 }

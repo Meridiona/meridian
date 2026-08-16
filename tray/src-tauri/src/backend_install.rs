@@ -529,6 +529,25 @@ async fn install(backend: &Path, home: &Path) -> Result<(), String> {
 
     let daemon_bin = home.join(".meridian").join("bin").join(DAEMON_FILE);
 
+    // HOLD THE STAGING WINDOW ACROSS stop → copy → register.
+    //
+    // The tray supervises the daemon as well as installing it, and until this
+    // guard existed the two halves raced: the stop below killed the daemon, the
+    // watchdog saw a silent endpoint ~10 s later and started it again from the
+    // very path being staged, and the stop's own poll then reported that new
+    // process as an un-killable holder of the binary. The full account is on
+    // [`crate::daemon_lifecycle::begin_staging`].
+    //
+    // Held past `stage_binary` and through `register_service` deliberately:
+    // registering is what legitimately brings the daemon back, and a watchdog
+    // start racing it would spawn a second one against the same DB.
+    //
+    // Not `cfg`-gated even though the lock hazard is Windows-only - the
+    // installer restarting the daemon while the watchdog independently decides
+    // to start it is a double-spawn on any platform, and a flag that exists on
+    // one OS only is the kind of asymmetry that rots.
+    let _staging = crate::daemon_lifecycle::begin_staging();
+
     // Windows keeps a running exe's pages mapped, so overwriting it fails with
     // "the process cannot access the file" (os error 32) — and this isn't just
     // a first-install concern: `ensure_backend_installed` re-stages on every
@@ -724,30 +743,7 @@ pub(crate) async fn stop_running_daemon_before_stage(daemon_bin: &Path) -> Resul
         .output()
         .await;
 
-    for pid in matching_daemon_pids(daemon_bin).await {
-        let out = tokio::process::Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
-            .no_window()
-            .output()
-            .await;
-        match out {
-            Ok(o) if o.status.success() => {
-                tracing::info!(pid, path = %daemon_bin.display(), "backend_install: stopped staged daemon process");
-            }
-            Ok(o) => {
-                tracing::warn!(
-                    pid,
-                    path = %daemon_bin.display(),
-                    status = %o.status,
-                    stderr = %String::from_utf8_lossy(&o.stderr).trim(),
-                    "backend_install: taskkill did not stop staged daemon process"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(pid, path = %daemon_bin.display(), error = %e, "backend_install: taskkill spawn failed");
-            }
-        }
-    }
+    kill_pids(&matching_daemon_pids(daemon_bin).await, daemon_bin).await;
 
     // Poll until the staged daemon's own processes are gone (the file handle
     // lingers briefly after the kill), then require an empty set — a still-alive
@@ -772,12 +768,37 @@ pub(crate) async fn stop_running_daemon_before_stage(daemon_bin: &Path) -> Resul
             }
             async move {
                 let pids = matching_daemon_pids(daemon_bin).await;
-                if emit && !pids.is_empty() {
-                    tracing::debug!(
-                        path = %daemon_bin.display(),
-                        remaining = pids.len(),
-                        "backend_install: still waiting for the previous daemon to exit"
-                    );
+                if !pids.is_empty() {
+                    if emit {
+                        tracing::debug!(
+                            path = %daemon_bin.display(),
+                            remaining = pids.len(),
+                            "backend_install: still waiting for the previous daemon to exit"
+                        );
+                    }
+                    // RE-KILL, don't just observe. The `taskkill` above ran once,
+                    // against the pid set as it stood before this poll began, so
+                    // anything that appeared afterwards was watched to the end of
+                    // the budget and then reported as an un-killable holder of the
+                    // binary — which is exactly how a daemon respawned two seconds
+                    // into the wait produced "still running after stop attempts".
+                    //
+                    // The staging guard in `install` is what stops the tray's own
+                    // watchdog doing that; this is the backstop for every spawner
+                    // it does not own — a second tray instance, the Startup-folder
+                    // launcher firing on a fast re-login, someone running the
+                    // daemon by hand. Re-killing a pid that is already dying is
+                    // harmless (`taskkill` just reports it gone), and the loop
+                    // still terminates on the same attempt budget.
+                    //
+                    // Kills the pids THIS probe just enumerated rather than
+                    // re-querying: `matching_daemon_pids` spawns a whole
+                    // `powershell -Command Get-CimInstance`, which costs far
+                    // more than the `taskkill`s it feeds. Re-querying here
+                    // would pay that twice on every one of the up-to-40
+                    // attempts, stretching the stop on exactly the slow,
+                    // loaded machines where this path is reached at all.
+                    kill_pids(&pids, daemon_bin).await;
                 }
                 pids
             }
@@ -798,6 +819,77 @@ pub(crate) async fn stop_running_daemon_before_stage(daemon_bin: &Path) -> Resul
         "staged daemon {} still running after stop attempts (pids: {remaining:?}) - cannot overwrite a locked binary",
         daemon_bin.display()
     ))
+}
+
+/// `taskkill /F` each of `pids`. `daemon_bin` is only for the log lines.
+///
+/// Takes an already-enumerated pid list rather than looking one up itself:
+/// both callers have just run [`matching_daemon_pids`], and that spawns an
+/// entire `powershell -Command Get-CimInstance`, which dwarfs the `taskkill`s
+/// it feeds. Re-querying inside here would pay it twice per poll attempt, up
+/// to 40 times, on precisely the loaded machines slow enough to reach the
+/// later attempts at all.
+///
+/// Killing by PID — not by `/IM` image name — is what keeps an unrelated
+/// `meridian.exe` (an interactive CLI run, a different tool sharing the image
+/// name) alive. Best-effort per pid: a failure is logged and the next one is
+/// still attempted, because the caller's post-kill poll is what actually
+/// decides whether the stop succeeded.
+///
+/// Called both before the wait and on every probe inside it — see the re-kill
+/// note in [`stop_running_daemon_before_stage`].
+#[cfg(target_os = "windows")]
+async fn kill_pids(pids: &[u32], daemon_bin: &Path) {
+    // Imported in-body rather than at module scope: this fn is
+    // `cfg(target_os = "windows")` and the trait has no other user here, so a
+    // top-level `use` would be an unused import on macOS - which is a hard
+    // error under `-D warnings`, from a file the macOS build otherwise
+    // compiles fine.
+    use tracing::Instrument;
+    for &pid in pids {
+        // One span PER PID rather than one for the loop: this runs on the
+        // update path, where the interesting question is never "did the stop
+        // work" but "which of these processes refused to die" - and a failure
+        // here is what surfaces later as "cannot overwrite a locked binary",
+        // several steps removed from its cause.
+        async {
+            let out = tokio::process::Command::new("taskkill")
+                .args(["/F", "/PID", &pid.to_string()])
+                .no_window()
+                .output()
+                .await;
+            let s = tracing::Span::current();
+            match out {
+                Ok(o) if o.status.success() => {
+                    tracing::info!(pid, path = %daemon_bin.display(), "backend_install: stopped staged daemon process");
+                }
+                Ok(o) => {
+                    // Span status, not only the log line: the ship leg is
+                    // error-only, so a WARN with no ERROR span is the shape
+                    // that reaches central OO stripped of the context needed
+                    // to act on it.
+                    s.record("otel.status_code", "ERROR");
+                    tracing::warn!(
+                        pid,
+                        path = %daemon_bin.display(),
+                        status = %o.status,
+                        stderr = %String::from_utf8_lossy(&o.stderr).trim(),
+                        "backend_install: taskkill did not stop staged daemon process"
+                    );
+                }
+                Err(e) => {
+                    s.record("otel.status_code", "ERROR");
+                    tracing::warn!(pid, path = %daemon_bin.display(), error = %e, "backend_install: taskkill spawn failed");
+                }
+            }
+        }
+        .instrument(tracing::debug_span!(
+            "backend_install.taskkill",
+            pid,
+            otel.status_code = tracing::field::Empty,
+        ))
+        .await;
+    }
 }
 
 /// PIDs of running processes whose executable is exactly the staged daemon

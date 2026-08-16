@@ -12,12 +12,24 @@
 // one workstream) or had no tracked work at all, so a six-ticket plan could render
 // four rows. Keying by ticket makes the plan portion count-exact by construction.
 //
-// A ticket's ROW still shows the WORK, not the ticket's own wording: the first
+// A ticket's ROW still shows the WORK, not the ticket's own wording: the longest
 // workstream behind it (`PlanVerdict.day_task_ids`, the join `day_evidence::
 // adherence` already settled) supplies the title and the click-through to the
 // worklog flow. Only a ticket with no tied workstream falls back to its own name and
 // opens the ticket instead - there is no worklog to write for work that did not
 // happen.
+//
+// EVERY ROW WITH WORK BEHIND IT OPENS THAT WORK'S DRAFT. This paragraph described
+// the behaviour for a while before the code did: the rows were built with no click
+// handler at all, so the finished half of the day - the rows whose worklogs are
+// waiting to be edited, approved and posted - did nothing when clicked, while the
+// untouched tickets, which have nothing to file, were the only ones that led
+// anywhere. The draft flow itself was never missing; `SummaryTaskView` has always
+// had generate / edit / approve / retarget / post, reached from the off-plan rows
+// through the same `onSelect`. The plan block simply had no entry point into it.
+// `drafts` reaches these rows for the same reason, so DRAFT READY TO POST shows on a
+// committed ticket and not only on unplanned work. See
+// `__tests__/summary-plan-row-drafts.test.ts`.
 //
 // WHY OFF-PLAN WORK GETS ITS OWN HEADED BLOCK rather than an inline chip on a row.
 // A real day contains work nobody planned, and a summary that quietly folds it into
@@ -25,7 +37,8 @@
 // about and cannot account for. Under its own heading it is also the only honest
 // place to show the second worklog outcome: these strands matched no planned ticket,
 // so Meridian drafts a NEW one rather than forcing them onto the nearest half-match.
-// That is what the sub-line on each row says, and it is why the rows are clickable.
+// That is what the sub-line on each row says. (Being clickable is no longer what
+// distinguishes them - both blocks now open a draft; the heading is.)
 //
 // NO SUB-FLOOR TAIL. The 30-minute floor (`TASK_MIN_MINUTES`) still decides what is
 // a thing you did rather than a detour, but the remainder is no longer stated as a
@@ -60,6 +73,33 @@ export function splitAtFloor(tasks: DayTask[]): { shown: DayTask[]; tailMinutes:
   return { shown, tailMinutes }
 }
 
+/** The workstream a planned ticket's row stands for, or `undefined` when the ticket
+ *  has no tracked work at all.
+ *
+ *  A `PlanVerdict` can name SEVERAL workstreams (`day_task_ids`) - one ticket advanced
+ *  by more than one strand of the day - while a worklog draft belongs to a single
+ *  strand. The row therefore has to choose, and it chooses the LONGEST: that is the
+ *  strand the row's own displayed duration mostly consists of, so its draft is the one
+ *  a reader expects to open. Picking the first id instead would hand the click to
+ *  whichever strand the adherence join happened to emit first, which is arbitrary and
+ *  silently so.
+ *
+ *  Ids with no matching task are skipped rather than treated as empty - a verdict can
+ *  reference a strand that fell below the day's floor and is not in `tasks` at all.
+ *
+ *  Exported for the test that pins the longest-wins rule; nothing else calls it. */
+export function pickPrimary(
+  v: Pick<PlanVerdict, 'day_task_ids'>,
+  byId: Map<string, DayTask>,
+): DayTask | undefined {
+  let best: DayTask | undefined
+  for (const id of v.day_task_ids) {
+    const t = byId.get(id)
+    if (t && (!best || t.minutes > best.minutes)) best = t
+  }
+  return best
+}
+
 /** A block heading inside the list panel. */
 function BlockLabel({ children }: { children: React.ReactNode }) {
   return (
@@ -67,18 +107,38 @@ function BlockLabel({ children }: { children: React.ReactNode }) {
   )
 }
 
-/** One planned ticket. NOT a button: the plan rows are read, not opened - the row
- *  that leads somewhere is an off-plan one, which is the row with a decision still
- *  attached to it. A ticket nobody touched is the exception, and opens the ticket. */
-function PlanRow({ title, sub, ticket, done, delay, onClick }: {
+/** One planned ticket.
+ *
+ *  EVERY row with work behind it opens that work's worklog draft; a ticket nobody
+ *  touched opens the ticket instead. Both are buttons - the only rows that are not
+ *  are the ones with genuinely nowhere to go.
+ *
+ *  This used to be the opposite ("the plan rows are read, not opened"), which put the
+ *  finished half of the day out of reach: a row reading `Done · 1h 34m` is exactly the
+ *  work whose worklog is waiting to be edited, approved and posted, and clicking it
+ *  did nothing at all. The rest of the file already described the behaviour restored
+ *  here - the header has said the row supplies "the click-through to the worklog flow"
+ *  since this component was written - so the code was the half that disagreed.
+ *
+ *  `badge` reaches the plan rows for the same reason: `DRAFT READY TO POST` on the
+ *  ticket you committed to is the single most actionable thing in the panel, and it
+ *  was rendering only under "not on the plan". */
+function PlanRow({ title, sub, ticket, done, delay, onClick, badge }: {
   title: string
   sub: string
   ticket: string
   done: boolean
   delay: number
   onClick?: () => void
+  badge?: DraftBadge
 }) {
   const reduce = useReducedMotion()
+  const chip = draftBadge(badge)
+  const stale = staleNote(badge)
+  // Same rule as `OffPlanRow`: only a draft that is an ASK tints its row. A ticket
+  // that is done and filed is a receipt, and shouting at someone about work they
+  // have already posted is how a badge stops being read.
+  const waiting = !!chip?.loud
   const body = (
     <>
       <span
@@ -103,7 +163,25 @@ function PlanRow({ title, sub, ticket, done, delay, onClick }: {
         >
           {title}
         </span>
-        <span className="block truncate" style={{ fontSize: 11, color: 'var(--t-faint)' }}>{sub}</span>
+        <span className="flex items-center gap-1.5 flex-wrap" style={{ fontSize: 11, color: 'var(--t-faint)' }}>
+          <span className="truncate">{sub}</span>
+          {chip && (
+            <>
+              <span aria-hidden>·</span>
+              <span
+                className="px-1.5 py-px rounded"
+                style={{
+                  fontSize: 9.5, fontWeight: 800, letterSpacing: '0.06em',
+                  color: chip.tone,
+                  background: `color-mix(in srgb, ${chip.tone} 15%, transparent)`,
+                }}
+              >
+                {chip.label}
+              </span>
+            </>
+          )}
+          {stale && <><span aria-hidden>·</span><span>{stale}</span></>}
+        </span>
       </span>
       <span className="shrink-0" style={{ fontSize: 11, color: 'var(--t-faint)' }}>{ticket}</span>
     </>
@@ -117,13 +195,26 @@ function PlanRow({ title, sub, ticket, done, delay, onClick }: {
       {onClick ? (
         <button
           onClick={onClick}
-          className="w-full flex items-center gap-2.5 rounded-lg px-2 py-2 text-left hover:opacity-80"
-          style={{ background: 'transparent', border: 'none', cursor: 'pointer' }}
+          className="w-full flex items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-shadow hover:shadow-[0_1px_6px_-2px_rgba(0,0,0,0.18)]"
+          style={{
+            cursor: 'pointer',
+            background: waiting
+              ? `color-mix(in srgb, ${chip.tone} 7%, transparent)`
+              : 'transparent',
+            border: waiting
+              ? `1px solid color-mix(in srgb, ${chip.tone} 26%, transparent)`
+              : '1px solid transparent',
+          }}
         >
           {body}
         </button>
       ) : (
-        <div className="flex items-center gap-2.5 rounded-lg px-2 py-2 text-left">{body}</div>
+        <div
+          className="flex items-center gap-2.5 rounded-lg px-2 py-2 text-left"
+          style={{ border: '1px solid transparent' }}
+        >
+          {body}
+        </div>
       )}
     </motion.li>
   )
@@ -315,11 +406,19 @@ export function WorkList({ tasks, plan, planned, onSelect, onOpenTask, drafts, d
       <BlockLabel>TODAY&apos;S PLAN</BlockLabel>
       <ul className="flex flex-col gap-1">
         {plan.map((v, n) => {
-          // The first real workstream behind this ticket, if any. Its title is what
-          // the person actually did, which reads better than the ticket's own name.
-          // A ticket with no tied workstream (not touched, or closed with nothing
-          // logged) falls back to its own title and opens the ticket instead.
-          const primary = v.day_task_ids.map(id => byId.get(id)).find(Boolean)
+          // The workstream this row stands for. Its title is what the person actually
+          // did, which reads better than the ticket's own name, and it is what the row
+          // opens. A ticket with no tied workstream (not touched, or closed with
+          // nothing logged) falls back to its own title and opens the ticket instead.
+          //
+          // WHICH workstream, when a ticket has several: the LONGEST. `day_task_ids`
+          // is a list - one ticket can be advanced by several strands - and drafts are
+          // per strand, so a row that opens "the first one" opens whichever the join
+          // happened to emit first. The biggest strand is the one whose draft the row's
+          // own duration mostly describes, so it is the honest single destination.
+          // Reaching the smaller strands is what the timeline is for; a row that opens
+          // the wrong draft would be worse than today's row that opens nothing.
+          const primary = pickPrimary(v, byId)
           const done = v.outcome === 'done'
           return (
             <PlanRow
@@ -339,9 +438,16 @@ export function WorkList({ tasks, plan, planned, onSelect, onOpenTask, drafts, d
               ticket={v.task_key}
               done={done}
               delay={delay + 0.04 * n}
-              // Only the untouched tickets lead anywhere, and they lead to the
-              // ticket: there is no worklog to write for work that did not happen.
-              onClick={primary ? undefined : () => onOpenTask(v.task_key, v.title)}
+              badge={primary ? drafts?.get(primary.id) : undefined}
+              // Work behind it -> that work's worklog draft, the same destination and
+              // the same `onSelect` the off-plan rows use. Nothing behind it -> the
+              // ticket, because there is no worklog to write for work that did not
+              // happen.
+              onClick={
+                primary
+                  ? () => onSelect(primary, tasks.indexOf(primary))
+                  : () => onOpenTask(v.task_key, v.title)
+              }
             />
           )
         })}

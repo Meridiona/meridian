@@ -134,6 +134,14 @@ pub(crate) struct Inputs {
     /// daemon that "will not come back" - about a daemon the user switched off
     /// on purpose.
     pub daemon_paused: bool,
+    /// Whether the installer is mid-swap of the daemon binary
+    /// ([`crate::daemon_lifecycle::is_staging`]).
+    ///
+    /// Like `daemon_paused`, the daemon is down *by instruction* — the
+    /// installer killed it so it could overwrite the file, and starting it back
+    /// up re-locks the very binary being written. Unlike a pause it lasts
+    /// seconds, not until the user says otherwise.
+    pub staging_in_progress: bool,
 }
 
 /// The whole watchdog policy, as one pure function.
@@ -152,8 +160,9 @@ pub(crate) struct Inputs {
 /// 5. storm cap reached → [`Action::GiveUp`]
 /// 6. otherwise → [`Action::Start`]
 ///
-/// Rule 0 sits above all of them: a daemon the user paused is off *by
-/// instruction*, and no evidence this loop can gather outranks that.
+/// Rule 0 sits above all of them: a daemon that is down *by instruction* — the
+/// user paused it, or the installer is replacing its binary — stays down, and
+/// no evidence this loop can gather outranks that.
 pub(crate) fn decide(i: Inputs) -> Action {
     // Ahead of the endpoint check, and ahead of the storm cap, on purpose.
     // Pause `bootout`s the agent, so a paused daemon presents exactly as a
@@ -161,6 +170,19 @@ pub(crate) fn decide(i: Inputs) -> Action {
     // from, and rule 5 would eventually escalate it to a user-visible "gave
     // up" notice. Returning here is what keeps `Pause` meaning something.
     if i.daemon_paused {
+        return Action::Wait;
+    }
+    // Same shape, different instruction: the installer stopped the daemon so it
+    // could overwrite `~/.meridian/bin/meridian.exe`, and a silent endpoint is
+    // the INTENDED state for those few seconds. Starting it here re-locks the
+    // binary mid-swap and fails the install outright - see
+    // [`crate::daemon_lifecycle::begin_staging`] for the incident this closes.
+    //
+    // It must sit above the `process_alive` guard, not below it: that guard is
+    // `None` on Windows (`daemon_control::process_alive`), which `decide`
+    // treats as non-blocking, so on the one platform where this race actually
+    // occurs there is nothing further down that would stop it.
+    if i.staging_in_progress {
         return Action::Wait;
     }
     if i.probe_ok {
@@ -216,6 +238,9 @@ pub async fn run_daemon_watchdog() {
 
         // Read fresh each tick, so a pause or resume takes effect on the next.
         let paused = crate::daemon_lifecycle::is_paused();
+        // Likewise fresh: the staging window opens and closes inside a single
+        // install, so a value cached across ticks would be wrong for most of it.
+        let staging = crate::daemon_lifecycle::is_staging();
 
         let probe_ok = crate::commands::daemon_control::probe().await.running;
         if probe_ok {
@@ -239,8 +264,16 @@ pub async fn run_daemon_watchdog() {
         // paused [`decide`] returns before it reads `process_alive`, so asking
         // would only fork `launchctl` every 5 s for an answer that cannot
         // change the verdict.
-        let could_start =
-            !paused && !probe_ok && consecutive_failures >= STRIKES && !in_cooldown && !gave_up;
+        // `!staging` joins this set for the same reason as `!paused`: while it
+        // is set `decide` returns before it reads `process_alive`, so asking
+        // would only fork a subprocess for an answer that cannot change the
+        // verdict.
+        let could_start = !paused
+            && !staging
+            && !probe_ok
+            && consecutive_failures >= STRIKES
+            && !in_cooldown
+            && !gave_up;
         let process_alive = if could_start {
             daemon_process_alive().await
         } else {
@@ -254,6 +287,7 @@ pub async fn run_daemon_watchdog() {
             starts_in_window,
             in_cooldown,
             daemon_paused: paused,
+            staging_in_progress: staging,
         });
 
         match action {
@@ -269,6 +303,35 @@ pub async fn run_daemon_watchdog() {
                 }
             }
             Action::Start => {
+                // RE-READ the flag at the last instant before acting.
+                //
+                // `decide` was handed a value sampled at the top of this tick,
+                // and between then and here the loop has awaited a socket probe
+                // and, on the path that reaches `Start`, forked a subprocess for
+                // the liveness check - hundreds of milliseconds during which an
+                // install can begin. That is a check-then-act window on the one
+                // decision that must not be wrong, and it is invisible from
+                // `decide`, which is pure and cannot know its input went stale.
+                //
+                // A re-read rather than [`crate::daemon_lifecycle::LIFECYCLE`]:
+                // the mutex would serialise properly, but the watchdog would
+                // then block for the length of an install and start the daemon
+                // the instant it was released, and a 5 s-budgeted `stop_for_quit`
+                // would queue behind the same install. The reasoning is recorded
+                // on `begin_staging`; this closes the window that reasoning left
+                // open rather than reversing it.
+                //
+                // Not airtight, and deliberately so: `begin_staging` can still
+                // land during `start_if_stopped` itself. The installer's own
+                // re-kill loop (`stop_running_daemon_before_stage`) is the
+                // backstop for that residue - it kills anything that appears
+                // mid-wait, which is exactly what this would be.
+                if crate::daemon_lifecycle::is_staging() {
+                    tracing::debug!(
+                        "daemon watchdog: install started during this tick - standing down"
+                    );
+                    continue;
+                }
                 async {
                     tracing::info!("daemon watchdog: daemon not running, starting it");
                     if let Err(e) = crate::commands::daemon_control::start_if_stopped().await {
@@ -316,7 +379,129 @@ mod tests {
             starts_in_window: 0,
             in_cooldown: false,
             daemon_paused: false,
+            staging_in_progress: false,
         }
+    }
+
+    /// **The regression test for the broken-Windows-update incident.**
+    ///
+    /// The installer kills the daemon to overwrite `meridian.exe`, which takes
+    /// long enough for this loop to strike out and start it again — from the
+    /// very path being staged. The installer's post-kill poll then reported
+    /// that process as an un-killable holder of the binary and failed the whole
+    /// install ("still running after stop attempts"), so every Windows update
+    /// after the first install died here.
+    ///
+    /// `silent_endpoint()` is deliberately the base: `process_alive: None` is
+    /// the Windows reality (`daemon_control::process_alive`), and `decide`
+    /// treats `None` as non-blocking — so on the one platform where this race
+    /// happens, this rule is the ONLY thing standing between the watchdog and
+    /// the installer.
+    #[test]
+    fn a_daemon_the_installer_stopped_is_never_started() {
+        let staging = Inputs {
+            staging_in_progress: true,
+            ..silent_endpoint()
+        };
+        // The control: without the flag this exact input starts the daemon,
+        // which is what made the race possible. So the assertion below is
+        // testing the rule and not some other guard that happens to cover it.
+        assert_eq!(
+            decide(silent_endpoint()),
+            Action::Start,
+            "sanity: a silent endpoint with no liveness answer does start"
+        );
+        assert_eq!(
+            decide(staging),
+            Action::Wait,
+            "starting the daemon mid-swap re-locks the binary and fails the install"
+        );
+
+        // A long install must not wear the rule down - staging outranks the
+        // failure count, the cooldown, and the storm cap alike. Every one of
+        // these reaches a verdict AFTER the staging check, so if the rule is
+        // ever moved below them this fails.
+        for extra in [
+            Inputs {
+                consecutive_failures: 1_000,
+                ..staging
+            },
+            Inputs {
+                in_cooldown: true,
+                ..staging
+            },
+            Inputs {
+                starts_in_window: MAX_STARTS_IN_WINDOW,
+                ..staging
+            },
+            Inputs {
+                process_alive: Some(false),
+                ..staging
+            },
+        ] {
+            assert_eq!(
+                decide(extra),
+                Action::Wait,
+                "no amount of downtime turns an install-held daemon into an outage"
+            );
+        }
+    }
+
+    /// The half `decide` structurally cannot cover: the flag going true AFTER
+    /// its input was sampled.
+    ///
+    /// `decide` is pure, so it can only ever judge a snapshot. The loop takes
+    /// that snapshot at the top of the tick and then awaits a socket probe,
+    /// plus (on exactly the path that reaches `Start`) a forked subprocess for
+    /// the liveness check - ample time for an install to begin. A verdict of
+    /// `Start` computed before `begin_staging` is therefore not evidence that
+    /// starting is still safe, and nothing inside `decide` can tell.
+    ///
+    /// Source-scanned because the window is between two awaits in
+    /// `run_daemon_watchdog`, which polls a real socket forever - there is no
+    /// seam to drive it through. Truncated at the first `#[cfg(test)]` so the
+    /// needles cannot match their own literals in this module.
+    #[test]
+    fn the_start_arm_re_reads_the_flag_before_acting() {
+        let whole = include_str!("watchdog.rs");
+        let src = &whole[..whole
+            .find("#[cfg(test)]")
+            .expect("watchdog.rs lost its test module marker")];
+        let arm = src
+            .split_once("Action::Start => {")
+            .expect("the Start arm is gone")
+            .1;
+        let arm = &arm[..arm.find("Action::GiveUp").unwrap_or(arm.len())];
+        assert!(
+            arm.contains("if crate::daemon_lifecycle::is_staging() {"),
+            "the Start arm acts on a staging value sampled before two awaits - \
+             an install that begins mid-tick starts the daemon it just killed"
+        );
+        // Standing down must SKIP the start, not merely log before it.
+        let gate = arm
+            .split_once("if crate::daemon_lifecycle::is_staging() {")
+            .expect("gate")
+            .1;
+        let gate = &gate[..gate.find("start_if_stopped").unwrap_or(gate.len())];
+        assert!(
+            gate.contains("continue;"),
+            "the re-read does not skip the start, so it only narrates the race"
+        );
+    }
+
+    /// Staging is a few seconds inside one install, so the rule must not
+    /// outlive it — a flag that stuck would leave the machine with no
+    /// supervisor at all on Windows, which is a worse failure than the one it
+    /// was added to fix (there, this loop IS the KeepAlive).
+    #[test]
+    fn the_backstop_returns_the_moment_staging_ends() {
+        assert_eq!(
+            decide(Inputs {
+                staging_in_progress: false,
+                ..silent_endpoint()
+            }),
+            Action::Start
+        );
     }
 
     /// **The regression test for the corruption incident.**
@@ -378,6 +563,7 @@ mod tests {
                 starts_in_window: MAX_STARTS_IN_WINDOW + 1,
                 in_cooldown: false,
                 daemon_paused: false,
+                staging_in_progress: false,
             }),
             Action::Wait
         );

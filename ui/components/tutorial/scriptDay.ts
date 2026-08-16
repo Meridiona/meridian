@@ -222,48 +222,106 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
     s.spotlight(null)
     await s.appeared('[data-tour="wl-generate"]', 4000)
     await s.pause(400)
+    // NAMES THE MODEL AS THE ONE THEY ALREADY CONNECTED. Part one had them press
+    // "Draft with AI" on their own task, and that button raises the same connect
+    // card and runs the same provider - so by the time this beat is reached the
+    // requirement has been met, once, at the moment it first mattered. Saying so
+    // is worth a clause: without it this reads as a second, separate AI feature,
+    // and a user who found connecting one a chore braces for another round of it.
+    s.say('Same AI that drafted your task this morning - now on a whole afternoon of work.')
     s.spotlight('[data-tour="wl-generate"]')
     await s.point('[data-tour="wl-generate"]')
     await s.waitForClick('[data-tour="wl-generate"]', 120000)
     s.spotlight(null)
-    s.say('Reading the work, comparing it against the tasks you planned this morning, writing the update.')
-    await s.appeared('[data-tour="draft-targets"]', 12000)
-    await s.pause(600)
 
-    // 5a. THE MATCH, WITH ITS NUMBER SHOWING. The confidence is the honest part:
-    // it says the model made a judgement rather than looked something up, which
-    // is what makes the override in the next line make sense.
-    s.spotlight('[data-tour="draft-targets"]')
-    await s.next('It matched this to a ticket on today\'s plan - 90%')
-    s.spotlight(null)
-    // NO BEAT ON THE RE-MATCH CONTROL. It used to ring it here and explain that
-    // the call is always yours - a good sentence about the wrong moment. The
-    // match on screen is a strong one the tour has just called out at 90%, so
-    // "matched the wrong one?" answers a doubt nobody watching this has, and it
-    // puts a detour in front of the only thing this stretch is here to land:
-    // approve, and it posts. The override is one visible control away for anyone
-    // who ever needs it, and beat 7 teaches picking a target properly - on the
-    // off-plan task, where the choice is real.
+    // 5-i. …unless there is no model, in which case the press returns the
+    // product's own "Connect an AI provider" card instead of a draft. The
+    // scripted worklog no longer bypasses that check (see `WorklogDraftDialog`),
+    // so what is on screen here is the truth rather than a demo of it.
+    //
+    // NO SECOND CONNECT DETOUR, and this is the correction worth recording. An
+    // earlier version of this beat ran the full flow again from here: ring the
+    // card, open Settings, pick a provider, come back, re-open the draft,
+    // re-press Generate. That duplicated a flow the tour already has. "Draft
+    // with AI" in part one needs the SAME provider, raises the SAME connect card
+    // (`ai-connect`), and already walks the user through picking one - and it
+    // happens first, on their own task, at the moment the requirement first
+    // means anything. Running it twice teaches that these are two separate AI
+    // features with two setups, which is the opposite of true.
+    //
+    // So the requirement is introduced where it is first hit, and this beat only
+    // has to be honest about what it is looking at. Reaching here blocked means
+    // they declined it in part one, or never opened the planner at all - asking
+    // a second time three beats later is nagging, and the closing beat asks
+    // once more anyway.
+    //
+    // ARMED ON THE CARD APPEARING, never on a flag. Predicting from what part one
+    // observed strands the tour on both sides: a wait for a card that never came,
+    // or a silent skip past one that did. It also means a failed health probe
+    // needs no special case - the dialog generates anyway, no card appears, and
+    // this whole block is skipped.
+    //
+    // WAITS FOR EITHER OUTCOME, then asks which. Both hang off the same health
+    // read, so a fixed window sized for the card would park that many silent
+    // seconds in front of every user who IS set up - and if their draft landed
+    // inside it, the next line ("reading the work, writing the update") would
+    // narrate work that had already finished.
+    await s.appeared('[data-tour="wl-connect-provider"], [data-tour="draft-targets"]', 15000)
+    // Zero-ish: a "which one is on screen right now" probe, not a wait.
+    const blocked = await s.appeared('[data-tour="wl-connect-provider"]', 250)
 
-    // 5b. Approve, then confirm. TWO presses, deliberately: this is the one place
-    // work leaves Meridian and lands somewhere other people can see it.
-    s.say('Nothing leaves Meridian until you approve it. Send this one.')
-    s.spotlight('[data-tour="wl-approve"]')
-    await s.point('[data-tour="wl-approve"]')
-    await s.waitForClick('[data-tour="wl-approve"]', 120000)
-    s.spotlight(null)
-    await s.pause(500)
-    s.say('It names the ticket before it posts, every time.')
-    s.spotlight('[data-tour="wl-confirm"]')
-    await s.point('[data-tour="wl-confirm"]')
-    await s.waitForClick('[data-tour="wl-confirm"]', 120000)
-    s.spotlight(null)
-    await s.appeared('[data-tour="wl-posted"]', 8000)
-    await s.pause(600)
-    // AND IT SAYS THE POST WAS FAKE. Left unsaid, the tick is a lie the user
-    // finds out about by opening their board - exactly the moment the product
-    // most needs to have been straight with them.
-    await s.next('Posted to the ticket, without opening your board. Example day, so nothing really went out.')
+    // EVERYTHING FROM HERE DESCRIBES A DRAFT, so it runs only when there is one.
+    // Narrating "reading the work, comparing it against the tasks you planned"
+    // over a card saying the opposite is the single most confusing thing a
+    // walkthrough can do - and it would then stall 12s waiting for targets that
+    // never arrive, and describe a 90% match nobody can see.
+    if (!blocked) {
+      s.say('Reading the work, comparing it against the tasks you planned this morning, writing the update.')
+      await s.appeared('[data-tour="draft-targets"]', 12000)
+      await s.pause(600)
+
+      // 5a. THE MATCH, WITH ITS NUMBER SHOWING. The confidence is the honest part:
+      // it says the model made a judgement rather than looked something up, which
+      // is what makes the override in the next line make sense.
+      s.spotlight('[data-tour="draft-targets"]')
+      await s.next('It matched this to a ticket on today\'s plan - 90%')
+      s.spotlight(null)
+      // NO BEAT ON THE RE-MATCH CONTROL. It used to ring it here and explain that
+      // the call is always yours - a good sentence about the wrong moment. The
+      // match on screen is a strong one the tour has just called out at 90%, so
+      // "matched the wrong one?" answers a doubt nobody watching this has, and it
+      // puts a detour in front of the only thing this stretch is here to land:
+      // approve, and it posts. The override is one visible control away for anyone
+      // who ever needs it, and beat 7 teaches picking a target properly - on the
+      // off-plan task, where the choice is real.
+
+      // 5b. Approve, then confirm. TWO presses, deliberately: this is the one place
+      // work leaves Meridian and lands somewhere other people can see it.
+      s.say('Nothing leaves Meridian until you approve it. Send this one.')
+      s.spotlight('[data-tour="wl-approve"]')
+      await s.point('[data-tour="wl-approve"]')
+      await s.waitForClick('[data-tour="wl-approve"]', 120000)
+      s.spotlight(null)
+      await s.pause(500)
+      s.say('It names the ticket before it posts, every time.')
+      s.spotlight('[data-tour="wl-confirm"]')
+      await s.point('[data-tour="wl-confirm"]')
+      await s.waitForClick('[data-tour="wl-confirm"]', 120000)
+      s.spotlight(null)
+      await s.appeared('[data-tour="wl-posted"]', 8000)
+      await s.pause(600)
+      // AND IT SAYS THE POST WAS FAKE. Left unsaid, the tick is a lie the user
+      // finds out about by opening their board - exactly the moment the product
+      // most needs to have been straight with them.
+      await s.next('Posted to the ticket, without opening your board. Example day, so nothing really went out.')
+    } else {
+      // No model. Said plainly, tied back to the button they already met, and
+      // moved past - the rest of the tour does not need a draft, and stopping to
+      // press the point on someone who has already declined it once is what
+      // makes them close the window. Nothing here touches `ctx.ai`, so the
+      // closing beat asks once more - the right number of times.
+      await s.next('This needs the same AI as "Draft with AI" earlier, and there is none connected yet. Set one up and this is two presses - ask, then approve.')
+    }
   } else {
     await s.next('Connect a board and it writes the ticket update too - matched, and posted once you approve.')
   }
@@ -398,13 +456,18 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   await s.point('[data-tour="wl-confirm"]')
   await s.waitForClick('[data-tour="wl-confirm"]', 120000)
   s.spotlight(null)
-  // STRAIGHT ON THE POSTED STATE. `appeared` returns the frame the posted bar
-  // renders, and the pause after it was 600ms of nothing on a screen the user
-  // has already read - they pressed the button, they are waiting to be told it
-  // worked. The scripted post itself was the other half of the wait; see
-  // `TutorialSummaryCard`.
+  // STRAIGHT ON THE POSTED STATE, with NOTHING after `appeared`. It polls per
+  // animation frame, so it returns the frame the posted bar renders and the new
+  // caption lands with it.
+  //
+  // Every ms added here is spent on a screen the user has already finished
+  // reading: they pressed Approve, they watched the bar flip to posted, and the
+  // beat still up says "nothing leaves Meridian until you approve it" - which
+  // they just did. This was 600ms, then 200ms, and both were visible as a stall
+  // between the thing happening and being told it happened. The scripted post in
+  // `TutorialSummaryCard` (550ms) is the one wait that stays: it sits BEFORE the
+  // posted bar, where it reads as the round-trip it is standing in for.
   await s.appeared('[data-tour="wl-posted"]', 6000)
-  await s.pause(200)
   await s.next('Filed and written up, from work that was never on a ticket. Example day - nothing went out.')
 
   // ── 8. Out of the summary, and WHEN it arrives ──────────────────────────
@@ -431,6 +494,9 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   // touches our servers - a claim that reads as a claim, arriving at the point
   // in the tour where the user is counting the beats left. Nothing is being
   // asked of them, so there is nothing to stop for.
+  // `ctx.ai`, straight from part one, because part two never changes it: the
+  // worklog beat deliberately does NOT run a second connect flow (see 5-i), so
+  // this stays the one place a user who declined earlier is asked again.
   if (ai === null) {
     await s.next('Last thing: pick the AI that does the writing. It runs through your own CLI.', 'Pick a model')
     s.openSettings('intelligence')
