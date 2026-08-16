@@ -407,8 +407,12 @@ describe('walkthrough structure', () => {
       // Beat 9 now exists only for the case that still needs an answer.
       expect(src).toContain("ai = 'connected-in-tour'")   // connected during the draft beat
       expect(src).toContain("ai = 'already-working'")     // set up before the tour began
-      expect(src).toContain('if (ai === null) {')
-      expect(at('if (ai === null) {')).toBeGreaterThan(at('── 9. AI ask'))
+      // Gated on `aiState`, not on `ctx.ai`. Part two can now connect a provider
+      // itself - the worklog beat takes a user with no model to the picker on the
+      // press - so the closing ask has to read what is true by the time it runs,
+      // not what part one happened to observe.
+      expect(src).toContain('if (aiState === null) {')
+      expect(at('if (aiState === null) {')).toBeGreaterThan(at('── 9. AI ask'))
       // The claim itself is gone, not relocated.
       expect(src).not.toContain('never sits on our servers')
     })
@@ -418,7 +422,9 @@ describe('walkthrough structure', () => {
       // successfully, so the connect card never appears and the old flag stayed
       // false - and the beat told someone already set up to go and pick one.
       const beat9 = src.slice(at('── 9. AI ask'), at('── 10.'))
-      expect(beat9.indexOf('openSettings')).toBeGreaterThan(beat9.indexOf('if (ai === null) {'))
+      const gate = beat9.indexOf('if (aiState === null) {')
+      expect(gate).toBeGreaterThan(-1)   // not merely "not -1 < something"
+      expect(beat9.indexOf('openSettings')).toBeGreaterThan(gate)
     })
   })
 })

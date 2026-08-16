@@ -225,7 +225,11 @@ export function GenerateCta({ hue, trackers, disabled, checking, blocked, onGene
             Connect an AI provider to generate worklogs. Meridian needs a model to turn
             this work into an update - the one you picked isn&apos;t answering.
           </p>
-          <button onClick={onConnectProvider}
+          {/* data-tour: the first-run walkthrough rings this. Its Generate beat
+              runs the same real check as everywhere else, so a user with no
+              model set up meets this card mid-tour and is taken from here to
+              the picker - see `tutorial/scriptDay.ts`. */}
+          <button data-tour="wl-connect-provider" onClick={onConnectProvider}
             className="mt-body-sm rounded-lg px-3 py-1.5 mt-2.5"
             style={{ fontWeight: 700, fontSize: 12.5, color: '#fff', background: hue, border: 'none', cursor: 'pointer' }}>
             Choose a provider

@@ -87,6 +87,11 @@ async function hasBoard(usesTracker: string | null): Promise<boolean> {
 export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   const { ai, usesTracker } = ctx
   const board = await hasBoard(usesTracker)
+  // What we know about their provider, which this half can now CHANGE: the
+  // worklog beat takes a user with no model to the picker on the spot, and the
+  // closing beat must not ask them again. `ctx.ai` is what part one observed and
+  // stays read-only; this is that plus anything learned since.
+  let aiState = ai
 
   // ── 3. The timeline, BUILT rather than shown ────────────────────────────
   // The half of the product that happens while the user is not looking, which is
@@ -226,44 +231,149 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
     await s.point('[data-tour="wl-generate"]')
     await s.waitForClick('[data-tour="wl-generate"]', 120000)
     s.spotlight(null)
-    s.say('Reading the work, comparing it against the tasks you planned this morning, writing the update.')
-    await s.appeared('[data-tour="draft-targets"]', 12000)
-    await s.pause(600)
 
-    // 5a. THE MATCH, WITH ITS NUMBER SHOWING. The confidence is the honest part:
-    // it says the model made a judgement rather than looked something up, which
-    // is what makes the override in the next line make sense.
-    s.spotlight('[data-tour="draft-targets"]')
-    await s.next('It matched this to a ticket on today\'s plan - 90%')
-    s.spotlight(null)
-    // NO BEAT ON THE RE-MATCH CONTROL. It used to ring it here and explain that
-    // the call is always yours - a good sentence about the wrong moment. The
-    // match on screen is a strong one the tour has just called out at 90%, so
-    // "matched the wrong one?" answers a doubt nobody watching this has, and it
-    // puts a detour in front of the only thing this stretch is here to land:
-    // approve, and it posts. The override is one visible control away for anyone
-    // who ever needs it, and beat 7 teaches picking a target properly - on the
-    // off-plan task, where the choice is real.
+    // 5-i. …except on a machine with no model, which is most first runs that got
+    // this far without one. The press runs the REAL provider check (the scripted
+    // worklog no longer bypasses it - see `WorklogDraftDialog`), so what comes
+    // back is the product's own "Connect an AI provider" card rather than a
+    // draft. Carrying on with "reading the work, writing the update" would be
+    // narrating a screen the user is not looking at, about a feature they cannot
+    // have yet.
+    //
+    // THE ORDER IS THE POINT. This ask used to sit at the very end of the tour,
+    // after the worklog had been demonstrated working - so the one thing the
+    // whole product is bought for was shown running on a machine that could not
+    // run it, and the requirement arrived as an afterthought. Asked here, it is
+    // the answer to a button the user just pressed.
+    //
+    // ARMED ON THE CARD APPEARING, never on a flag. Predicting from what part one
+    // observed strands the tour on both sides: a wait for a card that never came,
+    // or a silent skip past one that did. It also means a failed health probe
+    // needs no special case - the dialog generates anyway, no card appears, and
+    // this whole block is skipped.
+    //
+    // WAITS FOR EITHER OUTCOME, then asks which. Both hang off the same health
+    // read, so a fixed window sized for the card would park that many silent
+    // seconds in front of every user who IS set up - and if their draft landed
+    // inside it, the next line ("reading the work, writing the update") would
+    // narrate work that had already finished.
+    await s.appeared('[data-tour="wl-connect-provider"], [data-tour="draft-targets"]', 15000)
+    // Zero-ish: a "which one is on screen right now" probe, not a wait.
+    let blocked = await s.appeared('[data-tour="wl-connect-provider"]', 250)
+    if (blocked) {
+      // Recorded as connected EVEN IF THEY BACK OUT of the picker. This flag only
+      // decides whether the closing beat asks again, and a user who was just
+      // walked to the provider screen and chose not to finish has answered that
+      // question - asking a second time three beats later is nagging, not help.
+      aiState = 'connected-in-tour'
+      // Let the card arrive and be read first. They pressed a button and got an
+      // unexpected answer; a spotlight landing on it in the same second is a
+      // second surprise.
+      await s.pause(1200)
+      s.say('Writing the update needs an AI engine of your own - you pick which. Connect one and we will come straight back to this.')
+      s.spotlight('[data-tour="wl-connect-provider"]')
+      await s.point('[data-tour="wl-connect-provider"]')
+      await s.waitForClick('[data-tour="wl-connect-provider"]', 120000)
+      s.spotlight(null)
+      // The draft dialog closes ITSELF on that press (see `WorklogDraftDialog`),
+      // so Settings is not about to open behind it. Opening Settings is left to
+      // the script rather than the panel's own handler because in here that
+      // handler is deliberately inert - `TutorialScreen` passes a no-op, on the
+      // same reasoning as `onOpenPlan`: the script owns which surface is up.
+      s.openSettings('intelligence')
+      await s.pause(1000)
+      s.say('Pick a provider - Meridian installs it and signs you in here. Change it any time.')
+      await s.waitForClick('[data-tour="modal-close"]', 300000)
+      s.openModal(null)
+      await s.pause(700)
+      // BACK TO THE DRAFT, from the top. The dialog closed on the way out, so the
+      // entry row is what is on screen - ringing `wl-generate` here would ring a
+      // control that is not rendered, and the tour would sit on it until it timed
+      // out. Same two presses as the first time round, which is also the honest
+      // shape of doing this for real.
+      // NOT "connected" - nothing here knows that yet. Settings closing means the
+      // modal closed, not that a provider was picked: it is deliberately unlocked
+      // (the locked variant hands back to the PLANNER on success, which is the
+      // wrong place from here), so × is available the whole time. The press below
+      // is what finds out, and the line has to still be true if the answer is no.
+      s.say('Back to it - ask for that update again.')
+      s.spotlight('[data-tour="wl-open"]')
+      await s.point('[data-tour="wl-open"]')
+      await s.waitForClick('[data-tour="wl-open"]', 120000)
+      s.spotlight(null)
+      await s.appeared('[data-tour="wl-generate"]', 4000)
+      await s.pause(400)
+      s.spotlight('[data-tour="wl-generate"]')
+      await s.point('[data-tour="wl-generate"]')
+      await s.waitForClick('[data-tour="wl-generate"]', 120000)
+      s.spotlight(null)
 
-    // 5b. Approve, then confirm. TWO presses, deliberately: this is the one place
-    // work leaves Meridian and lands somewhere other people can see it.
-    s.say('Nothing leaves Meridian until you approve it. Send this one.')
-    s.spotlight('[data-tour="wl-approve"]')
-    await s.point('[data-tour="wl-approve"]')
-    await s.waitForClick('[data-tour="wl-approve"]', 120000)
-    s.spotlight(null)
-    await s.pause(500)
-    s.say('It names the ticket before it posts, every time.')
-    s.spotlight('[data-tour="wl-confirm"]')
-    await s.point('[data-tour="wl-confirm"]')
-    await s.waitForClick('[data-tour="wl-confirm"]', 120000)
-    s.spotlight(null)
-    await s.appeared('[data-tour="wl-posted"]', 8000)
-    await s.pause(600)
-    // AND IT SAYS THE POST WAS FAKE. Left unsaid, the tick is a lie the user
-    // finds out about by opening their board - exactly the moment the product
-    // most needs to have been straight with them.
-    await s.next('Posted to the ticket, without opening your board. Example day, so nothing really went out.')
+      // DID IT ACTUALLY TAKE? Settings closing proves only that the modal closed.
+      // Someone who opened the picker, found the provider they wanted needs a CLI
+      // installed, and pressed × arrives back here with the same card - and
+      // without this probe the tour would carry straight on into "reading the
+      // work, comparing it against the tasks you planned", narrating a draft that
+      // does not exist, over a card that says the opposite. Then a 12s stall and a
+      // beat about a 90% match nobody can see. That is the precise failure this
+      // whole stretch of comments exists to prevent, landing on exactly the users
+      // this change is for.
+      await s.appeared('[data-tour="wl-connect-provider"], [data-tour="draft-targets"]', 15000)
+      blocked = await s.appeared('[data-tour="wl-connect-provider"]', 250)
+      // And the closing ask goes back on. Skipping it was right while the picker
+      // had been visited and answered; it is wrong once we can see that it was
+      // not - a tour that stays quiet here leaves them finished, with a Meridian
+      // that cannot write anything and nothing having said so.
+      if (blocked) aiState = null
+    }
+
+    // EVERYTHING FROM HERE DESCRIBES A DRAFT. It runs only when there is one -
+    // which is every user who had a model, plus everyone who just connected one.
+    if (!blocked) {
+      s.say('Reading the work, comparing it against the tasks you planned this morning, writing the update.')
+      await s.appeared('[data-tour="draft-targets"]', 12000)
+      await s.pause(600)
+
+      // 5a. THE MATCH, WITH ITS NUMBER SHOWING. The confidence is the honest part:
+      // it says the model made a judgement rather than looked something up, which
+      // is what makes the override in the next line make sense.
+      s.spotlight('[data-tour="draft-targets"]')
+      await s.next('It matched this to a ticket on today\'s plan - 90%')
+      s.spotlight(null)
+      // NO BEAT ON THE RE-MATCH CONTROL. It used to ring it here and explain that
+      // the call is always yours - a good sentence about the wrong moment. The
+      // match on screen is a strong one the tour has just called out at 90%, so
+      // "matched the wrong one?" answers a doubt nobody watching this has, and it
+      // puts a detour in front of the only thing this stretch is here to land:
+      // approve, and it posts. The override is one visible control away for anyone
+      // who ever needs it, and beat 7 teaches picking a target properly - on the
+      // off-plan task, where the choice is real.
+
+      // 5b. Approve, then confirm. TWO presses, deliberately: this is the one place
+      // work leaves Meridian and lands somewhere other people can see it.
+      s.say('Nothing leaves Meridian until you approve it. Send this one.')
+      s.spotlight('[data-tour="wl-approve"]')
+      await s.point('[data-tour="wl-approve"]')
+      await s.waitForClick('[data-tour="wl-approve"]', 120000)
+      s.spotlight(null)
+      await s.pause(500)
+      s.say('It names the ticket before it posts, every time.')
+      s.spotlight('[data-tour="wl-confirm"]')
+      await s.point('[data-tour="wl-confirm"]')
+      await s.waitForClick('[data-tour="wl-confirm"]', 120000)
+      s.spotlight(null)
+      await s.appeared('[data-tour="wl-posted"]', 8000)
+      await s.pause(600)
+      // AND IT SAYS THE POST WAS FAKE. Left unsaid, the tick is a lie the user
+      // finds out about by opening their board - exactly the moment the product
+      // most needs to have been straight with them.
+      await s.next('Posted to the ticket, without opening your board. Example day, so nothing really went out.')
+    } else {
+      // They went to the picker and came back without one. Said plainly and
+      // moved past: the rest of the tour does not need a draft, and stopping to
+      // press the point on someone who has just declined twice is the one thing
+      // that would make them close it. The closing beat asks again, once.
+      await s.next('No model connected, so there is nothing to write the update with yet. Connect one and this is the same two presses - ask, then approve.')
+    }
   } else {
     await s.next('Connect a board and it writes the ticket update too - matched, and posted once you approve.')
   }
@@ -431,7 +541,9 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   // touches our servers - a claim that reads as a claim, arriving at the point
   // in the tour where the user is counting the beats left. Nothing is being
   // asked of them, so there is nothing to stop for.
-  if (ai === null) {
+  // `aiState`, not `ctx.ai`: the worklog beat may have taken them to this very
+  // screen already, in which case there is nothing left to ask.
+  if (aiState === null) {
     await s.next('Last thing: pick the AI that does the writing. It runs through your own CLI.', 'Pick a model')
     s.openSettings('intelligence')
     await s.pause(1000)
