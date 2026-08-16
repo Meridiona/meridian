@@ -120,8 +120,12 @@ describe('the walkthrough spotlight has no square corners', () => {
     // Asserted as SHARING, not as two matching copies: two copies is the thing
     // that drifts. One value, applied to both.
     expect(cutout).toMatch(/const glide = 'left \.5s cubic-bezier\(\.22,1,\.32,1\)/)
+    // At least the panes and the scrim. Not an exact count - a third layer that
+    // legitimately glides would fail a correct file, and the guarantee this
+    // test exists for (both shapes read one value) does not depend on how many
+    // things read it.
     const uses = cutout.match(/transition: glide\b/g) ?? []
-    expect(uses.length).toBe(2) // the panes, and the scrim
+    expect(uses.length).toBeGreaterThanOrEqual(2)
     expect(cutout).toContain("animation: 'mer-tour-dim .45s ease both'")
   })
 })

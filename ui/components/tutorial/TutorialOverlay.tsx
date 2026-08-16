@@ -692,10 +692,20 @@ function Cutout({ rect, dim }: { rect: DOMRect; dim: boolean }) {
           gradient, so a `color-mix` against it is invalid and drops the
           declaration outright. This read as "blur only, no dimming" for as long
           as it lived on the panes - they were doing half their job silently. */}
+      {/* Deliberately NOT the clamped `l`/`t` the panes use. The clamp exists
+          because a pane sized `height: t` cannot take a negative number; the
+          scrim has no such problem, and applying the clamp to it would matter
+          in a way it never did to the panes. A target within `FENCE_PAD` of
+          the top or left edge would pull one side of the scrim inside the ring
+          while it kept its rounding - a dimmed notch cutting into the lit area,
+          which is the same class of artifact this whole change removes. Letting
+          it run off-screen instead keeps the curve concentric everywhere; the
+          part outside the viewport simply is not painted. */}
       {dim && (
         <div style={{
           position: 'absolute', pointerEvents: 'none',
-          left: l, top: t, width: r - l, height: b - t,
+          left: rect.left - FENCE_PAD, top: rect.top - FENCE_PAD,
+          width: rect.width + FENCE_PAD * 2, height: rect.height + FENCE_PAD * 2,
           borderRadius: HOLE_RADIUS,
           boxShadow: '0 0 0 9999px rgba(20,16,40,0.42)',
           animation: 'mer-tour-dim .45s ease both',
