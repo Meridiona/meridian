@@ -626,3 +626,40 @@ export function buildSteps(platform: string | null, notificationsGranted: boolea
     : ALL_STEPS
   return steps.map((s, i) => ({ ...s, n: String(i + 1).padStart(2, '0') }))
 }
+
+/** Resolve a saved step ID back to a position in the CURRENT step list.
+ *
+ *  `-1` means "no position to resume to" - the caller stays on Welcome.
+ *
+ *  A plain `findIndex` is right for the case the stored ID was designed
+ *  against: the list changes shape between BUILDS, an ID from an older one
+ *  matches nothing, and starting from the top is the honest answer because we
+ *  cannot know where that step used to sit.
+ *
+ *  It is wrong for the case `buildSteps` introduced. On Windows the Alerts step
+ *  is dropped when notifications are already granted - so a user who quits ON
+ *  that step, grants notifications in Windows Settings, and comes back has a
+ *  saved ID that names a step this build knows perfectly well and has simply
+ *  finished with. `findIndex` returns -1 for that too, and the wizard restarts
+ *  at Welcome: the one flow whose entire purpose is not to lose your place,
+ *  losing it at the exact moment the user did the thing it asked for.
+ *
+ *  So a KNOWN id that is absent resumes at the first surviving step after it -
+ *  which is what "you finished that one" means - and falls back to the last
+ *  step when nothing survives it, because a wizard with every remaining step
+ *  behind you is one whose footer should read Open Dashboard. An id this build
+ *  has never heard of keeps the old behaviour exactly. */
+export function resumeIndex(steps: StepMeta[], savedStepId: string): number {
+  if (steps.length === 0) return -1
+  const at = steps.findIndex((s) => s.id === savedStepId)
+  if (at >= 0) return at
+  // Search the FULL list, not the built one - that is the difference between
+  // "dropped from this run" and "never existed".
+  const wasAt = ALL_STEPS.findIndex((s) => s.id === savedStepId)
+  if (wasAt < 0) return -1
+  for (let i = wasAt + 1; i < ALL_STEPS.length; i++) {
+    const next = steps.findIndex((s) => s.id === ALL_STEPS[i].id)
+    if (next >= 0) return next
+  }
+  return steps.length - 1
+}

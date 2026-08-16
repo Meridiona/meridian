@@ -491,7 +491,7 @@ if (document.fonts && document.fonts.ready) {
 // listener lives here: each event is forwarded to record_notification_response,
 // which stamps the answer on the outbox row (the daemon's response consumer
 // acts on it) and opens the dashboard for foreground answers.
-function armNotificationActions() {
+async function armNotificationActions() {
   try {
     const ch = new __TAURI__.core.Channel()
     ch.onmessage = (msg) => {
@@ -514,11 +514,22 @@ function armNotificationActions() {
         text: msg.inputValue == null ? null : String(msg.inputValue),
       }).catch((e) => dbg(`notification response failed: ${e}`))
     }
-    // Plugin absent in an unbundled run (tauri dev) — interactive toasts are
-    // packaged-only, so a registration failure is expected there, not an error.
-    invoke('plugin:notifications|register_listener', { event: 'actionPerformed', handler: ch })
-      .then(() => dbg('notification action listener registered'))
-      .catch(() => dbg('notification action listener not registered (unbundled run?)'))
+    // Two expected non-failures here, neither an error:
+    //   - an unbundled run (tauri dev) has no plugin at all — interactive
+    //     toasts are packaged-only;
+    //   - Windows never registers this listener, because its toasts are WinRT
+    //     (tray/src-tauri/src/win_toast.rs) and their handlers record answers
+    //     in Rust without a webview hop.
+    // Nested, so the two outcomes stay distinguishable. The outer catch is for
+    // the channel construction above - a genuine defect. This one is for the
+    // two expected non-failures listed above, which are not errors and must not
+    // be reported as one.
+    try {
+      await invoke('plugin:notifications|register_listener', { event: 'actionPerformed', handler: ch })
+      dbg('notification action listener registered')
+    } catch {
+      dbg('notification action listener not registered (dev run, or Windows/WinRT)')
+    }
   } catch (e) { dbg(`notification listener threw: ${e}`) }
 }
 
@@ -552,7 +563,13 @@ function startLivePopover() {
   invoke('get_status').then((s) => { render(s); resizeToContent() }).catch(() => {})
   checkUpdate()
   loadAppInfo()
-  armNotificationActions()
+  // Fire-and-forget, like every other call in here: nothing in the popover's
+  // startup depends on the listener being armed, and awaiting it would hold the
+  // first render behind an IPC round-trip. `armNotificationActions` handles all
+  // of its own failures, so the rejection this catch guards is one that cannot
+  // happen - it is here so a future edit that lets one escape does not surface
+  // as an unhandled rejection in a webview with no console open.
+  armNotificationActions().catch((e) => dbg(`notification listener threw: ${e}`))
 }
 
 function applyAuthGate(signedIn) {

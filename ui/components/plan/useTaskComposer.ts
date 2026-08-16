@@ -177,6 +177,22 @@ let resumePending = false
  *  Call it before reopening the planner - see `TaskComposer`'s mount effect. */
 export const armResume = () => { resumePending = true }
 
+/** Is a resume armed, WITHOUT spending it.
+ *
+ *  For the one job that has to happen before `TaskComposer` exists: `PlanBoardColumn` shows
+ *  the composer or the board list from its own `useState`, and that state dies with the
+ *  unmount the detour causes. The store carried the note across, so the note was intact -
+ *  but the user came back to the LIST and had to press ＋ New task again to see it, which
+ *  reads as having lost the work whether or not it survived. Worse mid-walkthrough: the
+ *  next beat points at fields inside the composer, and they were not on screen.
+ *
+ *  Peeking rather than consuming is what keeps that fix from becoming a second bug.
+ *  [`consumeResume`] is the one-shot the composer's mount effect depends on to know it must
+ *  skip `resetComposer`; if the column spent the flag deciding what to render, the composer
+ *  would mount, find nothing armed, treat it as an ordinary open and wipe the very note the
+ *  column had just reopened to show. */
+export const isResumePending = (): boolean => resumePending
+
 /** Read and clear the resume flag. One-shot by construction: a second mount after the same
  *  detour is a fresh open and must reset like any other. */
 export const consumeResume = (): boolean => {

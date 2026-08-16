@@ -1240,9 +1240,16 @@ describe('the day replay - the timeline taught by building it', () => {
     expect(screen).toContain('data-tour="day-view"')
     // A ring that big cannot park a bubble beside it; the overlay has to fall
     // back to the top bar or the beat narrates off the bottom of the screen.
+    //
+    // The fallback condition is now named `unanchored` rather than repeated
+    // inline - the effect that publishes the bar's height to `ModalShell` has to
+    // agree with the render branch exactly, and two copies of a four-term
+    // boolean is how they stop agreeing. Asserted on the definition plus its use,
+    // which is the same guarantee the inline literal gave.
     const overlay = readFileSync(new URL('../components/tutorial/TutorialOverlay.tsx', import.meta.url), 'utf8')
     expect(overlay).toContain('{caption && !centered && ring && ringFits && (')
-    expect(overlay).toContain('{caption && !centered && !(ring && ringFits) && (')
+    expect(overlay).toContain('const unanchored = !!caption && !centered && !(ring && ringFits)')
+    expect(overlay).toContain('{unanchored && (')
   })
 
   it('parks the caption below its target, off the heading', () => {
@@ -1503,16 +1510,23 @@ describe('deleting a personal task actually removes it from the plan', () => {
     expect(store).toContain("window.addEventListener('meridian:task-deleted'")
     // Every cached day, not just today: a personal task can sit on more than one
     // day's plan and the deletion is not scoped to one of them.
-    expect(store).toContain('[...store.keys()].map(d => refreshPlan(d))')
+    expect(store).toContain('[...store.keys()].map(d => refreshPlan(d, true))')
   })
 
   it('does not let the drag hold-off swallow that refresh', () => {
     // `paused` exists so a background poll cannot reshuffle a board mid-drag. A
     // delete is a user action whose result must be visible, and a drag cannot be
     // in progress while a modal dialog has the pointer.
+    //
+    // Expressed as `refreshPlan(d, force)` rather than by toggling the module
+    // flag around the reads. The old shape restored `wasPaused` from a value
+    // captured before the awaits, so a drag STARTING mid-refresh had its
+    // hold-off stamped back off; and it left `paused` false for any other
+    // reader during the window. The flag must not be written here at all.
     const listener = after(store, "addEventListener('meridian:task-deleted'")
-    expect(listener).toContain('paused = false')
-    expect(listener).toContain('.finally(() => { paused = wasPaused })')
+    expect(listener).toContain('refreshPlan(d, true)')
+    expect(listener).not.toContain('paused = false')
+    expect(listener).not.toContain('paused = wasPaused')
   })
 
   it('is fixed in the store, not by threading a callback through each opener', () => {

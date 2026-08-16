@@ -76,12 +76,15 @@ const MAC_PANE_COPY: Record<'accessibility' | 'screen' | 'notifications', { titl
     blurb: 'Allow the applications below to record the content of your screen.',
     others: ['Terminal', 'Google Chrome'],
   },
-  // Kept for the shape of the record, but macOS Notifications no longer renders
-  // through MacSettingsPanePreview - see MacNotificationsPanePreview for why the
-  // app-list layout was the wrong pane entirely.
+  // Notifications does NOT render through MacSettingsPanePreview (see
+  // MacNotificationsPanePreview for why the app-list layout was the wrong pane
+  // entirely) - but it does share `MacPaneChrome`, so its title/blurb still
+  // live here rather than being inlined in the one component that reads them.
+  // The blurb is the per-app page's framing, not the list's, because that is
+  // the page this preview reconstructs.
   notifications: {
     title: 'Notifications',
-    blurb: 'Allow the applications below to send notifications.',
+    blurb: 'Choose how Meridian sends you notifications.',
     others: ['Terminal', 'Google Chrome'],
   },
 }
@@ -93,6 +96,62 @@ function MacToggleOn() {
     }}>
       <span style={{ width: 15, height: 15, borderRadius: 99, background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,.25)' }} />
     </span>
+  )
+}
+
+/** The window chrome every reconstructed macOS pane shares - the white sheet,
+ *  the back/forward chevrons, the pane title, and the blurb under it. Whatever
+ *  the pane's own body is goes in `children`, filling the remaining height.
+ *
+ *  It exists because the three cards sit side by side and the eye reads them as
+ *  one row: any difference in where the title ends or the blurb starts shows up
+ *  as three misaligned pictures rather than three states of the same picture.
+ *  Two things used to break that alignment, and both are fixed HERE so no pane
+ *  can drift again:
+ *
+ *  1. `Screen & System Audio Recording` wraps to two lines at this width while
+ *     `Accessibility` does not, so every row below it sat a line lower in that
+ *     one card. The title box therefore reserves TWO lines in every pane
+ *     (`minHeight`), centred, so a one-line title simply has air above and
+ *     below it instead of pulling the pane up.
+ *  2. The blurb is one line in some panes and two in others - same fix, same
+ *     reason.
+ *
+ *  Reserving space rather than truncating is deliberate: these are real macOS
+ *  strings and an ellipsis in the middle of `Screen & System Audio…` would make
+ *  the pane harder to recognise, which is the entire job of the picture. */
+function MacPaneChrome({ title, blurb, children }: {
+  title: string; blurb: string; children: ReactNode
+}) {
+  return (
+    <div className="w-full flex flex-col" style={{
+      height: '100%', borderRadius: 10, overflow: 'hidden',
+      border: '0.5px solid var(--t-card-border)', background: '#fff',
+    }}>
+      <div className="flex items-center shrink-0" style={{ gap: 7, padding: '6px 10px', background: '#F0F0F1' }}>
+        <span style={{
+          width: 16, height: 16, borderRadius: 99, background: '#fff', border: '0.5px solid #d2d2d7',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#1d1d1f', lineHeight: 1,
+        }}>‹</span>
+        <span style={{
+          width: 16, height: 16, borderRadius: 99, background: '#fff', border: '0.5px solid #e5e5e7',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#c7c7cc', lineHeight: 1,
+        }}>›</span>
+        <span className="flex items-center" style={{
+          flex: 1, minWidth: 0, marginLeft: 2, minHeight: 32,
+          fontSize: 12.5, lineHeight: 1.25, fontWeight: 700, color: '#1d1d1f',
+        }}>{title}</span>
+      </div>
+
+      {/* Both reserved heights are BORDER-BOX (the global preflight sets
+         `box-sizing: border-box`), so they include the padding: 2 lines of
+         10.5px/1.35 is ~28.4px, plus 9px of vertical padding. */}
+      <p className="shrink-0 flex items-start" style={{
+        minHeight: 38, fontSize: 10.5, lineHeight: 1.35, color: '#48484a', padding: '5px 10px 4px',
+      }}>{blurb}</p>
+
+      {children}
+    </div>
   )
 }
 
@@ -118,24 +177,7 @@ function MacToggleOn() {
 function MacSettingsPanePreview({ permissionId }: { permissionId: 'accessibility' | 'screen' }) {
   const copy = MAC_PANE_COPY[permissionId]
   return (
-    <div className="w-full flex flex-col" style={{
-      height: '100%', borderRadius: 10, overflow: 'hidden',
-      border: '0.5px solid var(--t-card-border)', background: '#fff',
-    }}>
-      <div className="flex items-center shrink-0" style={{ gap: 7, padding: '6px 10px', background: '#F0F0F1' }}>
-        <span style={{
-          width: 16, height: 16, borderRadius: 99, background: '#fff', border: '0.5px solid #d2d2d7',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#1d1d1f', lineHeight: 1,
-        }}>‹</span>
-        <span style={{
-          width: 16, height: 16, borderRadius: 99, background: '#fff', border: '0.5px solid #e5e5e7',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#c7c7cc', lineHeight: 1,
-        }}>›</span>
-        <span style={{ fontSize: 12.5, fontWeight: 700, color: '#1d1d1f', marginLeft: 2 }}>{copy.title}</span>
-      </div>
-
-      <p className="shrink-0" style={{ fontSize: 10.5, lineHeight: 1.35, color: '#48484a', padding: '5px 10px 4px' }}>{copy.blurb}</p>
-
+    <MacPaneChrome title={copy.title} blurb={copy.blurb}>
       <div className="flex flex-col" style={{ flex: 1, margin: '2px 8px 7px', borderRadius: 8, overflow: 'hidden', background: '#F0F0F1' }}>
         {copy.others.map((name) => (
           <div key={name} className="flex items-center shrink-0" style={{
@@ -172,7 +214,7 @@ function MacSettingsPanePreview({ permissionId }: { permissionId: 'accessibility
           }}>{glyph}</span>
         ))}
       </div>
-    </div>
+    </MacPaneChrome>
   )
 }
 
@@ -201,27 +243,18 @@ function MacNotificationsPanePreview() {
   // the real page. Labels are omitted at this size - they render as unreadable
   // 6px text - so these are shape only.
   const placements = ['Desktop', 'Notification Center', 'Lock Screen']
+  const copy = MAC_PANE_COPY.notifications
   return (
-    <div className="w-full flex flex-col" style={{
-      height: '100%', borderRadius: 10, overflow: 'hidden',
-      border: '0.5px solid var(--t-card-border)', background: '#fff',
-    }}>
-      <div className="flex items-center shrink-0" style={{ gap: 7, padding: '6px 10px', background: '#F0F0F1' }}>
-        <span style={{
-          width: 16, height: 16, borderRadius: 99, background: '#fff', border: '0.5px solid #d2d2d7',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#1d1d1f', lineHeight: 1,
-        }}>‹</span>
-        <span style={{
-          width: 16, height: 16, borderRadius: 99, background: '#fff', border: '0.5px solid #e5e5e7',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#c7c7cc', lineHeight: 1,
-        }}>›</span>
-      </div>
-
+    // Same chrome as the sibling pane - it used to draw its own header with no
+    // title at all, which made the third card read as a different KIND of
+    // picture from the two beside it rather than the same picture of a
+    // different pane.
+    <MacPaneChrome title={copy.title} blurb={copy.blurb}>
       {/* THE control. Same sharp + accent-tinted treatment the sibling pane
          gives its Meridian row, for the same reason: it is the one thing on
          this picture the user has to act on. */}
       <div className="flex items-center shrink-0" style={{
-        gap: 9, margin: '6px 8px 0', padding: '7px 10px', borderRadius: 8,
+        gap: 9, margin: '2px 8px 0', padding: '7px 10px', borderRadius: 8,
         background: 'color-mix(in srgb, var(--t-accent) 11%, #fff)',
         boxShadow: 'inset 0 0 0 1.5px color-mix(in srgb, var(--t-accent) 50%, transparent)',
       }}>
@@ -264,7 +297,7 @@ function MacNotificationsPanePreview() {
           </div>
         ))}
       </div>
-    </div>
+    </MacPaneChrome>
   )
 }
 

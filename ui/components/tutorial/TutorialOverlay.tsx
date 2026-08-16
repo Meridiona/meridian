@@ -17,7 +17,7 @@
 // # Related
 // - `./engine.ts` — the primitives whose state this draws
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { availableTrackers } from '@/lib/integrations'
 import {
@@ -173,7 +173,7 @@ function useRect(selector: string | null): { rect: DOMRect | null; live: boolean
   return state
 }
 
-export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, cursorPoint, ghost, clicking, spotlight, spotlightDim, awaiting, chapter, choices, onChoose, onSkip, onSkipToDay = null }: {
+export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, cursorPoint, ghost, clicking, spotlight, spotlightDim, awaiting, handover, chapter, choices, onChoose, onSkip, onSkipToDay = null }: {
   caption: string
   /** Render the top narration bar at headline size. Set for the whole of the day
    *  replay, which is the one stretch of the tour the user WATCHES rather than
@@ -206,6 +206,12 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
   /** True while a beat has handed control over — drives the "your turn" cue on
    *  the spotlight so a waiting user knows the app expects something of them. */
   awaiting: AwaitKind
+  /** True while the tour is waiting on the user to drive the app THEMSELVES —
+   *  connect a tracker, work through a provider sign-in — rather than blocked on
+   *  one control it is pointing at. The fence comes down for these: see the
+   *  render site below for the deadlock that made this necessary. Set by
+   *  `appeared()` in `useTutorial`, for the whole of its wait. */
+  handover: boolean
   /** Which chapter the progress row is on. */
   chapter: ChapterId
   /** Answers to the question in `caption`, when a beat is asking one. Always
@@ -243,6 +249,58 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
   // small to point at, and is exactly what a whole-screen ring is.
   const ringFits = ring !== null && (ring.top - CAPTION_GAP - CAPTION_H > 0
     || ring.bottom + CAPTION_GAP + CAPTION_H < window.innerHeight)
+  const unanchored = !!caption && !centered && !(ring && ringFits)
+
+  // TELL THE PAGE WHERE THIS BAR ENDS, so a modal under it can move its own
+  // content out of the way (`ModalShell`'s TOUR_BODY_PAD).
+  //
+  // The bar floats over the page at a fixed height picked to clear a modal's
+  // title row - which it does, and then lands on the first line of the body 28px
+  // below. Nothing here can fix that alone: the bar and the panel are both
+  // centred with overlapping max-widths, and the two modals this happens on are
+  // `scrollInside` ones that can fill the window, so there is no free space to
+  // move the bar into. Publishing the measurement lets the party that CAN make
+  // room do it.
+  //
+  // Measured, not derived: the bar is one to three lines depending on the beat,
+  // and `big` changes its font and padding, so a constant would be wrong for
+  // most captions.
+  //
+  // OBSERVED rather than re-measured on a dependency list, because the caption
+  // is not the only thing that changes this height and the other two are the
+  // easy ones to forget. The bar is capped at `maxWidth: big ? 760 : 540`, so a
+  // window narrower than that re-wraps the text on a resize with no prop
+  // changing at all; and `choices` render INSIDE this bar, so a beat that adds
+  // buttons under an unchanged caption grows it too. Either way the published
+  // value would stay stale until the next `say()` - and a stale value is worse
+  // than none, because `ModalShell` pads to it and would hold a gap that no
+  // longer matches anything on screen. A `ResizeObserver` covers all three
+  // sources and the first measurement, so nothing has to be enumerated.
+  const sayRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const root = document.documentElement
+    const clear = () => root.style.removeProperty('--mer-tour-say-bottom')
+    const el = sayRef.current
+    if (!unanchored || !el) {
+      clear()
+      return
+    }
+    // `bottom`, not `height`: the property names where the bar ENDS in the
+    // viewport, which is what a modal has to clear. The bar's top is fixed by
+    // CSS, so a size change is the only thing that can move it.
+    const publish = () => {
+      const box = el.getBoundingClientRect()
+      root.style.setProperty('--mer-tour-say-bottom', `${Math.round(box.bottom)}px`)
+    }
+    const ro = new ResizeObserver(publish)
+    ro.observe(el) // fires once immediately, so this is also the initial read
+    return () => {
+      ro.disconnect()
+      // The tour is the only writer of this property, so clearing on the way
+      // out is what stops a finished walkthrough leaving every modal padded.
+      clear()
+    }
+  }, [unanchored])
 
   return (
     <div className="fixed inset-0" style={{ zIndex: 9000, pointerEvents: 'none' }}>
@@ -284,16 +342,81 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
           waiting for a click on a target that is no longer on screen, and the
           user is left reading an instruction about a window they cannot see.
 
-          Gated on `awaiting` on purpose. A fence that stands during narration
-          beats would make the app feel frozen for reasons the user cannot see;
-          one that stands only while the tour is genuinely blocked on them is
-          the difference between guiding and trapping.
-
           Rendered BEFORE the caption, the choice buttons and Skip, so those
           later siblings paint on top and keep their own `pointerEvents:'auto'`.
           The way out is always one click away. */}
-      {ring && spotlightDim && <Cutout rect={ring} dim />}
-      {ring && !spotlightDim && awaiting && <Cutout rect={ring} dim={false} />}
+      {/* THE FENCE STANDS FOR THE WHOLE RUN, not only while `awaiting`.
+          `awaiting` is true ONLY inside `waitForClick` / `waitForValue` /
+          `waitForMinWords` (see `useTutorial`), so it is FALSE during every
+          narration beat - `say`, `sleep`, and the pauses between steps, which
+          is most of the walkthrough's wall-clock time. During those the app
+          behind the tour took clicks normally.
+
+          That is not a cosmetic gap. The narration beats are exactly the ones
+          that run while a modal the tour opened is on screen: the integrations
+          step narrates over a live Jira OAuth panel, and the planner step
+          narrates over the composer. A stray click there hits Cancel, closes
+          the modal, or starts an OAuth flow the tour is not expecting, and the
+          walkthrough carries on narrating a screen that is no longer in the
+          state it describes. Reported from a real run twice.
+
+          The earlier reasoning was that a fence during narration "would make
+          the app feel frozen for reasons the user cannot see". The dim scrim
+          IS the visible reason, and the tour's own controls stay live: Skip,
+          the choice buttons and the caption are later siblings with their own
+          `pointerEvents:'auto'`, so the way out never depends on this. A
+          walkthrough is a modal experience; the honest thing is to look like
+          one. `awaiting` still drives the ring's pulse, which is what actually
+          signals "your turn" - that is the cue the user reads, not whether a
+          background panel happens to accept clicks.
+
+          `spotlightDim` still chooses whether the fence is BLURRED or clear.
+          The dimmed beats keep their blur; every other beat now gets the same
+          panes with nothing drawn on them. */}
+      {/* ...EXCEPT DURING A HANDOVER, which is the one case the rule above gets
+          backwards.
+
+          "The tour is waiting" covers two opposite situations. Blocked on ONE
+          control it is pointing at (`awaiting`), fencing the rest of the app is
+          the protection - that is everything above. Blocked on a SEQUENCE the
+          user has to drive themselves, the fence is the one thing that
+          guarantees they cannot finish it.
+
+          Two beats do exactly that, and in both the ring is cleared first, so
+          the whole-viewport `FullFence` went up over the very screen the user
+          had to operate: the tracker step waits up to TEN MINUTES on
+          `lock-handback` while they connect a tool or press "I don't use a
+          project tool", and the AI step waits the same on `task-note` while
+          they work through a provider's sign-in. Every click was swallowed. The
+          tour sat there telling them to pick a tool while the modal ignored
+          them, until the timeout expired. Reported from a real run.
+
+          Both fences are gated, not just the full-viewport one: `Cutout`'s
+          panes carry the same `pointerEvents:'auto'`, so leaving that half live
+          would keep the deadlock wherever a ring happened to still be up.
+
+          The overlay cannot infer which case it is in - the script knows. See
+          `appeared()` in `useTutorial`, which raises `handover` for its wait. */}
+      {ring && !handover && <Cutout rect={ring} dim={spotlightDim} />}
+      {/* No ring on this beat: fence the whole viewport instead. There is no
+          target to leave live, so there is nothing to cut a hole for - and this
+          is the case the `ring &&` guard above used to drop on the floor,
+          leaving the entire app clickable behind a caption.
+
+          ONLY WHEN THE TOUR IS NOT WAITING ON THE USER. `FullFence` has no
+          hole, so if the tour is blocked on a click it cannot ring, this covers
+          the very control it is waiting for. That is not hypothetical - the AI
+          step's subscription question waits on
+          `[data-tour="gate-subscription"], [data-tour="gate-free"]` with NO
+          spotlight on purpose, because ringing one of two real answers makes
+          the other read as wrong. Both cards went dead, and the beat sat there
+          for its full three-minute timeout.
+
+          `awaiting` covers a ringless waitForClick / waitForValue /
+          waitForMinWords; `handover` covers a long `appeared` where the user is
+          driving a flow the tour is not pointing at. Neither may be fenced.
+          What is left - narration - is exactly what the fence was added for. */}
+      {!ring && !handover && !awaiting && <FullFence />}
 
       {/* Spotlight — a ring around the real control. On its own (the default)
           it adds no scrim at all: the target stays fully interactive because
@@ -455,14 +578,14 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
           The ANCHORED variant above is untouched: it parks beside its target on
           purpose, and moving it up here would put the sentence and the thing it
           names at opposite ends of the screen. */}
-      {caption && !centered && !(ring && ringFits) && (
+      {unanchored && (
         // TWO divs, and they cannot be collapsed into one. `.mer-pop` animates
         // `transform` with fill `both`, so it OVERWRITES an inline
         // `translateX(-50%)` for the element's whole life - the bar rendered half
         // its own width to the right of centre, overlapping the modal beside it.
         // Centring lives on the outer div, the animation on the inner, so the two
         // transforms stop fighting over one property.
-        <div className="absolute" style={{
+        <div ref={sayRef} className="absolute" style={{
           // NARROWER THAN IT WAS (620). At body size a full-width line ran to
           // ~95 characters, well past the ~65 the eye tracks without losing its
           // place - so a two-sentence beat read as a paragraph even after the
@@ -621,16 +744,33 @@ function CaptionBody({ text, big }: { text: string; big?: boolean }) {
       // all at once, not the bubble itself settling into place.
       animation: 'mer-tour-say .3s cubic-bezier(.2,.8,.25,1) both',
       cursor: 'default',
+      position: 'relative',
       ...(big ? { font: '700 21px/1.35 var(--font-sans)', letterSpacing: '-.015em', textAlign: 'center' } : null),
     }}>
-      {shown}
-      {!done && (
-        <span aria-hidden style={{
-          display: 'inline-block', width: 2, height: '.9em', marginLeft: 3,
-          verticalAlign: '-.1em', background: 'currentColor', opacity: .75,
-          animation: 'mer-tour-blink 1s step-end infinite',
-        }} />
-      )}
+      {/* THE FULL LINE, INVISIBLE, HOLDING THE BOX OPEN.
+          Typing changes the bubble's HEIGHT as the text wraps onto a second and
+          third line, and two things downstream measure that height. The
+          un-anchored bar publishes its own bottom edge as `--mer-tour-say-bottom`
+          so `ModalShell` can pad its body clear of it (#775, the AI-gate question
+          that was rendered underneath and unreadable) - and that measurement is a
+          ResizeObserver, so a growing bar would re-pad the modal in steps, twice,
+          while the user is reading the very line doing it. The anchored bubble
+          has the same problem in the other axis: it is placed relative to its
+          target off its own height, so it would creep as it typed.
+          Reserving the final size on the first frame makes the box a constant and
+          both problems go away - the only thing that changes is which characters
+          are painted inside it. */}
+      <span aria-hidden style={{ visibility: 'hidden' }}>{text}</span>
+      <span style={{ position: 'absolute', inset: 0 }}>
+        {shown}
+        {!done && (
+          <span aria-hidden style={{
+            display: 'inline-block', width: 2, height: '.9em', marginLeft: 3,
+            verticalAlign: '-.1em', background: 'currentColor', opacity: .75,
+            animation: 'mer-tour-blink 1s step-end infinite',
+          }} />
+        )}
+      </span>
     </p>
   )
 }
@@ -797,6 +937,27 @@ function Cutout({ rect, dim }: { rect: DOMRect; dim: boolean }) {
       )}
     </>
   )
+}
+
+/** The fence for a beat with no ring at all - a pure narration step, or one
+ *  whose target never rendered.
+ *
+ *  [`Cutout`] fences everything AROUND a target, so with no target there is
+ *  nothing for it to build panes from and it renders nothing. That left the
+ *  whole app clickable behind the caption on exactly the beats where the tour
+ *  is talking rather than pointing - which, over a run, is most of them.
+ *
+ *  One inert-looking sheet rather than four panes: with no hole to leave, the
+ *  geometry collapses to the viewport. It draws NOTHING (no dim, no blur) -
+ *  the narration beats already have their own scrim where they want one
+ *  (`caption && centered`), and stacking a second one would darken the app
+ *  twice. Its only job is to take the click.
+ *
+ *  Rendered at the same point in the sibling order as [`Cutout`], so the
+ *  caption, the choice buttons and Skip still paint on top with their own
+ *  `pointerEvents:'auto'`. */
+function FullFence() {
+  return <div className="absolute inset-0" style={{ pointerEvents: 'auto' }} />
 }
 
 /** One answer button. `primary` is the styled-forward one — not a

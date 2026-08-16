@@ -17,6 +17,12 @@ Requires Pillow (`pip install Pillow`); not part of the app's runtime deps.
 
 Usage: python3 scripts/make-dmg-background.py
 """
+
+# Digest of the committed tray/src-tauri/dmg/background.png this script produces.
+# Pinned by ui/__tests__/dmg-install-steps.test.ts so a copy edit here that is
+# never re-rendered cannot ship the old picture with a diff that looks complete.
+# Re-run this script and update the line below in the SAME commit.
+# rendered-digest: 99d73a6d8ebc92285095ba79d25001c75c262536f52026ff16ecfd84580d8248
 import math
 import os
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
@@ -147,11 +153,33 @@ def main():
     draw.polygon([tip, left, right], fill=ARROW + (235,))
 
     # ── Instructional caption under the icon row ─────────────────────────────
-    cap_font = font(SFNS, 13)
-    caption = "Drag to Applications to install"
-    bbox = draw.textbbox((0, 0), caption, font=cap_font)
-    tw = bbox[2] - bbox[0]
-    draw.text((W // 2 - tw // 2, 258 * SCALE), caption, font=cap_font, fill=T_MUTED)
+    #
+    # TWO STEPS, NUMBERED, because the second one is the one people miss.
+    #
+    # This used to read "Drag to Applications to install" and stop there — which
+    # describes the drag accurately and then leaves the user on a Finder window
+    # with nothing telling them the app has not started. A DMG cannot launch
+    # anything itself: the drag is a Finder copy, no code of ours runs, and macOS
+    # has no post-install hook in a disk image by design. So the app sitting there
+    # unopened is not a bug to fix in code — it is a step the installer has to
+    # ASK for, and the background is the only surface that can.
+    #
+    # Numbered rather than one sentence: "and then open it" tacked onto the drag
+    # instruction reads as a description of what the drag does, which is exactly
+    # the misreading that leaves the app unopened. Two numbers make it two
+    # actions, and the second one names where to find it, because Applications
+    # is not where the user is looking at that moment.
+    step_font = font(SFNS, 12)
+    steps = [
+        "1.  Drag Meridian to Applications",
+        "2.  Open it from Applications to set up",
+    ]
+    for n, line in enumerate(steps):
+        bbox = draw.textbbox((0, 0), line, font=step_font)
+        tw = bbox[2] - bbox[0]
+        # 252pt clears the 128pt icon row (centred on 170pt, so its bottom edge
+        # is 234pt) with room for Finder's own icon labels underneath them.
+        draw.text((W // 2 - tw // 2, (252 + n * 17) * SCALE), line, font=step_font, fill=T_MUTED)
 
     os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
     bg.convert("RGB").save(OUT_PATH, dpi=(144, 144))

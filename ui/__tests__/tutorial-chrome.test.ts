@@ -60,6 +60,27 @@ describe('the tour can always be outpaced', () => {
     expect(overlay).not.toMatch(/setInterval/)
   })
 
+  it('does not let the typing resize the bubble it is typing into', () => {
+    // Two things downstream measure the caption's height. The un-anchored bar
+    // publishes its own bottom edge as `--mer-tour-say-bottom` so ModalShell can
+    // pad its body clear of it (#775) - via a ResizeObserver, so a bar that grows
+    // line by line as it types re-pads the modal in steps WHILE the user reads
+    // the line doing it. And the anchored bubble is placed off its own height, so
+    // it would creep upward as it typed.
+    //
+    // The fix is a hidden copy of the full line holding the box open from the
+    // first frame. Checked here because neither symptom is visible in a headless
+    // run: there is no layout, and no modal to re-pad.
+    const body = overlay.slice(overlay.indexOf('function CaptionBody'))
+    const sizer = body.indexOf("visibility: 'hidden' }}>{text}")
+    const typed = body.indexOf('{shown}')
+    expect(sizer).toBeGreaterThan(-1)
+    // The reserved copy renders the WHOLE text, the visible one the slice - and
+    // the visible layer is taken out of flow so it cannot add to the box.
+    expect(typed).toBeGreaterThan(sizer)
+    expect(body).toMatch(/position: 'absolute', inset: 0/)
+  })
+
   it('stops typing when the tour is torn down', () => {
     // The interval outlives the component otherwise, and keeps calling setState
     // on something React has unmounted - which in a walkthrough the user just
@@ -155,11 +176,12 @@ describe('the narration stays where it can be acted on', () => {
   it('only offers that hint where there is actually something ringed', () => {
     // The hint lives in the ANCHORED bubble, which only renders for a beat with
     // a spotlight. That is what makes "click the highlighted card" impossible to
-    // show when nothing is highlighted - three beats wait on a click with the
-    // ring deliberately cleared (the subscription gate, Settings' close, the
-    // schedule dialog), and in each the top-bar bubble is what renders.
+    // show when nothing is highlighted - and the script has FIVE beats that wait
+    // on the user with the ring deliberately cleared (see #786: the tracker step,
+    // the subscription question, the provider flow, Settings' close, the schedule
+    // dialog). Each of those renders the un-anchored bar instead.
     const anchored = overlay.indexOf('<AnchoredCaption rect={ring}>')
-    const topBar = overlay.indexOf('{caption && !centered && !(ring && ringFits) && (')
+    const topBar = overlay.indexOf('{unanchored && (')
     const hint = overlay.indexOf('<ClickHint />')
     expect(anchored).toBeGreaterThan(-1)
     expect(topBar).toBeGreaterThan(anchored)
@@ -189,12 +211,16 @@ describe('the narration stays where it can be acted on', () => {
     expect(teardown.slice(0, teardown.indexOf('setRunning(false)'))).toContain("setChapter('intro')")
   })
 
-  it('still paints the way out on top of the fence', () => {
-    // Carried from tutorial-click-fence: if the fence ever moves below Skip it
+  it('still paints the way out on top of both fences', () => {
+    // Carried from tutorial-click-fence: if a fence ever moves below Skip it
     // swallows it, and a user who cannot reach the target also cannot leave.
-    const fence = overlay.indexOf('<Cutout rect={ring} dim={false} />')
+    // There are TWO now - the ringed cutout and the whole-viewport `FullFence`
+    // added for narration beats - and Skip has to outrank both.
+    const cutout = overlay.indexOf('<Cutout rect={ring} dim={spotlightDim} />')
+    const full = overlay.indexOf('<FullFence />')
     const skip = overlay.indexOf('<button onClick={onSkip}')
-    expect(fence).toBeGreaterThan(-1)
-    expect(skip).toBeGreaterThan(fence)
+    expect(cutout).toBeGreaterThan(-1)
+    expect(full).toBeGreaterThan(-1)
+    expect(skip).toBeGreaterThan(Math.max(cutout, full))
   })
 })

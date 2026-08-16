@@ -300,6 +300,14 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
     // seconds in front of every user who IS set up - and if their draft landed
     // inside it, the next line ("reading the work, writing the update") would
     // narrate work that had already finished.
+    //
+    // 15s is DELIBERATELY under `HANDOVER_WAIT_MS` (30s), which is what tells
+    // `appeared` whether a wait is on the app or on a person - and the fence
+    // stays up for the former. This one waits on a health read coming back, not
+    // on the user doing anything, so the fence is still the right protection.
+    // It is the first probe to land between the old 4s ceiling and that
+    // threshold, which is the case that comment asks to be decided rather than
+    // inherited.
     await s.appeared('[data-tour="wl-connect-provider"], [data-tour="draft-targets"]', 15000)
     // Zero-ish: a "which one is on screen right now" probe, not a wait.
     const blocked = await s.appeared('[data-tour="wl-connect-provider"]', 250)
@@ -491,13 +499,18 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   await s.point('[data-tour="wl-confirm"]')
   await s.waitForClick('[data-tour="wl-confirm"]', 120000)
   s.spotlight(null)
-  // STRAIGHT ON THE POSTED STATE. `appeared` returns the frame the posted bar
-  // renders, and the pause after it was 600ms of nothing on a screen the user
-  // has already read - they pressed the button, they are waiting to be told it
-  // worked. The scripted post itself was the other half of the wait; see
-  // `TutorialSummaryCard`.
+  // STRAIGHT ON THE POSTED STATE, with NOTHING after `appeared`. It polls per
+  // animation frame, so it returns the frame the posted bar renders and the new
+  // caption lands with it.
+  //
+  // Every ms added here is spent on a screen the user has already finished
+  // reading: they pressed Approve, they watched the bar flip to posted, and the
+  // beat still up says "nothing leaves Meridian until you approve it" - which
+  // they just did. This was 600ms, then 200ms, and both were visible as a stall
+  // between the thing happening and being told it happened. The scripted post in
+  // `TutorialSummaryCard` (550ms) is the one wait that stays: it sits BEFORE the
+  // posted bar, where it reads as the round-trip it is standing in for.
   await s.appeared('[data-tour="wl-posted"]', 6000)
-  await s.pause(200)
   await s.next('Filed and written up, from work that was never on a ticket. Example day - nothing went out.')
 
   // The AI ask and the end-of-day time both live in this last chapter rather

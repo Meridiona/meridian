@@ -1,6 +1,66 @@
 {
   "releases": [
     {
+      "version": "1.87.0",
+      "date": "2026-08-16",
+      "highlights": [
+        "Notifications on Windows can now be answered. Buttons and the reply box did nothing there - the only way a question ever closed itself was by expiring - and a notification Meridian tried to take back stayed in the Action Center with buttons that still looked live. Both now work the way they already did on Mac.",
+        "The guided tour can be replayed. Settings - Account - Show me around brings it back. Until now that control existed only in development builds, so once you finished or skipped the tour there was no way to see it again.",
+        "The tour writes your first task for you instead of waiting at an empty box. It used to ask you to invent one before you had watched Meridian draft anything, which is the wrong moment to ask - the step straight after is the one where a scruffy one-liner becomes a titled, described task."
+      ],
+      "fixes": [
+        "On Windows the dashboard no longer opens with no title bar and no taskbar. It covered the whole screen with nothing to click - no minimize, no close - and the only ways out were Alt+F4 and Alt+Tab. It now fills the usable screen with its window controls intact.",
+        "On Windows, pressing Continue in the setup wizard no longer shrinks a maximized window back down to its smaller size.",
+        "The setup wizard no longer stops on the Alerts step when there is nothing to ask. Windows switches notifications on for most apps already, so that step usually opened with its one setting done.",
+        "The setup wizard's Continue button is easier to read - the old fill was pale enough that the button looked half-disabled.",
+        "Installing an update no longer races Meridian's own health check, which could put the background service back while the file it runs from was still being replaced.",
+        "Windows no longer logs a notification error every time Meridian starts.",
+        "Pressing Generate on a work log with no AI connected now takes you somewhere. The Choose a provider button opened Settings behind the card you were still looking at, so the one route the app offers for connecting a model appeared to do nothing.",
+        "The tour no longer demonstrates generating a work log on a machine with no AI set up at all.",
+        "The tour's spotlight no longer shows square corners around a rounded card, and its narration bar no longer covers the first line of what it is talking about.",
+        "Writing a task, being sent off to connect an AI provider, and coming back now returns you to what you were typing rather than to the task list.",
+        "Finishing the tour no longer asks a second time when you want your work log written."
+      ]
+    },
+    {
+      "version": "1.86.0",
+      "date": "2026-08-16",
+      "highlights": [
+        "Setup now picks up where you left off. Closing the wizard part-way through used to mean starting again from the first card.",
+        "Meridian tells you when your daily summary is ready, instead of leaving you to go and look.",
+        "The dashboard opens filling the screen rather than in a small window you have to resize every time."
+      ],
+      "fixes": [
+        "Signing in sticks. Your session was being quietly dropped every time Meridian restarted, so you had to sign in again each launch.",
+        "Settings no longer crashes on builds where sign-in is switched off.",
+        "The vendored sign-in component was writing your session token into Meridian's own logs. It no longer does, and that logging is now switched off by default regardless.",
+        "The wizard's privacy wording now matches what the app actually does. It said Meridian never collects anything - true of a build you compile yourself, but not of the installed app, which sends redacted error reports and product analytics you can switch off. The download page, the privacy document and the wizard all say the same thing now.",
+        "The Notifications permission card in setup now shows the real Notifications pane rather than a stand-in, and the permission cards are highlighted one at a time instead of all at once.",
+        "The setup wizard no longer renders black when the window is in full screen.",
+        "What's New no longer opens on top of you the moment first-run setup finishes.",
+        "The walkthrough survives a stray click, and the tray's own pop-ups no longer interrupt it half way through.",
+        "Connecting GitHub no longer blames your token when GitHub simply cut the response short. Meridian retries instead."
+      ]
+    },
+    {
+      "version": "1.85.0",
+      "date": "2026-08-13",
+      "highlights": [
+        "Meridian shows you around the first time you open it. A guided walkthrough covers planning a day, watching your work get picked up, and having a work log written for you - starting on your own day, then on an example day so you can see a full one end to end.",
+        "Yesterday's unfinished work now moves into today on its own, so you no longer start the morning rebuilding a list you already made.",
+        "Meridian now says when a draft work log has fallen behind the work it describes, rather than letting you post something that stopped being true an hour ago."
+      ],
+      "fixes": [
+        "Uninstalling now removes your data. Some of it survived every uninstall route the app offered, which is not what uninstall means.",
+        "An update already being installed is no longer reported as 'Update failed', and an install that genuinely fails now tells every screen, so nothing is left sitting on a spinner.",
+        "Restarting the background service no longer runs into the limit macOS puts on how often a service may restart, which used to leave it stopped for minutes at a time.",
+        "A work-log draft that the AI failed to produce now points you at the reason rather than ending the flow with nothing.",
+        "Every notification now opens the thing it is about. Some of them went nowhere. The board-hygiene digest, which fired at midnight and which nobody ever acted on, is gone.",
+        "A fresh install opens setup rather than dropping you on an empty dashboard.",
+        "The work-log draft is laid out as a document you can read, and the live hour on your timeline now says which hour it means."
+      ]
+    },
+    {
       "version": "1.84.0",
       "date": "2026-08-07",
       "highlights": [
