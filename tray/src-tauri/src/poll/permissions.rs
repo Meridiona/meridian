@@ -389,7 +389,10 @@ mod tests {
     /// tests scan rather than call.
     #[test]
     fn the_notice_writer_routes_through_the_debounce() {
-        let src = include_str!("permissions.rs");
+        let whole = include_str!("permissions.rs");
+        let src = &whole[..whole
+            .find("#[cfg(test)]")
+            .expect("permissions.rs lost its test module marker")];
         assert!(
             src.contains("let verdict = debounce.observe(perm.id, granted, now);"),
             "check_bool_permission no longer consults the debounce - a single \
