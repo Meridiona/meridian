@@ -49,6 +49,17 @@ function closeTask(): string {
   return src.slice(at, end)
 }
 
+/** The effect that tracks the visible day into `dayRef`. */
+function dayTracker(): string {
+  const at = src.indexOf('dayRef.current = day')
+  expect(at).toBeGreaterThan(-1)
+  const from = src.lastIndexOf('useEffect(', at)
+  expect(from).toBeGreaterThan(-1)
+  const end = src.indexOf('[day])', at)
+  expect(end).toBeGreaterThan(at)
+  return src.slice(from, end)
+}
+
 /** The Escape key handler. */
 function escapeHandler(): string {
   const at = src.indexOf('function onKey(')
@@ -82,6 +93,21 @@ describe('the badge map is re-read after the user acts on a draft', () => {
     const body = refreshDrafts()
     expect(body).toContain('++draftRequest.current')
     expect(body).toContain('req !== draftRequest.current')
+  })
+
+  it('invalidates an in-flight refresh whenever the day changes', () => {
+    // The hole the two guards above leave OPEN, together. Page A -> B -> A while a
+    // refresh for A is still in flight and BOTH checks wave it through: `dayRef` is
+    // back to A, and the request number is untouched because returning to A starts
+    // the day effect's own read, not another `refreshDrafts`. So a response from
+    // before the round trip lands on top of the fresh one the return to A just
+    // painted - the same "older answer wins" failure as two overlapping refreshes,
+    // reached by navigating instead of by clicking.
+    //
+    // Bumping the counter on every day transition closes it: the number a refresh
+    // captured before the user left is no longer current when it returns, so the
+    // response is dropped regardless of which day is showing.
+    expect(dayTracker()).toContain('draftRequest.current')
   })
 
   it('keeps the badges it already has when a refresh read fails', () => {
