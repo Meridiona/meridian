@@ -166,7 +166,18 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
   // tell whether the user navigated away before it resolved (and must not clobber
   // the new day's state - see `generate`/`generateNow`).
   const dayRef = useRef(day)
-  useEffect(() => { dayRef.current = day }, [day])
+  // Declared here rather than beside `refreshDrafts` because the effect below writes
+  // it - see the comment there, and the request-ordering note above `refreshDrafts`.
+  const draftRequest = useRef(0)
+  useEffect(() => {
+    dayRef.current = day
+    // Every day transition also retires whatever draft refresh was in flight (see
+    // `draftRequest` below). `dayRef` alone does not: page A -> B -> A and it reads
+    // A again, so a response sent before the round trip passes the check and lands
+    // on top of the badges the return to A has already painted. Bumping the number
+    // here means "the day moved" invalidates a refresh even when it moves back.
+    draftRequest.current += 1
+  }, [day])
 
   // A re-entry guard shared by both compose paths: a fast double-click (or a
   // Regenerate + Generate-now overlap) must not fire two concurrent LLM calls. A
@@ -195,7 +206,6 @@ export function DaySummaryOverlay({ day, isToday, onShiftDay, onClose, onOpenSet
   // in the order they were sent. The older response landing last would restore exactly
   // the badges the newer one had just corrected, which is the bug this file is fixing,
   // reappearing through a different door.
-  const draftRequest = useRef(0)
   const refreshDrafts = useCallback(async () => {
     const req = ++draftRequest.current
     const rows = await load<DayDraftState[]>(API, 'get_day_draft_states', { day }).catch(() => null)
