@@ -135,6 +135,34 @@ export async function invoke<T = unknown>(cmd: string, args?: Record<string, unk
   return t.core.invoke(cmd, args) as Promise<T>
 }
 
+/** Forward a UI-side failure to the tray's log, so it lands in the telemetry
+ *  spool (and therefore in an Export Diagnostics bundle) rather than only in a
+ *  console.
+ *
+ *  THE DASHBOARD HAS NO CONSOLE ANYONE CAN OPEN. A packaged build ships no
+ *  devtools — there is no `devtools` feature or config anywhere in
+ *  `tray/src-tauri` — so `console.error` in the webview is written to nothing.
+ *  That is not a theoretical gap: the planner's Refresh chip drew `⚠ Sync failed`
+ *  on 2026-08-17 while the Jira sync was demonstrably healthy (a hand-run
+ *  `meridian tasks-sync` synced 81 issues, `pm_sync_state.last_error` was NULL),
+ *  and the reason was unrecoverable — the invoke had been rejected on the JS side,
+ *  so there was no Rust span either, and the whole 7-day spool held nothing.
+ *
+ *  `tray_debug` is the command that already exists for this (it was written for
+ *  the popover's `window.onerror`); it logs at INFO with the calling window's
+ *  label, which is what makes a report attributable to a surface.
+ *
+ *  BEST EFFORT, ALWAYS. This is a diagnostic, so it must never turn a handled
+ *  failure into a second one: outside Tauri it is a no-op, and a rejected
+ *  `tray_debug` is swallowed. */
+export function reportUiError(msg: string): void {
+  const t = tauri()
+  if (!t) return
+  // Not `invoke()` above: that one throws outside Tauri, and a diagnostic must
+  // not need a try/catch at every call site.
+  t.core.invoke('tray_debug', { msg }).catch(() => {})
+}
+
 /** True when `href` is an absolute http(s) URL pointing outside `origin` —
  *  i.e. a navigation the Tauri webview cannot perform itself. Exported for
  *  the ExternalLinks interceptor and its tests. */
