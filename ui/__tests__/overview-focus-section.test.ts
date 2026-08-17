@@ -18,7 +18,7 @@
 import { describe, it, expect } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { focusSectionVisible } from '../components/timeline/types'
+import { focusSectionVisible, visibleFocusItems } from '../components/timeline/types'
 
 const src = (p: string) => readFileSync(join(import.meta.dir, '..', p), 'utf8')
 const panel = src('components/timeline/OverviewPanel.tsx')
@@ -143,5 +143,43 @@ describe('the panel uses the shared predicate', () => {
     // Solo genuinely changes other things (greeting copy, the Drafts mini-card,
     // the connect-a-tracker CTA) — those are not part of this bug.
     expect(panel).toContain('isSolo')
+  })
+})
+
+// ── which plan rows the section shows ────────────────────────────────────────
+//
+// Split out as a pure function because the old inline rule (`plan.confirmed ?
+// plan.plan : []`) hid real tasks twice, through two different write paths, and
+// there was nothing to test it with - the rule lived inside a `useMemo` in a
+// component with no render harness.
+describe('visibleFocusItems', () => {
+  const items = [{ task_key: 'KAN-1' }, { task_key: 'KAN-2' }]
+
+  it('shows rows the user committed', () => {
+    expect(visibleFocusItems({ plan: items, skipped: false })).toHaveLength(2)
+  })
+
+  it('shows them even when the day is not marked confirmed', () => {
+    // THE BUG. "Skip today" then "Plan today →" cleared `confirmed_at` and left
+    // the rows, so the dashboard drew "What are you working on today?" over a
+    // plan holding five tasks - while the planner, one click away, still listed
+    // them and said "Saved". Rows in `plan.plan` only ever get there because a
+    // user put them there; suggestions live in a different field.
+    expect(visibleFocusItems({ plan: items, skipped: false, confirmed: false } as never))
+      .toHaveLength(2)
+  })
+
+  it('shows nothing for a day that was skipped', () => {
+    // The other direction, and the reason this cannot simply return `plan.plan`.
+    // Skipping STAMPS `confirmed_at`, so the old `confirmed` gate was true on a
+    // skipped day and rendered whatever rows were left over from before it -
+    // under a day the user had explicitly declined to plan. Rust's `is_planned`
+    // has always checked `!skipped`; this puts the two back on one rule.
+    expect(visibleFocusItems({ plan: items, skipped: true })).toEqual([])
+  })
+
+  it('shows nothing before the plan has loaded', () => {
+    expect(visibleFocusItems(null)).toEqual([])
+    expect(visibleFocusItems(undefined)).toEqual([])
   })
 })

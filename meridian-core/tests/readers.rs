@@ -514,7 +514,13 @@ async fn plan_write_confirm_then_reopen_roundtrip() {
     // Confirmed tasks aren't re-suggested.
     assert!(resp.suggestions.is_empty());
 
-    // reopen → confirmed cleared, committed rows kept.
+    // reopen → un-skipped, committed rows kept AND still committed.
+    //
+    // This assertion used to read `!resp.confirmed`, pinning the bug rather than
+    // the behaviour: `reopen` cleared `confirmed_at` while leaving the rows, and
+    // every reader gates on that flag. See the `reopen` arm's comment, and
+    // `reopening_a_day_with_tasks_keeps_them_committed` below for the failure it
+    // produced on screen.
     let reopen = meridian_core::plan::PlanBody {
         action: "reopen".to_string(),
         date: Some(date.clone()),
@@ -525,8 +531,13 @@ async fn plan_write_confirm_then_reopen_roundtrip() {
         meridian_core::plan::apply_plan_action(&pool, &reopen, &date, today, &now, avail().await)
             .await
             .unwrap();
-    assert!(!resp.confirmed && !resp.skipped);
+    assert!(!resp.skipped);
     assert_eq!(resp.plan.len(), 2, "reopen keeps the committed rows");
+    assert!(
+        resp.confirmed,
+        "rows survived the reopen, so the day is still planned - clearing the flag \
+         hides them from the dashboard, the summary, and the auto-open gate"
+    );
 
     // remove one → drops just that key.
     let remove = meridian_core::plan::PlanBody {
@@ -541,6 +552,95 @@ async fn plan_write_confirm_then_reopen_roundtrip() {
             .unwrap();
     let plan_keys: Vec<&str> = resp.plan.iter().map(|p| p.task_key.as_str()).collect();
     assert_eq!(plan_keys, vec!["PROJ-B"]);
+}
+
+/// THE BUG: "Skip today" then "Plan today →" left the day holding its tasks with
+/// `confirmed_at` NULL, and every reader gates on that flag - so the dashboard's
+/// "Today's focus" showed the "What are you working on today?" nudge over a plan
+/// with five tasks in it, [`meridian_core::plan::DayPlan::is_planned`] scored the
+/// day against no tickets, and `plan_handled` let the planner auto-open again.
+///
+/// The planner itself kept showing the tasks and saying "Saved", which is what
+/// made it read as a display glitch. Touching anything in it fixed the symptom,
+/// because every planner edit routes through "confirm".
+///
+/// Asserted through `apply_plan_action` rather than by inspecting the meta row:
+/// what matters is the flag every consumer actually reads.
+#[tokio::test]
+async fn reopening_a_day_with_tasks_keeps_them_committed() {
+    let pool = make_plan_pool().await;
+    let today = chrono::Local::now().date_naive();
+    let date = today.format("%Y-%m-%d").to_string();
+    seed_task(&pool, "PROJ-A", "Backlog", Some(&date), 0).await;
+    let now = chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    let act = |action: &str, keys: Option<Vec<String>>| {
+        let body = meridian_core::plan::PlanBody {
+            action: action.to_string(),
+            date: Some(date.clone()),
+            task_key: None,
+            task_keys: keys,
+        };
+        let pool = &pool;
+        let now = now.clone();
+        let date = date.clone();
+        async move {
+            meridian_core::plan::apply_plan_action(pool, &body, &date, today, &now, Vec::new())
+                .await
+                .unwrap()
+        }
+    };
+
+    act("confirm", Some(vec!["PROJ-A".to_string()])).await;
+    act("skip", None).await;
+    let resp = act("reopen", None).await;
+
+    assert_eq!(resp.plan.len(), 1, "skip/reopen never deletes plan rows");
+    assert!(!resp.skipped, "reopen clears the skip");
+    assert!(
+        resp.confirmed,
+        "the day still holds a task, so it is still planned - a NULL confirmed_at \
+         here is what blanked Today's focus, the summary's planned branch, and the \
+         auto-open gate all at once"
+    );
+}
+
+/// The other half of the same rule: reopening a day with NOTHING in it must leave
+/// it genuinely uncommitted, which is the state the planner nudge exists for.
+/// Stamping unconditionally would silence the nudge on a day nobody has planned.
+#[tokio::test]
+async fn reopening_an_empty_day_leaves_it_unplanned() {
+    let pool = make_plan_pool().await;
+    let today = chrono::Local::now().date_naive();
+    let date = today.format("%Y-%m-%d").to_string();
+    let now = chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    let body = |action: &str| meridian_core::plan::PlanBody {
+        action: action.to_string(),
+        date: Some(date.clone()),
+        task_key: None,
+        task_keys: None,
+    };
+
+    meridian_core::plan::apply_plan_action(&pool, &body("skip"), &date, today, &now, Vec::new())
+        .await
+        .unwrap();
+    let resp = meridian_core::plan::apply_plan_action(
+        &pool,
+        &body("reopen"),
+        &date,
+        today,
+        &now,
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+
+    assert!(resp.plan.is_empty());
+    assert!(!resp.skipped);
+    assert!(
+        !resp.confirmed,
+        "an empty reopened day has not been planned - marking it committed would \
+         silence the planner nudge for a day with nothing in it"
+    );
 }
 
 #[tokio::test]

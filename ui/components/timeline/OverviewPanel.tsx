@@ -19,7 +19,7 @@ import { fmtDur } from '@/components/atoms'
 import { load as loadData, mutate as mutateData, openExternal } from '@/lib/bridge'
 import { usePlan, refreshPlan } from '@/components/plan/planStore'
 import type { PlanItem, CodingAgentsResponse } from '@/lib/api-types'
-import { focusSectionVisible, formatDayLabel, isPending } from './types'
+import { focusSectionVisible, formatDayLabel, isPending, visibleFocusItems } from './types'
 import { TimeByApp, appTotals } from './TimeByApp'
 import { TimeByCategory, categoryRows } from './TimeByCategory'
 import { UpdateCard } from './UpdateCard'
@@ -118,7 +118,7 @@ export function OverviewPanel({ data, onOpen, onOpenTask, onOpenSettings }: {
     const id = setInterval(() => refreshPlan(day), 30_000)
     return () => clearInterval(id)
   }, [day])
-  const focusItems = useMemo(() => (plan?.confirmed ? plan.plan : []), [plan])
+  const focusItems = useMemo(() => visibleFocusItems(plan), [plan])
 
   // Toggle a focus item's done state. This goes through `set_plan_task_done`,
   // NOT `apply_ticket_fix` — the latter only knows real trackers, so ticking a

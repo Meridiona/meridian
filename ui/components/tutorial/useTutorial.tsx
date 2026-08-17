@@ -27,7 +27,7 @@ import { invoke, load } from '@/lib/bridge'
 import { connectedTrackers } from '@/lib/integrations'
 import type { IntegrationsResponse } from '@/lib/api-types'
 import {
-  Aborted, setTutorialRunning, sleep, tourTarget, tween, waitForElement,
+  Aborted, revealTarget, setTutorialRunning, sleep, tourTarget, tween, waitForElement,
   type GhostCard, type Stage, type StageChoice, type StageModal,
 } from './engine'
 import { runScript } from './script'
@@ -316,6 +316,11 @@ export function useTutorial(opts: {
       get aborted() { return abortRef.current?.signal.aborted ?? true },
       say: (t) => { setCaption(t); setCentered(false) },
       spotlight: (sel, o) => {
+        // Ringing something the user cannot see is the same as not ringing it.
+        // A target inside a scrollable panel (the composer's "Where" choice is
+        // the one that bit) can sit below the fold, and the beat then waits on a
+        // click nobody can make. See `revealTarget`.
+        if (sel) revealTarget(sel)
         setSpotlight(sel)
         // Clearing the spotlight always clears the dim with it — a blur left
         // fenced around nothing would lock the whole window.
@@ -650,6 +655,10 @@ export function useTutorial(opts: {
         // querying immediately would race React's commit.
         const el = await waitForElement(sel, sig)
         if (!el) return
+        // Beats that point WITHOUT ringing get the same treatment - the cursor
+        // flying to a coordinate off the bottom of a scroller is no more useful
+        // than a ring there.
+        revealTarget(sel)
         setCursorPoint(null)
         setCursorAt(sel)
         await sleep(900, sig)

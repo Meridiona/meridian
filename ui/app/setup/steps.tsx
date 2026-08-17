@@ -306,7 +306,13 @@ function SignInBody({ wiz }: { wiz: Wiz }) {
             <p style={{ fontSize: 14.5, fontWeight: 600, color: 'var(--t-title)' }}>Sign-in disabled</p>
             <p style={{ fontSize: 12, color: 'var(--t-muted)', marginTop: 3 }}>
               This is a source build with no Clerk publishable key configured.<br />
-              Set <code style={{ fontFamily: 'monospace', fontSize: 11 }}>CLERK_PUBLISHABLE_KEY</code> in <code style={{ fontFamily: 'monospace', fontSize: 11 }}>.env</code> to enable sign-in.
+              {/* `var(--font-mono)`, not the browser's `monospace`: the wizard has ONE
+                  voice (SF Pro, via `--font-sans`, which `--font-mono` aliases), and
+                  these two `<code>`s were the only things in the whole setup flow
+                  still rendering in a different typeface. Kept as `<code>` because
+                  they name a literal env var and a literal filename - that is what
+                  the element is for; only the family was wrong. */}
+              Set <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>CLERK_PUBLISHABLE_KEY</code> in <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>.env</code> to enable sign-in.
             </p>
           </div>
         </div>

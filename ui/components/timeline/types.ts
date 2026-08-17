@@ -150,6 +150,38 @@ export function isPending(w: WorklogItem): boolean {
 // `planLoaded` is whether `get_plan` has resolved for this day. It gates the
 // empty case only, so an empty section never flashes before the first fetch —
 // items already imply a resolved fetch.
+/** Which of a day's plan rows "Today's focus" should show.
+ *
+ *  ROWS IN THE PLAN MEAN A USER PUT THEM THERE. Suggestions live in
+ *  `plan.suggestions` / `plan.available`, never in `plan.plan`, so a non-empty
+ *  `plan` is by construction a committed one. This used to read
+ *  `plan.confirmed ? plan.plan : []`, and that gate has now hidden real tasks
+ *  twice through two different write paths:
+ *
+ *    1. the composer's `add`, which wrote rows without stamping
+ *       `daily_plan_meta` at all (fixed in the Rust `add` arm);
+ *    2. `reopen`, which CLEARED the stamp while leaving the rows - so "Skip
+ *       today" then "Plan today →" left five tasks on screen in the planner and
+ *       the "What are you working on today?" nudge on the dashboard.
+ *
+ *  Both were write-side bugs and both are fixed there. Reading the rows rather
+ *  than the flag means a third one cannot blank this screen: the worst a missing
+ *  stamp can now do is affect surfaces that genuinely need to know whether the
+ *  ritual was performed, not hide work the user can see elsewhere in the app.
+ *
+ *  `skipped` IS still honoured, and this is where the old gate was wrong in the
+ *  other direction: skipping stamps `confirmed_at`, so `confirmed` was true on a
+ *  skipped day and leftover rows rendered under a day the user had explicitly
+ *  declined to plan. Matching Rust's [`DayPlan::is_planned`] - not skipped, and
+ *  actually holding something - puts the dashboard and the daily summary back on
+ *  one rule. */
+export function visibleFocusItems<T>(
+  plan: { plan: T[]; skipped: boolean } | null | undefined,
+): T[] {
+  if (!plan || plan.skipped) return []
+  return plan.plan
+}
+
 export function focusSectionVisible({ isToday, planLoaded, itemCount }: {
   isToday: boolean
   planLoaded: boolean

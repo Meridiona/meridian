@@ -1211,8 +1211,41 @@ pub async fn apply_plan_action(
             tx.commit().await?;
         }
         "reopen" => {
+            // UN-SKIPPING A DAY THAT ALREADY HOLDS TASKS MUST NOT UN-COMMIT THEM.
+            //
+            // `reopen` used to clear `confirmed_at` unconditionally, and skipping
+            // does not delete `daily_plan` rows - so "Skip today" followed by
+            // "Plan today →" left the day holding its tasks with `confirmed_at`
+            // NULL. Every reader gates on that flag, so all of this went wrong at
+            // once while the planner itself still showed the tasks and said
+            // "Saved · 5 tasks":
+            //   * the dashboard's "Today's focus" renders `confirmed ? plan : []`,
+            //     so it showed the "What are you working on today?" nudge over a
+            //     day that had five tasks in it;
+            //   * [`DayPlan::is_planned`] reads it, so `day_evidence` scored the
+            //     day against NO tickets and the daily summary took its
+            //     nothing-was-planned branch with `planned_count` 0;
+            //   * [`plan_handled`] reads it, so the planner AUTO-OPENED again on a
+            //     day that was already planned.
+            // Touching anything in the planner fixed all three, because every edit
+            // routes through "confirm" - which is exactly why this looked like a
+            // display glitch rather than a write bug.
+            //
+            // So the flag follows the rows: reopening a day with tasks in it
+            // re-commits them (`now`, not the original timestamp - it is a fresh
+            // decision), and reopening an empty day leaves it genuinely
+            // uncommitted, which is the state the planner nudge is for. Same
+            // invariant the `add` arm above spells out: rows in `daily_plan` mean
+            // a user put them there, and nothing should hide them afterwards.
             let mut tx = pool.begin().await?;
-            upsert_meta(&mut tx, date, None, 0, now).await?;
+            let has_items: bool = sqlx::query_scalar::<_, i64>(
+                "SELECT 1 FROM daily_plan WHERE plan_date = ? LIMIT 1",
+            )
+            .bind(date)
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some();
+            upsert_meta(&mut tx, date, has_items.then_some(now), 0, now).await?;
             tx.commit().await?;
         }
         other => return Err(PlanWriteError::UnknownAction(other.to_string()).into()),
