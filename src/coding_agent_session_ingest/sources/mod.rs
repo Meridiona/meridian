@@ -101,7 +101,7 @@ impl AgentSource {
                 })
                 .await
                 .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "copilot_cli collect task panicked");
+                    tracing::warn!(error = %e, "copilot_cli collect task panicked"); // not-anyhow: this error has no source chain to walk
                     Vec::new()
                 })
             }
@@ -120,7 +120,7 @@ impl AgentSource {
                 })
                 .await
                 .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "copilot_vscode collect task panicked");
+                    tracing::warn!(error = %e, "copilot_vscode collect task panicked"); // not-anyhow: this error has no source chain to walk
                     Vec::new()
                 })
             }
@@ -159,7 +159,7 @@ pub async fn sweep(pool: &SqlitePool, now: DateTime<Utc>) -> (u64, u64) {
     let endpoints = match super::db::fetch_session_endpoints(pool).await {
         Ok(e) => e,
         Err(e) => {
-            tracing::warn!(error = %e, "source sweep: fetch endpoints failed");
+            tracing::warn!(error = %crate::errors::chain(&e), "source sweep: fetch endpoints failed");
             return (0, 0);
         }
     };
