@@ -1444,10 +1444,21 @@ mod db_encryption_notice_tests {
     }
 }
 
-/// Debug bridge: lets the popover/tooltip JS forward `window.onerror` reports and
-/// the measured card height to the tray's stderr log, so GUI-only faults (a JS
-/// exception, a window/card size mismatch) are diagnosable without devtools. The
-/// injected `window` names the caller and exposes its actual size for comparison.
+/// Debug bridge: lets webview JS forward `window.onerror` reports and the measured
+/// card height to the tray's log, so GUI-only faults (a JS exception, a
+/// window/card size mismatch) are diagnosable without devtools. The injected
+/// `window` names the caller and exposes its actual size for comparison.
+///
+/// **A packaged build has no devtools at all** — there is no `devtools` feature or
+/// config anywhere in this crate — so anything a webview writes to `console.error`
+/// is written to nothing. This command is the only way a JS-side failure reaches
+/// the telemetry spool (and therefore an Export Diagnostics bundle).
+///
+/// # Who calls this
+/// - `tray/src/app.js` and `tray/src/tooltip.js` — the popover's `dbg()` helper.
+/// - The dashboard, via `ui/lib/bridge.ts::reportUiError` — added after a tracker
+///   sync failure proved unrecoverable: the invoke was rejected before dispatch so
+///   there was no span, and the reason existed only in an unopenable console.
 #[tauri::command]
 fn tray_debug(window: tauri::Window, msg: String) {
     tracing::info!(

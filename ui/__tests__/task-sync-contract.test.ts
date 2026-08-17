@@ -18,6 +18,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { lastSyncFailure, syncFailureReason } from '@/lib/taskSync'
 
 const read = (p: string) => readFileSync(join(import.meta.dir, '..', p), 'utf8')
 
@@ -27,7 +28,7 @@ const PLAN_VIEW = read('components/plan/PlanView.tsx')
 describe('syncTasks contract', () => {
   test('resolves an outcome rather than void, so a swallowed failure is still reportable', () => {
     expect(TASK_SYNC).toContain('export function syncTasks(): Promise<boolean>')
-    expect(TASK_SYNC).toContain('.then(() => true)')
+    expect(TASK_SYNC).toContain('return true')
     // The failure branch must yield `false` - not `undefined`, which is falsy in
     // the same way and would pass a lazy check while carrying no information.
     expect(TASK_SYNC).toContain('return false')
@@ -106,5 +107,79 @@ describe('a paused store is not a sync failure', () => {
     // the board mid-drag, which is a real bug in the other direction.
     expect(PLAN_VIEW).toContain('const id = setInterval(() => load(false), 30_000)')
     expect(PLAN_STORE).toContain('export function pausePlanRefresh(next: boolean)')
+  })
+})
+
+// A FAILURE WRITTEN ONLY TO THE CONSOLE IS A FAILURE NOBODY CAN READ.
+//
+// Measured on 2026-08-17 against 1.87.0-staging.3, after the planner drew
+// `⚠ Sync failed`: `meridian tasks-sync` by hand exited 0 in 4.7s (76 Jira + 5
+// GitHub issues) from both cwds `install::cli_cwd()` can resolve to,
+// `pm_sync_state.last_error` was NULL for both providers, and `pm_tasks` held 81
+// non-terminal board rows. Nothing about the sync had failed.
+//
+// What the telemetry spool held was worse than a wrong reason - it held none. The
+// whole 7-day retention contained exactly three records mentioning `tasks-sync`,
+// all of them `tasks-sync ok`, none from that day, and ZERO spans anywhere under
+// `meridian_tray_lib::commands::tasks`. The command never ran: the invoke was
+// rejected on the JS side. The only record of why was `console.error` in
+// `syncTasks` - and a packaged build ships no devtools (there is no `devtools`
+// feature or config anywhere in `tray/src-tauri`), while the `tray_debug`
+// JS→Rust bridge is wired into the popover JS only, never the dashboard. So the
+// reason went to a console with no way to open it.
+//
+// That specific rejection is now unrecoverable, and this does not try to guess at
+// it. It pins the thing that made it unrecoverable: a sync failure must leave its
+// reason somewhere a support bundle and the user can both reach.
+describe('a sync failure names itself', () => {
+  const BRIDGE = read('lib/bridge.ts')
+
+  test('the reason survives whatever shape the rejection arrives in', () => {
+    // A Tauri command that rejects with a String reaches JS as a bare string,
+    // and one that rejects with a struct reaches it as an OBJECT (the blanket
+    // Into<InvokeError> serializes it) - so `e.message` alone blanks the reason
+    // for half the cases that actually occur.
+    expect(syncFailureReason('tasks-sync timed out after 30s')).toBe('tasks-sync timed out after 30s')
+    expect(syncFailureReason(new Error('spawn error: No such file'))).toBe('spawn error: No such file')
+    // And the human field wins over the whole body: a chip reading
+    // `{"code":"db.locked","detail":"pool timed out"}` is a crash dump where one
+    // sentence was the entire point.
+    expect(syncFailureReason({ code: 'db.locked', detail: 'pool timed out' })).toBe('pool timed out')
+    expect(syncFailureReason({ message: 'expired token' })).toBe('expired token')
+    // No sentence anywhere - then the body is better than nothing.
+    expect(syncFailureReason({ code: 42 })).toContain('42')
+    // Never empty. An empty reason reads as "no reason recorded", which is the
+    // exact state this exists to end.
+    expect(syncFailureReason(undefined).length).toBeGreaterThan(0)
+    expect(syncFailureReason(null).length).toBeGreaterThan(0)
+  })
+
+  test('nothing has failed yet, so there is no reason to report', () => {
+    expect(lastSyncFailure()).toBeNull()
+  })
+
+  test('the reason is forwarded to the tray log, not just the console', () => {
+    expect(BRIDGE).toContain('export function reportUiError(')
+    // `tray_debug` is the command that already exists for exactly this - it logs
+    // at INFO with the window label, so the line lands in the telemetry spool and
+    // in an Export Diagnostics bundle.
+    expect(BRIDGE).toContain("invoke('tray_debug'")
+    expect(TASK_SYNC).toContain('reportUiError(')
+  })
+
+  test('the reason is readable from the chip itself', () => {
+    // A screenshot of the chip is what a user sends. Hovering it must say why,
+    // rather than making the reason depend on a console they cannot open.
+    expect(TASK_SYNC).toContain('export function lastSyncFailure(): string | null')
+    expect(PLAN_VIEW).toContain('lastSyncFailure()')
+  })
+
+  test('a null reason names the other half rather than shrugging', () => {
+    // The chip is raised by `!synced || !loaded`. `lastFailure` is cleared on a
+    // successful sync, so no reason means the SYNC worked and the re-read did
+    // not - which is a different sentence, not a missing one. "No reason
+    // recorded" here would be the same shrug this whole block exists to remove.
+    expect(TASK_SYNC).toContain('lastFailure = null; return true')
+    expect(PLAN_VIEW).toContain('the tickets synced but the board could not be re-read')
   })
 })

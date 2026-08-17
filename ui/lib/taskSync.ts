@@ -26,12 +26,61 @@
 //
 // # Who calls this
 // - `IntegrationConnect` - on every connect-completed path (warm start).
-// - `PlanView` - the empty-board backstop and the Refresh chip (joins, or starts).
+// - `PlanView` - the empty-board backstop and the Refresh chip (joins, or starts),
+//   and `lastSyncFailure()` for the chip's hover text.
 
-import { mutate } from '@/lib/bridge'
+import { mutate, reportUiError } from '@/lib/bridge'
 
 /** The sync currently running, if any. Cleared when it settles. */
 let inFlight: Promise<boolean> | null = null
+
+/** Why the last sync failed, or `null` if the last one worked (or none has run).
+ *  Module state rather than a return value because the callers that need the
+ *  reason and the caller that starts the sync are not the same component - the
+ *  connect flow fires it, the planner's chip is what has to explain it. */
+let lastFailure: string | null = null
+
+/**
+ * Render an unknown rejection as one diagnostic line.
+ *
+ * THE SHAPE IS NOT PREDICTABLE, and getting it wrong blanks the reason rather
+ * than throwing. A `#[tauri::command]` returning `Result<_, String>` rejects with
+ * a bare **string**; one returning `Result<_, SomeStruct>` rejects with the
+ * serialized **object** (the blanket `Into<InvokeError>` takes that path); the
+ * bridge's own guards reject with an **Error**. Reading `e.message` alone - the
+ * obvious thing - yields `undefined` for two of those three.
+ *
+ * Never returns an empty string. An empty reason renders as "no reason recorded",
+ * which is indistinguishable from the gap this whole mechanism exists to close.
+ */
+export function syncFailureReason(e: unknown): string {
+  if (typeof e === 'string') return e.trim() || 'sync failed with an empty error'
+  if (e instanceof Error) return e.message.trim() || 'sync failed with an empty Error'
+  if (e && typeof e === 'object') {
+    // Prefer the human field. A struct error's whole JSON body on the chip reads
+    // as a crash dump - `{"code":"db.locked","detail":"pool timed out"}` where
+    // "pool timed out" was the entire point - so dump the object only when it
+    // carries no sentence of its own.
+    for (const k of ['message', 'detail', 'error'] as const) {
+      const v = (e as Record<string, unknown>)[k]
+      if (typeof v === 'string' && v.trim()) return v.trim()
+    }
+    try {
+      return JSON.stringify(e)
+    } catch {
+      // A cycle or a BigInt. The shape is already lost; say so rather than throw.
+      return 'sync failed with an unserializable error'
+    }
+  }
+  return 'sync failed with no error value'
+}
+
+/** Why the last sync failed, or `null` if it succeeded / none has run yet.
+ *  Read by `PlanView`'s Refresh chip so hovering it says WHY, rather than the
+ *  reason living only in a console a packaged build cannot open. */
+export function lastSyncFailure(): string | null {
+  return lastFailure
+}
 
 /**
  * Pull the latest tickets from every connected tracker.
@@ -59,13 +108,23 @@ let inFlight: Promise<boolean> | null = null
 export function syncTasks(): Promise<boolean> {
   if (inFlight) return inFlight
   inFlight = mutate('/api/tasks/sync', 'sync_tasks', {})
-    .then(() => true)
+    .then(() => { lastFailure = null; return true })
     .catch((e) => {
-      // The only record this failure leaves. A first import is a real round trip
-      // to Jira or Linear and can fail for ordinary reasons (expired token, rate
-      // limit, tracker down); without this the board just stays empty and there
-      // is nothing anywhere to explain why.
+      // A first import is a real round trip to Jira or Linear and can fail for
+      // ordinary reasons (expired token, rate limit, tracker down); without a
+      // reason recorded somewhere the board just stays empty and nothing explains
+      // why.
+      //
+      // THREE PLACES, because the console alone was measurably not one of them.
+      // On 2026-08-17 the chip showed `⚠ Sync failed` against a Jira sync that was
+      // healthy by every other measure, and the reason could not be recovered from
+      // anything: the rejection happened before the IPC dispatch, so there was no
+      // Rust span, and a packaged build has no devtools to read `console.error`
+      // from. The console line stays for `next dev`; `reportUiError` puts the same
+      // line in the telemetry spool; `lastFailure` puts it on the chip.
+      lastFailure = syncFailureReason(e)
       console.error('[meridian] tracker sync failed', e)
+      reportUiError(`tracker sync failed: ${lastFailure}`)
       return false
     })
     .finally(() => { inFlight = null })
