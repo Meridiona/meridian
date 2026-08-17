@@ -426,7 +426,7 @@ async fn summarise_one_inner(
                 Err(e) => {
                     tracing::warn!(
                         row_id = row.id,
-                        error = %e,
+                        error = %e,  // not-anyhow: this error has no source chain to walk
                         "summariser fallback provider failed — leaving the row pending"
                     );
                     errors.push(format!("fallback: {e}"));
@@ -568,7 +568,7 @@ pub async fn run_loop(
     }
     let cfg = SummariserConfig::from_env();
     if let Err(e) = db::ensure_summary_source_column(&pool).await {
-        tracing::warn!(error = %e, "summariser: could not ensure summary_source column");
+        tracing::warn!(error = %crate::errors::chain(&e), "summariser: could not ensure summary_source column");
     }
     tracing::info!(
         sweep_s = cfg.sweep_interval_secs,
@@ -646,7 +646,7 @@ async fn drain(
     let rows = match db::fetch_pending(pool, cfg, cfg.batch_per_tick, &days).await {
         Ok(r) => r,
         Err(e) => {
-            tracing::warn!(error = %e, "summariser: fetch_pending failed");
+            tracing::warn!(error = %crate::errors::chain(&e), "summariser: fetch_pending failed");
             return false;
         }
     };
@@ -696,7 +696,7 @@ async fn drain(
                 .expect("record_attempt(.., written=false) always returns Some");
             if tries >= MAX_ROW_ATTEMPTS {
                 if let Err(e) = db::write_dead_letter(pool, row.id).await {
-                    tracing::error!(row_id = row.id, error = %e, "failed to dead-letter row");
+                    tracing::error!(row_id = row.id, error = %crate::errors::chain(&e), "failed to dead-letter row");
                 }
                 tracing::warn!(
                     row_id = outcome.row_id,
