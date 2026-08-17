@@ -18,7 +18,8 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { lastSyncFailure, syncFailureReason } from '@/lib/taskSync'
+import { reportUiError } from '@/lib/bridge'
+import { lastSyncFailure, syncFailureReason, syncTasks } from '@/lib/taskSync'
 
 const read = (p: string) => readFileSync(join(import.meta.dir, '..', p), 'utf8')
 
@@ -154,8 +155,86 @@ describe('a sync failure names itself', () => {
     expect(syncFailureReason(null).length).toBeGreaterThan(0)
   })
 
-  test('nothing has failed yet, so there is no reason to report', () => {
-    expect(lastSyncFailure()).toBeNull()
+  // THE WHOLE CHAIN, EXERCISED. A source scan cannot tell a live call from a
+  // commented-out one - checked, and a `// reportUiError(...)` satisfies it - so
+  // the forward has to be observed, not read.
+  //
+  // `bridge.ts` reaches Rust through `window.__TAURI__.core.invoke` and nothing
+  // else, so standing up a fake one is enough to drive `syncTasks` end to end
+  // without mocking a module. Both commands it can emit land in `sent`.
+  type Sent = { cmd: string; args: unknown }
+  // `unknown` cast rather than a global type augmentation: this is a test-local
+  // stand-in for the real bridge, and widening the app's Window type for it would
+  // make the fake look like production surface.
+  const g = globalThis as unknown as { window?: unknown }
+  function withFakeBridge<T>(
+    invoke: (cmd: string, args: unknown) => Promise<unknown>,
+    body: (sent: Sent[]) => Promise<T>,
+  ): Promise<T> {
+    const sent: Sent[] = []
+    const original = g.window
+    g.window = { __TAURI__: { core: { invoke: (cmd: string, args: unknown) => {
+      sent.push({ cmd, args })
+      return invoke(cmd, args)
+    } } } }
+    // Restored even on failure - a leaked fake `window` would silently change how
+    // every later test in this process sees the bridge.
+    return body(sent).finally(() => { g.window = original })
+  }
+
+  // Declared before the failure case so that one's "no reason yet" assertion holds
+  // whatever order these run in: this leaves `lastFailure` null either way.
+  test('a successful sync clears the previous reason', async () => {
+    let broken = true
+    await withFakeBridge(
+      (cmd) => cmd === 'sync_tasks' && broken
+        ? Promise.reject('first attempt failed')
+        : Promise.resolve(null),
+      async (sent) => {
+        expect(await syncTasks()).toBe(false)
+        expect(lastSyncFailure()).toBe('first attempt failed')
+        const reportedOnce = sent.filter(s => s.cmd === 'tray_debug').length
+
+        broken = false
+        expect(await syncTasks()).toBe(true)
+        // A reason left standing after a sync that worked is the same lie the chip
+        // told, only in reverse - and it would be the text on the NEXT failure.
+        expect(lastSyncFailure()).toBeNull()
+        // Nothing to report, so nothing reported: the tray log must not fill with
+        // non-events.
+        expect(sent.filter(s => s.cmd === 'tray_debug').length).toBe(reportedOnce)
+      },
+    )
+  })
+
+  test('a rejected sync resolves false, keeps the reason, and forwards it', () =>
+    // A `Result<_, String>` command rejects with a bare string - the shape
+    // `tasks-sync timed out` actually arrives in.
+    withFakeBridge(
+      (cmd) => cmd === 'sync_tasks'
+        ? Promise.reject('tasks-sync timed out after 30s')
+        : Promise.resolve(null),
+      async (sent) => {
+        expect(lastSyncFailure()).toBeNull()
+        // Never rejects - the contract above - so a caller reads the value.
+        expect(await syncTasks()).toBe(false)
+        expect(lastSyncFailure()).toBe('tasks-sync timed out after 30s')
+        // THE POINT OF ALL OF THIS: the reason reached Rust, so it reaches the
+        // telemetry spool and an Export Diagnostics bundle.
+        const forwarded = sent.find(s => s.cmd === 'tray_debug')
+        expect(forwarded).toBeDefined()
+        expect(JSON.stringify(forwarded?.args)).toContain('tasks-sync timed out after 30s')
+      },
+    ))
+
+  test('reporting a failure can never become a second failure', () => {
+    // Outside Tauri this is a no-op. It runs on an error path, so a throw here
+    // would replace a handled failure with an unhandled one.
+    expect(() => reportUiError('probe')).not.toThrow()
+    // And a rejecting `tray_debug` must not escape either.
+    return withFakeBridge(() => Promise.reject(new Error('ipc down')), async () => {
+      expect(() => reportUiError('probe')).not.toThrow()
+    })
   })
 
   test('the reason is forwarded to the tray log, not just the console', () => {
@@ -165,6 +244,18 @@ describe('a sync failure names itself', () => {
     // in an Export Diagnostics bundle.
     expect(BRIDGE).toContain("invoke('tray_debug'")
     expect(TASK_SYNC).toContain('reportUiError(')
+  })
+
+  test('the command it forwards to is still registered', () => {
+    // `reportUiError` invokes `tray_debug`. Rename it, or drop it from the
+    // `invoke_handler!`, and the forward silently no-ops - reintroducing the exact
+    // silent-loss failure this block exists to end, one refactor later, with every
+    // test still green. Cross-tree scan because the two halves live in different
+    // languages and nothing else couples them.
+    const TRAY_LIB = read('../tray/src-tauri/src/lib.rs')
+    expect(TRAY_LIB).toContain('fn tray_debug(window: tauri::Window, msg: String)')
+    // The registration line inside `generate_handler!`, not merely a mention.
+    expect(TRAY_LIB).toMatch(/^\s*tray_debug,$/m)
   })
 
   test('the reason is readable from the chip itself', () => {
