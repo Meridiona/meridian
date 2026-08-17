@@ -25,7 +25,7 @@
 
 import { describe, it, expect } from 'bun:test'
 import { readFileSync, statSync } from 'fs'
-import { createHash } from 'crypto'
+import { inflateSync } from 'zlib'
 import { join } from 'path'
 
 const repo = join(import.meta.dir, '..', '..')
@@ -40,11 +40,121 @@ function steps(): string[] {
   return [...gen.slice(at, end).matchAll(/"([^"]+)"/g)].map(m => m[1])
 }
 
+/** Read a big-endian u32, since a plain `Uint8Array` has no `readUInt32BE`. */
+function be32(b: Uint8Array, at: number): number {
+  return ((b[at] << 24) | (b[at + 1] << 16) | (b[at + 2] << 8) | b[at + 3]) >>> 0
+}
+
+/** Decode the background PNG to greyscale rows.
+ *
+ *  Hand-rolled rather than pulled from a package: `ui/` ships in the tray
+ *  binary, and adding an image library to its dependency tree to read one
+ *  committed asset in one test is a poor trade. The scope is exactly this file
+ *  - 8-bit truecolour, one IDAT, which is what `make-dmg-background.py` emits
+ *  (asserted below, so a format change fails loudly instead of decoding to
+ *  garbage). */
+function decodeGrayRows(png: Uint8Array): { width: number; rows: number[][] } {
+  let off = 8 // skip the signature
+  let width = 0
+  let height = 0
+  const idat: Uint8Array[] = []
+  while (off < png.length) {
+    const len = be32(png, off)
+    const type = String.fromCharCode(...png.subarray(off + 4, off + 8))
+    if (type === 'IHDR') {
+      width = be32(png, off + 8)
+      height = be32(png, off + 12)
+      expect(png[off + 16]).toBe(8) // bit depth
+      expect(png[off + 17]).toBe(2) // colour type: truecolour, no alpha
+      expect(png[off + 20]).toBe(0) // interlace: none
+    }
+    if (type === 'IDAT') idat.push(png.subarray(off + 8, off + 8 + len))
+    off += 12 + len
+  }
+  expect(width).toBeGreaterThan(0)
+
+  // Concatenated by hand rather than with `Buffer.concat`: with bun-types in
+  // scope node's `Buffer` no longer satisfies zlib's `InputType` (its backing
+  // store widens to `ArrayBufferLike`, which admits SharedArrayBuffer).
+  const joined = new Uint8Array(idat.reduce((n, c) => n + c.length, 0))
+  let at = 0
+  for (const chunk of idat) { joined.set(chunk, at); at += chunk.length }
+  const raw = inflateSync(joined)
+  const bpp = 3
+  const stride = width * bpp
+  const out: number[][] = []
+  // Undo the per-scanline filter. All five types are handled because Pillow
+  // chooses per row and the choice is not ours to predict.
+  const prev = new Uint8Array(stride)
+  const cur = new Uint8Array(stride)
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (stride + 1)]
+    const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1))
+    for (let i = 0; i < stride; i++) {
+      const a = i >= bpp ? cur[i - bpp] : 0
+      const b = prev[i]
+      const c = i >= bpp ? prev[i - bpp] : 0
+      let v = line[i]
+      if (filter === 1) v += a
+      else if (filter === 2) v += b
+      else if (filter === 3) v += (a + b) >> 1
+      else if (filter === 4) {
+        const p = a + b - c
+        const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c)
+        v += pa <= pb && pa <= pc ? a : pb <= pc ? b : c
+      } else if (filter !== 0) {
+        // Same rule as the IHDR assertions: fail loudly rather than decode to
+        // garbage. Without this an unknown byte falls through every branch and
+        // is silently treated as filter 0, so the rows are nonsense and the
+        // line count is an arbitrary number rather than an error.
+        throw new Error(`unknown PNG scanline filter ${filter} on row ${y}`)
+      }
+      cur[i] = v & 0xff
+    }
+    const row: number[] = new Array(width)
+    for (let x = 0; x < width; x++) {
+      // Rec. 601 luma, enough to separate dark glyphs from a pale backdrop.
+      row[x] = (cur[x * 3] * 299 + cur[x * 3 + 1] * 587 + cur[x * 3 + 2] * 114) / 1000
+    }
+    out.push(row)
+    prev.set(cur)
+  }
+  return { width, rows: out }
+}
+
+/** How many separate lines of text are drawn in `rows`.
+ *
+ *  A row with any dark pixel is inked; a run of inked rows is one line. The
+ *  threshold sits well below the backdrop (which is a pale lilac gradient,
+ *  luma > 220) and well above the caption's own colour (`--t-muted`, luma ~110),
+ *  so the gap between them is wide and the count is not sensitive to it. */
+function countTextLines(rows: number[][], width: number): number {
+  let lines = 0
+  let inRun = false
+  for (const row of rows) {
+    let inked = false
+    for (let x = 0; x < width; x++) {
+      if (row[x] < 160) { inked = true; break }
+    }
+    if (inked && !inRun) lines++
+    inRun = inked
+  }
+  return lines
+}
+
 describe('the DMG tells the user to open the app', () => {
   it('draws two steps, not one instruction', () => {
     // Numbered rather than one sentence on purpose: "and then open it" appended
     // to the drag instruction reads as a description of what the drag does,
     // which is exactly the misreading that leaves the app unopened.
+    //
+    // TWO is a product decision, not an incidental count: a DMG window is read
+    // in a second and a half, and a third instruction is where people stop
+    // reading any of them. So adding one should have to come here and argue for
+    // itself. That is why this assertion is fixed while the pixel check below
+    // derives its count from the generator - they are answering different
+    // questions ("should there be three?" vs "is what we ship what we wrote?"),
+    // and only the first is a judgement call.
     expect(steps()).toHaveLength(2)
   })
 
@@ -80,33 +190,49 @@ describe('the DMG tells the user to open the app', () => {
     expect(Number(m![1])).toBeGreaterThan(234)
   })
 
-  it('ships a PNG that actually contains the drawn text', () => {
+  it('ships a PNG with BOTH lines actually drawn in it', () => {
     // THE COMMITTED IMAGE IS THE ARTEFACT, and it is generated BY HAND - no
     // build step regenerates it. So editing the copy above and forgetting to
     // re-run the script ships the OLD picture while the diff looks complete.
+    // Everything above this point reads the generator's SOURCE, so all of it
+    // passes happily against a stale PNG. This is the assertion that looks at
+    // what users are actually shipped.
     //
-    // Not an mtime comparison, which was the obvious approach and is unsound:
-    // on a fresh clone git gives every file the same checkout time, so it
-    // passes unconditionally in CI - the one place it needed to work. Measured,
-    // not assumed: with equal mtimes the check passed even against a
-    // deliberately stale PNG.
+    // Two earlier attempts are recorded because each failed in a way that is
+    // invisible unless you go looking:
     //
-    // So this reads the image itself. Rasterised text cannot be grepped, but a
-    // re-render always changes the bytes, so the recorded digest is what ties
-    // the two together: change the copy without re-running and the digest no
-    // longer matches, which is exactly the mistake being guarded.
-    // `new Uint8Array(...)` around the read: with bun-types in scope, node's
-    // `Buffer` no longer satisfies `createHash().update`'s `BinaryLike` (its
-    // backing store widens to `ArrayBufferLike`, which admits SharedArrayBuffer).
-    // A plain view sidesteps the mismatch without casting the type away.
+    //   1. Comparing mtimes. Unsound: on a fresh clone git gives every file the
+    //      same checkout time, so it passes unconditionally in CI - the one
+    //      place it needed to work. Measured, not assumed - with equal mtimes it
+    //      passed against a deliberately stale PNG.
+    //   2. Pinning a `rendered-digest` comment in the generator. Better, but the
+    //      digest is hand-maintained, so the same edit that forgets to re-render
+    //      can paste the OLD hash and the test still passes. (CodeRabbit's
+    //      catch on #790.)
+    //
+    // Re-running the generator inside the test - the obvious remaining option -
+    // is not available: it hard-exits without `/System/Library/Fonts/SFNS.ttf`,
+    // and this suite runs on `ubuntu-latest`.
+    //
+    // So the PNG is measured directly. Rasterised text cannot be grepped, but
+    // it can be COUNTED: scan the caption band for rows containing dark pixels
+    // and count the runs of them. One run per line of text. The old one-line
+    // caption gives one, which is exactly the state being guarded, and no
+    // hand-maintained value stands between the check and the artefact.
     const png = new Uint8Array(readFileSync(join(repo, 'tray', 'src-tauri', 'dmg', 'background.png')))
-    const digest = createHash('sha256').update(png).digest('hex')
-    // Update this line WITH the PNG, in the same commit, after re-running
-    // `python3 scripts/make-dmg-background.py`. The failure message says so.
-    const RENDERED = gen.match(/#\s*rendered-digest:\s*([0-9a-f]{64})/)?.[1]
-    expect(
-      `${digest} (background.png) must match the rendered-digest in make-dmg-background.py - re-run it`,
-    ).toContain(RENDERED ?? 'no rendered-digest comment in make-dmg-background.py')
+    const { width, rows } = decodeGrayRows(png)
+
+    // The band and the expected count both come FROM the generator, so adding a
+    // third step and re-rendering correctly still passes. Hard-coding `2` would
+    // fail on a correct change and point at the artefact rather than at the
+    // stale expectation - which is the wrong place to send the reader.
+    const top = Number(gen.match(/\((\d+) \+ n \* (\d+)\) \* SCALE/)![1])
+    const pitch = Number(gen.match(/\((\d+) \+ n \* (\d+)\) \* SCALE/)![2])
+    const expected = steps().length
+    // 2x scale; one pitch of slack past the last line so a added line is inside
+    // the band rather than clipped by it (which would read as "not drawn").
+    const band = rows.slice(top * 2 - 8, (top + pitch * expected) * 2 + 8)
+    expect(countTextLines(band, width)).toBe(expected)
   })
 
   it('is a real image, not a placeholder or an LFS pointer', () => {

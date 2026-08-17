@@ -198,15 +198,25 @@ mod reopen_tests {
     /// now also the pattern the dashboard depends on being copied.
     #[test]
     fn window_resizes_check_for_full_screen_first() {
-        let src = include_str!("commands/system.rs");
-        // The QUERY is what this test is about - that something asks before it
-        // resizes. Which way the query's `Result` collapses is a separate
-        // question, owned by `system.rs`'s own
-        // `the_resize_guards_fail_closed_when_the_window_state_is_unknown`;
-        // pinning the whole expression here meant this test failed when that
-        // one was fixed, on a change it has no stake in.
+        // BOUND TO THE FUNCTION, not to the file. The needle was relaxed from
+        // the full expression to the bare query for a good reason (which way
+        // the `Result` collapses is `system.rs`'s own test's business, and
+        // pinning it here failed this test on a change it has no stake in) -
+        // but a bare `is_fullscreen()` also matches a COMMENT two lines below
+        // the guard and the other test's own string literal, so deleting the
+        // real guard left this passing. Scoped to the function body, and with
+        // the test module cut off first, it can only match the code it names.
+        let whole = include_str!("commands/system.rs");
+        let src = &whole[..whole
+            .find("#[cfg(test)]")
+            .expect("system.rs lost its test module marker")];
+        let body = src
+            .split_once("pub async fn resize_setup_window(")
+            .expect("resize_setup_window is gone")
+            .1;
+        let body = &body[..body.find("\n}\n").expect("resize_setup_window has no end")];
         assert!(
-            src.contains("win.is_fullscreen()"),
+            body.contains("win.is_fullscreen()"),
             "resize_setup_window lost its full-screen guard - a setContentSize: \
              against a full-screen style mask renders black around the content"
         );

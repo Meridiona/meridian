@@ -173,6 +173,11 @@ impl PermissionDebounce {
         notifications = tracing::field::Empty,
         accessibility = tracing::field::Empty,
         screen_recording = tracing::field::Empty,
+        // Declared here or `check_bool_permission`'s `record` is a silent
+        // no-op: `tracing` only accepts a field the span was opened with, and
+        // recording an undeclared one fails quietly - which would leave the
+        // failure path looking instrumented while exporting nothing.
+        otel.status_code = tracing::field::Empty,
     )
 )]
 pub(super) async fn check_permissions(
@@ -213,13 +218,39 @@ const NOTIFICATION_REMEDY: &str =
 const NOTIFICATION_REMEDY: &str =
     "Open System Settings \u{2192} Privacy & Security to re-grant it.";
 
-/// `true` when notifications are usable. Only an explicit `Denied` counts as
-/// off — an unknown/undetermined state is not evidence of revocation.
+/// `true` when notifications are usable.
+///
+/// `Granted` is the only state in which a toast actually reaches the user, so
+/// it is the only one that counts as on. `Prompt` / `PromptWithRationale` mean
+/// the grant has not been given yet — the toast is silently dropped exactly as
+/// it is under `Denied`, and from the user's side there is no difference
+/// between "you said no" and "you never answered": either way the notification
+/// they are waiting for never arrives.
+///
+/// That was worth being careful about, because the whole point of this module
+/// is to stop crying wolf. Two things make it safe. The tray REQUESTS
+/// permission at startup (`lib.rs`, on the first launch where it is not already
+/// granted), so `Prompt` is a transient state on the way to an answer, not a
+/// resting one — and [`REVOKE_HOLD`] is five continuous minutes, which the
+/// startup request resolves inside by orders of magnitude. A `Prompt` still
+/// standing five minutes later means the dialog was dismissed or never shown,
+/// which is a real, actionable "notifications are off".
+///
+/// `None` stays usable, deliberately, and is the opposite case: it means the
+/// probe itself could not answer (plugin absent in an unbundled run, or a
+/// failed WinRT read). Not knowing is not evidence of revocation.
 async fn notification_permission_granted(app: &tauri::AppHandle) -> bool {
-    !matches!(
-        crate::sys::notification_permission_state(app).await,
-        Some(tauri_plugin_notifications::PermissionState::Denied)
-    )
+    use tauri_plugin_notifications::PermissionState;
+    match crate::sys::notification_permission_state(app).await {
+        Some(PermissionState::Granted) => true,
+        Some(
+            PermissionState::Denied
+            | PermissionState::Prompt
+            | PermissionState::PromptWithRationale,
+        ) => false,
+        // Probe failed / plugin absent — see the doc comment.
+        None => true,
+    }
 }
 
 /// Raise `perm` when it has read off for [`REVOKE_HOLD`], clear it when
@@ -266,6 +297,13 @@ async fn check_bool_permission(
         }
     };
     if let Err(e) = result {
+        // Marks the enclosing `check_permissions` span, which is the span a
+        // remote query can actually find - this fn has none of its own, and the
+        // WARN alone leaves the span looking clean. That is precisely the gap
+        // the module header records: an unbroken row of bare `check_permissions`
+        // spans is what forced the 2026-08-16 phantom-notice investigation
+        // through the encrypted DB instead of `meridian logs`.
+        tracing::Span::current().record("otel.status_code", "ERROR");
         tracing::warn!(error = %e, id = perm.id, "permission notice write failed");
     }
 }
@@ -401,6 +439,56 @@ mod tests {
         assert!(
             src.contains("Verdict::Hold => {"),
             "the Hold verdict is no longer handled - it must write nothing at all"
+        );
+    }
+
+    /// Every `PermissionState` that is not `Granted` must read as off, and a
+    /// failed probe must not.
+    ///
+    /// `notification_permission_granted` needs a live `AppHandle` and a real
+    /// plugin, so the mapping is scanned rather than called - same reason as
+    /// the debounce test above. What is scanned is the exhaustive `match`,
+    /// which is what makes the claim checkable at all: an `if let` or a
+    /// `matches!` over a subset would compile fine while silently treating a
+    /// new variant as usable.
+    ///
+    /// THE BUG THIS PINS: only `Denied` counted as off, so `Prompt` /
+    /// `PromptWithRationale` - the states where the grant has not been given
+    /// and the toast is dropped exactly as it is under `Denied` - read as
+    /// "notifications are fine". The user sees no difference between "you said
+    /// no" and "you never answered": either way nothing arrives, and nothing
+    /// told them why.
+    #[test]
+    fn only_granted_counts_as_usable_notifications() {
+        let whole = include_str!("permissions.rs");
+        let src = &whole[..whole
+            .find("#[cfg(test)]")
+            .expect("permissions.rs lost its test module marker")];
+        let body = src
+            .split_once("async fn notification_permission_granted(")
+            .expect("notification_permission_granted is gone")
+            .1;
+        let body = &body[..body
+            .find("\n}\n")
+            .expect("notification_permission_granted has no end")];
+
+        assert!(
+            body.contains("Some(PermissionState::Granted) => true"),
+            "Granted must be the only state that reads as usable"
+        );
+        for variant in ["Denied", "Prompt", "PromptWithRationale"] {
+            assert!(
+                body.contains(variant),
+                "PermissionState::{variant} is unhandled - an ungranted \
+                 permission would read as usable and the user would never be \
+                 told why their notifications stopped"
+            );
+        }
+        // The probe FAILING is the opposite case and must stay usable: not
+        // knowing is not evidence of revocation.
+        assert!(
+            body.contains("None => true"),
+            "a failed probe must not be treated as a revoked permission"
         );
     }
 

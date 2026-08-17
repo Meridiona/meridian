@@ -18,11 +18,6 @@ Requires Pillow (`pip install Pillow`); not part of the app's runtime deps.
 Usage: python3 scripts/make-dmg-background.py
 """
 
-# Digest of the committed tray/src-tauri/dmg/background.png this script produces.
-# Pinned by ui/__tests__/dmg-install-steps.test.ts so a copy edit here that is
-# never re-rendered cannot ship the old picture with a diff that looks complete.
-# Re-run this script and update the line below in the SAME commit.
-# rendered-digest: 99d73a6d8ebc92285095ba79d25001c75c262536f52026ff16ecfd84580d8248
 import math
 import os
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
