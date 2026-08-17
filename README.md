@@ -1,5 +1,10 @@
 <div align="center">
 
+<a href="https://www.producthunt.com/products/meridian-16?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-meridian-19" target="_blank" rel="noopener noreferrer"><img alt="Meridian - Don't let your work go unnoticed. Get promoted! | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1222691&theme=light&t=1786882777866"></a>
+
+<br>
+<br>
+
 <img src="docs/images/banner.png" alt="Meridian - Stop letting your work go unnoticed." width="420" />
 
 <br>
