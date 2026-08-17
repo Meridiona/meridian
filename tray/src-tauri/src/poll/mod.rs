@@ -43,6 +43,11 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
     // (mirrors the SSE stores' change-only broadcast).
     let mut last_notices = String::new();
     let mut last_banners = String::new();
+    // How long each OS permission has been reading "off". Lives with the loop
+    // rather than in a static so it dies with it — and so a fresh process
+    // starts with an empty map, which is what gives every launch its grace
+    // period (see `permissions`' module docs).
+    let mut permission_debounce = permissions::PermissionDebounce::default();
 
     loop {
         // Tick 0, 1, 2… every 30s.
@@ -90,7 +95,7 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
                 });
             }
             if do_health {
-                permissions::check_permissions(&app, pool).await;
+                permissions::check_permissions(&app, pool, &mut permission_debounce).await;
             }
         }
         // Disk-space guard: auto-pause capture when free disk space on the

@@ -444,6 +444,48 @@ export function tourTarget(selector: string): Element | null {
   return surface?.querySelector(selector) ?? document.querySelector(selector)
 }
 
+/** Clearance a target needs from every viewport edge before the tour treats it
+ *  as comfortably in view.
+ *
+ *  A requirement, not a tolerance: an element flush against an edge is visible
+ *  but has nowhere for the caption to park (it goes above or below the ring), so
+ *  "technically on screen" is not the test worth running. 24px is wide enough to
+ *  catch a target sitting on the boundary and narrow enough that the many beats
+ *  ringing something mid-screen never scroll at all. */
+const REVEAL_MARGIN = 24
+
+/** Bring `selector` into view before the tour rings or points at it.
+ *
+ *  THE BUG THIS FIXES: a beat can only be answered if the user can SEE what it
+ *  is asking about, and nothing here scrolled. The composer's "Where" choice -
+ *  keep the task personal, or file a real ticket your team can see - sits at the
+ *  bottom of a `overflow-y-auto` panel, so on a short window the tour rang it,
+ *  flew the cursor to it, said "Pick either", and then waited up to two minutes
+ *  on a click the user could not make: the radios were below the fold of a
+ *  container the tour had no idea it was inside.
+ *
+ *  It is not specific to that beat. Every ringed target inside a scrollable
+ *  panel had the same latent failure, which is why this lives in the engine
+ *  rather than as a scroll call in one place in the script.
+ *
+ *  `block: 'center'` rather than `'nearest'`: the caption parks above or below
+ *  the ring, so a target flush against the top or bottom edge of its scroller is
+ *  in view and still leaves the bubble nowhere sensible to go. Centring gives
+ *  both room. Smooth, because the ring and the cursor track their target per
+ *  animation frame and will follow it across rather than jumping. */
+export function revealTarget(selector: string): void {
+  const el = tourTarget(selector)
+  if (!el) return
+  const r = el.getBoundingClientRect()
+  if (r.width === 0 && r.height === 0) return
+  const hidden = r.top < REVEAL_MARGIN
+    || r.bottom > window.innerHeight - REVEAL_MARGIN
+    || r.left < REVEAL_MARGIN
+    || r.right > window.innerWidth - REVEAL_MARGIN
+  if (!hidden) return
+  el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' })
+}
+
 /** Centre point of `selector` in viewport coordinates, or `null` if it is not
  *  on screen. Used to fly the cursor and to place the spotlight ring. */
 export function centreOf(selector: string): { x: number; y: number } | null {

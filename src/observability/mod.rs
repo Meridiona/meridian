@@ -77,6 +77,10 @@ use tracing_subscriber::{layer::SubscriberExt, reload, util::SubscriberInitExt, 
 mod filter;
 mod install_mode;
 mod otlp_target;
+/// Tests only - it reads the workspace's own source rather than calling
+/// anything, so there is nothing here to compile into a release build.
+#[cfg(test)]
+mod span_status_guard;
 pub use filter::reload_log_level;
 use filter::{build_default_filter, FILTER_HANDLE};
 use install_mode::capture_disabled;

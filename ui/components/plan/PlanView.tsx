@@ -25,7 +25,7 @@ import { dayString } from '@/components/timeline/types'
 import type { PlanResponse, IntegrationsResponse } from '@/lib/api-types'
 import { MAX_PLAN_TASKS } from '@/lib/api-types'
 import { load as bridgeLoad } from '@/lib/bridge'
-import { syncTasks } from '@/lib/taskSync'
+import { lastSyncFailure, syncTasks } from '@/lib/taskSync'
 import { availableTrackerNames, connectedTrackers } from '@/lib/integrations'
 import { usePlan, refreshPlan, planAction, pausePlanRefresh } from '@/components/plan/planStore'
 import { isTutorialRunning } from '@/components/tutorial/engine'
@@ -106,7 +106,16 @@ export default function PlanView() {
     // A failed read = real backend failure (not an empty day) → surface, don't
     // render empty. `refreshPlan` publishes to the store, so `data` arrives via
     // usePlan rather than local state.
-    return refreshPlan(todayKey).then(d => {
+    //
+    // `initial` reads FORCE past the store's drag hold-off. This guard above
+    // only covers THIS component's own drag ref; the hold-off is module-global
+    // and can be held by anything (another planner instance, a drag whose
+    // `onDragEnd` has not run yet). A paused store answered `null`, which is
+    // the same value a genuinely failed read returns - so the Refresh chip drew
+    // "Sync failed" over a sync that succeeded, and the first load raised
+    // `loadFailed` on a backend that was fine. Both are "nothing was attempted"
+    // reported as "something broke".
+    return refreshPlan(todayKey, initial).then(d => {
       if (!initial) return d != null
       if (d) { setLoadFailed(false); derive(d); return true }
       setLoadFailed(true)
@@ -348,7 +357,18 @@ export default function PlanView() {
               <button onClick={handleSync} disabled={syncing}
                 className="mt-body-sm px-2.5 py-1 rounded-md bg-ctrl inline-flex items-center gap-1.5"
                 style={{ border: `1px solid ${syncError ? 'var(--color-state-pending)' : 'var(--t-ctrl-border)'}`, color: syncError ? 'var(--color-state-pending)' : 'var(--t-muted)', opacity: syncing ? 0.6 : 1 }}
-                title="Pull latest tickets from your trackers">
+                // WHY it failed, not just THAT it failed. The chip is what a user
+                // screenshots, and the reason otherwise lives only in a console a
+                // packaged build cannot open - which is exactly how a red chip over
+                // a healthy Jira sync became undiagnosable once already.
+                //
+                // The chip is raised by `!synced || !loaded`, so a null reason is
+                // not "nothing was recorded" - it is precisely the other half:
+                // `lastSyncFailure()` is cleared on a successful sync, so the only
+                // way to be here without one is the re-read having failed.
+                title={syncError
+                  ? `Sync failed - ${lastSyncFailure() ?? 'the tickets synced but the board could not be re-read'}`
+                  : 'Pull latest tickets from your trackers'}>
                 <span style={{ display: 'inline-block', animation: syncing ? 'spin 1s linear infinite' : 'none' }}>{syncError ? '⚠' : '↻'}</span>
                 {syncing ? 'Syncing…' : syncError ? 'Sync failed' : 'Refresh'}
               </button>

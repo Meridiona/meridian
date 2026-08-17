@@ -16,6 +16,7 @@ pub mod daily_plan;
 pub mod day_summary;
 pub mod db;
 pub mod embedder;
+pub mod errors;
 pub mod etl;
 pub mod health;
 pub mod intelligence;

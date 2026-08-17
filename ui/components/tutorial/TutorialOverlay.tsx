@@ -169,7 +169,7 @@ function useRect(selector: string | null): { rect: DOMRect | null; live: boolean
   return state
 }
 
-export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, cursorPoint, ghost, clicking, spotlight, spotlightDim, awaiting, choices, onChoose, onSkip, onSkipToDay = null }: {
+export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, cursorPoint, ghost, clicking, spotlight, spotlightDim, awaiting, handover, choices, onChoose, onSkip, onSkipToDay = null }: {
   caption: string
   /** Render the top narration bar at headline size. Set for the whole of the day
    *  replay, which is the one stretch of the tour the user WATCHES rather than
@@ -202,6 +202,12 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
   /** True while a beat has handed control over — drives the "your turn" cue on
    *  the spotlight so a waiting user knows the app expects something of them. */
   awaiting: boolean
+  /** True while the tour is waiting on the user to drive the app THEMSELVES —
+   *  connect a tracker, work through a provider sign-in — rather than blocked on
+   *  one control it is pointing at. The fence comes down for these: see the
+   *  render site below for the deadlock that made this necessary. Set by
+   *  `appeared()` in `useTutorial`, for the whole of its wait. */
+  handover: boolean
   /** Answers to the question in `caption`, when a beat is asking one. Always
    *  rendered with the caption, never as a detached dialog — the question and its
    *  answers are one thing, and separating them puts two focal points on screen.
@@ -330,16 +336,81 @@ export function TutorialOverlay({ caption, centered, big, celebrate, cursorAt, c
           waiting for a click on a target that is no longer on screen, and the
           user is left reading an instruction about a window they cannot see.
 
-          Gated on `awaiting` on purpose. A fence that stands during narration
-          beats would make the app feel frozen for reasons the user cannot see;
-          one that stands only while the tour is genuinely blocked on them is
-          the difference between guiding and trapping.
-
           Rendered BEFORE the caption, the choice buttons and Skip, so those
           later siblings paint on top and keep their own `pointerEvents:'auto'`.
           The way out is always one click away. */}
-      {ring && spotlightDim && <Cutout rect={ring} dim />}
-      {ring && !spotlightDim && awaiting && <Cutout rect={ring} dim={false} />}
+      {/* THE FENCE STANDS FOR THE WHOLE RUN, not only while `awaiting`.
+          `awaiting` is true ONLY inside `waitForClick` / `waitForValue` /
+          `waitForMinWords` (see `useTutorial`), so it is FALSE during every
+          narration beat - `say`, `sleep`, and the pauses between steps, which
+          is most of the walkthrough's wall-clock time. During those the app
+          behind the tour took clicks normally.
+
+          That is not a cosmetic gap. The narration beats are exactly the ones
+          that run while a modal the tour opened is on screen: the integrations
+          step narrates over a live Jira OAuth panel, and the planner step
+          narrates over the composer. A stray click there hits Cancel, closes
+          the modal, or starts an OAuth flow the tour is not expecting, and the
+          walkthrough carries on narrating a screen that is no longer in the
+          state it describes. Reported from a real run twice.
+
+          The earlier reasoning was that a fence during narration "would make
+          the app feel frozen for reasons the user cannot see". The dim scrim
+          IS the visible reason, and the tour's own controls stay live: Skip,
+          the choice buttons and the caption are later siblings with their own
+          `pointerEvents:'auto'`, so the way out never depends on this. A
+          walkthrough is a modal experience; the honest thing is to look like
+          one. `awaiting` still drives the ring's pulse, which is what actually
+          signals "your turn" - that is the cue the user reads, not whether a
+          background panel happens to accept clicks.
+
+          `spotlightDim` still chooses whether the fence is BLURRED or clear.
+          The dimmed beats keep their blur; every other beat now gets the same
+          panes with nothing drawn on them. */}
+      {/* ...EXCEPT DURING A HANDOVER, which is the one case the rule above gets
+          backwards.
+
+          "The tour is waiting" covers two opposite situations. Blocked on ONE
+          control it is pointing at (`awaiting`), fencing the rest of the app is
+          the protection - that is everything above. Blocked on a SEQUENCE the
+          user has to drive themselves, the fence is the one thing that
+          guarantees they cannot finish it.
+
+          Two beats do exactly that, and in both the ring is cleared first, so
+          the whole-viewport `FullFence` went up over the very screen the user
+          had to operate: the tracker step waits up to TEN MINUTES on
+          `lock-handback` while they connect a tool or press "I don't use a
+          project tool", and the AI step waits the same on `task-note` while
+          they work through a provider's sign-in. Every click was swallowed. The
+          tour sat there telling them to pick a tool while the modal ignored
+          them, until the timeout expired. Reported from a real run.
+
+          Both fences are gated, not just the full-viewport one: `Cutout`'s
+          panes carry the same `pointerEvents:'auto'`, so leaving that half live
+          would keep the deadlock wherever a ring happened to still be up.
+
+          The overlay cannot infer which case it is in - the script knows. See
+          `appeared()` in `useTutorial`, which raises `handover` for its wait. */}
+      {ring && !handover && <Cutout rect={ring} dim={spotlightDim} />}
+      {/* No ring on this beat: fence the whole viewport instead. There is no
+          target to leave live, so there is nothing to cut a hole for - and this
+          is the case the `ring &&` guard above used to drop on the floor,
+          leaving the entire app clickable behind a caption.
+
+          ONLY WHEN THE TOUR IS NOT WAITING ON THE USER. `FullFence` has no
+          hole, so if the tour is blocked on a click it cannot ring, this covers
+          the very control it is waiting for. That is not hypothetical - the AI
+          step's subscription question waits on
+          `[data-tour="gate-subscription"], [data-tour="gate-free"]` with NO
+          spotlight on purpose, because ringing one of two real answers makes
+          the other read as wrong. Both cards went dead, and the beat sat there
+          for its full three-minute timeout.
+
+          `awaiting` covers a ringless waitForClick / waitForValue /
+          waitForMinWords; `handover` covers a long `appeared` where the user is
+          driving a flow the tour is not pointing at. Neither may be fenced.
+          What is left - narration - is exactly what the fence was added for. */}
+      {!ring && !handover && !awaiting && <FullFence />}
 
       {/* Spotlight — a ring around the real control. On its own (the default)
           it adds no scrim at all: the target stays fully interactive because
@@ -766,6 +837,27 @@ function Cutout({ rect, dim }: { rect: DOMRect; dim: boolean }) {
       )}
     </>
   )
+}
+
+/** The fence for a beat with no ring at all - a pure narration step, or one
+ *  whose target never rendered.
+ *
+ *  [`Cutout`] fences everything AROUND a target, so with no target there is
+ *  nothing for it to build panes from and it renders nothing. That left the
+ *  whole app clickable behind the caption on exactly the beats where the tour
+ *  is talking rather than pointing - which, over a run, is most of them.
+ *
+ *  One inert-looking sheet rather than four panes: with no hole to leave, the
+ *  geometry collapses to the viewport. It draws NOTHING (no dim, no blur) -
+ *  the narration beats already have their own scrim where they want one
+ *  (`caption && centered`), and stacking a second one would darken the app
+ *  twice. Its only job is to take the click.
+ *
+ *  Rendered at the same point in the sibling order as [`Cutout`], so the
+ *  caption, the choice buttons and Skip still paint on top with their own
+ *  `pointerEvents:'auto'`. */
+function FullFence() {
+  return <div className="absolute inset-0" style={{ pointerEvents: 'auto' }} />
 }
 
 /** One answer button. `primary` is the styled-forward one — not a

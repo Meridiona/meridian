@@ -184,7 +184,7 @@ impl SyncFault {
 /// goes through here so the truncation this module exists to fix cannot come
 /// back one call site at a time.
 pub fn chain(err: &anyhow::Error) -> String {
-    format!("{err:#}")
+    crate::errors::chain(err)
 }
 
 /// Decide what to do about a provider-sync failure, and format its detail.

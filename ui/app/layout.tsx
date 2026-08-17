@@ -1,7 +1,7 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 
 import type { Metadata } from 'next'
-import { JetBrains_Mono } from 'next/font/google'
+import localFont from 'next/font/local'
 import './globals.css'
 import { ThemeProvider } from '@/lib/theme-context'
 import ExternalLinks from '@/components/ExternalLinks'
@@ -12,9 +12,31 @@ import LayoutBanners from '@/components/LayoutBanners'
 // site's product demo (meridiona-website/assets/css/demo.css .hour-label),
 // which sets real JetBrains Mono rather than the app's aliased --font-mono.
 // Scoped deliberately, not a reversal of the decision below.
-const jetbrainsMono = JetBrains_Mono({
-  weight: ['500', '600'],
-  subsets: ['latin'],
+//
+// VENDORED (`next/font/local`), NOT `next/font/google`. The loader fetches from
+// fonts.gstatic.com AT BUILD TIME, which put a live network dependency on
+// Google in every `next build` - including CI and the release job. That is not
+// theoretical: on 2026-08-16 the CI UI job failed with six `Received response
+// with status 404 ... /jetbrainsmono/v24/...woff2` errors and `Turbopack build
+// failed with 12 errors`, while the same commit built fine locally. Google had
+// rotated the v24 file hashes; a machine with a warm font cache never noticed,
+// a cold CI runner could not resolve a single file. Nothing in the repo had
+// changed, and no re-run would have fixed it.
+//
+// The file is the VARIABLE latin subset, which is why one 55KB file covers both
+// weights the design uses (500 and 600) - `weight: '100 800'` is the axis range
+// JetBrains Mono ships, not a request for every weight. Only `latin` is
+// vendored: the Google loader also pulled cyrillic/greek/vietnamese subsets,
+// and the hour-rail labels this serves are digits and `AM`/`PM`.
+//
+// Licensed under the SIL Open Font License 1.1 - see `./fonts/OFL.txt`, kept
+// next to the file because the OFL requires the notice to travel with it.
+// Refreshing it means re-downloading from the same URL family and updating
+// nothing else; the API here does not change.
+const jetbrainsMono = localFont({
+  src: './fonts/JetBrainsMono-latin.woff2',
+  weight: '100 800',
+  style: 'normal',
   variable: '--font-jetbrains-mono',
   display: 'swap',
 })

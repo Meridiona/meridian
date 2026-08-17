@@ -28,7 +28,7 @@ pub async fn pm_tasks_present(pool: &SqlitePool) -> bool {
     {
         Ok(n) => n > 0,
         Err(e) => {
-            tracing::warn!(error = %e, "pm_tasks count failed — treating tracker as not ready");
+            tracing::warn!(error = %e, "pm_tasks count failed — treating tracker as not ready"); // not-anyhow: this error has no source chain to walk
             false
         }
     }
@@ -155,7 +155,9 @@ async fn triage_after_sync(meridian: &SqlitePool) {
             pruned = s.pruned,
             "board triaged"
         ),
-        Err(e) => tracing::warn!(error = %e, "board triage after sync failed"),
+        Err(e) => {
+            tracing::warn!(error = %crate::errors::chain(&e), "board triage after sync failed")
+        }
     }
 }
 

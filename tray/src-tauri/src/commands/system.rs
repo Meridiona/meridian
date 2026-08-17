@@ -129,7 +129,14 @@ pub async fn open_setup(app: tauri::AppHandle) -> Result<(), String> {
 /// Without a log a Windows-only resize failure would surface as "the wizard looks wrong on
 /// my machine" and nothing else.
 #[tauri::command]
-#[tracing::instrument(skip(app))]
+// `fields(otel.status_code = ...)` is NOT decoration: `Span::current().record`
+// on a field the span never declared is a silent no-op, so without this line
+// all three `record` calls below compile, run, and write nothing. That is how
+// they shipped in 1.88.0 - the WARN lines were there, the span status was not,
+// and nothing in the build or the tests could tell the difference.
+// `observability::span_status_guard` (daemon crate) now derives this rule from
+// the source rather than trusting anyone to remember it.
+#[tracing::instrument(skip(app), fields(otel.status_code = tracing::field::Empty))]
 pub async fn resize_setup_window(
     app: tauri::AppHandle,
     width: f64,
@@ -151,9 +158,33 @@ pub async fn resize_setup_window(
     // There's nothing to fix here anyway while full-screen — the card's own
     // `transform: scale(...)` in page.tsx already grows it to fill whatever
     // size the window actually is.
-    if win.is_fullscreen().unwrap_or(false) {
-        tracing::debug!("setup window is full-screen - resize skipped");
-        return Ok(());
+    //
+    // An UNREADABLE state skips the resize too - the guards fail CLOSED. An
+    // errored query tells us nothing about the window, and the two guesses are
+    // not symmetric: guessing "not full-screen" performs the very resize the
+    // guard exists to prevent, while guessing "full-screen" skips a resize that
+    // was never needed anyway (the card's `transform: scale(...)` fills
+    // whatever size the window is). Same reasoning on both guards below.
+    //
+    // The Err arm is SEPARATED from the `Ok(true)` arm rather than folded into
+    // it by an `unwrap_or(true)`, so the two reasons for skipping are
+    // distinguishable in a trace. Collapsing them emits the same debug line for
+    // "the window is genuinely full-screen" (routine, every wizard step) and
+    // "the query failed" (never expected, and the only clue if this ever
+    // misbehaves on a window manager we have not seen). The BEHAVIOUR is
+    // identical - skip either way, still fail closed - only the reporting
+    // differs.
+    match win.is_fullscreen() {
+        Ok(true) => {
+            tracing::debug!("setup window is full-screen - resize skipped");
+            return Ok(());
+        }
+        Ok(false) => {}
+        Err(e) => {
+            tracing::Span::current().record("otel.status_code", "ERROR");
+            tracing::warn!(error = %e, "full-screen state unreadable - resize skipped");
+            return Ok(());
+        }
     }
     // Same reasoning for a MAXIMIZED window, which is the shape the hazard
     // actually takes on Windows: `is_fullscreen()` is false there for a
@@ -166,9 +197,17 @@ pub async fn resize_setup_window(
     // un-maximized itself. Nothing needs resizing while maximized anyway: the
     // card's own `transform: scale(...)` in page.tsx already fills whatever
     // size the window is.
-    if win.is_maximized().unwrap_or(false) {
-        tracing::debug!("setup window is maximized - resize skipped");
-        return Ok(());
+    match win.is_maximized() {
+        Ok(true) => {
+            tracing::debug!("setup window is maximized - resize skipped");
+            return Ok(());
+        }
+        Ok(false) => {}
+        Err(e) => {
+            tracing::Span::current().record("otel.status_code", "ERROR");
+            tracing::warn!(error = %e, "maximized state unreadable - resize skipped");
+            return Ok(());
+        }
     }
     let resize = win
         .set_min_size(Some(tauri::LogicalSize::new(width, height)))
@@ -179,6 +218,11 @@ pub async fn resize_setup_window(
             Ok(())
         }
         Err(e) => {
+            // The one failure here that is not a deliberate skip. `instrument`
+            // is not declared with `err`, so a returned `Err` does NOT mark the
+            // span by itself - marking two of the three failure paths and
+            // leaving the only real one clean would be the worst of both.
+            tracing::Span::current().record("otel.status_code", "ERROR");
             tracing::warn!(error = %e, width, height, "setup window resize failed");
             Err(e.to_string())
         }
@@ -403,6 +447,72 @@ mod tests {
         assert!(!is_openable_url(""));
         // Multibyte content must not panic the scheme check.
         assert!(!is_openable_url("héllo→"));
+    }
+
+    /// `resize_setup_window`'s two skip-guards must fail CLOSED.
+    ///
+    /// They need a live window to exercise, so this is source-scanned - the
+    /// defect is in which way the `Result` collapses, which is visible in the
+    /// text and nowhere a unit test can reach.
+    ///
+    /// THE BUG: both guards read `.unwrap_or(false)`. A failed query therefore
+    /// meant "not maximized, not full-screen" and the resize went ahead - and
+    /// the resize IS the hazard the guards exist to prevent (on Win32,
+    /// `SetWindowPos` on a `WS_MAXIMIZE` window clears the maximized state, so
+    /// the wizard un-maximizes itself mid-step). Guessing wrong in that
+    /// direction costs the exact bug; guessing wrong the other way costs
+    /// nothing, because the card's own `transform: scale(...)` already fills
+    /// whatever size the window is. An unknown window state is not a licence
+    /// to resize it.
+    #[test]
+    fn the_resize_guards_fail_closed_when_the_window_state_is_unknown() {
+        // Truncated at the test module so this scan cannot match its own
+        // literals and pass forever (that trap has been hit here before).
+        let whole = include_str!("system.rs");
+        let src = &whole[..whole
+            .find("#[cfg(test)]")
+            .expect("system.rs lost its test module marker")];
+        let body = src
+            .split_once("pub async fn resize_setup_window(")
+            .expect("resize_setup_window is gone")
+            .1;
+        // Bounded at the function's closing brace. Scanning to end-of-file would
+        // drag in every later fn - `dismiss_popover`'s `is_visible().unwrap_or(false)`
+        // is next, and it gates only a debug log (the `hide()` runs either way), so a
+        // whole-file scan would fail on code that has no such hazard.
+        let body = &body[..body.find("\n}\n").expect("resize_setup_window has no end")];
+
+        for query in ["is_fullscreen()", "is_maximized()"] {
+            let at = body
+                .find(query)
+                .unwrap_or_else(|| panic!("the {query} guard is gone"));
+            // The Err arm must RETURN, which is what "fail closed" means here.
+            // Each guard is an explicit `match` rather than an `unwrap_or(true)`
+            // so an unreadable state is reported distinctly from a genuinely
+            // full-screen one - same behaviour, different diagnosis. The scan
+            // follows that shape: the arm, then a return before the next guard.
+            let arm = &body[at..];
+            let err_at = arm
+                .find("Err(e) =>")
+                .unwrap_or_else(|| panic!("the {query} guard has no Err arm"));
+            let err_arm = &arm[err_at..];
+            let end = err_arm.find("\n        }").unwrap_or(err_arm.len());
+            assert!(
+                err_arm[..end].contains("return Ok(())"),
+                "{query} must fail closed: an errored query has to skip the \
+                 resize, not perform the one action the guard exists to stop"
+            );
+            assert!(
+                err_arm[..end].contains("tracing::warn!"),
+                "{query}'s failure is invisible - an unreadable window state \
+                 must be distinguishable from a genuinely full-screen one"
+            );
+        }
+        assert!(
+            !body.contains(".unwrap_or("),
+            "a window-state query in resize_setup_window collapses its Result - \
+             the Err case must be handled explicitly, not folded into a default"
+        );
     }
 
     #[cfg(target_os = "windows")]

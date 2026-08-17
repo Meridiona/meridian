@@ -1356,13 +1356,26 @@ async fn register_agent(label: &str, plist: &Path) -> Result<(), String> {
     // wait loop and carry on regardless). Only the migration path treats a stuck
     // entry as fatal — see `bootout_agent_and_wait`'s doc comment.
     //
-    // DEBUG, not WARN: this path was previously silent, and WARN+ is what egresses
-    // to central telemetry. A slow-clearing entry here is recoverable and common
-    // enough on an install/update that warning would add fleet noise to the very
-    // stream used to spot real failures — while the case that actually matters
-    // (the migration) still surfaces, through its caller.
+    // WARN, not DEBUG. This used to be `debug!` on the reasoning that WARN+ is
+    // what egresses to central telemetry and a slow-clearing entry is common
+    // enough on an install/update that warning would add fleet noise. The noise
+    // half of that does not hold, and the cost of it was severe.
+    //
+    // What this branch means: the installer is about to bootstrap the daemon
+    // while the previous one may still be running — the double-writer
+    // precondition behind the recurring `database disk image is malformed`
+    // (`code: 11`), which as of 2026-08-17 had damaged the databases of 8 hosts,
+    // every one of them macOS. Nothing else records that moment, so the one
+    // condition worth catching was the one condition that could not leave the
+    // machine.
+    //
+    // On volume: this runs only during staging, and staging only runs on a
+    // version change. Measured over the same week, the whole fleet logged 38
+    // version transitions across 28 hosts — so the ceiling here is ~38 records
+    // a week, against the ~800k `code: 11` errors a single damaged host emits
+    // in the same window. There is no noise problem to trade against.
     if let Err(e) = bootout_agent_and_wait(label).await {
-        tracing::debug!(error = %e, label, "backend_install: proceeding to bootstrap anyway");
+        tracing::warn!(error = %e, label, "backend_install: proceeding to bootstrap anyway");
     }
 
     let _ = launchctl(&["enable", &target]).await;
@@ -1415,6 +1428,46 @@ async fn launchctl(args: &[&str]) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The branch that bootstraps a launchd agent whose `bootout` never cleared
+    /// must report at **WARN**, because WARN+ is the only severity that leaves
+    /// the machine.
+    ///
+    /// That branch is the one moment the installer knowingly proceeds while the
+    /// previous daemon may still be alive - the double-writer precondition
+    /// behind the recurring `database disk image is malformed`. It was logged at
+    /// `debug!` to keep central telemetry quiet, which meant the condition could
+    /// never be observed on any of the affected machines. See the call site for
+    /// the measurement that retired that concern.
+    ///
+    /// Scanned from source rather than executed: reaching the branch needs a
+    /// stuck `launchctl` domain entry, which cannot be staged in a unit test.
+    /// Same tactic as the sibling scans in this module.
+    #[test]
+    fn a_stuck_bootout_is_reported_at_warn() {
+        const SRC: &str = include_str!("backend_install.rs");
+        // Truncate at the test module FIRST. This file scans itself, so the
+        // needle below also appears in this very function - without the cut the
+        // assertion would match its own source and could never fail.
+        let prod = SRC.split_once("\n#[cfg(test)]").map_or(SRC, |(a, _)| a);
+        let body = prod
+            .split_once("async fn register_agent")
+            .expect("register_agent must exist")
+            .1;
+        const NEEDLE: &str = "proceeding to bootstrap anyway";
+        let line = body
+            .lines()
+            .find(|l| l.contains(NEEDLE) && !l.trim_start().starts_with("//"))
+            .unwrap_or_else(|| panic!("the stuck-bootout branch should still log \"{NEEDLE}\""));
+        assert!(
+            line.contains("tracing::warn!"),
+            "the stuck-bootout branch must log at WARN, not `{}`. Only WARN+ \
+             egresses to central OpenObserve, so any lower level makes the \
+             double-writer precondition invisible on exactly the machines \
+             whose databases are being corrupted.",
+            line.trim()
+        );
+    }
 
     /// Every path out of [`ensure_backend_installed`] that could leave a daemon
     /// down must call [`crate::daemon_lifecycle::restore_unless_paused`] first.

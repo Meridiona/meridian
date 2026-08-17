@@ -28,11 +28,27 @@ const overlay = readFileSync(
 )
 
 describe('the walkthrough fences off stray clicks', () => {
-  it('fences every spotlight beat it is blocked on, not only the dimmed one', () => {
-    // The dimmed beat keeps its blur; every other awaited beat gets the same
-    // panes with nothing drawn on them.
-    expect(overlay).toContain('{ring && spotlightDim && <Cutout rect={ring} dim />}')
-    expect(overlay).toContain('{ring && !spotlightDim && awaiting && <Cutout rect={ring} dim={false} />}')
+  it('fences every spotlight beat, not only the dimmed one', () => {
+    // One fence for every ringed beat. `spotlightDim` chooses whether it is
+    // BLURRED, never whether it exists - the dimmed beat keeps its blur and
+    // every other beat gets the same panes with nothing drawn on them.
+    //
+    // `!handover` is the one exception, and it is the subject of a test file of
+    // its own (`tutorial-handover-unfences.test.ts`): while the tour is waiting
+    // on the user to drive the app themselves, a fence is what stops them.
+    expect(overlay).toContain('{ring && !handover && <Cutout rect={ring} dim={spotlightDim} />}')
+  })
+
+  it('fences narration beats too, which have no ring to build panes around', () => {
+    // THE REGRESSION THIS EXISTS FOR. `Cutout` fences everything AROUND a
+    // target, so a beat with no target rendered no fence at all - and those are
+    // most of the run. Worse, they are exactly the beats that narrate over a
+    // modal the tour just opened (the Jira OAuth panel, the composer), so a
+    // stray click hit Cancel or started a flow the tour was not expecting and
+    // the walkthrough carried on describing a screen that no longer existed.
+    // Reported from real runs twice.
+    expect(overlay).toContain('{!ring && !handover && !awaiting && <FullFence />}')
+    expect(overlay).toContain('function FullFence()')
   })
 
   it('builds both fences from one component', () => {
@@ -48,11 +64,23 @@ describe('the walkthrough fences off stray clicks', () => {
     expect(pane).toMatch(/\.\.\.\(dim \? \{/)
   })
 
-  it('only fences while the tour is genuinely blocked on the user', () => {
-    // `awaiting` is the gate. A fence during narration beats would make the app
-    // feel frozen for reasons the user cannot see - that is trapping, not
-    // guiding.
-    expect(overlay).toMatch(/!spotlightDim && awaiting &&/)
+  it('does NOT gate the fence on `awaiting`', () => {
+    // The inverse of what this test used to assert, and the whole bug.
+    // `awaiting` is true only inside waitForClick / waitForValue /
+    // waitForMinWords, so gating on it left the app live for every narration
+    // beat. The old rationale was that fencing during narration would "feel
+    // frozen for reasons the user cannot see" - but the scrim is the visible
+    // reason, and Skip/choices/caption stay live as later siblings, so the way
+    // out never depended on this.
+    expect(overlay).not.toMatch(/awaiting && <Cutout/)
+    expect(overlay).not.toMatch(/<Cutout[^>]*awaiting/)
+  })
+
+  it('still uses `awaiting` for the cue that it is the user\'s turn', () => {
+    // Removing the gate must not remove the signal: the ring pulses only while
+    // the tour is genuinely blocked on a click. That is what tells the user to
+    // act - not whether some background panel happens to accept clicks.
+    expect(overlay).toMatch(/animation: awaiting && ringLive \? 'mer-tour-pulse/)
   })
 
   it('keeps the way out clickable', () => {
@@ -60,7 +88,7 @@ describe('the walkthrough fences off stray clicks', () => {
     // those later siblings paint over it and keep their own pointerEvents.
     // If the fence ever moves below them it swallows Skip, and a user who
     // cannot reach the target also cannot leave.
-    const fence = overlay.indexOf('<Cutout rect={ring} dim={false} />')
+    const fence = overlay.indexOf('<Cutout rect={ring} dim={spotlightDim} />')
     // The RENDER site, not the prop. `indexOf('onSkip')` finds the destructuring
     // in the component signature ~340 lines earlier, which sits before the fence
     // no matter where the button is painted - so comparing against it would fail
@@ -74,5 +102,13 @@ describe('the walkthrough fences off stray clicks', () => {
     // the fence move below the Skip button - the one arrangement this test is
     // here to forbid - without failing.
     expect(skip).toBeGreaterThan(fence)
+
+    // The full-viewport fence needs the SAME guarantee, and needs it more: it
+    // covers the entire screen, so if it ever painted over Skip the user would
+    // have no way out of the walkthrough at all.
+    const fullFence = overlay.indexOf('<FullFence />}')
+    expect(fullFence).toBeGreaterThan(-1)
+    expect(caption).toBeGreaterThan(fullFence)
+    expect(skip).toBeGreaterThan(fullFence)
   })
 })

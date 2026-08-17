@@ -119,7 +119,7 @@ pub async fn register_session(
     let start_after = match db::sealed_high_water(pool, &uuid).await {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!(uuid = %uuid, error = %e, "sealed_high_water failed");
+            tracing::warn!(uuid = %uuid, error = %crate::errors::chain(&e), "sealed_high_water failed");
             return Outcome::Failed;
         }
     };
@@ -140,7 +140,7 @@ pub async fn register_session(
     {
         Ok(segs) => segs,
         Err(e) => {
-            tracing::warn!(uuid = %uuid, error = %e, "parse task panicked");
+            tracing::warn!(uuid = %uuid, error = %e, "parse task panicked"); // not-anyhow: this error has no source chain to walk
             return Outcome::Failed;
         }
     };
@@ -189,7 +189,7 @@ pub async fn register_segments(
             }
             Ok(None) => {} // invalid, or hit an already-sealed row (no-op)
             Err(e) => {
-                tracing::warn!(uuid = %seg.session_uuid, seg = %seg.segment_started_at, error = %e, "upsert failed");
+                tracing::warn!(uuid = %seg.session_uuid, seg = %seg.segment_started_at, error = %crate::errors::chain(&e), "upsert failed");
             }
         }
     }
@@ -216,7 +216,7 @@ pub async fn register_records(
     let start_after = match db::sealed_high_water(pool, session_uuid).await {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!(uuid = %session_uuid, error = %e, "sealed_high_water failed");
+            tracing::warn!(uuid = %session_uuid, error = %crate::errors::chain(&e), "sealed_high_water failed");
             return Outcome::Failed;
         }
     };
@@ -268,7 +268,7 @@ pub async fn run_tick(
     let mut sealed = match db::seal_stale_open_rows(pool, &now_iso, cfg.seal_idle_seconds).await {
         Ok(n) => n,
         Err(e) => {
-            tracing::warn!(error = %e, "idle seal sweep failed");
+            tracing::warn!(error = %crate::errors::chain(&e), "idle seal sweep failed");
             0
         }
     };
@@ -286,7 +286,9 @@ pub async fn run_tick(
                 }
                 sealed += n;
             }
-            Err(e) => tracing::warn!(error = %e, "hour-boundary force-seal failed"),
+            Err(e) => {
+                tracing::warn!(error = %crate::errors::chain(&e), "hour-boundary force-seal failed")
+            }
         }
     }
 
@@ -359,7 +361,9 @@ async fn seal_finished_cli_sessions(pool: &SqlitePool, now_iso: &str) -> u64 {
                     }
                     sealed += n;
                 }
-                Err(e) => tracing::warn!(source, error = %e, "exited-CLI seal failed"),
+                Err(e) => {
+                    tracing::warn!(source, error = %crate::errors::chain(&e), "exited-CLI seal failed")
+                }
             }
             continue; // nothing left live; superseded pass would be a no-op
         }
@@ -370,7 +374,9 @@ async fn seal_finished_cli_sessions(pool: &SqlitePool, now_iso: &str) -> u64 {
                 }
                 sealed += n;
             }
-            Err(e) => tracing::warn!(source, error = %e, "superseded seal failed"),
+            Err(e) => {
+                tracing::warn!(source, error = %crate::errors::chain(&e), "superseded seal failed")
+            }
         }
     }
     sealed

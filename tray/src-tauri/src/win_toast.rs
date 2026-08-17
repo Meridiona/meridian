@@ -62,6 +62,7 @@
 //! - `docs/notifications.md` — the outbox → deliver → respond → expire lifecycle.
 
 use tauri::Manager;
+use tracing::Instrument;
 use windows::core::{IInspectable, Interface, Ref, HSTRING};
 use windows::Data::Xml::Dom::XmlDocument;
 use windows::Foundation::{IPropertyValue, TypedEventHandler};
@@ -96,21 +97,50 @@ const TAP: &str = "tap";
 /// stamped when it enqueued — falling back to the category registry if the
 /// column is empty. A row with neither still delivers, as plain title+body.
 pub fn show(app: &tauri::AppHandle, n: &meridian_core::notifications::PendingNotification) {
+    // Spanned because delivery CROSSES A THREAD: the work happens inside a
+    // `run_on_main_thread` closure, so without an explicit span the WinRT
+    // failure and the call that caused it land in telemetry unrelated. The
+    // closure enters this span, which is what keeps them one trace.
+    //
+    // `buttons` is on the span rather than only the success log because it is
+    // the diagnostic for "the toast appeared but had no way to answer it" -
+    // a category whose descriptors failed to parse delivers 0 and looks
+    // identical to a plain toast otherwise. Title/body are NOT recorded: they
+    // carry the user's ticket titles and window names.
+    let span = tracing::info_span!(
+        "notifications.toast.deliver",
+        id = n.id,
+        category = n.category.as_deref().unwrap_or("plain"),
+        buttons = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty,
+    );
+    let _e = span.enter();
+
     let actions =
         crate::toast_actions::resolve_actions(n.actions.as_deref(), n.category.as_deref());
     let xml = crate::toast_actions::build_toast_xml(&n.title, &n.body, &actions);
     let aumid = app.config().identifier.clone();
     let id = n.id;
     let buttons = actions.len();
-    let category = n.category.clone();
+    span.record("buttons", buttons);
 
     let handle = app.clone();
-    let dispatched =
-        app.run_on_main_thread(move || match show_on_main(&handle, id, &aumid, &xml) {
-            Ok(()) => tracing::info!(id, buttons, category = ?category, "outbox toast delivered"),
-            Err(e) => tracing::warn!(error = %e, id, "notify_outbox: toast delivery failed"),
-        });
+    let delivery = span.clone();
+    let dispatched = app.run_on_main_thread(move || {
+        let _e = delivery.enter();
+        match show_on_main(&handle, id, &aumid, &xml) {
+            Ok(()) => {
+                delivery.record("otel.status_code", "OK");
+                tracing::info!(id, buttons, "outbox toast delivered")
+            }
+            Err(e) => {
+                delivery.record("otel.status_code", "ERROR");
+                tracing::warn!(error = %e, id, "notify_outbox: toast delivery failed")
+            }
+        }
+    });
     if let Err(e) = dispatched {
+        span.record("otel.status_code", "ERROR");
         tracing::warn!(error = %e, id, "notify_outbox: main-thread dispatch failed");
     }
 }
@@ -120,8 +150,22 @@ pub fn show(app: &tauri::AppHandle, n: &meridian_core::notifications::PendingNot
 /// stamped regardless, so a failure leaves a stale toast but never a
 /// re-delivery.
 pub fn retract(app: &tauri::AppHandle, id: i64) {
+    // Same cross-thread reason as `show`. Worth spanning in its own right: this
+    // is the path that was silently broken on Windows for the whole life of the
+    // notify-rust backend (`remove_active` is a hard `Err` there), so "did the
+    // expiry actually withdraw the toast" needs to be answerable from telemetry
+    // rather than by reading a stale toast off someone's screen.
+    let span = tracing::info_span!(
+        "notifications.toast.retract",
+        id,
+        otel.status_code = tracing::field::Empty,
+    );
+    let _e = span.enter();
+
     let aumid = app.config().identifier.clone();
+    let removal = span.clone();
     let dispatched = app.run_on_main_thread(move || {
+        let _e = removal.enter();
         let removed = ToastNotificationManager::History().and_then(|h| {
             h.RemoveGroupedTagWithId(
                 &HSTRING::from(id.to_string()),
@@ -130,11 +174,18 @@ pub fn retract(app: &tauri::AppHandle, id: i64) {
             )
         });
         match removed {
-            Ok(()) => tracing::info!(id, "expired toast retracted"),
-            Err(e) => tracing::warn!(error = %e, id, "toast retraction failed"),
+            Ok(()) => {
+                removal.record("otel.status_code", "OK");
+                tracing::info!(id, "expired toast retracted")
+            }
+            Err(e) => {
+                removal.record("otel.status_code", "ERROR");
+                tracing::warn!(error = %e, id, "toast retraction failed")
+            }
         }
     });
     if let Err(e) = dispatched {
+        span.record("otel.status_code", "ERROR");
         tracing::warn!(error = %e, id, "retract_toast: main-thread dispatch failed");
     }
 }
@@ -237,12 +288,41 @@ fn record(app: &tauri::AppHandle, id: i64, action: String, text: Option<String>)
         return;
     };
     let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) =
-            crate::commands::notifications::apply_response(app, &pool, id, &action, text.as_deref())
-                .await
-        {
-            tracing::warn!(error = %e, id, action, "toast answer could not be recorded");
+    // The spawned task is a THIRD thread hop (pump -> tokio), and the one where
+    // the answer is actually persisted. `apply_response` opens its own
+    // `notifications.respond` span; `.instrument` is what makes that span a
+    // child of the toast's rather than an orphan root, so a lost answer can be
+    // followed from the button press to the write in one trace.
+    //
+    // `has_text` rather than the text itself: an inline reply IS the user's own
+    // writing and must never egress - whether one was supplied is the
+    // diagnostic, its content is not. Same rule as `apply_response`'s own span.
+    let span = tracing::info_span!(
+        "notifications.toast.answer",
+        id,
+        action,
+        has_text = text.is_some(),
+        otel.status_code = tracing::field::Empty,
+    );
+    tauri::async_runtime::spawn(
+        async move {
+            if let Err(e) = crate::commands::notifications::apply_response(
+                app,
+                &pool,
+                id,
+                &action,
+                text.as_deref(),
+            )
+            .await
+            {
+                // The answer is now lost - the user pressed a button and
+                // nothing recorded it. Marked on the span as well as logged, so
+                // it is findable by span status rather than only by grepping
+                // WARN bodies.
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::warn!(error = %e, id, action, "toast answer could not be recorded");
+            }
         }
-    });
+        .instrument(span),
+    );
 }
