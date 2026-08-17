@@ -239,9 +239,15 @@ const NOTIFICATION_REMEDY: &str =
 /// `None` stays usable, deliberately, and is the opposite case: it means the
 /// probe itself could not answer (plugin absent in an unbundled run, or a
 /// failed WinRT read). Not knowing is not evidence of revocation.
-async fn notification_permission_granted(app: &tauri::AppHandle) -> bool {
+///
+/// Split from the probe below so the RULE is testable on its own. The probe
+/// needs a live `AppHandle` and a bundled plugin, neither of which a unit test
+/// has, which is why this mapping was previously guarded by scanning the
+/// source for variant names — a check that passes just as happily when a
+/// variant is mapped the wrong way round, since the name is present either way.
+fn notifications_usable(state: Option<tauri_plugin_notifications::PermissionState>) -> bool {
     use tauri_plugin_notifications::PermissionState;
-    match crate::sys::notification_permission_state(app).await {
+    match state {
         Some(PermissionState::Granted) => true,
         Some(
             PermissionState::Denied
@@ -251,6 +257,12 @@ async fn notification_permission_granted(app: &tauri::AppHandle) -> bool {
         // Probe failed / plugin absent — see the doc comment.
         None => true,
     }
+}
+
+/// Probe the OS for the notification grant and map it through
+/// [`notifications_usable`].
+async fn notification_permission_granted(app: &tauri::AppHandle) -> bool {
+    notifications_usable(crate::sys::notification_permission_state(app).await)
 }
 
 /// Raise `perm` when it has read off for [`REVOKE_HOLD`], clear it when
@@ -310,7 +322,10 @@ async fn check_bool_permission(
 
 #[cfg(test)]
 mod tests {
-    use super::{PermissionDebounce, Verdict, ACCESSIBILITY, NOTIFICATION_REMEDY, REVOKE_HOLD};
+    use super::{
+        notifications_usable, PermissionDebounce, Verdict, ACCESSIBILITY, NOTIFICATION_REMEDY,
+        REVOKE_HOLD,
+    };
     use std::time::{Duration, Instant};
 
     /// THE regression. On 2026-08-16 both capture permissions read off on the
@@ -445,49 +460,43 @@ mod tests {
     /// Every `PermissionState` that is not `Granted` must read as off, and a
     /// failed probe must not.
     ///
-    /// `notification_permission_granted` needs a live `AppHandle` and a real
-    /// plugin, so the mapping is scanned rather than called - same reason as
-    /// the debounce test above. What is scanned is the exhaustive `match`,
-    /// which is what makes the claim checkable at all: an `if let` or a
-    /// `matches!` over a subset would compile fine while silently treating a
-    /// new variant as usable.
-    ///
     /// THE BUG THIS PINS: only `Denied` counted as off, so `Prompt` /
     /// `PromptWithRationale` - the states where the grant has not been given
     /// and the toast is dropped exactly as it is under `Denied` - read as
     /// "notifications are fine". The user sees no difference between "you said
     /// no" and "you never answered": either way nothing arrives, and nothing
     /// told them why.
+    ///
+    /// Asserted against [`notifications_usable`] directly. This used to SCAN
+    /// the source for each variant name, because the probe needs a live
+    /// `AppHandle`; that check could not fail for the bug it was written for,
+    /// since `PermissionState::Prompt => true` contains the string "Prompt"
+    /// just as `=> false` does. Splitting the pure mapping out gave it
+    /// something real to call.
     #[test]
     fn only_granted_counts_as_usable_notifications() {
-        let whole = include_str!("permissions.rs");
-        let src = &whole[..whole
-            .find("#[cfg(test)]")
-            .expect("permissions.rs lost its test module marker")];
-        let body = src
-            .split_once("async fn notification_permission_granted(")
-            .expect("notification_permission_granted is gone")
-            .1;
-        let body = &body[..body
-            .find("\n}\n")
-            .expect("notification_permission_granted has no end")];
+        use tauri_plugin_notifications::PermissionState;
 
         assert!(
-            body.contains("Some(PermissionState::Granted) => true"),
-            "Granted must be the only state that reads as usable"
+            notifications_usable(Some(PermissionState::Granted)),
+            "a granted permission is the one state where a toast arrives"
         );
-        for variant in ["Denied", "Prompt", "PromptWithRationale"] {
+        for state in [
+            PermissionState::Denied,
+            PermissionState::Prompt,
+            PermissionState::PromptWithRationale,
+        ] {
             assert!(
-                body.contains(variant),
-                "PermissionState::{variant} is unhandled - an ungranted \
-                 permission would read as usable and the user would never be \
-                 told why their notifications stopped"
+                !notifications_usable(Some(state)),
+                "{state:?} means the grant has not been given, so the toast is \
+                 dropped - reading it as usable is what left the user with no \
+                 notifications and no explanation"
             );
         }
         // The probe FAILING is the opposite case and must stay usable: not
         // knowing is not evidence of revocation.
         assert!(
-            body.contains("None => true"),
+            notifications_usable(None),
             "a failed probe must not be treated as a revoked permission"
         );
     }
