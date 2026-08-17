@@ -129,7 +129,14 @@ pub async fn open_setup(app: tauri::AppHandle) -> Result<(), String> {
 /// Without a log a Windows-only resize failure would surface as "the wizard looks wrong on
 /// my machine" and nothing else.
 #[tauri::command]
-#[tracing::instrument(skip(app))]
+// `fields(otel.status_code = ...)` is NOT decoration: `Span::current().record`
+// on a field the span never declared is a silent no-op, so without this line
+// all three `record` calls below compile, run, and write nothing. That is how
+// they shipped in 1.88.0 - the WARN lines were there, the span status was not,
+// and nothing in the build or the tests could tell the difference.
+// `observability::span_status_guard` (daemon crate) now derives this rule from
+// the source rather than trusting anyone to remember it.
+#[tracing::instrument(skip(app), fields(otel.status_code = tracing::field::Empty))]
 pub async fn resize_setup_window(
     app: tauri::AppHandle,
     width: f64,
@@ -152,20 +159,21 @@ pub async fn resize_setup_window(
     // `transform: scale(...)` in page.tsx already grows it to fill whatever
     // size the window actually is.
     //
-    // `unwrap_or(TRUE)`, deliberately: the guards fail CLOSED. An errored query
-    // tells us nothing about the window, and the two outcomes are not
-    // symmetric - guessing "not full-screen" performs the very resize the
-    // guard exists to prevent, while guessing "full-screen" skips a resize
-    // that was never needed anyway (the card's `transform: scale(...)` fills
+    // An UNREADABLE state skips the resize too - the guards fail CLOSED. An
+    // errored query tells us nothing about the window, and the two guesses are
+    // not symmetric: guessing "not full-screen" performs the very resize the
+    // guard exists to prevent, while guessing "full-screen" skips a resize that
+    // was never needed anyway (the card's `transform: scale(...)` fills
     // whatever size the window is). Same reasoning on both guards below.
     //
-    // The Err arm is SEPARATED from the true arm rather than folded in by
-    // `unwrap_or`, so the two reasons for skipping are distinguishable in a
-    // trace. Collapsing them emits the same debug line for "the window is
-    // genuinely full-screen" (routine, every wizard step) and "the query
-    // failed" (never expected, and the only clue if this ever misbehaves on a
-    // window manager we have not seen). The BEHAVIOUR is identical - skip
-    // either way, still fail closed - only the reporting differs.
+    // The Err arm is SEPARATED from the `Ok(true)` arm rather than folded into
+    // it by an `unwrap_or(true)`, so the two reasons for skipping are
+    // distinguishable in a trace. Collapsing them emits the same debug line for
+    // "the window is genuinely full-screen" (routine, every wizard step) and
+    // "the query failed" (never expected, and the only clue if this ever
+    // misbehaves on a window manager we have not seen). The BEHAVIOUR is
+    // identical - skip either way, still fail closed - only the reporting
+    // differs.
     match win.is_fullscreen() {
         Ok(true) => {
             tracing::debug!("setup window is full-screen - resize skipped");
@@ -210,6 +218,11 @@ pub async fn resize_setup_window(
             Ok(())
         }
         Err(e) => {
+            // The one failure here that is not a deliberate skip. `instrument`
+            // is not declared with `err`, so a returned `Err` does NOT mark the
+            // span by itself - marking two of the three failure paths and
+            // leaving the only real one clean would be the worst of both.
+            tracing::Span::current().record("otel.status_code", "ERROR");
             tracing::warn!(error = %e, width, height, "setup window resize failed");
             Err(e.to_string())
         }

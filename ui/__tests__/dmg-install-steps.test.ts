@@ -40,6 +40,22 @@ function steps(): string[] {
   return [...gen.slice(at, end).matchAll(/"([^"]+)"/g)].map(m => m[1])
 }
 
+/** Where the generator draws the step lines, read out of the generator itself.
+ *
+ *  `top` and `pitch` come from the one `draw.text(...)` offset expression, and
+ *  `scale` from the `SCALE` constant the generator multiplies it by - so a
+ *  render at a different resolution moves the band with it instead of leaving
+ *  these tests measuring empty pixels. Parsed once, with a message per value:
+ *  a non-null assertion on a reformatted generator throws a bare `TypeError`
+ *  that says nothing about what changed. */
+function captionGeometry(): { top: number; pitch: number; scale: number } {
+  const offset = gen.match(/\((\d+) \+ n \* (\d+)\) \* SCALE/)
+  expect(offset, 'the generator no longer draws the steps at `(top + n * pitch) * SCALE`').not.toBeNull()
+  const scale = gen.match(/^SCALE = (\d+)/m)
+  expect(scale, 'the generator no longer declares `SCALE` at the top level').not.toBeNull()
+  return { top: Number(offset![1]), pitch: Number(offset![2]), scale: Number(scale![1]) }
+}
+
 /** Read a big-endian u32, since a plain `Uint8Array` has no `readUInt32BE`. */
 function be32(b: Uint8Array, at: number): number {
   return ((b[at] << 24) | (b[at + 1] << 16) | (b[at + 2] << 8) | b[at + 3]) >>> 0
@@ -185,9 +201,7 @@ describe('the DMG tells the user to open the app', () => {
     // (tauri.conf.json's bundle.macOS.dmg), so their bottom edge is 234pt and
     // their labels sit below that. Text placed any higher would be drawn under
     // an icon - invisible, with nothing in the build to notice.
-    const m = gen.match(/\((\d+) \+ n \* \d+\) \* SCALE/)
-    expect(m).not.toBeNull()
-    expect(Number(m![1])).toBeGreaterThan(234)
+    expect(captionGeometry().top).toBeGreaterThan(234)
   })
 
   it('ships a PNG with BOTH lines actually drawn in it', () => {
@@ -226,12 +240,14 @@ describe('the DMG tells the user to open the app', () => {
     // third step and re-rendering correctly still passes. Hard-coding `2` would
     // fail on a correct change and point at the artefact rather than at the
     // stale expectation - which is the wrong place to send the reader.
-    const top = Number(gen.match(/\((\d+) \+ n \* (\d+)\) \* SCALE/)![1])
-    const pitch = Number(gen.match(/\((\d+) \+ n \* (\d+)\) \* SCALE/)![2])
+    const { top, pitch, scale } = captionGeometry()
     const expected = steps().length
-    // 2x scale; one pitch of slack past the last line so a added line is inside
-    // the band rather than clipped by it (which would read as "not drawn").
-    const band = rows.slice(top * 2 - 8, (top + pitch * expected) * 2 + 8)
+    // The band runs one FULL PITCH past the last line's baseline, not to it -
+    // so a third step, drawn one pitch below the second, falls inside the band
+    // and is counted. Ending at the last line would clip an added one, and a
+    // clipped line reads as "not drawn", which is the same failure as a stale
+    // PNG with a completely different cause.
+    const band = rows.slice(top * scale - 8, (top + pitch * expected) * scale + 8)
     expect(countTextLines(band, width)).toBe(expected)
   })
 
