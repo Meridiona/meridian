@@ -1,5 +1,48 @@
 # Changelog
 
+## [1.88.0](https://github.com/Meridiona/meridian/compare/v1.87.0...v1.88.0) (2026-08-17)
+
+### 🚀 Features
+
+* **ui:** refresh the open-source card — star CTA, icons, fixed button wrap ([e1b0d89](https://github.com/Meridiona/meridian/commit/e1b0d89b694f3a985c5a86cab0cd6ed2822e916b))
+
+### 🐛 Bug Fixes
+
+* address the CodeRabbit review on the 1.88.0 release PR ([5a4866f](https://github.com/Meridiona/meridian/commit/5a4866f2e1b9e2ee43dd8af74182740c8f76972a))
+* **dmg:** tell the user to open Meridian, not only to drag it ([ca319b8](https://github.com/Meridiona/meridian/commit/ca319b8e174f5c2e45d01b376ec37f8863f5b7f6))
+* **observability:** make the span-status records on resize_setup_window actually fire ([cc1b7fa](https://github.com/Meridiona/meridian/commit/cc1b7fa8bfdeccf753c7d123b10a5269e3e43cae)), closes [#790](https://github.com/Meridiona/meridian/issues/790) [#791](https://github.com/Meridiona/meridian/issues/791)
+* **observability:** render the full error chain on the daemon's DB paths ([99dc413](https://github.com/Meridiona/meridian/commit/99dc413b211014d713fcfdf7fabeeab25e30d393))
+* **plan:** make a failed tracker sync say why ([b114249](https://github.com/Meridiona/meridian/commit/b1142497246662da1716afc95727f518316419d2))
+* **plan:** stop un-skipping a day from un-planning it, and scroll tour targets into view ([9aa82a2](https://github.com/Meridiona/meridian/commit/9aa82a2438ab57f4242498b2b40caa599f31e1a2))
+* **setup:** size the permissions card to its content and unify the panes ([622b325](https://github.com/Meridiona/meridian/commit/622b325b74301c350a7cb492f87af5a4ff3d6d15))
+* **summary:** order concurrent badge refreshes, and pin the failure rule ([0df5724](https://github.com/Meridiona/meridian/commit/0df572426975481c1559142571e8e80f468c627c))
+* **summary:** re-read the worklog badges after a draft is acted on ([0f8b28d](https://github.com/Meridiona/meridian/commit/0f8b28d3be63791937ce8dbab37909881f006868))
+* **summary:** retire an in-flight draft refresh when the day changes ([c822d25](https://github.com/Meridiona/meridian/commit/c822d2519a7da9c3b46ee97757f273bfae534cd5))
+* **test:** hash the DMG background as a Uint8Array, not a Buffer ([f25c58c](https://github.com/Meridiona/meridian/commit/f25c58c10beb07fa08400606c55699866d3a4f5f))
+* **tray:** fail closed when the setup window's state cannot be read ([b6396b7](https://github.com/Meridiona/meridian/commit/b6396b7999e18fe9ab3c2aea01ccfeca7d4289fd))
+* **tray:** gate the Instrument import to its non-Windows consumer ([d8e128f](https://github.com/Meridiona/meridian/commit/d8e128f104abc5b1cd2d17e16f43a0480451743f))
+* **tray:** report a stuck launchd bootout at WARN, not DEBUG ([6e326c0](https://github.com/Meridiona/meridian/commit/6e326c081b5a93046bfe16a79a40736d3298f8be))
+* **tray:** require a permission to read off for 5m before notifying ([ca67d78](https://github.com/Meridiona/meridian/commit/ca67d7806229cb10c15f0fc153bf6e3947583991))
+* **tray:** span the notification delivery and retraction paths ([e4e05ef](https://github.com/Meridiona/meridian/commit/e4e05ef484b7431d40b8546209418a8d1b956cf8)), closes [#777](https://github.com/Meridiona/meridian/issues/777)
+* **walkthrough:** fence stray clicks, stop false sync failures, vendor the font ([c7266e2](https://github.com/Meridiona/meridian/commit/c7266e252bc47bfff97e8562ddee274720f0ab76))
+* **walkthrough:** stop the fence covering the controls the tour waits on ([dbf1173](https://github.com/Meridiona/meridian/commit/dbf1173645bf90e7d5319eae4f0c81db60d0f248)), closes [#781](https://github.com/Meridiona/meridian/issues/781)
+
+### ✅ Tests
+
+* close four gaps CodeRabbit found in the guards from the last round ([a1b9cd1](https://github.com/Meridiona/meridian/commit/a1b9cd12acfdea483d49ce77a03e8b15a9253f87))
+* **plan:** observe the sync-failure forward instead of scanning for it ([72989cd](https://github.com/Meridiona/meridian/commit/72989cd1eb79415d9ad6be67c36744780d154dd0))
+* **tray:** pin the full-screen QUERY, not how its Result collapses ([351e278](https://github.com/Meridiona/meridian/commit/351e2782bbff8c6e6bf522c950c3d6505e8c2381))
+* **tray:** scan only the production half of the file ([9f99c86](https://github.com/Meridiona/meridian/commit/9f99c86fd52c00f846025ffa540b782abf8ddcc4))
+
+### 📝 Documentation
+
+* **readme:** add Product Hunt featured badge to the top ([97fde6c](https://github.com/Meridiona/meridian/commit/97fde6c9852c666d9dc4c7527c519194f41da519))
+* **whats-new:** add the 1.88.0 entry ([fae62ab](https://github.com/Meridiona/meridian/commit/fae62ab522fe755999e3beb6bbd3bbf7f9e817e1))
+
+### 🔧 Chores
+
+* **release:** raise the mandatory-update floor to 1.88.0 ([2a82c17](https://github.com/Meridiona/meridian/commit/2a82c17a6f67001b66654d6f3203c57e0e874290))
+
 ## [1.87.0](https://github.com/Meridiona/meridian/compare/v1.86.0...v1.87.0) (2026-08-16)
 
 ### 🚀 Features
