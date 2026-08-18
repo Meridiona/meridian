@@ -407,7 +407,11 @@ pub(super) async fn refresh_active(pool: &SqlitePool, state: &Arc<Mutex<AppState
         }),
         Ok(None) => None,
         Err(e) => {
-            tracing::warn!(error = %e, "refresh_active failed");
+            // `%e` renders only `e`'s outermost `.context()` — see
+            // `meridian::errors::chain`'s doc for why a bare `%e` here would
+            // drop exactly the cause (e.g. a corrupt DB's SQLite code) that a
+            // reader needs.
+            tracing::warn!(error = %meridian::errors::chain(&e), "refresh_active failed");
             return;
         }
     };
@@ -445,7 +449,9 @@ pub(super) async fn refresh_current_task(pool: &SqlitePool, state: &Arc<Mutex<Ap
                 .as_ref()
                 .and_then(|c| c.estimate_s.map(|e| e.max(0) as u64));
         }
-        Err(e) => tracing::warn!(error = %e, "refresh_current_task failed"),
+        Err(e) => {
+            tracing::warn!(error = %meridian::errors::chain(&e), "refresh_current_task failed")
+        }
     }
 }
 
@@ -640,6 +646,48 @@ mod tests {
             "refresh_health no longer passes the staging flag - its restart \
              races the installer's binary swap, exactly as the watchdog's did"
         );
+    }
+
+    /// Regression guard: a bare `error = %e` on an `anyhow::Error` renders only
+    /// its outermost `.context()` and drops the actual cause — see
+    /// `meridian::errors::chain`'s doc for the field incident this same defect
+    /// caused on the daemon side. This is exactly how, in the field,
+    /// `refresh_active failed` / `refresh_current_task failed` arrived on over
+    /// half of one day's new installs as bare context strings
+    /// (`"active: fetch active_session"` / `"current_task: fetch most recent
+    /// task session"`) with no underlying DB error visible anywhere.
+    ///
+    /// Scoped to just these two functions' bodies, not the whole file: the
+    /// other `%e` sites here (`refresh_health`'s notice paths, `refresh_today`,
+    /// `refresh_worklogs`) are a separate, unverified sweep — see
+    /// `meridian::errors::chain`'s own doc on why converting everything at
+    /// once would bury the fix this guard is pinning.
+    #[test]
+    fn refresh_active_and_current_task_render_the_full_error_chain() {
+        let whole = include_str!("refresh.rs");
+        for func in ["refresh_active", "refresh_current_task"] {
+            let start = whole
+                .find(&format!("pub(super) async fn {func}"))
+                .unwrap_or_else(|| panic!("{func} not found in refresh.rs"));
+            let body = &whole[start..];
+            let end = body[1..]
+                .find("\npub(super) async fn ")
+                .map(|i| i + 1)
+                .or_else(|| body.find("\n#[cfg(test)]"))
+                .unwrap_or(body.len());
+            let offenders: Vec<&str> = body[..end]
+                .lines()
+                .filter(|l| l.contains("error = %e") && !l.trim_start().starts_with("//"))
+                .map(str::trim)
+                .collect();
+            assert!(
+                offenders.is_empty(),
+                "{func} logs a bare `error = %e`, which drops everything under the \
+                 outermost .context() before it can be logged or shipped — use \
+                 `error = %meridian::errors::chain(&e)` instead. Offending line(s): \
+                 {offenders:#?}"
+            );
+        }
     }
 
     /// The exact bug this fix targets: a fresh tray process (all counters at
