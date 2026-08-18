@@ -56,12 +56,28 @@ pub(crate) async fn run_meridian(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        // On timeout below, `tokio::time::timeout` drops the output future; without
+        // this the orphaned `meridian <args>` keeps running in the background after
+        // the UI reports a failure — for an LLM-backed call like `plan-task-draft`,
+        // that means the retry the user clicks next spawns a SECOND CLI process
+        // racing the first one for the same provider/DB, which is how a slow draft
+        // compounds into a retry loop that never finishes. See `tasks.rs::sync_tasks`
+        // for the sibling fix this mirrors.
+        .kill_on_drop(true)
         .no_window()
         .output();
 
     let output = match tokio::time::timeout(timeout, child).await {
         Err(_) => {
-            tracing::warn!(bin = %bin, timeout_s = timeout.as_secs(), "{label}: timed out");
+            // `kill_on_drop` reaps the child here, taking its stderr with it, so
+            // this log (bin + cwd, matching the spawn/non-zero arms below) is the
+            // only record a timeout leaves.
+            tracing::warn!(
+                bin = %bin,
+                cwd = %home.display(),
+                timeout_s = timeout.as_secs(),
+                "{label}: timed out"
+            );
             return Err(format!("{label} timed out"));
         }
         Ok(Err(e)) => {
@@ -184,5 +200,41 @@ pub(crate) async fn run_meridian_json<T: for<'de> Deserialize<'de>>(
                 "{label}: {bin} returned no result. It may be older than this app - reinstall or rebuild it."
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Regression guard: on a timeout, `tokio::time::timeout` drops the
+    /// `.output()` future, and without `kill_on_drop(true)` the spawned
+    /// `meridian <args>` keeps running in the background after the caller has
+    /// already reported failure to the user. For an LLM-backed call like
+    /// `plan-task-draft`, that orphan then competes with the next "Try again"
+    /// click's fresh process for the same provider/DB — a plausible reason a
+    /// draft that missed its 150s budget once keeps missing it on retry.
+    ///
+    /// Not runnable as a real spawn-and-verify test: `run_meridian` resolves
+    /// its binary via `crate::install::meridian_bin()`, and overriding that
+    /// via `MERIDIAN_BIN` would mean `std::env::set_var` on a shared test
+    /// binary — exactly what `integrations.rs`'s "avoiding `std::env::set_var`
+    /// on a Tokio worker thread" note warns off. Source-scanned instead,
+    /// mirroring `tasks.rs::sync_tasks`, the sibling call site that already
+    /// carries this fix.
+    #[test]
+    fn run_meridian_kills_the_child_on_timeout() {
+        let src = include_str!("cli_exec.rs");
+        let prod = src.split_once("\n#[cfg(test)]").map_or(src, |(a, _)| a);
+        let spawn = prod
+            .find("tokio::process::Command::new(&bin)")
+            .expect("run_meridian's Command builder moved or was renamed");
+        let output_call = prod[spawn..]
+            .find(".output();")
+            .expect("run_meridian's Command builder no longer ends in .output()");
+        let builder = &prod[spawn..spawn + output_call];
+        assert!(
+            builder.contains(".kill_on_drop(true)"),
+            "run_meridian's spawned child is missing .kill_on_drop(true) — a \
+             timeout will orphan it instead of killing it. Builder was: {builder}"
+        );
     }
 }
