@@ -1041,4 +1041,153 @@ mod tests {
             "reconciling a stale notice must not toast - nothing is being asked of the user"
         );
     }
+
+    /// A pool with the schema MISSING entirely — no `sqlx::migrate!` — so
+    /// `SELECT … FROM active_session` / `… FROM app_sessions` fail with a real
+    /// `no such table` error. This is exactly the shape a genuinely broken
+    /// install (corruption, a stale binary ahead of migrations) produces, and
+    /// it is what let the field incident this fix targets happen: the DB error
+    /// was real, just never logged past its outer context.
+    async fn unmigrated_db() -> meridian_core::SqlitePool {
+        use sqlx::sqlite::SqliteConnectOptions;
+        use std::str::FromStr;
+        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .create_if_missing(true);
+        meridian_core::SqlitePool::connect_with(opts).await.unwrap()
+    }
+
+    /// One captured tracing event: level + `(field name, debug-formatted
+    /// value)` pairs — same shape `commands::setup`'s tests use, so a reader
+    /// who has seen that pattern recognizes this one.
+    #[derive(Debug)]
+    struct CapturedEvent {
+        level: tracing::Level,
+        fields: Vec<(String, String)>,
+    }
+
+    /// Target-scoped to this module, not every event — an unmigrated pool
+    /// also makes `sqlx` itself log the query failure, and without the scope
+    /// this test could pass by matching sqlx's OWN warning instead of the
+    /// `tracing::warn!` this fix touches (see `pm_worklog::post`'s tests,
+    /// which hit the identical hazard for the identical reason).
+    struct Recorder(std::sync::Arc<std::sync::Mutex<Vec<CapturedEvent>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::layer::Layer<S> for Recorder {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if event.metadata().target() != "meridian_tray_lib::poll::refresh" {
+                return;
+            }
+            struct FieldVisitor(Vec<(String, String)>);
+            impl tracing::field::Visit for FieldVisitor {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0
+                        .push((field.name().to_string(), format!("{value:?}")));
+                }
+            }
+            let mut visitor = FieldVisitor(Vec::new());
+            event.record(&mut visitor);
+            self.0.lock().unwrap().push(CapturedEvent {
+                level: *event.metadata().level(),
+                fields: visitor.0,
+            });
+        }
+    }
+
+    /// Runs `f` under a recording subscriber on a CURRENT-THREAD runtime, so
+    /// the thread-local subscriber `with_default` installs stays active
+    /// across every `.await` inside `f` — the same technique
+    /// `pm_worklog::post`'s `levels_during_async` uses, for the same reason
+    /// (a multi-thread runtime could hop the future to a thread where the
+    /// subscriber was never installed).
+    fn capture_async<F: std::future::Future<Output = ()>>(
+        f: impl FnOnce() -> F,
+    ) -> Vec<CapturedEvent> {
+        use tracing_subscriber::layer::SubscriberExt;
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let subscriber =
+            tracing_subscriber::registry().with(Recorder(std::sync::Arc::clone(&seen)));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tracing::subscriber::with_default(subscriber, || rt.block_on(f()));
+        let events = std::mem::take(&mut *seen.lock().unwrap());
+        events
+    }
+
+    fn field<'a>(event: &'a CapturedEvent, name: &str) -> Option<&'a str> {
+        event
+            .fields
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// The end-to-end regression the source-scan test above can't reach: not
+    /// just that the code SAYS `chain(&e)`, but that a REAL failure actually
+    /// logs the full cause. Pins the exact field incident `meridian::errors`'
+    /// module doc describes — before this fix, only `error = "active: fetch
+    /// active_session"` would have shipped, with the real cause (there,
+    /// `(code: 11) database disk image is malformed`; here, `no such table`)
+    /// silently discarded.
+    #[test]
+    fn refresh_active_logs_the_cause_not_just_the_outer_context() {
+        let state = Arc::new(Mutex::new(AppState::default()));
+        let events = capture_async(move || {
+            let state = Arc::clone(&state);
+            async move {
+                let pool = unmigrated_db().await;
+                refresh_active(&pool, &state).await;
+            }
+        });
+
+        let warn = events
+            .iter()
+            .find(|e| e.level == tracing::Level::WARN)
+            .expect("refresh_active must warn on a DB read failure");
+        let error = field(warn, "error").expect("expected an `error` field");
+        assert!(
+            error.contains("active: fetch active_session"),
+            "outer context lost: {error}"
+        );
+        assert!(
+            error.contains("no such table"),
+            "the actual cause was dropped — got only: {error}"
+        );
+    }
+
+    #[test]
+    fn refresh_current_task_logs_the_cause_not_just_the_outer_context() {
+        let state = Arc::new(Mutex::new(AppState::default()));
+        let events = capture_async(move || {
+            let state = Arc::clone(&state);
+            async move {
+                let pool = unmigrated_db().await;
+                refresh_current_task(&pool, &state).await;
+            }
+        });
+
+        let warn = events
+            .iter()
+            .find(|e| e.level == tracing::Level::WARN)
+            .expect("refresh_current_task must warn on a DB read failure");
+        let error = field(warn, "error").expect("expected an `error` field");
+        assert!(
+            error.contains("current_task: fetch most recent task session"),
+            "outer context lost: {error}"
+        );
+        assert!(
+            error.contains("no such table"),
+            "the actual cause was dropped — got only: {error}"
+        );
+    }
 }
