@@ -118,6 +118,11 @@ pub async fn draft(note: &str) -> Result<TaskDraft> {
             schema: Some(prompts::plan_task_draft_schema()),
             max_tokens: DRAFT_MAX_TOKENS,
             label: "plan-task-draft".to_string(),
+            // The one call in this backend that a user is watching synchronously — see
+            // `PromptRequest::interactive`'s doc. Lets `CursorBackend` pick a faster
+            // model tier for this call specifically, without touching the pinned
+            // default that summarisation/worklog generation rely on for quality.
+            interactive: true,
         };
 
         let (out, provider) = match llm::complete(&req).await {

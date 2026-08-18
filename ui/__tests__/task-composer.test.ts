@@ -158,6 +158,21 @@ describe('the composer never blocks on the AI', () => {
   })
 })
 
+// This file's own header already says drafting "can take most of a minute" - but the
+// component used to override <GeneratingBar>'s honest default note ("this might take a
+// minute or so", the same wording WorklogDraftDialog and SummaryTaskView show) with a
+// hardcoded "this usually takes a few seconds". Cursor in particular can legitimately take
+// closer to a minute on a cold or hardened-ladder-retried call, so that override was a
+// promise the button could not keep for every provider - confirmed live (a single hardened
+// cursor-agent call measured ~6s; a call that has to retry can run well past "a few
+// seconds"). Fixed by dropping the override entirely.
+describe('the drafting spinner does not promise a latency it cannot keep', () => {
+  it('does not override GeneratingBar\'s note with an inaccurate "few seconds" claim', () => {
+    const generatingBarBlock = composer.slice(composer.indexOf('<GeneratingBar'))
+    expect(generatingBarBlock).not.toMatch(/note=/)
+  })
+})
+
 describe('composer state survives the plan modal closing mid-draft', () => {
   it('the store is module-level and exposed via useSyncExternalStore', () => {
     expect(store.includes('useSyncExternalStore')).toBe(true)

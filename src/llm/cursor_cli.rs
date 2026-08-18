@@ -370,6 +370,33 @@ pub fn looks_unknown_model(msg: &str) -> bool {
             || m.contains("no access"))
 }
 
+/// Did the call fail on a plain network/transport blip rather than anything about the
+/// request itself - a connection dropping mid-stream, a reset, a 5xx from Cursor's own
+/// backend? Worth exactly one bounded retry: unlike the other levers this isn't reacting to
+/// a capability the CLI lacks, it's reacting to noise that a second attempt often doesn't
+/// repeat.
+///
+/// Deliberately does NOT match our own client-side timeout (`"timed out after"`, the exact
+/// wording `run_capture` uses - see `SummariserError::Failed`). Retrying that would double
+/// the worst-case wait on an already-slow call, which is the opposite of what this exists
+/// for; a real timeout should fail promptly and let the caller decide, not silently cost the
+/// user a second full timeout window.
+pub fn looks_transient(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    if m.contains("timed out") {
+        return false;
+    }
+    m.contains("connection reset")
+        || m.contains("econnreset")
+        || m.contains("stream disconnected")
+        || m.contains("socket hang up")
+        || m.contains("broken pipe")
+        || m.contains("temporarily unavailable")
+        || m.contains("502 bad gateway")
+        || m.contains("503 service unavailable")
+        || m.contains("504 gateway")
+}
+
 /// Pinned model for every Meridian `cursor-agent` call: small, fast, cheap and ZDR-eligible
 /// (Cursor flags non-ZDR models explicitly in `--list-models`; this is not one) - the right
 /// tier for summarise/classify/draft, and deterministic across users unlike the account
@@ -378,6 +405,18 @@ pub fn looks_unknown_model(msg: &str) -> bool {
 /// `-medium` is the effort suffix Cursor displays as plain "GPT-5.4 Mini"; the ladder is
 /// `-none/-low/-medium/-high/-xhigh`.
 pub const DEFAULT_MODEL: &str = "gpt-5.4-mini-medium";
+
+/// Same pinned model, lower reasoning effort — used only for [`PromptRequest::interactive`]
+/// calls that have no explicit user model override (see `CursorBackend::complete`).
+///
+/// A synchronously-watched call (today, only the task composer's "Draft with AI") pays for
+/// `-medium`'s extra reasoning time in perceived latency, not in a better answer: the job is
+/// a three-field JSON extraction from a short note, not analysis. Background jobs
+/// (summarisation, worklog generation, classification) keep [`DEFAULT_MODEL`] - they run
+/// unattended, so slower-but-more-careful is free there and NOT free here.
+///
+/// [`PromptRequest::interactive`]: super::PromptRequest::interactive
+pub const FAST_MODEL: &str = "gpt-5.4-mini-low";
 
 /// Cursor's server-routed default, used only when [`DEFAULT_MODEL`] is not on the account.
 pub const FALLBACK_MODEL: &str = "auto";
@@ -413,6 +452,7 @@ struct Levers {
 /// 1. `--allowed-tools` rejected -> retry without it (fatter context, still works)
 /// 2. auth invisible from the sandbox `HOME` -> retry on the inherited one (carries skills)
 /// 3. model unavailable on this plan -> retry on [`FALLBACK_MODEL`]
+/// 4. a plain transient/network blip -> retry once, unchanged (see [`looks_transient`])
 ///
 /// A rate limit degrades nothing: `degradable_message` returns `None` and the error is
 /// returned immediately, because Cursor limits are account-level and a second call would
@@ -429,6 +469,10 @@ where
     };
     let mut model = model.to_string();
     let mut tried_fallback_model = model == FALLBACK_MODEL;
+    // Not a lever - retrying leaves argv/env unchanged, it just asks the same question
+    // again in case the first answer was noise. Bounded to one shot so a genuinely broken
+    // endpoint still fails promptly rather than doubling every call's worst case.
+    let mut tried_transient_retry = false;
 
     loop {
         let sandbox = if levers.sandbox { sandbox_home() } else { None };
@@ -467,6 +511,12 @@ where
             );
             model = FALLBACK_MODEL.to_string();
             tried_fallback_model = true;
+        } else if !tried_transient_retry && looks_transient(msg) {
+            tracing::warn!(
+                error = %msg,
+                "cursor: transient failure - retrying once unchanged"
+            );
+            tried_transient_retry = true;
         } else {
             // Nothing left to degrade, or a cause no lever addresses.
             return Err(err);
@@ -575,9 +625,53 @@ mod tests {
     /// An unrelated failure is not a licence to strip hardening.
     #[tokio::test]
     async fn an_unrecognised_failure_does_not_degrade() {
-        let (res, seen) = ladder(DEFAULT_MODEL, vec![Some("connection reset by peer")]).await;
+        let (res, seen) = ladder(DEFAULT_MODEL, vec![Some("internal assertion failed")]).await;
         assert!(res.is_err());
         assert_eq!(seen.len(), 1);
+    }
+
+    /// THE regression this lever exists for: a plain network blip - noise, not a capability
+    /// the CLI lacks - gets one retry with the argv/env completely unchanged.
+    #[tokio::test]
+    async fn a_transient_failure_retries_once_unchanged() {
+        let (res, seen) = ladder(DEFAULT_MODEL, vec![Some("connection reset by peer")]).await;
+        assert!(res.is_ok());
+        assert_eq!(seen.len(), 2);
+        assert_eq!(
+            seen[0], seen[1],
+            "a transient retry must not change argv/env - it isn't a lever"
+        );
+    }
+
+    /// Bounded: a second transient failure in a row is not a licence to keep spinning.
+    #[tokio::test]
+    async fn a_second_transient_failure_is_not_retried_again() {
+        let errs = vec![
+            Some("connection reset by peer"),
+            Some("stream disconnected"),
+        ];
+        let (res, seen) = ladder(DEFAULT_MODEL, errs).await;
+        assert!(res.is_err());
+        assert_eq!(seen.len(), 2, "one retry, then give up");
+    }
+
+    /// THE regression the exclusion exists for: retrying our own client-side timeout would
+    /// double the worst-case wait on an already-slow call, which is what this lever must never
+    /// do. `run_capture`'s exact wording (`SummariserError::Failed`) is `"<program> timed out
+    /// after <n>s"`.
+    #[tokio::test]
+    async fn a_timeout_shaped_message_is_not_retried() {
+        let (res, seen) = ladder(
+            DEFAULT_MODEL,
+            vec![Some("cursor-agent timed out after 300s")],
+        )
+        .await;
+        assert!(res.is_err());
+        assert_eq!(
+            seen.len(),
+            1,
+            "a timeout must fail promptly, not double the wait"
+        );
     }
 
     /// Each lever drops at most once, so a persistently failing CLI terminates instead of
@@ -696,6 +790,22 @@ mod tests {
         // Must not mistake a quota problem for an auth problem - that retry would waste a call.
         assert!(!looks_auth_failure("rate/usage limit reached"));
         assert!(!looks_auth_failure("workspace trust required"));
+    }
+
+    #[test]
+    fn transient_failure_detection_drives_the_bounded_retry() {
+        assert!(looks_transient("connection reset by peer"));
+        assert!(looks_transient("Error: socket hang up"));
+        assert!(looks_transient(
+            "cursor-agent exited Some(1): 503 Service Unavailable"
+        ));
+        // Must not mistake our own client-side timeout for noise worth retrying - see the
+        // doc comment on `looks_transient` for why that distinction matters.
+        assert!(!looks_transient("cursor-agent timed out after 300s"));
+        assert!(!looks_transient("Error: request timed out after retries"));
+        // Ordinary failures must not spend the one bounded retry either.
+        assert!(!looks_transient("rate/usage limit reached"));
+        assert!(!looks_transient("Not logged in"));
     }
 
     /// The sandbox must never be the user's real home - that is the whole safety property.

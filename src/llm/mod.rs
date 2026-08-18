@@ -154,6 +154,14 @@ pub struct PromptRequest {
     pub max_tokens: u32,
     /// Trace label (the hour, e.g. "2026-07-10T13") — for spans and logs, never the model.
     pub label: String,
+    /// This call is being watched synchronously by a user right now (e.g. the task
+    /// composer's "Draft with AI"), as opposed to a background job (summarisation,
+    /// worklog generation) where a slower, more capable model costs nothing perceptible.
+    ///
+    /// A backend MAY use this to pick a faster model tier when the user has not pinned
+    /// an explicit override — see `CursorBackend::complete`, the only backend that does
+    /// today. Defaults to `false`; only [`crate::plan_tasks::draft::draft`] sets it.
+    pub interactive: bool,
 }
 
 impl PromptRequest {
@@ -164,6 +172,7 @@ impl PromptRequest {
             schema: None,
             max_tokens: 2048,
             label: label.into(),
+            interactive: false,
         }
     }
 
@@ -174,6 +183,12 @@ impl PromptRequest {
 
     pub fn with_max_tokens(mut self, n: u32) -> Self {
         self.max_tokens = n;
+        self
+    }
+
+    /// Mark this call as synchronously watched by a user — see the field doc.
+    pub fn interactive(mut self) -> Self {
+        self.interactive = true;
         self
     }
 }

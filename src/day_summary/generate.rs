@@ -295,6 +295,7 @@ pub async fn generate(pool: &SqlitePool, day_local: &str) -> Result<DaySummary> 
         schema: Some(prompts::daily_summary_schema()),
         max_tokens: GENERATE_MAX_TOKENS,
         label: format!("daily-summary {day_local}"),
+        interactive: false,
     };
 
     // A failed call is not a failed screen: fall back rather than surfacing an

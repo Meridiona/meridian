@@ -267,6 +267,7 @@ async fn attempt(
         schema: Some(schema.clone()),
         max_tokens: PROBE_MAX_TOKENS,
         label: format!("probe {rung:?}"),
+        interactive: false,
     };
     let out = OpenAiCompatBackend { cfg }.complete(&req).await?;
     match super::parse_json_object(&out.text) {
