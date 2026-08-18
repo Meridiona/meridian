@@ -1695,6 +1695,10 @@ mod tests {
     // finishing a browser OAuth flow, and using them in a unit test would make the suite
     // take minutes for no extra coverage.
 
+    // Only the (unix-only) tests below call this - see the block comment above. Not gating
+    // it too would make it dead code on Windows and fail `-D warnings` there while looking
+    // perfectly clean on macOS/Linux, which is exactly how this was first missed.
+    #[cfg(unix)]
     fn instant_timing() -> InteractiveLoginTiming {
         InteractiveLoginTiming {
             deadline: Duration::from_millis(500),
