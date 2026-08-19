@@ -1445,7 +1445,17 @@ fn install_failed(cmd: &str, message: String) -> InstallOutcome {
     // here, so recording on the CURRENT span marks whichever of them is running
     // as failed without threading a handle through a dozen early returns.
     tracing::Span::current().record("ok", false);
-    tracing::warn!(%cmd, %message, "llm: provider install failed");
+    // No `message` field: some callers (the interactive-login failure path via
+    // `confirm_or_report`) pass the buffered CLI stdout/stderr tail here, which can
+    // carry OAuth verification URLs and device codes - the same class of leak
+    // already fixed at `drain_lines`/`probe_with_retry`/`confirm_or_report`'s own
+    // WARN sites in this file. `install_failed` has no way to tell a safe static
+    // message from raw CLI output, so it must treat every message as unsafe.
+    tracing::warn!(
+        cmd,
+        message_len = message.len(),
+        "llm: provider install failed"
+    );
     InstallOutcome {
         ok: false,
         message,

@@ -158,7 +158,14 @@ fn batch_message(stale: &[meridian_core::day_task_worklogs::StaleDraft]) -> (Str
     }
 
     let title = format!("{} worklog drafts are out of date", stale.len());
-    let names: Vec<&str> = stale.iter().map(|d| d.title.as_str()).collect();
+    // Sorted for the same reason `batch_dedup_key` sorts its parts: `stale`'s row
+    // order isn't part of the contract (it's whatever the hourly fold's query
+    // happened to return), but `batch_dedup_key` already treats the SET as the
+    // identity, not the order - a body built from the unsorted order would
+    // silently vary run to run for the identical set, and for a batch of 4+ it
+    // decides which two names actually get named, not just their order.
+    let mut names: Vec<&str> = stale.iter().map(|d| d.title.as_str()).collect();
+    names.sort_unstable();
     let listed = match names.as_slice() {
         [a, b] => format!("\"{a}\" and \"{b}\""),
         [a, b, c] => format!("\"{a}\", \"{b}\", and \"{c}\""),
@@ -226,7 +233,25 @@ mod tests {
             draft("T2", "Bug triage", 40),
         ]);
         assert_eq!(title, "2 worklog drafts are out of date");
-        assert!(body.contains("\"Release notes\" and \"Bug triage\""));
+        // Alphabetical, not input order - see the sort in `batch_message`.
+        assert!(body.contains("\"Bug triage\" and \"Release notes\""));
+    }
+
+    /// The whole point of sorting: the SAME stale set, folded in a different row
+    /// order (e.g. a different query plan, or a task's `stale_minutes` landing it
+    /// earlier/later in whatever produced `stale`), must produce the identical
+    /// notification body - not just the identical dedup key.
+    #[test]
+    fn the_batch_body_is_order_independent() {
+        let forward = [
+            draft("T1", "Release notes", 20),
+            draft("T2", "Bug triage", 40),
+        ];
+        let backward = [
+            draft("T2", "Bug triage", 40),
+            draft("T1", "Release notes", 20),
+        ];
+        assert_eq!(batch_message(&forward), batch_message(&backward));
     }
 
     #[test]
