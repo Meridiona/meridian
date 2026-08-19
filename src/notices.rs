@@ -85,13 +85,14 @@ pub struct Notice<'a> {
 /// using the same `event_key` so the retract dedup key matches the enqueue.
 pub async fn raise_typed(pool: &SqlitePool, n: Notice<'_>) -> Result<()> {
     sqlx::query(
-        "INSERT INTO system_notices (notice_id, severity, title, detail, remedy)
-         VALUES (?, ?, ?, ?, ?)
+        "INSERT INTO system_notices (notice_id, severity, title, detail, remedy, deep_link)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(notice_id) DO UPDATE SET
            severity  = excluded.severity,
            title     = excluded.title,
            detail    = excluded.detail,
            remedy    = excluded.remedy,
+           deep_link = excluded.deep_link,
            raised_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
     )
     .bind(n.id)
@@ -99,6 +100,7 @@ pub async fn raise_typed(pool: &SqlitePool, n: Notice<'_>) -> Result<()> {
     .bind(n.title)
     .bind(n.detail)
     .bind(n.remedy)
+    .bind(n.deep_link)
     .execute(pool)
     .await
     .context("raising system notice")?;
@@ -238,6 +240,70 @@ mod tests {
             .await
             .unwrap();
         assert!(!cleared_again);
+    }
+
+    /// THE bug this test exists for: `deep_link` reached the paired native toast
+    /// (`notifications.deep_link`, migration 042) but was silently dropped before it ever
+    /// reached the persistent banner (`system_notices` had no such column at all) - so a
+    /// banner that outlived its toast, which is the common case, had no click-through left.
+    /// Asserts on `system_notices` directly, via the same reader the banner actually uses
+    /// (`meridian_core::notices::read_notices`), not just on what `raise_typed` was asked to
+    /// do - a regression here could pass a Rust-only check on the query and still ship a
+    /// banner with no button if the reader's column list drifted.
+    #[tokio::test]
+    async fn raise_typed_persists_deep_link_onto_the_banner_row() {
+        let pool = fresh_db().await;
+
+        raise_typed(
+            &pool,
+            Notice {
+                id: "llm.groq_deprecated",
+                severity: "error",
+                title: "Groq is disabled",
+                detail: "Switch providers to resume.",
+                remedy: None,
+                event_key: "llm.groq_deprecated",
+                deep_link: Some(meridian_core::notifications::deep_links::INTELLIGENCE),
+            },
+        )
+        .await
+        .unwrap();
+
+        let notices = meridian_core::notices::read_notices(&pool).await;
+        let banner = notices
+            .iter()
+            .find(|n| n.notice_id == "llm.groq_deprecated")
+            .expect("raise_typed must have written the banner row");
+        assert_eq!(
+            banner.deep_link.as_deref(),
+            Some(meridian_core::notifications::deep_links::INTELLIGENCE)
+        );
+
+        // A re-raise (the poll loop's idempotent every-tick call) must not clear it either -
+        // the UPDATE branch of the upsert has its own column list to keep in sync.
+        raise_typed(
+            &pool,
+            Notice {
+                id: "llm.groq_deprecated",
+                severity: "error",
+                title: "Groq is disabled",
+                detail: "Switch providers to resume.",
+                remedy: None,
+                event_key: "llm.groq_deprecated",
+                deep_link: Some(meridian_core::notifications::deep_links::INTELLIGENCE),
+            },
+        )
+        .await
+        .unwrap();
+        let notices = meridian_core::notices::read_notices(&pool).await;
+        let banner = notices
+            .iter()
+            .find(|n| n.notice_id == "llm.groq_deprecated")
+            .unwrap();
+        assert_eq!(
+            banner.deep_link.as_deref(),
+            Some(meridian_core::notifications::deep_links::INTELLIGENCE)
+        );
     }
 
     /// The test above only checks `system_notices` — it would pass even if
