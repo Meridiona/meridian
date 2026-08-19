@@ -69,7 +69,7 @@
 //! Everything above is after-the-fact: a 429 must land before anything slows down. The
 //! complement is [`super::rate_limit`], which paces a custom endpoint's requests so the 429
 //! does not happen in the first place. [`complete_inner`] calls it before each attempt, and
-//! the two share a key derivation ([`backoff_key`] / [`super::rate_limit::custom_key`]) so
+//! the two share a key derivation ([`provider_key`] / [`super::rate_limit::custom_key`]) so
 //! an endpoint cannot be paced under one identity and parked under another.
 
 use std::collections::BTreeMap;
@@ -127,7 +127,7 @@ fn default_backoff(provider: LlmProvider) -> Duration {
 }
 
 /// When each rate-limited backend may be used again, keyed by backend IDENTITY (see
-/// [`backoff_key`]) — NOT the bare [`LlmProvider`], because two custom endpoints share the
+/// [`provider_key`]) — NOT the bare [`LlmProvider`], because two custom endpoints share the
 /// `Custom` variant but must back off independently.
 ///
 /// Per-backend keying is what makes "switch providers to escape a rate limit" work with no
@@ -148,15 +148,43 @@ pub(super) fn from_summariser_error(e: SummariserError) -> LlmError {
     }
 }
 
-/// The backoff-map key for a resolved backend. CLI providers key by name; a custom endpoint
-/// keys by its id so two endpoints (both the `Custom` variant) back off independently.
-fn backoff_key(provider: LlmProvider, cfg: &LlmConfig) -> String {
+/// The identity key for a resolved backend — used both as the in-memory backoff-map key
+/// here, and as the [`super::runtime_health`] file-record key (`record_success`,
+/// `record_failure`, `record_probe_success`, `latest_for` all take this, never a bare
+/// [`LlmProvider`]). CLI providers key by name; a custom endpoint keys by its own id
+/// (`custom:<id>`, via [`super::rate_limit::custom_key`]) so two endpoints - both the
+/// `Custom` variant - are tracked independently rather than sharing the literal string
+/// `"custom"`. Sharing it was a real bug: switching the active custom endpoint left the
+/// backoff map harmless (it is in-memory and per-process, see [`RATE_LIMITED_UNTIL`]'s own
+/// docs) but silently carried the PREVIOUS endpoint's persisted health/test verdict onto
+/// the newly-active one, which only became visible once a second curated preset (Ollama,
+/// alongside Groq) existed for a real user to switch between.
+pub fn provider_key(provider: LlmProvider, custom_id: Option<&str>) -> String {
     match provider {
-        LlmProvider::Custom => {
-            super::rate_limit::custom_key(cfg.custom.as_ref().map(|c| c.id.as_str()).unwrap_or(""))
-        }
+        LlmProvider::Custom => super::rate_limit::custom_key(custom_id.unwrap_or("")),
         _ => provider.as_str().to_string(),
     }
+}
+
+/// Groq is discontinued — this is an unconditional refusal, not a measured-failure verdict.
+///
+/// Shared by [`complete_inner`] (the production funnel: hourly folds, worklog drafts,
+/// classification) AND [`super::detect::test_provider`] (manual "Test Connection"), so a
+/// user can never see a Groq tile report a healthy test while the pipeline that actually
+/// matters silently refuses every real call — the two would otherwise be produced by code
+/// paths that had never been introduced to each other, exactly the trap `complete_inner`'s
+/// health gate already exists to avoid for a *measured* failure. Groq's free-tier TPM
+/// ceiling is too tight for Meridian's hourly prompt sizes; this is an ongoing production
+/// failure, not a transient one worth spending a network call to re-verify.
+pub fn groq_blocked(vendor: Option<&str>) -> Option<LlmError> {
+    if vendor != Some("groq") {
+        return None;
+    }
+    Some(LlmError::Failed(
+        "Groq is discontinued - its free tier can't reliably serve Meridian's hourly \
+         summaries. Open Settings → Intelligence and add a free Ollama key to resume."
+            .to_string(),
+    ))
 }
 
 fn is_backing_off(key: &str) -> bool {
@@ -409,6 +437,18 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
     let s = load_runtime_settings();
     let cfg = LlmConfig::from_settings(&s);
     let chosen = LlmProvider::from_wire(&s.llm_provider).unwrap_or_default();
+    // The ONE identity this whole call is tracked under — backoff, and every
+    // `runtime_health` read/write below. Computed once so it can't drift between call
+    // sites the way two independent `provider.as_str()`/`backoff_key(...)` calls could.
+    let key = provider_key(chosen, cfg.custom.as_ref().map(|c| c.id.as_str()));
+
+    if let Some(refusal) = groq_blocked(s.active_custom_provider().map(|c| c.vendor.as_str())) {
+        tracing::warn!(
+            label = %req.label,
+            "llm: refusing the call - groq is discontinued, switch to ollama in Settings → Intelligence"
+        );
+        return Err(refusal);
+    }
 
     // ── The provider is known to be unavailable ──────────────────────────────
     //
@@ -472,7 +512,7 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
     // metered endpoint, could count against the very quota we are waiting on. Keyed
     // per-backend, so a limit on a provider the user has since switched away from does not
     // block this one.
-    if is_backing_off(&backoff_key(chosen, &cfg)) {
+    if is_backing_off(&key) {
         tracing::debug!(
             provider = chosen.as_str(),
             label = %req.label,
@@ -488,7 +528,7 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
         // Re-stamp the runtime record so the banner stays up for the whole backoff window.
         // Without this the observation would age out mid-outage, because every call inside
         // the window returns here and never reaches the recording site below.
-        super::runtime_health::record_failure(chosen, &err);
+        super::runtime_health::record_failure(&key, &err);
         return Err(err);
     }
 
@@ -502,12 +542,7 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
         // never happens. No-op unless this is a custom endpoint with an `rpm` configured.
         if chosen == LlmProvider::Custom {
             if let Some(ep) = cfg.custom.as_ref() {
-                super::rate_limit::acquire(
-                    &backoff_key(chosen, &cfg),
-                    ep.rpm,
-                    Some(PACING_MAX_WAIT),
-                )
-                .await;
+                super::rate_limit::acquire(&key, ep.rpm, Some(PACING_MAX_WAIT)).await;
             }
         }
         match backend.complete(req).await {
@@ -521,9 +556,9 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
                 // which that check cannot see - so it would write nothing and the next call
                 // would be refused again by the verdict this one just disproved.
                 if probing {
-                    super::runtime_health::record_probe_success(chosen);
+                    super::runtime_health::record_probe_success(&key);
                 } else {
-                    super::runtime_health::record_success(chosen);
+                    super::runtime_health::record_success(&key);
                 }
                 return Ok((out, chosen));
             }
@@ -545,7 +580,7 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
                     backoff_source = if retry_after.is_some() { "header" } else { "message-or-default" },
                     "llm: provider rate-limited — skipping it until the quota resets"
                 );
-                start_backoff(&backoff_key(chosen, &cfg), backoff);
+                start_backoff(&key, backoff);
                 last = LlmError::RateLimited {
                     message,
                     retry_after,
@@ -577,7 +612,7 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
     // The one place every exhausted call converges, so the dashboard banner learns about a
     // provider that is installed and tested-fine but failing every real call — the state that
     // silently leaves worklog hours pending and the day timeline empty.
-    super::runtime_health::record_failure(chosen, &last);
+    super::runtime_health::record_failure(&key, &last);
     Err(last)
 }
 
@@ -593,6 +628,13 @@ mod tests {
     /// one variable, which is the same as none. See that module's docs.
     fn settings_for(tag: &str, provider: &str) -> ScopedSettings {
         ScopedSettings::install(tag, &format!(r#"{{"llm_provider":"{provider}"}}"#))
+    }
+
+    #[test]
+    fn groq_blocked_refuses_only_groq() {
+        assert!(groq_blocked(Some("groq")).is_some());
+        assert!(groq_blocked(Some("ollama")).is_none());
+        assert!(groq_blocked(None).is_none());
     }
 
     /// THE test for this design. The resolver re-reads settings on every call, so flipping

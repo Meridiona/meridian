@@ -5,11 +5,13 @@
 // card. Split out of <LlmProviderPicker> purely for size - the picker owns the grid and the
 // selection, this owns everything specific to a user-configured endpoint.
 //
-// THERE IS NO ADD FORM HERE ANY MORE. <GroqSetup> is the one way an endpoint gets created,
-// from a single pasted key; the old form asked for a vendor with one option, a URL it filled
-// in itself, a model from an unrankable list and two rate limits we now know. The vendor-preset
-// machinery it stood on is gone too - see the note where it used to live in
-// `@/lib/llm-providers`. `add` stays on the hook, because GroqSetup calls it.
+// THERE IS NO ADD FORM HERE ANY MORE. <CloudKeySetup> is the one way an endpoint gets
+// created, from a single pasted key against one of the curated presets in
+// `@/lib/llm-providers` (`CLOUD_PRESETS`); the old form asked for a vendor from an open-ended
+// dropdown, a URL it filled in itself, a model from an unrankable list and two rate limits we
+// now know for the presets that publish them. The vendor-preset machinery it stood on is gone
+// too - see the note where it used to live in `@/lib/llm-providers`. `add` stays on the hook,
+// because CloudKeySetup calls it.
 //
 // Two rules run through the whole file, and both come from Rust:
 //
@@ -29,7 +31,7 @@ import {
   type CustomProviderView,
   type ProbeOutcome,
 } from '@/lib/llm-providers'
-import { GroqLogo } from '@/components/LlmProviderLogos'
+import { CustomVendorLogo } from '@/components/LlmProviderLogos'
 
 /**
  * The configured endpoints, plus the writes that change them.
@@ -215,7 +217,7 @@ export function CustomProviderCard({ p, picked, live, statusDetail, probing, onP
           width: 30, height: 30, borderRadius: 8,
           background: 'var(--t-box)', border: '1px solid var(--t-ctrl-border)',
         }}>
-          <GroqLogo size={15} />
+          <CustomVendorLogo vendor={p.vendor} size={15} />
         </span>
         <div className="flex flex-col min-w-0" style={{ flex: 1, gap: 2 }}>
           <span style={{ fontSize: 14.5, fontWeight: 600, color: 'var(--t-title)', letterSpacing: '-.01em' }}>
