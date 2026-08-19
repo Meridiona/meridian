@@ -79,6 +79,30 @@ const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// set-aside file and a loud error, not a new empty database per launch.
 const FRESH_START_GUARD: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
+/// How many times [`execute_pending_repair`] retries a failed rebuild before
+/// giving up and reporting [`Outcome::Failed`].
+///
+/// Observed on the 2026-08 fleet incident: the same machine logged `database
+/// repair failed - the original is unchanged` twice within about a minute of
+/// its own repeated auto-repair-at-boot attempts, before a later attempt
+/// (elsewhere, hours afterward) finally succeeded. That is not proof of a
+/// specific transient cause here the way Windows' os-error-32 file lock is
+/// proven in [`meridian_core::retry`] - macOS was the only OS observed in this
+/// pattern, and nothing in `repair()`'s own error path currently distinguishes
+/// a transient failure from a genuinely unsalvageable one. But a bounded,
+/// same-boot retry costs nothing on the common path (a healthy database never
+/// reaches this code at all) and directly narrows the gap this fleet evidence
+/// pointed at: today, giving a corrupt database more than one chance to repair
+/// requires the user (or a relaunch) to reopen the app between every attempt,
+/// which an ordinary user has no reason to know to do.
+const REPAIR_RETRY_ATTEMPTS: u32 = 3;
+
+/// Linear backoff base for [`REPAIR_RETRY_ATTEMPTS`] - `base × attempt`
+/// between tries (2s, then 4s), matching [`meridian_core::retry`]'s schedule.
+/// Small enough that even the worst case (two retries) adds only ~6s to a
+/// boot that was already about to run a multi-table rebuild.
+const REPAIR_RETRY_BASE_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Outcome, kept plain so `lib.rs` can turn it into a notice once it has a pool
 /// (this runs before one exists).
 pub enum Outcome {
@@ -345,7 +369,7 @@ fn probe_and_heal(db_path: &Path, key_hex: Option<&str>, key_trust: KeyTrust) ->
 fn execute_pending_repair(db_path: &Path, key_hex: Option<&str>) -> Outcome {
     let outcome = tauri::async_runtime::block_on(async move {
         wait_for_daemon_to_stand_down().await;
-        meridian::db::repair::repair(db_path, key_hex).await
+        retry_repair(|| meridian::db::repair::repair(db_path, key_hex)).await
     });
 
     // Clear before reporting: a panic while formatting the summary must not
@@ -373,6 +397,27 @@ fn execute_pending_repair(db_path: &Path, key_hex: Option<&str>) -> Outcome {
             }
         }
     }
+}
+
+/// Runs `repair_fn` up to [`REPAIR_RETRY_ATTEMPTS`] times with
+/// [`REPAIR_RETRY_BASE_DELAY`] linear backoff, via the shared
+/// [`meridian_core::retry::retry_transient`] - see [`REPAIR_RETRY_ATTEMPTS`]'s
+/// doc for why this exists. `repair()` never modifies the original database
+/// until its final successful swap, so retrying a failed attempt costs
+/// nothing beyond time: each attempt either fails having changed nothing, or
+/// the whole operation succeeds.
+///
+/// Split out (rather than inlined into [`execute_pending_repair`]) so the
+/// retry/backoff wiring is testable with a fake fallible closure, the same
+/// way [`KeyTrust::of`] and [`probe_and_heal`] are split from their real I/O
+/// for the same reason.
+async fn retry_repair<F, Fut>(repair_fn: F) -> anyhow::Result<meridian::db::repair::RepairReport>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<meridian::db::repair::RepairReport>>,
+{
+    meridian_core::retry::retry_transient(REPAIR_RETRY_ATTEMPTS, REPAIR_RETRY_BASE_DELAY, repair_fn)
+        .await
 }
 
 /// Classifies the on-disk database. Read-only and safe against a live daemon:
@@ -776,6 +821,65 @@ mod probe_tests {
             .join("meridian.db.unopenable-backup-20260805000000");
         std::fs::write(&fresh, b"new damage").unwrap();
         assert_eq!(recent_unopenable_backup(&db), Some(fresh));
+    }
+
+    /// A repair that fails on its first attempts but succeeds within
+    /// [`REPAIR_RETRY_ATTEMPTS`] must recover, not report [`Outcome::Failed`]
+    /// - the whole point of [`REPAIR_RETRY_ATTEMPTS`]'s hardening: giving a
+    /// transient failure a same-boot second chance instead of requiring the
+    /// user to relaunch the app between every attempt.
+    #[tokio::test(start_paused = true)]
+    async fn retry_repair_recovers_within_the_attempt_budget() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let calls = AtomicU32::new(0);
+        let result = retry_repair(|| {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n + 1 < REPAIR_RETRY_ATTEMPTS {
+                    Err(anyhow::anyhow!("transient failure"))
+                } else {
+                    Ok(meridian::db::repair::RepairReport::default())
+                }
+            }
+        })
+        .await;
+        assert!(result.is_ok(), "must recover within the retry budget");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            REPAIR_RETRY_ATTEMPTS,
+            "no extra attempt past the success"
+        );
+    }
+
+    /// A repair that never succeeds must still give up after exactly
+    /// [`REPAIR_RETRY_ATTEMPTS`] tries and surface the last error - a
+    /// genuinely unsalvageable database must not retry forever.
+    #[tokio::test(start_paused = true)]
+    async fn retry_repair_gives_up_after_exhausting_the_attempt_budget() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let calls = AtomicU32::new(0);
+        let result = retry_repair(|| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Err(anyhow::anyhow!("still broken")) }
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), REPAIR_RETRY_ATTEMPTS);
+    }
+
+    /// The common path - success on the very first attempt - must not pay any
+    /// backoff or retry cost at all.
+    #[tokio::test]
+    async fn retry_repair_returns_on_first_success_without_retrying() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let calls = AtomicU32::new(0);
+        let result = retry_repair(|| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(meridian::db::repair::RepairReport::default()) }
+        })
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
 
