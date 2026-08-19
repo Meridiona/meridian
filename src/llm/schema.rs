@@ -88,6 +88,23 @@ pub(crate) fn strictify(v: &Value) -> Value {
                 "required".into(),
                 Value::Array(keys.into_iter().map(Value::String).collect()),
             );
+            // The other half of OpenAI's strict-mode contract, and the one Meridian's
+            // shared schemas didn't all carry by hand: every object node needs
+            // `additionalProperties: false`, not just `properties`-complete `required`.
+            // `placements.items` had it (authored explicitly in prompts.rs) so the
+            // existing test above only ever proved it *survives* the rewrite; every OTHER
+            // object node in every shared schema silently lacked it. Groq's endpoint
+            // validates this directly (unlike `codex exec --output-schema`, which appears
+            // to inject it before the API ever sees the request - see this fn's own doc on
+            // why a CLI-observed rung can hide a gap a direct API exposes), and rejects the
+            // whole request with a 400 before the model runs: "invalid JSON schema for
+            // response_format: 'answer': additionalProperties:false must be set on every
+            // object" - observed live across dozens of accounts, the single most common
+            // Groq-path failure in production telemetry (2026-08-19). Setting it here,
+            // unconditionally, closes the gap for every current and future shared schema
+            // at the one place that already owns strict-mode compliance, rather than
+            // relying on each hand-authored schema to remember it on every nested object.
+            out.insert("additionalProperties".into(), Value::Bool(false));
             Value::Object(out)
         }
         Value::Array(a) => Value::Array(a.iter().map(strictify).collect()),
@@ -140,6 +157,14 @@ mod tests {
                     "key {k} missing from required"
                 );
             }
+            // The other half of the contract - see this test's own comment for why
+            // `strictify_preserves_other_keywords` alone didn't catch this being absent
+            // everywhere ELSE it was needed.
+            assert_eq!(
+                v["additionalProperties"],
+                json!(false),
+                "an object node with properties is missing additionalProperties:false"
+            );
         }
         match v {
             Value::Object(m) => m.values().for_each(assert_strict),
