@@ -155,7 +155,12 @@ export function useLlmProviderDetection() {
         // remount 60s+ later. Re-test (silently - the user is already watching the sign-in
         // flow, this isn't a background surprise) rather than only refreshing install state,
         // so a sign-in that quietly resolved itself a moment later is reflected right away.
-        await Promise.all([detect(), testOne(id, { silent: true })])
+        // Sequenced, not concurrent: `detect()` REPLACES the whole status map (the backend
+        // reports `last_test: null` for every provider), so if `testOne()` settled first,
+        // `Promise.all`'s unordered resolution could let the later `detect()` overwrite the
+        // merged result and discard the just-spent probe. Same order `install()` above uses.
+        await detect()
+        await testOne(id, { silent: true })
       }
       return outcome
     } catch (e) {

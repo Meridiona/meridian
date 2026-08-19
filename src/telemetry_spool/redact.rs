@@ -632,8 +632,12 @@ fn platform_prefix() -> &'static str {
 }
 
 /// Unix seconds marking the end of the ALPHA per-user pseudonym window —
-/// 2026-12-31T00:00:00Z. Originally 2026-08-28 (one month out from when this
-/// shipped, 2026-07-28); extended because the alpha is still running at ~200
+/// 2027-01-01T00:00:00Z, i.e. the override stays active THROUGH the whole of
+/// 2026-12-31 (the check below is `now_unix >= this`, so the boundary itself
+/// must be the instant AFTER the last day the override should hold — using
+/// 2026-12-31T00:00:00Z here would have disabled it at the START of that day
+/// instead). Originally 2026-08-28 (one month out from when this shipped,
+/// 2026-07-28); extended because the alpha is still running at ~200
 /// hand-picked testers, several on more than one machine.
 ///
 /// **Extending is not cosmetic — the value CHANGES at this instant.** Every
@@ -649,7 +653,7 @@ fn platform_prefix() -> &'static str {
 ///
 /// See [`local_host_pseudonym`]'s ALPHA doc for why this is a date, not a
 /// channel check.
-const ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX: u64 = 1_798_675_200;
+const ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX: u64 = 1_798_761_600;
 
 /// Now, as Unix seconds. Failure (a clock so broken `UNIX_EPOCH` is in the
 /// future) reads as "expired" — `u64::MAX` — rather than "still in the alpha

@@ -122,7 +122,7 @@ different things about you - see [Error reporting](#error-reporting).
 | Event | When | What it contains |
 |---|---|---|
 | `app_installed` | Once per device, per signed-in account | Nothing beyond the shared properties below. |
-| `app_active` | Once per calendar day Meridian is running | Nothing beyond the shared properties. It exists only so we can tell how many people come back on a given day. |
+| `app_active` | Once per calendar day Meridian is running | The shared properties, plus the current-state summary described below (which AI provider and which trackers). It exists so we can tell how many people come back on a given day, and so a brand-new install's setup is visible without waiting for the first `daily_usage`. |
 | `daily_usage` | Once per completed calendar day | Three groups of numbers, listed below. |
 
 `daily_usage` carries:
@@ -139,10 +139,12 @@ different things about you - see [Error reporting](#error-reporting).
   never their text).
 - **Which AI provider you use, and whether it works** - the provider's name from our own
   fixed list (`claude`, `codex`, `cursor`, `copilot`, `custom`), whether it is currently
-  usable or rate-limited, and for a cloud endpoint the preset it came from (`openai`,
+  usable or rate-limited, whether you actually chose that provider or are still on the
+  default, and for a cloud endpoint the vendor it came from (one of `groq`, `openai`,
   `gemini`, `openrouter`, `other`) and the model id. If you entered your own endpoint by
-  hand, the **model id is not sent** - it can name an internal deployment. Your endpoint
-  URL and API key are never sent under any setting.
+  hand, the **model id is not sent** - it can name an internal deployment. A vendor value
+  we don't recognise is replaced with `unrecognised` rather than sent as-is. Your
+  endpoint URL and API key are never sent under any setting.
 - **Which trackers you connect, and whether they sync** - the tracker's name from our
   fixed list (`jira`, `linear`, `github`, `trello`, `azure_devops`) and a one-word status
   for each: syncing fine, stale, failing, never synced, or waiting for you to pick a
@@ -157,6 +159,15 @@ disabled on every event.
 `distinct_id`, which is why nothing is sent before sign-in. This path is identified, not
 pseudonymous, and we would rather say so plainly than bury it.
 
+**A small current-state record is kept against your account**, updated on each of the
+events above rather than accumulating one row per day: your email, app version, release
+channel, OS, which AI provider and model you are on, and which trackers you have
+connected. It exists so we can answer "what is this user's setup" without replaying
+their history. It is a subset of what the events above already carry - nothing is
+collected for it that is not listed here - and it is overwritten each time, so it always
+reflects your current setup rather than a trail. Your Support ID is deliberately kept
+out of it.
+
 **And they carry your Support ID, which links this to your error reports.** Error
 reports and crash reports are pseudonymous on their own - they identify a machine, not
 a person. Including the same Support ID here means that, for as long as product
@@ -170,8 +181,11 @@ application names, ticket keys, ticket titles or contents, notification text, su
 text, file paths, or anything about *what* you worked on. Nor anything that names your
 employer: your Jira or Azure DevOps instance URL, project keys, board or team ids,
 workspace names, your AI endpoint's URL or API key, or the text of any tracker sync
-error. Every value above is a count, a yes/no, a date, or an id from a list we defined
-in advance. They describe what Meridian did, not what you did or who you work for.
+error. Every value above is a count, a yes/no, a date, an id from a list we defined in
+advance, or one of the identifiers named earlier in this section - your account email,
+a random per-device UUID, your Support ID, your app version, and, for a known cloud
+endpoint, its model id. They describe what Meridian did, or who is using it, not what
+you did or who you work for.
 
 Analytics are captured through a single plain HTTPS request. Meridian does not embed
 PostHog's browser SDK, so session replay, autocapture, surveys, and feature flags are
@@ -223,8 +237,8 @@ Signing in is optional and is currently used to gate the invite-only alpha. Your
 - **Access** — your data is in SQLite on your own disk; inspect or export it any time.
 - **Delete** — `meridian uninstall` removes Meridian's local data and services. Deleting `~/.meridian/` by hand does the same for data alone.
 - **Portability** — export your activity data and switch tools; there is no lock-in.
-- **Opt out of error reporting** — one switch at Settings → Capture & Privacy. Product analytics does not yet have an equivalent switch; staying signed out disables it entirely.
-- **No behavioural tracking** — Meridian does not follow you across websites, does not record sessions, and sells or shares nothing with anyone. The only usage data collected is the two events described under [Product analytics](#product-analytics).
+- **Opt out of error reporting or product analytics** — each has its own switch at Settings → Capture & Privacy, and they can be turned off independently. Staying signed out disables product analytics entirely regardless of the switch.
+- **No behavioural tracking** — Meridian does not follow you across websites, does not record sessions, and sells or shares nothing with anyone. The only usage data collected is the three events described under [Product analytics](#product-analytics).
 
 ---
 

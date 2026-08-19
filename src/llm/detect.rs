@@ -636,9 +636,11 @@ where
     let outcome = classify_test_outcome(complete().await);
     match &outcome {
         ProviderTestOutcome::Failed { message } if looks_like_a_probe_timeout(message) => {
+            // No `message` field - it's the CLI's own timeout text, and WARN is the level
+            // that leaves a packaged install. `looks_like_a_probe_timeout` already pins the
+            // shape this matched, so the classification itself is the useful signal.
             tracing::warn!(
                 provider = %id,
-                error = %message,
                 "llm: connectivity probe timed out - retrying once before reporting failure"
             );
             classify_test_outcome(complete().await)
@@ -803,8 +805,9 @@ async fn resolve_installer_binary(cmd: &str) -> String {
 
 /// Build a `Command` for `path`, a CLI already located via [`resolve_cli`], with `path`'s own
 /// directory prepended onto the child's `PATH` — same fix as [`resolve_installer_binary`],
-/// applied to the sign-in flows ([`cursor_sign_in`]/[`codex_sign_in`]/[`claude_sign_in`]),
-/// which spawn the resolved binary directly rather than through a shell.
+/// applied to the sign-in flows ([`cursor_sign_in`]/[`codex_sign_in`]/[`claude_sign_in`]) AND
+/// to [`crate::coding_agent_session_ingest::summariser::run_capture`], which spawn the
+/// resolved binary directly rather than through a shell.
 ///
 /// Those CLIs are still spawned by ABSOLUTE PATH, so the OS doesn't need `PATH` to find `path`
 /// itself — but `codex`/`claude` (unlike `cursor-agent`, a native binary) are `#!/usr/bin/env
@@ -814,7 +817,16 @@ async fn resolve_installer_binary(cmd: &str) -> String {
 /// `/opt/homebrew/bin` — so that inner lookup fails with "env: node: No such file or
 /// directory" exactly like [`resolve_installer_binary`]'s install-time case, even though the
 /// CLI itself was already found and resolved correctly.
-fn command_for_resolved_cli(path: &std::path::Path) -> Command {
+///
+/// `pub(crate)`: `run_capture` used to build its own bare `Command::new(target)` without this
+/// — which is why a completed `codex login` (via [`interactive_login`], which already called
+/// this) could be followed seconds later by a failed `codex exec` (via `run_capture`, which
+/// didn't): same binary, same shim, but only one spawn path carried a working `PATH`. Observed
+/// live 2026-08-19 (staging build `1.89.0-staging.2`): sign-in traced clean end-to-end, then
+/// the immediate post-sign-in confirmation call failed with `code: Some(127)`, `stderr: "env:
+/// node: No such file or directory"` — which the UI rendered as "not signed in yet",
+/// misdirecting the report as an auth bug rather than a PATH bug.
+pub(crate) fn command_for_resolved_cli(path: &std::path::Path) -> Command {
     let mut cmd = Command::new(path);
     if let Some(dir) = path.parent() {
         let existing = std::env::var_os("PATH").unwrap_or_default();
@@ -834,6 +846,7 @@ fn command_for_resolved_cli(path: &std::path::Path) -> Command {
         provider = provider.as_str(),
         ok = tracing::field::Empty,
         cli_path = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty,
     )
 )]
 pub async fn install_provider(provider: LlmProvider) -> InstallOutcome {
@@ -1106,7 +1119,11 @@ fn drain_lines(
             use tokio::io::{AsyncBufReadExt, BufReader};
             let mut lines = BufReader::new(out).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                tracing::info!(line = %line, stream, "llm: interactive login output");
+                // No `line` field - login CLI output carries OAuth verification URLs and
+                // device codes, short-lived credentials with no reason to sit in the local
+                // spool. `buffered_tail` below already retains the buffer itself for the
+                // user-facing message, so the length is all this log needs.
+                tracing::debug!(stream, chars = line.len(), "llm: interactive login output");
                 let mut buf = seen.lock().unwrap_or_else(|e| e.into_inner());
                 buf.push_str(&line);
                 buf.push('\n');
@@ -1343,10 +1360,12 @@ where
         // The two signals disagree: the CLI process reported failure/timeout, but a direct
         // read of the vendor's own auth state says otherwise. Ground truth wins - logged at
         // WARN (not swallowed as INFO) precisely because a real divergence like this is
-        // worth seeing on a packaged install, not just locally.
+        // worth seeing on a packaged install, not just locally. No `process_message` field -
+        // it's built from the drained CLI stderr/stdout tail (see the `printed` interpolation
+        // above), which is raw vendor CLI text and must not egress via WARN.
         tracing::warn!(
             bin,
-            process_outcome = %process_message,
+            verify_overrode = true,
             "llm: sign-in process reported failure but the status check confirms the user IS \
              signed in - trusting the status check"
         );
@@ -1375,7 +1394,7 @@ where
 ///
 /// See [`interactive_login`] for the shared race/verify logic this and its two siblings run
 /// through, and `cursor::login_status_signed_in` for Cursor's ground-truth check.
-#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty))]
+#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty, otel.status_code = tracing::field::Empty))]
 pub async fn cursor_sign_in() -> InstallOutcome {
     let meridian_home = default_meridian_home();
     interactive_login(
@@ -1404,7 +1423,7 @@ pub async fn cursor_sign_in() -> InstallOutcome {
 /// See [`interactive_login`] for the shared race/verify logic and `codex::login_status_signed_in`
 /// for Codex's ground-truth check (the same `codex login status` call `codex::signed_out`
 /// already uses as a pre-flight for a real completion call).
-#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty))]
+#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty, otel.status_code = tracing::field::Empty))]
 pub async fn codex_sign_in() -> InstallOutcome {
     let meridian_home = default_meridian_home();
     interactive_login(
@@ -1431,7 +1450,7 @@ pub async fn codex_sign_in() -> InstallOutcome {
 ///
 /// See [`interactive_login`] for the shared race/verify logic and `claude::login_status_signed_in`
 /// for Claude's ground-truth check.
-#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty))]
+#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty, otel.status_code = tracing::field::Empty))]
 pub async fn claude_sign_in() -> InstallOutcome {
     let meridian_home = default_meridian_home();
     interactive_login(
@@ -1471,7 +1490,24 @@ fn install_failed(cmd: &str, message: String) -> InstallOutcome {
     // here, so recording on the CURRENT span marks whichever of them is running
     // as failed without threading a handle through a dozen early returns.
     tracing::Span::current().record("ok", false);
-    tracing::warn!(%cmd, %message, "llm: provider install failed");
+    // Also the OTel-standard span-status field, not just the local `ok` field
+    // above - see `tray/src-tauri/src/daemon_lifecycle.rs` for the established
+    // convention this mirrors. `ok` is this file's own boolean; the standard
+    // field is what marks the span as errored for any trace-status query (e.g.
+    // the redacted ship leg, which egresses ERROR-status spans alongside WARN+
+    // logs).
+    tracing::Span::current().record("otel.status_code", "ERROR");
+    // No `message` field: some callers (the interactive-login failure path via
+    // `confirm_or_report`) pass the buffered CLI stdout/stderr tail here, which can
+    // carry OAuth verification URLs and device codes - the same class of leak
+    // already fixed at `drain_lines`/`probe_with_retry`/`confirm_or_report`'s own
+    // WARN sites in this file. `install_failed` has no way to tell a safe static
+    // message from raw CLI output, so it must treat every message as unsafe.
+    tracing::warn!(
+        cmd,
+        message_len = message.len(),
+        "llm: provider install failed"
+    );
     InstallOutcome {
         ok: false,
         message,
@@ -2851,6 +2887,67 @@ mod tests {
             "FAKE_NODE_RAN",
             "{output:?}"
         );
+    }
+
+    /// The `run_capture` counterpart to `command_for_resolved_cli_fixes_the_env_node_shebang_lookup`:
+    /// the summariser's shared subprocess runner (`codex exec`/`claude -p`/`cursor-agent`/
+    /// `copilot`, `src/coding_agent_session_ingest/summariser/mod.rs::run_capture`) used to
+    /// resolve a CLI's absolute path via `resolve_cli` but then spawn it with a bare
+    /// `Command::new(target)`, never prepending PATH — so a `#!/usr/bin/env node` CLI that
+    /// `resolve_cli` found (via a candidate dir, exactly as here) still failed once actually
+    /// run. Live incident, 2026-08-19 (staging `1.89.0-staging.2`): a `codex login` — which DOES
+    /// go through `command_for_resolved_cli` via `interactive_login` — traced clean end-to-end,
+    /// then the very next `codex exec` (via `run_capture`) failed 5ms later with `code:
+    /// Some(127)`, `stderr: "env: node: No such file or directory"`, which the UI then rendered
+    /// as "not signed in yet". Only passes now that `run_capture` spawns through
+    /// `command_for_resolved_cli` too.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_capture_fixes_the_env_node_shebang_lookup() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = ENV_LOCK.lock().await;
+        let original_home = std::env::var_os("HOME");
+        let temp_home = std::env::temp_dir().join(format!(
+            "meridian-detect-run-capture-shebang-test-{}",
+            std::process::id()
+        ));
+        let bin_dir = temp_home.join(".local").join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let fake_node = bin_dir.join("node");
+        std::fs::write(&fake_node, "#!/bin/sh\necho FAKE_NODE_RAN\n").unwrap();
+        // `resolve_cli` only ever caches SUCCESSES (see `RESOLVED_BINS`'s doc), so a name
+        // unique to this test can never collide with another test's cached resolution.
+        let fake_cli = bin_dir.join("meridian-fake-run-capture-cli");
+        std::fs::write(&fake_cli, "#!/usr/bin/env node\n").unwrap();
+        for f in [&fake_node, &fake_cli] {
+            let mut perms = std::fs::metadata(f).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(f, perms).unwrap();
+        }
+        std::env::set_var("HOME", &temp_home);
+
+        let result = crate::coding_agent_session_ingest::summariser::run_capture(
+            "meridian-fake-run-capture-cli",
+            &[],
+            "",
+            &temp_home,
+            5,
+            &[],
+            &[],
+        )
+        .await;
+
+        match original_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&temp_home);
+
+        let cap = result.unwrap_or_else(|e| panic!("run_capture must succeed: {e}"));
+        assert!(cap.success, "code={:?} stderr={}", cap.code, cap.stderr);
+        assert_eq!(cap.stdout.trim(), "FAKE_NODE_RAN");
     }
 
     /// cursor-agent does not install via npm on Windows (see

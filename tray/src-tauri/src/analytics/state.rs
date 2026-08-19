@@ -122,9 +122,26 @@ pub(super) fn day_rollover_action(
 ) -> Option<Option<String>> {
     match last_sent_day {
         None => Some(None),
-        Some(prev) if prev != today => Some(Some(prev.to_string())),
+        // The closed day to report is always `today`'s own yesterday, never the stale
+        // cursor - `last_sent_day` only marks "the tick that last ran", not "the day
+        // whose usage is outstanding" (the caller advances it to `today` on send, see
+        // `maybe_send_daily_tick`). Using the cursor value directly here used to
+        // report an arbitrarily stale day after a multi-day gap instead of the one
+        // day this function's own doc promises - see `yesterday`'s doc.
+        Some(prev) if prev != today => Some(Some(yesterday(today))),
         _ => None,
     }
+}
+
+/// `today - 1 day`, as a local `'YYYY-MM-DD'` string. Falls back to `today` itself
+/// on an unparseable input (should be unreachable — `today` always comes from
+/// [`meridian_core::date::today_string`] — but this must never panic on a tick).
+fn yesterday(today: &str) -> String {
+    chrono::NaiveDate::parse_from_str(today, "%Y-%m-%d")
+        .ok()
+        .and_then(|d| d.pred_opt())
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| today.to_string())
 }
 
 /// Whether to send an `app_active` heartbeat this tick: true on the first tick
@@ -215,13 +232,20 @@ mod day_rollover_tests {
 
     #[test]
     fn multi_day_gap_reports_only_the_last_closed_day() {
-        // A gap of several days (tray closed then reopened) still reports
-        // only the most recent `last_sent_day` — intervening days are never
-        // backfilled (see the doc comment on `day_rollover_action`).
+        // A gap of several days (tray closed then reopened) still reports only
+        // the SINGLE most recently closed day - 2026-07-08, one day before
+        // `today` - never the stale cursor (2026-07-01) and never a backfill of
+        // every day in between (see the doc comment on `day_rollover_action`).
         assert_eq!(
             day_rollover_action(Some("2026-07-01"), "2026-07-09"),
-            Some(Some("2026-07-01".to_string()))
+            Some(Some("2026-07-08".to_string()))
         );
+    }
+
+    #[test]
+    fn yesterday_crosses_a_month_and_year_boundary() {
+        assert_eq!(super::yesterday("2026-03-01"), "2026-02-28");
+        assert_eq!(super::yesterday("2027-01-01"), "2026-12-31");
     }
 }
 

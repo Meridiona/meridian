@@ -128,7 +128,7 @@ export function CaptureSection({ settings, patch, save }: {
 
       <SectionCard>
         <SectionHeader>Product analytics</SectionHeader>
-        <FieldRow label="Send usage stats" description="Once a day Meridian sends a count of what it did for you - tickets updated, plans confirmed, summaries written, notifications delivered - so we can tell whether the product is working. It is counts only: never your screen activity, window titles, ticket names, or anything you wrote. Sent under your account email. On by default; turn it off here any time.">
+        <FieldRow label="Send usage stats" description="Once a day Meridian sends a count of what it did for you - tickets updated, plans confirmed, summaries written, notifications delivered - plus a health snapshot: whether the daemon and your AI provider are working, which trackers are connected and syncing, and your notification and error-reporting settings. It's counts and status only: never your screen activity, window titles, ticket names, or anything you wrote. Sent under your account email. On by default; turn it off here any time.">
           <Switch checked={settings.product_analytics_enabled} onCheckedChange={v => patch({ product_analytics_enabled: v })} />
         </FieldRow>
         <SaveButton

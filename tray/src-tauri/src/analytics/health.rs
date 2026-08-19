@@ -227,6 +227,81 @@ fn resolve_provider(settings: &meridian_core::settings::RuntimeSettings) -> &'st
         .map_or(UNRECOGNISED_PROVIDER, |p| p.as_str())
 }
 
+/// Every vendor preset [`meridian_core::settings::CustomLlmProvider::vendor`] can
+/// legitimately hold — see that field's doc. Unlike `llm_provider`, this field is a
+/// plain `String` with no `from_wire`-style parser, because it is provenance/display
+/// only; behaviour never branches on it. That also means nothing stops a hand-edited
+/// settings file (or a future bug in the UI's preset picker) from putting arbitrary
+/// text here, and this list is what stands between that text and an analytics event —
+/// see the module doc's fourth rule ("the model id ships only for a known vendor
+/// preset").
+const KNOWN_CUSTOM_VENDORS: [&str; 5] = ["groq", "openai", "gemini", "openrouter", "other"];
+
+/// The value shipped when a configured custom endpoint's `vendor` is not one of
+/// [`KNOWN_CUSTOM_VENDORS`] — mirrors [`UNRECOGNISED_PROVIDER`]'s reasoning. Never the
+/// raw string.
+const UNRECOGNISED_VENDOR: &str = "unrecognised";
+
+/// The `(llm_vendor, llm_model)` pair for the snapshot, given the active custom
+/// endpoint (if any) and the built-in-provider model override that applies when
+/// there isn't one. Pulled out of [`snapshot`] as a pure function purely so this
+/// validation is unit-testable without a pool/settings file.
+fn resolve_custom_vendor_and_model(
+    custom: Option<&meridian_core::settings::CustomLlmProvider>,
+    builtin_provider_model: Option<String>,
+) -> (Option<String>, Option<String>) {
+    let Some(c) = custom else {
+        // No custom endpoint active: `builtin_provider_model` is the model override
+        // for the built-in CLI provider `resolve_provider` resolved, not a
+        // custom-vendor fallback — see `llm_provider_model`'s doc in
+        // meridian-core/src/settings.rs.
+        return (None, builtin_provider_model);
+    };
+    if !KNOWN_CUSTOM_VENDORS.contains(&c.vendor.as_str()) {
+        // Unknown vendor text: the vendor itself downgrades (never the raw hand-
+        // edited string) and the model ships even less - it's exactly as
+        // untrustworthy as `other`'s, just not spelled that way.
+        return (Some(UNRECOGNISED_VENDOR.to_string()), None);
+    }
+    let model = if c.vendor == "other" {
+        // A hand-entered endpoint's model can name an internal deployment.
+        None
+    } else {
+        Some(c.model.clone())
+    };
+    (Some(c.vendor.clone()), model)
+}
+
+/// Whether the user has ever actually CHOSEN an AI provider, as opposed to
+/// silently inheriting the default.
+///
+/// # Why this can't be inferred from `llm_provider`
+/// [`meridian_core::settings::RuntimeSettings::default`] sets `llm_provider` to
+/// `claude`, and `load_runtime_settings` merges the file over those defaults.
+/// So a user who has never opened the provider picker reports exactly the same
+/// value as one who deliberately picked Claude — and on a fleet dashboard the
+/// first group is large, newly-installed, and the population you most want to
+/// find, because "provider = claude, provider_ok = false" is usually "never set
+/// up" rather than "Claude is broken".
+///
+/// The only place that distinction survives is the raw settings file: the key
+/// is present iff something wrote it. So this reads the file directly rather
+/// than going through [`meridian_core::settings::read_settings_value`], which
+/// has already merged the defaults in and cannot tell the two apart.
+///
+/// An unreadable or unparseable file reads as "not chosen" — the same answer a
+/// fresh install gives, and the safer of the two when we cannot tell.
+fn provider_explicitly_chosen() -> bool {
+    let path = meridian_core::settings::settings_json_path();
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(&raw)
+        .ok()
+        .and_then(|v| v.get("llm_provider").cloned())
+        .is_some_and(|v| v.is_string())
+}
+
 /// Probe every health source and assemble the snapshot.
 ///
 /// Never fails: each source already degrades to "unknown"/empty on error, and
@@ -264,13 +339,8 @@ pub(crate) async fn snapshot(pool: &SqlitePool) -> HealthSnapshot {
     // A custom endpoint's vendor and model. The base URL and API key on this
     // same struct must never be touched here — see the module doc.
     let custom = settings.active_custom_provider();
-    let llm_vendor = custom.map(|c| c.vendor.clone());
-    let llm_model = match custom {
-        // A hand-entered endpoint's model can name an internal deployment.
-        Some(c) if c.vendor == "other" => None,
-        Some(c) => Some(c.model.clone()),
-        None => settings.llm_provider_model.clone(),
-    };
+    let (llm_vendor, llm_model) =
+        resolve_custom_vendor_and_model(custom, settings.llm_provider_model.clone());
 
     let snap = HealthSnapshot {
         daemon_running: h.daemon_running,
@@ -313,6 +383,62 @@ impl HealthSnapshot {
             .values()
             .filter(|s| **s != IntegrationStatus::Ok)
             .count()
+    }
+
+    /// The subset of this snapshot that belongs on the PERSON rather than the
+    /// event: slowly-changing current state — which AI provider, which
+    /// trackers — that you want as a sortable column on the Persons list
+    /// rather than as something recoverable only by querying each person's
+    /// latest event. See [`super::base_person_properties`] for the general
+    /// rule, and for why `support_id` is excluded from this treatment.
+    ///
+    /// Deliberately NOT included: anything momentary (`daemon_running`,
+    /// `database_ready`, rate-limit state, active notices, per-tracker sync
+    /// status). Those change hour to hour, and a person property keeps only the
+    /// newest value — so "is the daemon running" as a person property would
+    /// answer "was it running at the last send", which reads as current fact
+    /// and is not one. They stay event properties, where they are timestamped.
+    ///
+    /// `unset` collects the names of any optional field that is `None` on THIS
+    /// snapshot, so the caller can send them as PostHog's `$unset` alongside
+    /// `$set` — see `super::attach_person_properties`. Without it, a user who
+    /// switches away from a custom endpoint (clearing `llm_vendor`/`llm_model`)
+    /// or whose vendor stops resolving would keep their PREVIOUS value forever:
+    /// `$set` only overwrites keys that are present, so an omitted key is not
+    /// "cleared", it is simply never mentioned again.
+    pub(crate) fn write_person_properties(
+        &self,
+        person: &mut Map<String, Value>,
+        unset: &mut Vec<String>,
+    ) {
+        person.insert(
+            "llm_provider".to_string(),
+            Value::String(self.llm_provider.to_string()),
+        );
+        person.insert(
+            "llm_provider_chosen".to_string(),
+            Value::Bool(provider_explicitly_chosen()),
+        );
+        match &self.llm_vendor {
+            Some(v) => {
+                person.insert("llm_vendor".to_string(), Value::String(v.clone()));
+            }
+            None => unset.push("llm_vendor".to_string()),
+        }
+        match &self.llm_model {
+            Some(m) => {
+                person.insert("llm_model".to_string(), Value::String(m.clone()));
+            }
+            None => unset.push("llm_model".to_string()),
+        }
+        person.insert(
+            "integrations_connected".to_string(),
+            serde_json::json!(self.integrations_connected),
+        );
+        person.insert(
+            "integrations_count".to_string(),
+            serde_json::json!(self.integrations_connected.len()),
+        );
     }
 
     /// Fold the snapshot into an event's property map under a `health_` prefix,
@@ -512,6 +638,69 @@ mod tests {
         );
     }
 
+    fn custom_provider(vendor: &str, model: &str) -> meridian_core::settings::CustomLlmProvider {
+        meridian_core::settings::CustomLlmProvider {
+            id: "cust1".to_string(),
+            vendor: vendor.to_string(),
+            name: "My endpoint".to_string(),
+            base_url: "https://example.com/v1".to_string(),
+            model: model.to_string(),
+            api_key: "sk-should-never-appear-in-this-test".to_string(),
+            rpm: 0,
+            rpd: 0,
+            rungs: Default::default(),
+        }
+    }
+
+    /// A known preset ships both its vendor and its model.
+    #[test]
+    fn a_known_vendor_ships_vendor_and_model() {
+        let p = custom_provider("groq", "openai/gpt-oss-120b");
+        assert_eq!(
+            resolve_custom_vendor_and_model(Some(&p), None),
+            (
+                Some("groq".to_string()),
+                Some("openai/gpt-oss-120b".to_string())
+            )
+        );
+    }
+
+    /// A hand-entered (`other`) endpoint's model can name an internal deployment,
+    /// so only the vendor survives - the vendor id itself is still a closed-set
+    /// preset value.
+    #[test]
+    fn a_hand_entered_vendor_ships_no_model() {
+        let p = custom_provider("other", "acme-internal-gpt4");
+        assert_eq!(
+            resolve_custom_vendor_and_model(Some(&p), None),
+            (Some("other".to_string()), None)
+        );
+    }
+
+    /// The whole point of this fix: a vendor string that is not one of
+    /// KNOWN_CUSTOM_VENDORS - a hand-edited settings file, or a future UI bug that
+    /// lets free text through - must never reach the analytics event, neither as
+    /// itself nor via the model it would otherwise unlock.
+    #[test]
+    fn an_unrecognised_vendor_ships_neither_vendor_nor_model() {
+        let p = custom_provider("totally-made-up-vendor", "some-internal-model-name");
+        assert_eq!(
+            resolve_custom_vendor_and_model(Some(&p), None),
+            (Some(UNRECOGNISED_VENDOR.to_string()), None),
+            "an unrecognised vendor must downgrade, not pass its raw string or model through"
+        );
+    }
+
+    /// No custom endpoint active: the built-in provider's own model override ships
+    /// instead, and no vendor does (there is no custom vendor to report).
+    #[test]
+    fn no_custom_endpoint_falls_back_to_the_builtin_providers_model() {
+        assert_eq!(
+            resolve_custom_vendor_and_model(None, Some("claude-sonnet-5".to_string())),
+            (None, Some("claude-sonnet-5".to_string()))
+        );
+    }
+
     /// Tracker ids and statuses always ship, and the flat failing count rides
     /// alongside the map so "how many users have a broken tracker" is one line
     /// of HogQL rather than a dig into a nested object.
@@ -624,6 +813,122 @@ mod tests {
         assert!(
             !props.contains_key("health_llm_model"),
             "but the model must not"
+        );
+    }
+}
+
+#[cfg(test)]
+mod person_property_tests {
+    //! What lands on the PostHog Person rather than the event. These pin the
+    //! split, because getting it wrong is silent: a momentary value promoted to
+    //! a person property reads as current fact forever, and a changing value
+    //! promoted there loses its own history.
+    use super::*;
+
+    fn snap() -> HealthSnapshot {
+        HealthSnapshot {
+            llm_provider: "custom",
+            llm_vendor: Some("groq".to_string()),
+            llm_model: Some("openai/gpt-oss-120b".to_string()),
+            integrations_connected: vec!["jira".into(), "github".into()],
+            daemon_running: Some(false),
+            database_ready: Some(true),
+            ..Default::default()
+        }
+    }
+
+    /// The provider and tracker set are the whole point: they must be person
+    /// properties so PostHog shows them as a column, not values you have to dig
+    /// out of each person's most recent event.
+    #[test]
+    fn provider_and_trackers_land_on_the_person() {
+        let mut person = Map::new();
+        snap().write_person_properties(&mut person, &mut Vec::new());
+
+        assert_eq!(
+            person.get("llm_provider"),
+            Some(&Value::String("custom".to_string()))
+        );
+        assert_eq!(
+            person.get("llm_vendor"),
+            Some(&Value::String("groq".to_string()))
+        );
+        assert_eq!(
+            person.get("integrations_connected"),
+            Some(&serde_json::json!(["jira", "github"]))
+        );
+        assert_eq!(
+            person.get("integrations_count"),
+            Some(&serde_json::json!(2))
+        );
+    }
+
+    /// Momentary state must NOT be promoted to the person. A person property
+    /// keeps only the newest value, so `daemon_running` there would answer
+    /// "was it up at the last send" while reading as "is it up" — the kind of
+    /// wrong that looks right on a dashboard.
+    #[test]
+    fn momentary_state_stays_off_the_person() {
+        let mut person = Map::new();
+        snap().write_person_properties(&mut person, &mut Vec::new());
+
+        for k in [
+            "daemon_running",
+            "database_ready",
+            "llm_provider_rate_limited",
+            "active_notices",
+            "integrations_status",
+            "health_observed_on",
+        ] {
+            assert!(
+                !person.contains_key(k),
+                "{k} is momentary and must stay an event property"
+            );
+        }
+    }
+
+    /// `support_id` must never become a person property. It legitimately
+    /// changes (a second machine, a re-seed, the alpha window ending), and a
+    /// person property keeps only the newest — which would silently orphan
+    /// every error row recorded under the previous one. As an event property a
+    /// DISTINCT recovers the full set.
+    #[test]
+    fn support_id_is_never_a_person_property() {
+        let mut person = Map::new();
+        snap().write_person_properties(&mut person, &mut Vec::new());
+        assert!(!person.contains_key("support_id"));
+    }
+
+    /// A snapshot WITH a vendor/model must not queue either for unset - only an
+    /// absent value is stale, a present one is not.
+    #[test]
+    fn a_present_vendor_and_model_are_never_queued_for_unset() {
+        let mut person = Map::new();
+        let mut unset = Vec::new();
+        snap().write_person_properties(&mut person, &mut unset);
+        assert!(unset.is_empty());
+    }
+
+    /// The whole point of this fix: a user who moves off a custom endpoint (back
+    /// to a built-in provider, or to one CodeRabbit's earlier fix downgrades to
+    /// `unrecognised`) has `llm_vendor`/`llm_model` go from `Some` to `None`. A
+    /// bare `$set` would leave the PostHog person carrying the stale value
+    /// forever - `write_person_properties` must queue both names for `$unset`.
+    #[test]
+    fn a_cleared_vendor_and_model_are_queued_for_unset() {
+        let snap = HealthSnapshot {
+            llm_vendor: None,
+            llm_model: None,
+            ..snap()
+        };
+        let mut person = Map::new();
+        let mut unset = Vec::new();
+        snap.write_person_properties(&mut person, &mut unset);
+        assert!(!person.contains_key("llm_vendor"));
+        assert!(!person.contains_key("llm_model"));
+        assert_eq!(
+            unset,
+            vec!["llm_vendor".to_string(), "llm_model".to_string()]
         );
     }
 }

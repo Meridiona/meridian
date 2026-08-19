@@ -44,19 +44,8 @@ pub fn summary_schema_json() -> String {
 }
 
 /// Substrings that mark a subscription usage/rate limit in CLI stderr/output —
-/// for Claude (`claude -p`), Codex (`codex exec`), and `cursor-agent` alike.
-///
-/// `resource_exhausted` / `retriableerror` are Cursor's own vocabulary, not a
-/// generic phrase like the rest of this list — its backend is gRPC-flavoured and
-/// reports a free-plan quota wall as `RetriableError: [resource_exhausted] Error`,
-/// wrapped in cursor-agent's own connection-retry banner ("Connection lost,
-/// reconnecting..." x3) that reads exactly like a network blip. Without this
-/// marker a resource-exhausted account never returns `LlmError::RateLimited`
-/// (`degradable_message` -> `None`, no further retry) - it falls through as a
-/// plain `Failed`, which both `resolver::complete_inner` AND
-/// `cursor_cli::run_hardened`'s transient lever then retry, burning more calls
-/// against an already-exhausted quota and taking 20-30s+ per attempt to fail
-/// again the same way. Observed live on a free-plan account 2026-08-19.
+/// generic across every engine (Claude `claude -p`, Codex `codex exec`,
+/// Copilot, and `cursor-agent`).
 const RATE_LIMIT_MARKERS: &[&str] = &[
     "usage limit",
     "rate limit",
@@ -68,13 +57,42 @@ const RATE_LIMIT_MARKERS: &[&str] = &[
     "resets at",
     "try again at",
     "upgrade to plus",
-    "resource_exhausted",
-    "resource exhausted",
 ];
 
-pub fn looks_rate_limited(text: &str) -> bool {
+/// `cursor-agent`-ONLY vocabulary — deliberately NOT in [`RATE_LIMIT_MARKERS`].
+///
+/// `resource_exhausted` is not a generic phrase like the rest of that list: it is
+/// gRPC's own `RESOURCE_EXHAUSTED` status, which Cursor's backend uses to report a
+/// free-plan quota wall (`RetriableError: [resource_exhausted] Error`, wrapped in
+/// cursor-agent's own connection-retry banner that reads exactly like a network
+/// blip) — but the same gRPC code also covers non-quota resource failures (out of
+/// memory, a message-size limit) that have nothing to do with a rate limit. Mixed
+/// into the shared list it would let Claude/Codex/Copilot's genuinely transient
+/// resource errors get misclassified as `RateLimited`, which skips
+/// `resolver::complete_inner`'s and `cursor_cli::run_hardened`'s transient retry —
+/// exactly backwards for an error that WOULD have recovered on its own. Scoped to
+/// cursor-agent alone via [`looks_rate_limited_cursor`], whose only caller is
+/// `summariser/cursor_agent.rs`. Without this marker a resource-exhausted Cursor
+/// account never returns `LlmError::RateLimited` and instead retries against an
+/// already-exhausted quota, taking 20-30s+ per attempt to fail again the same way.
+/// Observed live on a free-plan account 2026-08-19.
+const CURSOR_RATE_LIMIT_MARKERS: &[&str] = &["resource_exhausted", "resource exhausted"];
+
+fn matches_any_marker(text: &str, markers: &[&str]) -> bool {
     let low = text.to_lowercase();
-    RATE_LIMIT_MARKERS.iter().any(|m| low.contains(m))
+    markers.iter().any(|m| low.contains(m))
+}
+
+/// Generic rate-limit check, safe for every engine. Does NOT match Cursor's
+/// gRPC `resource_exhausted` vocabulary — see [`looks_rate_limited_cursor`].
+pub fn looks_rate_limited(text: &str) -> bool {
+    matches_any_marker(text, RATE_LIMIT_MARKERS)
+}
+
+/// `cursor-agent`-only: the generic check, plus Cursor's own gRPC vocabulary. See
+/// [`CURSOR_RATE_LIMIT_MARKERS`] for why this must not be the default.
+pub fn looks_rate_limited_cursor(text: &str) -> bool {
+    looks_rate_limited(text) || matches_any_marker(text, CURSOR_RATE_LIMIT_MARKERS)
 }
 
 /// The first line that actually matched a rate-limit marker, capped to 200
@@ -82,9 +100,21 @@ pub fn looks_rate_limited(text: &str) -> bool {
 /// additional input from stdin..."), so quoting `first_line` puts the wrong
 /// text in the fallback WARN log — quote the matching line instead.
 pub fn rate_limited_line(text: &str) -> Option<String> {
+    rate_limited_line_matching(text, looks_rate_limited)
+}
+
+/// [`rate_limited_line`], but scoped to [`looks_rate_limited_cursor`] — must be
+/// paired with it (see `summariser/cursor_agent.rs`), or a line that only matched
+/// via [`CURSOR_RATE_LIMIT_MARKERS`] silently falls through to `first_line`
+/// instead of being quoted.
+pub fn rate_limited_line_cursor(text: &str) -> Option<String> {
+    rate_limited_line_matching(text, looks_rate_limited_cursor)
+}
+
+fn rate_limited_line_matching(text: &str, matches: impl Fn(&str) -> bool) -> Option<String> {
     text.lines()
         .map(str::trim)
-        .find(|line| !line.is_empty() && looks_rate_limited(line))
+        .find(|line| !line.is_empty() && matches(line))
         .map(|line| line.chars().take(200).collect())
 }
 
@@ -178,9 +208,25 @@ mod tests {
                      (attempt 1)...\nRetry attempt 1...\nConnection lost, reconnecting to \
                      https://agentn.global.api5.cursor.sh (attempt 2)...\nRetry attempt 2...\n\
                      RetriableError: [resource_exhausted] Error";
-        assert!(looks_rate_limited(blob));
-        let line = rate_limited_line(blob).unwrap();
+        assert!(looks_rate_limited_cursor(blob));
+        let line = rate_limited_line_cursor(blob).unwrap();
         assert!(line.contains("resource_exhausted"));
+    }
+
+    /// The whole point of scoping `resource_exhausted` to Cursor: the SAME gRPC
+    /// status also covers non-quota resource failures for other engines (out of
+    /// memory, a message-size limit), and misreading one as a rate limit would
+    /// skip the transient retry that would have recovered it. Generic
+    /// `looks_rate_limited`/`rate_limited_line` (what Claude/Codex/Copilot call)
+    /// must never match Cursor's vocabulary.
+    #[test]
+    fn a_non_cursor_resource_exhausted_message_is_not_a_rate_limit() {
+        let blob = "request failed: resource exhausted while allocating worker memory";
+        assert!(!looks_rate_limited(blob));
+        assert!(rate_limited_line(blob).is_none());
+        // But it IS still Cursor's business - the cursor-scoped check must still
+        // catch a resource-exhausted message even without the retry-banner dressing.
+        assert!(looks_rate_limited_cursor(blob));
     }
 
     /// A bare "connection lost" with no exhaustion signal must NOT be read as a

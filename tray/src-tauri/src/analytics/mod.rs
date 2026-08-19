@@ -7,7 +7,8 @@
 //! - `app_installed`, once per (signed-in email, device) pair;
 //! - `app_active`, once per local calendar day the tray is actually running —
 //!   the return-rate signal (see [`state::day_active_action`] for why `daily_usage`
-//!   cannot serve as one);
+//!   cannot serve as one), and the event that keeps the person properties
+//!   fresh (see [`base_person_properties`]);
 //! - `daily_usage`, once per COMPLETED local calendar day, carrying engagement
 //!   hours, product-action counts ([`meridian_core::usage_rollup`]) and an
 //!   install-health snapshot ([`health`]) — assembled in [`daily`].
@@ -43,6 +44,19 @@
 //! each time, silently orphaning every historical error row. As an event
 //! property the full set is recoverable with a `DISTINCT` over the user's
 //! events, across devices and across any re-seed.
+//!
+//! **Person properties.** Alongside the event properties, each event carries a
+//! `$set` payload ([`base_person_properties`] +
+//! [`health::HealthSnapshot::write_person_properties`]) holding the user's
+//! slowly-changing CURRENT state: which AI provider and model, which trackers,
+//! app version, channel, OS, and the email itself (so `person.email` is
+//! filterable — it is already the `distinct_id`, so this adds no new data).
+//! These exist because "which provider is each of my users on" is otherwise
+//! answerable only by finding every person's latest `daily_usage` and reading
+//! it, one query per person; as person properties it is a sortable column.
+//! Momentary state (daemon up, notices, per-tracker sync status) stays on the
+//! EVENT, where it is timestamped — a person property keeps only the newest
+//! value and would read as current fact while answering "at the last send".
 //!
 //! **No anonymous events, ever.** The PostHog `distinct_id` for all events IS
 //! the signed-in account email ([`crate::commands::account::read_account_email`])
@@ -279,6 +293,73 @@ fn base_properties(
     m
 }
 
+/// PostHog **person** properties — the `$set` payload.
+///
+/// # Why these exist alongside the event properties
+/// Everything else here is an event property, which is right for anything that
+/// describes a moment. But "which AI provider is this user on" and "which
+/// trackers do they have" are *current state* of a person, and as event
+/// properties they are only answerable by finding that person's latest
+/// `daily_usage` and reading it — per person, in HogQL. As person properties
+/// they become a column on the Persons list, sortable and breakdown-able in one
+/// click. Being overwritten on every send is exactly the wanted behaviour.
+///
+/// **`support_id` is deliberately NOT here.** It is the one value where being
+/// overwritten is harmful rather than helpful: the pseudonym legitimately
+/// changes over an install's life, and a person property would keep only the
+/// newest, silently orphaning every error row recorded under the previous one.
+/// It stays an event property so a `DISTINCT` recovers the full set — see the
+/// module doc's "The join key".
+///
+/// `email` is included even though it is already the `distinct_id`, because
+/// PostHog cannot filter on `person.email` unless the property exists. It adds
+/// no new data: the address is the identity of every one of these events
+/// already.
+fn base_person_properties(
+    app: &tauri::AppHandle,
+    email: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut m = serde_json::Map::new();
+    m.insert(
+        "email".to_string(),
+        serde_json::Value::String(email.to_string()),
+    );
+    m.insert(
+        "app_version".to_string(),
+        serde_json::Value::String(app.package_info().version.to_string()),
+    );
+    m.insert(
+        "channel".to_string(),
+        serde_json::Value::String(crate::commands::version::build_channel().to_string()),
+    );
+    m.insert(
+        "os".to_string(),
+        serde_json::Value::String(std::env::consts::OS.to_string()),
+    );
+    m
+}
+
+/// Attach a `$set` (and, when `unset` is non-empty, `$unset`) person-property
+/// payload to an event's properties.
+///
+/// PostHog reads both from inside `properties` on the capture endpoint, so
+/// this is plain nested data rather than a separate request. `unset` clears a
+/// PREVIOUSLY-set value that has gone away this send (e.g.
+/// [`health::HealthSnapshot::write_person_properties`]'s `llm_vendor`/
+/// `llm_model` when the user is no longer on a custom endpoint) — `$set`
+/// alone cannot do this, since an omitted key is simply never mentioned
+/// again, not cleared.
+fn attach_person_properties(
+    props: &mut serde_json::Map<String, serde_json::Value>,
+    person: serde_json::Map<String, serde_json::Value>,
+    unset: Vec<String>,
+) {
+    props.insert("$set".to_string(), serde_json::Value::Object(person));
+    if !unset.is_empty() {
+        props.insert("$unset".to_string(), serde_json::json!(unset));
+    }
+}
+
 /// Whether product analytics may be sent at all: the user hasn't switched it
 /// off, and the hard kill switch is clear.
 ///
@@ -347,16 +428,32 @@ pub(crate) async fn maybe_send_daily_tick(app: &tauri::AppHandle, pool: &SqliteP
     let mut state = load_or_init_state(&path);
     let mut dirty = false;
 
-    if !state.install_events_sent.contains(&email)
-        && capture(
-            "app_installed",
-            &email,
-            base_properties(app, &state.device_id),
-        )
-        .await
-    {
-        state.install_events_sent.insert(email.clone());
-        dirty = true;
+    if !state.install_events_sent.contains(&email) {
+        let mut props = base_properties(app, &state.device_id);
+        // The health snapshot rides here too, not just on `app_active`/`daily_usage`
+        // - `app_installed` fires exactly once per (device, account), so if it were
+        // the ONLY event whose person properties never carried provider/tracker
+        // state, a signed-in user whose tray never survives to the next event would
+        // show up in PostHog with no AI provider or tracker set at all.
+        let mut person = base_person_properties(app, &email);
+        let mut unset = Vec::new();
+        health::snapshot(pool)
+            .await
+            .write_person_properties(&mut person, &mut unset);
+        attach_person_properties(&mut props, person, unset);
+        if capture("app_installed", &email, props).await {
+            state.install_events_sent.insert(email.clone());
+            dirty = true;
+            // INFO, not DEBUG: this fires once per (device, account) ever, so
+            // it costs nothing, and without it a successful send leaves NO
+            // trace in the logs at all — the on-disk cursor is the only
+            // evidence. Failures already log at WARN, so "no WARN" was the
+            // only available proof of success, which is an inference rather
+            // than a record. Measured on a real staging install: 1500 log
+            // records covering the exact minute of a confirmed send contained
+            // zero analytics lines.
+            tracing::info!(event = "app_installed", "analytics: event sent");
+        }
     }
 
     let today = meridian_core::date::today_string();
@@ -373,11 +470,27 @@ pub(crate) async fn maybe_send_daily_tick(app: &tauri::AppHandle, pool: &SqliteP
     ) {
         let mut props = base_properties(app, &state.device_id);
         props.insert("date".to_string(), serde_json::Value::String(today.clone()));
+
+        // The health snapshot rides here as PERSON properties, not just on
+        // `daily_usage`. That matters for exactly the question this data is
+        // for: `daily_usage` needs a local-midnight rollover, so attaching the
+        // provider and tracker set only there means a brand-new user's AI
+        // provider and PM tool are unknown until their second calendar day —
+        // and permanently unknown if their tray never survives a midnight.
+        // `app_active` fires on day one, so these land immediately.
+        let mut person = base_person_properties(app, &email);
+        let mut unset = Vec::new();
+        health::snapshot(pool)
+            .await
+            .write_person_properties(&mut person, &mut unset);
+        attach_person_properties(&mut props, person, unset);
+
         if capture("app_active", &email, props).await {
             state
                 .last_active_day_by_email
                 .insert(email.clone(), today.clone());
             dirty = true;
+            tracing::info!(event = "app_active", day = %today, "analytics: event sent");
         }
     }
 

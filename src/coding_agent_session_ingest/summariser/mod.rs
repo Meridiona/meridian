@@ -110,7 +110,6 @@ pub(crate) async fn run_capture(
     // only ever surfaced in the tray. Falls back to the bare name so a process that
     // does have a working `PATH` behaves exactly as before.
     let resolved = crate::llm::detect::resolve_cli(program).await;
-    let target = resolved.as_deref().unwrap_or_else(|| Path::new(program));
     // `claude`, `codex`, etc. install as npm-shimmed `.cmd`/`.bat` files on
     // Windows, not PE executables. Do NOT hand-wrap these in `cmd.exe /C` —
     // `Command::new(target)` already detects a `.bat`/`.cmd` target and routes
@@ -119,7 +118,20 @@ pub(crate) async fn run_capture(
     // manual `cmd.arg("/C").arg(target)` wrapper bypasses that safe escaping —
     // `args` below can carry session-derived prompt text, so a hand-rolled
     // wrapper reopens exactly the injection std's built-in handling closes.
-    let mut cmd = Command::new(target);
+    //
+    // Resolving `program`'s own absolute path is not enough on macOS: `codex`/`claude`
+    // are `#!/usr/bin/env node` shims, and `env` does its OWN independent `PATH` search
+    // for `node` at exec time, using whatever the CHILD inherits — which under the
+    // packaged tray is launchd's stripped default with no `/opt/homebrew/bin`. Use
+    // `command_for_resolved_cli`, the same fix already applied to the sign-in flows
+    // (`cursor_sign_in`/`codex_sign_in`/`claude_sign_in`), so a resolved CLI's own
+    // directory is prepended onto the child's `PATH` here too — see its doc comment for
+    // the live incident this closes (a clean `codex login` followed by a `codex exec`
+    // that failed with `env: node: No such file or directory`).
+    let mut cmd = match resolved.as_deref() {
+        Some(path) => crate::llm::detect::command_for_resolved_cli(path),
+        None => Command::new(program),
+    };
     cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
