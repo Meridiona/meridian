@@ -252,6 +252,22 @@ pub struct RuntimeSettings {
     // unaffected either way. Existing settings.json files without this key load
     // as `true` via the struct-level `#[serde(default)]`.
     pub error_reporting_enabled: bool,
+    // Whether the tray sends PRODUCT analytics (the `app_active` heartbeat and
+    // the `daily_usage` rollup) to PostHog. Deliberately SEPARATE from
+    // `error_reporting_enabled`: that governs the redacted, error-only crash /
+    // WARN+ stream to our own OpenObserve and Sentry, which is pseudonymous.
+    // This one governs a stream that is identified by the user's account email
+    // and describes how they use the product. Conflating the two would mean a
+    // user turning off crash reports silently loses all usage reporting, and
+    // vice versa — two different promises, two different switches.
+    //
+    // Counts product ACTIONS only (tickets updated, plan confirmed,
+    // notifications delivered — see `crate::usage_rollup`), never captured
+    // content. Default `true`: opt-OUT, matching `error_reporting_enabled`,
+    // and the hard `MERIDIAN_TELEMETRY_DISABLED` kill switch stops this too.
+    // Existing settings.json files without this key load as `true` via the
+    // struct-level `#[serde(default)]`.
+    pub product_analytics_enabled: bool,
     // Notification preferences — a master switch + quiet hours. Read by
     // [`crate::notifications`] to decide whether an event may surface;
     // every event type is gated ONLY by these two (no per-category toggles —
@@ -316,7 +332,7 @@ pub struct RuntimeSettings {
     // ID/shipped `host.name` per-USER instead of per-machine, so support can
     // trace one alpha tester's errors across their Mac and Windows boxes.
     // Only takes effect before `redact::ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`
-    // (2026-08-28) — a hardcoded date, checked against the wall clock, is the
+    // (2026-12-31) — a hardcoded date, checked against the wall clock, is the
     // revert here since channel can't distinguish alpha testers from anyone
     // else on the same build. `None` (not signed in, or past the expiry)
     // falls back to the pre-existing per-machine hardware-UUID pseudonym.
@@ -356,6 +372,9 @@ impl Default for RuntimeSettings {
             // Error reporting is opt-OUT: on by default (packaged installs only;
             // redacted + error-only). Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
             error_reporting_enabled: true,
+            // Product analytics is opt-OUT too, and separately switchable from
+            // error reporting. Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
+            product_analytics_enabled: true,
             // Notifications on by default; quiet hours off (22:00–08:00 when
             // enabled). Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
             notifications_enabled: true,

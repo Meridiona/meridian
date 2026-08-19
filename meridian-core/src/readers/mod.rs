@@ -86,6 +86,11 @@ pub mod proposed;
 /// The `/api/triage` cleanup working set (ported from triage/route.ts).
 pub mod triage;
 
+/// Per-day **product-action** counters (tickets updated, plan ritual, day-task
+/// corrections, notification delivery) for the tray's `daily_usage` analytics
+/// event. No route — new work, and deliberately free of captured content.
+pub mod usage_rollup;
+
 /// The `/api/week` 7-day summary, computed in Rust (ported from week/route.ts).
 pub mod week;
 

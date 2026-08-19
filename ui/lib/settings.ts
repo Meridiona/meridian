@@ -19,6 +19,13 @@ export interface RuntimeSettings {
   // in meridian-core/src/settings.rs. On by default (opt-OUT). Gates only the
   // packaged/Canonical shipping path; a dev checkout ships via otlp_enabled.
   error_reporting_enabled: boolean
+  // Whether the tray sends PRODUCT analytics (daily heartbeat + a per-day
+  // count of product actions) to PostHog. Mirrors
+  // RuntimeSettings.product_analytics_enabled in meridian-core/src/settings.rs.
+  // On by default (opt-OUT). Separate from error_reporting_enabled: that
+  // stream is pseudonymous and error-only, this one is identified by account
+  // email and describes product usage.
+  product_analytics_enabled: boolean
   // ETL
   poll_interval_secs: number
   agent_auto_floor: number
@@ -86,6 +93,9 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   // Central error reporting is opt-OUT: on by default, turned off in Settings.
   // Must match RuntimeSettings::default() in meridian-core/src/settings.rs.
   error_reporting_enabled: true,
+  // Product analytics is opt-OUT too, and switchable independently of error
+  // reporting. Must match RuntimeSettings::default() in meridian-core/src/settings.rs.
+  product_analytics_enabled: true,
   poll_interval_secs: 60,
   agent_auto_floor: 0.65,
   agent_queue_floor: 0.40,

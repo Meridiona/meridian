@@ -21,6 +21,7 @@ tracing = "0.1.41"
 parking_lot = "0.12"
 tauri-plugin-http = { version = "2.4", features = ['unsafe-headers'] }
 serde_json = "1.0.140"
+serde_path_to_error = "0.1"
 log = "0.4"
 tauri-plugin-store = "2"
 

@@ -350,6 +350,40 @@ pub fn connected_providers() -> Vec<&'static str> {
     connected_from_env(&env, oauth_file_exists)
 }
 
+/// Providers whose board/project selection is REQUIRED for syncing and is not
+/// set — i.e. connected, but structurally unable to ever sync.
+///
+/// # Why this is one provider and not five
+/// Every tracker has a selection key, but only GitHub's gates the sync. Checked
+/// against the sync implementations rather than assumed:
+/// - `github`: `project_ids.is_empty()` → logs "no GITHUB_PROJECT_IDS
+///   configured - skipping github sync" and returns without syncing
+///   (`src/intelligence/providers/github/mod.rs`). **Required.**
+/// - `jira` / `linear` / `trello`: an empty selection means "allow everything"
+///   (`board_allowed`, `team_allowed`, and Jira's `project_keys` filter all
+///   return true / skip filtering when empty). **Optional filters.**
+///
+/// So a GitHub connected with a token but no project picked is a silent,
+/// permanent dead end: no sync, no error, no `pm_sync_state` row, and nothing
+/// on screen to say why. That is precisely the state worth surfacing, and it
+/// is why this returns a distinct answer instead of being folded into
+/// "never synced".
+///
+/// # Who calls this
+/// `crate::analytics::health` — to classify a connected tracker as
+/// `awaiting_selection` rather than the misleading `never_synced`.
+pub fn providers_awaiting_selection() -> Vec<&'static str> {
+    let mode = crate::install::detect_install_mode();
+    let env = mode.env_path().map(parse_env).unwrap_or_default();
+    let connected = connected_from_env(&env, oauth_file_exists);
+
+    let mut out = Vec::new();
+    if connected.contains(&"github") && !is_set(&env, "GITHUB_PROJECT_IDS") {
+        out.push("github");
+    }
+    out
+}
+
 /// Which trackers are connected (the ported /api/integrations GET).
 #[tauri::command]
 #[tracing::instrument(skip(pool))]

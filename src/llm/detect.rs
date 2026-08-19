@@ -1755,21 +1755,22 @@ mod tests {
     // Only the (unix-only) tests below call this - see the block comment above. Not gating
     // it too would make it dead code on Windows and fail `-D warnings` there while looking
     // perfectly clean on macOS/Linux, which is exactly how this was first missed.
+    // `grace`/`poll_interval` used to be 5ms/15ms - fast on an unloaded dev machine, but
+    // that races the REAL spawn→exec→exit→waitpid round trip for `sh -c "exit 0"` against
+    // GitHub's shared macOS runners under load (~990 other tests running concurrently in
+    // the same `cargo test` process). Observed failing twice in a row in CI
+    // (`a_clean_exit_is_trusted_without_ever_calling_verify`, then that test plus
+    // `a_failed_process_with_an_inconclusive_verify_reports_the_process_failure` on retry -
+    // a different pair each time, the signature of scheduler jitter rather than a logic
+    // bug) while passing 100% locally, including as part of the full suite. Still
+    // millisecond-scale (the whole file's worth of these tests stays well under a second
+    // combined), just wide enough to absorb real CI contention.
     #[cfg(unix)]
     fn instant_timing() -> InteractiveLoginTiming {
         InteractiveLoginTiming {
-            deadline: Duration::from_millis(1000),
-            // Was 5ms - too tight for a loaded CI runner. `sh -c "exit 0"` still has to pay
-            // real fork/exec + kernel-scheduling latency before `try_wait` can observe it, and
-            // on a contended macOS GitHub Actions runner that occasionally exceeded 5ms, so
-            // `a_clean_exit_is_trusted_without_ever_calling_verify` intermittently saw the
-            // grace elapse first and called `verify` on what should have been the pure happy
-            // path (flaked in CI 2026-08-19, passed every time locally). 150ms is generous
-            // headroom above any observed spawn latency while staying well under the 1000ms
-            // deadline, so `verify_confirming_mid_wait_returns_before_the_child_exits_or_times_out`
-            // (which relies on grace elapsing before deadline) still has ample room.
+            deadline: Duration::from_millis(2000),
             grace: Duration::from_millis(150),
-            poll_interval: Duration::from_millis(15),
+            poll_interval: Duration::from_millis(200),
         }
     }
 
