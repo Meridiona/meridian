@@ -812,6 +812,7 @@ pub(crate) fn command_for_resolved_cli(path: &std::path::Path) -> Command {
         provider = provider.as_str(),
         ok = tracing::field::Empty,
         cli_path = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty,
     )
 )]
 pub async fn install_provider(provider: LlmProvider) -> InstallOutcome {
@@ -1359,7 +1360,7 @@ where
 ///
 /// See [`interactive_login`] for the shared race/verify logic this and its two siblings run
 /// through, and `cursor::login_status_signed_in` for Cursor's ground-truth check.
-#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty))]
+#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty, otel.status_code = tracing::field::Empty))]
 pub async fn cursor_sign_in() -> InstallOutcome {
     let meridian_home = default_meridian_home();
     interactive_login(
@@ -1388,7 +1389,7 @@ pub async fn cursor_sign_in() -> InstallOutcome {
 /// See [`interactive_login`] for the shared race/verify logic and `codex::login_status_signed_in`
 /// for Codex's ground-truth check (the same `codex login status` call `codex::signed_out`
 /// already uses as a pre-flight for a real completion call).
-#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty))]
+#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty, otel.status_code = tracing::field::Empty))]
 pub async fn codex_sign_in() -> InstallOutcome {
     let meridian_home = default_meridian_home();
     interactive_login(
@@ -1415,7 +1416,7 @@ pub async fn codex_sign_in() -> InstallOutcome {
 ///
 /// See [`interactive_login`] for the shared race/verify logic and `claude::login_status_signed_in`
 /// for Claude's ground-truth check.
-#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty))]
+#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty, otel.status_code = tracing::field::Empty))]
 pub async fn claude_sign_in() -> InstallOutcome {
     let meridian_home = default_meridian_home();
     interactive_login(
@@ -1455,6 +1456,13 @@ fn install_failed(cmd: &str, message: String) -> InstallOutcome {
     // here, so recording on the CURRENT span marks whichever of them is running
     // as failed without threading a handle through a dozen early returns.
     tracing::Span::current().record("ok", false);
+    // Also the OTel-standard span-status field, not just the local `ok` field
+    // above - see `tray/src-tauri/src/daemon_lifecycle.rs` for the established
+    // convention this mirrors. `ok` is this file's own boolean; the standard
+    // field is what marks the span as errored for any trace-status query (e.g.
+    // the redacted ship leg, which egresses ERROR-status spans alongside WARN+
+    // logs).
+    tracing::Span::current().record("otel.status_code", "ERROR");
     // No `message` field: some callers (the interactive-login failure path via
     // `confirm_or_report`) pass the buffered CLI stdout/stderr tail here, which can
     // carry OAuth verification URLs and device codes - the same class of leak

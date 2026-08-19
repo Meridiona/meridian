@@ -254,6 +254,27 @@ mod tests {
         assert_eq!(batch_message(&forward), batch_message(&backward));
     }
 
+    /// The 2-draft case above can't catch a mistake in the 4+ branch, which
+    /// selects the first two SORTED names for "X, Y, and N more" rather than
+    /// naming every draft - an unsorted 4+ batch is the only input that
+    /// exercises which two names that selection actually picks.
+    #[test]
+    fn the_batch_body_is_order_independent_at_four_or_more() {
+        let forward = [
+            draft("T1", "Release notes", 20),
+            draft("T2", "Bug triage", 20),
+            draft("T3", "API docs", 20),
+            draft("T4", "Changelog", 20),
+        ];
+        let backward = [
+            draft("T4", "Changelog", 20),
+            draft("T3", "API docs", 20),
+            draft("T2", "Bug triage", 20),
+            draft("T1", "Release notes", 20),
+        ];
+        assert_eq!(batch_message(&forward), batch_message(&backward));
+    }
+
     #[test]
     fn more_than_three_stale_drafts_are_summarised() {
         let stale = vec![
