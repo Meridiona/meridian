@@ -1758,8 +1758,17 @@ mod tests {
     #[cfg(unix)]
     fn instant_timing() -> InteractiveLoginTiming {
         InteractiveLoginTiming {
-            deadline: Duration::from_millis(500),
-            grace: Duration::from_millis(5),
+            deadline: Duration::from_millis(1000),
+            // Was 5ms - too tight for a loaded CI runner. `sh -c "exit 0"` still has to pay
+            // real fork/exec + kernel-scheduling latency before `try_wait` can observe it, and
+            // on a contended macOS GitHub Actions runner that occasionally exceeded 5ms, so
+            // `a_clean_exit_is_trusted_without_ever_calling_verify` intermittently saw the
+            // grace elapse first and called `verify` on what should have been the pure happy
+            // path (flaked in CI 2026-08-19, passed every time locally). 150ms is generous
+            // headroom above any observed spawn latency while staying well under the 1000ms
+            // deadline, so `verify_confirming_mid_wait_returns_before_the_child_exits_or_times_out`
+            // (which relies on grace elapsing before deadline) still has ample room.
+            grace: Duration::from_millis(150),
             poll_interval: Duration::from_millis(15),
         }
     }
