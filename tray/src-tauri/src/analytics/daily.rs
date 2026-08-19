@@ -170,9 +170,13 @@ pub(super) fn write_rollup_properties(
         "posts_by_provider".to_string(),
         serde_json::json!(r.posts_by_provider),
     );
+    // Named for state, not action — see `UsageRollup::worklogs_with_post_error`.
+    // It counts worklogs CREATED on this day that are currently stuck, which is
+    // not the same population as "posts that failed today", and the key says so
+    // because nobody reading a chart will go check the module doc.
     props.insert(
-        "post_failures".to_string(),
-        serde_json::json!(r.post_failures),
+        "worklogs_with_post_error".to_string(),
+        serde_json::json!(r.worklogs_with_post_error),
     );
     props.insert(
         "worklogs_drafted".to_string(),
@@ -187,7 +191,9 @@ pub(super) fn write_rollup_properties(
         serde_json::json!(r.proposals_pending),
     );
 
-    // Daily plan ritual.
+    // Daily plan ritual. `plan_state` carries the distinction the booleans
+    // cannot: "never saw it" vs "saw it and did neither" are both false/false.
+    props.insert("plan_state".to_string(), serde_json::json!(r.plan_state));
     props.insert(
         "plan_confirmed".to_string(),
         serde_json::json!(r.plan_confirmed),
@@ -298,7 +304,7 @@ mod tests {
         for key in [
             "tickets_updated",
             "worklogs_posted",
-            "post_failures",
+            "worklogs_with_post_error",
             "plan_items",
             "day_tasks",
             "notifications_delivered",

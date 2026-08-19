@@ -122,7 +122,23 @@ impl HealthSnapshot {
     ///
     /// `Option::None` fields are OMITTED rather than written as `false` — see
     /// the struct doc on why "unknown" must not collapse into "broken".
+    ///
+    /// # These properties describe a DIFFERENT instant to the rest of the event
+    /// `daily_usage` is sent on the first tick after midnight and every other
+    /// property on it describes the day that just closed. This snapshot is
+    /// taken at SEND time — so `health_daemon_running: false` on the event
+    /// dated 2026-05-14 means the daemon was down early on the **15th**.
+    ///
+    /// Sitting next to `tickets_updated`, that asymmetry is invisible and will
+    /// eventually produce a confident wrong answer in a support conversation.
+    /// `health_observed_on` is therefore written alongside, carrying the day
+    /// the snapshot actually describes, so the difference is visible at the
+    /// query site rather than buried in this doc comment.
     pub(crate) fn write_properties(&self, props: &mut Map<String, Value>) {
+        props.insert(
+            "health_observed_on".to_string(),
+            Value::String(meridian_core::date::today_string()),
+        );
         let mut put_bool = |k: &str, v: Option<bool>| {
             if let Some(b) = v {
                 props.insert(k.to_string(), Value::Bool(b));
@@ -183,6 +199,22 @@ mod tests {
             "an unknown probe must be absent, never false"
         );
         assert_eq!(props.get("health_database_ready"), Some(&Value::Bool(true)));
+    }
+
+    /// The health group must always stamp the day it describes. Every OTHER
+    /// property on `daily_usage` describes the day that closed; this group
+    /// describes the morning after, and without the stamp that is invisible at
+    /// the query site.
+    #[test]
+    fn health_carries_the_day_it_actually_describes() {
+        let mut props = Map::new();
+        HealthSnapshot::default().write_properties(&mut props);
+
+        assert_eq!(
+            props.get("health_observed_on"),
+            Some(&Value::String(meridian_core::date::today_string())),
+            "health is a point-in-time read, not a read of the reported day"
+        );
     }
 
     /// The notice/integration lists always ship, even when empty — an absent

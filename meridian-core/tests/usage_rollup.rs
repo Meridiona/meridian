@@ -12,7 +12,7 @@
 //! assertion derive from the same bound math the reader uses.
 
 use meridian_core::date::local_day_bounds;
-use meridian_core::usage_rollup::usage_rollup;
+use meridian_core::usage_rollup::{usage_rollup, PlanState};
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 
@@ -74,9 +74,17 @@ async fn make_pool() -> SqlitePool {
     pool
 }
 
-/// An instant guaranteed to be inside `day`'s local bounds.
+/// An instant guaranteed to be inside `day`'s local bounds — its lower edge.
 fn inside(day: &str) -> String {
     local_day_bounds(day).0
+}
+
+/// The LAST instant of `day` (23:59:59.999 local, as UTC). Exercises the `<=`
+/// side of every bounded query — `inside()` only ever tests `>=`, so without
+/// this a bound accidentally written `<` would pass the whole suite while
+/// silently dropping every late-evening action.
+fn last_instant(day: &str) -> String {
+    local_day_bounds(day).1
 }
 
 #[tokio::test]
@@ -192,7 +200,7 @@ async fn counts_product_actions_across_every_surface() {
     assert_eq!(r.worklogs_posted, 3, "individual successful posts");
     assert_eq!(r.posts_by_provider.get("jira"), Some(&2));
     assert_eq!(r.posts_by_provider.get("linear"), Some(&1));
-    assert_eq!(r.post_failures, 1, "the HTTP 403 row");
+    assert_eq!(r.worklogs_with_post_error, 1, "the HTTP 403 row");
 
     assert_eq!(r.worklogs_drafted, 1);
     assert_eq!(r.worklogs_approved, 1);
@@ -308,4 +316,87 @@ async fn banner_only_notifications_are_never_counted_as_native_failures() {
     assert_eq!(r.notifications_enqueued(), 4);
     assert_eq!(r.notifications_delivered(), 1);
     assert_eq!(r.notifications_failed(), 1);
+}
+
+#[tokio::test]
+async fn a_post_at_the_last_instant_of_the_day_still_counts() {
+    // The realistic late-evening case, and the only test exercising the `<=`
+    // side of the day window — see `last_instant`.
+    let pool = make_pool().await;
+    sqlx::query(
+        "INSERT INTO pm_worklogs (task_key, day_utc, provider, state, posted_at, created_at,
+                                  window_start, payload_json, time_spent_seconds)
+         VALUES ('ENG-9', ?, 'jira', 'posted', ?, ?, ?, '{}', 600)",
+    )
+    .bind(DAY)
+    .bind(last_instant(DAY))
+    .bind(inside(DAY))
+    .bind(inside(DAY))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let r = usage_rollup(&pool, DAY).await.expect("rollup");
+    assert_eq!(
+        r.tickets_updated, 1,
+        "a post at 23:59:59.999 local is still that day's action"
+    );
+}
+
+#[tokio::test]
+async fn plan_state_separates_never_seen_from_seen_and_undecided() {
+    // The two states a pair of booleans cannot tell apart. "Never adopted the
+    // daily plan" and "opened it and walked away" are different product
+    // problems, and both read false/false.
+    let pool = make_pool().await;
+
+    let unseen = usage_rollup(&pool, DAY).await.expect("rollup");
+    assert_eq!(unseen.plan_state, PlanState::Unseen);
+    assert!(!unseen.plan_confirmed && !unseen.plan_skipped);
+
+    sqlx::query(
+        "INSERT INTO daily_plan_meta (plan_date, confirmed_at, skipped) VALUES (?, NULL, 0)",
+    )
+    .bind(DAY)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let open = usage_rollup(&pool, DAY).await.expect("rollup");
+    assert_eq!(
+        open.plan_state,
+        PlanState::Open,
+        "a row with no decision is 'open', not 'unseen'"
+    );
+    assert!(
+        !open.plan_confirmed && !open.plan_skipped,
+        "and the booleans genuinely cannot distinguish it - which is why PlanState exists"
+    );
+}
+
+#[tokio::test]
+async fn a_pre_migration_database_yields_zeros_instead_of_an_error() {
+    // The tray can run new code against a database the daemon has not migrated
+    // yet (the daemon owns migrations; they are separate processes). Before the
+    // sqlite_master guard this returned Err, and because `daily_usage` treats
+    // every Err as retryable the tray would retry the same day every ~60s
+    // forever, warning each time, until the daemon happened to restart.
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open in-memory db");
+
+    let r = usage_rollup(&pool, DAY)
+        .await
+        .expect("an unmigrated database must not fail the rollup");
+
+    assert_eq!(r.tickets_updated, 0);
+    assert_eq!(r.day_tasks, 0);
+    assert_eq!(r.notifications_enqueued(), 0);
+    assert_eq!(
+        r.plan_state,
+        PlanState::Unseen,
+        "absent plan tables read as 'never seen', which is the truth"
+    );
 }
