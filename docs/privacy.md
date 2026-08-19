@@ -135,9 +135,19 @@ different things about you - see [Error reporting](#error-reporting).
   corrected, whether a day summary was written, and how many notifications were sent,
   delivered, or failed to deliver.
 - **Whether your install is healthy** - is the daemon running, is the database readable,
-  is your chosen AI provider working, which internal warnings are active (as short
-  internal codes such as `db.corrupt`, never their text), and which trackers are failing
-  to sync (the tracker's name, never the error message).
+  and which internal warnings are active (as short internal codes such as `db.corrupt`,
+  never their text).
+- **Which AI provider you use, and whether it works** - the provider's name from our own
+  fixed list (`claude`, `codex`, `cursor`, `copilot`, `custom`), whether it is currently
+  usable or rate-limited, and for a cloud endpoint the preset it came from (`openai`,
+  `gemini`, `openrouter`, `other`) and the model id. If you entered your own endpoint by
+  hand, the **model id is not sent** - it can name an internal deployment. Your endpoint
+  URL and API key are never sent under any setting.
+- **Which trackers you connect, and whether they sync** - the tracker's name from our
+  fixed list (`jira`, `linear`, `github`, `trello`, `azure_devops`) and a one-word status
+  for each: syncing fine, stale, failing, never synced, or waiting for you to pick a
+  project. This is the one thing here that describes your workplace rather than Meridian,
+  and it is the name only.
 
 All three carry: your app version, your OS name (`macos` / `windows`), the release
 channel, a random per-device UUID, and your Support ID. Location lookup is explicitly
@@ -157,8 +167,11 @@ off product analytics breaks it: error reporting alone never carries your email.
 
 **What it never contains:** screen content, OCR text, window titles, browser URLs,
 application names, ticket keys, ticket titles or contents, notification text, summary
-text, file paths, or anything about *what* you worked on. Every value above is a count,
-a yes/no, or a fixed internal code. They describe what Meridian did, not what you did.
+text, file paths, or anything about *what* you worked on. Nor anything that names your
+employer: your Jira or Azure DevOps instance URL, project keys, board or team ids,
+workspace names, your AI endpoint's URL or API key, or the text of any tracker sync
+error. Every value above is a count, a yes/no, a date, or an id from a list we defined
+in advance. They describe what Meridian did, not what you did or who you work for.
 
 Analytics are captured through a single plain HTTPS request. Meridian does not embed
 PostHog's browser SDK, so session replay, autocapture, surveys, and feature flags are
