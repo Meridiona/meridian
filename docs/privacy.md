@@ -93,7 +93,7 @@ Nothing *inside* an error report is associated with an account, and the hash can
 
 > **But if product analytics is on, we can still connect the two.** Product-analytics events carry both your account email and the same Support ID, so the pair links your errors to you. That linkage lives entirely on the analytics side - an error report itself never contains your email. Turning off **Product analytics** removes it; see [Product analytics](#product-analytics).
 
-> **Alpha exception, until 31 December 2026.** While Meridian is in invite-only alpha, signing in changes this: the Support ID is instead derived from a salted hash of your account email, so support can follow one tester's errors across their machines. Your raw email address is never sent. Settings → Account states which mode is currently active for you. After that date every install reverts to the hardware-derived pseudonym automatically, and your Support ID changes at that point.
+> **Alpha exception, until 31 December 2026.** While Meridian is in invite-only alpha, signing in changes this: the Support ID is instead derived from a salted hash of your account email, so support can follow one tester's errors across their machines. Your raw email address is not included in the Support ID or in error reports - only the salted hash is. (Product analytics, if you have it on, sends the raw email separately - see [Product analytics](#product-analytics).) Settings → Account states which mode is currently active for you. After that date every install reverts to the hardware-derived pseudonym automatically, and your Support ID changes at that point.
 
 ### Crash reports
 
@@ -123,7 +123,7 @@ different things about you - see [Error reporting](#error-reporting).
 |---|---|---|
 | `app_installed` | Once per device, per signed-in account | Nothing beyond the shared properties below. |
 | `app_active` | Once per calendar day Meridian is running | The shared properties, plus the current-state summary described below (which AI provider and which trackers). It exists so we can tell how many people come back on a given day, and so a brand-new install's setup is visible without waiting for the first `daily_usage`. |
-| `daily_usage` | Once per completed calendar day | Three groups of numbers, listed below. |
+| `daily_usage` | Once per completed calendar day | The categories listed below. |
 
 `daily_usage` carries:
 
@@ -246,7 +246,7 @@ Signing in is optional and is currently used to gate the invite-only alpha. Your
 - **Delete** — `meridian uninstall` removes Meridian's local data and services. Deleting `~/.meridian/` by hand does the same for data alone.
 - **Portability** — export your activity data and switch tools; there is no lock-in.
 - **Opt out of error reporting or product analytics** — each has its own switch at Settings → Capture & Privacy, and they can be turned off independently. Staying signed out disables product analytics entirely regardless of the switch.
-- **No behavioural tracking** — Meridian does not follow you across websites, does not record sessions, and sells or shares nothing with anyone. The only usage data collected is the three events described under [Product analytics](#product-analytics).
+- **No behavioural tracking** — Meridian does not follow you across websites, does not record sessions, and never sells your data or shares it for advertising. It does reach the service providers named throughout this document to do the job each is described for - PostHog for product analytics, Sentry for crash reports, Clerk for sign-in - and nowhere else. The only usage data collected is the three events described under [Product analytics](#product-analytics).
 
 ---
 
