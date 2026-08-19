@@ -1755,12 +1755,22 @@ mod tests {
     // Only the (unix-only) tests below call this - see the block comment above. Not gating
     // it too would make it dead code on Windows and fail `-D warnings` there while looking
     // perfectly clean on macOS/Linux, which is exactly how this was first missed.
+    // `grace`/`poll_interval` used to be 5ms/15ms - fast on an unloaded dev machine, but
+    // that races the REAL spawn→exec→exit→waitpid round trip for `sh -c "exit 0"` against
+    // GitHub's shared macOS runners under load (~990 other tests running concurrently in
+    // the same `cargo test` process). Observed failing twice in a row in CI
+    // (`a_clean_exit_is_trusted_without_ever_calling_verify`, then that test plus
+    // `a_failed_process_with_an_inconclusive_verify_reports_the_process_failure` on retry -
+    // a different pair each time, the signature of scheduler jitter rather than a logic
+    // bug) while passing 100% locally, including as part of the full suite. Still
+    // millisecond-scale (the whole file's worth of these tests stays well under a second
+    // combined), just wide enough to absorb real CI contention.
     #[cfg(unix)]
     fn instant_timing() -> InteractiveLoginTiming {
         InteractiveLoginTiming {
-            deadline: Duration::from_millis(500),
-            grace: Duration::from_millis(5),
-            poll_interval: Duration::from_millis(15),
+            deadline: Duration::from_millis(2000),
+            grace: Duration::from_millis(150),
+            poll_interval: Duration::from_millis(200),
         }
     }
 
