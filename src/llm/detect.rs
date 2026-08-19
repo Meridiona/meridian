@@ -40,7 +40,7 @@ use meridian_core::LlmProvider;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
-use super::{resolver::backend_for, LlmConfig, LlmError, PromptRequest};
+use super::{resolver::backend_for, LlmConfig, LlmError, LlmOutput, PromptRequest};
 
 /// How long a probe may take before we call it absent. A login shell sources the user's
 /// profile, which can be slow (nvm, rbenv, …), but not this slow.
@@ -546,14 +546,71 @@ pub async fn test_provider(
         interactive: false,
     };
 
-    let outcome = match backend_for(provider, cfg).complete(&req).await {
-        Ok(_) => ProviderTestOutcome::Ok,
-        Err(LlmError::RateLimited { message: m, .. }) => {
-            ProviderTestOutcome::RateLimited { message: m }
-        }
-        Err(LlmError::Failed(m)) => ProviderTestOutcome::Failed { message: m },
-    };
+    let backend = backend_for(provider, cfg);
+    let outcome = probe_with_retry(&id, || backend.complete(&req)).await;
     finish_test(id, outcome, t0)
+}
+
+/// `backend.complete()`'s result, sorted into the three outcomes a test/probe reports.
+fn classify_test_outcome(result: Result<LlmOutput, LlmError>) -> ProviderTestOutcome {
+    match result {
+        Ok(_) => ProviderTestOutcome::Ok,
+        Err(LlmError::RateLimited { message, .. }) => ProviderTestOutcome::RateLimited { message },
+        Err(LlmError::Failed(message)) => ProviderTestOutcome::Failed { message },
+    }
+}
+
+/// Was this failure a plain "the CLI took too long to answer" rather than a genuine error?
+///
+/// All four CLI backends' timeouts share this exact wording — `run_capture`'s
+/// `SummariserError::Failed(format!("{program} timed out after {timeout_s}s"))`, mapped
+/// straight through by each backend's `from_summariser_error`. A custom HTTP endpoint's
+/// timeout text varies by `reqwest` version and simply won't match this, which is the safe
+/// default (no retry) rather than a false one.
+fn looks_like_a_probe_timeout(msg: &str) -> bool {
+    msg.to_lowercase().contains("timed out")
+}
+
+/// Run one connectivity-test completion, retrying exactly once if — and only if — the
+/// failure was a plain timeout.
+///
+/// # Why this exists
+///
+/// [`PROBE_TIMEOUT_S`] is deliberately tight (20s — see its own doc), which is right for
+/// catching a genuinely broken spawn path fast. It is also exactly the kind of budget a
+/// one-off cold start can miss for reasons that have nothing to do with whether the
+/// provider actually works: Windows AV/EDR scanning a vendor CLI binary the first time it
+/// runs in a while, a first-call JIT/interpreter warm-up, a transient network blip. Without
+/// a retry, ONE such miss is enough to persist a `Failed` result that then drives
+/// `in_use_provider_health` into "provider unavailable, nothing being recorded" — including
+/// right after a successful interactive sign-in, whose silent confirmation call
+/// (`useLlmProviderDetection.ts`'s `signIn`) IS this exact probe. A user who just proved
+/// their subscription works watched the app declare it broken on the strength of one slow
+/// answer. (github.com/Meridiona/meridian/issues/805)
+///
+/// Bounded to one retry, and ONLY for a timeout-shaped failure — a rate limit or a genuine
+/// error (not signed in, bad model, …) is reported immediately, matching the "never retry a
+/// rate limit" rule already followed elsewhere (`cursor_cli::run_hardened`).
+///
+/// Generic over the completion so the retry logic is testable without spawning a real
+/// vendor CLI — see this module's tests.
+async fn probe_with_retry<F, Fut>(id: &str, mut complete: F) -> ProviderTestOutcome
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<LlmOutput, LlmError>>,
+{
+    let outcome = classify_test_outcome(complete().await);
+    match &outcome {
+        ProviderTestOutcome::Failed { message } if looks_like_a_probe_timeout(message) => {
+            tracing::warn!(
+                provider = %id,
+                error = %message,
+                "llm: connectivity probe timed out - retrying once before reporting failure"
+            );
+            classify_test_outcome(complete().await)
+        }
+        _ => outcome,
+    }
 }
 
 fn finish_test(id: String, outcome: ProviderTestOutcome, t0: Instant) -> ProviderTestResult {
@@ -1925,6 +1982,121 @@ mod tests {
             "a budget this small is spent on reasoning tokens before the model answers, and \
              the empty response reads to the user as a broken key"
         );
+    }
+
+    // ── probe_with_retry: one bounded retry, only on a plain timeout ─────────────────────
+
+    #[test]
+    fn looks_like_a_probe_timeout_matches_run_captures_exact_wording() {
+        assert!(looks_like_a_probe_timeout("codex timed out after 20s"));
+        assert!(looks_like_a_probe_timeout(
+            "cursor-agent timed out after 20s"
+        ));
+        assert!(looks_like_a_probe_timeout("claude timed out after 20s"));
+        // Ordinary failures must not spend the retry.
+        assert!(!looks_like_a_probe_timeout(
+            "Codex isn't signed in yet - run `codex login` in a terminal, then try again."
+        ));
+        assert!(!looks_like_a_probe_timeout("rate/usage limit reached"));
+    }
+
+    /// THE regression this whole fix exists for
+    /// (github.com/Meridiona/meridian/issues/805): a single cold-start miss of the 20s probe
+    /// budget must not be trusted as the final answer - a second attempt gets to prove it
+    /// wrong before a `Failed` result is persisted.
+    #[tokio::test]
+    async fn a_timeout_shaped_failure_is_retried_once_and_can_recover() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls2 = calls.clone();
+        let outcome = probe_with_retry("codex", move || {
+            let calls = calls2.clone();
+            async move {
+                let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n == 0 {
+                    Err(LlmError::Failed("codex timed out after 20s".into()))
+                } else {
+                    Ok(LlmOutput::default())
+                }
+            }
+        })
+        .await;
+        assert!(matches!(outcome, ProviderTestOutcome::Ok));
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "must have retried exactly once"
+        );
+    }
+
+    /// Bounded: a SECOND consecutive timeout is not retried again - it is reported honestly
+    /// rather than the probe silently spinning.
+    #[tokio::test]
+    async fn a_second_consecutive_timeout_is_not_retried_again() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls2 = calls.clone();
+        let outcome = probe_with_retry("codex", move || {
+            let calls = calls2.clone();
+            async move {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(LlmError::Failed("codex timed out after 20s".into()))
+            }
+        })
+        .await;
+        assert!(matches!(outcome, ProviderTestOutcome::Failed { .. }));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// A genuine (non-timeout) failure is reported immediately - retrying "you're not signed
+    /// in" wastes a call and delays the honest answer for no benefit.
+    #[tokio::test]
+    async fn a_non_timeout_failure_is_not_retried() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls2 = calls.clone();
+        let outcome = probe_with_retry("codex", move || {
+            let calls = calls2.clone();
+            async move {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(LlmError::Failed("codex isn't signed in yet".into()))
+            }
+        })
+        .await;
+        assert!(matches!(outcome, ProviderTestOutcome::Failed { .. }));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// A rate limit is never retried - Cursor/Codex/Claude limits are account-level, so a
+    /// second call spends quota to hit the same wall, matching the rule
+    /// `cursor_cli::run_hardened` already follows.
+    #[tokio::test]
+    async fn a_rate_limit_is_never_retried() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls2 = calls.clone();
+        let outcome = probe_with_retry("codex", move || {
+            let calls = calls2.clone();
+            async move {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(LlmError::rate_limited("429 too many requests"))
+            }
+        })
+        .await;
+        assert!(matches!(outcome, ProviderTestOutcome::RateLimited { .. }));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_clean_success_never_retries() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls2 = calls.clone();
+        let outcome = probe_with_retry("codex", move || {
+            let calls = calls2.clone();
+            async move {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(LlmOutput::default())
+            }
+        })
+        .await;
+        assert!(matches!(outcome, ProviderTestOutcome::Ok));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
