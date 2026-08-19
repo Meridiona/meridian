@@ -1234,6 +1234,13 @@ where
                     bin,
                     "llm: sign-in confirmed by status check while the CLI was still running"
                 );
+                // `child` is still running here, and `.kill_on_drop(true)` alone is not
+                // enough: Drop only calls the non-blocking `start_kill`, it never awaits
+                // the exit, so relying on it would leave a killed-but-unreaped zombie for
+                // however long it takes something else to reap it - which may be never,
+                // if nothing else ever calls `.wait()` on this process. `Child::kill`
+                // does both (`start_kill` then `wait().await`) - see tokio's doc on it.
+                let _ = child.kill().await;
                 return InstallOutcome {
                     ok: true,
                     message: success_message,
