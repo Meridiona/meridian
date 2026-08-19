@@ -398,7 +398,19 @@ impl HealthSnapshot {
     /// newest value — so "is the daemon running" as a person property would
     /// answer "was it running at the last send", which reads as current fact
     /// and is not one. They stay event properties, where they are timestamped.
-    pub(crate) fn write_person_properties(&self, person: &mut Map<String, Value>) {
+    ///
+    /// `unset` collects the names of any optional field that is `None` on THIS
+    /// snapshot, so the caller can send them as PostHog's `$unset` alongside
+    /// `$set` — see `super::attach_person_properties`. Without it, a user who
+    /// switches away from a custom endpoint (clearing `llm_vendor`/`llm_model`)
+    /// or whose vendor stops resolving would keep their PREVIOUS value forever:
+    /// `$set` only overwrites keys that are present, so an omitted key is not
+    /// "cleared", it is simply never mentioned again.
+    pub(crate) fn write_person_properties(
+        &self,
+        person: &mut Map<String, Value>,
+        unset: &mut Vec<String>,
+    ) {
         person.insert(
             "llm_provider".to_string(),
             Value::String(self.llm_provider.to_string()),
@@ -407,11 +419,17 @@ impl HealthSnapshot {
             "llm_provider_chosen".to_string(),
             Value::Bool(provider_explicitly_chosen()),
         );
-        if let Some(v) = &self.llm_vendor {
-            person.insert("llm_vendor".to_string(), Value::String(v.clone()));
+        match &self.llm_vendor {
+            Some(v) => {
+                person.insert("llm_vendor".to_string(), Value::String(v.clone()));
+            }
+            None => unset.push("llm_vendor".to_string()),
         }
-        if let Some(m) = &self.llm_model {
-            person.insert("llm_model".to_string(), Value::String(m.clone()));
+        match &self.llm_model {
+            Some(m) => {
+                person.insert("llm_model".to_string(), Value::String(m.clone()));
+            }
+            None => unset.push("llm_model".to_string()),
         }
         person.insert(
             "integrations_connected".to_string(),
@@ -825,7 +843,7 @@ mod person_property_tests {
     #[test]
     fn provider_and_trackers_land_on_the_person() {
         let mut person = Map::new();
-        snap().write_person_properties(&mut person);
+        snap().write_person_properties(&mut person, &mut Vec::new());
 
         assert_eq!(
             person.get("llm_provider"),
@@ -852,7 +870,7 @@ mod person_property_tests {
     #[test]
     fn momentary_state_stays_off_the_person() {
         let mut person = Map::new();
-        snap().write_person_properties(&mut person);
+        snap().write_person_properties(&mut person, &mut Vec::new());
 
         for k in [
             "daemon_running",
@@ -877,7 +895,40 @@ mod person_property_tests {
     #[test]
     fn support_id_is_never_a_person_property() {
         let mut person = Map::new();
-        snap().write_person_properties(&mut person);
+        snap().write_person_properties(&mut person, &mut Vec::new());
         assert!(!person.contains_key("support_id"));
+    }
+
+    /// A snapshot WITH a vendor/model must not queue either for unset - only an
+    /// absent value is stale, a present one is not.
+    #[test]
+    fn a_present_vendor_and_model_are_never_queued_for_unset() {
+        let mut person = Map::new();
+        let mut unset = Vec::new();
+        snap().write_person_properties(&mut person, &mut unset);
+        assert!(unset.is_empty());
+    }
+
+    /// The whole point of this fix: a user who moves off a custom endpoint (back
+    /// to a built-in provider, or to one CodeRabbit's earlier fix downgrades to
+    /// `unrecognised`) has `llm_vendor`/`llm_model` go from `Some` to `None`. A
+    /// bare `$set` would leave the PostHog person carrying the stale value
+    /// forever - `write_person_properties` must queue both names for `$unset`.
+    #[test]
+    fn a_cleared_vendor_and_model_are_queued_for_unset() {
+        let snap = HealthSnapshot {
+            llm_vendor: None,
+            llm_model: None,
+            ..snap()
+        };
+        let mut person = Map::new();
+        let mut unset = Vec::new();
+        snap.write_person_properties(&mut person, &mut unset);
+        assert!(!person.contains_key("llm_vendor"));
+        assert!(!person.contains_key("llm_model"));
+        assert_eq!(
+            unset,
+            vec!["llm_vendor".to_string(), "llm_model".to_string()]
+        );
     }
 }

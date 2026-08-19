@@ -181,8 +181,11 @@ application names, ticket keys, ticket titles or contents, notification text, su
 text, file paths, or anything about *what* you worked on. Nor anything that names your
 employer: your Jira or Azure DevOps instance URL, project keys, board or team ids,
 workspace names, your AI endpoint's URL or API key, or the text of any tracker sync
-error. Every value above is a count, a yes/no, a date, or an id from a list we defined
-in advance. They describe what Meridian did, not what you did or who you work for.
+error. Every value above is a count, a yes/no, a date, an id from a list we defined in
+advance, or one of the identifiers named earlier in this section - your account email,
+a random per-device UUID, your Support ID, your app version, and, for a known cloud
+endpoint, its model id. They describe what Meridian did, or who is using it, not what
+you did or who you work for.
 
 Analytics are captured through a single plain HTTPS request. Meridian does not embed
 PostHog's browser SDK, so session replay, autocapture, surveys, and feature flags are
@@ -234,8 +237,8 @@ Signing in is optional and is currently used to gate the invite-only alpha. Your
 - **Access** — your data is in SQLite on your own disk; inspect or export it any time.
 - **Delete** — `meridian uninstall` removes Meridian's local data and services. Deleting `~/.meridian/` by hand does the same for data alone.
 - **Portability** — export your activity data and switch tools; there is no lock-in.
-- **Opt out of error reporting** — one switch at Settings → Capture & Privacy. Product analytics does not yet have an equivalent switch; staying signed out disables it entirely.
-- **No behavioural tracking** — Meridian does not follow you across websites, does not record sessions, and sells or shares nothing with anyone. The only usage data collected is the two events described under [Product analytics](#product-analytics).
+- **Opt out of error reporting or product analytics** — each has its own switch at Settings → Capture & Privacy, and they can be turned off independently. Staying signed out disables product analytics entirely regardless of the switch.
+- **No behavioural tracking** — Meridian does not follow you across websites, does not record sessions, and sells or shares nothing with anyone. The only usage data collected is the three events described under [Product analytics](#product-analytics).
 
 ---
 

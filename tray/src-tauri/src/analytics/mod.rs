@@ -339,15 +339,25 @@ fn base_person_properties(
     m
 }
 
-/// Attach a `$set` person-property payload to an event's properties.
+/// Attach a `$set` (and, when `unset` is non-empty, `$unset`) person-property
+/// payload to an event's properties.
 ///
-/// PostHog reads `$set` from inside `properties` on the capture endpoint, so
-/// this is a plain nested object rather than a separate request.
+/// PostHog reads both from inside `properties` on the capture endpoint, so
+/// this is plain nested data rather than a separate request. `unset` clears a
+/// PREVIOUSLY-set value that has gone away this send (e.g.
+/// [`health::HealthSnapshot::write_person_properties`]'s `llm_vendor`/
+/// `llm_model` when the user is no longer on a custom endpoint) — `$set`
+/// alone cannot do this, since an omitted key is simply never mentioned
+/// again, not cleared.
 fn attach_person_properties(
     props: &mut serde_json::Map<String, serde_json::Value>,
     person: serde_json::Map<String, serde_json::Value>,
+    unset: Vec<String>,
 ) {
     props.insert("$set".to_string(), serde_json::Value::Object(person));
+    if !unset.is_empty() {
+        props.insert("$unset".to_string(), serde_json::json!(unset));
+    }
 }
 
 /// Whether product analytics may be sent at all: the user hasn't switched it
@@ -420,7 +430,17 @@ pub(crate) async fn maybe_send_daily_tick(app: &tauri::AppHandle, pool: &SqliteP
 
     if !state.install_events_sent.contains(&email) {
         let mut props = base_properties(app, &state.device_id);
-        attach_person_properties(&mut props, base_person_properties(app, &email));
+        // The health snapshot rides here too, not just on `app_active`/`daily_usage`
+        // - `app_installed` fires exactly once per (device, account), so if it were
+        // the ONLY event whose person properties never carried provider/tracker
+        // state, a signed-in user whose tray never survives to the next event would
+        // show up in PostHog with no AI provider or tracker set at all.
+        let mut person = base_person_properties(app, &email);
+        let mut unset = Vec::new();
+        health::snapshot(pool)
+            .await
+            .write_person_properties(&mut person, &mut unset);
+        attach_person_properties(&mut props, person, unset);
         if capture("app_installed", &email, props).await {
             state.install_events_sent.insert(email.clone());
             dirty = true;
@@ -459,10 +479,11 @@ pub(crate) async fn maybe_send_daily_tick(app: &tauri::AppHandle, pool: &SqliteP
         // and permanently unknown if their tray never survives a midnight.
         // `app_active` fires on day one, so these land immediately.
         let mut person = base_person_properties(app, &email);
+        let mut unset = Vec::new();
         health::snapshot(pool)
             .await
-            .write_person_properties(&mut person);
-        attach_person_properties(&mut props, person);
+            .write_person_properties(&mut person, &mut unset);
+        attach_person_properties(&mut props, person, unset);
 
         if capture("app_active", &email, props).await {
             state

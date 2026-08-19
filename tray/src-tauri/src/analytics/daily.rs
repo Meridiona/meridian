@@ -51,7 +51,12 @@ pub(super) async fn send_daily_usage(
     let today = match meridian_core::today::get_today(pool, day, &day_end).await {
         Ok(t) => t,
         Err(e) => {
-            tracing::warn!(error = %e, day, "analytics: today read failed for daily_usage — will retry");
+            // `%e` renders only `e`'s outermost `.context()` - see
+            // `meridian::errors::chain`'s doc (and 99dc413b/f1ebebc1, the same
+            // defect fixed on the daemon's DB paths and the tray's poll
+            // refreshers) for why a bare `%e` here would drop exactly the
+            // cause a reader needs to tell a capture failure from a DB failure.
+            tracing::warn!(error = %meridian::errors::chain(&e), day, "analytics: today read failed for daily_usage — will retry");
             return false;
         }
     };
@@ -71,7 +76,7 @@ pub(super) async fn send_daily_usage(
     let worklogs = match meridian_core::worklogs::get_worklogs(pool, day).await {
         Ok(w) => w,
         Err(e) => {
-            tracing::warn!(error = %e, day, "analytics: worklogs read failed for daily_usage — will retry");
+            tracing::warn!(error = %meridian::errors::chain(&e), day, "analytics: worklogs read failed for daily_usage — will retry");
             return false;
         }
     };
@@ -102,7 +107,7 @@ pub(super) async fn send_daily_usage(
     let rollup = match meridian_core::usage_rollup::usage_rollup(pool, day).await {
         Ok(r) => r,
         Err(e) => {
-            tracing::warn!(error = %e, day, "analytics: usage rollup failed for daily_usage — will retry");
+            tracing::warn!(error = %meridian::errors::chain(&e), day, "analytics: usage rollup failed for daily_usage — will retry");
             return false;
         }
     };
@@ -139,8 +144,9 @@ pub(super) async fn send_daily_usage(
     health.write_properties(&mut props);
 
     let mut person = super::base_person_properties(app, email);
-    health.write_person_properties(&mut person);
-    super::attach_person_properties(&mut props, person);
+    let mut unset = Vec::new();
+    health.write_person_properties(&mut person, &mut unset);
+    super::attach_person_properties(&mut props, person, unset);
 
     tracing::info!(
         day,
