@@ -265,6 +265,17 @@ mod tests {
     }
 
     #[test]
+    fn the_batch_dedup_key_changes_when_a_task_is_added() {
+        let before = vec![draft("T1", "A", 20)];
+        let after = vec![draft("T1", "A", 20), draft("T2", "B", 20)];
+        assert_ne!(
+            batch_dedup_key("2026-08-19", &before),
+            batch_dedup_key("2026-08-19", &after),
+            "a newly-stale task joining the batch must produce a fresh notification"
+        );
+    }
+
+    #[test]
     fn reads_as_minutes_below_the_hour() {
         let b = stale_body("Fixing the login bug", 18);
         assert!(b.contains("18 more minutes"), "{b}");

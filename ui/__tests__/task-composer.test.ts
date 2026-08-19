@@ -168,8 +168,12 @@ describe('the composer never blocks on the AI', () => {
 // seconds"). Fixed by dropping the override entirely.
 describe('the drafting spinner does not promise a latency it cannot keep', () => {
   it('does not override GeneratingBar\'s note with an inaccurate "few seconds" claim', () => {
-    const generatingBarBlock = composer.slice(composer.indexOf('<GeneratingBar'))
-    expect(generatingBarBlock).not.toMatch(/note=/)
+    const generatingBarStart = composer.indexOf('<GeneratingBar')
+    expect(generatingBarStart).toBeGreaterThanOrEqual(0)
+    const generatingBarEnd = composer.indexOf('/>', generatingBarStart)
+    expect(generatingBarEnd).toBeGreaterThan(generatingBarStart)
+    const generatingBarBlock = composer.slice(generatingBarStart, generatingBarEnd)
+    expect(generatingBarBlock).not.toMatch(/\bnote\s*=/)
   })
 })
 

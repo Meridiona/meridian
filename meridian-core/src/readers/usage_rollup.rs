@@ -46,6 +46,7 @@
 //! - `tray/src-tauri/src/analytics/health.rs` — the sibling *point-in-time*
 //!   health snapshot; this module is strictly per-day counters.
 
+use anyhow::Context;
 use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
@@ -220,15 +221,29 @@ impl UsageRollup {
 #[tracing::instrument(skip(pool))]
 pub async fn usage_rollup(pool: &SqlitePool, day: &str) -> anyhow::Result<UsageRollup> {
     let (day_start, day_end) = crate::date::local_day_bounds(day);
-    let tables = existing_tables(pool).await?;
+    let tables = existing_tables(pool)
+        .await
+        .context("usage_rollup: reading sqlite_master")?;
     let mut r = UsageRollup::default();
 
-    read_ticket_actions(pool, &tables, &day_start, &day_end, &mut r).await?;
-    read_worklog_states(pool, &tables, day, &mut r).await?;
-    read_plan(pool, &tables, day, &mut r).await?;
-    read_day_tasks(pool, &tables, day, &mut r).await?;
-    read_personal_and_agents(pool, &tables, day, &day_start, &day_end, &mut r).await?;
-    read_notifications(pool, &tables, &day_start, &day_end, &mut r).await?;
+    read_ticket_actions(pool, &tables, &day_start, &day_end, &mut r)
+        .await
+        .context("usage_rollup: reading ticket actions")?;
+    read_worklog_states(pool, &tables, day, &mut r)
+        .await
+        .context("usage_rollup: reading worklog states")?;
+    read_plan(pool, &tables, day, &mut r)
+        .await
+        .context("usage_rollup: reading daily plan")?;
+    read_day_tasks(pool, &tables, day, &mut r)
+        .await
+        .context("usage_rollup: reading day tasks")?;
+    read_personal_and_agents(pool, &tables, day, &day_start, &day_end, &mut r)
+        .await
+        .context("usage_rollup: reading personal tasks and coding-agent sessions")?;
+    read_notifications(pool, &tables, &day_start, &day_end, &mut r)
+        .await
+        .context("usage_rollup: reading notifications")?;
 
     tracing::info!(
         day,
@@ -354,7 +369,9 @@ async fn read_worklog_states(
     if !have(tables, &["pm_worklogs", "pm_tasks"]) {
         return Ok(());
     }
-    let w = crate::worklogs::get_worklogs(pool, day).await?;
+    let w = crate::worklogs::get_worklogs(pool, day)
+        .await
+        .context("usage_rollup: reading worklogs via the dashboard reader")?;
     for item in &w.items {
         match (item.is_proposed, item.state.as_str()) {
             (true, "proposed") => r.proposals_pending += 1,
