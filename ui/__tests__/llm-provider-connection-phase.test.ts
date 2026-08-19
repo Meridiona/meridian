@@ -338,6 +338,21 @@ describe('the chooser grid', () => {
     expect(hook).toContain('await floor')
     expect(picker).toContain("animation: 'spin 0.7s linear infinite'")
   })
+
+  it('re-tests a failed sign-in sequentially, not concurrently with detect()', () => {
+    // `detect()` REPLACES the whole status map with `last_test: null` for every provider
+    // (see `setStatus(Object.fromEntries(...))` above). Racing it against `testOne()` via
+    // `Promise.all` could let `detect()` resolve second and silently discard the just-spent
+    // probe's result, right back to a stale FAILED badge - the exact bug this path exists to
+    // fix. Must stay sequenced like `install()` already does.
+    const hook = src('components/useLlmProviderDetection.ts')
+    expect(hook).not.toContain('Promise.all([detect(), testOne')
+    const signInFailureBranch = hook.slice(hook.indexOf('} else {', hook.indexOf('const signIn =')))
+    expect(signInFailureBranch).toContain('await detect()')
+    expect(signInFailureBranch.indexOf('await detect()')).toBeLessThan(
+      signInFailureBranch.indexOf('await testOne(id'),
+    )
+  })
 })
 
 describe('an already-working provider still releases the connect flow', () => {

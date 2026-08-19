@@ -565,10 +565,11 @@ where
             model = FALLBACK_MODEL.to_string();
             tried_fallback_model = true;
         } else if !tried_transient_retry && looks_transient(msg) {
-            tracing::warn!(
-                error = %msg,
-                "cursor: transient failure - retrying once unchanged"
-            );
+            // No raw `msg` field here (unlike the other levers, which only ever attach safe
+            // structured state) - it's the vendor CLI's own stderr/stdout text, and WARN is the
+            // level that leaves a packaged install. See the coding-conventions note on
+            // `CAPTURE_TARGETS`/`SAFE_STRING_KEYS` in CLAUDE.md's Observability section.
+            tracing::warn!(model = %model, "cursor: transient failure - retrying once unchanged");
             tried_transient_retry = true;
         } else {
             // Nothing left to degrade, or a cause no lever addresses.

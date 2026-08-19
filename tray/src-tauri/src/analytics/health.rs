@@ -227,6 +227,51 @@ fn resolve_provider(settings: &meridian_core::settings::RuntimeSettings) -> &'st
         .map_or(UNRECOGNISED_PROVIDER, |p| p.as_str())
 }
 
+/// Every vendor preset [`meridian_core::settings::CustomLlmProvider::vendor`] can
+/// legitimately hold — see that field's doc. Unlike `llm_provider`, this field is a
+/// plain `String` with no `from_wire`-style parser, because it is provenance/display
+/// only; behaviour never branches on it. That also means nothing stops a hand-edited
+/// settings file (or a future bug in the UI's preset picker) from putting arbitrary
+/// text here, and this list is what stands between that text and an analytics event —
+/// see the module doc's fourth rule ("the model id ships only for a known vendor
+/// preset").
+const KNOWN_CUSTOM_VENDORS: [&str; 5] = ["groq", "openai", "gemini", "openrouter", "other"];
+
+/// The value shipped when a configured custom endpoint's `vendor` is not one of
+/// [`KNOWN_CUSTOM_VENDORS`] — mirrors [`UNRECOGNISED_PROVIDER`]'s reasoning. Never the
+/// raw string.
+const UNRECOGNISED_VENDOR: &str = "unrecognised";
+
+/// The `(llm_vendor, llm_model)` pair for the snapshot, given the active custom
+/// endpoint (if any) and the built-in-provider model override that applies when
+/// there isn't one. Pulled out of [`snapshot`] as a pure function purely so this
+/// validation is unit-testable without a pool/settings file.
+fn resolve_custom_vendor_and_model(
+    custom: Option<&meridian_core::settings::CustomLlmProvider>,
+    builtin_provider_model: Option<String>,
+) -> (Option<String>, Option<String>) {
+    let Some(c) = custom else {
+        // No custom endpoint active: `builtin_provider_model` is the model override
+        // for the built-in CLI provider `resolve_provider` resolved, not a
+        // custom-vendor fallback — see `llm_provider_model`'s doc in
+        // meridian-core/src/settings.rs.
+        return (None, builtin_provider_model);
+    };
+    if !KNOWN_CUSTOM_VENDORS.contains(&c.vendor.as_str()) {
+        // Unknown vendor text: the vendor itself downgrades (never the raw hand-
+        // edited string) and the model ships even less - it's exactly as
+        // untrustworthy as `other`'s, just not spelled that way.
+        return (Some(UNRECOGNISED_VENDOR.to_string()), None);
+    }
+    let model = if c.vendor == "other" {
+        // A hand-entered endpoint's model can name an internal deployment.
+        None
+    } else {
+        Some(c.model.clone())
+    };
+    (Some(c.vendor.clone()), model)
+}
+
 /// Probe every health source and assemble the snapshot.
 ///
 /// Never fails: each source already degrades to "unknown"/empty on error, and
@@ -264,13 +309,8 @@ pub(crate) async fn snapshot(pool: &SqlitePool) -> HealthSnapshot {
     // A custom endpoint's vendor and model. The base URL and API key on this
     // same struct must never be touched here — see the module doc.
     let custom = settings.active_custom_provider();
-    let llm_vendor = custom.map(|c| c.vendor.clone());
-    let llm_model = match custom {
-        // A hand-entered endpoint's model can name an internal deployment.
-        Some(c) if c.vendor == "other" => None,
-        Some(c) => Some(c.model.clone()),
-        None => settings.llm_provider_model.clone(),
-    };
+    let (llm_vendor, llm_model) =
+        resolve_custom_vendor_and_model(custom, settings.llm_provider_model.clone());
 
     let snap = HealthSnapshot {
         daemon_running: h.daemon_running,
@@ -509,6 +549,69 @@ mod tests {
             resolve_provider(&bogus),
             UNRECOGNISED_PROVIDER,
             "an unparseable provider must never pass its raw string through"
+        );
+    }
+
+    fn custom_provider(vendor: &str, model: &str) -> meridian_core::settings::CustomLlmProvider {
+        meridian_core::settings::CustomLlmProvider {
+            id: "cust1".to_string(),
+            vendor: vendor.to_string(),
+            name: "My endpoint".to_string(),
+            base_url: "https://example.com/v1".to_string(),
+            model: model.to_string(),
+            api_key: "sk-should-never-appear-in-this-test".to_string(),
+            rpm: 0,
+            rpd: 0,
+            rungs: Default::default(),
+        }
+    }
+
+    /// A known preset ships both its vendor and its model.
+    #[test]
+    fn a_known_vendor_ships_vendor_and_model() {
+        let p = custom_provider("groq", "openai/gpt-oss-120b");
+        assert_eq!(
+            resolve_custom_vendor_and_model(Some(&p), None),
+            (
+                Some("groq".to_string()),
+                Some("openai/gpt-oss-120b".to_string())
+            )
+        );
+    }
+
+    /// A hand-entered (`other`) endpoint's model can name an internal deployment,
+    /// so only the vendor survives - the vendor id itself is still a closed-set
+    /// preset value.
+    #[test]
+    fn a_hand_entered_vendor_ships_no_model() {
+        let p = custom_provider("other", "acme-internal-gpt4");
+        assert_eq!(
+            resolve_custom_vendor_and_model(Some(&p), None),
+            (Some("other".to_string()), None)
+        );
+    }
+
+    /// The whole point of this fix: a vendor string that is not one of
+    /// KNOWN_CUSTOM_VENDORS - a hand-edited settings file, or a future UI bug that
+    /// lets free text through - must never reach the analytics event, neither as
+    /// itself nor via the model it would otherwise unlock.
+    #[test]
+    fn an_unrecognised_vendor_ships_neither_vendor_nor_model() {
+        let p = custom_provider("totally-made-up-vendor", "some-internal-model-name");
+        assert_eq!(
+            resolve_custom_vendor_and_model(Some(&p), None),
+            (Some(UNRECOGNISED_VENDOR.to_string()), None),
+            "an unrecognised vendor must downgrade, not pass its raw string or model through"
+        );
+    }
+
+    /// No custom endpoint active: the built-in provider's own model override ships
+    /// instead, and no vendor does (there is no custom vendor to report).
+    #[test]
+    fn no_custom_endpoint_falls_back_to_the_builtin_providers_model() {
+        assert_eq!(
+            resolve_custom_vendor_and_model(None, Some("claude-sonnet-5".to_string())),
+            (None, Some("claude-sonnet-5".to_string()))
         );
     }
 

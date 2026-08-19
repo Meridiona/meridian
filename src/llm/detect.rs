@@ -602,9 +602,11 @@ where
     let outcome = classify_test_outcome(complete().await);
     match &outcome {
         ProviderTestOutcome::Failed { message } if looks_like_a_probe_timeout(message) => {
+            // No `message` field - it's the CLI's own timeout text, and WARN is the level
+            // that leaves a packaged install. `looks_like_a_probe_timeout` already pins the
+            // shape this matched, so the classification itself is the useful signal.
             tracing::warn!(
                 provider = %id,
-                error = %message,
                 "llm: connectivity probe timed out - retrying once before reporting failure"
             );
             classify_test_outcome(complete().await)
@@ -1072,7 +1074,11 @@ fn drain_lines(
             use tokio::io::{AsyncBufReadExt, BufReader};
             let mut lines = BufReader::new(out).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                tracing::info!(line = %line, stream, "llm: interactive login output");
+                // No `line` field - login CLI output carries OAuth verification URLs and
+                // device codes, short-lived credentials with no reason to sit in the local
+                // spool. `buffered_tail` below already retains the buffer itself for the
+                // user-facing message, so the length is all this log needs.
+                tracing::debug!(stream, chars = line.len(), "llm: interactive login output");
                 let mut buf = seen.lock().unwrap_or_else(|e| e.into_inner());
                 buf.push_str(&line);
                 buf.push('\n');
@@ -1309,10 +1315,12 @@ where
         // The two signals disagree: the CLI process reported failure/timeout, but a direct
         // read of the vendor's own auth state says otherwise. Ground truth wins - logged at
         // WARN (not swallowed as INFO) precisely because a real divergence like this is
-        // worth seeing on a packaged install, not just locally.
+        // worth seeing on a packaged install, not just locally. No `process_message` field -
+        // it's built from the drained CLI stderr/stdout tail (see the `printed` interpolation
+        // above), which is raw vendor CLI text and must not egress via WARN.
         tracing::warn!(
             bin,
-            process_outcome = %process_message,
+            verify_overrode = true,
             "llm: sign-in process reported failure but the status check confirms the user IS \
              signed in - trusting the status check"
         );
