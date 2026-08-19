@@ -130,9 +130,17 @@ pub(super) async fn send_daily_usage(
     write_rollup_properties(&rollup, &mut props);
 
     // ── Group 3: install health ──────────────────────────────────────────────
-    super::health::snapshot(pool)
-        .await
-        .write_properties(&mut props);
+    // One snapshot, used twice: as timestamped EVENT properties (the full
+    // point-in-time picture, stamped with `health_observed_on`) and as the
+    // slowly-changing PERSON properties. `app_active` refreshes the person
+    // properties too, so they are never more than a day stale even for a user
+    // whose tray rarely survives a midnight.
+    let health = super::health::snapshot(pool).await;
+    health.write_properties(&mut props);
+
+    let mut person = super::base_person_properties(app, email);
+    health.write_person_properties(&mut person);
+    super::attach_person_properties(&mut props, person);
 
     tracing::info!(
         day,
@@ -143,7 +151,11 @@ pub(super) async fn send_daily_usage(
         tickets_updated = rollup.tickets_updated,
         "analytics: sending daily_usage"
     );
-    super::capture("daily_usage", email, props).await
+    let sent = super::capture("daily_usage", email, props).await;
+    if sent {
+        tracing::info!(event = "daily_usage", day, "analytics: event sent");
+    }
+    sent
 }
 
 /// Fold [`meridian_core::usage_rollup::UsageRollup`] into the event properties.

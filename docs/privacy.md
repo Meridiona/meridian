@@ -122,7 +122,7 @@ different things about you - see [Error reporting](#error-reporting).
 | Event | When | What it contains |
 |---|---|---|
 | `app_installed` | Once per device, per signed-in account | Nothing beyond the shared properties below. |
-| `app_active` | Once per calendar day Meridian is running | Nothing beyond the shared properties. It exists only so we can tell how many people come back on a given day. |
+| `app_active` | Once per calendar day Meridian is running | The shared properties, plus the current-state summary described below (which AI provider and which trackers). It exists so we can tell how many people come back on a given day, and so a brand-new install's setup is visible without waiting for the first `daily_usage`. |
 | `daily_usage` | Once per completed calendar day | Three groups of numbers, listed below. |
 
 `daily_usage` carries:
@@ -139,10 +139,12 @@ different things about you - see [Error reporting](#error-reporting).
   never their text).
 - **Which AI provider you use, and whether it works** - the provider's name from our own
   fixed list (`claude`, `codex`, `cursor`, `copilot`, `custom`), whether it is currently
-  usable or rate-limited, and for a cloud endpoint the preset it came from (`openai`,
+  usable or rate-limited, whether you actually chose that provider or are still on the
+  default, and for a cloud endpoint the vendor it came from (one of `groq`, `openai`,
   `gemini`, `openrouter`, `other`) and the model id. If you entered your own endpoint by
-  hand, the **model id is not sent** - it can name an internal deployment. Your endpoint
-  URL and API key are never sent under any setting.
+  hand, the **model id is not sent** - it can name an internal deployment. A vendor value
+  we don't recognise is replaced with `unrecognised` rather than sent as-is. Your
+  endpoint URL and API key are never sent under any setting.
 - **Which trackers you connect, and whether they sync** - the tracker's name from our
   fixed list (`jira`, `linear`, `github`, `trello`, `azure_devops`) and a one-word status
   for each: syncing fine, stale, failing, never synced, or waiting for you to pick a
@@ -156,6 +158,15 @@ disabled on every event.
 **These events identify you by your account email.** It is used directly as the PostHog
 `distinct_id`, which is why nothing is sent before sign-in. This path is identified, not
 pseudonymous, and we would rather say so plainly than bury it.
+
+**A small current-state record is kept against your account**, updated on each of the
+events above rather than accumulating one row per day: your email, app version, release
+channel, OS, which AI provider and model you are on, and which trackers you have
+connected. It exists so we can answer "what is this user's setup" without replaying
+their history. It is a subset of what the events above already carry - nothing is
+collected for it that is not listed here - and it is overwritten each time, so it always
+reflects your current setup rather than a trail. Your Support ID is deliberately kept
+out of it.
 
 **And they carry your Support ID, which links this to your error reports.** Error
 reports and crash reports are pseudonymous on their own - they identify a machine, not

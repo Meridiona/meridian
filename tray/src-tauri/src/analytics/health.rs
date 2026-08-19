@@ -272,6 +272,36 @@ fn resolve_custom_vendor_and_model(
     (Some(c.vendor.clone()), model)
 }
 
+/// Whether the user has ever actually CHOSEN an AI provider, as opposed to
+/// silently inheriting the default.
+///
+/// # Why this can't be inferred from `llm_provider`
+/// [`meridian_core::settings::RuntimeSettings::default`] sets `llm_provider` to
+/// `claude`, and `load_runtime_settings` merges the file over those defaults.
+/// So a user who has never opened the provider picker reports exactly the same
+/// value as one who deliberately picked Claude — and on a fleet dashboard the
+/// first group is large, newly-installed, and the population you most want to
+/// find, because "provider = claude, provider_ok = false" is usually "never set
+/// up" rather than "Claude is broken".
+///
+/// The only place that distinction survives is the raw settings file: the key
+/// is present iff something wrote it. So this reads the file directly rather
+/// than going through [`meridian_core::settings::read_settings_value`], which
+/// has already merged the defaults in and cannot tell the two apart.
+///
+/// An unreadable or unparseable file reads as "not chosen" — the same answer a
+/// fresh install gives, and the safer of the two when we cannot tell.
+fn provider_explicitly_chosen() -> bool {
+    let path = meridian_core::settings::settings_json_path();
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(&raw)
+        .ok()
+        .and_then(|v| v.get("llm_provider").cloned())
+        .is_some_and(|v| v.is_string())
+}
+
 /// Probe every health source and assemble the snapshot.
 ///
 /// Never fails: each source already degrades to "unknown"/empty on error, and
@@ -353,6 +383,44 @@ impl HealthSnapshot {
             .values()
             .filter(|s| **s != IntegrationStatus::Ok)
             .count()
+    }
+
+    /// The subset of this snapshot that belongs on the PERSON rather than the
+    /// event: slowly-changing current state — which AI provider, which
+    /// trackers — that you want as a sortable column on the Persons list
+    /// rather than as something recoverable only by querying each person's
+    /// latest event. See [`super::base_person_properties`] for the general
+    /// rule, and for why `support_id` is excluded from this treatment.
+    ///
+    /// Deliberately NOT included: anything momentary (`daemon_running`,
+    /// `database_ready`, rate-limit state, active notices, per-tracker sync
+    /// status). Those change hour to hour, and a person property keeps only the
+    /// newest value — so "is the daemon running" as a person property would
+    /// answer "was it running at the last send", which reads as current fact
+    /// and is not one. They stay event properties, where they are timestamped.
+    pub(crate) fn write_person_properties(&self, person: &mut Map<String, Value>) {
+        person.insert(
+            "llm_provider".to_string(),
+            Value::String(self.llm_provider.to_string()),
+        );
+        person.insert(
+            "llm_provider_chosen".to_string(),
+            Value::Bool(provider_explicitly_chosen()),
+        );
+        if let Some(v) = &self.llm_vendor {
+            person.insert("llm_vendor".to_string(), Value::String(v.clone()));
+        }
+        if let Some(m) = &self.llm_model {
+            person.insert("llm_model".to_string(), Value::String(m.clone()));
+        }
+        person.insert(
+            "integrations_connected".to_string(),
+            serde_json::json!(self.integrations_connected),
+        );
+        person.insert(
+            "integrations_count".to_string(),
+            serde_json::json!(self.integrations_connected.len()),
+        );
     }
 
     /// Fold the snapshot into an event's property map under a `health_` prefix,
@@ -728,5 +796,88 @@ mod tests {
             !props.contains_key("health_llm_model"),
             "but the model must not"
         );
+    }
+}
+
+#[cfg(test)]
+mod person_property_tests {
+    //! What lands on the PostHog Person rather than the event. These pin the
+    //! split, because getting it wrong is silent: a momentary value promoted to
+    //! a person property reads as current fact forever, and a changing value
+    //! promoted there loses its own history.
+    use super::*;
+
+    fn snap() -> HealthSnapshot {
+        HealthSnapshot {
+            llm_provider: "custom",
+            llm_vendor: Some("groq".to_string()),
+            llm_model: Some("openai/gpt-oss-120b".to_string()),
+            integrations_connected: vec!["jira".into(), "github".into()],
+            daemon_running: Some(false),
+            database_ready: Some(true),
+            ..Default::default()
+        }
+    }
+
+    /// The provider and tracker set are the whole point: they must be person
+    /// properties so PostHog shows them as a column, not values you have to dig
+    /// out of each person's most recent event.
+    #[test]
+    fn provider_and_trackers_land_on_the_person() {
+        let mut person = Map::new();
+        snap().write_person_properties(&mut person);
+
+        assert_eq!(
+            person.get("llm_provider"),
+            Some(&Value::String("custom".to_string()))
+        );
+        assert_eq!(
+            person.get("llm_vendor"),
+            Some(&Value::String("groq".to_string()))
+        );
+        assert_eq!(
+            person.get("integrations_connected"),
+            Some(&serde_json::json!(["jira", "github"]))
+        );
+        assert_eq!(
+            person.get("integrations_count"),
+            Some(&serde_json::json!(2))
+        );
+    }
+
+    /// Momentary state must NOT be promoted to the person. A person property
+    /// keeps only the newest value, so `daemon_running` there would answer
+    /// "was it up at the last send" while reading as "is it up" — the kind of
+    /// wrong that looks right on a dashboard.
+    #[test]
+    fn momentary_state_stays_off_the_person() {
+        let mut person = Map::new();
+        snap().write_person_properties(&mut person);
+
+        for k in [
+            "daemon_running",
+            "database_ready",
+            "llm_provider_rate_limited",
+            "active_notices",
+            "integrations_status",
+            "health_observed_on",
+        ] {
+            assert!(
+                !person.contains_key(k),
+                "{k} is momentary and must stay an event property"
+            );
+        }
+    }
+
+    /// `support_id` must never become a person property. It legitimately
+    /// changes (a second machine, a re-seed, the alpha window ending), and a
+    /// person property keeps only the newest — which would silently orphan
+    /// every error row recorded under the previous one. As an event property a
+    /// DISTINCT recovers the full set.
+    #[test]
+    fn support_id_is_never_a_person_property() {
+        let mut person = Map::new();
+        snap().write_person_properties(&mut person);
+        assert!(!person.contains_key("support_id"));
     }
 }
