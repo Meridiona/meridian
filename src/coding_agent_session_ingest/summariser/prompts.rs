@@ -44,7 +44,19 @@ pub fn summary_schema_json() -> String {
 }
 
 /// Substrings that mark a subscription usage/rate limit in CLI stderr/output —
-/// for Claude (`claude -p`) and Codex (`codex exec`) alike.
+/// for Claude (`claude -p`), Codex (`codex exec`), and `cursor-agent` alike.
+///
+/// `resource_exhausted` / `retriableerror` are Cursor's own vocabulary, not a
+/// generic phrase like the rest of this list — its backend is gRPC-flavoured and
+/// reports a free-plan quota wall as `RetriableError: [resource_exhausted] Error`,
+/// wrapped in cursor-agent's own connection-retry banner ("Connection lost,
+/// reconnecting..." x3) that reads exactly like a network blip. Without this
+/// marker a resource-exhausted account never returns `LlmError::RateLimited`
+/// (`degradable_message` -> `None`, no further retry) - it falls through as a
+/// plain `Failed`, which both `resolver::complete_inner` AND
+/// `cursor_cli::run_hardened`'s transient lever then retry, burning more calls
+/// against an already-exhausted quota and taking 20-30s+ per attempt to fail
+/// again the same way. Observed live on a free-plan account 2026-08-19.
 const RATE_LIMIT_MARKERS: &[&str] = &[
     "usage limit",
     "rate limit",
@@ -56,6 +68,8 @@ const RATE_LIMIT_MARKERS: &[&str] = &[
     "resets at",
     "try again at",
     "upgrade to plus",
+    "resource_exhausted",
+    "resource exhausted",
 ];
 
 pub fn looks_rate_limited(text: &str) -> bool {
@@ -151,5 +165,31 @@ mod tests {
         let line = rate_limited_line(stderr).unwrap();
         assert!(line.starts_with("ERROR: You've hit your usage limit"));
         assert!(rate_limited_line("all good, no errors here").is_none());
+    }
+
+    /// Pinned regression: the exact message a free-plan Cursor account hit live
+    /// (2026-08-19) - `cursor-agent`'s own retry banner wrapping a gRPC
+    /// `resource_exhausted` quota wall. Without this marker the message reads as
+    /// a plain `Failed` and gets retried against an already-exhausted quota
+    /// instead of surfacing the soft "rate limited, catching up on its own" state.
+    #[test]
+    fn cursor_resource_exhausted_is_recognised_as_a_rate_limit() {
+        let blob = "Connection lost, reconnecting to https://agentn.global.api5.cursor.sh \
+                     (attempt 1)...\nRetry attempt 1...\nConnection lost, reconnecting to \
+                     https://agentn.global.api5.cursor.sh (attempt 2)...\nRetry attempt 2...\n\
+                     RetriableError: [resource_exhausted] Error";
+        assert!(looks_rate_limited(blob));
+        let line = rate_limited_line(blob).unwrap();
+        assert!(line.contains("resource_exhausted"));
+    }
+
+    /// A bare "connection lost" with no exhaustion signal must NOT be read as a
+    /// rate limit - that would silently stop `run_hardened`'s transient retry
+    /// from ever firing for a genuine one-off network blip.
+    #[test]
+    fn a_plain_connection_drop_is_not_mistaken_for_a_rate_limit() {
+        assert!(!looks_rate_limited(
+            "Connection lost, reconnecting to https://agentn.global.api5.cursor.sh (attempt 1)...."
+        ));
     }
 }

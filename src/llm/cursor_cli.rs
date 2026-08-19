@@ -30,7 +30,9 @@
 //! - [`crate::coding_agent_session_ingest::summariser::cursor_agent`] - text-output summariser
 //! - [`meridian_core::CURSOR_CLI_VERSION`] - the pinned build these flags are verified against
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 /// Skill roots `cursor-agent` discovers relative to `$HOME`, as directory names to neutralise.
 ///
@@ -422,6 +424,40 @@ pub const FAST_MODEL: &str = "gpt-5.4-mini-low";
 /// Cursor's server-routed default, used only when [`DEFAULT_MODEL`] is not on the account.
 pub const FALLBACK_MODEL: &str = "auto";
 
+/// Pinned model ids [`run_hardened`] has already learned this account cannot use, memoised
+/// for the process lifetime.
+///
+/// Measured live on a free-plan account (2026-08-19): a rejected named model costs ~10.5s
+/// (`cursor-agent` still has to round-trip to the server to find out), before the ladder even
+/// starts the real `auto` attempt. `run_hardened` re-discovers this from scratch on EVERY
+/// call - summarise, classify, draft, the connectivity probe - because the ladder's own state
+/// is local to one invocation. That is ~10.5s of pure waste on every single Cursor call this
+/// process makes, and on the connectivity probe specifically (20s budget) it is often enough
+/// on its own to push the total past the timeout that's supposed to just be catching a hung
+/// process.
+///
+/// Self-heals on restart, same as [`crate::llm::detect::resolve_cli`]'s bin-path cache: an
+/// account that upgrades plans mid-session keeps paying the tax until the daemon/tray next
+/// restarts, which is an acceptable trade against a persisted cache going stale the other way
+/// (silently skipping a model that became available again requires no code, just a restart).
+static KNOWN_UNAVAILABLE_MODELS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn model_known_unavailable(model: &str) -> bool {
+    KNOWN_UNAVAILABLE_MODELS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(model)
+}
+
+fn remember_model_unavailable(model: String) {
+    KNOWN_UNAVAILABLE_MODELS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(model);
+}
+
 /// A failure a [`run_hardened`] caller can classify.
 ///
 /// Implemented by both call sites' error types so the ladder is written once. Returning
@@ -469,6 +505,16 @@ where
         sandbox: true,
     };
     let mut model = model.to_string();
+    // Skip a model this process already knows this account can't use - see
+    // `KNOWN_UNAVAILABLE_MODELS`'s doc for the ~10.5s/call this saves once warmed.
+    if model != FALLBACK_MODEL && model_known_unavailable(&model) {
+        tracing::debug!(
+            model,
+            fallback = FALLBACK_MODEL,
+            "cursor: skipping known-unavailable model, starting on auto"
+        );
+        model = FALLBACK_MODEL.to_string();
+    }
     let mut tried_fallback_model = model == FALLBACK_MODEL;
     // Not a lever - retrying leaves argv/env unchanged, it just asks the same question
     // again in case the first answer was noise. Bounded to one shot so a genuinely broken
@@ -510,6 +556,12 @@ where
                 fallback = FALLBACK_MODEL,
                 "cursor: model unavailable on this account - retrying with auto"
             );
+            // Recorded even if this whole call later times out waiting on `auto` - the
+            // mutation is synchronous and happens the moment the cause is classified, well
+            // before any surrounding deadline can cancel the future. So the very next call
+            // (including a `probe_with_retry` second attempt on the SAME timed-out call)
+            // starts on `auto` directly instead of re-discovering this.
+            remember_model_unavailable(model.clone());
             model = FALLBACK_MODEL.to_string();
             tried_fallback_model = true;
         } else if !tried_transient_retry && looks_transient(msg) {
@@ -608,10 +660,73 @@ mod tests {
 
     #[tokio::test]
     async fn an_unavailable_model_falls_back_to_auto() {
-        let (res, seen) = ladder(DEFAULT_MODEL, vec![Some("Unknown model: gpt-5.4-mini")]).await;
+        // A model name unique to this test, NOT `DEFAULT_MODEL` - `run_hardened` memoises a
+        // rejected model process-wide (see `KNOWN_UNAVAILABLE_MODELS`), and `cargo test` runs
+        // this file's tests in parallel in one process, so teaching it here that `DEFAULT_MODEL`
+        // is unavailable would silently rewrite every OTHER test's `DEFAULT_MODEL` call to
+        // start on `auto` too, depending on execution order.
+        let (res, seen) = ladder(
+            "test-model-unavailable-a",
+            vec![Some("Unknown model: test-model-unavailable-a")],
+        )
+        .await;
         assert!(res.is_ok());
         assert_eq!(seen.len(), 2);
         assert!(seen[1].0.contains(&FALLBACK_MODEL.to_string()));
+    }
+
+    /// Warmed state: once a model has been classified unavailable, the NEXT call - including
+    /// one made with a fresh model string but for the account this cache is scoped to being
+    /// still unavailable - must skip straight to `auto` rather than paying the ~10.5s round
+    /// trip to rediscover the same rejection. This is the fix for the real-world symptom: a
+    /// probe (20s budget) that pays this tax on EVERY attempt can time out even when both the
+    /// pinned model rejection and the eventual `auto` answer are each individually fast.
+    #[tokio::test]
+    async fn a_known_unavailable_model_skips_the_wasted_first_attempt() {
+        let model = "test-model-unavailable-b";
+        // Teach the cache.
+        let (res, seen) =
+            ladder(model, vec![Some("Unknown model: test-model-unavailable-b")]).await;
+        assert!(res.is_ok());
+        assert_eq!(
+            seen.len(),
+            2,
+            "first call still pays the discovery cost once"
+        );
+
+        // The SAME model, a fresh call, no queued errors: if the pinned model were tried
+        // again it would fail immediately with no error queued for it, so success in exactly
+        // ONE call - on `auto` - is only possible if the skip fired.
+        let (res2, seen2) = ladder(model, vec![]).await;
+        assert!(res2.is_ok());
+        assert_eq!(
+            seen2.len(),
+            1,
+            "a warmed rejection must not pay the discovery cost again"
+        );
+        assert!(
+            seen2[0].0.contains(&FALLBACK_MODEL.to_string()),
+            "the single attempt must already be on auto, not the known-bad pinned model"
+        );
+    }
+
+    /// The memoised rejection is keyed by model string, not a blanket "something is wrong" -
+    /// learning that one model is unavailable must not silently reroute a DIFFERENT, never-
+    /// before-seen model to `auto` too.
+    #[tokio::test]
+    async fn learning_a_model_is_unavailable_does_not_affect_other_models() {
+        let bad = "test-model-unavailable-c";
+        let (res, _) = ladder(bad, vec![Some("Unknown model: test-model-unavailable-c")]).await;
+        assert!(res.is_ok());
+
+        let untouched = "test-model-never-rejected";
+        let (res2, seen2) = ladder(untouched, vec![]).await;
+        assert!(res2.is_ok());
+        assert_eq!(seen2.len(), 1);
+        assert!(
+            seen2[0].0.contains(&untouched.to_string()),
+            "an unrelated model must run unchanged, not get rerouted by another model's rejection"
+        );
     }
 
     /// A rate limit must NOT walk the ladder - Cursor limits are account-level, so a retry
@@ -698,13 +813,15 @@ mod tests {
     /// looping.
     #[tokio::test]
     async fn the_ladder_terminates_after_every_lever_is_spent() {
+        // A model unique to this test - see `an_unavailable_model_falls_back_to_auto`'s
+        // comment on why `DEFAULT_MODEL` itself must not be taught a rejection here.
         let errs = vec![
             Some("unknown option '--allowed-tools'"),
             Some("Not logged in"),
-            Some("Unknown model: x"),
+            Some("Unknown model: test-model-unavailable-d"),
             Some("unknown option '--allowed-tools'"),
         ];
-        let (res, seen) = ladder(DEFAULT_MODEL, errs).await;
+        let (res, seen) = ladder("test-model-unavailable-d", errs).await;
         assert!(res.is_err());
         assert_eq!(seen.len(), 4, "3 degradations, then give up");
     }
