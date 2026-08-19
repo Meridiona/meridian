@@ -387,6 +387,7 @@ pub fn looks_transient(msg: &str) -> bool {
         return false;
     }
     m.contains("connection reset")
+        || m.contains("connection lost")
         || m.contains("econnreset")
         || m.contains("stream disconnected")
         || m.contains("socket hang up")
@@ -643,6 +644,25 @@ mod tests {
         );
     }
 
+    /// End-to-end pin of the exact message a live account hit: `run_hardened` must recover
+    /// from a real `cursor-agent` websocket reconnect message the same way it already
+    /// recovers from a generic "connection reset by peer" - via the transient lever, not
+    /// by exhausting the ladder and surfacing "provider unavailable".
+    #[tokio::test]
+    async fn a_connection_lost_reconnect_message_retries_once_unchanged() {
+        let (res, seen) = ladder(
+            DEFAULT_MODEL,
+            vec![Some(
+                "cursor-agent exited Some(1): Connection lost, reconnecting to \
+                 https://agentn.global.api5.cursor.sh (attempt 1)....",
+            )],
+        )
+        .await;
+        assert!(res.is_ok());
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], seen[1]);
+    }
+
     /// Bounded: a second transient failure in a row is not a licence to keep spinning.
     #[tokio::test]
     async fn a_second_transient_failure_is_not_retried_again() {
@@ -806,6 +826,56 @@ mod tests {
         // Ordinary failures must not spend the one bounded retry either.
         assert!(!looks_transient("rate/usage limit reached"));
         assert!(!looks_transient("Not logged in"));
+    }
+
+    /// Pinned regression: the exact message a live account hit mid-session
+    /// (`cursor-agent`'s own websocket reconnect telling us it dropped the stream to
+    /// `agentn.global.api5.cursor.sh`) tripped the "in-use provider unavailable" banner
+    /// because this exact wording wasn't recognised as transient - only "connection reset"
+    /// was. A one-word gap between two near-identical phrasings meant a self-resolving
+    /// network blip escalated into a non-dismissible "Meridian has stopped writing your
+    /// day" banner instead of quietly retrying once.
+    #[test]
+    fn connection_lost_is_recognised_as_transient() {
+        assert!(looks_transient(
+            "cursor-agent exited Some(1): Connection lost, reconnecting to \
+             https://agentn.global.api5.cursor.sh (attempt 1)...."
+        ));
+    }
+
+    /// A message this shape must land on EXACTLY one lever. If a future edit to any
+    /// classifier makes two of them match, `run_hardened`'s `if`/`else if` chain would
+    /// silently pick whichever is checked first and the other lever's intent - a
+    /// different retry strategy - would never fire for messages of this shape. Pinning
+    /// mutual exclusion here catches that at the classifier level, before it can hide
+    /// behind the ladder's own ordering.
+    #[test]
+    fn connection_lost_is_not_also_read_as_auth_or_model_trouble() {
+        let msg = "cursor-agent exited Some(1): Connection lost, reconnecting to \
+                    https://agentn.global.api5.cursor.sh (attempt 1)....";
+        assert!(looks_transient(msg));
+        assert!(!looks_auth_failure(msg));
+        assert!(!looks_unknown_model(msg));
+        assert!(!looks_unsupported_flag(msg));
+    }
+
+    /// A dropped connection reported mid-authentication ("lost the connection while
+    /// verifying your session, please log in again") is a real - if rarer - shape:
+    /// transient-sounding text wrapping an actual auth problem. `run_hardened` checks
+    /// `looks_auth_failure` before `looks_transient`, so this must resolve to the sandbox
+    /// retry, not the transient one - retrying blind on an expired session just spends
+    /// the bounded transient retry on a call that will fail identically both times.
+    #[test]
+    fn a_connection_drop_during_auth_is_still_classified_as_auth_first() {
+        let msg = "connection lost while verifying your session - please log in again";
+        assert!(
+            looks_transient(msg),
+            "the wording alone still reads as transient"
+        );
+        assert!(
+            looks_auth_failure(msg),
+            "but the auth signal must also be present so the ladder's auth check wins"
+        );
     }
 
     /// The sandbox must never be the user's real home - that is the whole safety property.
