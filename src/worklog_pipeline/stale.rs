@@ -24,6 +24,15 @@
 // stylistic choice: see `notify_step`, where a linear step is what turned this
 // guarantee into one notification per hour, forever.
 //
+// ONE NOTIFICATION PER FOLD, NOT ONE PER TASK. A day with several drafted tasks
+// worked past their staleness threshold in the same hourly fold used to fire one
+// toast per task - five stale drafts meant five toasts landing at once. `notify_step`
+// already collapses repetition *within* a task; this collapses repetition *across*
+// tasks in the same run: every draft `stale_drafts` returns this tick becomes ONE
+// combined notification (`batch_message`), keyed on the full (task, step) set that
+// composed it (`batch_dedup_key`) so the same set never re-fires, but a newly-stale
+// task or a further escalation - which changes the set - produces a fresh one.
+//
 // # Who calls this
 // [`crate::worklog_pipeline::workstream::run`], immediately after the hourly
 // fold rewrites the day's tasks - which is the only moment measured minutes can
@@ -59,28 +68,20 @@ pub async fn notify_stale_drafts(pool: &SqlitePool, day_local: &str) {
         return;
     }
 
-    for d in &stale {
-        let step = notify_step(d.stale_minutes);
-        let dedup = format!("worklog.stale:{day_local}:{}:{step}", d.task_id);
-        let body = stale_body(&d.title, d.stale_minutes);
-        let n = NewNotification::event(
-            &dedup,
-            "worklog.stale",
-            "Your worklog draft is out of date",
-            &body,
-        )
+    let dedup = batch_dedup_key(day_local, &stale);
+    let (title, body) = batch_message(&stale);
+    let n = NewNotification::event(&dedup, "worklog.stale", &title, &body)
         // The draft is edited in the worklog review surface, not on the
         // timeline. `/today` merely closed any open modal, which resolved but
         // landed nowhere useful — the one ALL entry whose handler was still
         // behaviourally a no-op.
         .link(meridian_core::notifications::deep_links::WORKLOGS);
-        if let Err(e) = notifications::enqueue(pool, n).await {
-            tracing::warn!(
-                day = day_local,
-                error = %e,
-                "worklog: could not enqueue stale-draft notice"
-            );
-        }
+    if let Err(e) = notifications::enqueue(pool, n).await {
+        tracing::warn!(
+            day = day_local,
+            error = %e,
+            "worklog: could not enqueue stale-draft notice"
+        );
     }
 
     tracing::info!(
@@ -120,6 +121,58 @@ fn stale_body(title: &str, minutes: i64) -> String {
     format!("You have worked {amount} on \"{title}\" since the draft was written. Regenerate it before you post.")
 }
 
+/// The dedup key for a whole fold's worth of stale drafts, not one task.
+///
+/// Built from every `(task_id, step)` pair in `stale`, sorted so key order never
+/// depends on `stale_drafts`'s row order. `enqueue`'s idempotency then does the
+/// same job it always did - the same set of tasks at the same steps produces the
+/// same key and is a no-op - but the unit of "same" is now the whole batch: any
+/// task newly crossing the threshold, or escalating to the next step, changes the
+/// set and earns a fresh notification, same as before.
+fn batch_dedup_key(
+    day_local: &str,
+    stale: &[meridian_core::day_task_worklogs::StaleDraft],
+) -> String {
+    let mut parts: Vec<String> = stale
+        .iter()
+        .map(|d| format!("{}@{}", d.task_id, notify_step(d.stale_minutes)))
+        .collect();
+    parts.sort();
+    format!("worklog.stale:{day_local}:{}", parts.join(","))
+}
+
+/// The title and body for a fold's worth of stale drafts.
+///
+/// A single stale draft keeps the original, specific wording - naming the task
+/// and the exact amount is the whole point when there is only one to act on. Two
+/// or more collapse into one notification naming every task (three or fewer) or
+/// the first two plus a count (more than three), because at that point which
+/// exact minute each one crossed its threshold is not the decision the user needs
+/// to make - regenerating all of them is.
+fn batch_message(stale: &[meridian_core::day_task_worklogs::StaleDraft]) -> (String, String) {
+    if let [only] = stale {
+        return (
+            "Your worklog draft is out of date".to_string(),
+            stale_body(&only.title, only.stale_minutes),
+        );
+    }
+
+    let title = format!("{} worklog drafts are out of date", stale.len());
+    let names: Vec<&str> = stale.iter().map(|d| d.title.as_str()).collect();
+    let listed = match names.as_slice() {
+        [a, b] => format!("\"{a}\" and \"{b}\""),
+        [a, b, c] => format!("\"{a}\", \"{b}\", and \"{c}\""),
+        _ => {
+            let rest = names.len() - 2;
+            format!("\"{}\", \"{}\", and {rest} more", names[0], names[1])
+        }
+    };
+    let body = format!(
+        "{listed} have new work since their drafts were written. Regenerate them before you post."
+    );
+    (title, body)
+}
+
 /// The dedup bucket a given staleness falls in: `WORKLOG_STALE_MINUTES` doubling each
 /// time — 15, 30, 60, 120, 240 minutes behind.
 ///
@@ -148,6 +201,68 @@ fn notify_step(stale_minutes: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use meridian_core::day_task_worklogs::StaleDraft;
+
+    fn draft(task_id: &str, title: &str, minutes: i64) -> StaleDraft {
+        StaleDraft {
+            task_id: task_id.to_string(),
+            title: title.to_string(),
+            stale_minutes: minutes,
+        }
+    }
+
+    #[test]
+    fn a_single_stale_draft_keeps_the_specific_wording() {
+        let (title, body) = batch_message(&[draft("T1", "Fixing the login bug", 18)]);
+        assert_eq!(title, "Your worklog draft is out of date");
+        assert!(body.contains("Fixing the login bug"));
+        assert!(body.contains("18 more minutes"));
+    }
+
+    #[test]
+    fn two_stale_drafts_are_both_named() {
+        let (title, body) = batch_message(&[
+            draft("T1", "Release notes", 20),
+            draft("T2", "Bug triage", 40),
+        ]);
+        assert_eq!(title, "2 worklog drafts are out of date");
+        assert!(body.contains("\"Release notes\" and \"Bug triage\""));
+    }
+
+    #[test]
+    fn more_than_three_stale_drafts_are_summarised() {
+        let stale = vec![
+            draft("T1", "A", 20),
+            draft("T2", "B", 20),
+            draft("T3", "C", 20),
+            draft("T4", "D", 20),
+            draft("T5", "E", 20),
+        ];
+        let (title, body) = batch_message(&stale);
+        assert_eq!(title, "5 worklog drafts are out of date");
+        assert!(body.contains("\"A\", \"B\", and 3 more"));
+        assert!(!body.contains('C'), "{body}");
+    }
+
+    #[test]
+    fn the_batch_dedup_key_is_order_independent() {
+        let forward = vec![draft("T1", "A", 20), draft("T2", "B", 45)];
+        let backward = vec![draft("T2", "B", 45), draft("T1", "A", 20)];
+        assert_eq!(
+            batch_dedup_key("2026-08-19", &forward),
+            batch_dedup_key("2026-08-19", &backward)
+        );
+    }
+
+    #[test]
+    fn the_batch_dedup_key_changes_when_a_task_escalates() {
+        let before = vec![draft("T1", "A", 20)]; // step 15
+        let after = vec![draft("T1", "A", 35)]; // step 30
+        assert_ne!(
+            batch_dedup_key("2026-08-19", &before),
+            batch_dedup_key("2026-08-19", &after)
+        );
+    }
 
     #[test]
     fn reads_as_minutes_below_the_hour() {
