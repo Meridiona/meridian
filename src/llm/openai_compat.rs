@@ -239,6 +239,7 @@ impl LlmBackend for OpenAiCompatBackend {
                 {"role": "user",   "content": req.user},
             ],
         });
+        apply_reasoning_effort(&mut body, &ep.model);
         apply_schema(&mut body, req, ep);
 
         // The endpoint id, not the URL or the key: a base URL can carry a key in a query
@@ -323,6 +324,22 @@ impl LlmBackend for OpenAiCompatBackend {
             output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0) as u32,
             elapsed_s: t0.elapsed().as_secs_f64(),
         })
+    }
+}
+
+/// Cap a gpt-oss (Harmony template) model's hidden reasoning budget.
+///
+/// gpt-oss spends its hidden reasoning against the same completion budget as the visible
+/// answer, so it can burn `max_tokens` entirely on reasoning and return empty `content` with
+/// `finish_reason: "length"` (see the empty-content branch in [`OpenAiCompatBackend::complete`]
+/// — measured on both Groq's and Ollama's gpt-oss-120b/20b). `reasoning_effort` is the
+/// model's own harmony parameter for capping that hidden budget; `"low"` was verified live
+/// against Ollama's Cloud API to eliminate the empty answer without a quality regression on
+/// trivial prompts. Gated on the MODEL name, not the vendor, because the failure is a
+/// property of the gpt-oss template itself, not of any one endpoint.
+fn apply_reasoning_effort(body: &mut Value, model: &str) {
+    if model.contains("gpt-oss") {
+        body["reasoning_effort"] = json!("low");
     }
 }
 
@@ -645,6 +662,25 @@ mod tests {
         let body = body_for(SchemaRung::JsonObject);
         assert_eq!(body["response_format"], json!({"type": "json_object"}));
         assert!(body["messages"][1]["content"].as_str().unwrap().len() > "hour report".len());
+    }
+
+    #[test]
+    fn reasoning_effort_is_capped_for_gpt_oss_models_only() {
+        for model in [
+            "gpt-oss:20b",
+            "gpt-oss:20b-cloud",
+            "gpt-oss-120b",
+            "openai/gpt-oss-120b",
+        ] {
+            let mut body = json!({});
+            apply_reasoning_effort(&mut body, model);
+            assert_eq!(body["reasoning_effort"], json!("low"), "model {model}");
+        }
+        for model in ["gemini-flash-latest", "llama-3.3-70b", ""] {
+            let mut body = json!({});
+            apply_reasoning_effort(&mut body, model);
+            assert!(body["reasoning_effort"].is_null(), "model {model}");
+        }
     }
 
     /// A schema-less request must not gain a response_format at any rung.

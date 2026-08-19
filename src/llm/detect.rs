@@ -40,7 +40,10 @@ use meridian_core::LlmProvider;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
-use super::{resolver::backend_for, LlmConfig, LlmError, LlmOutput, PromptRequest};
+use super::{
+    resolver::{backend_for, provider_key},
+    LlmConfig, LlmError, LlmOutput, PromptRequest,
+};
 
 /// How long a probe may take before we call it absent. A login shell sources the user's
 /// profile, which can be slow (nvm, rbenv, …), but not this slow.
@@ -258,9 +261,10 @@ fn provider_display_name(p: LlmProvider) -> &'static str {
 /// summary cadence it guards.
 const IN_USE_HEALTH_TTL: Duration = Duration::from_secs(300);
 
-/// Cache of the last computed provider health: `(provider wire id, computed_at, result)`. Keyed
-/// by the provider id so switching the selected provider invalidates it immediately rather than
-/// serving the previous provider's verdict for up to a TTL.
+/// Cache of the last computed provider health: `(provider_key, computed_at, result)`. Keyed by
+/// [`provider_key`] - NOT the bare `llm_provider` wire string - so switching the selected
+/// provider (including switching which specific custom endpoint is active) invalidates it
+/// immediately rather than serving the previous one's verdict for up to a TTL.
 #[allow(clippy::type_complexity)]
 static IN_USE_HEALTH_CACHE: std::sync::OnceLock<
     std::sync::Mutex<Option<(String, Instant, InUseProviderHealth)>>,
@@ -273,14 +277,22 @@ static IN_USE_HEALTH_CACHE: std::sync::OnceLock<
 /// unavailable → rate-limited → fine decision.
 #[tracing::instrument(skip(settings), fields(provider = %settings.llm_provider))]
 pub async fn in_use_provider_health(settings: &RuntimeSettings) -> InUseProviderHealth {
+    // `provider_key`, not the bare `settings.llm_provider` string: two custom endpoints both
+    // read as `"custom"` there, so switching between them used to serve THE PREVIOUS
+    // endpoint's cached verdict for up to `IN_USE_HEALTH_TTL` - the comment below used to
+    // claim this cache "invalidates immediately" on a switch, which was true for switching
+    // provider KIND but not for switching which custom endpoint, until this key change.
+    let key = LlmProvider::from_wire(&settings.llm_provider)
+        .map(|p| provider_key(p, settings.active_custom_provider().map(|c| c.id.as_str())))
+        .unwrap_or_else(|| settings.llm_provider.clone());
     // Serve a fresh-enough cached result for the SAME provider.
     {
         let guard = IN_USE_HEALTH_CACHE
             .get_or_init(Default::default)
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if let Some((provider, at, health)) = guard.as_ref() {
-            if provider == &settings.llm_provider && at.elapsed() < IN_USE_HEALTH_TTL {
+        if let Some((cached_key, at, health)) = guard.as_ref() {
+            if cached_key == &key && at.elapsed() < IN_USE_HEALTH_TTL {
                 tracing::debug!(cache = "hit", age_ms = at.elapsed().as_millis() as u64);
                 return health.clone();
             }
@@ -317,11 +329,7 @@ pub async fn in_use_provider_health(settings: &RuntimeSettings) -> InUseProvider
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    *guard = Some((
-        settings.llm_provider.clone(),
-        Instant::now(),
-        health.clone(),
-    ));
+    *guard = Some((key, Instant::now(), health.clone()));
     health
 }
 
@@ -342,13 +350,20 @@ async fn compute_in_use_provider_health(settings: &RuntimeSettings) -> InUseProv
         };
     };
     let name = provider_display_name(provider).to_string();
+    // The SAME key `test_provider`/`resolver::complete_inner` file their results under - see
+    // `provider_key`'s docs for why the bare `provider.as_str()` (`"custom"` for every cloud
+    // endpoint alike) was the wrong lookup here.
+    let key = provider_key(
+        provider,
+        settings.active_custom_provider().map(|c| c.id.as_str()),
+    );
     // Two independent signals: the last MANUAL Settings → Test, and what the pipeline last
     // observed on a real call. The manual test alone can't see a provider that passed an hour
     // ago and is failing every call since — the state that stalls the worklog pipeline — so
     // the fresher of the two wins (see `runtime_health::most_recent_outcome`).
     let cache = load_test_cache();
-    let last_test = cache.get(provider.as_str());
-    let last_runtime = super::runtime_health::latest_for(provider);
+    let last_test = cache.get(&key);
+    let last_runtime = super::runtime_health::latest_for(&key);
     let last_outcome = super::runtime_health::most_recent_outcome(last_test, last_runtime.as_ref());
     // A cloud endpoint (`Custom`, `cli_name() == None`) has no binary to probe, so it's treated
     // as "installed" here — only its last test can tell us anything.
@@ -527,8 +542,27 @@ pub async fn test_provider(
     provider: LlmProvider,
     settings: &RuntimeSettings,
 ) -> ProviderTestResult {
-    let id = provider.as_str().to_string();
+    // `provider_key`, NOT the bare wire id: for `Custom` that would be the literal string
+    // `"custom"`, which every configured cloud endpoint shares regardless of which one is
+    // actually active - two endpoints' test results would overwrite each other in
+    // `provider_test_cache.json` every time the user switched between them. Keying by the
+    // ACTIVE endpoint's own id is what let a real user see Groq's old rate-limit message
+    // rendered on Ollama's card after switching to it.
+    let id = provider_key(
+        provider,
+        settings.active_custom_provider().map(|c| c.id.as_str()),
+    );
     let t0 = Instant::now();
+
+    // Same unconditional refusal `complete_inner` applies to real calls — a manual "Test
+    // Connection" must never report Groq healthy while the production funnel silently
+    // refuses every call to it; that contradiction is exactly what let a stale verdict from
+    // one code path outlive the truth in the other.
+    if let Some(refusal) =
+        super::resolver::groq_blocked(settings.active_custom_provider().map(|c| c.vendor.as_str()))
+    {
+        return finish_test(id, classify_test_outcome(Err(refusal)), t0);
+    }
 
     let mut cfg = LlmConfig::from_settings(settings);
     cfg.cli_timeout_s = PROBE_TIMEOUT_S;

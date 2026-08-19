@@ -26,10 +26,21 @@
 //!   answers, [`record_failure`] when it errors or rate-limits.
 //! - Reader: [`crate::llm::detect::in_use_provider_health`], via [`most_recent_outcome`].
 //!
+//! # Keys, not bare providers
+//! Every public function here takes a health-KEY string, never an [`meridian_core::LlmProvider`]
+//! directly - `super::resolver::provider_key` is the one place that turns a provider (plus,
+//! for `Custom`, which specific endpoint) into that key. Passing `LlmProvider::Custom.as_str()`
+//! (the bare literal `"custom"`) directly here was the bug this module shipped with for a
+//! while: it was invisible for as long as a user could only ever have ONE cloud endpoint
+//! configured, and became a real, observed cross-contamination bug the moment a second
+//! curated preset (Ollama, alongside Groq) existed - switching the active endpoint did not
+//! change the key, so the newly-active endpoint inherited whichever one was tested last.
+//!
 //! # Related
 //! - [`crate::llm::detect`] — the banner ladder (`classify_provider_health`) and the
 //!   manual-test cache this merges with.
-//! - [`crate::llm::resolver`] — the call path that produces these observations.
+//! - [`crate::llm::resolver`] — the call path that produces these observations, and
+//!   `provider_key`, the shared key derivation.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -39,7 +50,6 @@ use serde::{Deserialize, Serialize};
 
 use super::detect::{ProviderTestOutcome, ProviderTestResult};
 use super::LlmError;
-use meridian_core::LlmProvider;
 
 /// How many CONSECUTIVE hard failures a provider must rack up before the banner alarms.
 ///
@@ -65,7 +75,12 @@ const OBSERVATION_MAX_AGE_HOURS: i64 = 6;
 /// One provider outcome as observed on a REAL pipeline call (never a manual test).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeObservation {
-    /// Provider wire id, e.g. `claude` — matches [`LlmProvider::as_str`].
+    /// The health key this observation is filed under — matches `LlmProvider::as_str` for a
+    /// CLI provider (e.g. `claude`), or `super::resolver::provider_key`'s `custom:<endpoint
+    /// id>` form for a cloud endpoint. NEVER the bare literal `"custom"`: two different
+    /// custom endpoints (a Groq row and an Ollama row, say) must file under two different
+    /// keys, or one's health silently overwrites the other's the moment the user switches
+    /// between them - see the module header.
     pub id: String,
     /// What happened. Shares [`ProviderTestOutcome`] with the manual-test cache so
     /// `classify_provider_health`'s ladder needs no new variant to reason about.
@@ -173,7 +188,7 @@ fn has_unresolved_failure(
     )
 }
 
-/// Record that `provider` answered a call made specifically to re-establish truth.
+/// Record that `id` answered a call made specifically to re-establish truth.
 ///
 /// The difference from [`record_success`] is that this ALWAYS writes. `record_success` is
 /// on the hot path and deliberately writes only on a state change, deciding "was there
@@ -189,15 +204,14 @@ fn has_unresolved_failure(
 /// Writing unconditionally is safe precisely because the caller is rare: `resolver`'s probe
 /// exemption admits at most one call per provider per interval, so this cannot become the
 /// per-call disk write that `record_success`'s short circuit exists to avoid.
-pub fn record_probe_success(provider: LlmProvider) {
-    let id = provider.as_str().to_string();
-    clear_streak(&id);
+pub fn record_probe_success(id: &str) {
+    clear_streak(id);
     tracing::info!(
         provider = %id,
         "llm provider answered a health probe - clearing the failed verdict"
     );
     persist(RuntimeObservation {
-        id,
+        id: id.to_string(),
         outcome: ProviderTestOutcome::Ok,
         observed_at: chrono::Utc::now().to_rfc3339(),
     });
@@ -208,16 +222,15 @@ pub fn record_probe_success(provider: LlmProvider) {
     super::detect::invalidate_in_use_health();
 }
 
-/// Record that `provider` answered a real call.
+/// Record that `id` answered a real call.
 ///
 /// Clears the failure streak and stamps an `Ok` observation, so a recovered provider drops
 /// the banner on the tray's next health poll rather than waiting for the user to re-test.
 /// Writes only on a state CHANGE (the first success after failures) — a healthy provider
 /// making an hourly call must not rewrite the file forever. A call made to test a REFUSED
 /// provider uses [`record_probe_success`] instead, which has no such short circuit.
-pub fn record_success(provider: LlmProvider) {
-    let id = provider.as_str().to_string();
-    let was_failing = clear_streak(&id);
+pub fn record_success(id: &str) {
+    let was_failing = clear_streak(id);
     // Reads [`RECORD_MIRROR`], not a fresh `load()`: this function runs on EVERY successful
     // call - the common, healthy-provider path - and a real disk read+parse there on every
     // single call was the actual hot-path cost (a `was_failing`-only short circuit still hit
@@ -227,7 +240,7 @@ pub fn record_success(provider: LlmProvider) {
     // and updates the mirror in lockstep with the disk.
     let stale_failure = !was_failing && {
         let mut guard = RECORD_MIRROR.lock().unwrap_or_else(|e| e.into_inner());
-        has_unresolved_failure(&id, &mut guard, load)
+        has_unresolved_failure(id, &mut guard, load)
     };
     if !was_failing && !stale_failure {
         return;
@@ -237,13 +250,13 @@ pub fn record_success(provider: LlmProvider) {
         "llm provider recovered — clearing the runtime health flag"
     );
     persist(RuntimeObservation {
-        id,
+        id: id.to_string(),
         outcome: ProviderTestOutcome::Ok,
         observed_at: chrono::Utc::now().to_rfc3339(),
     });
 }
 
-/// Record that `provider` failed a real call.
+/// Record that `id` failed a real call.
 ///
 /// Two classes, handled differently on purpose:
 ///
@@ -256,12 +269,11 @@ pub fn record_success(provider: LlmProvider) {
 /// A rate limit deliberately does NOT reset the hard-failure streak: being throttled is not
 /// evidence that the earlier failures were resolved. Only a success (via [`record_success`])
 /// clears it.
-pub fn record_failure(provider: LlmProvider, err: &LlmError) {
-    let id = provider.as_str().to_string();
+pub fn record_failure(id: &str, err: &LlmError) {
     match err {
         LlmError::RateLimited { message, .. } => {
             persist(RuntimeObservation {
-                id,
+                id: id.to_string(),
                 outcome: ProviderTestOutcome::RateLimited {
                     message: message.clone(),
                 },
@@ -269,7 +281,7 @@ pub fn record_failure(provider: LlmProvider, err: &LlmError) {
             });
         }
         LlmError::Failed(message) => {
-            let streak = bump_streak(&id);
+            let streak = bump_streak(id);
             if streak < FAILURE_STREAK_THRESHOLD {
                 tracing::debug!(
                     provider = %id,
@@ -289,7 +301,7 @@ pub fn record_failure(provider: LlmProvider, err: &LlmError) {
                 "llm provider failing repeatedly — flagging it unavailable for the dashboard"
             );
             persist(RuntimeObservation {
-                id,
+                id: id.to_string(),
                 outcome: ProviderTestOutcome::Failed {
                     message: message.clone(),
                 },
@@ -299,9 +311,9 @@ pub fn record_failure(provider: LlmProvider, err: &LlmError) {
     }
 }
 
-/// The last runtime observation for `provider`, if one is on record.
-pub fn latest_for(provider: LlmProvider) -> Option<RuntimeObservation> {
-    load().get(provider.as_str()).cloned()
+/// The last runtime observation filed under `id`, if one is on record.
+pub fn latest_for(id: &str) -> Option<RuntimeObservation> {
+    load().get(id).cloned()
 }
 
 /// Fold the manual test result and the runtime observation into the ONE outcome the banner

@@ -573,7 +573,7 @@ export async function runScript(s: Stage): Promise<void> {
         // the tour narrating a screen that had already moved on.
         //
         // Long, because everything slow lives in here: installing a CLI, a
-        // browser sign-in, or getting a Groq key from a website.
+        // browser sign-in, or picking a free preset and getting its key from a website.
         await s.appeared('[data-tour="task-note"]', 600000)
         await s.pause(900)
         // The draft is already running by now - `armResume` starts it. So this

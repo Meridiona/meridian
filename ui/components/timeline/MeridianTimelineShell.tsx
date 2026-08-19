@@ -229,6 +229,11 @@ export default function MeridianTimelineShell() {
         case '/tasks?integrations=1':
           openSettings('integrations')
           break
+        // Where a discontinued free preset (Groq) points its users to add a
+        // replacement (Ollama) - see `llm.groq_deprecated`.
+        case '/settings/intelligence':
+          openSettings('intelligence')
+          break
         // There is no in-app log viewer. What a user can actually do about a
         // fault is quote their Support ID and export diagnostics, both of which
         // live in Account. `/health` is an older spelling of the same intent.

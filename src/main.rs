@@ -1438,6 +1438,50 @@ async fn main() -> Result<()> {
                     }
                 }
 
+                // Groq is discontinued and actively BLOCKED (see the hard refusal in
+                // `llm::resolver::complete_inner` — every call is refused unconditionally
+                // while Groq is the active provider, so hourly summaries stop, not just
+                // "may fail"). Its free tier's token-rate limits are too tight for this
+                // pipeline's hourly calls — real, observed production failures, not a
+                // hypothetical. The row itself is left untouched (still visible, still
+                // manageable, still selectable) so the user isn't locked out of their own
+                // settings, but the moment Groq is active this banner says plainly that
+                // nothing is being sent to it. Raise/clear every tick, same idempotent
+                // pattern as disk-space above. Scoped to `vendor == "groq"` specifically, so
+                // Claude/Codex/Cursor/Copilot/Ollama users see nothing.
+                match cfg.runtime.active_custom_provider().map(|p| p.vendor.as_str()) {
+                    Some("groq") => {
+                        let _ = meridian::notices::raise_typed(
+                            &meridian,
+                            meridian::notices::Notice {
+                                id: "llm.groq_deprecated",
+                                severity: "error",
+                                title: "Groq is disabled",
+                                detail: "Groq's free tier can't reliably serve Meridian's \
+                                    hourly summaries, so Meridian no longer sends it any \
+                                    requests. Hourly summaries are paused until you switch \
+                                    providers.",
+                                remedy: Some(
+                                    "Add a free Ollama key in Settings - Intelligence to resume.",
+                                ),
+                                event_key: "llm.groq_deprecated",
+                                deep_link: Some(
+                                    meridian_core::notifications::deep_links::INTELLIGENCE,
+                                ),
+                            },
+                        )
+                        .await;
+                    }
+                    _ => {
+                        let _ = meridian::notices::clear_typed(
+                            &meridian,
+                            "llm.groq_deprecated",
+                            "llm.groq_deprecated",
+                        )
+                        .await;
+                    }
+                }
+
                 // Interactive-notification responses — act on the user's answers
                 // (snooze re-enqueues an hour out). Idempotent end-to-end, so the
                 // same cadence as the nudge above is safe.

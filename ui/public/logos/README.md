@@ -33,6 +33,7 @@ defined (and flips, or deliberately does not), so the two cannot drift.
 | `openai.svg` | [Simple Icons](https://simpleicons.org) v16.28.0, `icons/openai.svg` | CC0-1.0 |
 | `cursor.svg` | [Simple Icons](https://simpleicons.org) v16.28.0, `icons/cursor.svg` | CC0-1.0 |
 | `groq.svg` | Groq's own `https://groq.com/favicon.svg` | see note below |
+| `ollama.svg` | [Simple Icons](https://simpleicons.org) v16.28.0, `icons/ollama.svg` | CC0-1.0 |
 
 Simple Icons was chosen over the vendors' press kits for a specific reason: its files are
 released **CC0-1.0**, which removes any question about redistributing the SVG *file* inside

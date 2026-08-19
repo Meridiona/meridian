@@ -1,7 +1,12 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 'use client'
 
-// The no-subscription path: get a free Groq key, in three steps, and be done.
+// The no-subscription path: get a free cloud API key, in three steps, and be done.
+//
+// One component, driven by a `CloudKeyPreset` (`@/lib/llm-providers`), for every curated
+// no-subscription vendor - today Groq and Ollama. It used to be Groq-only (`GroqSetup`),
+// hardcoded to that one preset's copy and URLs; generalizing it is what let a second preset
+// exist without a second ~300-line copy of the same wizard logic to keep in sync.
 //
 // This replaces a generic add-endpoint FORM (vendor dropdown, base URL, model, rate limits,
 // two quota fields) with a walkthrough, because the two surfaces are answering completely
@@ -11,28 +16,30 @@
 // either fixed by the vendor (URL) or decided for the user (model), so none of them is a
 // decision worth putting on screen.
 //
-// THE MODEL IS CHOSEN FROM THE ENDPOINT'S OWN LIST, not hardcoded. Groq's catalogue turns
-// over, and a retired model id baked in here would not fail at setup - it would fail at the
-// first real hour, hours later, with nothing on screen connecting the two. So the key is
-// used to ask Groq what it actually serves, and `pickGroqModel` ranks that list. See
-// GROQ_MODEL_PREFERENCE.
+// THE MODEL IS CHOSEN FROM THE ENDPOINT'S OWN LIST, not hardcoded. A vendor's catalogue
+// turns over, and a retired model id baked in here would not fail at setup - it would fail at
+// the first real hour, hours later, with nothing on screen connecting the two. So the key is
+// used to ask the endpoint what it actually serves, and `pickCloudModel` ranks that list
+// against `preset.modelPreference`.
 //
 // THE PRIVACY CLAIMS CARRY THEIR SOURCE. This screen asks someone to paste an API key partly
 // on the strength of three sentences about data handling; a sentence with no link is exactly
-// what a careful reader should refuse. Each claim sits next to Groq's own policy page.
+// what a careful reader should refuse. Each claim sits next to the vendor's own policy page.
 //
 // # Who calls this
-// [`LlmProviderPicker`], when the gate is answered "free".
+// [`LlmProviderPicker`], when the gate is answered "free" or the "bring your own key" tile is
+// opened with no endpoint configured yet - in both cases after a preset (Groq or Ollama) has
+// been picked from `CLOUD_PRESETS`.
 //
 // # Related
-// - `@/lib/llm-providers` — GROQ (copy + urls), pickGroqModel
+// - `@/lib/llm-providers` — `CloudKeyPreset`, `GROQ`, `OLLAMA`, `pickCloudModel`
 // - `@/components/CustomProviders` — the registry hook this writes through
 
 import { BackLink } from '@/components/ui/BackLink'
 import { useState } from 'react'
 import { invoke, openExternal } from '@/lib/bridge'
-import { GROQ, pickGroqModel, type ProbeOutcome } from '@/lib/llm-providers'
-import { GroqLogo } from '@/components/LlmProviderLogos'
+import { pickCloudModel, type CloudKeyPreset, type ProbeOutcome } from '@/lib/llm-providers'
+import { CustomVendorLogo } from '@/components/LlmProviderLogos'
 
 /** What `add` does under the hood - the registry write, unchanged from the form path. */
 type AddFn = (fields: {
@@ -42,7 +49,8 @@ type AddFn = (fields: {
 
 type Phase = 'idle' | 'listing' | 'adding' | 'selecting' | 'done'
 
-export default function GroqSetup({ onBack, onAdd, onPick }: {
+export default function CloudKeySetup({ preset, onBack, onAdd, onPick }: {
+  preset: CloudKeyPreset
   onBack: () => void
   onAdd: AddFn
   /** Make the freshly added endpoint the live provider. Rejects if the tray refuses. */
@@ -64,14 +72,14 @@ export default function GroqSetup({ onBack, onAdd, onPick }: {
   const canConnect = !busy && (!!apiKey.trim() || !!addedId)
 
   // THE FAILURE THIS IS SHAPED AROUND is a free-tier 429 during the eligibility probe -
-  // the expected case on Groq's free tier, not a rare one - landing on the COMPULSORY
+  // the expected case on a free tier, not a rare one - landing on the COMPULSORY
   // AI-connect step of first-run.
   //
   // It used to be unrecoverable. The key was cleared as soon as the endpoint was saved but
   // before eligibility was checked, so the throw left an empty field; `connect` opens by
   // returning early on an empty key, so pressing the button again did nothing at all -
   // no request, no error, no change. And even with the key retyped, a retry re-ran the add,
-  // which the tray refuses forever once an endpoint named "Groq" exists. There was no way
+  // which the tray refuses forever once an endpoint with this name exists. There was no way
   // out from inside the flow either: the picker renders this screen unconditionally for the
   // "free" gate answer and Back returns to that same gate.
   //
@@ -94,18 +102,19 @@ export default function GroqSetup({ onBack, onAdd, onPick }: {
           refresh: true,
         })
       } else {
-        // 1. Ask Groq what it serves, on this key. Doubles as the first real check that the
-        //    key works at all - a typo fails here, before anything is written to settings.
+        // 1. Ask the endpoint what it serves, on this key. Doubles as the first real check
+        //    that the key works at all - a typo fails here, before anything is written to
+        //    settings.
         setPhase('listing')
         const ids = await invoke<string[]>('list_custom_llm_provider_models', {
-          baseUrl: GROQ.baseUrl,
+          baseUrl: preset.baseUrl,
           apiKey: key,
         })
-        const chosen = pickGroqModel(ids)
+        const chosen = pickCloudModel(preset, ids)
         if (!chosen) {
           // Empty, or nothing but speech/embedding models. There is no default to fall back
           // on, so say so rather than writing an endpoint that cannot answer a prompt.
-          throw new Error('This key has no chat models available on it. Check the key is from console.groq.com and try again.')
+          throw new Error('This key has no chat models available on it. Check the key and try again.')
         }
         setModel(chosen)
 
@@ -113,12 +122,12 @@ export default function GroqSetup({ onBack, onAdd, onPick }: {
         //    whether Meridian can actually use it - see `production_eligible`.
         setPhase('adding')
         outcome = await onAdd({
-          vendor: GROQ.vendor, name: GROQ.name, base_url: GROQ.baseUrl,
+          vendor: preset.vendor, name: preset.name, base_url: preset.baseUrl,
           model: chosen, api_key: key,
-          // Groq's published free-tier limits for the model we just pinned - not a guess, and
-          // not left at 0 either: unknown limits mean unpaced requests and a standing notice on
-          // the endpoint card asking for a number we already know. See GROQ.freeRpm/freeRpd.
-          rpm: GROQ.freeRpm, rpd: GROQ.freeRpd,
+          // The preset's published free-tier limits for the model we just pinned - never a
+          // guess, and never silently invented either: `0/0` (Ollama) means "not known", not
+          // "unmetered". See `freeRpm`/`freeRpd` on `CloudKeyPreset`.
+          rpm: preset.freeRpm, rpd: preset.freeRpd,
         })
         // Recorded BEFORE the eligibility check below, because it is true regardless of how
         // that check goes: the endpoint exists now, so every later attempt must re-measure
@@ -129,7 +138,7 @@ export default function GroqSetup({ onBack, onAdd, onPick }: {
       if (!outcome.provider.production_eligible) {
         throw new Error(
           `${outcome.provider.model} answered, but it could not return the structured replies ` +
-          `Meridian needs. This is often a busy free tier - press Connect Groq to try again.`,
+          `Meridian needs. This is often a busy free tier - press Connect again to try again.`,
         )
       }
 
@@ -153,8 +162,8 @@ export default function GroqSetup({ onBack, onAdd, onPick }: {
           You&apos;re set up
         </span>
         <p style={{ fontSize: 12, lineHeight: 1.5, color: 'var(--t-muted)', maxWidth: 480 }}>
-          Meridian is using Groq{model ? ` (${model})` : ''} to write your summaries. You can
-          change this any time in Settings.
+          Meridian is using {preset.name}{model ? ` (${model})` : ''} to write your summaries.
+          You can change this any time in Settings.
         </p>
       </div>
     )
@@ -165,26 +174,26 @@ export default function GroqSetup({ onBack, onAdd, onPick }: {
       <BackLink onClick={onBack}>Back</BackLink>
 
       {/* The two badges lead, together. FREE is what makes this the right screen for
-          someone who just said they have no subscription; ZERO RETENTION is the other
+          someone who just said they have no subscription; the privacy badge is the other
           half of the same decision, and it used to sit below the fold in a block that
           reads as boilerplate. Both are one-word answers to the two questions actually
           being asked, so both are stated before anything else. */}
       <div className="flex flex-col" style={{ gap: 7 }}>
         <div className="flex items-center" style={{ gap: 6 }}>
-          <HueBadge hue="var(--color-state-approved)">{GROQ.freeBadge}</HueBadge>
-          <HueBadge hue="var(--t-accent)">{GROQ.privacyBadge}</HueBadge>
+          <HueBadge hue="var(--color-state-approved)">{preset.freeBadge}</HueBadge>
+          <HueBadge hue="var(--t-accent)">{preset.privacyBadge}</HueBadge>
         </div>
         <span className="flex items-center" style={{ gap: 9, fontSize: 19, fontWeight: 600, color: 'var(--t-title)' }}>
           <span className="flex items-center justify-center shrink-0" style={{
             width: 32, height: 32, borderRadius: 9,
             background: 'var(--t-box)', border: '1px solid var(--t-ctrl-border)',
           }}>
-            <GroqLogo size={17} />
+            <CustomVendorLogo vendor={preset.vendor} size={17} />
           </span>
-          {GROQ.headline}
+          {preset.headline}
         </span>
         <p style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--t-muted)', maxWidth: 500 }}>
-          {GROQ.blurb}
+          {preset.blurb}
         </p>
       </div>
 
@@ -197,37 +206,37 @@ export default function GroqSetup({ onBack, onAdd, onPick }: {
         <span className="font-mono" style={{
           fontSize: 9, letterSpacing: '.1em', color: 'var(--color-state-approved)',
         }}>YOUR DATA</span>
-        {GROQ.trust.map((line) => (
+        {preset.trust.map((line) => (
           <div key={line} className="flex items-start" style={{ gap: 7 }}>
             <span aria-hidden style={{ color: 'var(--color-state-approved)', fontSize: 11, marginTop: 1 }}>✓</span>
             <span style={{ fontSize: 11.5, lineHeight: 1.45, color: 'var(--t-muted)' }}>{line}</span>
           </div>
         ))}
         <div className="flex items-center" style={{ gap: 12, marginTop: 3 }}>
-          <LinkOut href={GROQ.privacyUrl}>Groq privacy policy</LinkOut>
-          <LinkOut href={GROQ.termsUrl}>Terms</LinkOut>
+          <LinkOut href={preset.privacyUrl}>{preset.name} privacy policy</LinkOut>
+          <LinkOut href={preset.termsUrl}>Terms</LinkOut>
         </div>
       </div>
 
-      {/* ONE link, to the keys page - not a sign-up step and then a key step.
-          console.groq.com/keys already handles both: signed out it asks you to sign up
-          (Google or email, no card), then lands you on the very page the step is asking
-          for. Splitting that into two numbered steps described the same click twice and
-          made a two-minute setup look like a three-part chore. */}
-      <Step n={1} title="Create a free Groq API key"
-        body="Sign up with Google or an email address if you have not already - no card is asked for. Then press Create API key and copy it, Groq shows it once.">
-        <ActionLink href={GROQ.keyUrl}>Open Groq API keys</ActionLink>
+      {/* ONE link, to the keys page - not a sign-up step and then a key step. Every preset's
+          key page already handles both: signed out it asks you to sign up (Google or email,
+          no card), then lands you on the very page the step is asking for. Splitting that
+          into two numbered steps described the same click twice and made a two-minute setup
+          look like a three-part chore. */}
+      <Step n={1} title={`Create a free ${preset.name} API key`}
+        body={preset.keyStepBody}>
+        <ActionLink href={preset.keyUrl}>Open {preset.name} API keys</ActionLink>
       </Step>
 
       <Step n={2} title="Paste it here"
         body="Meridian picks the model, checks the key works, and sets everything else up.">
         <div className="flex flex-col" style={{ gap: 8 }}>
           <input
-            data-tour="groq-key"
+            data-tour="cloud-key"
             type="password"
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
-            placeholder={GROQ.keyPlaceholder}
+            placeholder={preset.keyPlaceholder}
             spellCheck={false}
             autoComplete="off"
             disabled={busy}
@@ -239,7 +248,7 @@ export default function GroqSetup({ onBack, onAdd, onPick }: {
             }}
           />
           <button
-            data-tour="groq-connect"
+            data-tour="cloud-connect"
             onClick={connect}
             disabled={!canConnect}
             className="self-start"
@@ -253,7 +262,7 @@ export default function GroqSetup({ onBack, onAdd, onPick }: {
             {phase === 'listing' ? 'Checking your key…'
               : phase === 'adding' ? 'Setting up…'
                 : phase === 'selecting' ? 'Almost there…'
-                  : 'Connect Groq'}
+                  : `Connect ${preset.name}`}
           </button>
           {/* Named, because "Setting up…" can sit for a while - it is running real
               requests against the endpoint to measure what it supports. */}

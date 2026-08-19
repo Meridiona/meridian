@@ -23,6 +23,7 @@ const MARKS = [
   { file: 'openai', constant: 'OPENAI', cssVar: '--logo-openai', flipsOnDark: true },
   { file: 'cursor', constant: 'CURSOR', cssVar: '--logo-cursor', flipsOnDark: true },
   { file: 'groq', constant: 'GROQ', cssVar: '--logo-groq', flipsOnDark: false },
+  { file: 'ollama', constant: 'OLLAMA', cssVar: '--logo-ollama', flipsOnDark: true },
 ]
 
 /** The single `d` and `viewBox` out of a saved mark. */

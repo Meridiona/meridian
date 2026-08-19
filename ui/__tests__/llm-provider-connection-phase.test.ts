@@ -279,10 +279,12 @@ describe('the usage claim is made once, and says the same thing everywhere', () 
 describe('the chooser grid', () => {
   const picker = src('components/LlmProviderPicker.tsx')
 
-  it('is always a complete rectangle - 3 across gated, 2 x 2 in Settings', () => {
-    // auto-fill laid four tiles out 3 + 1, which reads as "and one afterthought" and left the
-    // last card a different shape from its siblings.
-    expect(picker).toContain('repeat(${gate ? 3 : 2}, minmax(0, 1fr))')
+  it('wraps cleanly at any tile count, rather than assuming exactly four', () => {
+    // A fixed column count (3 across gated, 2 x 2 in Settings) worked while there was exactly
+    // one free-key tile standing in for every custom endpoint - it stopped being true the
+    // moment Groq and Ollama each got their own tile (5 tiles in Settings), and would break
+    // again the moment a third preset exists. Auto-fit wraps at any count instead.
+    expect(picker).toContain("gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))'")
   })
 
   it('carries the SAME ranking the gate showed, on every tile', () => {
@@ -318,14 +320,16 @@ describe('the chooser grid', () => {
     expect(badge).toContain("background: filled ? 'var(--t-box)' : 'transparent'")
   })
 
-  it('names the fourth tile Groq and says FREE, not "bring your own API key / ADVANCED"', () => {
-    // That label described the plumbing, not the offer. Someone with no subscription - the
-    // exact person the tile is for - could not tell from it that this is the free path, and
-    // "advanced" actively warns them off. Groq is the only preset left, so the tile is Groq.
-    expect(picker).toContain('name={GROQ.name}')
-    // ...and it opens the SAME three-step walkthrough the gate's free answer lands on, not a
-    // second, differently-shaped route to the same place.
-    expect(picker).toContain('custom.providers.length === 0')
+  it('gives every free preset its own tile, named and badged FREE - not one shared tile', () => {
+    // "Bring your own API key / ADVANCED" described the plumbing, not the offer. And a
+    // single collapsed tile for BOTH presets is its own failure mode: it can only ever name
+    // one vendor, so configuring Groq made Ollama disappear entirely - exactly the confusion
+    // a real user hit. Each preset (Groq, Ollama, ...) gets a tile of its own, the same way
+    // Claude/Codex/Cursor do.
+    expect(picker).toContain('CLOUD_PRESETS.map((preset) => (')
+    expect(picker).toContain('<CloudPresetTile')
+    // Clicking a preset's OWN tile already answers which vendor - no chooser in between.
+    expect(picker).toContain('vendorRows.length === 0')
   })
 
   it('shows a rescan long enough to be believed', () => {
@@ -493,8 +497,9 @@ describe('every surface reads the same ladder', () => {
 
   it('the cloud endpoint is judged like every other provider, not by being selected', () => {
     // `value === 'custom'` may decide what is SELECTED. It may never decide what is LIVE.
-    expect(picker).toContain('const customPhase = phaseFor(')
-    expect(picker).toContain('live={!TILE_NOT_LIVE.includes(customPhase.kind)}')
+    expect(picker).toContain('const phase = selected')
+    expect(picker).toContain('const vendorPhase = selectedRow')
+    expect(picker).toContain('live={!TILE_NOT_LIVE.includes(vendorPhase.kind)}')
     // …and the endpoint card takes that verdict rather than re-deriving one.
     expect(providers).toContain('live: boolean')
     expect(providers).toContain("{live ? 'In use' : 'Not connected'}")

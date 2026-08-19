@@ -398,31 +398,40 @@ pub async fn detect_llm_providers() -> Result<Vec<meridian::llm::detect::Provide
     let mut found = meridian::llm::detect::detect_all_with_cache().await;
 
     // `detect_all` enumerates BUILT-INS only, on purpose: a custom endpoint is a registry row
-    // with no CLI to probe, so it has no install state. But the test cache is keyed by wire id
-    // and DOES hold a row for `custom` - written by `test_llm_provider` and by the dev
+    // with no CLI to probe, so it has no install state. But the test cache DOES hold a row
+    // for the ACTIVE custom endpoint - written by `test_llm_provider` and by the dev
     // Disconnect button - and dropping it here meant nothing on the chooser could ever see it.
     // The Groq tile therefore rendered IN USE off `value === 'custom'` alone: a green,
     // confident "connected" for a provider the app had just been told is not.
     //
-    // So the cached verdict is carried through as its own status row. `installed: true` is the
-    // honest answer for a cloud endpoint (there is nothing to install), and the row appears
-    // only when there is a cached test to report, so a never-tested endpoint stays absent
-    // rather than arriving as a bare green tick.
-    if let Some(last) =
-        meridian::llm::detect::cached_test_result(meridian_core::LlmProvider::Custom.as_str())
-    {
-        found.push(meridian::llm::detect::ProviderStatus {
-            id: meridian_core::LlmProvider::Custom.as_str().to_string(),
-            installed: true,
-            path: None,
-            authenticated: None,
-            last_test: Some(last),
-            // Nothing to install, which is the same reason `installed: true` above is the
-            // honest answer - a cloud endpoint is reached over HTTP, not spawned. The UI
-            // falls back to its static hint when this is None, and never shows an install
-            // step for this row anyway.
-            install_command: None,
-        });
+    // Keyed by `provider_key` for the ACTIVE endpoint specifically - NOT the bare literal
+    // `"custom"`, which every configured cloud endpoint shares regardless of which is active.
+    // Looking that up directly used to mean an Ollama row inherited whatever a PREVIOUSLY
+    // active Groq row had last tested as, the moment the user switched between them - a real
+    // cross-contamination bug, only ever invisible while a user had exactly one cloud
+    // endpoint configured at all. Only the ACTIVE endpoint's row is injected here (not every
+    // configured row) - a non-active endpoint's card falls back to "not yet tested" until the
+    // user opens it, which is the existing, honest default for anything untested.
+    let settings = meridian_core::settings::load_runtime_settings();
+    if let Some(active) = settings.active_custom_provider() {
+        let key = meridian::llm::resolver::provider_key(
+            meridian_core::LlmProvider::Custom,
+            Some(active.id.as_str()),
+        );
+        if let Some(last) = meridian::llm::detect::cached_test_result(&key) {
+            found.push(meridian::llm::detect::ProviderStatus {
+                id: key,
+                installed: true,
+                path: None,
+                authenticated: None,
+                last_test: Some(last),
+                // Nothing to install, which is the same reason `installed: true` above is the
+                // honest answer - a cloud endpoint is reached over HTTP, not spawned. The UI
+                // falls back to its static hint when this is None, and never shows an install
+                // step for this row anyway.
+                install_command: None,
+            });
+        }
     }
 
     tracing::info!(
@@ -492,8 +501,16 @@ pub async fn disconnect_llm_provider(app: tauri::AppHandle, id: String) -> Resul
     }
     let provider = meridian_core::LlmProvider::from_wire(&id)
         .ok_or_else(|| format!("unknown provider {id:?}"))?;
+    // The SAME key `test_llm_provider`/the pipeline file results under (see `provider_key`) -
+    // for `Custom` that is the ACTIVE endpoint's own id, never the bare literal `"custom"`
+    // every configured endpoint would otherwise share.
+    let settings = meridian_core::settings::load_runtime_settings();
+    let key = meridian::llm::resolver::provider_key(
+        provider,
+        settings.active_custom_provider().map(|c| c.id.as_str()),
+    );
     meridian::llm::detect::persist_test_result(&meridian::llm::detect::ProviderTestResult {
-        id: provider.as_str().to_string(),
+        id: key,
         outcome: meridian::llm::detect::ProviderTestOutcome::Failed {
             message: "Disconnected from the dev panel".to_string(),
         },

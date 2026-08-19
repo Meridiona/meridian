@@ -16,8 +16,8 @@
 // louder should use a real button rather than widening this.
 //
 // # Who calls this
-// `LlmProviderPicker` (twice: the gate's "I don't have one" and the detail view),
-// `LlmProviderDetail`, `GroqSetup`.
+// `LlmProviderPicker` (three times: the gate's "I don't have one", the detail view, and the
+// no-subscription preset chooser), `LlmProviderDetail`, `CloudKeySetup`.
 
 import type { ReactNode } from 'react'
 
