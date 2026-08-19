@@ -12,11 +12,18 @@
 //! copy — the shape recurred across the Windows sync-failure fixes and earned a
 //! home in the shared crate.
 //!
-//! On non-Windows platforms these are effectively inert: the guarded ops don't
-//! hit transient sharing violations there, so the first attempt always succeeds.
-//! Keeping them platform-neutral means the logic compiles and is unit-tested on
-//! CI (macOS) — the one platform CI runs tests on — even though the failures
-//! they absorb are Windows-specific.
+//! On the original (file-rename) call sites, this is effectively inert on
+//! non-Windows platforms: the guarded ops don't hit transient sharing
+//! violations there, so the first attempt always succeeds. Keeping them
+//! platform-neutral means the logic compiles and is unit-tested on CI (macOS)
+//! — the one platform CI runs tests on — even though those failures are
+//! Windows-specific.
+//!
+//! A third caller, the tray's same-boot database-repair retry
+//! (`repair_boot::retry_repair`), is different: it wraps a whole `db repair`
+//! rebuild rather than a single rename, on a failure class observed only on
+//! macOS and not conclusively diagnosed as transient — see its own doc for
+//! the fleet evidence and the honest uncertainty about why it helps.
 //!
 //! Each retried attempt emits a `debug`-level trace (`attempt`, `attempts`)
 //! before backing off, so a live `meridian logs` tail shows the retry cadence —
