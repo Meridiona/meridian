@@ -2,11 +2,17 @@
 //! Product analytics — PostHog Cloud event capture.
 //!
 //! # What this is
-//! A deliberately tiny, best-effort telemetry client: two IDENTIFIED signals —
-//! `app_installed` once per (signed-in email, device) pair, and one
-//! `daily_usage` event per completed local calendar day (focus/coding hours,
-//! logged hours, and drafts count — the same four numbers as the dashboard's
-//! Today card). Nothing else: a single raw HTTP POST to PostHog's `/i/v0/e/`
+//! A deliberately tiny, best-effort telemetry client: three IDENTIFIED signals,
+//! all capped at once-per-day or once-ever —
+//! - `app_installed`, once per (signed-in email, device) pair;
+//! - `app_active`, once per local calendar day the tray is actually running —
+//!   the return-rate signal (see [`state::day_active_action`] for why `daily_usage`
+//!   cannot serve as one);
+//! - `daily_usage`, once per COMPLETED local calendar day, carrying engagement
+//!   hours, product-action counts ([`meridian_core::usage_rollup`]) and an
+//!   install-health snapshot ([`health`]) — assembled in [`daily`].
+//!
+//! Nothing else: a single raw HTTP POST to PostHog's `/i/v0/e/`
 //! capture endpoint, no `posthog-js`, so session replay / autocapture /
 //! surveys / feature flags never activate — that's client-SDK behaviour this
 //! code never touches. `$geoip_disable` is set on every event since the
@@ -14,7 +20,31 @@
 //! default GeoIP enrichment would otherwise resolve each user's real
 //! location).
 //!
-//! **No anonymous events, ever.** The PostHog `distinct_id` for both events IS
+//! **Consent.** Everything here is gated on
+//! [`meridian_core::settings::RuntimeSettings::product_analytics_enabled`]
+//! (opt-OUT, default true) and on the hard `MERIDIAN_TELEMETRY_DISABLED` kill
+//! switch. That setting is deliberately SEPARATE from
+//! `error_reporting_enabled`: this stream is identified by the user's account
+//! email and describes product usage, whereas the error stream is pseudonymous
+//! and error-only. Conflating them would mean turning off crash reports
+//! silently killed usage reporting, and vice versa. The gate is re-read every
+//! tick, so switching it off in Settings takes effect within ~60 s and needs
+//! no relaunch.
+//!
+//! **The join key.** Every event carries a `support_id` property — the same
+//! [`meridian::telemetry_spool::redact::local_host_pseudonym`] value that
+//! identifies this install in OpenObserve and Sentry, and that Settings shows
+//! the user as their Support ID. It is what makes "this user is erroring"
+//! answerable at all: without it, PostHog knows emails and the error backends
+//! know pseudonyms, with nothing connecting the two. It ships as an EVENT
+//! property, not a person property, on purpose — the pseudonym legitimately
+//! changes over an install's life (a second machine, a re-seed, the alpha
+//! account-scoping window ending), and a person property would be overwritten
+//! each time, silently orphaning every historical error row. As an event
+//! property the full set is recoverable with a `DISTINCT` over the user's
+//! events, across devices and across any re-seed.
+//!
+//! **No anonymous events, ever.** The PostHog `distinct_id` for all events IS
 //! the signed-in account email ([`crate::commands::account::read_account_email`])
 //! — nothing is sent, for either event, until sign-in has happened. This is
 //! deliberate: an anonymous per-machine UUID identity was tried first and
@@ -32,7 +62,7 @@
 //! for the same (device, email) pair (e.g. sign-out then sign back in as the
 //! same person). So the per-device state file tracks a SET of emails this
 //! device has already reported `app_installed` for
-//! ([`AnalyticsState::install_events_sent`]), not a single boolean. A
+//! ([`state::AnalyticsState::install_events_sent`]), not a single boolean. A
 //! per-device `device_id` (a random UUID, unchanged from the old anonymous
 //! identity) still rides along as an event PROPERTY — never as `distinct_id`
 //! — so cross-device patterns for one email stay analyzable in PostHog
@@ -47,21 +77,23 @@
 //! from `settings.json` (never dashboard-editable, never displayed).
 //!
 //! Call volume is intentionally minimal: at most 1 `app_installed` per
-//! (device, email) pair ever + at most 1 `daily_usage` per calendar day,
-//! regardless of how many times the tray restarts or how often the poll loop
-//! ticks — nowhere near PostHog's free-tier event limits.
+//! (device, email) pair ever, + at most 1 `app_active` and 1 `daily_usage` per
+//! calendar day, regardless of how many times the tray restarts or how often
+//! the poll loop ticks. At the current fleet size that is ~2 events per user
+//! per day — nowhere near PostHog's free-tier limits.
 //!
-//! **Not backfilled**: only the single most-recently-closed day is ever
-//! reported (see [`day_rollover_action`]). If the tray isn't running across a
+//! **`daily_usage` is not backfilled**: only the single most-recently-closed
+//! day is ever reported (see [`state::day_rollover_action`]). If the tray isn't running across a
 //! local-day boundary for several days — including the entire time before the
 //! very first sign-in — the intervening day(s) are skipped entirely, never
 //! sent late. The first tick after sign-in only arms today's date; the
 //! earliest day it can ever report is the day AFTER that.
 //!
 //! **Nothing is lost on failure.** [`capture`] reports success/failure via
-//! its return value, and both call sites ([`maybe_send_daily_tick`],
-//! [`send_daily_usage`]) only flip their persisted "sent" bookkeeping
-//! (`install_events_sent` / `last_sent_day_by_email`) on a confirmed success. A DB read
+//! its return value, and every call site ([`maybe_send_daily_tick`],
+//! [`daily::send_daily_usage`]) only flips its persisted "sent" bookkeeping
+//! (`install_events_sent` / `last_active_day_by_email` /
+//! `last_sent_day_by_email`) on a confirmed success. A DB read
 //! failure, a network error, a timeout, or a non-2xx from PostHog all leave
 //! that bookkeeping untouched, so the *exact same* pending event (the same
 //! day, carrying that day's own `date` property — never today's) is retried
@@ -83,10 +115,18 @@
 //!   — the same readers the dashboard uses, queried here for an already-closed
 //!   past day (never "today", which is still accumulating).
 
+/// Assembly of the `daily_usage` event — engagement hours + product actions +
+/// health. Split out to keep this file under the repo's 500-line cap.
+mod daily;
+/// The point-in-time install-health snapshot folded into `daily_usage`.
+mod health;
+/// On-disk bookkeeping + the pure per-email cursor rules driving each tick.
+mod state;
+
 use meridian_core::SqlitePool;
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use state::{
+    analytics_state_path, day_active_action, day_rollover_action, load_or_init_state, save_state,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tracing::Instrument;
@@ -138,74 +178,6 @@ fn posthog_api_key() -> String {
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_POSTHOG_API_KEY.to_string())
-}
-
-/// Persisted analytics bookkeeping. Deliberately its own file — never merged
-/// into `settings.json` (which the dashboard reads/writes/displays).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct AnalyticsState {
-    /// A random per-device id, generated once and never reused as a PostHog
-    /// `distinct_id` (see the module doc for why). Kept only as an event
-    /// PROPERTY so cross-device activity for one email is still analyzable.
-    /// `#[serde(alias)]` reads an older install's `distinct_id` field under
-    /// its old name, so an existing device keeps the same id across the
-    /// upgrade rather than silently minting a second one.
-    #[serde(alias = "distinct_id")]
-    device_id: String,
-    /// Emails this device has already sent `app_installed` for. A SET, not a
-    /// bool: the same device can see more than one signed-in email over its
-    /// lifetime (sign-out, sign back in as someone else), and each first
-    /// sighting of a given email on THIS device should fire once — see the
-    /// module doc's "Install dedup" section. `#[serde(default)]` so an older
-    /// install's file (no such field) just starts with an empty set rather
-    /// than failing to parse.
-    #[serde(default)]
-    install_events_sent: HashSet<String>,
-    /// The last LOCAL calendar day ("YYYY-MM-DD") a `daily_usage` event was
-    /// sent for, keyed by the signed-in account email it was accrued under —
-    /// NOT a single device-wide cursor. Scoped per email for the same reason
-    /// `install_events_sent` is a set: one device can see more than one
-    /// signed-in email over its lifetime (sign-out, sign back in as someone
-    /// else). A shared cursor would let account A's still-pending day be sent
-    /// under account B's `distinct_id` after a switch, and could suppress
-    /// account B's own first eligible day as "already sent" — so each email
-    /// carries its own cursor. An email absent from the map has observed no
-    /// day boundary yet (which never happens before that email's first
-    /// sign-in — see [`maybe_send_daily_tick`]). `#[serde(default)]` so an
-    /// older install's file (no such field, or the old scalar `last_sent_day`)
-    /// just starts empty rather than failing to parse — the currently
-    /// signed-in email simply re-arms today with no send, never a double-send.
-    #[serde(default)]
-    last_sent_day_by_email: HashMap<String, String>,
-}
-
-fn analytics_state_path() -> Option<PathBuf> {
-    meridian_core::paths::home_dir().map(|h| h.join(".meridian/analytics_state.json"))
-}
-
-/// Load the state file, creating a fresh one (new random `device_id`) if
-/// absent or unparseable. Never errors — a corrupt/missing file just starts a
-/// new device id, same as a genuine first run.
-fn load_or_init_state(path: &std::path::Path) -> AnalyticsState {
-    if let Ok(s) = std::fs::read_to_string(path) {
-        if let Ok(state) = serde_json::from_str::<AnalyticsState>(&s) {
-            return state;
-        }
-    }
-    AnalyticsState {
-        device_id: uuid::Uuid::new_v4().to_string(),
-        install_events_sent: HashSet::new(),
-        last_sent_day_by_email: HashMap::new(),
-    }
-}
-
-/// Crash-safely persist the state file via the shared atomic-write helper
-/// ([`meridian_core::fs_utils::atomic_write_json`]) — best-effort, logs on
-/// failure like the rest of this module.
-fn save_state(path: &std::path::Path, state: &AnalyticsState) {
-    if let Err(e) = meridian_core::fs_utils::atomic_write_json(path, state) {
-        tracing::warn!(error = %e, "analytics: could not persist state file");
-    }
 }
 
 /// POST one event to PostHog's raw capture endpoint (no SDK — see module
@@ -295,7 +267,32 @@ fn base_properties(
         "device_id".to_string(),
         serde_json::Value::String(device_id.to_string()),
     );
+    // The join key to OpenObserve / Sentry — see the module doc's "The join
+    // key" section for why this is an event property rather than a person one.
+    // Computed from the SAME function that produces the shipped `host.name`
+    // and the Support ID shown in Settings, never recomputed separately, so
+    // the three can never drift apart.
+    m.insert(
+        "support_id".to_string(),
+        serde_json::Value::String(meridian::telemetry_spool::redact::local_host_pseudonym()),
+    );
     m
+}
+
+/// Whether product analytics may be sent at all: the user hasn't switched it
+/// off, and the hard kill switch is clear.
+///
+/// Re-read every tick rather than cached at startup, so turning the switch off
+/// in Settings stops the next tick's events without a relaunch. Deliberately
+/// checks `product_analytics_enabled`, NOT `error_reporting_enabled` — see the
+/// module doc's "Consent" section.
+fn analytics_allowed() -> bool {
+    let killed = std::env::var("MERIDIAN_TELEMETRY_DISABLED")
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    if killed {
+        return false;
+    }
+    meridian_core::settings::load_runtime_settings().product_analytics_enabled
 }
 
 /// Called once per poll-loop health tick (~60 s — see [`crate::poll`]). A
@@ -332,6 +329,13 @@ pub(crate) async fn maybe_send_daily_tick(app: &tauri::AppHandle, pool: &SqliteP
     }
     let _guard = InFlightGuard;
 
+    if !analytics_allowed() {
+        // Switched off in Settings, or the hard kill switch is set. Nothing is
+        // sent AND no bookkeeping is advanced, so re-enabling later resumes
+        // cleanly from wherever the cursors were left.
+        return;
+    }
+
     let Some(email) = crate::commands::account::read_account_email() else {
         // Not signed in — no identity to attach events to, so nothing to do.
         return;
@@ -356,6 +360,27 @@ pub(crate) async fn maybe_send_daily_tick(app: &tauri::AppHandle, pool: &SqliteP
     }
 
     let today = meridian_core::date::today_string();
+
+    // The return-rate signal. Fires on the first tick of each local day the
+    // tray is running, BEFORE the daily_usage rollover below, and about TODAY
+    // rather than a closed day — see [`state::day_active_action`].
+    if day_active_action(
+        state
+            .last_active_day_by_email
+            .get(&email)
+            .map(|s| s.as_str()),
+        &today,
+    ) {
+        let mut props = base_properties(app, &state.device_id);
+        props.insert("date".to_string(), serde_json::Value::String(today.clone()));
+        if capture("app_active", &email, props).await {
+            state
+                .last_active_day_by_email
+                .insert(email.clone(), today.clone());
+            dirty = true;
+        }
+    }
+
     // Read/advance THIS email's own cursor — never a shared one — so a
     // still-pending day accrued under a previously signed-in account can never
     // be attributed to whoever is signed in now (see [`AnalyticsState::last_sent_day_by_email`]).
@@ -371,7 +396,7 @@ pub(crate) async fn maybe_send_daily_tick(app: &tauri::AppHandle, pool: &SqliteP
             // Only advance past `day` when it actually sent — a transient DB
             // read hiccup must retry next tick, not silently report (and
             // permanently skip) a fabricated zero-usage day.
-            if send_daily_usage(app, pool, &email, &state.device_id, &day).await {
+            if daily::send_daily_usage(app, pool, &email, &state.device_id, &day).await {
                 state.last_sent_day_by_email.insert(email.clone(), today);
                 dirty = true;
             }
@@ -381,235 +406,5 @@ pub(crate) async fn maybe_send_daily_tick(app: &tauri::AppHandle, pool: &SqliteP
 
     if dirty {
         save_state(&path, &state);
-    }
-}
-
-/// Pure day-rollover decision, split out from [`maybe_send_daily_tick`] so it
-/// can be unit-tested without a live DB/HTTP client (see tests below).
-/// `None` → nothing to do this tick. `Some(None)` → arm the first-observed
-/// day with no send (nothing has closed yet). `Some(Some(day))` → `day` just
-/// closed; send its usage, then the caller advances past it on success.
-///
-/// NOTE: only the single most-recently-closed day is ever reported. If the
-/// tray isn't running across more than one local-day boundary (closed, then
-/// reopened days later), the intervening day(s) are skipped, not backfilled —
-/// an accepted "today/yesterday-only, no backfill" simplification consistent
-/// with the rest of the daemon's daily-cadence jobs.
-fn day_rollover_action(last_sent_day: Option<&str>, today: &str) -> Option<Option<String>> {
-    match last_sent_day {
-        None => Some(None),
-        Some(prev) if prev != today => Some(Some(prev.to_string())),
-        _ => None,
-    }
-}
-
-/// Build + send the `daily_usage` event for an already-completed local day —
-/// the same four numbers as the dashboard's Today card (Focus/Coding/Logged/
-/// Drafts, see `ui/components/timeline/OverviewPanel.tsx`), via the same
-/// readers the dashboard uses ([`meridian_core::today::get_today`],
-/// [`meridian_core::worklogs::get_worklogs`]). Queried at the day's own
-/// closing instant (its local-day upper bound) so a past day's active-session
-/// edge case can't leak into the total.
-///
-/// Returns `false` on a DB read failure (WITHOUT sending anything — never
-/// fabricates zeros for a real error, a genuinely idle day's zeros come only
-/// from a successful read) OR when the resulting `capture()` HTTP POST
-/// itself fails/times out/is rejected. Either way the caller must not
-/// advance `last_sent_day`, so the exact same day is retried next tick
-/// instead of being lost.
-async fn send_daily_usage(
-    app: &tauri::AppHandle,
-    pool: &SqlitePool,
-    email: &str,
-    device_id: &str,
-    day: &str,
-) -> bool {
-    let (_, day_end) = meridian_core::date::local_day_bounds(day);
-    let today = match meridian_core::today::get_today(pool, day, &day_end).await {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::warn!(error = %e, day, "analytics: today read failed for daily_usage — will retry");
-            return false;
-        }
-    };
-    // Mirrors OverviewPanel.tsx's "Focus" tile exactly (focus + autonomous
-    // agent time), not the raw `focus_s` field.
-    let focus_s = today.engaged_s;
-    // Mirrors TimeByCategory.tsx's coding-category fold: session time
-    // classified `cat == "coding"` plus coding-agent tool time (`agent_s`).
-    let coding_s: i64 = today
-        .sessions
-        .iter()
-        .filter(|s| s.cat == "coding")
-        .map(|s| s.dur)
-        .sum::<i64>()
-        + today.agent_s;
-
-    let worklogs = match meridian_core::worklogs::get_worklogs(pool, day).await {
-        Ok(w) => w,
-        Err(e) => {
-            tracing::warn!(error = %e, day, "analytics: worklogs read failed for daily_usage — will retry");
-            return false;
-        }
-    };
-    // Mirrors OverviewPanel.tsx's "Logged" tile: real (non-proposed) worklogs
-    // that are approved or posted, summed by their actual time spent.
-    let logged_s: i64 = worklogs
-        .items
-        .iter()
-        .filter(|i| !i.is_proposed && (i.state == "approved" || i.state == "posted"))
-        .map(|i| i.time_spent_seconds)
-        .sum();
-    // Mirrors OverviewPanel.tsx's "Drafts" tile (`isPending`, types.ts):
-    // proposed tickets still `proposed`, or real worklogs still `drafted`.
-    let drafts_count = worklogs
-        .items
-        .iter()
-        .filter(|i| {
-            if i.is_proposed {
-                i.state == "proposed"
-            } else {
-                i.state == "drafted"
-            }
-        })
-        .count();
-
-    let hours = |s: i64| (s.max(0) as f64 / 3600.0 * 100.0).round() / 100.0;
-    let mut props = base_properties(app, device_id);
-    props.insert(
-        "date".to_string(),
-        serde_json::Value::String(day.to_string()),
-    );
-    props.insert("focus_hours".to_string(), serde_json::json!(hours(focus_s)));
-    props.insert(
-        "coding_hours".to_string(),
-        serde_json::json!(hours(coding_s)),
-    );
-    props.insert(
-        "logged_hours".to_string(),
-        serde_json::json!(hours(logged_s)),
-    );
-    props.insert("drafts_count".to_string(), serde_json::json!(drafts_count));
-
-    tracing::info!(
-        day,
-        focus_s,
-        coding_s,
-        logged_s,
-        drafts_count,
-        "analytics: sending daily_usage"
-    );
-    capture("daily_usage", email, props).await
-}
-
-#[cfg(test)]
-mod day_rollover_tests {
-    use super::day_rollover_action;
-
-    #[test]
-    fn first_observation_arms_without_sending() {
-        assert_eq!(day_rollover_action(None, "2026-07-09"), Some(None));
-    }
-
-    #[test]
-    fn same_day_is_a_no_op() {
-        assert_eq!(day_rollover_action(Some("2026-07-09"), "2026-07-09"), None);
-    }
-
-    #[test]
-    fn day_boundary_reports_the_closed_day() {
-        assert_eq!(
-            day_rollover_action(Some("2026-07-08"), "2026-07-09"),
-            Some(Some("2026-07-08".to_string()))
-        );
-    }
-
-    #[test]
-    fn multi_day_gap_reports_only_the_last_closed_day() {
-        // A gap of several days (tray closed then reopened) still reports
-        // only the most recent `last_sent_day` — intervening days are never
-        // backfilled (see the doc comment on `day_rollover_action`).
-        assert_eq!(
-            day_rollover_action(Some("2026-07-01"), "2026-07-09"),
-            Some(Some("2026-07-01".to_string()))
-        );
-    }
-}
-
-#[cfg(test)]
-mod per_email_cursor_tests {
-    //! Regression coverage for the per-email daily-usage cursor
-    //! ([`AnalyticsState::last_sent_day_by_email`]). These mirror the exact
-    //! cursor read/advance that [`maybe_send_daily_tick`] performs for the
-    //! signed-in email, minus the live DB/HTTP send, so they assert the
-    //! scoping decision without a Tauri app or SQLite pool.
-    use super::{day_rollover_action, AnalyticsState};
-    use std::collections::{HashMap, HashSet};
-
-    fn state_with_cursors(cursors: &[(&str, &str)]) -> AnalyticsState {
-        AnalyticsState {
-            device_id: "test-device".to_string(),
-            install_events_sent: HashSet::new(),
-            last_sent_day_by_email: cursors
-                .iter()
-                .map(|(email, day)| (email.to_string(), day.to_string()))
-                .collect::<HashMap<_, _>>(),
-        }
-    }
-
-    /// The day (if any) that `maybe_send_daily_tick` would actually SEND a
-    /// `daily_usage` for, for `email` on `today` — reading only that email's
-    /// own cursor, exactly as the tick does. `None` = arm-only / no-op.
-    fn day_to_send_for(state: &AnalyticsState, email: &str, today: &str) -> Option<String> {
-        match day_rollover_action(
-            state.last_sent_day_by_email.get(email).map(|s| s.as_str()),
-            today,
-        ) {
-            Some(Some(day)) => Some(day),
-            _ => None,
-        }
-    }
-
-    #[test]
-    fn account_switch_does_not_misattribute_pending_day() {
-        // Account A armed its cursor at 2026-07-08 while signed in; a local-day
-        // boundary then passed (today is 2026-07-09) with A's 2026-07-08 usage
-        // still pending. A signs out and B signs in before the next tick fires.
-        let state = state_with_cursors(&[("a@example.com", "2026-07-08")]);
-
-        // B has no cursor of its own, so the tick arms B at today WITHOUT
-        // sending anything — A's pending 2026-07-08 day is never attributed to
-        // B. (The pre-fix shared cursor would have sent 2026-07-08 under B's
-        // email, since prev != today.)
-        assert_eq!(day_to_send_for(&state, "b@example.com", "2026-07-09"), None);
-
-        // And A's own cursor is untouched: when A signs back in, its pending
-        // 2026-07-08 day is still sent — under A's own email, where it belongs.
-        assert_eq!(
-            day_to_send_for(&state, "a@example.com", "2026-07-09"),
-            Some("2026-07-08".to_string())
-        );
-    }
-
-    #[test]
-    fn newly_signed_in_account_still_gets_its_first_full_day() {
-        // A device that has already reported days for account A. Account B
-        // signs in fresh — a shared cursor sitting at A's latest day could
-        // suppress B's first eligible day as "already sent".
-        let mut state = state_with_cursors(&[("a@example.com", "2026-07-09")]);
-
-        // First tick after B signs in: nothing has closed for B yet → arm
-        // only, no send.
-        assert_eq!(day_to_send_for(&state, "b@example.com", "2026-07-09"), None);
-        state
-            .last_sent_day_by_email
-            .insert("b@example.com".to_string(), "2026-07-09".to_string());
-
-        // Next local day: B's own first full day (2026-07-09) is now sent,
-        // independent of A's cursor.
-        assert_eq!(
-            day_to_send_for(&state, "b@example.com", "2026-07-10"),
-            Some("2026-07-09".to_string())
-        );
     }
 }
