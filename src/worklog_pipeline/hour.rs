@@ -100,6 +100,7 @@ pub(crate) fn report_request(report_input: String, label: &str) -> PromptRequest
         schema: None,
         max_tokens: REPORT_MAX_TOKENS,
         label: format!("activity-report {label}"),
+        interactive: false,
     }
 }
 

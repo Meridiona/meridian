@@ -95,18 +95,43 @@ const LOGIN_STATUS_TIMEOUT_S: u64 = 8;
 /// on every real hourly call too, not just the Test button. `codex login status` answers the
 /// same question in a fraction of a second because it only reads a local credential file.
 async fn signed_out(cfg: &LlmConfig) -> Option<String> {
+    (login_status_signed_in(&cfg.meridian_home).await == Some(false)).then(|| {
+        "Codex isn't signed in yet - run `codex login` in a terminal, then try again.".to_string()
+    })
+}
+
+/// Ternary read of `codex login status`: `Some(true)` = confirmed signed in, `Some(false)` =
+/// confirmed signed out (the same "not logged in" text [`classify_login_status`] already
+/// recognises), `None` = the check itself was inconclusive (spawn/timeout failure, or a
+/// result that matches neither case) and must not be trusted either way.
+///
+/// `pub(crate)`: shared ground truth for two callers that must never disagree - this call's
+/// own [`signed_out`] pre-flight, and `detect::codex_sign_in`'s post-hoc verification of
+/// whether an interactive login actually took, independent of what the spawned CLI process
+/// itself reported (a hung or non-zero-exiting `codex login` doesn't necessarily mean the
+/// OAuth round-trip failed - only this file read does).
+pub(crate) async fn login_status_signed_in(meridian_home: &std::path::Path) -> Option<bool> {
     let cap = run_capture(
         "codex",
         &["login".into(), "status".into()],
         "",
-        &cfg.meridian_home,
+        meridian_home,
         LOGIN_STATUS_TIMEOUT_S,
         &[],
         &[],
     )
     .await
     .ok()?;
-    classify_login_status(cap.success, &cap.stdout, &cap.stderr)
+    ternary_login_status(cap.success, &cap.stdout, &cap.stderr)
+}
+
+/// The pure decision [`login_status_signed_in`] makes from a captured result — split out so
+/// it is unit-testable without spawning a process, matching [`classify_login_status`].
+fn ternary_login_status(success: bool, stdout: &str, stderr: &str) -> Option<bool> {
+    if classify_login_status(success, stdout, stderr).is_some() {
+        return Some(false);
+    }
+    success.then_some(true)
 }
 
 /// The pure classification `signed_out` applies to `codex login status`'s result — split out
@@ -327,6 +352,31 @@ mod tests {
             None
         );
         assert_eq!(classify_login_status(false, "", ""), None);
+    }
+
+    #[test]
+    fn ternary_login_status_reads_the_positive_case() {
+        assert_eq!(ternary_login_status(true, "Logged in as x", ""), Some(true));
+    }
+
+    #[test]
+    fn ternary_login_status_reads_the_confirmed_negative_case() {
+        assert_eq!(
+            ternary_login_status(false, "Not logged in\n", ""),
+            Some(false)
+        );
+    }
+
+    /// An unrecognised failure must stay `None` (inconclusive), never collapse to either
+    /// extreme - the whole reason this returns three states instead of a bool. A caller
+    /// treating this as "confirmed signed out" would report a real sign-in as failed; treating
+    /// it as "confirmed signed in" would report a real failure as success.
+    #[test]
+    fn ternary_login_status_is_inconclusive_on_an_unrecognised_failure() {
+        assert_eq!(
+            ternary_login_status(false, "", "connection reset by peer"),
+            None
+        );
     }
 
     /// The regression this exists for: `req.system` used to go over argv (`codex exec

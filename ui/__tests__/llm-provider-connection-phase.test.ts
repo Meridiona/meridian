@@ -140,6 +140,36 @@ it('the subscription-provider "not signed in" copy only replaces the DISPLAY, no
   expect(registry).toMatch(/Sign in to Claude/)
 })
 
+// ── A failure is never a dead end: fixing THIS provider is never the only way forward ────────
+//
+// The dashboard's own Draft-with-AI failure path (`AiEngineNotice`) already shows the
+// engine's real error plus a one-click route back to the picker. The wizard/Settings detail
+// view had the same underlying data but only a "‹ All providers" link at the very top of the
+// screen — reachable, but not right next to the failure a user is actually reading. Both
+// failure branches (the subscription-provider "sign in" card AND the generic "isn't
+// responding" branch, for Copilot/custom endpoints) must offer the same one-click way out.
+
+it('a failed subscription-provider sign-in offers a one-click way to try a different provider', () => {
+  // `case 'failed':` also appears in `statusPill`'s switch - scope to `ConnectionBody`'s,
+  // the one that actually renders the card.
+  const connectionBody = detail.slice(detail.indexOf('function ConnectionBody'))
+  const failedBranch = connectionBody.slice(
+    connectionBody.indexOf("case 'failed':"),
+    connectionBody.indexOf("case 'ready_untested':"),
+  )
+  expect(failedBranch).toMatch(/onSwitchProvider/)
+  // Both the signInProvider branch and the generic fallback branch render it - not just one.
+  expect(failedBranch.match(/<SwitchProvider/g)?.length).toBe(2)
+})
+
+it('the switch-provider affordance is wired to the same destination as the top-of-screen back link', () => {
+  // `ConnectionBody` has no navigation of its own — it must be handed the real `onBack`
+  // callback from `LlmProviderDetail`, the same one `<BackLink>` already uses, or the button
+  // would need its own (and inevitably drifting) notion of "back to the picker".
+  expect(detail).toMatch(/onSwitchProvider=\{onBack\}/)
+  expect(detail).toMatch(/onSwitchProvider:\s*\(\)\s*=>\s*void/)
+})
+
 // The button copy and the tray command it fires used to live in two files - a provider added
 // to one and not the other got a sign-in button wired to nothing, or (worse) to another
 // vendor's login. One record now carries both, so they cannot desync.

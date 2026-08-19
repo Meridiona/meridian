@@ -146,8 +146,16 @@ export function useLlmProviderDetection() {
         })
         void testOne(id, { silent: true })
       } else {
-        // Sign-in didn't complete - refresh at least the install state.
-        await detect()
+        // Sign-in didn't complete, at least according to the CLI process itself - but the
+        // backend now double-checks that against a real status read before giving up (see
+        // `interactive_login` in `src/llm/detect.rs`), so `ok: false` here is not the whole
+        // story either: a stale FAILED `last_test` from an earlier real attempt could still
+        // be sitting on this provider from before the browser tab was even opened, and
+        // without a fresh test it would keep reading as broken until the panel happens to
+        // remount 60s+ later. Re-test (silently - the user is already watching the sign-in
+        // flow, this isn't a background surprise) rather than only refreshing install state,
+        // so a sign-in that quietly resolved itself a moment later is reflected right away.
+        await Promise.all([detect(), testOne(id, { silent: true })])
       }
       return outcome
     } catch (e) {

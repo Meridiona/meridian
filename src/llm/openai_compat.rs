@@ -573,6 +573,7 @@ mod tests {
             schema: Some(crate::llm::prompts::workstream_schema()),
             max_tokens: 2048,
             label: "test".into(),
+            interactive: false,
         }
     }
 
@@ -657,6 +658,7 @@ mod tests {
             schema: None,
             max_tokens: 512,
             label: "t".into(),
+            interactive: false,
         };
         apply_schema(&mut body, &req, &ep(SchemaRung::Strict));
         assert!(body["response_format"].is_null());
@@ -870,6 +872,7 @@ mod tests {
             schema: Some(crate::llm::prompts::workstream_schema()),
             max_tokens: 2048,
             label: "live workstream".into(),
+            interactive: false,
         };
 
         let out = OpenAiCompatBackend { cfg }

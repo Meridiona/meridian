@@ -40,6 +40,50 @@ use super::{prompts, LlmBackend, LlmConfig, LlmError, LlmOutput, LlmProvider, Pr
 
 const ARG_CAP: usize = 180_000;
 
+/// Above this, a call logs a WARN (not just the routine INFO summary) so a latency
+/// regression is visible in OpenObserve on a packaged install, not just in a local spool
+/// nobody is tailing. Comfortably above the ~6s a warm, hardened call took when measured
+/// live, and below the point where a user watching "Draft with AI" would call it stuck.
+const SLOW_CALL_WARN_THRESHOLD_S: f64 = 30.0;
+
+/// How long `cursor-agent status` may take — a local credential read; measured ~2.3s live
+/// (slower than Codex's/Claude's equivalent, still comfortably sub-second-budget territory).
+/// Generous ceiling, not a real budget.
+const LOGIN_STATUS_TIMEOUT_S: u64 = 15;
+
+/// Ternary read of `cursor-agent status --format json`'s `isAuthenticated` field.
+/// `Some(true)`/`Some(false)` are authoritative; `None` means the check itself failed (spawn
+/// error, timeout, malformed output) and must not be trusted either way — see
+/// [`super::detect::interactive_login`], the sole caller: it uses this to confirm an
+/// interactive sign-in actually took even when the spawned `cursor-agent login` process
+/// itself timed out or exited non-zero.
+///
+/// **The exit code is NOT authoritative here** — measured live: `cursor-agent status` can
+/// exit 1 ("unable to fetch user details") while its own JSON body reports
+/// `isAuthenticated: true`. The body is the only trustworthy signal, which is why this reads
+/// it regardless of `cap.success`.
+pub(crate) async fn login_status_signed_in(meridian_home: &std::path::Path) -> Option<bool> {
+    let cap = run_capture(
+        "cursor-agent",
+        &["status".into(), "--format".into(), "json".into()],
+        "",
+        meridian_home,
+        LOGIN_STATUS_TIMEOUT_S,
+        &[],
+        cursor_cli::ENV_REMOVE,
+    )
+    .await
+    .ok()?;
+    parse_is_authenticated(&cap.stdout)
+}
+
+/// The pure parse [`login_status_signed_in`] applies to the captured stdout — split out so
+/// it is unit-testable without spawning a process.
+fn parse_is_authenticated(stdout: &str) -> Option<bool> {
+    let v: Value = serde_json::from_str(stdout.trim()).ok()?;
+    v.get("isAuthenticated").and_then(Value::as_bool)
+}
+
 pub struct CursorBackend {
     pub cfg: LlmConfig,
 }
@@ -167,13 +211,7 @@ impl LlmBackend for CursorBackend {
         let t0 = std::time::Instant::now();
         let prompt = build_prompt(req);
 
-        // Empty override = the pinned default (deterministic, ZDR). A non-empty override is the
-        // user's explicit choice and is passed through as-is.
-        let model = if self.cfg.model.is_empty() {
-            cursor_cli::DEFAULT_MODEL
-        } else {
-            self.cfg.model.as_str()
-        };
+        let model = resolve_model(&self.cfg.model, req.interactive);
 
         // The degradation ladder lives in `cursor_cli` so the summariser inherits it too.
         let text =
@@ -187,6 +225,18 @@ impl LlmBackend for CursorBackend {
             chars = text.len(),
             "cursor: call complete"
         );
+        // WARN, not INFO: this is the one signal that ships on a packaged install (only
+        // WARN+ egresses - see CLAUDE.md's Observability section), and a Cursor call that
+        // blows past a normal budget is exactly the kind of regression that must be visible
+        // without an engineer already looking at this one machine's local spool.
+        if elapsed_s > SLOW_CALL_WARN_THRESHOLD_S {
+            tracing::warn!(
+                model,
+                elapsed_s,
+                interactive = req.interactive,
+                "cursor: call took longer than expected"
+            );
+        }
         Ok(LlmOutput {
             text,
             // The CLI reports usage in its envelope but not a comparable prompt/completion split;
@@ -195,6 +245,21 @@ impl LlmBackend for CursorBackend {
             output_tokens: 0,
             elapsed_s,
         })
+    }
+}
+
+/// Which model tier this call uses. An explicit user override (`cfg_model` non-empty) always
+/// wins, matching every other provider's "the user's choice is never silently swapped" rule -
+/// [`PromptRequest::interactive`] only ever picks between OUR two pinned tiers, never
+/// overrides what the user chose. Extracted so the choice is testable without spawning a
+/// process — see [`CursorBackend::complete`].
+fn resolve_model(cfg_model: &str, interactive: bool) -> &str {
+    if !cfg_model.is_empty() {
+        cfg_model
+    } else if interactive {
+        cursor_cli::FAST_MODEL
+    } else {
+        cursor_cli::DEFAULT_MODEL
     }
 }
 
@@ -227,6 +292,53 @@ mod tests {
 
     fn req() -> PromptRequest {
         PromptRequest::new("SYSTEM PROMPT", "USER INPUT", "test-label")
+    }
+
+    #[test]
+    fn a_background_call_with_no_override_uses_the_default_tier() {
+        assert_eq!(resolve_model("", false), cursor_cli::DEFAULT_MODEL);
+    }
+
+    #[test]
+    fn an_interactive_call_with_no_override_uses_the_fast_tier() {
+        assert_eq!(resolve_model("", true), cursor_cli::FAST_MODEL);
+    }
+
+    /// THE property that matters: a user's explicit model choice is never silently swapped
+    /// for a faster one just because the call happens to be interactive.
+    #[test]
+    fn an_explicit_override_always_wins_over_the_interactive_hint() {
+        assert_eq!(resolve_model("claude-opus-4-8", true), "claude-opus-4-8");
+        assert_eq!(resolve_model("claude-opus-4-8", false), "claude-opus-4-8");
+    }
+
+    /// THE regression this parse exists for: verbatim shape captured live from
+    /// `cursor-agent status --format json` while genuinely authenticated - the exit code was
+    /// 1 ("unable to fetch user details") but the body says `isAuthenticated: true`. A caller
+    /// that gated on exit code instead of this field would misreport a working sign-in as
+    /// failed.
+    #[test]
+    fn parse_is_authenticated_reads_the_real_authenticated_response_despite_a_nonzero_exit() {
+        let body = r#"{"status":"authenticated","isAuthenticated":true,"hasAccessToken":true,
+            "hasRefreshToken":true,"message":"Logged in (unable to fetch user details)"}"#;
+        assert_eq!(parse_is_authenticated(body), Some(true));
+    }
+
+    #[test]
+    fn parse_is_authenticated_reads_a_signed_out_response() {
+        assert_eq!(
+            parse_is_authenticated(r#"{"isAuthenticated":false}"#),
+            Some(false)
+        );
+    }
+
+    /// Malformed/empty output (a crash, an incompatible future CLI version) must be
+    /// inconclusive, never misread as either extreme.
+    #[test]
+    fn parse_is_authenticated_is_none_on_malformed_output() {
+        assert_eq!(parse_is_authenticated(""), None);
+        assert_eq!(parse_is_authenticated("not json"), None);
+        assert_eq!(parse_is_authenticated("{}"), None);
     }
 
     /// The marker is what cuts the summarise -> ingest -> summarise loop, so the property to
