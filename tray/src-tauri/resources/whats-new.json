@@ -2,8 +2,9 @@
   "releases": [
     {
       "version": "1.89.0",
-      "date": "2026-08-19",
+      "date": "2026-08-20",
       "highlights": [
+        "Ollama Cloud joins the setup wizard as a free, no-subscription way to draft with AI, and is now the one we recommend if you don't already have a subscription. Groq is being retired from active use - if you're currently on it, Settings will show a notice pointing you to Ollama, and your configuration stays exactly as you left it until you switch.",
         "Settings now shows exactly what daily usage reporting sends - a health snapshot alongside the counts, never your screen activity or anything you wrote - and a new switch lets you turn it off separately from error reporting, without losing crash reports."
       ],
       "fixes": [
@@ -12,8 +13,9 @@
         "Draft with AI on Cursor no longer takes up to a minute when it usually takes seconds.",
         "A brief network or provider hiccup no longer flips your AI provider to unavailable and stops your day from being written - Meridian retries once before giving up.",
         "Several worklog drafts falling behind in the same hour now arrive as one notification instead of landing all at once.",
-        "Drafting stopped failing with a hidden schema error on some Groq models.",
-        "Coding-agent session summaries no longer silently fail to generate on some setups."
+        "Drafting stopped failing with a hidden schema error on some custom AI endpoints.",
+        "Coding-agent session summaries no longer silently fail to generate on some setups.",
+        "A database repair that fails on launch now retries automatically within the same session instead of leaving Meridian stuck until you relaunch."
       ]
     },
     {
