@@ -150,6 +150,14 @@ different things about you - see [Error reporting](#error-reporting).
   for each: syncing fine, stale, failing, never synced, or waiting for you to pick a
   project. This is the one thing here that describes your workplace rather than Meridian,
   and it is the name only.
+- **How much CPU and memory Meridian itself used** - and nothing about any other program
+  on your machine. Once a minute Meridian measures two processes by their process id: the
+  menu-bar app and its background service. It records the highest and average of each
+  over the day, along with how many measurements were taken. It does **not** list, count,
+  or measure your other applications, and it does not measure the AI command-line tools -
+  those are programs you run yourself, and telling them apart from ours reliably is not
+  possible, so they are left out rather than guessed at. This exists so we can tell
+  whether a release made Meridian heavier on real machines instead of only on ours.
 
 All three carry: your app version, your OS name (`macos` / `windows`), the release
 channel, a random per-device UUID, and your Support ID. Location lookup is explicitly

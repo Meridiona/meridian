@@ -134,6 +134,8 @@
 mod daily;
 /// The point-in-time install-health snapshot folded into `daily_usage`.
 mod health;
+/// CPU/RSS sampling of Meridian's own processes, aggregated per day.
+pub(crate) mod perf;
 /// On-disk bookkeeping + the pure per-email cursor rules driving each tick.
 mod state;
 

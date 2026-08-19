@@ -148,6 +148,23 @@ pub(super) async fn send_daily_usage(
     health.write_person_properties(&mut person, &mut unset);
     super::attach_person_properties(&mut props, person, unset);
 
+    // ── Group 4: what Meridian itself cost to run ────────────────────────────
+    // A per-day AGGREGATE of a 60s time series, which makes it the one group
+    // here that is neither a per-day count nor point-in-time state. It carries
+    // its own `perf_samples` / `perf_window_s` for exactly that reason — see
+    // `super::perf`'s window-semantics doc before reading a peak.
+    //
+    // Absent (not zeroed) when this tray never sampled the day being reported:
+    // a tray that started today and is clearing a stale cursor has no window
+    // for yesterday, and zeros would read as "Meridian used no memory".
+    match super::perf::completed_for(day) {
+        Some(window) => window.write_properties(&mut props),
+        None => tracing::debug!(
+            day,
+            "analytics: no perf window for the reported day — omitting perf_* properties"
+        ),
+    }
+
     tracing::info!(
         day,
         focus_s,
