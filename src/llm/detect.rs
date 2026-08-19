@@ -771,8 +771,9 @@ async fn resolve_installer_binary(cmd: &str) -> String {
 
 /// Build a `Command` for `path`, a CLI already located via [`resolve_cli`], with `path`'s own
 /// directory prepended onto the child's `PATH` — same fix as [`resolve_installer_binary`],
-/// applied to the sign-in flows ([`cursor_sign_in`]/[`codex_sign_in`]/[`claude_sign_in`]),
-/// which spawn the resolved binary directly rather than through a shell.
+/// applied to the sign-in flows ([`cursor_sign_in`]/[`codex_sign_in`]/[`claude_sign_in`]) AND
+/// to [`crate::coding_agent_session_ingest::summariser::run_capture`], which spawn the
+/// resolved binary directly rather than through a shell.
 ///
 /// Those CLIs are still spawned by ABSOLUTE PATH, so the OS doesn't need `PATH` to find `path`
 /// itself — but `codex`/`claude` (unlike `cursor-agent`, a native binary) are `#!/usr/bin/env
@@ -782,7 +783,16 @@ async fn resolve_installer_binary(cmd: &str) -> String {
 /// `/opt/homebrew/bin` — so that inner lookup fails with "env: node: No such file or
 /// directory" exactly like [`resolve_installer_binary`]'s install-time case, even though the
 /// CLI itself was already found and resolved correctly.
-fn command_for_resolved_cli(path: &std::path::Path) -> Command {
+///
+/// `pub(crate)`: `run_capture` used to build its own bare `Command::new(target)` without this
+/// — which is why a completed `codex login` (via [`interactive_login`], which already called
+/// this) could be followed seconds later by a failed `codex exec` (via `run_capture`, which
+/// didn't): same binary, same shim, but only one spawn path carried a working `PATH`. Observed
+/// live 2026-08-19 (staging build `1.89.0-staging.2`): sign-in traced clean end-to-end, then
+/// the immediate post-sign-in confirmation call failed with `code: Some(127)`, `stderr: "env:
+/// node: No such file or directory"` — which the UI rendered as "not signed in yet",
+/// misdirecting the report as an auth bug rather than a PATH bug.
+pub(crate) fn command_for_resolved_cli(path: &std::path::Path) -> Command {
     let mut cmd = Command::new(path);
     if let Some(dir) = path.parent() {
         let existing = std::env::var_os("PATH").unwrap_or_default();
@@ -2835,6 +2845,67 @@ mod tests {
             "FAKE_NODE_RAN",
             "{output:?}"
         );
+    }
+
+    /// The `run_capture` counterpart to `command_for_resolved_cli_fixes_the_env_node_shebang_lookup`:
+    /// the summariser's shared subprocess runner (`codex exec`/`claude -p`/`cursor-agent`/
+    /// `copilot`, `src/coding_agent_session_ingest/summariser/mod.rs::run_capture`) used to
+    /// resolve a CLI's absolute path via `resolve_cli` but then spawn it with a bare
+    /// `Command::new(target)`, never prepending PATH — so a `#!/usr/bin/env node` CLI that
+    /// `resolve_cli` found (via a candidate dir, exactly as here) still failed once actually
+    /// run. Live incident, 2026-08-19 (staging `1.89.0-staging.2`): a `codex login` — which DOES
+    /// go through `command_for_resolved_cli` via `interactive_login` — traced clean end-to-end,
+    /// then the very next `codex exec` (via `run_capture`) failed 5ms later with `code:
+    /// Some(127)`, `stderr: "env: node: No such file or directory"`, which the UI then rendered
+    /// as "not signed in yet". Only passes now that `run_capture` spawns through
+    /// `command_for_resolved_cli` too.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_capture_fixes_the_env_node_shebang_lookup() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = ENV_LOCK.lock().await;
+        let original_home = std::env::var_os("HOME");
+        let temp_home = std::env::temp_dir().join(format!(
+            "meridian-detect-run-capture-shebang-test-{}",
+            std::process::id()
+        ));
+        let bin_dir = temp_home.join(".local").join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let fake_node = bin_dir.join("node");
+        std::fs::write(&fake_node, "#!/bin/sh\necho FAKE_NODE_RAN\n").unwrap();
+        // `resolve_cli` only ever caches SUCCESSES (see `RESOLVED_BINS`'s doc), so a name
+        // unique to this test can never collide with another test's cached resolution.
+        let fake_cli = bin_dir.join("meridian-fake-run-capture-cli");
+        std::fs::write(&fake_cli, "#!/usr/bin/env node\n").unwrap();
+        for f in [&fake_node, &fake_cli] {
+            let mut perms = std::fs::metadata(f).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(f, perms).unwrap();
+        }
+        std::env::set_var("HOME", &temp_home);
+
+        let result = crate::coding_agent_session_ingest::summariser::run_capture(
+            "meridian-fake-run-capture-cli",
+            &[],
+            "",
+            &temp_home,
+            5,
+            &[],
+            &[],
+        )
+        .await;
+
+        match original_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&temp_home);
+
+        let cap = result.unwrap_or_else(|e| panic!("run_capture must succeed: {e}"));
+        assert!(cap.success, "code={:?} stderr={}", cap.code, cap.stderr);
+        assert_eq!(cap.stdout.trim(), "FAKE_NODE_RAN");
     }
 
     /// cursor-agent does not install via npm on Windows (see
