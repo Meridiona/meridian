@@ -79,11 +79,31 @@ const TIMESTAMP_KEYS: &[&str] = &[
     "last_used_at",
 ];
 
+/// guest-js serializes the client's in-flight `sign_in`/`sign_up` resources
+/// with the short JS-side object name (`"sign_in"` / `"sign_up"`) instead of
+/// clerk-js's real `object` value. `clerk-fapi-rs`'s generated `ClientSignIn`/
+/// `ClientSignUp` models each type `object` as a single-variant enum that only
+/// accepts `"sign_in_attempt"` / `"sign_up_attempt"` (see
+/// `client_sign_in.rs`/`client_sign_up.rs` upstream), so the mismatch fails
+/// deserialization with `unknown variant "sign_in", expected "sign_in_attempt"`
+/// on every real sign-in — a fresh sibling of the missing-field bug this module
+/// otherwise fixes, but on a key that IS present rather than absent, so
+/// `defaults_for`'s `entry(..).or_insert(..)` can never reach it; the value
+/// has to be rewritten in place instead.
+fn canonical_object_type(raw: &str) -> &str {
+    match raw {
+        "sign_in" => "sign_in_attempt",
+        "sign_up" => "sign_up_attempt",
+        other => other,
+    }
+}
+
 /// Recursively normalize a Clerk `client` JSON tree (or any subtree of one)
 /// so it deserializes cleanly into `clerk-fapi-rs`'s models. Mutates in
 /// place; safe to call on an already-well-formed payload (every backfill is
 /// an `entry(..).or_insert(..)` and every timestamp rewrite is a no-op on an
-/// already-integral value).
+/// already-integral value, and `canonical_object_type` is a no-op on an
+/// already-canonical `object`).
 pub(crate) fn backfill_clerk_client_json(value: &mut Value) {
     match value {
         Value::Array(items) => {
@@ -97,7 +117,11 @@ pub(crate) fn backfill_clerk_client_json(value: &mut Value) {
                 // Borrow-check: collect the (owned) defaults before touching
                 // `map` again, since `object_type` borrows from it.
                 let object_type = object_type.to_string();
-                for (key, default) in defaults_for(&object_type) {
+                let canonical = canonical_object_type(&object_type).to_string();
+                if canonical != object_type {
+                    map.insert("object".to_string(), json!(canonical));
+                }
+                for (key, default) in defaults_for(&canonical) {
                     map.entry(*key).or_insert_with(default);
                 }
             }
@@ -277,5 +301,195 @@ mod tests {
         backfill_clerk_client_json(&mut value);
         assert_eq!(value["created_at"], json!(100));
         assert_eq!(value["sessions"][0]["created_at"], json!(200));
+    }
+
+    /// A client's in-flight sign-in, shaped exactly as guest-js emits it: the
+    /// `object` discriminator is the short JS resource name `"sign_in"`, not
+    /// clerk-fapi-rs's `"sign_in_attempt"`. Every other field is present and
+    /// well-typed — this is purely the discriminator mismatch production hit.
+    fn guest_js_shaped_sign_in_json() -> Value {
+        json!({
+            "object": "sign_in",
+            "id": "sign_in_abc123",
+            "status": "needs_first_factor",
+            "supported_identifiers": ["email_address"],
+            "supported_first_factors": null,
+            "supported_second_factors": null,
+            "first_factor_verification": null,
+            "second_factor_verification": null,
+            "identifier": "user@example.com",
+            "user_data": null,
+            "created_session_id": null,
+            "abandon_at": 1719765690
+        })
+    }
+
+    /// Pins the production bug: `unknown variant "sign_in", expected
+    /// "sign_in_attempt"`, hit by every real user with an in-flight sign-in.
+    #[test]
+    fn without_the_fix_guest_js_sign_in_object_type_fails_to_deserialize() {
+        let value = guest_js_shaped_sign_in_json();
+        assert!(
+            serde_json::from_value::<clerk_fapi_rs::models::ClientSignIn>(value).is_err(),
+            "fixture no longer reproduces the upstream mismatch — if clerk-fapi-rs \
+             relaxed its schema, this test (not the fix) should be revisited"
+        );
+    }
+
+    #[test]
+    fn backfill_canonicalizes_the_sign_in_object_type() {
+        let mut value = guest_js_shaped_sign_in_json();
+        backfill_clerk_client_json(&mut value);
+        assert_eq!(value["object"], json!("sign_in_attempt"));
+        serde_json::from_value::<clerk_fapi_rs::models::ClientSignIn>(value).expect(
+            "backfilled sign_in payload must deserialize into clerk-fapi-rs's ClientSignIn",
+        );
+    }
+
+    /// The same rewrite applied recursively, inside a whole client tree —
+    /// not just when `ClientSignIn` is deserialized standalone.
+    #[test]
+    fn backfill_canonicalizes_sign_in_nested_inside_a_client() {
+        let mut value = json!({
+            "object": "client",
+            "sign_in": guest_js_shaped_sign_in_json(),
+            "sign_up": null,
+        });
+        backfill_clerk_client_json(&mut value);
+        assert_eq!(value["sign_in"]["object"], json!("sign_in_attempt"));
+    }
+
+    /// `sign_up` carries the identical bug class (`"sign_up"` vs
+    /// `"sign_up_attempt"`) — covered at the canonicalizer level since a full
+    /// `ClientSignUp` fixture needs a `verifications` sub-object this bug has
+    /// nothing to do with.
+    #[test]
+    fn canonicalizes_sign_up_the_same_way_as_sign_in() {
+        assert_eq!(canonical_object_type("sign_up"), "sign_up_attempt");
+    }
+
+    /// An already-canonical `object` must not be touched — only the two known
+    /// guest-js short names are remapped.
+    #[test]
+    fn canonical_object_type_is_a_no_op_on_correct_and_unrelated_values() {
+        assert_eq!(canonical_object_type("sign_in_attempt"), "sign_in_attempt");
+        assert_eq!(canonical_object_type("user"), "user");
+    }
+
+    /// A client's in-flight sign-up, shaped as guest-js emits it — the
+    /// `sign_up` counterpart to `guest_js_shaped_sign_in_json`. `verifications`
+    /// is the one field `ClientSignUp` requires that `ClientSignIn` does not
+    /// (each of its four sub-fields is `Option::deserialize`, so `null` is
+    /// valid but the KEY must be present).
+    fn guest_js_shaped_sign_up_json() -> Value {
+        json!({
+            "object": "sign_up",
+            "id": "sign_up_abc123",
+            "status": "missing_requirements",
+            "required_fields": ["email_address"],
+            "optional_fields": [],
+            "missing_fields": ["email_address"],
+            "unverified_fields": [],
+            "verifications": {
+                "email_address": null,
+                "phone_number": null,
+                "web3_wallet": null,
+                "external_account": null
+            },
+            "username": null,
+            "email_address": "user@example.com",
+            "phone_number": null,
+            "web3_wallet": null,
+            "password_enabled": true,
+            "first_name": null,
+            "last_name": null,
+            "custom_action": false,
+            "external_id": null,
+            "created_session_id": null,
+            "created_user_id": null,
+            "abandon_at": 1719765690,
+            "legal_accepted_at": null
+        })
+    }
+
+    /// The `sign_up` counterpart to `without_the_fix_guest_js_sign_in_object_type_fails_to_deserialize`
+    /// — pins that the discriminator mismatch is not sign_in-specific.
+    #[test]
+    fn without_the_fix_guest_js_sign_up_object_type_fails_to_deserialize() {
+        let value = guest_js_shaped_sign_up_json();
+        assert!(
+            serde_json::from_value::<clerk_fapi_rs::models::ClientSignUp>(value).is_err(),
+            "fixture no longer reproduces the upstream mismatch — if clerk-fapi-rs \
+             relaxed its schema, this test (not the fix) should be revisited"
+        );
+    }
+
+    #[test]
+    fn backfill_canonicalizes_the_sign_up_object_type() {
+        let mut value = guest_js_shaped_sign_up_json();
+        backfill_clerk_client_json(&mut value);
+        assert_eq!(value["object"], json!("sign_up_attempt"));
+        serde_json::from_value::<clerk_fapi_rs::models::ClientSignUp>(value).expect(
+            "backfilled sign_up payload must deserialize into clerk-fapi-rs's ClientSignUp",
+        );
+    }
+
+    #[test]
+    fn backfill_canonicalizes_sign_up_nested_inside_a_client() {
+        let mut value = json!({
+            "object": "client",
+            "sign_in": null,
+            "sign_up": guest_js_shaped_sign_up_json(),
+        });
+        backfill_clerk_client_json(&mut value);
+        assert_eq!(value["sign_up"]["object"], json!("sign_up_attempt"));
+    }
+
+    /// Idempotency across the REWRITE path specifically — the existing
+    /// `backfill_is_idempotent_on_an_already_well_formed_payload` only covers
+    /// the original fixture, whose `sign_in`/`sign_up` are `null` and so never
+    /// touch `canonical_object_type` at all.
+    #[test]
+    fn backfill_is_idempotent_after_canonicalizing_a_populated_sign_in() {
+        let mut value = json!({
+            "object": "client",
+            "sign_in": guest_js_shaped_sign_in_json(),
+            "sign_up": null,
+        });
+        backfill_clerk_client_json(&mut value);
+        let once = value.clone();
+        backfill_clerk_client_json(&mut value);
+        assert_eq!(
+            once, value,
+            "a second pass over an already-canonicalized sign_in must be a no-op"
+        );
+    }
+
+    /// The full end-to-end case none of the standalone `ClientSignIn` tests
+    /// reach: a whole `ClientClient` with a LIVE (non-null) `sign_in`, shaped
+    /// exactly as guest-js emits it end to end, deserializing successfully
+    /// after backfill — not just the `object` field in isolation. This is the
+    /// actual shape `set_client` receives in production the moment a user is
+    /// mid-sign-in (MFA prompt, etc.) rather than already fully signed in.
+    #[test]
+    fn backfill_makes_a_client_with_a_live_sign_in_deserialize() {
+        let mut value = json!({
+            "object": "client",
+            "id": "client_abc123",
+            "sessions": [],
+            "sign_in": guest_js_shaped_sign_in_json(),
+            "sign_up": null,
+            "last_active_session_id": null,
+            "cookie_expires_at": null,
+            "captcha_bypass": false,
+            "created_at": 1719765600,
+            "updated_at": 1719765690
+        });
+        backfill_clerk_client_json(&mut value);
+        let client = serde_json::from_value::<ClientClient>(value).expect(
+            "a client with a live sign_in must deserialize into ClientClient after backfill",
+        );
+        let sign_in = client.sign_in.expect("sign_in must survive the round trip");
+        assert_eq!(sign_in.id, "sign_in_abc123");
     }
 }
