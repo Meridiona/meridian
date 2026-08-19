@@ -332,7 +332,7 @@ pub struct RuntimeSettings {
     // ID/shipped `host.name` per-USER instead of per-machine, so support can
     // trace one alpha tester's errors across their Mac and Windows boxes.
     // Only takes effect before `redact::ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`
-    // (2026-08-28) — a hardcoded date, checked against the wall clock, is the
+    // (2026-12-31) — a hardcoded date, checked against the wall clock, is the
     // revert here since channel can't distinguish alpha testers from anyone
     // else on the same build. `None` (not signed in, or past the expiry)
     // falls back to the pre-existing per-machine hardware-UUID pseudonym.

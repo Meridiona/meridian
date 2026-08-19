@@ -13,12 +13,14 @@ Meridian does make network calls. There are **five kinds**, listed here in full:
 1. **Ticket updates you approve** — sent directly from your machine to the trackers you connect.
 2. **AI summarisation** — session text, including text captured from your screen, sent to the LLM provider you choose. **This is the one path on which your captured content leaves the device**, and it goes to a provider you pick and configure, never to Meridiana. It is described in [LLM provider](#llm-provider-summarisation--ticket-matching).
 3. **Error reports** — redacted, error-only diagnostics sent to Meridiana. **On by default in packaged installs; one switch turns it off.**
-4. **Product analytics** — two events, and only once you sign in: that you installed, and a daily count of hours and drafts. **No screen content. Currently no off switch** — see [Product analytics](#product-analytics).
-5. **A public counter ping** — one anonymous "+1" to meridiona.com each time you post a worklog **or update a personal task**, powering the counter on the landing page. No payload. Sent only from release builds, and it has **no off switch** either.
+4. **Product analytics** — three events, and only once you sign in: that you installed, that you were active on a given day, and a daily count of what Meridian did for you. **No screen content. On by default; one switch turns it off** — see [Product analytics](#product-analytics).
+5. **A public counter ping** — one anonymous "+1" to meridiona.com each time you post a worklog **or update a personal task**, powering the counter on the landing page. No payload. Sent only from release builds, and it has **no off switch**.
 
 **How much of this you control:** 1 and 2 happen only because you connected a tracker
-and chose a provider; 3 has a switch in Settings. 4 and 5 do not currently have one.
-Saying "you control all of them" would be simpler and would not be true.
+and chose a provider; 3 and 4 each have their own switch in Settings, and they are
+separate switches on purpose — turning off crash reports should not silently stop
+usage reporting, or the reverse. 5 does not have one. Saying "you control all of
+them" would be simpler and would not be true.
 
 Each is described in full below. If you only read two sections, read
 [Error reporting](#error-reporting) and [Product analytics](#product-analytics).
@@ -87,9 +89,11 @@ OCR text, accessibility-tree content, window titles, browser URLs, coding-agent 
 
 An error report carries a **Support ID** instead of your hostname. It is a one-way pseudonym, and it exists so a support ticket you file can be matched to the errors your machine actually reported. It is derived from a hardware identifier, not your hostname — on macOS the hostname is routinely derived from your network and often contains your real name.
 
-Nothing in an error report is associated with an account, and the hash cannot be reversed. You can see your own Support ID in **Settings → Account**.
+Nothing *inside* an error report is associated with an account, and the hash cannot be reversed. You can see your own Support ID in **Settings → Account**.
 
-> **Alpha exception, until 28 August 2026.** While Meridian is in invite-only alpha, signing in changes this: the Support ID is instead derived from a salted hash of your account email, so support can follow one tester's errors across their machines. Your raw email address is never sent. Settings → Account states which mode is currently active for you. After that date every install reverts to the hardware-derived pseudonym automatically.
+> **But if product analytics is on, we can still connect the two.** Product-analytics events carry both your account email and the same Support ID, so the pair links your errors to you. That linkage lives entirely on the analytics side - an error report itself never contains your email. Turning off **Product analytics** removes it; see [Product analytics](#product-analytics).
+
+> **Alpha exception, until 31 December 2026.** While Meridian is in invite-only alpha, signing in changes this: the Support ID is instead derived from a salted hash of your account email, so support can follow one tester's errors across their machines. Your raw email address is never sent. Settings → Account states which mode is currently active for you. After that date every install reverts to the hardware-derived pseudonym automatically, and your Support ID changes at that point.
 
 ### Crash reports
 
@@ -105,29 +109,56 @@ Packaged builds also send crash reports (via Sentry) so we learn about crashes t
 
 ## Product analytics
 
-Meridian sends two product-analytics events to PostHog Cloud, so we can see how many
-people install it and whether they keep using it.
+Meridian sends three product-analytics events to PostHog Cloud, so we can see how many
+people install it, whether they keep using it, and whether it is actually working for
+them.
 
 **Nothing is sent until you sign in.** Signed out, this path is entirely inactive.
+
+**You can turn it off:** Settings → Capture & Privacy → **Product analytics**. It is on
+by default. This is a *separate* switch from error reporting, because the two send
+different things about you - see [Error reporting](#error-reporting).
 
 | Event | When | What it contains |
 |---|---|---|
 | `app_installed` | Once per device, per signed-in account | Nothing beyond the shared properties below. |
-| `daily_usage` | Once per completed calendar day | Focus hours, coding hours, logged hours, and number of drafts - the same four numbers the dashboard's Today card shows you. |
+| `app_active` | Once per calendar day Meridian is running | Nothing beyond the shared properties. It exists only so we can tell how many people come back on a given day. |
+| `daily_usage` | Once per completed calendar day | Three groups of numbers, listed below. |
 
-Both carry: your app version, your OS name (`macos` / `windows`), the release channel,
-and a random per-device UUID. Location lookup is explicitly disabled on every event.
+`daily_usage` carries:
+
+- **Your day in four numbers** - focus hours, coding hours, logged hours, and number of
+  drafts. The same four the dashboard's Today card shows you.
+- **What Meridian did for you** - counts only: how many tickets it updated and on which
+  trackers, how many worklog posts failed, whether you confirmed or skipped the daily
+  plan and how many items were in it, how many day-tasks it produced and how many you
+  corrected, whether a day summary was written, and how many notifications were sent,
+  delivered, or failed to deliver.
+- **Whether your install is healthy** - is the daemon running, is the database readable,
+  is your chosen AI provider working, which internal warnings are active (as short
+  internal codes such as `db.corrupt`, never their text), and which trackers are failing
+  to sync (the tracker's name, never the error message).
+
+All three carry: your app version, your OS name (`macos` / `windows`), the release
+channel, a random per-device UUID, and your Support ID. Location lookup is explicitly
+disabled on every event.
 
 **These events identify you by your account email.** It is used directly as the PostHog
-`distinct_id`, which is why nothing is sent before sign-in. This is a real trade-off and
-we would rather state it plainly than bury it: this path is identified, not
-pseudonymous, and unlike error reporting it **does not currently have an off switch**.
-An opt-out is planned - if you want it sooner, say so on
-[the issue tracker](https://github.com/Meridiona/meridian/issues) and it will move up.
+`distinct_id`, which is why nothing is sent before sign-in. This path is identified, not
+pseudonymous, and we would rather say so plainly than bury it.
+
+**And they carry your Support ID, which links this to your error reports.** Error
+reports and crash reports are pseudonymous on their own - they identify a machine, not
+a person. Including the same Support ID here means that, for as long as product
+analytics is on, we can connect the two. We do this so that when something breaks we
+can tell *who* it is broken for and reach out, rather than staring at an anonymous
+error we cannot act on. If you would rather we could not make that connection, turning
+off product analytics breaks it: error reporting alone never carries your email.
 
 **What it never contains:** screen content, OCR text, window titles, browser URLs,
-application names, ticket keys, ticket contents, file paths, or anything about *what*
-you worked on. The four daily numbers are totals, not a description of your day.
+application names, ticket keys, ticket titles or contents, notification text, summary
+text, file paths, or anything about *what* you worked on. Every value above is a count,
+a yes/no, or a fixed internal code. They describe what Meridian did, not what you did.
 
 Analytics are captured through a single plain HTTPS request. Meridian does not embed
 PostHog's browser SDK, so session replay, autocapture, surveys, and feature flags are
