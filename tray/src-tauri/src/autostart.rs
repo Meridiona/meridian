@@ -55,11 +55,11 @@
 //! - **Windows** — one scheduled task with a `LogonTrigger` *and* a daily
 //!   `CalendarTrigger`, registered from XML because `schtasks`' command form
 //!   cannot express two triggers. Its `MultipleInstancesPolicy` is `IgnoreNew`,
-//!   which is what stops the 09:00 trigger starting a second tray on top of the
-//!   one the logon trigger already started.
+//!   which is what stops the new-day trigger starting a second tray on top of
+//!   the one the logon trigger already started.
 //!
 //! # Duplicates are prevented by a guard, not by hoping
-//! The 09:00 trigger is started by the OS scheduler, and **neither scheduler can
+//! The new-day trigger is started by the OS scheduler, and **neither scheduler can
 //! see that the app is already running.** launchd tracks liveness per job
 //! LABEL, so the process macOS's loginwindow started via SMAppService is
 //! invisible to our calendar job; Task Scheduler's `MultipleInstancesPolicy:
@@ -74,7 +74,7 @@
 //!
 //! An earlier version of this module claimed `RunAtLoad false` alone prevented
 //! the duplicate. It does not — it only prevents one at LOGIN, and moved the
-//! collision to 09:00.
+//! collision to the new-day trigger.
 //!
 //! # Who calls this
 //! [`crate::run`]'s `setup()` hook, once per launch, bundled runs only (see
@@ -154,13 +154,49 @@ where
     args.into_iter().any(|a| a.as_ref() == AUTOSTART_FLAG)
 }
 
-/// Local hour the morning relaunch fires, on both platforms.
+/// Local hour the NEW-DAY relaunch fires, on both platforms.
+///
+/// # The requirement is "whenever they next start", not a clock time
+/// If the user quits, Meridian must be back by the time they next sit down —
+/// the next morning, whenever that is. A fixed hour is a crude way to express
+/// that, so the hour is chosen to make the OS's own missed-trigger behaviour do
+/// the work:
+///
+/// - **Machine asleep overnight.** launchd coalesces missed
+///   `StartCalendarInterval` fires and runs them **on wake** (Apple's
+///   "Scheduling Timed Jobs"); Windows does the same via the task's
+///   `StartWhenAvailable`. So for any wake after this hour, the trigger fires
+///   *at the moment they open the laptop* — exactly the requirement, with no
+///   activity detection at all.
+/// - **Machine powered off overnight.** The calendar miss is irrelevant: powering
+///   on means logging in, and the LOGIN trigger covers that.
+/// - **Machine left on overnight.** This is the only case where a clock time is
+///   really a clock time, and it is why the hour is 06:00 rather than just after
+///   midnight.
+///
+/// # Why 06:00 specifically
+/// It has to be before anyone's workday starts, or they arrive to a tray that is
+/// still quit. It also has to be late enough that a machine left running is not
+/// woken back into capturing someone's evening: `work_hours_enabled` defaults to
+/// **false**, so capture is NOT paused outside work hours by default, and a
+/// 00:05 relaunch would mean quitting at 20:00 and being watched again from just
+/// after midnight. Someone who quits deliberately should not get that.
+///
+/// 06:00 sits in the gap: after essentially all late-night use, before
+/// essentially every workday. A machine left on is idle or locked then, so the
+/// relaunch captures nothing meaningful; a machine asleep gets it on wake.
+///
+/// # The residual gap, stated plainly
+/// Someone who genuinely starts before 06:00 on a machine that never slept
+/// waits until 06:00. Nothing here fixes that, and the exact fix would be an
+/// activity probe (macOS `HIDIdleTime`, Windows `GetLastInputInfo`) driven by the
+/// always-running daemon — real machinery, for an edge this does not justify yet.
 ///
 /// A constant, not a setting: a settings field would need a UI, a migration and
-/// a re-registration path on change, to serve a preference nobody has asked
-/// for. Widening this to several times a day is one more entry in the plist's
-/// `StartCalendarInterval` array / the task's `Triggers`.
-pub(crate) const MORNING_HOUR: u32 = 9;
+/// a re-registration path on change. Widening it is one more entry in the plist's
+/// `StartCalendarInterval` array / the task's `Triggers`, and the single-instance
+/// guard makes extra fires harmless no-ops.
+pub(crate) const MORNING_HOUR: u32 = 6;
 
 /// Marker recording that the user deliberately turned autostart OFF.
 ///

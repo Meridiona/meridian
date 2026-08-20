@@ -90,7 +90,7 @@ fn current_exe() -> Option<PathBuf> {
 /// The rest:
 /// - `StartCalendarInterval` covers "the user quit; bring it back tomorrow
 ///   morning". launchd runs a missed calendar job when the machine wakes, so a
-///   laptop asleep at [`super::MORNING_HOUR`] still gets it.
+///   laptop asleep at [`super::MORNING_HOUR`] (06:00) still gets it.
 /// - **No `KeepAlive`**, deliberately: with it, Quit would be undone within
 ///   seconds and there would be no way to stop Meridian for the afternoon. The
 ///   daemon's plist makes the opposite choice because it is headless and has no
@@ -265,7 +265,7 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
     //
     // The gain is not cosmetic: without bootstrapping, launchd only picks the
     // job up at the next login, so a user who installed and then quit the same
-    // day would NOT come back at 09:00. Bootstrapping closes that gap, so the
+    // day would NOT come back on the new-day trigger. Bootstrapping closes that gap, so the
     // morning relaunch works from the moment of install.
     //
     // Best-effort: `bootout` first so a re-registration replaces cleanly, and a
@@ -347,7 +347,8 @@ async fn migrate_off_plugin() {
 ///
 /// The accepted cost is narrow. Our plist DOES carry a morning trigger, and it
 /// stays live until logout, so a user who turns autostart off AND quits later
-/// the same day could still be relaunched once at 09:00. From the next login on
+/// the same day could still be relaunched once by the new-day trigger. From the
+/// next login on
 /// there is no plist to load and the setting is fully honoured. Relaunching
 /// once beats quitting the app out from under someone who was changing a
 /// preference.

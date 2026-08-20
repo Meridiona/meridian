@@ -5,7 +5,7 @@
 //! # Why XML, not `schtasks /SC`
 //! The command form takes exactly one `/SC`, so a login task and a daily task
 //! would have to be two separate tasks — and two tasks are two independent
-//! instance policies, so the 09:00 task would start a second tray on top of the
+//! instance policies, so the daily trigger would start a second tray on top of the
 //! one the logon task already started. Registering from XML allows one task
 //! with two triggers, and therefore one `MultipleInstancesPolicy` of
 //! `IgnoreNew`, which is what makes the morning trigger a no-op while the tray
@@ -79,7 +79,7 @@ fn current_exe() -> Option<PathBuf> {
 ///   default to TRUE in Task Scheduler, which on a laptop means the tray never
 ///   starts on battery and is KILLED when the machine unplugs. That default
 ///   would silently make Meridian a desktop-only product.
-/// - `StartWhenAvailable` `true` — runs a missed 09:00 trigger once the machine
+/// - `StartWhenAvailable` `true` — runs a missed new-day trigger once the machine
 ///   is next awake, matching launchd's behaviour on macOS.
 /// - `ExecutionTimeLimit` `PT0S` — no limit. The default (72 hours) would
 ///   terminate a long-running tray.
