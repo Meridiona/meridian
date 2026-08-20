@@ -190,6 +190,35 @@ pub(crate) struct HealthSnapshot {
     /// The user's error-reporting switch — shipped so a quiet install can be
     /// explained ("they turned it off") rather than guessed at.
     pub error_reporting_enabled: bool,
+    /// The tray is registered to start at login. `None` on a platform or an
+    /// install shape where the check cannot run (an unbundled dev run).
+    ///
+    /// This is the field that separates **churn from a broken login item**.
+    /// Capture runs in-process in the tray, so an install whose registration
+    /// has gone (see [`crate::autostart`]) produces no data and stops sending
+    /// `app_active` — which is byte-for-byte what a user who walked away looks
+    /// like. Without this, the two populations are one number.
+    pub autostart_registered: Option<bool>,
+    /// The registration points at the executable that is actually running.
+    /// `false` means the app was moved after being registered, so it will not
+    /// come back at the next login even though something IS registered.
+    pub autostart_path_ok: Option<bool>,
+    /// This launch had to write a registration that should already have been
+    /// there — i.e. autostart was broken until now. The fleet rate of this is
+    /// how the fix is verified in production.
+    pub autostart_repaired: bool,
+    /// What [`crate::autostart::ensure_registered`] decided, as a stable wire
+    /// name — `already_correct`, `repaired_path_drift`,
+    /// `skipped_disabled_by_user`, … `None` before it has run.
+    pub autostart_action: Option<&'static str>,
+    /// This process was started by the login/morning job rather than by the
+    /// user. Distinguishes "autostart is working" from "they opened it
+    /// themselves", which is otherwise unknowable.
+    pub launched_by_autostart: bool,
+    /// Seconds this tray process has been up. Reading `launched_by_autostart`
+    /// without it is ambiguous: a long-lived process started by the login job
+    /// days ago says nothing about whether autostart worked *today*.
+    pub tray_uptime_s: Option<i64>,
 }
 
 /// Hand-written rather than derived because `#[derive(Default)]` would give
@@ -211,6 +240,12 @@ impl Default for HealthSnapshot {
             integrations_status: BTreeMap::new(),
             notifications_enabled: false,
             error_reporting_enabled: false,
+            autostart_registered: None,
+            autostart_path_ok: None,
+            autostart_repaired: false,
+            autostart_action: None,
+            launched_by_autostart: false,
+            tray_uptime_s: None,
         }
     }
 }
@@ -342,6 +377,13 @@ pub(crate) async fn snapshot(pool: &SqlitePool) -> HealthSnapshot {
     let (llm_vendor, llm_model) =
         resolve_custom_vendor_and_model(custom, settings.llm_provider_model.clone());
 
+    // Autostart is probed LIVE rather than cached from startup: the point of
+    // shipping it is to catch a registration that has gone missing, and one that
+    // went missing after this process started is exactly the case a cached value
+    // could not see.
+    let autostart = crate::autostart::status().await;
+    let action = crate::autostart::last_action();
+
     let snap = HealthSnapshot {
         daemon_running: h.daemon_running,
         database_ready: h.database_ready,
@@ -355,10 +397,20 @@ pub(crate) async fn snapshot(pool: &SqlitePool) -> HealthSnapshot {
         integrations_status,
         notifications_enabled: settings.notifications_enabled,
         error_reporting_enabled: settings.error_reporting_enabled,
+        autostart_registered: autostart.registered,
+        autostart_path_ok: autostart.path_ok,
+        autostart_repaired: action.is_some_and(|a| a.is_repair()),
+        autostart_action: action.map(|a| a.as_str()),
+        launched_by_autostart: crate::autostart::launched_by_autostart(),
+        tray_uptime_s: crate::sys::uptime_secs(),
     };
 
     tracing::info!(
         daemon_running = ?snap.daemon_running,
+        autostart_registered = ?snap.autostart_registered,
+        autostart_path_ok = ?snap.autostart_path_ok,
+        autostart_action = ?snap.autostart_action,
+        launched_by_autostart = snap.launched_by_autostart,
         database_ready = ?snap.database_ready,
         llm_provider = snap.llm_provider,
         llm_provider_ok = ?snap.llm_provider_ok,
@@ -519,6 +571,37 @@ impl HealthSnapshot {
             "setting_error_reporting_enabled".to_string(),
             Value::Bool(self.error_reporting_enabled),
         );
+
+        // Autostart. These are EVENT properties, never person properties: each
+        // one describes one launch of one process, and a person property keeps
+        // only the newest value, which would read as "this user's autostart is
+        // fine" on the strength of whichever machine reported last.
+        // Written long-hand rather than through `put_bool` above: that closure
+        // holds a mutable borrow of `props`, and reviving it here would conflict
+        // with the plain `insert`s in between.
+        if let Some(b) = self.autostart_registered {
+            props.insert("health_autostart_registered".to_string(), Value::Bool(b));
+        }
+        if let Some(b) = self.autostart_path_ok {
+            props.insert("health_autostart_path_ok".to_string(), Value::Bool(b));
+        }
+        props.insert(
+            "health_autostart_repaired".to_string(),
+            Value::Bool(self.autostart_repaired),
+        );
+        if let Some(a) = self.autostart_action {
+            props.insert(
+                "health_autostart_action".to_string(),
+                Value::String(a.to_string()),
+            );
+        }
+        props.insert(
+            "launched_by_autostart".to_string(),
+            Value::Bool(self.launched_by_autostart),
+        );
+        if let Some(u) = self.tray_uptime_s {
+            props.insert("tray_uptime_s".to_string(), serde_json::json!(u));
+        }
     }
 }
 

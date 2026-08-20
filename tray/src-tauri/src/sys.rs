@@ -41,6 +41,33 @@ use tauri_plugin_notifications::Notifications;
 #[cfg(not(target_os = "windows"))]
 use tracing::Instrument;
 
+/// When this process started, set once by [`mark_process_start`].
+///
+/// Exists so [`crate::analytics::health`] can report how long the tray has been
+/// up, which is what separates "started this morning by the login job" from
+/// "has been running for a week" when reading autostart behaviour in the fleet.
+/// Without it, `launched_by` alone cannot distinguish a freshly repaired install
+/// from one that never stopped.
+static PROCESS_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Record the process start time. Called once, as early as possible in
+/// [`crate::run`]; later calls are ignored, so it is safe if that ever moves.
+pub(crate) fn mark_process_start() {
+    let _ = PROCESS_START.set(std::time::Instant::now());
+}
+
+/// Seconds since [`mark_process_start`], or `None` if it never ran (an
+/// unbundled path that bypasses `run`, or a test).
+///
+/// A monotonic `Instant`, not a wall clock: the tray routinely spans a sleep or
+/// a timezone change, either of which can make a wall-clock difference negative
+/// and so nonsensical as an uptime.
+pub(crate) fn uptime_secs() -> Option<i64> {
+    PROCESS_START
+        .get()
+        .map(|t| t.elapsed().as_secs().min(i64::MAX as u64) as i64)
+}
+
 /// The current user's numeric uid as a string (for `launchctl gui/<uid>/…`
 /// domain targets). Falls back to `"501"` (the first macOS user) if `id -u`
 /// can't be read — better than failing the whole launchctl call.
@@ -123,7 +150,7 @@ pub fn is_bundled() -> bool {
 /// (`…/AppTranslocation/…`, a randomized read-only mount the OS discards).
 ///
 /// Shared by two callers that both care about the same failure class:
-/// [`crate::autostart::ensure_enabled_once`] (don't pin a login item to a path
+/// [`crate::autostart::ensure_registered`] (don't pin a login item to a path
 /// that's about to vanish) and [`crate::relocate::maybe_relocate_to_applications`]
 /// (that's exactly the situation it offers to fix).
 ///

@@ -175,6 +175,13 @@ pub fn run() {
         .as_ref()
         .map(|c| tauri_plugin_sentry::minidump::init(c));
 
+    // Uptime baseline for `analytics::health`. Deliberately AFTER the minidump
+    // reporter, not before it: `crash::init_client` above must be the first
+    // thing this function does, because the reporter relaunches this exe in a
+    // special mode that short-circuits before any app work, and a process that
+    // exists only to upload a crash dump has no meaningful "uptime" to record.
+    sys::mark_process_start();
+
     // Tray telemetry. Emit the tray's own spans + logs (service.name =
     // meridian-tray) into the shared OTLP spool — the same one the daemon writes
     // and its shipper drains. In a PACKAGED install this is how tray errors
@@ -249,18 +256,12 @@ pub fn run() {
     } else {
         tracing::info!("unbundled run — notifications plugin not registered, toasts disabled");
     }
-    // Launch-at-login (see `autostart.rs`). Bundled only, same rationale as
-    // notifications above: an unbundled `cargo run`/`tauri dev` binary lives
-    // under `target/`, and registering a login item pointing at that path
-    // would be both wrong (dev builds move/vanish) and surprising.
-    if sys::is_bundled() {
-        builder = builder.plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ));
-    } else {
-        tracing::info!("unbundled run — autostart plugin not registered, no login item");
-    }
+    // NOTE: there is no autostart PLUGIN here any more. `tauri-plugin-autostart`
+    // could only write `RunAtLoad`, so it had no way to express the morning
+    // relaunch, and it named its plist after `productName` rather than
+    // `com.meridiona.*`, which is why every uninstall left the login item
+    // behind. `autostart.rs` owns the plist / scheduled task outright now; it is
+    // called from `setup()` below, still bundled-only.
     builder
         .manage(app_state.clone())
         // Pending dashboard navigation target (e.g. "/plan") — set by tray-side
@@ -1043,17 +1044,20 @@ pub fn run() {
                 poll::run_daemon_watchdog().await;
             });
 
-            // Launch-at-login: self-heal (once ever, see autostart.rs) so the
-            // tray comes back on its own after a reboot/re-login instead of
-            // needing a manual relaunch. Bundled only — the plugin above is
-            // only registered there, so `app.autolaunch()` has no state
-            // otherwise. Spawned off the setup hook like the backend install
-            // below: it does file + `auto_launch` I/O that shouldn't block
-            // tray startup.
+            // Launch-at-login AND morning relaunch: VERIFY-AND-REPAIR on every
+            // launch (see autostart.rs), so the tray comes back after a reboot
+            // and again the next morning if it was quit. Deliberately not
+            // once-ever: the previous implementation trusted a
+            // `~/.meridian/autostart_configured` marker, which survives the app
+            // being trashed, reinstalled or moved — so an install could lose its
+            // login item permanently with nothing able to notice. Bundled only:
+            // an unbundled `cargo run` binary lives under `target/` and must
+            // never be pinned. Spawned off the setup hook like the backend
+            // install below, because it does file + `launchctl`/`schtasks` I/O
+            // that shouldn't block tray startup.
             if sys::is_bundled() {
-                let autostart_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    autostart::ensure_enabled_once(&autostart_handle).await;
+                    autostart::ensure_registered().await;
                 });
             }
 
