@@ -101,10 +101,18 @@
 // platform APIs, so there is nothing to stop them building anywhere — the same
 // reasoning (and the same `cfg_attr(allow(dead_code))` shape) as
 // [`crate::backend_install`]'s `wait_until_gone`.
-/// SMAppService login-item registration. macOS-only for real (it is an ObjC
-/// framework call, not a string builder), so unlike the two platform modules
-/// this one is genuinely `cfg`-gated.
-#[cfg(target_os = "macos")]
+/// SMAppService login-item registration.
+///
+/// Compiled on every target, like the two platform modules and for the same
+/// reason — but here it is also required, not merely preferable: [`macos`] is
+/// itself compiled everywhere and imports this, so gating the DECLARATION is
+/// what broke the Windows build with `no login_item in autostart`. Gating only
+/// the module's *contents* was not enough; the `mod` item has to exist.
+///
+/// The ObjC calls inside are individually `cfg`-gated and `available()` is a
+/// constant `false` off macOS, so nothing here can message a framework that
+/// isn't there.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) mod login_item;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) mod macos;
