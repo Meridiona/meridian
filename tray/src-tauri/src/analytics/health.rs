@@ -199,6 +199,16 @@ pub(crate) struct HealthSnapshot {
     /// `app_active` — which is byte-for-byte what a user who walked away looks
     /// like. Without this, the two populations are one number.
     pub autostart_registered: Option<bool>,
+    /// macOS only: SMAppService's view of the LOGIN-item registration —
+    /// `enabled`, `requires_approval`, `not_registered`, `not_found`, or
+    /// `unavailable` below macOS 13. `None` off macOS.
+    ///
+    /// This is the field that answers "is Meridian actually in Login Items &
+    /// Extensions", which was unanswerable from the fleet — and it is the real
+    /// question behind every "why doesn't it start" report. `requires_approval`
+    /// in particular is a state only the USER can clear, so seeing it here is
+    /// the difference between shipping a fix and shipping a prompt.
+    pub autostart_login_item: Option<&'static str>,
     /// The registration points at the executable that is actually running.
     /// `false` means the app was moved after being registered, so it will not
     /// come back at the next login even though something IS registered.
@@ -241,6 +251,7 @@ impl Default for HealthSnapshot {
             notifications_enabled: false,
             error_reporting_enabled: false,
             autostart_registered: None,
+            autostart_login_item: None,
             autostart_path_ok: None,
             autostart_repaired: false,
             autostart_action: None,
@@ -398,6 +409,7 @@ pub(crate) async fn snapshot(pool: &SqlitePool) -> HealthSnapshot {
         notifications_enabled: settings.notifications_enabled,
         error_reporting_enabled: settings.error_reporting_enabled,
         autostart_registered: autostart.registered,
+        autostart_login_item: autostart.login_item,
         autostart_path_ok: autostart.path_ok,
         autostart_repaired: action.is_some_and(|a| a.is_repair()),
         autostart_action: action.map(|a| a.as_str()),
@@ -408,6 +420,7 @@ pub(crate) async fn snapshot(pool: &SqlitePool) -> HealthSnapshot {
     tracing::info!(
         daemon_running = ?snap.daemon_running,
         autostart_registered = ?snap.autostart_registered,
+        autostart_login_item = ?snap.autostart_login_item,
         autostart_path_ok = ?snap.autostart_path_ok,
         autostart_action = ?snap.autostart_action,
         launched_by_autostart = snap.launched_by_autostart,
@@ -584,6 +597,12 @@ impl HealthSnapshot {
         }
         if let Some(b) = self.autostart_path_ok {
             props.insert("health_autostart_path_ok".to_string(), Value::Bool(b));
+        }
+        if let Some(s) = self.autostart_login_item {
+            props.insert(
+                "health_autostart_login_item".to_string(),
+                Value::String(s.to_string()),
+            );
         }
         props.insert(
             "health_autostart_repaired".to_string(),

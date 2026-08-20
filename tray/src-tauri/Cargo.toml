@@ -210,7 +210,18 @@ block2 = "0.6"
 # Typed NSWorkspace/NSImage/NSBitmapImageRep bindings for real per-app icon
 # extraction (commands/app_icons.rs) — same generation family as objc2 0.6.
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSRunningApplication"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSData", "NSDictionary", "NSGeometry"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSData", "NSDictionary", "NSGeometry", "NSProcessInfo", "NSError"] }
+# SMAppService — the sanctioned way to register a login item since macOS 13, and
+# the only one that puts a NAMED, user-togglable "Meridian" entry in System
+# Settings → General → Login Items & Extensions. Same objc2 generation (0.3.x)
+# as the app-kit/foundation bindings above, from the same maintainers, so it adds
+# no new FFI style and no new transitive tree — which is why this is preferred
+# over the third-party `smappservice-rs` wrapper (0.1.x, last touched May 2025).
+#
+# Requires macOS 13 at RUNTIME while the app declares LSMinimumSystemVersion
+# 10.13, so every call site is gated on `login_item::available()`. See
+# `autostart/login_item.rs`.
+objc2-service-management = { version = "0.3", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation"] }
 # CoreFoundation/Apple-frameworks bindings. Used ONLY for the in-process
 # Accessibility-trust prompt (`ax::is_process_trusted_with_prompt`) — the AX
 # analogue of `CGRequestScreenCaptureAccess`. Pinned to the same 0.13 line

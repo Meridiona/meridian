@@ -91,6 +91,11 @@
 // platform APIs, so there is nothing to stop them building anywhere — the same
 // reasoning (and the same `cfg_attr(allow(dead_code))` shape) as
 // [`crate::backend_install`]'s `wait_until_gone`.
+/// SMAppService login-item registration. macOS-only for real (it is an ObjC
+/// framework call, not a string builder), so unlike the two platform modules
+/// this one is genuinely `cfg`-gated.
+#[cfg(target_os = "macos")]
+pub(crate) mod login_item;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) mod macos;
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -178,6 +183,12 @@ pub(crate) enum RegistrationAction {
     /// Registered, but with no morning trigger. This is the upgrade path for
     /// every install that was registered by `tauri-plugin-autostart`.
     RepairedMissingMorningTrigger,
+    /// Registered at the right path, but the definition is not what this build
+    /// renders — a field changed that no substring probe would have noticed.
+    /// The case that motivated it: an older build's plist carried
+    /// `RunAtLoad true`, which would double-launch alongside the SMAppService
+    /// login item on macOS 13+.
+    RepairedStaleDefinition,
     /// The registration could not be read or written (permissions, missing
     /// home directory, `schtasks` refused). Retried on the next launch.
     Failed,
@@ -194,6 +205,7 @@ impl RegistrationAction {
             Self::RegisteredMissing => "registered_missing",
             Self::RepairedPathDrift => "repaired_path_drift",
             Self::RepairedMissingMorningTrigger => "repaired_missing_morning_trigger",
+            Self::RepairedStaleDefinition => "repaired_stale_definition",
             Self::Failed => "failed",
         }
     }
@@ -203,7 +215,10 @@ impl RegistrationAction {
     pub(crate) fn is_repair(self) -> bool {
         matches!(
             self,
-            Self::RegisteredMissing | Self::RepairedPathDrift | Self::RepairedMissingMorningTrigger
+            Self::RegisteredMissing
+                | Self::RepairedPathDrift
+                | Self::RepairedMissingMorningTrigger
+                | Self::RepairedStaleDefinition
         )
     }
 
@@ -216,6 +231,7 @@ impl RegistrationAction {
             Self::RepairedPathDrift => 5,
             Self::RepairedMissingMorningTrigger => 6,
             Self::Failed => 7,
+            Self::RepairedStaleDefinition => 8,
         }
     }
 
@@ -228,6 +244,7 @@ impl RegistrationAction {
             5 => Self::RepairedPathDrift,
             6 => Self::RepairedMissingMorningTrigger,
             7 => Self::Failed,
+            8 => Self::RepairedStaleDefinition,
             _ => return None,
         })
     }
@@ -414,6 +431,16 @@ pub(crate) struct Status {
     /// nothing is registered or the check could not run — never `false` for
     /// "we could not tell", per the rule in [`crate::analytics::health`].
     pub(crate) path_ok: Option<bool>,
+    /// macOS only: what SMAppService says about the LOGIN-item registration —
+    /// `enabled`, `requires_approval`, `not_registered`, `not_found`, or
+    /// `unavailable` below macOS 13. `None` off macOS.
+    ///
+    /// Distinct from [`Self::registered`], which describes the morning-relaunch
+    /// plist. The two are separate mechanisms and can disagree, and the whole
+    /// reason this field exists is that "is Meridian actually in Login Items &
+    /// Extensions" was unanswerable from the fleet — which is exactly the
+    /// question a user asking "why doesn't it start" is really asking.
+    pub(crate) login_item: Option<&'static str>,
 }
 
 /// Probe the current registration. Best-effort; every failure degrades to
@@ -449,15 +476,18 @@ pub(crate) fn status_from(registered: Option<&str>, expected_exe: Option<&str>) 
         (None, _) => Status {
             registered: Some(false),
             path_ok: None,
+            login_item: None,
         },
         (Some(text), Some(exe)) => Status {
             registered: Some(true),
             path_ok: Some(text.contains(exe)),
+            login_item: None,
         },
         // Registered, but we cannot resolve our own path to compare against.
         (Some(_), None) => Status {
             registered: Some(true),
             path_ok: None,
+            login_item: None,
         },
     }
 }
@@ -571,6 +601,7 @@ mod tests {
             RegistrationAction::RegisteredMissing,
             RegistrationAction::RepairedPathDrift,
             RegistrationAction::RepairedMissingMorningTrigger,
+            RegistrationAction::RepairedStaleDefinition,
         ] {
             assert!(a.is_repair(), "{a:?} should count as a repair");
         }
@@ -595,6 +626,7 @@ mod tests {
             RegistrationAction::RegisteredMissing,
             RegistrationAction::RepairedPathDrift,
             RegistrationAction::RepairedMissingMorningTrigger,
+            RegistrationAction::RepairedStaleDefinition,
             RegistrationAction::Failed,
         ] {
             assert_eq!(RegistrationAction::from_code(a.code()), Some(a));

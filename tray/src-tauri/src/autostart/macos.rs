@@ -20,7 +20,7 @@
 //!   binary. It is worth knowing about on a developer machine, where the visible
 //!   effect is that `KeepAlive` stops resurrecting the tray.
 
-use super::{RegistrationAction, Status};
+use super::{login_item, RegistrationAction, Status};
 use std::path::{Path, PathBuf};
 
 /// launchd label, matching the `com.meridiona.*` convention that
@@ -44,9 +44,13 @@ const LEGACY_PLIST_FILE: &str = "Meridian.plist";
 // owns the one place a bootout of that label is safe, because there the app is
 // meant to stop.
 
-/// Element that proves a plist carries the morning relaunch. See
-/// [`super::decide`] for why this is a text check.
-const MORNING_TRIGGER_MARKER: &str = "StartCalendarInterval";
+// NOTE: there is no MORNING_TRIGGER_MARKER here any more. `ensure_registered`
+// compares the rendered plist body EXACTLY rather than probing for substrings,
+// because a substring check cannot see a change to a field it does not name —
+// and `RunAtLoad` is precisely such a field now that SMAppService owns the login
+// half on macOS 13+. Windows still uses the substring form (`super::decide`),
+// because Task Scheduler reformats the XML it hands back, so an exact compare
+// there would report drift on every launch.
 
 /// `~/Library/LaunchAgents`, where per-user agents live. `None` when the home
 /// directory cannot be resolved, in which case there is nothing this module can
@@ -69,7 +73,21 @@ fn current_exe() -> Option<PathBuf> {
 /// Pure and separate from the write so every field below is unit-testable
 /// without touching `~/Library/LaunchAgents` on a developer machine.
 ///
-/// - `RunAtLoad` covers login (and therefore reboot).
+/// # `run_at_load` is the coordination with SMAppService, not a preference
+/// On macOS 13+ the login half is owned by
+/// [`super::login_item`] (`SMAppService.mainApp`), which is what produces a
+/// named, user-togglable "Meridian" entry in Login Items & Extensions. This
+/// plist is then reduced to its ONE remaining job — the morning relaunch — and
+/// must be written with `run_at_load` **false**. Leaving it true would mean two
+/// independent mechanisms both starting a tray at login: two processes writing
+/// one SQLite file, which is the double-writer condition behind the
+/// `database disk image is malformed` incidents documented in
+/// `backend_install.rs`.
+///
+/// Below macOS 13 SMAppService does not exist, so this plist carries both jobs
+/// and `run_at_load` is true.
+///
+/// The rest:
 /// - `StartCalendarInterval` covers "the user quit; bring it back tomorrow
 ///   morning". launchd runs a missed calendar job when the machine wakes, so a
 ///   laptop asleep at [`super::MORNING_HOUR`] still gets it.
@@ -85,11 +103,12 @@ fn current_exe() -> Option<PathBuf> {
 ///   `CLAUDE.md`'s observability section — the one thing the OTel spool cannot
 ///   capture. `src/telemetry_spool/launchd_log_cap.rs` already size-caps these
 ///   exact paths.
-pub(crate) fn plist_body(exe: &Path, home: &Path) -> String {
+pub(crate) fn plist_body(exe: &Path, home: &Path, run_at_load: bool) -> String {
     let exe = super::xml_escape(&exe.to_string_lossy());
     let home = super::xml_escape(&home.to_string_lossy());
     let flag = super::AUTOSTART_FLAG;
     let hour = super::MORNING_HOUR;
+    let run_at_load = if run_at_load { "<true/>" } else { "<false/>" };
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -105,7 +124,7 @@ pub(crate) fn plist_body(exe: &Path, home: &Path) -> String {
     </array>
 
     <key>RunAtLoad</key>
-    <true/>
+    {run_at_load}
 
     <key>StartCalendarInterval</key>
     <array>
@@ -155,20 +174,68 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
         return RegistrationAction::Failed;
     };
 
-    let existing = read_registration().await;
-    let action = super::decide(
+    // Skip decisions first, and they apply to BOTH mechanisms: a user who
+    // turned autostart off must not get a login item either, and a transient
+    // (DMG / translocated) path must not be pinned by anything.
+    let skip = super::decide(
         super::disabled_by_user(),
         crate::sys::running_from_stable_location(),
-        existing.as_deref(),
-        &exe.to_string_lossy(),
-        MORNING_TRIGGER_MARKER,
+        // `Some("")` rather than `None`: this call is only being asked about the
+        // two skip conditions, and a `None` here would answer
+        // `RegisteredMissing` before they were consulted.
+        Some(""),
+        "",
+        "",
     );
-    if !matches!(
-        action,
-        RegistrationAction::RegisteredMissing
-            | RegistrationAction::RepairedPathDrift
-            | RegistrationAction::RepairedMissingMorningTrigger
+    if matches!(
+        skip,
+        RegistrationAction::SkippedDisabledByUser | RegistrationAction::SkippedTransientPath
     ) {
+        return skip;
+    }
+
+    // The LOGIN half. On macOS 13+ this is SMAppService, which is the only way
+    // to appear in Login Items & Extensions as "Meridian" rather than as an
+    // anonymous legacy agent. Below 13 it reports `Unavailable` and the plist
+    // below carries the login trigger instead.
+    let login = login_item::register();
+    let owns_login = !matches!(
+        login,
+        login_item::RegisterOutcome::Unavailable | login_item::RegisterOutcome::Failed
+    );
+
+    // The MORNING half. `run_at_load` is the inverse of who owns login: if
+    // SMAppService took it, this plist must NOT also start a tray at login, or
+    // both fire and two processes write one SQLite file.
+    let expected = plist_body(&exe, &home, !owns_login);
+    let existing = read_registration().await;
+
+    // Exact-body comparison, not a substring probe.
+    //
+    // The substring version (path present? morning trigger present?) cannot see
+    // a change to a field it does not name — and `RunAtLoad` is exactly such a
+    // field. An install carrying the previous build's `RunAtLoad true` plist
+    // would have passed every substring check while double-launching alongside
+    // the new login item. Comparing the whole rendered body makes every future
+    // field change self-healing for free, and the cost of a false "differs" is
+    // one idempotent file write.
+    let action = match existing.as_deref() {
+        None => RegistrationAction::RegisteredMissing,
+        Some(cur) if cur == expected => RegistrationAction::AlreadyCorrect,
+        // Distinguish the two repairs that matter for the fleet: a moved app is
+        // a different problem from a definition this build simply renders
+        // differently.
+        Some(cur) if !cur.contains(exe.to_string_lossy().as_ref()) => {
+            RegistrationAction::RepairedPathDrift
+        }
+        Some(_) => RegistrationAction::RepairedStaleDefinition,
+    };
+
+    if action == RegistrationAction::AlreadyCorrect {
+        tracing::debug!(
+            login_item = login.as_str(),
+            "autostart: login item and morning trigger both already correct"
+        );
         return action;
     }
 
@@ -177,19 +244,23 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
         return RegistrationAction::Failed;
     }
     let dest = dir.join(PLIST_FILE);
-    if let Err(e) = tokio::fs::write(&dest, plist_body(&exe, &home)).await {
+    if let Err(e) = tokio::fs::write(&dest, &expected).await {
         tracing::warn!(error = %e, plist = %dest.display(), "autostart: could not write the plist");
         return RegistrationAction::Failed;
     }
 
-    // NOT bootstrapped - see the module docs on `crate::autostart`. launchd
-    // loads this directory at session start, so the job is live from the next
-    // login onward; bootstrapping it here would honour `RunAtLoad` and start a
-    // second tray against the same SQLite file.
+    // NOT bootstrapped - see the module docs on `crate::autostart`. Measured, so
+    // the cost is known rather than assumed: a probe plist that was never
+    // bootstrapped still appeared in `sfltool dumpbtm`, so the entry IS visible
+    // in Login Items & Extensions immediately. What waits for the next login is
+    // only the job becoming live, which is why bootstrapping here (and starting
+    // a second tray via `RunAtLoad`) buys nothing.
     tracing::info!(
         plist = %dest.display(),
         action = action.as_str(),
-        "autostart: LaunchAgent written - live from the next login"
+        login_item = login.as_str(),
+        run_at_load = !owns_login,
+        "autostart: morning-relaunch LaunchAgent written"
     );
     action
 }
@@ -248,6 +319,12 @@ async fn migrate_off_plugin() {
 /// once beats quitting the app out from under someone who was changing a
 /// preference.
 pub(crate) async fn unregister() {
+    // The login half first. Unlike `launchctl bootout` this does NOT terminate
+    // the running app, so it is safe to call from the Settings toggle while the
+    // user is looking at the window — which is the whole reason the plist below
+    // is deleted rather than booted out.
+    login_item::unregister();
+
     let Some(plist) = launch_agents_dir().map(|d| d.join(PLIST_FILE)) else {
         return;
     };
@@ -263,22 +340,27 @@ pub(crate) async fn unregister() {
 
 /// Live registration state for analytics. See [`super::Status`].
 pub(crate) async fn status() -> Status {
-    super::status_from(
+    // The plist half, then the login half folded on top: they are independent
+    // mechanisms and either can be broken while the other is fine.
+    let mut status = super::status_from(
         read_registration().await.as_deref(),
         current_exe()
             .map(|p| p.to_string_lossy().into_owned())
             .as_deref(),
-    )
+    );
+    status.login_item = Some(login_item::status().as_str());
+    status
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn body() -> String {
+    fn body(run_at_load: bool) -> String {
         plist_body(
             Path::new("/Applications/Meridian.app/Contents/MacOS/Meridian"),
             Path::new("/Users/tester"),
+            run_at_load,
         )
     }
 
@@ -291,23 +373,40 @@ mod tests {
         assert!(LABEL.starts_with("com.meridiona."));
     }
 
+    /// THE double-launch guard. On macOS 13+ SMAppService owns login, so this
+    /// plist must carry `RunAtLoad false` and nothing else may start a tray at
+    /// login. Both firing means two processes writing one SQLite file - the
+    /// double-writer condition behind `database disk image is malformed`.
     #[test]
-    fn plist_carries_both_triggers_and_the_autostart_flag() {
-        let b = body();
-        assert!(b.contains("<key>RunAtLoad</key>"), "login trigger missing");
-        assert!(
-            b.contains(MORNING_TRIGGER_MARKER),
-            "morning trigger missing"
-        );
-        assert!(
-            b.contains(&format!(
-                "<integer>{}</integer>",
-                super::super::MORNING_HOUR
-            )),
-            "morning hour missing"
-        );
-        assert!(b.contains(super::super::AUTOSTART_FLAG));
-        assert!(b.contains("/Applications/Meridian.app/Contents/MacOS/Meridian"));
+    fn run_at_load_is_false_when_smappservice_owns_login() {
+        let with_login_item = body(false);
+        assert!(with_login_item.contains("<key>RunAtLoad</key>\n    <false/>"));
+        assert!(!with_login_item.contains("<true/>"));
+
+        // And true on the fallback path, where nothing else covers login.
+        let fallback = body(true);
+        assert!(fallback.contains("<key>RunAtLoad</key>\n    <true/>"));
+    }
+
+    /// The morning trigger is this plist's reason to exist in BOTH modes -
+    /// SMAppService cannot express a calendar interval at all.
+    #[test]
+    fn both_modes_keep_the_morning_trigger() {
+        for run_at_load in [true, false] {
+            let b = body(run_at_load);
+            assert!(
+                b.contains("StartCalendarInterval"),
+                "run_at_load={run_at_load}"
+            );
+            assert!(
+                b.contains(&format!(
+                    "<integer>{}</integer>",
+                    super::super::MORNING_HOUR
+                )),
+                "run_at_load={run_at_load}"
+            );
+            assert!(b.contains(super::super::AUTOSTART_FLAG));
+        }
     }
 
     /// `KeepAlive` would make Quit impossible - the user explicitly wants
@@ -315,29 +414,17 @@ mod tests {
     /// this plist differs from the daemon's.
     #[test]
     fn plist_must_not_carry_keepalive() {
-        assert!(!body().contains("KeepAlive"));
+        assert!(!body(true).contains("KeepAlive"));
+        assert!(!body(false).contains("KeepAlive"));
     }
 
     /// The log paths are the crash safety net `telemetry_spool::launchd_log_cap`
     /// size-caps by exact name; a rename here would silently uncap them.
     #[test]
     fn plist_redirects_to_the_capped_log_paths() {
-        let b = body();
+        let b = body(true);
         assert!(b.contains("/Users/tester/.meridian/logs/tray.log"));
         assert!(b.contains("/Users/tester/.meridian/logs/tray-error.log"));
-    }
-
-    /// A plist this module wrote must be recognised as correct by the very
-    /// decision function that decides whether to rewrite it - otherwise every
-    /// launch would rewrite and report a repair forever.
-    #[test]
-    fn a_freshly_written_plist_reads_back_as_already_correct() {
-        let exe = "/Applications/Meridian.app/Contents/MacOS/Meridian";
-        let b = plist_body(Path::new(exe), Path::new("/Users/tester"));
-        assert_eq!(
-            super::super::decide(false, true, Some(&b), exe, MORNING_TRIGGER_MARKER),
-            RegistrationAction::AlreadyCorrect
-        );
     }
 
     /// An `&` in a user's home directory name would otherwise produce a plist
@@ -348,8 +435,18 @@ mod tests {
         let b = plist_body(
             Path::new("/Users/a&b/Meridian.app/Contents/MacOS/Meridian"),
             Path::new("/Users/a&b"),
+            true,
         );
         assert!(b.contains("/Users/a&amp;b/Meridian.app"));
         assert!(!b.contains("/Users/a&b"));
+    }
+
+    /// The two modes must render DIFFERENTLY, which is what makes the exact-body
+    /// comparison in `ensure_registered` able to detect a stale definition. If
+    /// they were byte-identical, an install carrying the old `RunAtLoad true`
+    /// plist would never be repaired and would double-launch forever.
+    #[test]
+    fn the_two_modes_are_distinguishable_by_an_exact_compare() {
+        assert_ne!(body(true), body(false));
     }
 }
