@@ -135,6 +135,23 @@ export default function MeridianTimelineShell() {
     setShowWorklogPrompt(true)
   }, [worklogPrompted])
 
+  // Retire the shell's own trigger the instant the TOUR arms its copy of the
+  // ask — not only once that copy is answered. Answering (Turn on / X /
+  // backdrop) already clears both flags via the tour dialog's own `onDone`
+  // (see the render site below), but a SKIP while that dialog is still up
+  // unmounts it through `finish()` resetting `tourWorklogSchedule` directly,
+  // never reaching `onDone`. Without this, `showWorklogPrompt` stayed latched
+  // true from the initial settings load, and the instant `tutorial.running`
+  // flipped false the shell popped the identical dialog right back up, seconds
+  // after the tour's own copy had just closed. The tour has already put the
+  // same question in front of the user once either way, so there is nothing
+  // left for the shell's own trigger to do this session — an unanswered skip
+  // still re-arms it cleanly next launch, since `worklog_auto_generate_prompted`
+  // stays false in the DB.
+  useEffect(() => {
+    if (tourWorklogSchedule) setShowWorklogPrompt(false)
+  }, [tourWorklogSchedule])
+
   // NoticeBar lives at the root layout, outside this tree, so its pm.* CTA
   // reaches this shell through a window event rather than props.
   //
