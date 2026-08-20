@@ -16,10 +16,10 @@ path data inline and fills each one from a theme variable holding that brand's o
 selected tile tint them with the Meridian accent: every logo came out violet, which defeats
 the entire point of showing a real logo.
 
-The two that need care are OpenAI and Cursor, whose marks **are** black. Both flip to white
-under the `ink` theme, which is what their own brand guidance says to do on a dark
-background - and is why the fill is a CSS variable rather than a hex baked into the file.
-An `<img>` pointed at these files could not be themed at all.
+The ones that need care are OpenAI, Cursor, and Ollama, whose marks **are** black. All three
+flip to white under the `ink` theme, which is what their own brand guidance says to do on a
+dark background - and is why the fill is a CSS variable rather than a hex baked into the
+file. An `<img>` pointed at these files could not be themed at all.
 
 The same path therefore exists in two places. `__tests__/provider-logos.test.ts` asserts the
 component's copy is byte-identical to the file here, and that every brand variable is

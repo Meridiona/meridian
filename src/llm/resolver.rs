@@ -222,20 +222,26 @@ const HEALTH_PROBE_INTERVAL: Duration = Duration::from_secs(15 * 60);
 /// (new PATH, fresh credentials, a CLI installed while the daemon was down).
 static LAST_HEALTH_PROBE: Mutex<Option<BTreeMap<String, Instant>>> = Mutex::new(None);
 
-/// Whether `provider` may spend one call re-checking a refusal, stamping the attempt if so.
+/// Whether the backend identified by `key` may spend one call re-checking a refusal,
+/// stamping the attempt if so.
+///
+/// Takes the same [`provider_key`] identity every other per-backend map in this file keys
+/// on, NOT a bare [`LlmProvider`] - see that fn's doc for why: two custom endpoints (e.g.
+/// Groq and Ollama, both `LlmProvider::Custom`) would otherwise share one probe allowance,
+/// so re-checking one endpoint's refusal could silently spend the other's exemption.
 ///
 /// Check and stamp are one operation under one lock on purpose: several pipeline stages can
 /// reach the gate concurrently on the same tick, and a check that did not immediately record
 /// the grant would let all of them through together - turning "one call per interval" into a
 /// small burst against a provider already believed to be failing.
-fn health_probe_is_due(provider: LlmProvider) -> bool {
+fn health_probe_is_due(key: &str) -> bool {
     let mut guard = LAST_HEALTH_PROBE.lock().unwrap_or_else(|e| e.into_inner());
     let map = guard.get_or_insert_with(BTreeMap::new);
     let now = Instant::now();
-    match map.get(provider.as_str()) {
+    match map.get(key) {
         Some(last) if now.duration_since(*last) < HEALTH_PROBE_INTERVAL => false,
         _ => {
-            map.insert(provider.as_str().to_string(), now);
+            map.insert(key.to_string(), now);
             true
         }
     }
@@ -488,7 +494,7 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
     let health = super::detect::in_use_provider_health(&s).await;
     let mut probing = false;
     if let Some(refusal) = health_refusal(&health) {
-        if !(health.probeable && health_probe_is_due(chosen)) {
+        if !(health.probeable && health_probe_is_due(&key)) {
             tracing::warn!(
                 provider = chosen.as_str(),
                 label = %req.label,
@@ -715,11 +721,17 @@ mod tests {
     /// than merely long, and nothing tells the user any of it.
     #[test]
     fn a_refused_provider_earns_one_probe_per_interval() {
+        // `LAST_HEALTH_PROBE` is process-global, like the backoff map -
+        // `two_custom_endpoints_earn_independent_probe_allowances` also calls
+        // `clear_health_probes()`, and without this lock the two can interleave and wipe
+        // each other's in-progress state. See `a_backoff_on_one_provider_does_not_stall_another`'s
+        // comment for the same race on the sibling map.
+        let _lock = crate::test_env::lock_settings_env();
         clear_health_probes();
 
         // First refusal after the interval: one call goes through to re-check.
         assert!(
-            health_probe_is_due(LlmProvider::Claude),
+            health_probe_is_due(&provider_key(LlmProvider::Claude, None)),
             "a refused provider must get a chance to prove the verdict wrong"
         );
 
@@ -729,15 +741,42 @@ mod tests {
         // believed to be broken once per stage.
         for _ in 0..5 {
             assert!(
-                !health_probe_is_due(LlmProvider::Claude),
+                !health_probe_is_due(&provider_key(LlmProvider::Claude, None)),
                 "only ONE call per interval may pass the gate"
             );
         }
 
         // Per provider, not global: a broken Claude must not consume Codex's probe.
         assert!(
-            health_probe_is_due(LlmProvider::Codex),
+            health_probe_is_due(&provider_key(LlmProvider::Codex, None)),
             "the allowance is keyed per provider"
+        );
+    }
+
+    /// The whole point of keying on `provider_key` rather than the bare `LlmProvider`: two
+    /// distinct custom endpoints (both `LlmProvider::Custom`) must earn independent probe
+    /// allowances, exactly like the health/test-cache contamination bug this mirrors (see
+    /// `provider_key`'s own doc).
+    #[test]
+    fn two_custom_endpoints_earn_independent_probe_allowances() {
+        // See `a_refused_provider_earns_one_probe_per_interval`'s comment - same
+        // process-global map, same need to serialize against it.
+        let _lock = crate::test_env::lock_settings_env();
+        clear_health_probes();
+        let groq = provider_key(LlmProvider::Custom, Some("groq-endpoint"));
+        let ollama = provider_key(LlmProvider::Custom, Some("ollama-endpoint"));
+
+        assert!(
+            health_probe_is_due(&groq),
+            "the first custom endpoint gets its probe"
+        );
+        assert!(
+            !health_probe_is_due(&groq),
+            "that SAME endpoint is exempt again within the interval"
+        );
+        assert!(
+            health_probe_is_due(&ollama),
+            "a DIFFERENT custom endpoint must not have spent its allowance too"
         );
     }
 

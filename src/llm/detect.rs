@@ -538,6 +538,23 @@ pub struct ProviderTestResult {
 /// failed once could never be re-tested, so the failure that closed the gate would also be
 /// the thing preventing it from ever reopening. It would look like a provider that can
 /// never be reconnected, with a Test button that fails instantly for no visible reason.
+/// Whether testing `provider` must refuse outright because it resolves to the discontinued
+/// Groq endpoint — pulled out of [`test_provider`] as a pure fn so this is unit-testable
+/// without spawning a real CLI.
+///
+/// Gated on `provider == Custom`: `settings.active_custom_provider()` reads the GLOBALLY
+/// selected endpoint, not the one `provider` names. [`super::resolver::complete_inner`] gets
+/// away with the same lookup because it only ever tests the currently-selected provider, but
+/// this fn is parameterized so the UI can test any tile regardless of what's active - without
+/// this guard, testing Claude/Codex/Cursor/Copilot while a Groq endpoint happened to be the
+/// active provider would incorrectly refuse THAT test too.
+fn groq_refusal_for(provider: LlmProvider, settings: &RuntimeSettings) -> Option<LlmError> {
+    if provider != LlmProvider::Custom {
+        return None;
+    }
+    super::resolver::groq_blocked(settings.active_custom_provider().map(|c| c.vendor.as_str()))
+}
+
 pub async fn test_provider(
     provider: LlmProvider,
     settings: &RuntimeSettings,
@@ -558,9 +575,7 @@ pub async fn test_provider(
     // Connection" must never report Groq healthy while the production funnel silently
     // refuses every call to it; that contradiction is exactly what let a stale verdict from
     // one code path outlive the truth in the other.
-    if let Some(refusal) =
-        super::resolver::groq_blocked(settings.active_custom_provider().map(|c| c.vendor.as_str()))
-    {
+    if let Some(refusal) = groq_refusal_for(provider, settings) {
         return finish_test(id, classify_test_outcome(Err(refusal)), t0);
     }
 
@@ -1786,6 +1801,65 @@ fn path_candidate_names(bin: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn groq_custom_provider() -> meridian_core::settings::CustomLlmProvider {
+        meridian_core::settings::CustomLlmProvider {
+            id: "groq1".to_string(),
+            vendor: "groq".to_string(),
+            name: "My Groq endpoint".to_string(),
+            base_url: "https://api.groq.com/openai/v1".to_string(),
+            model: "openai/gpt-oss-120b".to_string(),
+            api_key: "gsk-test".to_string(),
+            rpm: 0,
+            rpd: 0,
+            rungs: Default::default(),
+        }
+    }
+
+    fn settings_with_active_groq() -> RuntimeSettings {
+        RuntimeSettings {
+            llm_provider: "custom".to_string(),
+            llm_provider_custom_id: Some("groq1".to_string()),
+            custom_llm_providers: vec![groq_custom_provider()],
+            ..Default::default()
+        }
+    }
+
+    /// The bug this fn exists to fix: testing the Custom tile while a Groq endpoint is the
+    /// active custom provider must refuse.
+    #[test]
+    fn testing_the_custom_tile_refuses_when_groq_is_active() {
+        let settings = settings_with_active_groq();
+        assert!(groq_refusal_for(LlmProvider::Custom, &settings).is_some());
+    }
+
+    /// The regression itself: testing a DIFFERENT provider's tile while Groq happens to be
+    /// the globally active one must NOT be refused - `settings.active_custom_provider()`
+    /// reads the global selection, not the provider actually under test.
+    #[test]
+    fn testing_a_different_provider_is_unaffected_by_an_active_groq_endpoint() {
+        let settings = settings_with_active_groq();
+        for p in [
+            LlmProvider::Claude,
+            LlmProvider::Codex,
+            LlmProvider::Cursor,
+            LlmProvider::Copilot,
+        ] {
+            assert!(
+                groq_refusal_for(p, &settings).is_none(),
+                "{p:?} must not be refused just because Groq is the active provider"
+            );
+        }
+    }
+
+    /// A Custom tile that ISN'T Groq (e.g. Ollama, or any other preset) must never be
+    /// refused - the block is Groq-specific, not "every custom endpoint".
+    #[test]
+    fn a_non_groq_custom_endpoint_is_never_refused() {
+        let mut settings = settings_with_active_groq();
+        settings.custom_llm_providers[0].vendor = "ollama".to_string();
+        assert!(groq_refusal_for(LlmProvider::Custom, &settings).is_none());
+    }
 
     /// The load-bearing property: whatever `resolve_cli` hands back must be something
     /// `Command::new` can spawn WITHOUT relying on the caller's `PATH` — i.e. an absolute

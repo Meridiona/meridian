@@ -15,7 +15,8 @@
         "Several worklog drafts falling behind in the same hour now arrive as one notification instead of landing all at once.",
         "Drafting stopped failing with a hidden schema error on some custom AI endpoints.",
         "Coding-agent session summaries no longer silently fail to generate on some setups.",
-        "A database repair that fails on launch now retries automatically within the same session instead of leaving Meridian stuck until you relaunch."
+        "A database repair that fails on launch now retries automatically within the same session instead of leaving Meridian stuck until you relaunch.",
+        "Testing a specific AI provider's connection is more reliable when you have more than one free-tier key configured - it could fail outright, or show one endpoint's result on another's card."
       ]
     },
     {

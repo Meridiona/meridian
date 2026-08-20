@@ -188,6 +188,28 @@ function ChooserTile({ id, name, rank, selected, subtitle, phase, action, logo, 
   )
 }
 
+/** The selected row (if any) among ONE vendor's own custom-provider rows, and the status
+ *  ladder phase that follows from it. Shared by `CloudPresetTile`'s own tile and the
+ *  opened-detail view below so they can never disagree - two call sites deriving this
+ *  separately is how they used to: the tile said NOT CONNECTED while the card behind it said
+ *  "In use". Reads `status[customVariantId(selectedRow.id)]`, NOT `status.custom` - the Rust
+ *  side files the active endpoint's test/health under its OWN id (`provider_key`) precisely
+ *  because the bare `"custom"` bucket is shared by every configured endpoint: reading it
+ *  directly is what let a real user see Groq's stale rate-limit message rendered on Ollama's
+ *  tile after switching to it. */
+function vendorPhaseFor(
+  rows: CustomProviderView[],
+  selectedCustomId: string | null,
+  status: Record<string, ProviderStatus>,
+) {
+  const selectedRow = rows.find((p) => p.id === selectedCustomId)
+  const activeStatus = selectedRow ? status[customVariantId(selectedRow.id)] : undefined
+  const phase = selectedRow
+    ? phaseFor(false, false, false, activeStatus, activeStatus?.last_test ?? null)
+    : phaseFor(false, false, false, undefined, null)
+  return { selectedRow, phase }
+}
+
 /** One no-subscription preset's OWN tile in the top-level grid - Groq's, or Ollama's, never
  *  a tile shared between them.
  *
@@ -212,12 +234,11 @@ function CloudPresetTile({ preset, value, selectedCustomId, status, custom, onOp
   // these tiles from `gridPresets`, which IS `CLOUD_PRESETS` (see its own comment on why a
   // discontinued vendor like Groq no longer gets a tile at all rather than a "blocked" one).
   const rows = custom.providers.filter((p) => p.vendor === preset.vendor)
-  const selectedRow = rows.find((p) => p.id === selectedCustomId)
+  const { selectedRow, phase: computedPhase } = vendorPhaseFor(rows, selectedCustomId, status)
   const selected = value === 'custom' && !!selectedRow
-  const activeStatus = selectedRow ? status[customVariantId(selectedRow.id)] : undefined
-  const phase = selected
-    ? phaseFor(false, false, false, activeStatus, activeStatus?.last_test ?? null)
-    : phaseFor(false, false, false, undefined, null)
+  // Only a SELECTED row's status ladder answers - an unselected vendor's tile shows the same
+  // untested-neutral phase an unselected CLI tile shows, never borrowed from `selectedRow`.
+  const phase = selected ? computedPhase : phaseFor(false, false, false, undefined, null)
   return (
     <ChooserTile
       id="custom"
@@ -417,16 +438,13 @@ export default function LlmProviderPicker({
         />
       )
     }
-    // Whether the SELECTED row (if any) among this vendor's own rows is answering. Two call
-    // sites deriving this separately is how they used to disagree - the tile said NOT
-    // CONNECTED while the card behind it said "In use". Reads the row's OWN key
-    // (`customVariantId`), not `status.custom` - see `CloudPresetTile`'s comment on why
-    // that shared bucket is wrong the moment more than one endpoint exists.
-    const selectedRow = vendorRows.find((p) => p.id === selectedCustomId)
-    const activeStatus = selectedRow ? status[customVariantId(selectedRow.id)] : undefined
-    const vendorPhase = selectedRow
-      ? phaseFor(false, false, false, activeStatus, activeStatus?.last_test ?? null)
-      : phaseFor(false, false, false, undefined, null)
+    // Whether the SELECTED row (if any) among this vendor's own rows is answering. Shared
+    // with `CloudPresetTile` via `vendorPhaseFor` - two call sites deriving this separately
+    // is how they used to disagree, the tile said NOT CONNECTED while the card behind it
+    // said "In use". Reads the row's OWN key (`customVariantId`), not `status.custom` - see
+    // `vendorPhaseFor`'s comment on why that shared bucket is wrong the moment more than one
+    // endpoint exists.
+    const { selectedRow, phase: vendorPhase } = vendorPhaseFor(vendorRows, selectedCustomId ?? null, status)
     return (
       <CustomDetail
         preset={preset}
@@ -701,10 +719,12 @@ function CustomDetail({
   )
 }
 
-/** The chooser between the curated no-subscription presets (Groq, Ollama) - shown ONLY on the
- *  gate's "free" answer, where there is no tile yet to have already named the vendor. Settings
- *  never reaches this: Groq and Ollama each have their own tile there (`CloudPresetTile`), so
- *  clicking one already answers "which vendor" and skips straight to its wizard or registry.
+/** The chooser between the curated no-subscription presets in `CLOUD_PRESETS` - shown ONLY on
+ *  the gate's "free" answer, where there is no tile yet to have already named the vendor, and
+ *  only when there are two or more presets to choose from (`CLOUD_PRESETS.length === 1` skips
+ *  straight to `CloudKeySetup` instead - see the caller). Settings never reaches this: each
+ *  preset has its own tile there (`CloudPresetTile`), so clicking one already answers "which
+ *  vendor" and skips straight to its wizard or registry.
  *
  *  A dedicated small chooser rather than reusing `<ChooserTile>`: that component is built
  *  around a SELECTED `LlmProviderId`'s live status (IN USE / NOT CONNECTED, a `Phase`) and
@@ -722,7 +742,7 @@ function CloudPresetChooser({ onBack, onPick }: {
           Choose a free provider
         </h2>
         <p style={{ fontSize: 12, lineHeight: 1.5, color: 'var(--t-muted)', marginTop: 5 }}>
-          Both are free, no card required. Meridian sets either one up from a single pasted key.
+          All free, no card required. Meridian sets any of them up from a single pasted key.
         </p>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 11 }}>
