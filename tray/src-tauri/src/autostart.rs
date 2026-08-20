@@ -40,13 +40,17 @@
 //! (`autostart_disabled`).
 //!
 //! # What gets registered
-//! One job per platform, carrying both triggers, so the OS's own
-//! single-job-instance semantics do the de-duplication:
 //!
-//! - **macOS** — `~/Library/LaunchAgents/com.meridiona.tray.plist` with
-//!   `RunAtLoad` (login) + `StartCalendarInterval` at [`MORNING_HOUR`] (the
-//!   morning relaunch), and deliberately **no `KeepAlive`**: the user asked for
-//!   Quit to stick for the rest of the day and be undone the next morning, and
+//! - **macOS 13+** — `SMAppService.mainApp` owns LOGIN (see [`login_item`]),
+//!   which is what produces a named, user-togglable "Meridian" entry in System
+//!   Settings → General → Login Items & Extensions. The plist
+//!   `~/Library/LaunchAgents/com.meridiona.tray.plist` is reduced to the morning
+//!   relaunch alone: `RunAtLoad` **false** + `StartCalendarInterval` at
+//!   [`MORNING_HOUR`], bootstrapped immediately so the trigger is live from the
+//!   moment of install rather than the next login. Below 13 there is no
+//!   SMAppService, so that plist carries both jobs with `RunAtLoad` true.
+//!   Deliberately **no `KeepAlive`** either way: the user asked for Quit to
+//!   stick for the rest of the day and be undone the next morning, and
 //!   `KeepAlive` would make quitting impossible.
 //! - **Windows** — one scheduled task with a `LogonTrigger` *and* a daily
 //!   `CalendarTrigger`, registered from XML because `schtasks`' command form
@@ -54,17 +58,23 @@
 //!   which is what stops the 09:00 trigger starting a second tray on top of the
 //!   one the logon trigger already started.
 //!
-//! # Deliberately not bootstrapped on macOS
-//! [`macos::ensure_registered`] writes the plist but does not
-//! `launchctl bootstrap` it. `bootstrap` honours `RunAtLoad`, so bootstrapping
-//! our own job from inside the running tray would immediately start a SECOND
-//! tray — two processes writing `capture_frames` to one SQLite file. launchd
-//! loads `~/Library/LaunchAgents` at session start, so login coverage and the
-//! calendar trigger both work from the next login onward. The cost is precise
-//! and bounded: in the single session where the plist was first written, the
-//! calendar trigger is not yet live, so a user who installs and then quits on
-//! the same day waits until their next login rather than until 09:00. Every
-//! later session behaves fully.
+//! # Duplicates are prevented by a guard, not by hoping
+//! The 09:00 trigger is started by the OS scheduler, and **neither scheduler can
+//! see that the app is already running.** launchd tracks liveness per job
+//! LABEL, so the process macOS's loginwindow started via SMAppService is
+//! invisible to our calendar job; Task Scheduler's `MultipleInstancesPolicy:
+//! IgnoreNew` only dedupes the task's own instances. So the trigger fires daily
+//! into a running app.
+//!
+//! `tauri-plugin-single-instance` is therefore load-bearing, not a nicety: it is
+//! registered FIRST in [`crate::run`]'s builder so the doomed second process
+//! exits before it can create a tray icon or a capture writer. Two processes
+//! writing one `meridian.db` is the double-writer condition behind the
+//! `database disk image is malformed` incidents in [`crate::backend_install`].
+//!
+//! An earlier version of this module claimed `RunAtLoad false` alone prevented
+//! the duplicate. It does not — it only prevents one at LOGIN, and moved the
+//! collision to 09:00.
 //!
 //! # Who calls this
 //! [`crate::run`]'s `setup()` hook, once per launch, bundled runs only (see
@@ -91,6 +101,19 @@
 // platform APIs, so there is nothing to stop them building anywhere — the same
 // reasoning (and the same `cfg_attr(allow(dead_code))` shape) as
 // [`crate::backend_install`]'s `wait_until_gone`.
+/// SMAppService login-item registration.
+///
+/// Compiled on every target, like the two platform modules and for the same
+/// reason — but here it is also required, not merely preferable: [`macos`] is
+/// itself compiled everywhere and imports this, so gating the DECLARATION is
+/// what broke the Windows build with `no login_item in autostart`. Gating only
+/// the module's *contents* was not enough; the `mod` item has to exist.
+///
+/// The ObjC calls inside are individually `cfg`-gated and `available()` is a
+/// constant `false` off macOS, so nothing here can message a framework that
+/// isn't there.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) mod login_item;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) mod macos;
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -178,6 +201,12 @@ pub(crate) enum RegistrationAction {
     /// Registered, but with no morning trigger. This is the upgrade path for
     /// every install that was registered by `tauri-plugin-autostart`.
     RepairedMissingMorningTrigger,
+    /// Registered at the right path, but the definition is not what this build
+    /// renders — a field changed that no substring probe would have noticed.
+    /// The case that motivated it: an older build's plist carried
+    /// `RunAtLoad true`, which would double-launch alongside the SMAppService
+    /// login item on macOS 13+.
+    RepairedStaleDefinition,
     /// The registration could not be read or written (permissions, missing
     /// home directory, `schtasks` refused). Retried on the next launch.
     Failed,
@@ -194,6 +223,7 @@ impl RegistrationAction {
             Self::RegisteredMissing => "registered_missing",
             Self::RepairedPathDrift => "repaired_path_drift",
             Self::RepairedMissingMorningTrigger => "repaired_missing_morning_trigger",
+            Self::RepairedStaleDefinition => "repaired_stale_definition",
             Self::Failed => "failed",
         }
     }
@@ -203,7 +233,10 @@ impl RegistrationAction {
     pub(crate) fn is_repair(self) -> bool {
         matches!(
             self,
-            Self::RegisteredMissing | Self::RepairedPathDrift | Self::RepairedMissingMorningTrigger
+            Self::RegisteredMissing
+                | Self::RepairedPathDrift
+                | Self::RepairedMissingMorningTrigger
+                | Self::RepairedStaleDefinition
         )
     }
 
@@ -216,6 +249,7 @@ impl RegistrationAction {
             Self::RepairedPathDrift => 5,
             Self::RepairedMissingMorningTrigger => 6,
             Self::Failed => 7,
+            Self::RepairedStaleDefinition => 8,
         }
     }
 
@@ -228,6 +262,7 @@ impl RegistrationAction {
             5 => Self::RepairedPathDrift,
             6 => Self::RepairedMissingMorningTrigger,
             7 => Self::Failed,
+            8 => Self::RepairedStaleDefinition,
             _ => return None,
         })
     }
@@ -335,6 +370,29 @@ pub async fn ensure_registered() {
             action = action.as_str(),
             "autostart: registration was missing or stale - repaired"
         );
+    } else if matches!(
+        action,
+        RegistrationAction::SkippedTransientPath | RegistrationAction::Failed
+    ) {
+        // WARN, because these two mean AUTOSTART IS NOT IN PLACE and the user
+        // does not know it.
+        //
+        // They were previously DEBUG, lumped in with "no change needed" — which
+        // is how an install that silently never registers looked identical, in
+        // the fleet and in `meridian logs`, to one that was working perfectly.
+        // The requirement this module exists to satisfy is "the tray comes back
+        // after a restart, and again the next morning, until uninstalled"; an
+        // install sitting on either of these branches satisfies none of it, and
+        // that has to be visible without asking the user to run anything.
+        //
+        // Volume is bounded: a transient path resolves as soon as the app is in
+        // a stable location (`crate::relocate`), and `Failed` is a real I/O or
+        // API error rather than a routine state. `SkippedDisabledByUser` stays
+        // quiet on purpose — that one is the user's decision, not a fault.
+        tracing::warn!(
+            action = action.as_str(),
+            "autostart: NOT registered - the tray will not come back on its own"
+        );
     } else {
         tracing::debug!(action = action.as_str(), "autostart: no change needed");
     }
@@ -414,6 +472,16 @@ pub(crate) struct Status {
     /// nothing is registered or the check could not run — never `false` for
     /// "we could not tell", per the rule in [`crate::analytics::health`].
     pub(crate) path_ok: Option<bool>,
+    /// macOS only: what SMAppService says about the LOGIN-item registration —
+    /// `enabled`, `requires_approval`, `not_registered`, `not_found`, or
+    /// `unavailable` below macOS 13. `None` off macOS.
+    ///
+    /// Distinct from [`Self::registered`], which describes the morning-relaunch
+    /// plist. The two are separate mechanisms and can disagree, and the whole
+    /// reason this field exists is that "is Meridian actually in Login Items &
+    /// Extensions" was unanswerable from the fleet — which is exactly the
+    /// question a user asking "why doesn't it start" is really asking.
+    pub(crate) login_item: Option<&'static str>,
 }
 
 /// Probe the current registration. Best-effort; every failure degrades to
@@ -449,15 +517,18 @@ pub(crate) fn status_from(registered: Option<&str>, expected_exe: Option<&str>) 
         (None, _) => Status {
             registered: Some(false),
             path_ok: None,
+            login_item: None,
         },
         (Some(text), Some(exe)) => Status {
             registered: Some(true),
             path_ok: Some(text.contains(exe)),
+            login_item: None,
         },
         // Registered, but we cannot resolve our own path to compare against.
         (Some(_), None) => Status {
             registered: Some(true),
             path_ok: None,
+            login_item: None,
         },
     }
 }
@@ -571,6 +642,7 @@ mod tests {
             RegistrationAction::RegisteredMissing,
             RegistrationAction::RepairedPathDrift,
             RegistrationAction::RepairedMissingMorningTrigger,
+            RegistrationAction::RepairedStaleDefinition,
         ] {
             assert!(a.is_repair(), "{a:?} should count as a repair");
         }
@@ -584,6 +656,31 @@ mod tests {
         }
     }
 
+    /// The severity split in `ensure_registered`: exactly the actions that mean
+    /// "autostart is not in place" must be loud, because the user cannot tell.
+    ///
+    /// Pinned as a test because it is a one-line `matches!` that reads like
+    /// logging trivia and is not. It was DEBUG once, which made an install that
+    /// silently never registered indistinguishable — in the fleet AND in
+    /// `meridian logs` — from one working perfectly. `SkippedDisabledByUser` is
+    /// deliberately NOT in the loud set: that is the user's decision, not a
+    /// fault, and warning on it would train everyone to ignore the warning.
+    #[test]
+    fn only_the_not_registered_outcomes_are_loud() {
+        let loud = |a: RegistrationAction| {
+            matches!(
+                a,
+                RegistrationAction::SkippedTransientPath | RegistrationAction::Failed
+            )
+        };
+        assert!(loud(RegistrationAction::SkippedTransientPath));
+        assert!(loud(RegistrationAction::Failed));
+        assert!(!loud(RegistrationAction::SkippedDisabledByUser));
+        assert!(!loud(RegistrationAction::AlreadyCorrect));
+        // Repairs are loud too, via `is_repair` on the branch above.
+        assert!(RegistrationAction::RegisteredMissing.is_repair());
+    }
+
     /// The analytics wire names are a contract with saved PostHog queries, so
     /// they are pinned here rather than derived from the variant spelling.
     #[test]
@@ -595,6 +692,7 @@ mod tests {
             RegistrationAction::RegisteredMissing,
             RegistrationAction::RepairedPathDrift,
             RegistrationAction::RepairedMissingMorningTrigger,
+            RegistrationAction::RepairedStaleDefinition,
             RegistrationAction::Failed,
         ] {
             assert_eq!(RegistrationAction::from_code(a.code()), Some(a));
