@@ -1447,40 +1447,16 @@ async fn main() -> Result<()> {
                 // manageable, still selectable) so the user isn't locked out of their own
                 // settings, but the moment Groq is active this banner says plainly that
                 // nothing is being sent to it. Raise/clear every tick, same idempotent
-                // pattern as disk-space above. Scoped to `vendor == "groq"` specifically, so
-                // Claude/Codex/Cursor/Copilot/Ollama users see nothing.
-                match cfg.runtime.active_custom_provider().map(|p| p.vendor.as_str()) {
-                    Some("groq") => {
-                        let _ = meridian::notices::raise_typed(
-                            &meridian,
-                            meridian::notices::Notice {
-                                id: "llm.groq_deprecated",
-                                severity: "error",
-                                title: "Groq is disabled",
-                                detail: "Groq's free tier can't reliably serve Meridian's \
-                                    hourly summaries, so Meridian no longer sends it any \
-                                    requests. Hourly summaries are paused until you switch \
-                                    providers.",
-                                remedy: Some(
-                                    "Add a free Ollama key in Settings - Intelligence to resume.",
-                                ),
-                                event_key: "llm.groq_deprecated",
-                                deep_link: Some(
-                                    meridian_core::notifications::deep_links::INTELLIGENCE,
-                                ),
-                            },
-                        )
-                        .await;
-                    }
-                    _ => {
-                        let _ = meridian::notices::clear_typed(
-                            &meridian,
-                            "llm.groq_deprecated",
-                            "llm.groq_deprecated",
-                        )
-                        .await;
-                    }
-                }
+                // pattern as disk-space above. This is the steady-state driver; the tray's
+                // `update_settings` calls the SAME function the instant the provider changes,
+                // so switching away from Groq clears the banner immediately rather than
+                // leaving it up for up to a minute after the fix already took effect — see
+                // `sync_groq_deprecated_notice`'s doc for why both call it.
+                meridian::notices::sync_groq_deprecated_notice(
+                    &meridian,
+                    cfg.runtime.active_custom_provider().map(|p| p.vendor.as_str()),
+                )
+                .await;
 
                 // Interactive-notification responses — act on the user's answers
                 // (snooze re-enqueues an hour out). Idempotent end-to-end, so the
