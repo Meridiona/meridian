@@ -52,6 +52,35 @@ const LEGACY_PLIST_FILE: &str = "Meridian.plist";
 // because Task Scheduler reformats the XML it hands back, so an exact compare
 // there would report drift on every launch.
 
+/// Darwin notifications that mean "the device just became usable again".
+///
+/// See [`plist_body`] for why this is a SET rather than one name, and for where
+/// each came from. Order is irrelevant; launchd keys the dict by name.
+pub(crate) const WAKE_NOTIFICATIONS: [&str; 7] = [
+    // Unlock. macOS requires a password after sleep by default, so this is the
+    // common path for "opened the laptop". Apple triggers its own
+    // com.apple.contextstored on this exact name.
+    "com.apple.sessionagent.screenIsUnlocked",
+    // Desktop up after login / fast user switch.
+    "com.apple.system.loginwindow.desktopUp",
+    // The display coming back on - the closest thing to "the screen is usable
+    // again" for a machine woken without a password prompt.
+    "com.apple.iokit.hid.displayStatus",
+    // System power state change (sleep/wake). BOTH spellings are listed on
+    // purpose: Apple's own plists use the `com.apple.powermanagement.*` form
+    // while the community-collected list uses `com.apple.system.powermanagement.*`.
+    // One of them is wrong on any given release and neither costs anything -
+    // see `plist_body` for why an unknown name is inert.
+    "com.apple.system.powermanagement.systempowerstate",
+    "com.apple.powermanagement.systempowerstate",
+    // A power event the user actually sees, i.e. a real wake rather than a dark
+    // wake for maintenance.
+    "com.apple.system.powermanagement.uservisiblepowerevent",
+    // The laptop lid - literally "device opened". Fires on close too, which is a
+    // harmless no-op thanks to the single-instance guard.
+    "com.apple.system.powermanagement.clamshellstate",
+];
+
 /// `~/Library/LaunchAgents`, where per-user agents live. `None` when the home
 /// directory cannot be resolved, in which case there is nothing this module can
 /// do.
@@ -73,42 +102,77 @@ fn current_exe() -> Option<PathBuf> {
 /// Pure and separate from the write so every field below is unit-testable
 /// without touching `~/Library/LaunchAgents` on a developer machine.
 ///
-/// # `run_at_load` is the coordination with SMAppService, not a preference
-/// On macOS 13+ the login half is owned by
-/// [`super::login_item`] (`SMAppService.mainApp`), which is what produces a
-/// named, user-togglable "Meridian" entry in Login Items & Extensions. This
-/// plist is then reduced to its ONE remaining job — the morning relaunch — and
-/// must be written with `run_at_load` **false**. Leaving it true would mean two
-/// independent mechanisms both starting a tray at login: two processes writing
-/// one SQLite file, which is the double-writer condition behind the
-/// `database disk image is malformed` incidents documented in
-/// `backend_install.rs`.
+/// # There is no clock in here, deliberately
+/// The requirement is "Meridian is running after the device is turned on or
+/// woken" — an EVENT, not a time. This used to be a `StartCalendarInterval` at a
+/// hardcoded hour, which is the wrong shape for that: it fires when the user
+/// isn't there, and misses them when they are.
 ///
-/// Below macOS 13 SMAppService does not exist, so this plist carries both jobs
-/// and `run_at_load` is true.
+/// launchd has no `wake` or `unlock` trigger among its start keys (`RunAtLoad`,
+/// `StartInterval`, `StartCalendarInterval`, `WatchPaths`, `QueueDirectories`,
+/// `StartOnMount`, `KeepAlive`, `MachServices`, `Sockets`) — but `LaunchEvents`
+/// with the `com.apple.notifyd.matching` stream starts a job on an arbitrary
+/// Darwin notification, which is how Apple's own agents do this. The shape here
+/// is copied from `/System/Library/LaunchDaemons/com.apple.contextstored.plist`,
+/// which triggers on the same unlock notification, and the mechanism was
+/// verified end-to-end on macOS 26: a probe agent did not run on bootstrap and
+/// ran the instant its notification was posted.
 ///
-/// The rest:
-/// - `StartCalendarInterval` covers "the user quit; bring it back tomorrow
-///   morning". launchd runs a missed calendar job when the machine wakes, so a
-///   laptop asleep at [`super::MORNING_HOUR`] (06:00) still gets it.
-/// - **No `KeepAlive`**, deliberately: with it, Quit would be undone within
-///   seconds and there would be no way to stop Meridian for the afternoon. The
-///   daemon's plist makes the opposite choice because it is headless and has no
-///   Quit.
-/// - [`super::AUTOSTART_FLAG`] is passed so the tray knows this launch was
-///   unattended and must not open a window.
-/// - `ProcessType` `Interactive` keeps launchd from throttling a job that owns
-///   UI.
+/// # Why SEVERAL notifications rather than the one right one
+/// These names are private, so Apple documents none of them and no single one
+/// can be relied on across releases. That would normally be a reason for
+/// caution; here it is free, for two reasons:
+///
+/// - A notification launchd never receives is simply **inert** — an unknown name
+///   costs nothing and fails silently in the safe direction.
+/// - A notification that fires while the tray is ALREADY running costs a process
+///   that exits in milliseconds, because `tauri-plugin-single-instance` is
+///   registered first (see [`crate::run`]).
+///
+/// So the set is chosen for coverage, not minimality, and no single guess has to
+/// be correct:
+///
+/// See [`WAKE_NOTIFICATIONS`] for the list and what each one covers. Both
+/// spellings of the power-state notification are included because Apple's plists
+/// and the community-collected list disagree, and being wrong about one is free.
+///
+/// **Measured, not assumed** (macOS 26): a plist carrying a deliberately bogus
+/// notification name alongside real ones still bootstrapped cleanly, and the
+/// real notification still started the job. So an unknown or renamed name
+/// degrades to "never fires" rather than breaking the whole registration.
+///
+/// Login itself is NOT here: on macOS 13+ it belongs to `SMAppService`
+/// ([`super::login_item`]), which is what produces a named, user-togglable
+/// "Meridian" entry in Login Items & Extensions.
+///
+/// # The rest
+/// - `run_at_load` is the coordination with SMAppService. FALSE when SMAppService
+///   owns login, or both would start a tray at login. Below macOS 13 there is no
+///   SMAppService, so it is true and this plist carries login too.
+/// - **No `KeepAlive`**, deliberately: with it Quit would be undone within
+///   seconds and there would be no way to stop Meridian at all. The daemon's
+///   plist makes the opposite choice because it is headless and has no Quit.
+/// - [`super::AUTOSTART_FLAG`] tells the tray this launch was unattended, so it
+///   opens no window (`crate::poll::whats_new_auto_open`).
+/// - `ProcessType` `Interactive` keeps launchd from throttling a job that owns UI.
 /// - The stdout/stderr redirects are the OS-level crash safety net described in
 ///   `CLAUDE.md`'s observability section — the one thing the OTel spool cannot
-///   capture. `src/telemetry_spool/launchd_log_cap.rs` already size-caps these
-///   exact paths.
+///   capture. `src/telemetry_spool/launchd_log_cap.rs` size-caps these exact paths.
 pub(crate) fn plist_body(exe: &Path, home: &Path, run_at_load: bool) -> String {
     let exe = super::xml_escape(&exe.to_string_lossy());
     let home = super::xml_escape(&home.to_string_lossy());
     let flag = super::AUTOSTART_FLAG;
-    let hour = super::MORNING_HOUR;
     let run_at_load = if run_at_load { "<true/>" } else { "<false/>" };
+    // Rendered from the table rather than hand-written, so adding a trigger is
+    // one entry and the plist cannot drift from the list.
+    let events: String = WAKE_NOTIFICATIONS
+        .iter()
+        .map(|n| {
+            format!(
+                "            <key>{n}</key>\n                             <dict>\n                <key>Notification</key>\n                                 <string>{n}</string>\n            </dict>\n"
+            )
+        })
+        .collect();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -126,15 +190,12 @@ pub(crate) fn plist_body(exe: &Path, home: &Path, run_at_load: bool) -> String {
     <key>RunAtLoad</key>
     {run_at_load}
 
-    <key>StartCalendarInterval</key>
-    <array>
+    <key>LaunchEvents</key>
+    <dict>
+        <key>com.apple.notifyd.matching</key>
         <dict>
-            <key>Hour</key>
-            <integer>{hour}</integer>
-            <key>Minute</key>
-            <integer>0</integer>
-        </dict>
-    </array>
+{events}        </dict>
+    </dict>
 
     <key>StandardOutPath</key>
     <string>{home}/.meridian/logs/tray.log</string>
@@ -422,25 +483,53 @@ mod tests {
         assert!(fallback.contains("<key>RunAtLoad</key>\n    <true/>"));
     }
 
-    /// The morning trigger is this plist's reason to exist in BOTH modes -
-    /// SMAppService cannot express a calendar interval at all.
+    /// The wake triggers are this plist's reason to exist in BOTH modes -
+    /// SMAppService cannot express them at all, and there is no clock left.
     #[test]
-    fn both_modes_keep_the_morning_trigger() {
+    fn both_modes_carry_every_wake_notification_and_no_clock() {
         for run_at_load in [true, false] {
             let b = body(run_at_load);
             assert!(
-                b.contains("StartCalendarInterval"),
+                b.contains("<key>LaunchEvents</key>"),
                 "run_at_load={run_at_load}"
             );
             assert!(
-                b.contains(&format!(
-                    "<integer>{}</integer>",
-                    super::super::MORNING_HOUR
-                )),
+                b.contains("com.apple.notifyd.matching"),
                 "run_at_load={run_at_load}"
             );
+            for n in WAKE_NOTIFICATIONS {
+                assert!(b.contains(n), "missing {n} (run_at_load={run_at_load})");
+            }
             assert!(b.contains(super::super::AUTOSTART_FLAG));
+            // The whole point of the rewrite: no hardcoded time survives.
+            assert!(
+                !b.contains("StartCalendarInterval") && !b.contains("StartInterval"),
+                "a clock came back - the requirement is an event, not a time"
+            );
         }
+    }
+
+    /// Each notification must appear as its own `{{ Notification: <name> }}` dict
+    /// under `com.apple.notifyd.matching`, which is the shape Apple's own
+    /// `com.apple.contextstored.plist` uses. A flat array silently never fires.
+    #[test]
+    fn each_notification_is_rendered_in_apples_dict_shape() {
+        let b = body(false);
+        for n in WAKE_NOTIFICATIONS {
+            assert!(
+                b.contains(&format!("<key>{n}</key>")),
+                "{n} is not a key in the matching dict"
+            );
+            assert!(
+                b.contains(&format!("<string>{n}</string>")),
+                "{n} has no Notification value"
+            );
+        }
+        assert_eq!(
+            b.matches("<key>Notification</key>").count(),
+            WAKE_NOTIFICATIONS.len(),
+            "one Notification key per notification"
+        );
     }
 
     /// `KeepAlive` would make Quit impossible - the user explicitly wants

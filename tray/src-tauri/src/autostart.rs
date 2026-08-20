@@ -154,49 +154,14 @@ where
     args.into_iter().any(|a| a.as_ref() == AUTOSTART_FLAG)
 }
 
-/// Local hour the NEW-DAY relaunch fires, on both platforms.
-///
-/// # The requirement is "whenever they next start", not a clock time
-/// If the user quits, Meridian must be back by the time they next sit down —
-/// the next morning, whenever that is. A fixed hour is a crude way to express
-/// that, so the hour is chosen to make the OS's own missed-trigger behaviour do
-/// the work:
-///
-/// - **Machine asleep overnight.** launchd coalesces missed
-///   `StartCalendarInterval` fires and runs them **on wake** (Apple's
-///   "Scheduling Timed Jobs"); Windows does the same via the task's
-///   `StartWhenAvailable`. So for any wake after this hour, the trigger fires
-///   *at the moment they open the laptop* — exactly the requirement, with no
-///   activity detection at all.
-/// - **Machine powered off overnight.** The calendar miss is irrelevant: powering
-///   on means logging in, and the LOGIN trigger covers that.
-/// - **Machine left on overnight.** This is the only case where a clock time is
-///   really a clock time, and it is why the hour is 06:00 rather than just after
-///   midnight.
-///
-/// # Why 06:00 specifically
-/// It has to be before anyone's workday starts, or they arrive to a tray that is
-/// still quit. It also has to be late enough that a machine left running is not
-/// woken back into capturing someone's evening: `work_hours_enabled` defaults to
-/// **false**, so capture is NOT paused outside work hours by default, and a
-/// 00:05 relaunch would mean quitting at 20:00 and being watched again from just
-/// after midnight. Someone who quits deliberately should not get that.
-///
-/// 06:00 sits in the gap: after essentially all late-night use, before
-/// essentially every workday. A machine left on is idle or locked then, so the
-/// relaunch captures nothing meaningful; a machine asleep gets it on wake.
-///
-/// # The residual gap, stated plainly
-/// Someone who genuinely starts before 06:00 on a machine that never slept
-/// waits until 06:00. Nothing here fixes that, and the exact fix would be an
-/// activity probe (macOS `HIDIdleTime`, Windows `GetLastInputInfo`) driven by the
-/// always-running daemon — real machinery, for an edge this does not justify yet.
-///
-/// A constant, not a setting: a settings field would need a UI, a migration and
-/// a re-registration path on change. Widening it is one more entry in the plist's
-/// `StartCalendarInterval` array / the task's `Triggers`, and the single-instance
-/// guard makes extra fires harmless no-ops.
-pub(crate) const MORNING_HOUR: u32 = 6;
+// NOTE: there is no MORNING_HOUR any more, and that removal is the point.
+//
+// A hardcoded relaunch hour was the wrong shape for the requirement ("Meridian is
+// running after the device is turned on or woken"): it fires when the user is not
+// there and misses them when they are. Both platforms now trigger on the OS's own
+// events instead - launchd `LaunchEvents` on wake/unlock notifications
+// ([`macos::WAKE_NOTIFICATIONS`]) and Windows `SessionStateChangeTrigger` on
+// `SessionUnlock`/`ConsoleConnect`. There is no clock left in this module.
 
 /// Marker recording that the user deliberately turned autostart OFF.
 ///

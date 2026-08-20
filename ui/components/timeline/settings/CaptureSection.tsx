@@ -68,7 +68,7 @@ export function CaptureSection({ settings, patch, save }: {
           this key registers or removes that job immediately. */}
       <SectionCard>
         <SectionHeader>Startup</SectionHeader>
-        <FieldRow label="Start Meridian automatically" description="On by default: Meridian starts in your menu bar when you sign in, and comes back the next morning if you quit it - as soon as you open your laptop or start your day. It opens quietly in the background - no window, nothing to dismiss. Meridian only records your work while it is running, so turning this off means days you forget to open it are not tracked.">
+        <FieldRow label="Start Meridian automatically" description="On by default: Meridian starts in your menu bar when you sign in, and comes back whenever you turn your machine on or wake it up. It opens quietly in the background - no window, nothing to dismiss. Meridian only records your work while it is running, so turning this off means days you forget to open it are not tracked.">
           <Switch checked={settings.autostart_enabled} onCheckedChange={v => patch({ autostart_enabled: v })} />
         </FieldRow>
         <SaveButton

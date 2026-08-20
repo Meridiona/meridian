@@ -2,6 +2,23 @@
 //! Windows side of [`crate::autostart`] — one per-user scheduled task carrying
 //! both a logon trigger and a daily trigger.
 //!
+//! # The triggers are EVENTS, not a clock
+//! The requirement is "Meridian is running after the device is turned on or
+//! woken". Windows expresses that natively: `SessionStateChangeTrigger` fires on
+//! `SessionUnlock` (the user unlocked the workstation) and `ConsoleConnect` (the
+//! user connected to the session), alongside `LogonTrigger` for sign-in. There
+//! is no hardcoded time anywhere.
+//!
+//! This replaced a daily `CalendarTrigger` at a fixed hour, which was the wrong
+//! shape for the requirement: it fired when the user was not there and missed
+//! them when they were. macOS gets the same treatment through launchd's
+//! `LaunchEvents` (see [`super::macos`]); the two platforms now use each OS's
+//! own event system rather than a clock.
+//!
+//! Firing on every unlock is safe because `tauri-plugin-single-instance` is
+//! registered first, so a launch into an already-running tray exits in
+//! milliseconds.
+//!
 //! # Why XML, not `schtasks /SC`
 //! The command form takes exactly one `/SC`, so a login task and a daily task
 //! would have to be two separate tasks — and two tasks are two independent
@@ -17,14 +34,15 @@
 //! all (the same policy [`crate::backend_install`] already works around for the
 //! daemon), so this degrades rather than giving up:
 //!
-//! 1. `schtasks /Create /XML` — logon + morning, `IgnoreNew`.
-//! 2. `schtasks /Create /SC ONLOGON` — logon only. Loses the morning relaunch,
-//!    keeps the restart case.
+//! 1. `schtasks /Create /XML` — logon + unlock + console-connect, `IgnoreNew`.
+//! 2. `schtasks /Create /SC ONLOGON` — logon only. Loses the wake triggers, keeps
+//!    the restart case. The command form takes one `/SC` and cannot express a
+//!    session-state trigger at all.
 //! 3. A hidden VBScript in the Startup folder — logon only, no Task Scheduler
 //!    involvement at all.
 //!
-//! Each fallback is logged at WARN, so "how many Windows installs cannot have a
-//! morning relaunch" is answerable from the fleet rather than guessed at.
+//! Each fallback is logged at WARN, so "how many Windows installs cannot wake
+//! Meridian on unlock" is answerable from the fleet rather than guessed at.
 //!
 //! # Who calls this
 //! [`crate::autostart::ensure_registered`] and [`crate::autostart::status`].
@@ -38,9 +56,12 @@ use std::path::{Path, PathBuf};
 /// with separate lifecycles, and `src/uninstall.rs` deletes them by name.
 pub(crate) const TASK_NAME: &str = "Meridian Tray";
 
-/// Element that proves the registered task carries the morning trigger. See
+/// Element that proves the registered task carries the wake triggers. See
 /// [`super::decide`] for why this is a text check.
-const MORNING_TRIGGER_MARKER: &str = "CalendarTrigger";
+///
+/// It is also the upgrade detector for installs registered by an earlier build,
+/// whose task carried a `CalendarTrigger` at a hardcoded hour instead.
+const MORNING_TRIGGER_MARKER: &str = "SessionStateChangeTrigger";
 
 /// The `HKCU\...\Run` value `tauri-plugin-autostart` used to write, named after
 /// `productName`. Removed on first run so an upgraded install does not start
@@ -88,11 +109,6 @@ fn current_exe() -> Option<PathBuf> {
 pub(crate) fn task_xml(exe: &Path) -> String {
     let exe = super::xml_escape(&exe.to_string_lossy());
     let flag = super::xml_escape(super::AUTOSTART_FLAG);
-    let hour = super::MORNING_HOUR;
-    // The date component of `StartBoundary` only establishes when the schedule
-    // begins; with `ScheduleByDay` the time of day is what recurs. A fixed past
-    // date keeps this function pure - deriving "today" would make the generated
-    // XML differ on every launch and so read as drift.
     format!(
         r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -103,13 +119,14 @@ pub(crate) fn task_xml(exe: &Path) -> String {
     <LogonTrigger>
       <Enabled>true</Enabled>
     </LogonTrigger>
-    <CalendarTrigger>
-      <StartBoundary>2020-01-01T{hour:02}:00:00</StartBoundary>
+    <SessionStateChangeTrigger>
       <Enabled>true</Enabled>
-      <ScheduleByDay>
-        <DaysInterval>1</DaysInterval>
-      </ScheduleByDay>
-    </CalendarTrigger>
+      <StateChange>SessionUnlock</StateChange>
+    </SessionStateChangeTrigger>
+    <SessionStateChangeTrigger>
+      <Enabled>true</Enabled>
+      <StateChange>ConsoleConnect</StateChange>
+    </SessionStateChangeTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author">
@@ -515,12 +532,18 @@ mod tests {
     /// would have two instance policies, and the morning one would start a
     /// second tray on top of the running one.
     #[test]
-    fn task_carries_both_triggers_on_one_task() {
+    fn task_carries_logon_and_wake_triggers_on_one_task() {
         let x = task_xml(Path::new(EXE));
         assert!(x.contains("<LogonTrigger>"));
         assert!(x.contains(MORNING_TRIGGER_MARKER));
         assert_eq!(x.matches("<Actions").count(), 1, "one action, one task");
-        assert!(x.contains(&format!("T{:02}:00:00", super::super::MORNING_HOUR)));
+        // Both native wake triggers, and NO clock.
+        assert!(x.contains("<StateChange>SessionUnlock</StateChange>"));
+        assert!(x.contains("<StateChange>ConsoleConnect</StateChange>"));
+        assert!(
+            !x.contains("CalendarTrigger"),
+            "a hardcoded daily trigger came back - the requirement is an event, not a time"
+        );
     }
 
     /// `IgnoreNew` is what makes the morning trigger a no-op while the tray is
