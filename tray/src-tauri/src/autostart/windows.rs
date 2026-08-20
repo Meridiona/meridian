@@ -217,11 +217,34 @@ fn is_disabled(xml: &str) -> bool {
     xml.contains("<Enabled>false</Enabled>")
 }
 
+/// Whether the plugin-era `HKCU\…\Run` value may be deleted, given the
+/// verdict and whether a replacement got registered.
+///
+/// A pure predicate, and used by [`ensure_registered`] rather than restated
+/// there, so the test below pins the real rule: the sequencing
+/// in `ensure_registered` is the whole safety property, it is invisible at
+/// the call site, and a refactor that hoists `migrate_off_plugin` back to
+/// the top of the function would silently reintroduce "upgraded Windows
+/// install ends up with no autostart at all" — a bug with no local symptom,
+/// visible only as a user saying it stopped starting.
+fn may_drop_legacy(action: RegistrationAction, registered: bool) -> bool {
+    match action {
+        // Removing it IS honouring the user's "no": left behind, the stale
+        // value keeps starting the tray and the setting reads as ignored.
+        RegistrationAction::SkippedDisabledByUser => true,
+        // Something correct is already registered, so it is redundant.
+        RegistrationAction::AlreadyCorrect => true,
+        // A repair was attempted — only safe if it actually took.
+        a if a.is_repair() => registered,
+        // Transient path, or a hard failure: nothing took over, so the
+        // legacy value is the only autostart the user has. Keep it.
+        _ => false,
+    }
+}
+
 /// Verify and, if needed, re-register the task. See
 /// [`crate::autostart::ensure_registered`] for the contract.
 pub(crate) async fn ensure_registered() -> RegistrationAction {
-    migrate_off_plugin().await;
-
     let Some(exe) = current_exe() else {
         tracing::warn!("autostart: could not resolve our own executable path");
         return RegistrationAction::Failed;
@@ -237,11 +260,35 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
         &exe.to_string_lossy(),
         MORNING_TRIGGER_MARKER,
     );
+    // ORDER MATTERS HERE, and getting it wrong costs an upgraded user their
+    // autostart entirely.
+    //
+    // `migrate_off_plugin` deletes the plugin-era `HKCU\…\Run` value — which on
+    // an install upgrading across this change is the WORKING autostart. It used
+    // to run first, unconditionally, before anything knew whether a replacement
+    // registration would succeed. Two paths then ended with the user having
+    // none at all: an early return on a non-repair verdict, and all three
+    // registration attempts failing on a locked-down machine.
+    //
+    // So the legacy value is now dropped only once something is confirmed to
+    // have taken over from it:
+    //
+    // - the user turned autostart OFF — then removing it is the point, because
+    //   the stale value would otherwise keep starting the tray and the setting
+    //   would read as ignored;
+    // - a correct task is already registered, so the value is redundant;
+    // - we just registered one successfully.
+    //
+    // On every other path it is deliberately left in place. A duplicate launcher
+    // is a far smaller problem than no launcher, and the next launch retries.
     if !action.is_repair() {
+        if may_drop_legacy(action, false) {
+            migrate_off_plugin().await;
+        }
         return action;
     }
 
-    match register_from_xml(&exe).await {
+    let registered = match register_from_xml(&exe).await {
         Ok(()) => {
             // A previous run may have fallen back when policy was stricter than
             // it is now; clear it so logon does not start two trays.
@@ -251,17 +298,26 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
                 action = action.as_str(),
                 "autostart: scheduled task registered with logon and morning triggers"
             );
-            action
+            true
         }
         Err(e) => {
             tracing::warn!(
                 error = %e,
                 "autostart: XML task registration failed - falling back to a logon-only task (no morning relaunch)"
             );
-            fallback_register(&exe).await;
-            action
+            fallback_register(&exe).await
         }
+    };
+
+    if may_drop_legacy(action, registered) {
+        migrate_off_plugin().await;
+    } else {
+        tracing::warn!(
+            "autostart: could not register by any means - KEEPING the legacy Run value so an \
+             upgraded install is not left with no autostart at all"
+        );
     }
+    action
 }
 
 /// `schtasks /Create /F /XML` — the full-fidelity path.
@@ -296,7 +352,13 @@ async fn register_from_xml(exe: &Path) -> Result<(), String> {
 /// Logon-only registration, then the Startup folder if even that is refused.
 /// Both lose the morning relaunch; both keep the restart case, which is
 /// strictly better than nothing.
-async fn fallback_register(exe: &Path) {
+///
+/// Returns whether ANYTHING will now start the tray at logon. The caller needs
+/// that answer, not just a log line: it decides whether the plugin-era `Run`
+/// value — the only autostart an upgrading install currently has — may safely be
+/// deleted. Reporting success here when nothing was registered is how a
+/// locked-down machine would end up with no autostart at all.
+async fn fallback_register(exe: &Path) -> bool {
     let out = tokio::process::Command::new("schtasks")
         .args([
             "/Create", "/F", "/TN", TASK_NAME, "/SC", "ONLOGON", "/RL", "LIMITED", "/TR",
@@ -311,16 +373,22 @@ async fn fallback_register(exe: &Path) {
             task = TASK_NAME,
             "autostart: registered a logon-only task - the morning relaunch is unavailable on this machine"
         );
-        return;
+        return true;
     }
     match install_startup_folder_launcher(exe).await {
-        Ok(()) => tracing::warn!(
-            "autostart: Task Scheduler refused - installed a Startup-folder launcher (logon only)"
-        ),
-        Err(e) => tracing::warn!(
-            error = %e,
-            "autostart: could not register the tray to start at logon by any means"
-        ),
+        Ok(()) => {
+            tracing::warn!(
+                "autostart: Task Scheduler refused - installed a Startup-folder launcher (logon only)"
+            );
+            true
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "autostart: could not register the tray to start at logon by any means"
+            );
+            false
+        }
     }
 }
 
@@ -569,6 +637,32 @@ mod tests {
                 MORNING_TRIGGER_MARKER
             ),
             RegistrationAction::RegisteredMissing
+        );
+    }
+
+    #[test]
+    fn the_legacy_run_value_survives_until_something_replaces_it() {
+        // The two paths that used to lose a working autostart outright.
+        assert!(
+            !may_drop_legacy(RegistrationAction::RegisteredMissing, false),
+            "a failed registration must not delete the only autostart that works"
+        );
+        assert!(
+            !may_drop_legacy(RegistrationAction::Failed, false),
+            "a hard failure must not delete the only autostart that works"
+        );
+        assert!(
+            !may_drop_legacy(RegistrationAction::SkippedTransientPath, false),
+            "deferring must not delete the only autostart that works"
+        );
+
+        // The paths where dropping it is correct.
+        assert!(may_drop_legacy(RegistrationAction::RegisteredMissing, true));
+        assert!(may_drop_legacy(RegistrationAction::RepairedPathDrift, true));
+        assert!(may_drop_legacy(RegistrationAction::AlreadyCorrect, false));
+        assert!(
+            may_drop_legacy(RegistrationAction::SkippedDisabledByUser, false),
+            "a user who turned autostart off must not keep being started by the stale value"
         );
     }
 
