@@ -41,6 +41,29 @@
 //! read in production, with nothing but a bare `serde_json::Error` Display, to
 //! pin down which field it was.
 //!
+//! # Third incident (2026-08-20): the JSON pointer earned its keep
+//! The first two fixes did not end this. On 2026-08-20 a machine whose user
+//! WAS signed in logged this same WARN twice every ~44 seconds, with
+//! `path = payload.client.sign_in.status` and
+//! `error = invalid type: null, expected string or map`. So `set_client` had
+//! still never run, the offline cache was still empty, and session persistence
+//! had been broken the whole time the previous fix looked successful.
+//!
+//! Two lessons are worth more than the one-line fix:
+//!
+//! 1. **The `serde_path_to_error` pointer turned a spool dig into a grep.**
+//!    Diagnosing incident two needed raw-OTLP archaeology. This one was named
+//!    outright in the log line. Keep that wrapper.
+//! 2. **Hand-written "realistic" test fixtures hid the bugs.** The pre-existing
+//!    `sign_up`/`sign_in` fixtures were described as guest-js-shaped but had
+//!    been written from the model's requirements rather than transcribed from
+//!    the serializer, so they supplied fields guest-js never sends
+//!    (`abandon_at`, `password_enabled`, `custom_action`, `external_id`, a
+//!    populated `verifications`) and round-tripped cleanly. Transcribing the
+//!    real serializer exposed five more defects at once — see
+//!    `json_backfill`'s `idealized_sign_up_json` doc. **Copy the serializer;
+//!    do not describe it.**
+//!
 //! # Un-vendoring
 //! Once upstream releases a version with #9 (or an equivalent fix) merged,
 //! drop this directory, restore the crates.io dependency + version pin in
