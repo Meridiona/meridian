@@ -1053,6 +1053,45 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // 4a-ter. Single-instance guard — CHECKED here, before `setup_db`, even
+    //     though the listener isn't bound until 5b below.
+    //
+    //     ~/.meridian/daemon.sock: a successful connect that gets a greeting
+    //     means ANOTHER daemon already owns this data dir. That happens
+    //     routinely — a leftover packaged install's launchd agent
+    //     (KeepAlive=true) respawning next to a dev build, two `meridian`
+    //     invocations racing — and, the case that motivated moving this check
+    //     ahead of `setup_db`, a version-update restart where
+    //     `backend_install::register_agent` bootstraps the new daemon after a
+    //     15s best-effort wait for the old launchd entry to clear, and
+    //     proceeds anyway (logged at WARN) if it doesn't. Previously this
+    //     check ran AFTER `setup_db` (4b) and the capture preflight (4c), so a
+    //     daemon that was always going to lose this race still opened a pool
+    //     and ran migrations — including a live `ALTER TABLE` — against a
+    //     file the winning daemon could simultaneously be writing to or
+    //     checkpointing. Checking before `setup_db` means a losing daemon
+    //     never touches meridian.db at all.
+    //
+    //     Only a stale socket (no listener) is removed, and only right before
+    //     THIS process binds its own — see the bind site below. Whoever starts
+    //     second bows out; dev-start.sh stops the installed daemon first so
+    //     the dev build wins, and any KeepAlive respawn self-terminates here,
+    //     repeating every ~30s (ThrottleInterval) until the winner's listener
+    //     goes away — the same non-crash stand-down cadence as the repair-
+    //     marker check above, not a crash loop (`KeepAlive` is unconditional
+    //     in the shipped plist, so both an `exit(1)` and this `return Ok(())`
+    //     relaunch regardless).
+    //
+    //     The endpoint itself is OS-specific (a socket file on Unix, a named
+    //     pipe on Windows) — see `meridian::platform`.
+    if meridian::platform::daemon_already_running().await {
+        tracing::warn!(
+            endpoint = %meridian::platform::endpoint_display(),
+            "another meridian daemon already owns this data dir — exiting (single-instance guard)"
+        );
+        return Ok(());
+    }
+
     // 4b. Open / create meridian pool and run migrations FIRST — before any
     //     preflight that can block or fail. The UI and MCP server read this DB
     //     directly, so it must exist even when an optional component (capture,
@@ -1090,27 +1129,18 @@ async fn main() -> Result<()> {
     meridian::health::Report::new(meridian::health::capture::checks(&meridian).await)
         .log("startup");
 
-    // 5b. Unix domain socket — health endpoint for the tray / UI, AND the
-    //     single-instance guard. ~/.meridian/daemon.sock: a successful connect that
-    //     gets a greeting means ANOTHER daemon already owns this data dir. That
-    //     happens routinely — a leftover packaged install's launchd agent
-    //     (KeepAlive=true) respawning next to a dev build, two `meridian` invocations
-    //     racing — and two daemons on one meridian.db double every ETL pass and fire
-    //     the worklog trigger twice (near-duplicate day_tasks, clobbering folds). So
-    //     if one is already answering, exit cleanly here rather than delete its socket
-    //     and become a second writer. Only a stale socket (no listener) is removed
-    //     before we bind our own. Whoever starts second bows out; dev-start.sh stops
-    //     the installed daemon first so the dev build wins, and any KeepAlive respawn
-    //     self-terminates on the next line.
-    //     The endpoint itself is OS-specific (a socket file on Unix, a named
-    //     pipe on Windows) — see `meridian::platform`.
-    if meridian::platform::daemon_already_running().await {
-        tracing::warn!(
-            endpoint = %meridian::platform::endpoint_display(),
-            "another meridian daemon already owns this data dir — exiting (single-instance guard)"
-        );
-        return Ok(());
-    }
+    // 5b. Bind the health-endpoint socket now that the pool is open and
+    //     migrations have run. The single-instance CHECK already happened
+    //     above (4a-ter), before `setup_db` — deliberately not moved down
+    //     here with the bind: binding only now means the greeting
+    //     (`{"running":true}`) is never advertised until the database is
+    //     actually usable. Binding it back at the earlier check site instead
+    //     would let a daemon that's about to `exit(1)` on a locked or corrupt
+    //     database falsely tell the tray's watchdog it's healthy for the
+    //     brief window before that failure surfaces. Safe to bind
+    //     unconditionally here: the check above already established nothing
+    //     else is listening, and nothing between there and here binds it out
+    //     from under us (both single-threaded up to the poll loop).
     meridian::platform::spawn_health_listener()?;
     tracing::info!(endpoint = %meridian::platform::endpoint_display(), "daemon health endpoint ready");
 
@@ -1573,3 +1603,66 @@ async fn etl_tick(meridian: &meridian::db::SqlitePool) -> bool {
 /// The id itself lives in the lib ([`meridian::notices::DB_CORRUPT`]) because
 /// `db::repair` must clear the very same id from a rebuilt database.
 const DB_CORRUPT_NOTICE: &str = meridian::notices::DB_CORRUPT;
+
+#[cfg(test)]
+mod startup_order_tests {
+    /// The single-instance guard's CHECK must run before `setup_db` opens the
+    /// pool and runs migrations, and the health-endpoint BIND must run after.
+    ///
+    /// This is the whole fix: a daemon that is about to lose the
+    /// single-instance race must never touch `meridian.db` — see the comment
+    /// at the check's call site (4a-ter) for the fleet-correlated corruption
+    /// this closes. Regressing either half reopens a real hazard:
+    /// - check moved back after `setup_db` → a losing daemon runs migrations
+    ///   (including a live `ALTER TABLE`) against a file the winning daemon
+    ///   may be concurrently writing to or checkpointing — the double-writer
+    ///   window this change exists to close.
+    /// - bind moved up alongside the check → the health socket can advertise
+    ///   `{"running":true}` for a daemon that is about to `exit(1)` on a
+    ///   locked/corrupt database, feeding the tray's watchdog a false-healthy
+    ///   signal.
+    ///
+    /// `main()` shells out to `launchctl`/binds real OS sockets and can't be
+    /// unit-tested directly, so — matching the established idiom in
+    /// `backend_install.rs` (`a_stuck_bootout_is_reported_at_warn`,
+    /// `every_early_return_still_restores_the_daemon`) — this scans the
+    /// source for the three call sites and asserts their relative order.
+    #[test]
+    fn single_instance_check_precedes_setup_db_and_bind_follows_it() {
+        const SRC: &str = include_str!("main.rs");
+        // Truncate at THIS test module first — the file scans itself, and the
+        // needles below (`daemon_already_running`, `setup_db(&initial_cfg`)
+        // both appear again in this doc comment / this very module, so an
+        // untruncated scan could match its own source and never fail. Same
+        // trap noted in `backend_install.rs`'s self-scanning tests.
+        let prod = SRC
+            .split_once("\n#[cfg(test)]")
+            .map_or(SRC, |(before, _)| before);
+
+        let check_pos = prod
+            .find("meridian::platform::daemon_already_running().await")
+            .expect("the single-instance guard's check call must exist in main()");
+        let setup_db_pos = prod
+            .find("setup_db(&initial_cfg.meridian_db_uri()).await")
+            .expect("the setup_db() call must exist in main()");
+        let bind_pos = prod
+            .find("meridian::platform::spawn_health_listener()?;")
+            .expect("the health-listener bind call must exist in main()");
+
+        assert!(
+            check_pos < setup_db_pos,
+            "the single-instance guard must be CHECKED before setup_db() opens \
+             the pool and runs migrations — a daemon that will lose that race \
+             must never touch meridian.db. Found check at byte {check_pos}, \
+             setup_db at byte {setup_db_pos}."
+        );
+        assert!(
+            setup_db_pos < bind_pos,
+            "the health-endpoint listener must be BOUND only after setup_db() \
+             succeeds — binding earlier would let a daemon that is about to \
+             exit(1) on a locked/corrupt database advertise {{\"running\":true}} \
+             to the tray's watchdog. Found setup_db at byte {setup_db_pos}, \
+             bind at byte {bind_pos}."
+        );
+    }
+}
