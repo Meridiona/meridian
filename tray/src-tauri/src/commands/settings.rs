@@ -221,6 +221,17 @@ pub async fn update_settings(
         }
     }
 
+    // Autostart has to be applied to the OS, not just recorded. Turning it ON
+    // registers the login/morning job now rather than at the next launch;
+    // turning it OFF actively removes it, because the job already on disk is
+    // what the OS acts on - `autostart::ensure_registered` merely declining to
+    // write it would leave the user's "no" ignored until they uninstalled.
+    // Bundled-only, matching where the registration exists at all.
+    if body_obj.contains_key("autostart_enabled") && crate::sys::is_bundled() {
+        let enabled = meridian_core::settings::load_runtime_settings().autostart_enabled;
+        crate::autostart::apply_setting_change(enabled).await;
+    }
+
     redact_password(&mut updated);
     redact_custom_keys(&mut updated);
     Ok(updated)

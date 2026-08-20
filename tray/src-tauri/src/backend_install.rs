@@ -1415,8 +1415,13 @@ fn agent_target(label: &str) -> String {
 
 /// Run `launchctl <args>`, returning `Ok(true)` on exit 0. Errors only on spawn
 /// failure; a non-zero exit is `Ok(false)` so callers decide what's fatal.
+///
+/// `pub(crate)` for [`crate::autostart::macos`], which owns the TRAY's own
+/// LaunchAgent and needs the same `bootout` when retiring the plugin-era login
+/// item. Shared rather than re-rolled so there is one spelling of "shell out to
+/// launchctl" in the tray.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-async fn launchctl(args: &[&str]) -> Result<bool, String> {
+pub(crate) async fn launchctl(args: &[&str]) -> Result<bool, String> {
     tokio::process::Command::new("launchctl")
         .args(args)
         .output()

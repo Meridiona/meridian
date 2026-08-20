@@ -268,6 +268,23 @@ pub struct RuntimeSettings {
     // Existing settings.json files without this key load as `true` via the
     // struct-level `#[serde(default)]`.
     pub product_analytics_enabled: bool,
+    // Whether Meridian starts itself at login and again each morning if it was
+    // quit (`tray/src-tauri/src/autostart.rs`). Default `true`, opt-OUT — and
+    // for this switch that default is not a preference so much as a
+    // precondition: capture runs in-process in the tray, so a tray that is not
+    // running records nothing at all.
+    //
+    // It exists because the tray now VERIFIES AND REPAIRS its registration on
+    // every launch, which it has to (the old register-once marker silently
+    // diverged from reality and left installs permanently unable to start). The
+    // side effect is that turning the login item off in the OS's own settings no
+    // longer sticks — the next launch would put it back. This is therefore the
+    // one place a deliberate "no" can be recorded, and `autostart.rs` checks it
+    // before writing anything.
+    //
+    // Existing settings.json files without this key load as `true` via the
+    // struct-level `#[serde(default)]`.
+    pub autostart_enabled: bool,
     // Notification preferences — a master switch + quiet hours. Read by
     // [`crate::notifications`] to decide whether an event may surface;
     // every event type is gated ONLY by these two (no per-category toggles —
@@ -375,6 +392,10 @@ impl Default for RuntimeSettings {
             // Product analytics is opt-OUT too, and separately switchable from
             // error reporting. Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
             product_analytics_enabled: true,
+            // Autostart on by default - the tray is what captures, so an install
+            // that does not come back after a reboot records nothing. Must match
+            // SETTINGS_DEFAULTS in ui/lib/settings.ts.
+            autostart_enabled: true,
             // Notifications on by default; quiet hours off (22:00–08:00 when
             // enabled). Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
             notifications_enabled: true,
