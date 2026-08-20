@@ -46,6 +46,26 @@ tauri-plugin-positioner = { version = "2.3", features = ["tray-icon"] }
 # (interactive toasts are packaged-only, same class of limitation as the
 # popover-404 dev caveat).
 tauri-plugin-notifications = { version = "=0.4.6", default-features = false }
+# Single instance. LOAD-BEARING for autostart correctness, not a nicety.
+#
+# The 09:00 morning trigger (`autostart::macos` / `autostart::windows`) starts the
+# tray from the OS scheduler, and neither scheduler can see "the app is already
+# running": launchd tracks liveness per JOB LABEL, so the process macOS's
+# loginwindow started via SMAppService is invisible to our calendar job, and Task
+# Scheduler's `MultipleInstancesPolicy: IgnoreNew` only dedupes the task's own
+# instances. Without this plugin the trigger would fire daily into a running app
+# and produce two processes writing one meridian.db - the double-writer condition
+# behind the `database disk image is malformed` incidents.
+#
+# Both platform impls do exactly what is needed: the SECOND process exits.
+# macOS uses a Unix socket (`/tmp/<identifier>_si.sock`) and `std::process::exit(0)`;
+# Windows uses a named mutex plus `WM_COPYDATA` to a hidden tool window, then
+# `cleanup_before_exit()` + exit. Neither disturbs the running instance.
+#
+# MUST be registered FIRST in lib.rs's builder (upstream requirement) - that is
+# also what keeps the doomed second process from ever creating a tray icon or a
+# capture writer before it exits.
+tauri-plugin-single-instance = "2"
 tauri-plugin-opener = "2"
 # Email sign-in on the setup wizard's Sign-in step (see ui/app/setup/signin.tsx).
 # Community-maintained (Nipsuli/tauri-plugin-clerk) — originally pinned exact

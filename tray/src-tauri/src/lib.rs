@@ -159,6 +159,70 @@ mod catch_setup_panic_tests {
     }
 }
 
+#[cfg(test)]
+mod single_instance_tests {
+    /// The second-instance callback must never open or focus a window.
+    ///
+    /// Source-scanned because the thing being asserted is "nothing appeared",
+    /// which a headless test has no window to observe — the same reasoning as
+    /// `ui/__tests__/no-native-dialogs.test.ts`. What it protects is specific:
+    /// every single-instance example on the internet focuses the main window,
+    /// so the natural "improvement" to this callback is precisely the bug. The
+    /// common caller is the 09:00 morning trigger on a machine nobody touched.
+    #[test]
+    fn the_second_instance_callback_opens_nothing() {
+        let src = include_str!("lib.rs");
+        // Newline-anchored so it matches the DEFINITION and not the string
+        // literal on this very line — searching for the bare name found this
+        // test first and made it fail against its own forbidden-word list.
+        let start = src
+            .find("\nfn on_second_instance(")
+            .expect("callback renamed - re-check this test's needles");
+        let body_end = src[start..]
+            .find("\npub fn run()")
+            .expect("callback is expected to sit directly above run()");
+        let body = &src[start..start + body_end];
+        for forbidden in [
+            "open_native_dashboard",
+            "open_wizard_window",
+            "set_focus",
+            ".show()",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "on_second_instance must not call {forbidden} - an unattended \
+                 relaunch would put a window on screen"
+            );
+        }
+    }
+}
+
+/// What the surviving instance does when a second one was blocked: **nothing
+/// but log**.
+///
+/// This is a deliberate departure from every single-instance example, which
+/// focuses or shows the main window. Doing that here would be actively wrong:
+/// the overwhelmingly common caller is the 09:00 morning trigger passing
+/// `--autostart`, i.e. the OS starting Meridian on a machine nobody touched. A
+/// window appearing then is exactly the annoyance that makes people disable
+/// autostart, which costs us the capture the tray exists to perform.
+///
+/// A user-initiated activation does NOT arrive here. Clicking the app in
+/// Finder, Spotlight or the Dock goes through LaunchServices, which activates
+/// the running instance and fires `RunEvent::Reopen` — handled separately by
+/// [`reopen`], which opens the dashboard. This callback only sees a direct
+/// re-exec of the binary, which on this app means a scheduler.
+///
+/// So the correct behaviour is to let the second process die quietly and carry
+/// on. Logged at DEBUG rather than INFO because on a machine left running for
+/// weeks this fires once a day, forever, and says nothing new each time.
+fn on_second_instance(_app: &tauri::AppHandle, args: Vec<String>, _cwd: String) {
+    tracing::debug!(
+        unattended = autostart::args_indicate_autostart(args.iter().map(String::as_str)),
+        "single-instance: a second launch was blocked - staying as we are"
+    );
+}
+
 pub fn run() {
     // Native-crash capture (Phase 2B). MUST be first: `tauri-plugin-sentry`'s
     // minidump reporter relaunches this exe in a special reporter mode that has
@@ -205,6 +269,26 @@ pub fn run() {
     let app_state = Arc::new(Mutex::new(AppState::default()));
 
     let mut builder = tauri::Builder::default()
+        // SINGLE INSTANCE MUST BE FIRST. Two reasons, and the second is ours.
+        //
+        // Upstream requires it so the plugin runs before anything else can
+        // interfere. For Meridian it is also what guarantees the doomed second
+        // process exits BEFORE it can create a tray icon or, far worse, a
+        // capture writer against `meridian.db`.
+        //
+        // Why a second process happens at all: the 09:00 morning trigger
+        // (`autostart`) is started by the OS scheduler, and neither scheduler can
+        // see that the app is already running. launchd tracks liveness per job
+        // LABEL, so the process macOS's loginwindow started via SMAppService is
+        // invisible to our calendar job; Task Scheduler's
+        // `MultipleInstancesPolicy: IgnoreNew` only dedupes the task's own
+        // instances. So the trigger fires daily into a running app, and without
+        // this the result is two processes writing one SQLite file — the
+        // double-writer condition behind `database disk image is malformed`.
+        //
+        // The callback runs in the FIRST (surviving) instance. It deliberately
+        // does nothing but log — see `on_second_instance`.
+        .plugin(tauri_plugin_single_instance::init(on_second_instance))
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_opener::init())
         // DMG auto-update: reads endpoint + minisign pubkey from tauri.conf.json.

@@ -207,7 +207,8 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
     // The MORNING half. `run_at_load` is the inverse of who owns login: if
     // SMAppService took it, this plist must NOT also start a tray at login, or
     // both fire and two processes write one SQLite file.
-    let expected = plist_body(&exe, &home, !owns_login);
+    let run_at_load_owned_by_plist = !owns_login;
+    let expected = plist_body(&exe, &home, run_at_load_owned_by_plist);
     let existing = read_registration().await;
 
     // Exact-body comparison, not a substring probe.
@@ -249,17 +250,49 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
         return RegistrationAction::Failed;
     }
 
-    // NOT bootstrapped - see the module docs on `crate::autostart`. Measured, so
-    // the cost is known rather than assumed: a probe plist that was never
-    // bootstrapped still appeared in `sfltool dumpbtm`, so the entry IS visible
-    // in Login Items & Extensions immediately. What waits for the next login is
-    // only the job becoming live, which is why bootstrapping here (and starting
-    // a second tray via `RunAtLoad`) buys nothing.
+    // NOW bootstrap it, which is safe for the first time.
+    //
+    // This used to be skipped, on the grounds that `bootstrap` honours
+    // `RunAtLoad` and would start a second tray. Two things changed and both
+    // matter:
+    //
+    // 1. On macOS 13+ this plist carries `RunAtLoad false` (SMAppService owns
+    //    login), so bootstrapping loads the calendar trigger WITHOUT launching
+    //    anything at all.
+    // 2. `tauri-plugin-single-instance` now guarantees that even if something
+    //    did launch a second process, it exits before touching the tray or the
+    //    database.
+    //
+    // The gain is not cosmetic: without bootstrapping, launchd only picks the
+    // job up at the next login, so a user who installed and then quit the same
+    // day would NOT come back at 09:00. Bootstrapping closes that gap, so the
+    // morning relaunch works from the moment of install.
+    //
+    // Best-effort: `bootout` first so a re-registration replaces cleanly, and a
+    // failure here only costs the current session (the next login loads it from
+    // disk regardless).
+    let target = format!("gui/{}/{LABEL}", crate::sys::uid_str());
+    if run_at_load_owned_by_plist {
+        // Below macOS 13 this plist DOES carry `RunAtLoad true`, so bootstrapping
+        // it here would start a second tray. The single-instance guard would kill
+        // that duplicate, but relying on a guard to undo a launch we chose to
+        // make is worse than not making it: skip, and let the next login load it.
+        tracing::debug!("autostart: not bootstrapping a RunAtLoad plist from inside the app");
+    } else {
+        let _ = crate::backend_install::launchctl(&["bootout", &target]).await;
+        let _ = crate::backend_install::launchctl(&[
+            "bootstrap",
+            &format!("gui/{}", crate::sys::uid_str()),
+            &dest.to_string_lossy(),
+        ])
+        .await;
+    }
+
     tracing::info!(
         plist = %dest.display(),
         action = action.as_str(),
         login_item = login.as_str(),
-        run_at_load = !owns_login,
+        run_at_load = run_at_load_owned_by_plist,
         "autostart: morning-relaunch LaunchAgent written"
     );
     action

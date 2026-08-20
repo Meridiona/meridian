@@ -40,13 +40,17 @@
 //! (`autostart_disabled`).
 //!
 //! # What gets registered
-//! One job per platform, carrying both triggers, so the OS's own
-//! single-job-instance semantics do the de-duplication:
 //!
-//! - **macOS** — `~/Library/LaunchAgents/com.meridiona.tray.plist` with
-//!   `RunAtLoad` (login) + `StartCalendarInterval` at [`MORNING_HOUR`] (the
-//!   morning relaunch), and deliberately **no `KeepAlive`**: the user asked for
-//!   Quit to stick for the rest of the day and be undone the next morning, and
+//! - **macOS 13+** — `SMAppService.mainApp` owns LOGIN (see [`login_item`]),
+//!   which is what produces a named, user-togglable "Meridian" entry in System
+//!   Settings → General → Login Items & Extensions. The plist
+//!   `~/Library/LaunchAgents/com.meridiona.tray.plist` is reduced to the morning
+//!   relaunch alone: `RunAtLoad` **false** + `StartCalendarInterval` at
+//!   [`MORNING_HOUR`], bootstrapped immediately so the trigger is live from the
+//!   moment of install rather than the next login. Below 13 there is no
+//!   SMAppService, so that plist carries both jobs with `RunAtLoad` true.
+//!   Deliberately **no `KeepAlive`** either way: the user asked for Quit to
+//!   stick for the rest of the day and be undone the next morning, and
 //!   `KeepAlive` would make quitting impossible.
 //! - **Windows** — one scheduled task with a `LogonTrigger` *and* a daily
 //!   `CalendarTrigger`, registered from XML because `schtasks`' command form
@@ -54,17 +58,23 @@
 //!   which is what stops the 09:00 trigger starting a second tray on top of the
 //!   one the logon trigger already started.
 //!
-//! # Deliberately not bootstrapped on macOS
-//! [`macos::ensure_registered`] writes the plist but does not
-//! `launchctl bootstrap` it. `bootstrap` honours `RunAtLoad`, so bootstrapping
-//! our own job from inside the running tray would immediately start a SECOND
-//! tray — two processes writing `capture_frames` to one SQLite file. launchd
-//! loads `~/Library/LaunchAgents` at session start, so login coverage and the
-//! calendar trigger both work from the next login onward. The cost is precise
-//! and bounded: in the single session where the plist was first written, the
-//! calendar trigger is not yet live, so a user who installs and then quits on
-//! the same day waits until their next login rather than until 09:00. Every
-//! later session behaves fully.
+//! # Duplicates are prevented by a guard, not by hoping
+//! The 09:00 trigger is started by the OS scheduler, and **neither scheduler can
+//! see that the app is already running.** launchd tracks liveness per job
+//! LABEL, so the process macOS's loginwindow started via SMAppService is
+//! invisible to our calendar job; Task Scheduler's `MultipleInstancesPolicy:
+//! IgnoreNew` only dedupes the task's own instances. So the trigger fires daily
+//! into a running app.
+//!
+//! `tauri-plugin-single-instance` is therefore load-bearing, not a nicety: it is
+//! registered FIRST in [`crate::run`]'s builder so the doomed second process
+//! exits before it can create a tray icon or a capture writer. Two processes
+//! writing one `meridian.db` is the double-writer condition behind the
+//! `database disk image is malformed` incidents in [`crate::backend_install`].
+//!
+//! An earlier version of this module claimed `RunAtLoad false` alone prevented
+//! the duplicate. It does not — it only prevents one at LOGIN, and moved the
+//! collision to 09:00.
 //!
 //! # Who calls this
 //! [`crate::run`]'s `setup()` hook, once per launch, bundled runs only (see
