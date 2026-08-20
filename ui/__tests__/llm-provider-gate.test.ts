@@ -71,13 +71,24 @@ describe('the picker routes on the answer', () => {
     expect(picker).toContain("gate ? null : 'subscription'")
   })
 
-  it('sends the free answer to a preset chooser, not straight to one vendor', () => {
-    // With two curated presets, "which free key" is a real question - unlike the old
-    // single-preset days, where a chooser containing one tile would have asked the user to
-    // confirm an answer they had just given.
+  it('sends the free answer straight to the one offered preset, not a chooser of one', () => {
+    // CLOUD_PRESETS is down to one entry (Ollama, since Groq's removal) - a chooser
+    // containing a single tile would be asking the user to confirm an answer they just
+    // gave. The length===1 branch must render CloudKeySetup directly with that one preset.
     expect(picker).toContain("gateAnswer === 'free'")
+    expect(picker).toContain('if (CLOUD_PRESETS.length === 1)')
+    const singlePresetBranch = picker.slice(
+      picker.indexOf('if (CLOUD_PRESETS.length === 1)'),
+      picker.indexOf('return <CloudPresetChooser'),
+    )
+    expect(singlePresetBranch).toContain('<CloudKeySetup')
+    expect(singlePresetBranch).toContain('preset={CLOUD_PRESETS[0]}')
+  })
+
+  it('falls back to a chooser the moment a second preset is offered again', () => {
+    // Nothing here assumes exactly one or exactly two - the chooser still exists as the
+    // fallthrough for whenever CLOUD_PRESETS grows past one again.
     expect(picker).toContain('<CloudPresetChooser')
-    expect(picker).toContain('<CloudKeySetup')
   })
 
   it('hides the bring-your-own tile under the gate', () => {

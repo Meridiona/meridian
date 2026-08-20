@@ -208,9 +208,10 @@ pub const GROQ_DEPRECATED: &str = "llm.groq_deprecated";
 /// Idempotent either way (upsert / delete-if-present), so calling it from both places on the
 /// same transition is harmless — whichever call lands first does the work, the other is a
 /// no-op.
+#[tracing::instrument(skip(pool))]
 pub async fn sync_groq_deprecated_notice(pool: &SqlitePool, active_vendor: Option<&str>) {
     if active_vendor == Some("groq") {
-        let _ = raise_typed(
+        if let Err(e) = raise_typed(
             pool,
             Notice {
                 id: GROQ_DEPRECATED,
@@ -225,9 +226,20 @@ pub async fn sync_groq_deprecated_notice(pool: &SqlitePool, active_vendor: Optio
                 deep_link: Some(meridian_core::notifications::deep_links::INTELLIGENCE),
             },
         )
-        .await;
-    } else {
-        let _ = clear_typed(pool, GROQ_DEPRECATED, GROQ_DEPRECATED).await;
+        .await
+        {
+            tracing::warn!(
+                error = %crate::errors::chain(&e),
+                active_vendor,
+                "notices: failed to raise the Groq-deprecated notice"
+            );
+        }
+    } else if let Err(e) = clear_typed(pool, GROQ_DEPRECATED, GROQ_DEPRECATED).await {
+        tracing::warn!(
+            error = %crate::errors::chain(&e),
+            active_vendor,
+            "notices: failed to clear the Groq-deprecated notice"
+        );
     }
 }
 

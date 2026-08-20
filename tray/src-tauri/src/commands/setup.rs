@@ -448,6 +448,28 @@ pub async fn detect_llm_providers() -> Result<Vec<meridian::llm::detect::Provide
     Ok(found)
 }
 
+/// Parse `test_llm_provider`'s `id` argument: either a bare wire name ("claude", "custom",
+/// …) or a specific custom endpoint's variant id (`ui/lib/llm-providers.ts::customVariantId`,
+/// `"custom:<id>"`) - the picker addresses one tile per configured endpoint, not one shared
+/// "custom" tile, so [`meridian_core::LlmProvider::from_wire`] alone (which only knows the
+/// bare wire names) rejects the variant form outright with "unknown provider". Pulled out of
+/// the command as a pure fn so the parsing is unit-testable without a `tauri::AppHandle`.
+fn parse_test_provider_id(
+    id: &str,
+) -> Result<(meridian_core::LlmProvider, Option<String>), String> {
+    match id.split_once(':') {
+        Some(("custom", endpoint_id)) if !endpoint_id.is_empty() => Ok((
+            meridian_core::LlmProvider::Custom,
+            Some(endpoint_id.to_string()),
+        )),
+        _ => Ok((
+            meridian_core::LlmProvider::from_wire(id)
+                .ok_or_else(|| format!("unknown provider {id:?}"))?,
+            None,
+        )),
+    }
+}
+
 /// Run one real, trivial call against `id`'s CLI and report + persist what happened - the
 /// Intelligence panel's per-card "Test" button. Spends one real request against the user's
 /// subscription, so this only ever runs on explicit user action, never automatically.
@@ -457,9 +479,16 @@ pub async fn test_llm_provider(
     app: tauri::AppHandle,
     id: String,
 ) -> Result<meridian::llm::detect::ProviderTestResult, String> {
-    let provider = meridian_core::LlmProvider::from_wire(&id)
-        .ok_or_else(|| format!("unknown provider {id:?}"))?;
-    let settings = meridian_core::settings::load_runtime_settings();
+    let (provider, custom_id) = parse_test_provider_id(&id)?;
+    let mut settings = meridian_core::settings::load_runtime_settings();
+    // `test_provider` reads the endpoint to test from `settings.active_custom_provider()`,
+    // which only ever resolves the GLOBALLY selected endpoint - so testing a non-active
+    // endpoint's tile means overriding the selection on this throwaway copy before calling
+    // it, not touching what's actually persisted or globally active.
+    if let Some(custom_id) = custom_id {
+        settings.llm_provider = "custom".to_string();
+        settings.llm_provider_custom_id = Some(custom_id);
+    }
     let result = meridian::llm::detect::test_provider(provider, &settings).await;
     meridian::llm::detect::persist_test_result(&result);
     tracing::info!(
@@ -668,7 +697,7 @@ pub async fn test_all_llm_providers(
 #[cfg(test)]
 mod tests {
     use super::{
-        log_install_outcome, log_signin_outcome, notification_state_label,
+        log_install_outcome, log_signin_outcome, notification_state_label, parse_test_provider_id,
         write_completion_markers, WALKTHROUGH_MARKER,
     };
     use crate::commands::whats_new::has_unseen_release_notes;
@@ -676,6 +705,40 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tauri_plugin_notifications::PermissionState;
     use tracing_subscriber::{layer::SubscriberExt, registry, Layer};
+
+    /// The bug this fn exists to fix: the picker addresses a specific custom endpoint as
+    /// `"custom:<id>"` (`ui/lib/llm-providers.ts::customVariantId`), which bare
+    /// `LlmProvider::from_wire` rejects outright.
+    #[test]
+    fn a_custom_variant_id_parses_into_custom_plus_its_endpoint_id() {
+        let (provider, custom_id) = parse_test_provider_id("custom:groq1").unwrap();
+        assert_eq!(provider, meridian_core::LlmProvider::Custom);
+        assert_eq!(custom_id, Some("groq1".to_string()));
+    }
+
+    #[test]
+    fn bare_wire_names_still_parse_with_no_endpoint_id() {
+        let (provider, custom_id) = parse_test_provider_id("claude").unwrap();
+        assert_eq!(provider, meridian_core::LlmProvider::Claude);
+        assert_eq!(custom_id, None);
+
+        let (provider, custom_id) = parse_test_provider_id("custom").unwrap();
+        assert_eq!(provider, meridian_core::LlmProvider::Custom);
+        assert_eq!(custom_id, None);
+    }
+
+    #[test]
+    fn an_unknown_provider_name_is_rejected() {
+        assert!(parse_test_provider_id("groq").is_err());
+        assert!(parse_test_provider_id("").is_err());
+    }
+
+    /// `"custom:"` with an empty id names no endpoint - must fail loudly rather than
+    /// silently falling back to whatever happens to be globally active.
+    #[test]
+    fn a_custom_variant_with_an_empty_endpoint_id_is_rejected() {
+        assert!(parse_test_provider_id("custom:").is_err());
+    }
 
     // A fresh install has no `last_seen_version`, and `has_unseen_release_notes`
     // reads a missing marker as "unseen" (`Err(_) => true`) — correct for an

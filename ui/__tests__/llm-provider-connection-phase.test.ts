@@ -326,7 +326,11 @@ describe('the chooser grid', () => {
     // one vendor, so configuring Groq made Ollama disappear entirely - exactly the confusion
     // a real user hit. Each preset (Groq, Ollama, ...) gets a tile of its own, the same way
     // Claude/Codex/Cursor do.
-    expect(picker).toContain('CLOUD_PRESETS.map((preset) => (')
+    // `gridPresets`, NOT `CLOUD_PRESETS` - the grid also carries an already-configured
+    // vendor that has since stopped being offered (Groq, today), so asserting the wrong
+    // one here would pass by coincidence off `CLOUD_PRESETS.map` appearing elsewhere in
+    // the file (`CloudPresetChooser`'s own grid) rather than actually checking this one.
+    expect(picker).toContain('gridPresets.map((preset) => (')
     expect(picker).toContain('<CloudPresetTile')
     // Clicking a preset's OWN tile already answers which vendor - no chooser in between.
     expect(picker).toContain('vendorRows.length === 0')
@@ -498,7 +502,13 @@ describe('every surface reads the same ladder', () => {
   it('the cloud endpoint is judged like every other provider, not by being selected', () => {
     // `value === 'custom'` may decide what is SELECTED. It may never decide what is LIVE.
     expect(picker).toContain('const phase = selected')
-    expect(picker).toContain('const vendorPhase = selectedRow')
+    // Both call sites share `vendorPhaseFor` - inside it, `phase` depends only on
+    // `selectedRow`, never on `value`, so the two can never disagree.
+    expect(picker).toContain('function vendorPhaseFor(')
+    expect(picker).toContain('const phase = selectedRow')
+    expect(picker).toContain(
+      'phase: vendorPhase } = vendorPhaseFor(vendorRows, selectedCustomId ?? null, status)',
+    )
     expect(picker).toContain('live={!TILE_NOT_LIVE.includes(vendorPhase.kind)}')
     // …and the endpoint card takes that verdict rather than re-deriving one.
     expect(providers).toContain('live: boolean')
