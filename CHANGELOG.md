@@ -1,5 +1,62 @@
 # Changelog
 
+## [1.89.0](https://github.com/Meridiona/meridian/compare/v1.88.0...v1.89.0) (2026-08-20)
+
+### 🚀 Features
+
+* **analytics:** add a per-day product-action usage rollup reader ([aeac9b7](https://github.com/Meridiona/meridian/commit/aeac9b744f2b784c4da96f2056f03e1dbe442d6a))
+* **analytics:** add PostHog person properties, and log successful sends ([e6cd6f6](https://github.com/Meridiona/meridian/commit/e6cd6f62a0b1a5066b85d5b32db2254e21fc5a5f)), closes [#811](https://github.com/Meridiona/meridian/issues/811)
+* **analytics:** add the app_active heartbeat, product+health properties, and a consent switch ([775dd28](https://github.com/Meridiona/meridian/commit/775dd28a1d6fbcdbd0be7ea6c6d356e0e06581a4))
+* **analytics:** report CPU and memory used by Meridian's own processes ([631a1f6](https://github.com/Meridiona/meridian/commit/631a1f662d8b7b511a9a28a080eba705bca9fa98))
+* **analytics:** report which AI provider and trackers are in use, and whether they work ([a42e9d9](https://github.com/Meridiona/meridian/commit/a42e9d98d40280d10eab8af00f455a7451897c34))
+* **llm:** add Ollama as a free cloud provider, discontinue Groq ([c6e4930](https://github.com/Meridiona/meridian/commit/c6e4930b56eab762fe6db9275aa72021fe5d1170))
+
+### 🐛 Bug Fixes
+
+* **analytics:** stop four counters from meaning something other than their name ([e9f9c94](https://github.com/Meridiona/meridian/commit/e9f9c94089051690a1688db391bdf94374421c42))
+* **clerk:** canonicalize guest-js's sign_in/sign_up object discriminator ([da57cfa](https://github.com/Meridiona/meridian/commit/da57cfa4c745c4818db533b06682479d189ff635)), closes [#7](https://github.com/Meridiona/meridian/issues/7)
+* **clerk:** fall back a null session status instead of dropping the auth event ([56f21a4](https://github.com/Meridiona/meridian/commit/56f21a4032c4834786151df01aea928c5ad93f26))
+* **coding-agent:** prepend PATH when spawning a resolved CLI via run_capture ([1cf9059](https://github.com/Meridiona/meridian/commit/1cf90596eab199bba12550817ba965d2e7587d83))
+* **coding-agent:** scope resource_exhausted rate-limit marker to cursor-agent ([9ba320f](https://github.com/Meridiona/meridian/commit/9ba320fb5d5dddb2af433d7b1b9ed799415e02a2)), closes [#811](https://github.com/Meridiona/meridian/issues/811) [#812](https://github.com/Meridiona/meridian/issues/812)
+* **llm:** gate instant_timing() test helper behind #[cfg(unix)] ([92ed422](https://github.com/Meridiona/meridian/commit/92ed422cb895d85d450d284d69b9e32649c2bb6c))
+* **llm:** harden AI provider sign-in detection and interactive draft latency ([fabc52f](https://github.com/Meridiona/meridian/commit/fabc52fa480a8f84a38bb44e423d8f3e78d321bc))
+* **llm:** recognize a cursor-agent websocket reconnect as a transient failure ([ad3e297](https://github.com/Meridiona/meridian/commit/ad3e29779a08c35bac536efc1400d7cadd159c2a))
+* **llm:** recognize Cursor's resource_exhausted rate limit, memoise a rejected model ([262f3a1](https://github.com/Meridiona/meridian/commit/262f3a18b284f82d7e4c3589ad3d342fa0dedee2))
+* **llm:** retry the connectivity probe once on a plain timeout ([6afb44e](https://github.com/Meridiona/meridian/commit/6afb44ef67c5575ed6325443cfff6710d8573ca5))
+* **llm:** set additionalProperties:false on every strict-schema object node ([40c663f](https://github.com/Meridiona/meridian/commit/40c663f70766cfc3d78bb5b8e63c62071aabfd6f))
+* **llm:** set additionalProperties:false on object schemas with no properties ([e2633d9](https://github.com/Meridiona/meridian/commit/e2633d94af34fd47508754092d9deb71314bb4be)), closes [#812](https://github.com/Meridiona/meridian/issues/812)
+* **llm:** widen interactive_login's test grace window to stop a CI flake ([64d3edd](https://github.com/Meridiona/meridian/commit/64d3eddd8061b2bdf7aefd131c60c2ba52103d3d))
+* **notifications:** clear/raise the Groq banner the instant the provider changes ([e4359da](https://github.com/Meridiona/meridian/commit/e4359da399f71a5317d733b5bb6ee06ec94cbfbf))
+* **notifications:** give the persistent fault banner a real click-through link ([638d22e](https://github.com/Meridiona/meridian/commit/638d22e48d5fd2784f6c1d208cdf21a21a0185f0))
+* **release:** address CodeRabbit findings from the pre-main → main promotion ([c1fd66f](https://github.com/Meridiona/meridian/commit/c1fd66fe18605d9a0793f34337474d75780c2b68)), closes [#811](https://github.com/Meridiona/meridian/issues/811)
+* **release:** address CodeRabbit's re-review after [#819](https://github.com/Meridiona/meridian/issues/819) merged (round 4) ([3cc5538](https://github.com/Meridiona/meridian/commit/3cc5538e4826de06349fa711df52135147aadd72)), closes [#811](https://github.com/Meridiona/meridian/issues/811) [#804](https://github.com/Meridiona/meridian/issues/804) [#809](https://github.com/Meridiona/meridian/issues/809) [#816](https://github.com/Meridiona/meridian/issues/816)
+* **release:** address CodeRabbit's re-review after PR [#813](https://github.com/Meridiona/meridian/issues/813) merged ([126d03f](https://github.com/Meridiona/meridian/commit/126d03fe18afbdf520d26f166787ef24e8e98e51)), closes [#811](https://github.com/Meridiona/meridian/issues/811)
+* **release:** address CodeRabbit's re-review of [#815](https://github.com/Meridiona/meridian/issues/815)'s analytics work ([be08e95](https://github.com/Meridiona/meridian/commit/be08e95cf89f917a44b336c6d3f682c4c53db217)), closes [#811](https://github.com/Meridiona/meridian/issues/811) [815-#817](https://github.com/Meridiona/815-/issues/817)
+* **release:** address CodeRabbit's review of [#820](https://github.com/Meridiona/meridian/issues/820)'s Ollama/Groq work (round 5) ([23cc249](https://github.com/Meridiona/meridian/commit/23cc249982b07aef64411e55f9dd009151a55c9d)), closes [#811](https://github.com/Meridiona/meridian/issues/811) [#824](https://github.com/Meridiona/meridian/issues/824) [#825](https://github.com/Meridiona/meridian/issues/825)
+* **tray:** kill orphaned CLI child processes on timeout ([5eced74](https://github.com/Meridiona/meridian/commit/5eced74f285a8f8349dddf0ab5312339b2aa58d6))
+* **tray:** render the full error chain in refresh_active/refresh_current_task ([f1ebebc](https://github.com/Meridiona/meridian/commit/f1ebebc1bd682b59dbce5ad75bcf2fbbe7e46082))
+* **tray:** retry a failed db repair within the same boot ([309ce19](https://github.com/Meridiona/meridian/commit/309ce19a1e573590a959e0bea10c7e022d23f05e))
+* **ui:** derive the discontinued-vendor recovery copy from CLOUD_PRESETS ([cd50050](https://github.com/Meridiona/meridian/commit/cd50050b4bd0663b8a24c45c41b2d5ce164f5dff))
+* **worklog:** batch stale-draft notifications into one per fold ([2fcad55](https://github.com/Meridiona/meridian/commit/2fcad55b3a2b79b6abb7c45b05c60322089907dc))
+
+### ✅ Tests
+
+* **clerk:** harden sign_in/sign_up discriminator coverage ([9b31803](https://github.com/Meridiona/meridian/commit/9b31803826378e34dcc116fd24f660f38263a147))
+* **llm:** widen interactive_login's test timing to survive CI scheduler jitter ([d97c445](https://github.com/Meridiona/meridian/commit/d97c445c082826bbfe6e2c467ad2161e847d573e))
+* **tray:** add a behavioral regression guard for kill_on_drop ([93fc697](https://github.com/Meridiona/meridian/commit/93fc6971afdfd24cc34a8dc277963d4149877050))
+* **tray:** add a behavioral regression guard for the error-chain fix ([65e12f2](https://github.com/Meridiona/meridian/commit/65e12f2e6f5dea36e83e57bd7b8cceafd197aa6e))
+
+### 📝 Documentation
+
+* **privacy:** disclose the widened analytics, and extend the alpha Support ID window ([6178ca7](https://github.com/Meridiona/meridian/commit/6178ca71621217fd5b30b2a3ff62f9fe4b8e1cd8)), closes [#734](https://github.com/Meridiona/meridian/issues/734)
+
+### 🔧 Chores
+
+* **readme:** swap Product Hunt badge to top-post-badge variant ([52f9e8e](https://github.com/Meridiona/meridian/commit/52f9e8e51797cae6706a244ddb11d6184c68882b))
+* **release:** add the 1.89.0 What's New entry and bump the update floor ([e90f37b](https://github.com/Meridiona/meridian/commit/e90f37bcd7ea0324abc378c646408031636071eb)), closes [#811](https://github.com/Meridiona/meridian/issues/811)
+* **release:** update the 1.89.0 What's New entry for Ollama/Groq and the DB-repair retry ([7cde895](https://github.com/Meridiona/meridian/commit/7cde895be7934ee98076e7d3bad5a5e560720d6a)), closes [#818](https://github.com/Meridiona/meridian/issues/818) [#820](https://github.com/Meridiona/meridian/issues/820) [#821](https://github.com/Meridiona/meridian/issues/821) [#812](https://github.com/Meridiona/meridian/issues/812) [#818](https://github.com/Meridiona/meridian/issues/818)
+* retrigger CI (previous push's workflow run never queued) ([9d5cc82](https://github.com/Meridiona/meridian/commit/9d5cc827507950ee8c4f6b528661610272c8e709))
+
 ## [1.88.0](https://github.com/Meridiona/meridian/compare/v1.87.0...v1.88.0) (2026-08-17)
 
 ### 🚀 Features
