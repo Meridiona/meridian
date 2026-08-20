@@ -620,21 +620,20 @@ export const OLLAMA: CloudKeyPreset = {
   vendor: 'ollama',
   name: 'Ollama',
   baseUrl: 'https://ollama.com/v1',
-  // NOT the bare `/settings/keys` address - verified live (this session): visiting that
-  // signed-out redirects to `/signin` with no return path attached at all, so a user who
-  // just created an account lands on ollama.com's general homepage with no obvious way
-  // back to the key screen. `/signin?next=...` carries the destination through their
-  // WorkOS auth redirect instead (confirmed via the `state` param, which base64-decodes to
-  // exactly `/settings/keys`), so sign-up and sign-in both land back here afterward - the
-  // same round-trip Groq's own keys link gives for free.
-  keyUrl: 'https://ollama.com/signin?next=%2Fsettings%2Fkeys',
+  // The direct address, by request - deliberately NOT `/signin?next=%2Fsettings%2Fkeys`,
+  // which carries the destination through Ollama's WorkOS auth redirect and lands a
+  // signed-out user straight back here. Trade-off worth knowing: visiting THIS bare address
+  // signed-out 303s to a generic `/signin` with no return path at all (verified live), so
+  // `keyStepBody` below tells a signed-out user to navigate to Settings → Keys themselves
+  // once they're in, rather than promising an automatic landing.
+  keyUrl: 'https://ollama.com/settings/keys',
   // Spelt out, unlike Groq's: Groq's link opens a page with nothing else on it, but Ollama's
   // settings are a tabbed page, so "create an API key" alone leaves the actual click
   // unnamed. Named explicitly so nobody has to go hunting for it.
   keyStepBody:
     'Sign up with Google or an email address if you have not already - no card is asked for. ' +
-    'You will land on the Keys section of Settings - press Create API key there and copy it, ' +
-    'it is shown once.',
+    'If it does not take you straight there, go to Settings → Keys and press Create API key ' +
+    'there and copy it, it is shown once.',
   privacyUrl: 'https://ollama.com/privacy',
   termsUrl: 'https://ollama.com/terms',
   freeBadge: 'FREE',

@@ -652,6 +652,11 @@ export interface Notice {
   detail: string
   remedy: string | null
   raised_at: string
+  /** A route-like target (`/settings/intelligence`, …) from `meridian_core::notifications::deep_links`
+   *  — the same value the notice's paired native toast carries, now persisted onto the banner row
+   *  too (migration 081) so a click-through survives past the toast itself. `null` on the great
+   *  majority of notices, which render with no button. */
+  deep_link: string | null
 }
 
 // ── Banner notifications (`get_banner_notifications`) ─────────────────────────
