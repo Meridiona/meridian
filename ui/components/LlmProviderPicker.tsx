@@ -582,7 +582,8 @@ export default function LlmProviderPicker({
       {usingHiddenCloud && activeRow && (
         <p style={{ fontSize: 11, lineHeight: 1.45, color: 'var(--color-state-pending)' }}>
           You&apos;re currently using {activeRow.name}, which is discontinued - Meridian isn&apos;t
-          sending it any requests. Add a free Ollama key above to resume summaries.
+          sending it any requests. Add a free {CLOUD_PRESETS.map((p) => p.name).join(' or ')} key
+          above to resume summaries.
         </p>
       )}
 
