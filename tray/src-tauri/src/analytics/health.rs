@@ -381,7 +381,7 @@ pub(crate) async fn snapshot(pool: &SqlitePool) -> HealthSnapshot {
     // shipping it is to catch a registration that has gone missing, and one that
     // went missing after this process started is exactly the case a cached value
     // could not see.
-    let autostart = crate::autostart::status();
+    let autostart = crate::autostart::status().await;
     let action = crate::autostart::last_action();
 
     let snap = HealthSnapshot {

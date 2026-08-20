@@ -201,6 +201,22 @@ async fn read_registration() -> Option<String> {
     Some(decode_console_output(&out.stdout))
 }
 
+/// A task definition that exists but will never fire — `<Enabled>false</Enabled>`.
+///
+/// Treated as "nothing usable is registered" by [`ensure_registered`], which is
+/// both accurate and the thing that makes the Settings switch reversible:
+/// [`unregister`] disables the task rather than deleting it (see its docs for
+/// why), so without this a user who turned autostart off and then back on again
+/// would get `already_correct` — the task is there, the path matches, the
+/// triggers are there — and a permanently disabled task. Silently.
+///
+/// It also self-heals a task someone disabled by hand in Task Scheduler, which
+/// is consistent with the rest of this module: `settings.json` is the source of
+/// truth for whether autostart is wanted, and OS-level drift gets repaired.
+fn is_disabled(xml: &str) -> bool {
+    xml.contains("<Enabled>false</Enabled>")
+}
+
 /// Verify and, if needed, re-register the task. See
 /// [`crate::autostart::ensure_registered`] for the contract.
 pub(crate) async fn ensure_registered() -> RegistrationAction {
@@ -211,7 +227,9 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
         return RegistrationAction::Failed;
     };
 
-    let existing = read_registration().await;
+    // A disabled task counts as absent — see `is_disabled` for why that is what
+    // makes the Settings switch reversible rather than one-way.
+    let existing = read_registration().await.filter(|xml| !is_disabled(xml));
     let action = super::decide(
         super::disabled_by_user(),
         crate::sys::running_from_stable_location(),
@@ -367,17 +385,30 @@ async fn migrate_off_plugin() {
         .await;
 }
 
-/// Remove the task AND the Startup-folder fallback, honouring a user who turned
-/// autostart off.
+/// Stop the tray starting itself, honouring a user who turned autostart off.
 ///
-/// Both, unconditionally: a machine that once fell back to the Startup folder
-/// and later got a real task can legitimately have had both, and leaving either
-/// behind means the user's "no" is ignored at the next logon. `schtasks /Delete`
-/// exits non-zero when the task is absent, which is the normal case, so the
-/// result is deliberately not treated as an error.
+/// # `/Change /DISABLE`, not `/Delete`
+/// The tray the user is looking at when they untick the setting was started BY
+/// this task, so it is the task's running instance — and `/Delete` terminates
+/// running instances. Deleting here would quit the app out from under someone
+/// who was changing a preference. `/Change /DISABLE` leaves the definition and
+/// the running process alone while stopping every future trigger, which is
+/// exactly what "don't start yourself" means.
+///
+/// (`src/uninstall.rs` still uses `/Delete`, correctly: there the app is meant
+/// to stop, and leaving a task pointed at a deleted executable is the bug.)
+///
+/// The Startup-folder fallback is removed too, unconditionally: a machine that
+/// fell back under a stricter policy and later got a real task can legitimately
+/// have had both, and leaving it behind means the "no" is ignored at next logon.
+/// Deleting a script cannot kill a running process, so there is no equivalent
+/// hazard.
+///
+/// `schtasks` exits non-zero when the task is absent, the normal case when
+/// autostart was never on, so the result is deliberately not an error.
 pub(crate) async fn unregister() {
     let _ = tokio::process::Command::new("schtasks")
-        .args(["/Delete", "/F", "/TN", TASK_NAME])
+        .args(["/Change", "/TN", TASK_NAME, "/DISABLE"])
         .no_window()
         .output()
         .await;
@@ -388,18 +419,18 @@ pub(crate) async fn unregister() {
 
 /// Live registration state for analytics. See [`super::Status`].
 ///
-/// Synchronous to match the macOS signature, so it shells out blocking. Called
-/// once a day from the analytics tick, never from the poll hot path.
-pub(crate) fn status() -> Status {
-    let registered = std::process::Command::new("schtasks")
-        .args(["/Query", "/TN", TASK_NAME, "/XML"])
-        .no_window()
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| decode_console_output(&o.stdout));
+/// Reuses [`read_registration`] rather than shelling out again, so the read
+/// path and the repair path can never disagree about what "registered" means —
+/// and so this stays `async`, because its caller runs on the tray's poll loop
+/// and a blocking process spawn there would stall a runtime worker.
+pub(crate) async fn status() -> Status {
     super::status_from(
-        registered.as_deref(),
+        // Same `is_disabled` filter as the repair path: a task that will never
+        // fire must not be reported to the fleet as a healthy registration.
+        read_registration()
+            .await
+            .filter(|xml| !is_disabled(xml))
+            .as_deref(),
         current_exe()
             .map(|p| p.to_string_lossy().into_owned())
             .as_deref(),
@@ -506,6 +537,39 @@ mod tests {
         let body = startup_launcher_body(Path::new(r"C:\Program Files\Meridian\Meridian.exe"));
         assert!(body.contains(r#""""C:\Program Files\Meridian\Meridian.exe"" --autostart""#));
         assert!(body.contains(", 0, False"));
+    }
+
+    /// The task this module writes must not read back as disabled, or every
+    /// launch would tear it down and rebuild it.
+    #[test]
+    fn a_freshly_written_task_is_not_disabled() {
+        assert!(!is_disabled(&task_xml(Path::new(EXE))));
+    }
+
+    /// `unregister` disables rather than deletes (it would otherwise kill the
+    /// tray, which IS the task's running instance). This is what stops that
+    /// choice making the Settings switch one-way: a disabled task must read as
+    /// absent, so turning autostart back on re-creates it enabled.
+    #[test]
+    fn a_disabled_task_reads_as_absent_so_the_switch_is_reversible() {
+        let disabled = task_xml(Path::new(EXE)).replace(
+            "<Enabled>true</Enabled>\n    <Hidden>false</Hidden>",
+            "<Enabled>false</Enabled>\n    <Hidden>false</Hidden>",
+        );
+        assert!(is_disabled(&disabled), "the disabled marker must be found");
+        // What `ensure_registered` does with it: filter to None, so `decide`
+        // reports a fresh registration rather than `already_correct`.
+        let existing = Some(disabled).filter(|xml| !is_disabled(xml));
+        assert_eq!(
+            super::super::decide(
+                false,
+                true,
+                existing.as_deref(),
+                EXE,
+                MORNING_TRIGGER_MARKER
+            ),
+            RegistrationAction::RegisteredMissing
+        );
     }
 
     /// The tray's task and launcher names must not collide with the daemon's

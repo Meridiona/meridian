@@ -38,8 +38,11 @@ const PLIST_FILE: &str = "com.meridiona.tray.plist";
 /// tray at login.
 const LEGACY_PLIST_FILE: &str = "Meridian.plist";
 
-/// The legacy plist's launchd label — the plugin used the app name for both.
-const LEGACY_LABEL: &str = "Meridian";
+// NOTE: there is deliberately no LEGACY_LABEL constant. The label would only be
+// needed to `launchctl bootout` the plugin-era job, and doing that from inside
+// the running tray kills the tray — see `migrate_off_plugin`. `src/uninstall.rs`
+// owns the one place a bootout of that label is safe, because there the app is
+// meant to stop.
 
 /// Element that proves a plist carries the morning relaunch. See
 /// [`super::decide`] for why this is a text check.
@@ -128,8 +131,10 @@ pub(crate) fn plist_body(exe: &Path, home: &Path) -> String {
 }
 
 /// The plist currently on disk, or `None` if absent/unreadable.
-fn read_registration() -> Option<String> {
-    std::fs::read_to_string(launch_agents_dir()?.join(PLIST_FILE)).ok()
+async fn read_registration() -> Option<String> {
+    tokio::fs::read_to_string(launch_agents_dir()?.join(PLIST_FILE))
+        .await
+        .ok()
 }
 
 /// Verify and, if needed, rewrite the LaunchAgent. See
@@ -150,7 +155,7 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
         return RegistrationAction::Failed;
     };
 
-    let existing = read_registration();
+    let existing = read_registration().await;
     let action = super::decide(
         super::disabled_by_user(),
         crate::sys::running_from_stable_location(),
@@ -189,12 +194,26 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
     action
 }
 
-/// Boot out and delete the plugin-era `Meridian.plist`.
+/// Delete the plugin-era `Meridian.plist`, so an upgraded install does not end
+/// up with two jobs both starting a tray at login.
 ///
 /// Idempotent and silent: on all but one launch in an install's life there is
-/// nothing there. `bootout` before the delete because removing the file alone
-/// leaves the job loaded for the rest of the session, still able to start a
-/// duplicate tray at the plugin's `RunAtLoad`.
+/// nothing there.
+///
+/// # It must NOT `launchctl bootout` first
+/// This is the tempting version and it is a self-inflicted crash. `bootout`
+/// unloads a job AND terminates its processes — and on an existing install the
+/// tray IS that job's process, because the plugin's login item is what started
+/// it. Booting the label out from inside the running tray therefore kills the
+/// tray, seconds after an update, with no `KeepAlive` to bring it back. The
+/// user's app would simply vanish at login.
+///
+/// Deleting the file alone is both safe and sufficient: the plugin's plist
+/// carries only `RunAtLoad`, which fires at load time (session start, already
+/// past) and never again. A loaded-but-deleted job spontaneously starts
+/// nothing, and at the next login launchd has no file to load. The only cost is
+/// that the stale label lingers in `launchctl print` until logout, which is
+/// cosmetic.
 async fn migrate_off_plugin() {
     let Some(legacy) = launch_agents_dir().map(|d| d.join(LEGACY_PLIST_FILE)) else {
         return;
@@ -202,8 +221,6 @@ async fn migrate_off_plugin() {
     if !legacy.exists() {
         return;
     }
-    let target = format!("gui/{}/{LEGACY_LABEL}", crate::sys::uid_str());
-    let _ = crate::backend_install::launchctl(&["bootout", &target]).await;
     match tokio::fs::remove_file(&legacy).await {
         Ok(()) => tracing::info!(
             plist = %legacy.display(),
@@ -218,15 +235,22 @@ async fn migrate_off_plugin() {
 
 /// Remove the LaunchAgent, honouring a user who turned autostart off.
 ///
-/// `bootout` before the delete: deleting the file alone leaves the job loaded
-/// for the rest of the login session, so launchd would still honour the morning
-/// trigger today — the user's "no" would appear to have been ignored.
+/// # Also deliberately does not `bootout`
+/// Same reason as [`migrate_off_plugin`], and here the consequence would be
+/// even more obviously wrong: the user unticks "Start Meridian automatically"
+/// in Settings and the app they are looking at quits, because they are running
+/// as the job being booted out.
+///
+/// The accepted cost is narrow. Our plist DOES carry a morning trigger, and it
+/// stays live until logout, so a user who turns autostart off AND quits later
+/// the same day could still be relaunched once at 09:00. From the next login on
+/// there is no plist to load and the setting is fully honoured. Relaunching
+/// once beats quitting the app out from under someone who was changing a
+/// preference.
 pub(crate) async fn unregister() {
     let Some(plist) = launch_agents_dir().map(|d| d.join(PLIST_FILE)) else {
         return;
     };
-    let target = format!("gui/{}/{LABEL}", crate::sys::uid_str());
-    let _ = crate::backend_install::launchctl(&["bootout", &target]).await;
     match tokio::fs::remove_file(&plist).await {
         Ok(()) => tracing::info!(plist = %plist.display(), "autostart: LaunchAgent removed"),
         // Already gone - the normal case when autostart was never on.
@@ -238,9 +262,9 @@ pub(crate) async fn unregister() {
 }
 
 /// Live registration state for analytics. See [`super::Status`].
-pub(crate) fn status() -> Status {
+pub(crate) async fn status() -> Status {
     super::status_from(
-        read_registration().as_deref(),
+        read_registration().await.as_deref(),
         current_exe()
             .map(|p| p.to_string_lossy().into_owned())
             .as_deref(),

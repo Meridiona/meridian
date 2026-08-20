@@ -418,14 +418,23 @@ pub(crate) struct Status {
 
 /// Probe the current registration. Best-effort; every failure degrades to
 /// `None` rather than to `false`.
-pub(crate) fn status() -> Status {
+///
+/// `async` for the Windows path's sake: reading a scheduled task means shelling
+/// out to `schtasks`, and its only caller ([`crate::analytics::health::snapshot`])
+/// runs on the tray's poll loop. A blocking `std::process::Command` there would
+/// stall a runtime worker for the length of a process spawn — briefly, once a
+/// day, but the poll loop is also what drives the tray icon, the health banner
+/// and the notification drain, and "the menu bar froze for a moment" is not a
+/// trade worth making for a telemetry field. macOS only reads a file, but
+/// matches the signature so there is one shape to call.
+pub(crate) async fn status() -> Status {
     #[cfg(target_os = "macos")]
     {
-        macos::status()
+        macos::status().await
     }
     #[cfg(target_os = "windows")]
     {
-        windows::status()
+        windows::status().await
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {

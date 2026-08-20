@@ -160,11 +160,6 @@ mod catch_setup_panic_tests {
 }
 
 pub fn run() {
-    // Uptime baseline for `analytics::health`. Cheap, infallible, and taken
-    // before anything that can block, so "how long has the tray been up"
-    // measures the process rather than the point some later hook reached.
-    sys::mark_process_start();
-
     // Native-crash capture (Phase 2B). MUST be first: `tauri-plugin-sentry`'s
     // minidump reporter relaunches this exe in a special reporter mode that has
     // to short-circuit before any app work. `crash::init_client()` returns None
@@ -179,6 +174,13 @@ pub fn run() {
     let _sentry_minidump = sentry_client
         .as_ref()
         .map(|c| tauri_plugin_sentry::minidump::init(c));
+
+    // Uptime baseline for `analytics::health`. Deliberately AFTER the minidump
+    // reporter, not before it: `crash::init_client` above must be the first
+    // thing this function does, because the reporter relaunches this exe in a
+    // special mode that short-circuits before any app work, and a process that
+    // exists only to upload a crash dump has no meaningful "uptime" to record.
+    sys::mark_process_start();
 
     // Tray telemetry. Emit the tray's own spans + logs (service.name =
     // meridian-tray) into the shared OTLP spool — the same one the daemon writes

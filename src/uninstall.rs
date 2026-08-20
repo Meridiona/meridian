@@ -391,19 +391,19 @@ fn run_human(plan: &Plan) {
         }
     }
 
-    // macOS: the tray's own LaunchAgent is `com.meridiona.tray`, which the plist
-    // loop below sweeps up along with the daemon's — that is exactly why
-    // `autostart.rs` uses that label. The plugin-era plist did NOT match: it was
-    // named after productName (`Meridian.plist`), so it survived every
-    // uninstall, still pointing at a trashed app. An install upgraded across
-    // that change may still have it, so it is removed by name here.
+    // macOS: the TRAY's own login item. `autostart.rs` names it
+    // `com.meridiona.tray`, so the plist loop below finds it. The plugin-era one
+    // did NOT match that glob — it was named after productName
+    // (`Meridian.plist`) — so it survived every uninstall, still pointing at a
+    // trashed app. An install upgraded across that change may still have it, so
+    // it is removed by name here.
+    //
+    // Removed WITHOUT a `bootout`, for the same reason `autostart.rs` never
+    // boots this label out: see `TRAY_LABELS` below.
     #[cfg(target_os = "macos")]
     if let Some(home) = meridian_core::paths::home_dir() {
         let legacy = home.join("Library/LaunchAgents/Meridian.plist");
         if legacy.exists() {
-            let _ = std::process::Command::new("launchctl")
-                .args(["bootout", &format!("gui/{}/Meridian", uid_str())])
-                .status();
             match std::fs::remove_file(&legacy) {
                 Ok(()) => println!("✓ removed agent  Meridian (legacy login item)"),
                 Err(e) => eprintln!("⚠ could not remove {}: {e}", legacy.display()),
@@ -411,13 +411,35 @@ fn run_human(plan: &Plan) {
         }
     }
 
+    // Labels whose plist is deleted but which are NEVER `bootout`-ed.
+    //
+    // `launchctl bootout` terminates the job's processes, and the tray is that
+    // job's process — it is what launchd started at login. This uninstall runs as
+    // a CHILD of the tray (the in-app wizard shells out to `meridian uninstall`
+    // and waits on its output, see `tray/src-tauri/src/commands/uninstall.rs`),
+    // so booting the tray's label out kills the wizard mid-run: the window
+    // vanishes, the itemized result is never shown, and the permissions guidance
+    // that is the entire reason the wizard exists never appears.
+    //
+    // This was previously invisible because the tray's login item was labelled
+    // `Meridian`, which this loop's `com.meridiona.*` glob never matched.
+    //
+    // Deleting the plist alone is sufficient: nothing loads it again, so the
+    // tray does not come back at the next login, and the user quits or trashes
+    // the app themselves — which is exactly what the wizard's next step tells
+    // them to do. The daemon is deliberately NOT in this list: it is headless,
+    // nothing is waiting on it, and it must actually stop.
+    const TRAY_LABELS: [&str; 1] = ["com.meridiona.tray"];
+
     let uid = uid_str();
     for (label, plist) in &plan.agents {
         // `bootout` can legitimately return non-zero (the agent isn't currently
         // loaded); it's best-effort, so its exit status isn't an error here.
-        let _ = std::process::Command::new("launchctl")
-            .args(["bootout", &format!("gui/{uid}/{label}")])
-            .status();
+        if !TRAY_LABELS.contains(&label.as_str()) {
+            let _ = std::process::Command::new("launchctl")
+                .args(["bootout", &format!("gui/{uid}/{label}")])
+                .status();
+        }
         // But don't claim "✓ removed" if the plist deletion actually failed.
         match std::fs::remove_file(plist) {
             Ok(()) => println!("✓ removed agent  {label}"),
