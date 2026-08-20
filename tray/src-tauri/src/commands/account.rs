@@ -28,16 +28,22 @@
 //!   PostHog event is sent at all until this returns `Some` (the email
 //!   becomes the event's `distinct_id` directly, never an anonymous id).
 //!
-//! # ALPHA TESTING ONLY — per-user Support ID (expires 2026-08-28)
+//! # ALPHA TESTING ONLY — per-user Support ID + raw-email telemetry (expires 2026-08-28)
 //! [`save_account_email`] also derives a domain-separated, one-way hash of the email
 //! (`meridian::telemetry_spool::redact::pseudonymize_account`) and mirrors
-//! ONLY that hash into `settings.json`'s `account_pseudonym` — never the raw
-//! email, which stays confined to this module's own `account.json`. The
-//! daemon has no other way to see who's signed in (`settings.json` is the one
-//! file both processes read), and it's what
-//! `telemetry_spool::redact::local_host_pseudonym` reads to seed the Support
-//! ID/shipped `host.name` per account instead of per machine, until that
-//! function's hardcoded expiry passes. [`clear_account_email`] clears it back
+//! BOTH that hash AND the raw email into `settings.json` (`account_pseudonym`
+//! and `account_email` respectively) — the raw email otherwise stays confined
+//! to this module's own `account.json`. The daemon has no other way to see
+//! who's signed in (`settings.json` is the one file both processes read), and
+//! `account_pseudonym` is what `telemetry_spool::redact::local_host_pseudonym`
+//! reads to seed the Support ID/shipped `host.name` per account instead of
+//! per machine; `account_email` is what lets an OpenObserve resource
+//! attribute (`observability::init`) and Sentry's `user.email` (`crash.rs`)
+//! name the actual signed-in tester, via
+//! `telemetry_spool::redact::alpha_account_email_if_active`, gated at read
+//! time by both consumers against the same hardcoded expiry. This is a
+//! deliberate, explicitly-approved exception to "never write the raw email"
+//! — see `docs/privacy.md`'s alpha section. [`clear_account_email`] clears it back
 //! out on sign-out. See that function's doc for the full rationale — this is
 //! gated on the wall clock, NOT the release channel, because the hand-picked
 //! alpha testers install the same `stable` build as everyone else.
@@ -197,15 +203,18 @@ pub async fn save_account_email(email: String) -> Result<(), String> {
 }
 
 /// ALPHA TESTING ONLY (revert target: ~1 month from 2026-07-28) — mirror the
-/// signed-in account's hashed pseudonym into `settings.json`'s
-/// `account_pseudonym`, or clear it (`email = None`) on sign-out. Never
-/// writes the raw email — only
-/// [`meridian::telemetry_spool::redact::pseudonymize_account`]'s one-way
-/// hash, which is all `telemetry_spool::redact::local_host_pseudonym` needs.
-/// Clearing promptly on sign-out matters: a lingering hash would keep
-/// grouping error reports under someone no longer signed in on this machine.
-/// Mirror the account pseudonym (a one-way hash, never the raw email) into
-/// `settings.json`, or clear it on sign-out.
+/// signed-in account's identity into `settings.json`'s `account_pseudonym`
+/// (a one-way hash) AND, as of the raw-email telemetry change, its sibling
+/// `account_email` (the RAW address), or clear both (`email = None`) on
+/// sign-out. `account_pseudonym` is what
+/// `telemetry_spool::redact::local_host_pseudonym` needs; `account_email` is
+/// what lets an OpenObserve resource attribute / Sentry `user.email` name the
+/// actual signed-in tester, gated at READ time by every consumer against
+/// `redact::ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX` (see
+/// `redact::alpha_account_email_if_active`) — this function itself does not
+/// time-gate the write, exactly like the pseudonym half never did. Clearing
+/// promptly on sign-out matters: a lingering value would keep attributing
+/// error reports to someone no longer signed in on this machine.
 ///
 /// Instrumented because it does real I/O whose failure is otherwise invisible:
 /// the mapped `String` error stops at the Tauri command boundary and never
@@ -215,6 +224,7 @@ pub async fn save_account_email(email: String) -> Result<(), String> {
 #[tracing::instrument(skip(email), fields(signed_in = email.is_some()))]
 async fn write_account_pseudonym(email: Option<&str>) -> anyhow::Result<()> {
     let hash = email.map(meridian::telemetry_spool::redact::pseudonymize_account);
+    let raw_email = email.map(str::to_string);
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let mut v = meridian_core::settings::read_settings_value();
         if let Some(obj) = v.as_object_mut() {
@@ -222,6 +232,13 @@ async fn write_account_pseudonym(email: Option<&str>) -> anyhow::Result<()> {
                 "account_pseudonym".to_string(),
                 match &hash {
                     Some(h) => serde_json::Value::String(h.clone()),
+                    None => serde_json::Value::Null,
+                },
+            );
+            obj.insert(
+                "account_email".to_string(),
+                match &raw_email {
+                    Some(e) => serde_json::Value::String(e.clone()),
                     None => serde_json::Value::Null,
                 },
             );
@@ -234,7 +251,7 @@ async fn write_account_pseudonym(email: Option<&str>) -> anyhow::Result<()> {
     if let Err(e) = &result {
         // The failure boundary. No email and no hash in the field set - the
         // hash IS the pseudonymous identifier, so it stays out of logs.
-        tracing::error!(error = %format!("{e:#}"), "writing the account pseudonym failed");
+        tracing::error!(error = %format!("{e:#}"), "writing the account identity failed");
     }
     result
 }

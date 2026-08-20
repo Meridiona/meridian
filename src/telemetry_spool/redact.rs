@@ -175,6 +175,13 @@ const SAFE_STRING_KEYS: &[&str] = &[
     "db.operation",
     "rpc.method",
     "rpc.system",
+    // ── ALPHA TESTING ONLY — deliberate raw-PII exception ────────────────────
+    // See `ACCOUNT_EMAIL_KEY` / `alpha_account_email_if_active`'s docs. This is
+    // the one key in this list whose value is a raw email address rather than
+    // operational metadata; it is populated only for a signed-in alpha tester
+    // before `ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`, so it is absent from every
+    // other record. Must stay off `FREE_TEXT_KEYS` — see that constant's key.
+    ACCOUNT_EMAIL_KEY,
 ];
 
 /// The subset of [`SAFE_STRING_KEYS`] whose values are FREE TEXT — a human or
@@ -692,6 +699,48 @@ fn choose_pseudonym_source(now_unix: u64, account_pseudonym: Option<&str>) -> Op
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
+}
+
+/// The RESOURCE ATTRIBUTE KEY [`observability::init`] uses for the raw signed-in
+/// email (see [`alpha_account_email_if_active`]). `pub` so the redaction
+/// allowlist test below and `observability::init` can both refer to the same
+/// literal rather than risking two copies drifting apart. `crate::observability`
+/// is a sibling module, not a dependency of this one, so it imports this
+/// constant rather than the other way around.
+///
+/// DELIBERATELY on [`SAFE_STRING_KEYS`] and NOT on [`FREE_TEXT_KEYS`] — being
+/// free-text would run it through [`scrub_text`], whose whole job includes
+/// redacting anything that looks like an email address into `<email>`, which
+/// would defeat the one thing this key exists to carry. Nothing else should
+/// ever be attached under this key; it is allowlisted for exactly one
+/// deliberate, alpha-gated purpose.
+pub const ACCOUNT_EMAIL_KEY: &str = "user.email";
+
+/// ALPHA TESTING ONLY (same window as [`choose_pseudonym_source`],
+/// [`ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`]) — whether the RAW signed-in email
+/// may be attached to outgoing telemetry right now, and if so, the value to
+/// use.
+///
+/// This is a genuine, deliberate exception to the rest of this module's "no
+/// raw PII ships" stance, made ONLY so support can identify which user and
+/// which machine an error came from during the hand-picked alpha (see
+/// `docs/privacy.md`'s alpha section). It is gated identically to
+/// [`choose_pseudonym_source`] — signed in (non-empty `account_email`) AND
+/// before the same hardcoded expiry — so the raw-email exception can never
+/// outlive the pseudonym-override exception it's a sibling of.
+///
+/// Callers: `observability::init`'s `Resource::new(...)` (attaches it under
+/// [`ACCOUNT_EMAIL_KEY`] when `Some`) and the tray's Sentry `before_send`
+/// (`crash.rs`, sets `event.user`'s email the same way).
+///
+/// Delegates to [`choose_pseudonym_source`] rather than re-implementing the
+/// same expiry-check-then-trim-then-filter-empty shape: the two exceptions
+/// share the identical rule (signed in AND before the same hardcoded date),
+/// so one pure oracle backs both, and
+/// `account_pseudonym_only_overrides_before_the_expiry` already pins its edge
+/// cases.
+pub fn alpha_account_email_if_active(account_email: Option<&str>) -> Option<String> {
+    choose_pseudonym_source(now_unix_or_expired(), account_email)
 }
 
 fn is_safe_string_key(key: &str) -> bool {
@@ -1645,6 +1694,50 @@ mod tests {
                 "disagreed for account_pseudonym = {hash:?}"
             );
         }
+    }
+
+    /// [`alpha_account_email_if_active`] is a thin delegate to
+    /// [`choose_pseudonym_source`] — pin that it actually delegates (same
+    /// oracle, same answer for the same inputs) rather than trusting the doc
+    /// comment. Can't inject `now` into the public fn, so this pins the
+    /// delegation at whatever `now_unix_or_expired()` returns when the test
+    /// runs; `account_pseudonym_only_overrides_before_the_expiry` already
+    /// covers the expiry-boundary edge cases against the shared oracle
+    /// directly.
+    #[test]
+    fn alpha_account_email_delegates_to_choose_pseudonym_source() {
+        for email in [Some("tester@example.com"), None, Some("  ")] {
+            assert_eq!(
+                alpha_account_email_if_active(email),
+                choose_pseudonym_source(now_unix_or_expired(), email),
+                "disagreed for account_email = {email:?}"
+            );
+        }
+    }
+
+    /// The whole point of [`ACCOUNT_EMAIL_KEY`]: it must survive
+    /// [`keep_attribute`] with its raw value untouched (unlike a `FREE_TEXT_KEYS`
+    /// value, which the email regex in [`scrub_text`] would rewrite to
+    /// `<email>`), and it must NOT be on [`FREE_TEXT_KEYS`] at all.
+    #[test]
+    fn account_email_key_is_allowlisted_but_not_free_text() {
+        assert!(SAFE_STRING_KEYS.contains(&ACCOUNT_EMAIL_KEY));
+        assert!(
+            !FREE_TEXT_KEYS.contains(&ACCOUNT_EMAIL_KEY),
+            "must not be free-text scrubbed - that would redact the very value it exists to carry"
+        );
+        let mut attr = str_attr(ACCOUNT_EMAIL_KEY, "tester@example.com");
+        assert!(keep(&mut attr));
+        let AnyValue {
+            value: Some(any_value::Value::StringValue(v)),
+        } = attr.value.unwrap()
+        else {
+            panic!("expected string value");
+        };
+        assert_eq!(
+            v, "tester@example.com",
+            "the raw email must survive intact, not get scrubbed to <email>"
+        );
     }
 
     /// Every other free-text case here is Unix-shaped, but Windows installs

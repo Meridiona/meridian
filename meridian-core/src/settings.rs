@@ -322,6 +322,19 @@ pub struct RuntimeSettings {
     // falls back to the pre-existing per-machine hardware-UUID pseudonym.
     #[serde(default)]
     pub account_pseudonym: Option<String>,
+    // ALPHA TESTING ONLY, same window as `account_pseudonym` above
+    // (`redact::ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`, 2026-08-28) — the RAW
+    // signed-in email, mirrored alongside the hash so BOTH the tray and the
+    // daemon can attach it to their OpenObserve resource attributes and (tray
+    // only) Sentry's `user.email`, which is how support tells which user and
+    // which machine hit an issue during the alpha. This is a deliberate,
+    // explicitly-approved exception to "never write the raw email" — every
+    // reader of this field MUST re-check the same expiry constant before
+    // using the value (see `telemetry_spool::redact::alpha_account_email_if_active`),
+    // exactly like `account_pseudonym`'s readers do; this field itself is not
+    // time-gated at write time. `None` = signed out (or never signed in).
+    #[serde(default)]
+    pub account_email: Option<String>,
 }
 
 /// Default surface palette when `settings.json` predates the `theme` key. Must
@@ -383,6 +396,7 @@ impl Default for RuntimeSettings {
             worklog_auto_generate_prompted: false,
             // Signed out (or never signed in) until the tray says otherwise.
             account_pseudonym: None,
+            account_email: None,
         }
     }
 }
