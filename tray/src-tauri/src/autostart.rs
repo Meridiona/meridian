@@ -352,6 +352,29 @@ pub async fn ensure_registered() {
             action = action.as_str(),
             "autostart: registration was missing or stale - repaired"
         );
+    } else if matches!(
+        action,
+        RegistrationAction::SkippedTransientPath | RegistrationAction::Failed
+    ) {
+        // WARN, because these two mean AUTOSTART IS NOT IN PLACE and the user
+        // does not know it.
+        //
+        // They were previously DEBUG, lumped in with "no change needed" — which
+        // is how an install that silently never registers looked identical, in
+        // the fleet and in `meridian logs`, to one that was working perfectly.
+        // The requirement this module exists to satisfy is "the tray comes back
+        // after a restart, and again the next morning, until uninstalled"; an
+        // install sitting on either of these branches satisfies none of it, and
+        // that has to be visible without asking the user to run anything.
+        //
+        // Volume is bounded: a transient path resolves as soon as the app is in
+        // a stable location (`crate::relocate`), and `Failed` is a real I/O or
+        // API error rather than a routine state. `SkippedDisabledByUser` stays
+        // quiet on purpose — that one is the user's decision, not a fault.
+        tracing::warn!(
+            action = action.as_str(),
+            "autostart: NOT registered - the tray will not come back on its own"
+        );
     } else {
         tracing::debug!(action = action.as_str(), "autostart: no change needed");
     }
@@ -613,6 +636,31 @@ mod tests {
         ] {
             assert!(!a.is_repair(), "{a:?} should not count as a repair");
         }
+    }
+
+    /// The severity split in `ensure_registered`: exactly the actions that mean
+    /// "autostart is not in place" must be loud, because the user cannot tell.
+    ///
+    /// Pinned as a test because it is a one-line `matches!` that reads like
+    /// logging trivia and is not. It was DEBUG once, which made an install that
+    /// silently never registered indistinguishable — in the fleet AND in
+    /// `meridian logs` — from one working perfectly. `SkippedDisabledByUser` is
+    /// deliberately NOT in the loud set: that is the user's decision, not a
+    /// fault, and warning on it would train everyone to ignore the warning.
+    #[test]
+    fn only_the_not_registered_outcomes_are_loud() {
+        let loud = |a: RegistrationAction| {
+            matches!(
+                a,
+                RegistrationAction::SkippedTransientPath | RegistrationAction::Failed
+            )
+        };
+        assert!(loud(RegistrationAction::SkippedTransientPath));
+        assert!(loud(RegistrationAction::Failed));
+        assert!(!loud(RegistrationAction::SkippedDisabledByUser));
+        assert!(!loud(RegistrationAction::AlreadyCorrect));
+        // Repairs are loud too, via `is_repair` on the branch above.
+        assert!(RegistrationAction::RegisteredMissing.is_repair());
     }
 
     /// The analytics wire names are a contract with saved PostHog queries, so

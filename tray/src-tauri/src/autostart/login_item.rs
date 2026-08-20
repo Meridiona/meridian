@@ -42,10 +42,28 @@
 //! [`super::macos::ensure_registered`] / [`super::macos::unregister`], and
 //! [`super::status`] via [`status`].
 
+// The ObjC bindings are a macOS-only dependency (see this crate's
+// `[target.'cfg(target_os = "macos")'.dependencies]`), so the imports — and only
+// the four functions that actually message Objective-C — are gated. Everything
+// else in this module is pure and compiles on every target ON PURPOSE, for the
+// same reason `super::macos` and `super::windows` do: CI runs on macOS and
+// Linux, and a type whose wire names are a contract with saved fleet queries
+// should be linted and tested everywhere, not only where it can run.
+//
+// This gate is also what broke the Windows build once: `super::macos` is
+// compiled on every target and imports this module, so making the WHOLE module
+// macOS-only left Windows with an unresolved import.
+#[cfg(target_os = "macos")]
 use objc2_foundation::NSProcessInfo;
+#[cfg(target_os = "macos")]
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 
 /// Lowest macOS major version that has `SMAppService`.
+///
+/// `isize` to match `NSOperatingSystemVersion`'s field type. Read by
+/// `available()` on macOS and pinned by a test on every target, so it is never
+/// dead code.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const MIN_MACOS_MAJOR: isize = 13;
 
 /// Whether `SMAppService` can be called on this system at all.
@@ -54,12 +72,21 @@ const MIN_MACOS_MAJOR: isize = 13;
 /// for the class, because the answer is also worth logging and reporting: an
 /// install stuck on the fallback path is a fact about the machine, not a
 /// mystery.
+#[cfg(target_os = "macos")]
 pub(crate) fn available() -> bool {
     // `processInfo` is a singleton accessor and `operatingSystemVersion` a
     // plain struct read; objc2-foundation exposes both as safe, and they exist
     // on every macOS version this app can run on.
     let version = NSProcessInfo::processInfo().operatingSystemVersion();
     version.majorVersion >= MIN_MACOS_MAJOR
+}
+
+/// Off macOS there is no ServiceManagement framework at all, so the honest
+/// answer is a flat no — and every entry point below short-circuits on it,
+/// which is what lets the rest of this module stay platform-neutral.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn available() -> bool {
+    false
 }
 
 /// What the system currently thinks of our login-item registration.
@@ -108,7 +135,8 @@ impl LoginItemStatus {
     }
 }
 
-/// Current registration status. `Unavailable` below macOS 13.
+/// Current registration status. `Unavailable` below macOS 13, and off macOS.
+#[cfg(target_os = "macos")]
 pub(crate) fn status() -> LoginItemStatus {
     if !available() {
         return LoginItemStatus::Unavailable;
@@ -128,6 +156,12 @@ pub(crate) fn status() -> LoginItemStatus {
         // fleet as itself instead of being silently folded into "fine".
         LoginItemStatus::NotFound
     }
+}
+
+/// No ServiceManagement framework off macOS.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn status() -> LoginItemStatus {
+    LoginItemStatus::Unavailable
 }
 
 /// Result of a registration attempt.
@@ -176,8 +210,15 @@ pub(crate) fn register() -> RegisterOutcome {
         );
         return RegisterOutcome::AlreadySettled;
     }
+    register_main_app()
+}
 
-    // SAFETY: guarded by `available()`. `registerAndReturnError` maps the
+/// The one line that actually messages Objective-C, isolated so the policy above
+/// it (availability gate, idempotence check, logging) stays platform-neutral and
+/// reviewable in one place.
+#[cfg(target_os = "macos")]
+fn register_main_app() -> RegisterOutcome {
+    // SAFETY: callers gate on `available()`. `registerAndReturnError` maps the
     // ObjC out-error to a Rust `Result`, so there is no raw pointer handling.
     match unsafe { SMAppService::mainAppService().registerAndReturnError() } {
         Ok(()) => {
@@ -207,19 +248,29 @@ pub(crate) fn register() -> RegisterOutcome {
     }
 }
 
+/// Unreachable off macOS: `available()` is a constant `false` there, so
+/// `register` returns before this. Present only so the module compiles on every
+/// target — see the import gate at the top for why that matters.
+#[cfg(not(target_os = "macos"))]
+fn register_main_app() -> RegisterOutcome {
+    RegisterOutcome::Unavailable
+}
+
 /// Unregister the login item, honouring a user who turned autostart off.
 ///
 /// Unlike `launchctl bootout`, this does NOT terminate the running app — it only
 /// removes the launch-at-login registration — so it is safe to call from the
 /// Settings toggle while the user is looking at the window.
 pub(crate) fn unregister() {
-    if !available() {
+    if !available() || status() == LoginItemStatus::NotRegistered {
         return;
     }
-    if status() == LoginItemStatus::NotRegistered {
-        return;
-    }
-    // SAFETY: guarded by `available()`; same shape as `register` above.
+    unregister_main_app();
+}
+
+#[cfg(target_os = "macos")]
+fn unregister_main_app() {
+    // SAFETY: callers gate on `available()`; same shape as `register_main_app`.
     match unsafe { SMAppService::mainAppService().unregisterAndReturnError() } {
         Ok(()) => tracing::info!("autostart: login item unregistered"),
         Err(e) => {
@@ -229,6 +280,10 @@ pub(crate) fn unregister() {
     }
 }
 
+/// Unreachable off macOS — see [`register_main_app`]'s non-macOS twin.
+#[cfg(not(target_os = "macos"))]
+fn unregister_main_app() {}
+
 /// Open System Settings → Login Items, for a UI affordance that walks a user to
 /// the approval toggle instead of describing where it is.
 ///
@@ -236,11 +291,11 @@ pub(crate) fn unregister() {
 /// only the user can clear, and this is the one-call way to take them there.
 #[allow(dead_code)]
 pub(crate) fn open_system_settings() {
-    if !available() {
-        return;
+    #[cfg(target_os = "macos")]
+    if available() {
+        // SAFETY: guarded by `available()`; takes no arguments, returns nothing.
+        unsafe { SMAppService::openSystemSettingsLoginItems() };
     }
-    // SAFETY: guarded by `available()`; takes no arguments and returns nothing.
-    unsafe { SMAppService::openSystemSettingsLoginItems() };
 }
 
 /// The plist name is unused for `mainApp` registration, but the constant
