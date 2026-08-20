@@ -232,6 +232,7 @@ pub fn from_snapshot(
             schema,
             max_tokens,
             label,
+            interactive: false,
         },
         render_ctx,
     ))

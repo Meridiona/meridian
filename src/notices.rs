@@ -85,13 +85,14 @@ pub struct Notice<'a> {
 /// using the same `event_key` so the retract dedup key matches the enqueue.
 pub async fn raise_typed(pool: &SqlitePool, n: Notice<'_>) -> Result<()> {
     sqlx::query(
-        "INSERT INTO system_notices (notice_id, severity, title, detail, remedy)
-         VALUES (?, ?, ?, ?, ?)
+        "INSERT INTO system_notices (notice_id, severity, title, detail, remedy, deep_link)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(notice_id) DO UPDATE SET
            severity  = excluded.severity,
            title     = excluded.title,
            detail    = excluded.detail,
            remedy    = excluded.remedy,
+           deep_link = excluded.deep_link,
            raised_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
     )
     .bind(n.id)
@@ -99,6 +100,7 @@ pub async fn raise_typed(pool: &SqlitePool, n: Notice<'_>) -> Result<()> {
     .bind(n.title)
     .bind(n.detail)
     .bind(n.remedy)
+    .bind(n.deep_link)
     .execute(pool)
     .await
     .context("raising system notice")?;
@@ -188,6 +190,59 @@ pub async fn clear_typed_on(
     Ok(result.rows_affected() > 0)
 }
 
+/// This notice's id — shared with its own `event_key` (see [`raise_typed`]'s doc on that
+/// pairing), so both this module and any other caller name it identically.
+pub const GROQ_DEPRECATED: &str = "llm.groq_deprecated";
+
+/// Raise or clear [`GROQ_DEPRECATED`] to match whether Groq is the currently active custom
+/// provider — the single source of truth for this banner's condition, called from TWO
+/// places that must never answer differently:
+///
+/// - the daemon's poll tick (`main.rs`), every ~60 s, the steady-state driver;
+/// - the tray's `update_settings` command, the INSTANT `llm_provider`/`llm_provider_custom_id`
+///   changes — mirroring `push_health_update`'s existing "don't make a fresh pick wait out
+///   the poll interval" fix for `llm_provider_ok`. Before this existed, switching away from
+///   Groq left the banner up for up to a minute after the fix had already taken effect,
+///   which reads as "did that actually work?" at the exact moment a user is checking.
+///
+/// Idempotent either way (upsert / delete-if-present), so calling it from both places on the
+/// same transition is harmless — whichever call lands first does the work, the other is a
+/// no-op.
+#[tracing::instrument(skip(pool))]
+pub async fn sync_groq_deprecated_notice(pool: &SqlitePool, active_vendor: Option<&str>) {
+    if active_vendor == Some("groq") {
+        if let Err(e) = raise_typed(
+            pool,
+            Notice {
+                id: GROQ_DEPRECATED,
+                severity: "error",
+                title: "Groq is disabled",
+                detail: "Groq's free tier can't reliably serve Meridian's \
+                    hourly summaries, so Meridian no longer sends it any \
+                    requests. Hourly summaries are paused until you switch \
+                    providers.",
+                remedy: Some("Add a free Ollama key in Settings - Intelligence to resume."),
+                event_key: GROQ_DEPRECATED,
+                deep_link: Some(meridian_core::notifications::deep_links::INTELLIGENCE),
+            },
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %crate::errors::chain(&e),
+                active_vendor,
+                "notices: failed to raise the Groq-deprecated notice"
+            );
+        }
+    } else if let Err(e) = clear_typed(pool, GROQ_DEPRECATED, GROQ_DEPRECATED).await {
+        tracing::warn!(
+            error = %crate::errors::chain(&e),
+            active_vendor,
+            "notices: failed to clear the Groq-deprecated notice"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,6 +293,107 @@ mod tests {
             .await
             .unwrap();
         assert!(!cleared_again);
+    }
+
+    /// THE bug this test exists for: `deep_link` reached the paired native toast
+    /// (`notifications.deep_link`, migration 042) but was silently dropped before it ever
+    /// reached the persistent banner (`system_notices` had no such column at all) - so a
+    /// banner that outlived its toast, which is the common case, had no click-through left.
+    /// Asserts on `system_notices` directly, via the same reader the banner actually uses
+    /// (`meridian_core::notices::read_notices`), not just on what `raise_typed` was asked to
+    /// do - a regression here could pass a Rust-only check on the query and still ship a
+    /// banner with no button if the reader's column list drifted.
+    #[tokio::test]
+    async fn raise_typed_persists_deep_link_onto_the_banner_row() {
+        let pool = fresh_db().await;
+
+        raise_typed(
+            &pool,
+            Notice {
+                id: "llm.groq_deprecated",
+                severity: "error",
+                title: "Groq is disabled",
+                detail: "Switch providers to resume.",
+                remedy: None,
+                event_key: "llm.groq_deprecated",
+                deep_link: Some(meridian_core::notifications::deep_links::INTELLIGENCE),
+            },
+        )
+        .await
+        .unwrap();
+
+        let notices = meridian_core::notices::read_notices(&pool).await;
+        let banner = notices
+            .iter()
+            .find(|n| n.notice_id == "llm.groq_deprecated")
+            .expect("raise_typed must have written the banner row");
+        assert_eq!(
+            banner.deep_link.as_deref(),
+            Some(meridian_core::notifications::deep_links::INTELLIGENCE)
+        );
+
+        // A re-raise (the poll loop's idempotent every-tick call) must not clear it either -
+        // the UPDATE branch of the upsert has its own column list to keep in sync.
+        raise_typed(
+            &pool,
+            Notice {
+                id: "llm.groq_deprecated",
+                severity: "error",
+                title: "Groq is disabled",
+                detail: "Switch providers to resume.",
+                remedy: None,
+                event_key: "llm.groq_deprecated",
+                deep_link: Some(meridian_core::notifications::deep_links::INTELLIGENCE),
+            },
+        )
+        .await
+        .unwrap();
+        let notices = meridian_core::notices::read_notices(&pool).await;
+        let banner = notices
+            .iter()
+            .find(|n| n.notice_id == "llm.groq_deprecated")
+            .unwrap();
+        assert_eq!(
+            banner.deep_link.as_deref(),
+            Some(meridian_core::notifications::deep_links::INTELLIGENCE)
+        );
+    }
+
+    /// THE function two different processes (the daemon's poll tick and the tray's
+    /// `update_settings`) both call and must agree on. Exercises both directions plus the
+    /// idempotent double-call each caller relies on (the daemon re-syncs every tick; the tray
+    /// syncs once on a settings write — either could run twice for the same state).
+    #[tokio::test]
+    async fn sync_groq_deprecated_notice_raises_for_groq_and_clears_for_everything_else() {
+        let pool = fresh_db().await;
+
+        sync_groq_deprecated_notice(&pool, Some("groq")).await;
+        let notices = meridian_core::notices::read_notices(&pool).await;
+        assert!(notices.iter().any(|n| n.notice_id == GROQ_DEPRECATED));
+
+        // Re-syncing the SAME state (the daemon's next tick, or a redundant tray call) must
+        // not error or duplicate the row.
+        sync_groq_deprecated_notice(&pool, Some("groq")).await;
+        let notices = meridian_core::notices::read_notices(&pool).await;
+        assert_eq!(
+            notices
+                .iter()
+                .filter(|n| n.notice_id == GROQ_DEPRECATED)
+                .count(),
+            1
+        );
+
+        // Switching to Ollama (or any other vendor) clears it immediately - no dependence on
+        // a poll interval.
+        sync_groq_deprecated_notice(&pool, Some("ollama")).await;
+        let notices = meridian_core::notices::read_notices(&pool).await;
+        assert!(!notices.iter().any(|n| n.notice_id == GROQ_DEPRECATED));
+
+        // `None` (a CLI provider, or nothing configured) clears it too.
+        sync_groq_deprecated_notice(&pool, Some("groq")).await;
+        sync_groq_deprecated_notice(&pool, None).await;
+        let notices = meridian_core::notices::read_notices(&pool).await;
+        assert!(!notices.iter().any(|n| n.notice_id == GROQ_DEPRECATED));
     }
 
     /// The test above only checks `system_notices` — it would pass even if

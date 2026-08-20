@@ -135,6 +135,9 @@ pub mod deep_links {
     pub const SETTINGS: &str = "/settings";
     /// Settings → Integrations — where a tracker is (re)connected.
     pub const INTEGRATIONS: &str = "/settings/integrations";
+    /// Settings → Intelligence — where an AI provider is chosen or replaced. First producer:
+    /// `llm.groq_deprecated`, pointing a user off a discontinued free preset onto Ollama.
+    pub const INTELLIGENCE: &str = "/settings/intelligence";
     /// Settings → Account, which holds the Support ID and Export Diagnostics.
     /// This is where a fault sends the user: there is no in-app log viewer, so
     /// the actionable response to "something broke" is exporting diagnostics
@@ -149,13 +152,14 @@ pub mod deep_links {
     pub const SUMMARY: &str = "/summary";
 
     /// Every link a producer may emit.
-    pub const ALL: [&str; 8] = [
+    pub const ALL: [&str; 9] = [
         PLAN,
         WORKLOGS,
         WHATS_NEW,
         TODAY,
         SETTINGS,
         INTEGRATIONS,
+        INTELLIGENCE,
         LOGS,
         SUMMARY,
     ];

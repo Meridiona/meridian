@@ -107,6 +107,13 @@ keyring = { version = "3", features = ["apple-native", "windows-native"] }
 rand = "0.8"
 hex = "0.4"
 chrono = { version = "0.4", features = ["clock"] }
+# Per-process CPU/RSS sampling for `analytics::perf`. Pinned to the 0.29 line
+# ON PURPOSE: the screenpipe fork already pulls sysinfo 0.29.11 in
+# transitively, so matching it keeps ONE copy in the tree. Taking a newer
+# major here would build a second, duplicate sysinfo and its platform FFI
+# alongside the fork's — the same shape as the notifications-plugin link flake.
+# Check `cargo tree -p meridian-tray -i sysinfo` before changing this.
+sysinfo = { version = "0.29", default-features = false }
 # Anonymous per-install id for product analytics (analytics.rs) — already in
 # the workspace lockfile transitively, so this adds no new crate to the tree.
 uuid = { version = "1", features = ["v4"] }

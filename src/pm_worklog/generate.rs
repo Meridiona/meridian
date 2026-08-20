@@ -627,6 +627,7 @@ pub(crate) async fn generate_request(
         schema: Some(prompts::worklog_generate_schema()),
         max_tokens: GENERATE_MAX_TOKENS,
         label: format!("worklog-generate {day_local} {task_id}"),
+        interactive: false,
     };
     Ok((req, candidates.len()))
 }
@@ -658,6 +659,7 @@ pub(crate) async fn generate_request_from_task(
         schema: Some(prompts::worklog_generate_schema()),
         max_tokens: GENERATE_MAX_TOKENS,
         label: format!("worklog-generate {day_local} (inline)"),
+        interactive: false,
     };
     Ok((req, candidates.len()))
 }

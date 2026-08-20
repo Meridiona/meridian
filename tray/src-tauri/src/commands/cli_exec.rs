@@ -56,12 +56,28 @@ pub(crate) async fn run_meridian(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        // On timeout below, `tokio::time::timeout` drops the output future; without
+        // this the orphaned `meridian <args>` keeps running in the background after
+        // the UI reports a failure — for an LLM-backed call like `plan-task-draft`,
+        // that means the retry the user clicks next spawns a SECOND CLI process
+        // racing the first one for the same provider/DB, which is how a slow draft
+        // compounds into a retry loop that never finishes. See `tasks.rs::sync_tasks`
+        // for the sibling fix this mirrors.
+        .kill_on_drop(true)
         .no_window()
         .output();
 
     let output = match tokio::time::timeout(timeout, child).await {
         Err(_) => {
-            tracing::warn!(bin = %bin, timeout_s = timeout.as_secs(), "{label}: timed out");
+            // `kill_on_drop` reaps the child here, taking its stderr with it, so
+            // this log (bin + cwd, matching the spawn/non-zero arms below) is the
+            // only record a timeout leaves.
+            tracing::warn!(
+                bin = %bin,
+                cwd = %home.display(),
+                timeout_s = timeout.as_secs(),
+                "{label}: timed out"
+            );
             return Err(format!("{label} timed out"));
         }
         Ok(Err(e)) => {
@@ -184,5 +200,139 @@ pub(crate) async fn run_meridian_json<T: for<'de> Deserialize<'de>>(
                 "{label}: {bin} returned no result. It may be older than this app - reinstall or rebuild it."
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    /// Regression guard: on a timeout, `tokio::time::timeout` drops the
+    /// `.output()` future, and without `kill_on_drop(true)` the spawned
+    /// `meridian <args>` keeps running in the background after the caller has
+    /// already reported failure to the user. For an LLM-backed call like
+    /// `plan-task-draft`, that orphan then competes with the next "Try again"
+    /// click's fresh process for the same provider/DB — a plausible reason a
+    /// draft that missed its 150s budget once keeps missing it on retry.
+    ///
+    /// This can't drive `run_meridian` itself as a real spawn-and-verify test:
+    /// it resolves its binary via `crate::install::meridian_bin()`, and
+    /// overriding that via `MERIDIAN_BIN` would mean `std::env::set_var` on a
+    /// shared test binary — exactly what `integrations.rs`'s "avoiding
+    /// `std::env::set_var` on a Tokio worker thread" note warns off. So this
+    /// is source-scanned, mirroring `tasks.rs::sync_tasks`, the sibling call
+    /// site that already carries this fix. The MECHANISM itself — that
+    /// `kill_on_drop(true)` actually terminates an orphaned child, on this
+    /// platform, with tokio's real process reaping — is verified separately
+    /// below, against a plain `tokio::process::Command` that needs no
+    /// `MERIDIAN_BIN` override at all.
+    #[test]
+    fn run_meridian_kills_the_child_on_timeout() {
+        let src = include_str!("cli_exec.rs");
+        let prod = src.split_once("\n#[cfg(test)]").map_or(src, |(a, _)| a);
+        let spawn = prod
+            .find("tokio::process::Command::new(&bin)")
+            .expect("run_meridian's Command builder moved or was renamed");
+        let output_call = prod[spawn..]
+            .find(".output();")
+            .expect("run_meridian's Command builder no longer ends in .output()");
+        let builder = &prod[spawn..spawn + output_call];
+        assert!(
+            builder.contains(".kill_on_drop(true)"),
+            "run_meridian's spawned child is missing .kill_on_drop(true) — a \
+             timeout will orphan it instead of killing it. Builder was: {builder}"
+        );
+    }
+
+    /// A process that runs far longer than the timeout below, so the timeout
+    /// always wins the race — the exact shape `run_meridian` puts its child
+    /// in. No dependency on `meridian`/`MERIDIAN_BIN`: `sleep`/`ping` are
+    /// present on every macOS and Windows runner this crate's tests run on
+    /// (see `.github/workflows/ci.yml`'s `windows-latest` + `macos-latest`
+    /// `cargo test --workspace` jobs).
+    #[cfg(unix)]
+    fn long_running_command() -> (&'static str, &'static [&'static str]) {
+        ("sleep", &["30"])
+    }
+    #[cfg(windows)]
+    fn long_running_command() -> (&'static str, &'static [&'static str]) {
+        // `timeout.exe` refuses to run with stdin redirected (no console
+        // handle) — `ping` to loopback is the standard "sleep N seconds"
+        // substitute on Windows and needs no real network.
+        ("ping", &["-n", "30", "127.0.0.1"])
+    }
+
+    #[cfg(unix)]
+    fn process_is_alive(pid: u32) -> bool {
+        std::process::Command::new("ps")
+            .args(["-p", &pid.to_string()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(windows)]
+    fn process_is_alive(pid: u32) -> bool {
+        // `tasklist` exits 0 either way, printing "No tasks are running..."
+        // when nothing matches — the pid has to actually appear in the
+        // output, not just a success status.
+        std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+            .unwrap_or(false)
+    }
+
+    /// Proves the MECHANISM `run_meridian_kills_the_child_on_timeout` pins the
+    /// wiring for: that `kill_on_drop(true)` on a `tokio::process::Command`
+    /// actually terminates the child once the future racing it is dropped —
+    /// i.e. that this fix does what its own reasoning claims, not just that
+    /// the flag is textually present.
+    #[tokio::test]
+    async fn kill_on_drop_actually_terminates_the_orphaned_child() {
+        let (bin, args) = long_running_command();
+        let child = tokio::process::Command::new(bin)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("failed to spawn the long-running test process");
+        let pid = child.id().expect("a just-spawned child must have a pid");
+        assert!(
+            process_is_alive(pid),
+            "test bug: process not observed alive right after spawn"
+        );
+
+        {
+            // Mirrors `run_meridian` exactly: race the child's `.output()`
+            // against a timeout far shorter than the process's own runtime.
+            let output_fut = child.wait_with_output();
+            let result = tokio::time::timeout(Duration::from_millis(50), output_fut).await;
+            assert!(
+                result.is_err(),
+                "test bug: the process exited before the timeout could fire"
+            );
+            // `output_fut` (and the `Child` it consumed) drops here — exactly
+            // what happens when `tokio::time::timeout` drops `run_meridian`'s
+            // `.output()` future on a real timeout.
+        }
+
+        // `kill_on_drop`'s kill is fired from `Drop`, not awaited to
+        // completion — poll briefly rather than asserting instantaneously.
+        let mut still_alive = process_is_alive(pid);
+        for _ in 0..20 {
+            if !still_alive {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            still_alive = process_is_alive(pid);
+        }
+        assert!(
+            !still_alive,
+            "child (pid {pid}) is still running ~2s after being dropped — \
+             kill_on_drop did not terminate it"
+        );
     }
 }

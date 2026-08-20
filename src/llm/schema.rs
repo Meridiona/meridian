@@ -55,43 +55,83 @@ pub(crate) fn strictify(v: &Value) -> Value {
                 .map(|(k, val)| (k.clone(), strictify(val)))
                 .collect();
 
-            // Only an object node with `properties` carries the rule; `properties`'
-            // own children are schemas in their own right and were handled above.
-            let Some(keys) = out
+            // Whether THIS node is an object-type schema at all - checked on `type`,
+            // not on "does it have a `properties` key". `properties` itself is a bag
+            // of field-name -> schema mappings, not a schema node, and recursion walks
+            // into it too (see the `.iter().map` above); testing `type` instead of
+            // `properties`' mere presence is what keeps this from misfiring on that
+            // bag, while still catching a `{"type":"object"}` with no `properties` at
+            // all, or a `["object","null"]` union - both of which the old
+            // `out.get("properties")`-gated early return skipped past silently,
+            // leaving them without `additionalProperties:false` (see below).
+            if !declares_object_type(&out) {
+                return Value::Object(out);
+            }
+
+            let keys = out
                 .get("properties")
                 .and_then(Value::as_object)
                 .map(|p| p.keys().cloned().collect::<Vec<_>>())
-            else {
-                return Value::Object(out);
-            };
-
-            let required: Vec<String> = out
-                .get("required")
-                .and_then(Value::as_array)
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(str::to_string))
-                        .collect()
-                })
                 .unwrap_or_default();
 
-            // A key the schema didn't require kept its "absent" meaning in the answer;
-            // it can only keep it under strict mode by being nullable.
-            if let Some(props) = out.get_mut("properties").and_then(Value::as_object_mut) {
-                for k in keys.iter().filter(|k| !required.contains(k)) {
-                    if let Some(p) = props.get_mut(k) {
-                        make_nullable(p);
+            if !keys.is_empty() {
+                let required: Vec<String> = out
+                    .get("required")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                // A key the schema didn't require kept its "absent" meaning in the
+                // answer; it can only keep it under strict mode by being nullable.
+                if let Some(props) = out.get_mut("properties").and_then(Value::as_object_mut) {
+                    for k in keys.iter().filter(|k| !required.contains(k)) {
+                        if let Some(p) = props.get_mut(k) {
+                            make_nullable(p);
+                        }
                     }
                 }
+                out.insert(
+                    "required".into(),
+                    Value::Array(keys.into_iter().map(Value::String).collect()),
+                );
             }
-            out.insert(
-                "required".into(),
-                Value::Array(keys.into_iter().map(Value::String).collect()),
-            );
+            // The other half of OpenAI's strict-mode contract, and the one Meridian's
+            // shared schemas didn't all carry by hand: every object-type node needs
+            // `additionalProperties: false`, whether or not it declares `properties` -
+            // an empty object (`{"type":"object"}`, no `properties` at all) and an
+            // `["object","null"]` union both still need it. `placements.items` had it
+            // (authored explicitly in prompts.rs) so the existing test above only ever
+            // proved it *survives* the rewrite; every OTHER object node in every shared
+            // schema silently lacked it. Groq's endpoint validates this directly
+            // (unlike `codex exec --output-schema`, which appears to inject it before
+            // the API ever sees the request - see this fn's own doc on why a
+            // CLI-observed rung can hide a gap a direct API exposes), and rejects the
+            // whole request with a 400 before the model runs: "invalid JSON schema for
+            // response_format: 'answer': additionalProperties:false must be set on every
+            // object" - observed live across dozens of accounts, the single most common
+            // Groq-path failure in production telemetry (2026-08-19). Setting it here,
+            // unconditionally for every object-type node, closes the gap for every
+            // current and future shared schema at the one place that already owns
+            // strict-mode compliance, rather than relying on each hand-authored schema
+            // to remember it on every nested object.
+            out.insert("additionalProperties".into(), Value::Bool(false));
             Value::Object(out)
         }
         Value::Array(a) => Value::Array(a.iter().map(strictify).collect()),
         _ => v.clone(),
+    }
+}
+
+/// Whether a schema node's `type` names (or includes, in a union) `"object"`.
+fn declares_object_type(map: &serde_json::Map<String, Value>) -> bool {
+    match map.get("type") {
+        Some(Value::String(t)) => t == "object",
+        Some(Value::Array(types)) => types.iter().any(|t| t.as_str() == Some("object")),
+        _ => false,
     }
 }
 
@@ -138,6 +178,22 @@ mod tests {
                 assert!(
                     required.contains(&k.as_str()),
                     "key {k} missing from required"
+                );
+            }
+            // The other half of the contract - see this test's own comment for why
+            // `strictify_preserves_other_keywords` alone didn't catch this being absent
+            // everywhere ELSE it was needed.
+            assert_eq!(
+                v["additionalProperties"],
+                json!(false),
+                "an object node with properties is missing additionalProperties:false"
+            );
+        } else if let Value::Object(m) = v {
+            if declares_object_type(m) {
+                assert_eq!(
+                    v["additionalProperties"],
+                    json!(false),
+                    "an object-type node WITHOUT properties is missing additionalProperties:false"
                 );
             }
         }
@@ -200,6 +256,46 @@ mod tests {
             out["properties"]["propose"]["type"],
             json!(["object", "null"])
         );
+    }
+
+    /// An object schema with no `properties` at all - previously skipped entirely by the
+    /// old `out.get("properties")`-gated early return, so it never picked up
+    /// `additionalProperties:false` and Groq's endpoint would 400 on it.
+    #[test]
+    fn strictify_sets_additional_properties_false_on_an_empty_object() {
+        let out = strictify(&json!({"type": "object"}));
+        assert_eq!(out["additionalProperties"], json!(false));
+    }
+
+    /// Same gap, via the union form real schemas actually use (see `propose` in
+    /// `worklog_generate_schema`) — an `["object","null"]` node with no `properties`.
+    #[test]
+    fn strictify_sets_additional_properties_false_on_an_object_null_union_with_no_properties() {
+        let out = strictify(&json!({"type": ["object", "null"]}));
+        assert_eq!(out["additionalProperties"], json!(false));
+    }
+
+    /// A non-object node (a bare string schema) must never gain
+    /// `additionalProperties` - the field means nothing outside an object type.
+    #[test]
+    fn strictify_never_adds_additional_properties_to_a_non_object_node() {
+        let out = strictify(&json!({"type": "string"}));
+        assert!(out.get("additionalProperties").is_none());
+    }
+
+    /// The `properties` bag itself is a map of field-name -> schema, walked by the same
+    /// recursion as every other node - it must never be mistaken for an object-type
+    /// schema and gain a spurious `additionalProperties`/`required` key of its own,
+    /// which would show up as a bogus field named "additionalProperties" in the schema.
+    #[test]
+    fn strictify_does_not_stamp_the_properties_bag_itself() {
+        let out = strictify(&json!({
+            "type": "object",
+            "properties": {"x": {"type": "string"}},
+            "required": ["x"]
+        }));
+        assert!(out["properties"].get("additionalProperties").is_none());
+        assert!(out["properties"].get("required").is_none());
     }
 
     /// The other shared schemas must survive the same walk — Codex can carry any of them.

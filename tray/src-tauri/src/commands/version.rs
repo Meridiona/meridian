@@ -266,7 +266,7 @@ pub(crate) fn build_channel() -> &'static str {
 pub struct AppInfo {
     pub version: String,
     pub channel: String,
-    /// This machine's pseudonym (ALPHA TESTING, until 2026-08-28: while
+    /// This machine's pseudonym (ALPHA TESTING, until 2026-12-31: while
     /// signed in, the signed-in account's pseudonym instead — see
     /// `meridian::telemetry_spool::redact::local_host_pseudonym`'s doc) — the
     /// exact value error telemetry from here carries as `host.name` in the

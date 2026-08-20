@@ -27,7 +27,9 @@ use sqlx::FromRow;
 use tracing::Instrument;
 
 /// One active fault banner (the shape `NoticeBar.tsx` renders). `severity` is
-/// `'error'|'warning'`; `remedy` is the optional fix hint.
+/// `'error'|'warning'`; `remedy` is the optional fix hint. `deep_link` (migration
+/// 081) is the same route-like target the paired native toast carries — `None`
+/// on the great majority of notices, which render with no click-through button.
 #[derive(Debug, Clone, FromRow, serde::Serialize)]
 pub struct Notice {
     pub notice_id: String,
@@ -36,6 +38,7 @@ pub struct Notice {
     pub detail: String,
     pub remedy: Option<String>,
     pub raised_at: String,
+    pub deep_link: Option<String>,
 }
 
 /// All active notices, newest first (port of `notices-store.ts`'s `queryNotices`).
@@ -45,7 +48,7 @@ pub struct Notice {
 #[tracing::instrument(skip(pool))]
 pub async fn read_notices(pool: &SqlitePool) -> Vec<Notice> {
     let rows = sqlx::query_as::<_, Notice>(
-        "SELECT notice_id, severity, title, detail, remedy, raised_at \
+        "SELECT notice_id, severity, title, detail, remedy, raised_at, deep_link \
          FROM system_notices ORDER BY raised_at DESC",
     )
     .fetch_all(pool)
@@ -121,21 +124,26 @@ mod tests {
 
         sqlx::query(
             "CREATE TABLE system_notices (notice_id TEXT PRIMARY KEY, severity TEXT, \
-             title TEXT, detail TEXT, remedy TEXT, raised_at TEXT)",
+             title TEXT, detail TEXT, remedy TEXT, raised_at TEXT, deep_link TEXT)",
         )
         .execute(&pool)
         .await
         .unwrap();
-        for (nid, raised) in [
-            ("pm.jira", "2026-06-18T09:00:00Z"),
-            ("a11y", "2026-06-18T10:00:00Z"),
+        for (nid, raised, deep_link) in [
+            ("pm.jira", "2026-06-18T09:00:00Z", None),
+            (
+                "a11y",
+                "2026-06-18T10:00:00Z",
+                Some("/settings/intelligence"),
+            ),
         ] {
             sqlx::query(
-                "INSERT INTO system_notices (notice_id, severity, title, detail, remedy, raised_at) \
-                 VALUES (?, 'warning', 't', 'd', NULL, ?)",
+                "INSERT INTO system_notices (notice_id, severity, title, detail, remedy, raised_at, deep_link) \
+                 VALUES (?, 'warning', 't', 'd', NULL, ?, ?)",
             )
             .bind(nid)
             .bind(raised)
+            .bind(deep_link)
             .execute(&pool)
             .await
             .unwrap();
@@ -146,5 +154,10 @@ mod tests {
         assert_eq!(notices[0].notice_id, "a11y");
         assert_eq!(notices[1].notice_id, "pm.jira");
         assert!(notices[0].remedy.is_none());
+        assert_eq!(
+            notices[0].deep_link.as_deref(),
+            Some("/settings/intelligence")
+        );
+        assert!(notices[1].deep_link.is_none());
     }
 }

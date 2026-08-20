@@ -30,7 +30,9 @@
 //! - [`crate::coding_agent_session_ingest::summariser::cursor_agent`] - text-output summariser
 //! - [`meridian_core::CURSOR_CLI_VERSION`] - the pinned build these flags are verified against
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 /// Skill roots `cursor-agent` discovers relative to `$HOME`, as directory names to neutralise.
 ///
@@ -370,6 +372,34 @@ pub fn looks_unknown_model(msg: &str) -> bool {
             || m.contains("no access"))
 }
 
+/// Did the call fail on a plain network/transport blip rather than anything about the
+/// request itself - a connection dropping mid-stream, a reset, a 5xx from Cursor's own
+/// backend? Worth exactly one bounded retry: unlike the other levers this isn't reacting to
+/// a capability the CLI lacks, it's reacting to noise that a second attempt often doesn't
+/// repeat.
+///
+/// Deliberately does NOT match our own client-side timeout (`"timed out after"`, the exact
+/// wording `run_capture` uses - see `SummariserError::Failed`). Retrying that would double
+/// the worst-case wait on an already-slow call, which is the opposite of what this exists
+/// for; a real timeout should fail promptly and let the caller decide, not silently cost the
+/// user a second full timeout window.
+pub fn looks_transient(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    if m.contains("timed out") {
+        return false;
+    }
+    m.contains("connection reset")
+        || m.contains("connection lost")
+        || m.contains("econnreset")
+        || m.contains("stream disconnected")
+        || m.contains("socket hang up")
+        || m.contains("broken pipe")
+        || m.contains("temporarily unavailable")
+        || m.contains("502 bad gateway")
+        || m.contains("503 service unavailable")
+        || m.contains("504 gateway")
+}
+
 /// Pinned model for every Meridian `cursor-agent` call: small, fast, cheap and ZDR-eligible
 /// (Cursor flags non-ZDR models explicitly in `--list-models`; this is not one) - the right
 /// tier for summarise/classify/draft, and deterministic across users unlike the account
@@ -379,8 +409,54 @@ pub fn looks_unknown_model(msg: &str) -> bool {
 /// `-none/-low/-medium/-high/-xhigh`.
 pub const DEFAULT_MODEL: &str = "gpt-5.4-mini-medium";
 
+/// Same pinned model, lower reasoning effort — used only for [`PromptRequest::interactive`]
+/// calls that have no explicit user model override (see `CursorBackend::complete`).
+///
+/// A synchronously-watched call (today, only the task composer's "Draft with AI") pays for
+/// `-medium`'s extra reasoning time in perceived latency, not in a better answer: the job is
+/// a three-field JSON extraction from a short note, not analysis. Background jobs
+/// (summarisation, worklog generation, classification) keep [`DEFAULT_MODEL`] - they run
+/// unattended, so slower-but-more-careful is free there and NOT free here.
+///
+/// [`PromptRequest::interactive`]: super::PromptRequest::interactive
+pub const FAST_MODEL: &str = "gpt-5.4-mini-low";
+
 /// Cursor's server-routed default, used only when [`DEFAULT_MODEL`] is not on the account.
 pub const FALLBACK_MODEL: &str = "auto";
+
+/// Pinned model ids [`run_hardened`] has already learned this account cannot use, memoised
+/// for the process lifetime.
+///
+/// Measured live on a free-plan account (2026-08-19): a rejected named model costs ~10.5s
+/// (`cursor-agent` still has to round-trip to the server to find out), before the ladder even
+/// starts the real `auto` attempt. `run_hardened` re-discovers this from scratch on EVERY
+/// call - summarise, classify, draft, the connectivity probe - because the ladder's own state
+/// is local to one invocation. That is ~10.5s of pure waste on every single Cursor call this
+/// process makes, and on the connectivity probe specifically (20s budget) it is often enough
+/// on its own to push the total past the timeout that's supposed to just be catching a hung
+/// process.
+///
+/// Self-heals on restart, same as [`crate::llm::detect::resolve_cli`]'s bin-path cache: an
+/// account that upgrades plans mid-session keeps paying the tax until the daemon/tray next
+/// restarts, which is an acceptable trade against a persisted cache going stale the other way
+/// (silently skipping a model that became available again requires no code, just a restart).
+static KNOWN_UNAVAILABLE_MODELS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn model_known_unavailable(model: &str) -> bool {
+    KNOWN_UNAVAILABLE_MODELS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(model)
+}
+
+fn remember_model_unavailable(model: String) {
+    KNOWN_UNAVAILABLE_MODELS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(model);
+}
 
 /// A failure a [`run_hardened`] caller can classify.
 ///
@@ -413,6 +489,7 @@ struct Levers {
 /// 1. `--allowed-tools` rejected -> retry without it (fatter context, still works)
 /// 2. auth invisible from the sandbox `HOME` -> retry on the inherited one (carries skills)
 /// 3. model unavailable on this plan -> retry on [`FALLBACK_MODEL`]
+/// 4. a plain transient/network blip -> retry once, unchanged (see [`looks_transient`])
 ///
 /// A rate limit degrades nothing: `degradable_message` returns `None` and the error is
 /// returned immediately, because Cursor limits are account-level and a second call would
@@ -428,7 +505,21 @@ where
         sandbox: true,
     };
     let mut model = model.to_string();
+    // Skip a model this process already knows this account can't use - see
+    // `KNOWN_UNAVAILABLE_MODELS`'s doc for the ~10.5s/call this saves once warmed.
+    if model != FALLBACK_MODEL && model_known_unavailable(&model) {
+        tracing::debug!(
+            model,
+            fallback = FALLBACK_MODEL,
+            "cursor: skipping known-unavailable model, starting on auto"
+        );
+        model = FALLBACK_MODEL.to_string();
+    }
     let mut tried_fallback_model = model == FALLBACK_MODEL;
+    // Not a lever - retrying leaves argv/env unchanged, it just asks the same question
+    // again in case the first answer was noise. Bounded to one shot so a genuinely broken
+    // endpoint still fails promptly rather than doubling every call's worst case.
+    let mut tried_transient_retry = false;
 
     loop {
         let sandbox = if levers.sandbox { sandbox_home() } else { None };
@@ -465,8 +556,21 @@ where
                 fallback = FALLBACK_MODEL,
                 "cursor: model unavailable on this account - retrying with auto"
             );
+            // Recorded even if this whole call later times out waiting on `auto` - the
+            // mutation is synchronous and happens the moment the cause is classified, well
+            // before any surrounding deadline can cancel the future. So the very next call
+            // (including a `probe_with_retry` second attempt on the SAME timed-out call)
+            // starts on `auto` directly instead of re-discovering this.
+            remember_model_unavailable(model.clone());
             model = FALLBACK_MODEL.to_string();
             tried_fallback_model = true;
+        } else if !tried_transient_retry && looks_transient(msg) {
+            // No raw `msg` field here (unlike the other levers, which only ever attach safe
+            // structured state) - it's the vendor CLI's own stderr/stdout text, and WARN is the
+            // level that leaves a packaged install. See the coding-conventions note on
+            // `CAPTURE_TARGETS`/`SAFE_STRING_KEYS` in CLAUDE.md's Observability section.
+            tracing::warn!(model = %model, "cursor: transient failure - retrying once unchanged");
+            tried_transient_retry = true;
         } else {
             // Nothing left to degrade, or a cause no lever addresses.
             return Err(err);
@@ -557,10 +661,73 @@ mod tests {
 
     #[tokio::test]
     async fn an_unavailable_model_falls_back_to_auto() {
-        let (res, seen) = ladder(DEFAULT_MODEL, vec![Some("Unknown model: gpt-5.4-mini")]).await;
+        // A model name unique to this test, NOT `DEFAULT_MODEL` - `run_hardened` memoises a
+        // rejected model process-wide (see `KNOWN_UNAVAILABLE_MODELS`), and `cargo test` runs
+        // this file's tests in parallel in one process, so teaching it here that `DEFAULT_MODEL`
+        // is unavailable would silently rewrite every OTHER test's `DEFAULT_MODEL` call to
+        // start on `auto` too, depending on execution order.
+        let (res, seen) = ladder(
+            "test-model-unavailable-a",
+            vec![Some("Unknown model: test-model-unavailable-a")],
+        )
+        .await;
         assert!(res.is_ok());
         assert_eq!(seen.len(), 2);
         assert!(seen[1].0.contains(&FALLBACK_MODEL.to_string()));
+    }
+
+    /// Warmed state: once a model has been classified unavailable, the NEXT call - including
+    /// one made with a fresh model string but for the account this cache is scoped to being
+    /// still unavailable - must skip straight to `auto` rather than paying the ~10.5s round
+    /// trip to rediscover the same rejection. This is the fix for the real-world symptom: a
+    /// probe (20s budget) that pays this tax on EVERY attempt can time out even when both the
+    /// pinned model rejection and the eventual `auto` answer are each individually fast.
+    #[tokio::test]
+    async fn a_known_unavailable_model_skips_the_wasted_first_attempt() {
+        let model = "test-model-unavailable-b";
+        // Teach the cache.
+        let (res, seen) =
+            ladder(model, vec![Some("Unknown model: test-model-unavailable-b")]).await;
+        assert!(res.is_ok());
+        assert_eq!(
+            seen.len(),
+            2,
+            "first call still pays the discovery cost once"
+        );
+
+        // The SAME model, a fresh call, no queued errors: if the pinned model were tried
+        // again it would fail immediately with no error queued for it, so success in exactly
+        // ONE call - on `auto` - is only possible if the skip fired.
+        let (res2, seen2) = ladder(model, vec![]).await;
+        assert!(res2.is_ok());
+        assert_eq!(
+            seen2.len(),
+            1,
+            "a warmed rejection must not pay the discovery cost again"
+        );
+        assert!(
+            seen2[0].0.contains(&FALLBACK_MODEL.to_string()),
+            "the single attempt must already be on auto, not the known-bad pinned model"
+        );
+    }
+
+    /// The memoised rejection is keyed by model string, not a blanket "something is wrong" -
+    /// learning that one model is unavailable must not silently reroute a DIFFERENT, never-
+    /// before-seen model to `auto` too.
+    #[tokio::test]
+    async fn learning_a_model_is_unavailable_does_not_affect_other_models() {
+        let bad = "test-model-unavailable-c";
+        let (res, _) = ladder(bad, vec![Some("Unknown model: test-model-unavailable-c")]).await;
+        assert!(res.is_ok());
+
+        let untouched = "test-model-never-rejected";
+        let (res2, seen2) = ladder(untouched, vec![]).await;
+        assert!(res2.is_ok());
+        assert_eq!(seen2.len(), 1);
+        assert!(
+            seen2[0].0.contains(&untouched.to_string()),
+            "an unrelated model must run unchanged, not get rerouted by another model's rejection"
+        );
     }
 
     /// A rate limit must NOT walk the ladder - Cursor limits are account-level, so a retry
@@ -575,22 +742,87 @@ mod tests {
     /// An unrelated failure is not a licence to strip hardening.
     #[tokio::test]
     async fn an_unrecognised_failure_does_not_degrade() {
-        let (res, seen) = ladder(DEFAULT_MODEL, vec![Some("connection reset by peer")]).await;
+        let (res, seen) = ladder(DEFAULT_MODEL, vec![Some("internal assertion failed")]).await;
         assert!(res.is_err());
         assert_eq!(seen.len(), 1);
+    }
+
+    /// THE regression this lever exists for: a plain network blip - noise, not a capability
+    /// the CLI lacks - gets one retry with the argv/env completely unchanged.
+    #[tokio::test]
+    async fn a_transient_failure_retries_once_unchanged() {
+        let (res, seen) = ladder(DEFAULT_MODEL, vec![Some("connection reset by peer")]).await;
+        assert!(res.is_ok());
+        assert_eq!(seen.len(), 2);
+        assert_eq!(
+            seen[0], seen[1],
+            "a transient retry must not change argv/env - it isn't a lever"
+        );
+    }
+
+    /// End-to-end pin of the exact message a live account hit: `run_hardened` must recover
+    /// from a real `cursor-agent` websocket reconnect message the same way it already
+    /// recovers from a generic "connection reset by peer" - via the transient lever, not
+    /// by exhausting the ladder and surfacing "provider unavailable".
+    #[tokio::test]
+    async fn a_connection_lost_reconnect_message_retries_once_unchanged() {
+        let (res, seen) = ladder(
+            DEFAULT_MODEL,
+            vec![Some(
+                "cursor-agent exited Some(1): Connection lost, reconnecting to \
+                 https://agentn.global.api5.cursor.sh (attempt 1)....",
+            )],
+        )
+        .await;
+        assert!(res.is_ok());
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], seen[1]);
+    }
+
+    /// Bounded: a second transient failure in a row is not a licence to keep spinning.
+    #[tokio::test]
+    async fn a_second_transient_failure_is_not_retried_again() {
+        let errs = vec![
+            Some("connection reset by peer"),
+            Some("stream disconnected"),
+        ];
+        let (res, seen) = ladder(DEFAULT_MODEL, errs).await;
+        assert!(res.is_err());
+        assert_eq!(seen.len(), 2, "one retry, then give up");
+    }
+
+    /// THE regression the exclusion exists for: retrying our own client-side timeout would
+    /// double the worst-case wait on an already-slow call, which is what this lever must never
+    /// do. `run_capture`'s exact wording (`SummariserError::Failed`) is `"<program> timed out
+    /// after <n>s"`.
+    #[tokio::test]
+    async fn a_timeout_shaped_message_is_not_retried() {
+        let (res, seen) = ladder(
+            DEFAULT_MODEL,
+            vec![Some("cursor-agent timed out after 300s")],
+        )
+        .await;
+        assert!(res.is_err());
+        assert_eq!(
+            seen.len(),
+            1,
+            "a timeout must fail promptly, not double the wait"
+        );
     }
 
     /// Each lever drops at most once, so a persistently failing CLI terminates instead of
     /// looping.
     #[tokio::test]
     async fn the_ladder_terminates_after_every_lever_is_spent() {
+        // A model unique to this test - see `an_unavailable_model_falls_back_to_auto`'s
+        // comment on why `DEFAULT_MODEL` itself must not be taught a rejection here.
         let errs = vec![
             Some("unknown option '--allowed-tools'"),
             Some("Not logged in"),
-            Some("Unknown model: x"),
+            Some("Unknown model: test-model-unavailable-d"),
             Some("unknown option '--allowed-tools'"),
         ];
-        let (res, seen) = ladder(DEFAULT_MODEL, errs).await;
+        let (res, seen) = ladder("test-model-unavailable-d", errs).await;
         assert!(res.is_err());
         assert_eq!(seen.len(), 4, "3 degradations, then give up");
     }
@@ -696,6 +928,72 @@ mod tests {
         // Must not mistake a quota problem for an auth problem - that retry would waste a call.
         assert!(!looks_auth_failure("rate/usage limit reached"));
         assert!(!looks_auth_failure("workspace trust required"));
+    }
+
+    #[test]
+    fn transient_failure_detection_drives_the_bounded_retry() {
+        assert!(looks_transient("connection reset by peer"));
+        assert!(looks_transient("Error: socket hang up"));
+        assert!(looks_transient(
+            "cursor-agent exited Some(1): 503 Service Unavailable"
+        ));
+        // Must not mistake our own client-side timeout for noise worth retrying - see the
+        // doc comment on `looks_transient` for why that distinction matters.
+        assert!(!looks_transient("cursor-agent timed out after 300s"));
+        assert!(!looks_transient("Error: request timed out after retries"));
+        // Ordinary failures must not spend the one bounded retry either.
+        assert!(!looks_transient("rate/usage limit reached"));
+        assert!(!looks_transient("Not logged in"));
+    }
+
+    /// Pinned regression: the exact message a live account hit mid-session
+    /// (`cursor-agent`'s own websocket reconnect telling us it dropped the stream to
+    /// `agentn.global.api5.cursor.sh`) tripped the "in-use provider unavailable" banner
+    /// because this exact wording wasn't recognised as transient - only "connection reset"
+    /// was. A one-word gap between two near-identical phrasings meant a self-resolving
+    /// network blip escalated into a non-dismissible "Meridian has stopped writing your
+    /// day" banner instead of quietly retrying once.
+    #[test]
+    fn connection_lost_is_recognised_as_transient() {
+        assert!(looks_transient(
+            "cursor-agent exited Some(1): Connection lost, reconnecting to \
+             https://agentn.global.api5.cursor.sh (attempt 1)...."
+        ));
+    }
+
+    /// A message this shape must land on EXACTLY one lever. If a future edit to any
+    /// classifier makes two of them match, `run_hardened`'s `if`/`else if` chain would
+    /// silently pick whichever is checked first and the other lever's intent - a
+    /// different retry strategy - would never fire for messages of this shape. Pinning
+    /// mutual exclusion here catches that at the classifier level, before it can hide
+    /// behind the ladder's own ordering.
+    #[test]
+    fn connection_lost_is_not_also_read_as_auth_or_model_trouble() {
+        let msg = "cursor-agent exited Some(1): Connection lost, reconnecting to \
+                    https://agentn.global.api5.cursor.sh (attempt 1)....";
+        assert!(looks_transient(msg));
+        assert!(!looks_auth_failure(msg));
+        assert!(!looks_unknown_model(msg));
+        assert!(!looks_unsupported_flag(msg));
+    }
+
+    /// A dropped connection reported mid-authentication ("lost the connection while
+    /// verifying your session, please log in again") is a real - if rarer - shape:
+    /// transient-sounding text wrapping an actual auth problem. `run_hardened` checks
+    /// `looks_auth_failure` before `looks_transient`, so this must resolve to the sandbox
+    /// retry, not the transient one - retrying blind on an expired session just spends
+    /// the bounded transient retry on a call that will fail identically both times.
+    #[test]
+    fn a_connection_drop_during_auth_is_still_classified_as_auth_first() {
+        let msg = "connection lost while verifying your session - please log in again";
+        assert!(
+            looks_transient(msg),
+            "the wording alone still reads as transient"
+        );
+        assert!(
+            looks_auth_failure(msg),
+            "but the auth signal must also be present so the ladder's auth check wins"
+        );
     }
 
     /// The sandbox must never be the user's real home - that is the whole safety property.

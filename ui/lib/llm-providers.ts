@@ -157,7 +157,16 @@ export function rungLabel(rung: SchemaRung): string {
   }
 }
 
-/** The wire form addressing ONE custom endpoint - a Lab variant, never a stored setting. */
+/**
+ * The key addressing ONE custom endpoint specifically - `custom:<id>`, matching Rust's
+ * `provider_key`/`rate_limit::custom_key` exactly (never re-derive this format locally, or
+ * the two will drift the way the health-cache lookup once did).
+ *
+ * Two uses: an LLM-Lab variant id (never a stored setting), and the `status` map's key for
+ * the ACTIVE custom endpoint's own test/health row (`LlmProviderPicker`'s `CloudPresetTile`) -
+ * the bare `'custom'` id is ambiguous the moment more than one endpoint is configured, since
+ * every custom row shares the `LlmProvider::Custom` wire form.
+ */
 export function customVariantId(id: string): string {
   return `custom:${id}`
 }
@@ -425,7 +434,9 @@ export const LLM_GATE_CHOICES: LlmGateChoice[] = [
     value: 'free',
     ...LLM_RANK_FREE,
     label: 'No, set me up',
-    detail: 'A free Groq key, in three steps. No card, no subscription.',
+    // Vendor-agnostic on purpose: which free key (Groq or Ollama) is a choice made on the
+    // NEXT screen, not something to name here and then contradict a click later.
+    detail: 'A free API key, in a few steps. No card, no subscription.',
   },
 ]
 
@@ -460,146 +471,278 @@ export const USAGE_FOOTPRINT_NOTE =
  * The list had already collapsed to Groq alone, which made the form a questionnaire with
  * one possible answer: pick the only vendor, keep the URL it filled in, press "List models"
  * to choose from ids nobody outside the team can rank, then guess two rate-limit numbers the
- * verdict would otherwise nag about. `<GroqSetup>` answers every one of those for the user
- * from one pasted key, so the form was a second, worse route to the same endpoint - and the
- * "+ Add a custom endpoint" tile advertised it on the settings screen as though it were a
+ * verdict would otherwise nag about. `<CloudKeySetup>` answers every one of those for the
+ * user from one pasted key, so the form was a second, worse route to the same endpoint - and
+ * the "+ Add a custom endpoint" tile advertised it on the settings screen as though it were a
  * capability rather than a leftover.
  *
  * The cost, stated plainly: an arbitrary OpenAI-compatible endpoint can no longer be added
- * from the UI. The registry underneath is untouched - `add_custom_llm_provider` still
- * exists, `<GroqSetup>` still calls it, and an endpoint added by an older build still loads,
- * runs and can be selected. Only the way to CREATE one narrowed.
+ * from the UI - only the two curated presets below can. The registry underneath is
+ * untouched - `add_custom_llm_provider` still exists, `<CloudKeySetup>` still calls it, and
+ * an endpoint added by an older build (or a third vendor added by hand) still loads, runs
+ * and can be selected. Only the way to CREATE one from the UI narrowed to these presets.
  */
 
 /**
- * Everything the no-subscription path says and points at, in one record.
+ * Everything a no-subscription preset says and points at, in one record - the shape both
+ * `GROQ` and `OLLAMA` satisfy, and `<CloudKeySetup>` is built entirely against.
  *
- * The privacy claims are LINKED, not just asserted. This screen asks someone to paste a key
- * on the strength of a sentence about data handling, and a sentence with no source is
+ * The privacy claims are LINKED, not just asserted. The setup screen asks someone to paste a
+ * key on the strength of a sentence about data handling, and a sentence with no source is
  * exactly the thing a careful user should not accept - so each claim carries the vendor's
  * own page next to it, and the wording stays close enough to that page to survive being
  * checked against it.
  *
  * All hyphens plain, per the user-facing text rule.
  */
-export const GROQ = {
-  vendor: 'groq',
+export interface CloudKeyPreset {
+  /** Stored on the registry row as `CustomLlmProvider::vendor` - display/provenance only in
+   *  Rust, but read here (and by `CustomVendorLogo`) to pick the right setup screen and logo. */
+  vendor: string
   /** The name stored on the registry row, and what the rest of the app then calls it. */
+  name: string
+  baseUrl: string
+  /** Where a free key is created. Doubles as the sign-up path on every vendor here - signed
+   *  out, each one asks you to create an account and then lands on the key screen. MUST be
+   *  the link that survives sign-up/sign-in and still lands on the actual key screen - a
+   *  vendor whose auth redirect drops the original destination needs the return path spelt
+   *  out in the URL itself (see `OLLAMA.keyUrl`), not just linked to the page's plain address. */
+  keyUrl: string
+  /** Step 1's instructions - what to do after `keyUrl` opens. Per-preset because the vendors
+   *  genuinely differ here: Groq's link lands directly on a dedicated keys page with nothing
+   *  else on it, while Ollama's settings are a tabbed page, so the click that Groq's copy
+   *  doesn't need to mention (find, then press, "Create API key") is one Ollama's copy has to
+   *  spell out - a generic instruction that fit one vendor silently stopped fitting the other. */
+  keyStepBody: string
+  privacyUrl: string
+  termsUrl: string
+  /** Shown at the very top - the single fact that makes this option make sense. */
+  freeBadge: string
+  /** The second badge, next to FREE - what happens to what gets sent, ranked with the price
+   *  because that answer used to live three paragraphs down in a block most people skip. */
+  privacyBadge: string
+  headline: string
+  blurb: string
+  /** The claims, each backed by the page in `privacyUrl`/`termsUrl`. Ordered by what a
+   *  careful reader asks first: is it kept, is it learned from, how much of my machine goes
+   *  with it. */
+  trust: string[]
+  /** Shown as the key field's placeholder, so a wrong paste is obvious. */
+  keyPlaceholder: string
+  /** Requests-per-minute ceiling this preset's free tier is KNOWN to allow, or `0` when the
+   *  quota isn't measured in requests at all (see `meridian_core::llm_capacity::assess` -
+   *  `0` means "not known", never "unmetered"). Never guessed. */
+  freeRpm: number
+  /** Requests-per-day ceiling, same "0 = not known" convention as `freeRpm`. */
+  freeRpd: number
+  /** Which model Meridian picks, best first - matched as a PREFIX against whatever the
+   *  endpoint's own `/models` actually returns. See `pickCloudModel`. */
+  modelPreference: string[]
+  /** Model-name fragments that can't answer a chat completion at all (speech, embeddings,
+   *  safety classifiers) - excluded before ranking so a fallback can never land on one. */
+  nonChatFilter: string[]
+}
+
+/**
+ * Groq's own free-tier limits (30 RPM, 1,000 RPD - console.groq.com/docs/rate-limits, checked
+ * Aug 2026) for the gpt-oss pair this preset pins.
+ *
+ * These used to be written as 0/0 - "unknown rather than guessed" - which was right while the
+ * model was whatever the key happened to serve, but is no longer: the model is pinned to
+ * gpt-oss (see `modelPreference` below) and both members carry these exact numbers. The cost
+ * of leaving them unknown was a permanent notice on the endpoint card asking the user to go
+ * and look up a limit we already know, and unpaced requests on a key that does have a
+ * per-minute cap.
+ *
+ * Understating a PAID key is the deliberate direction to be wrong in: a working day needs 23
+ * requests against 1,000, so the verdict reads "sufficient" either way, and pacing at 30/min
+ * costs a paid user nothing at this volume.
+ */
+export const GROQ: CloudKeyPreset = {
+  vendor: 'groq',
   name: 'Groq',
   baseUrl: 'https://api.groq.com/openai/v1',
-  // No signUpUrl. The keys page IS the sign-up path - signed out it asks you to create an
-  // account and then lands on the key screen - so a separate login link only added a step
-  // that describes the same click.
   keyUrl: 'https://console.groq.com/keys',
+  // This link IS the keys page, and Groq's own sign-up redirect returns here afterward - so
+  // the whole trip is "sign up if you haven't, then you're already looking at Create API key".
+  keyStepBody:
+    'Sign up with Google or an email address if you have not already - no card is asked for. ' +
+    'Then press Create API key and copy it, it is shown once.',
   privacyUrl: 'https://groq.com/privacy-policy/',
   // Terms of USE, not the old /terms-of-sale/ - that path 404s, and a dead link under a
   // privacy claim is worse than no link: it reads as a claim that cannot be checked.
   termsUrl: 'https://groq.com/terms-and-conditions/',
-  /** Shown at the very top - the single fact that makes this option make sense. */
   freeBadge: 'FREE',
-  /** The second badge, next to FREE.
-   *
-   *  Cost is only half of what someone weighs before pasting a key into a screen that
-   *  reads their working hours. The other half is what happens to what gets sent, and
-   *  that answer used to live three paragraphs down in a block most people scroll past.
-   *  It ranks with the price, so it is stated with the price. */
   privacyBadge: 'ZERO DATA RETENTION',
   headline: 'Groq Cloud',
   blurb: 'A free API key, and Meridian handles the rest. No card, no subscription.',
-  /** The three claims, each with the page that backs it.
-   *
-   *  Ordered by what a careful reader asks first: is it kept, is it learned from, and how
-   *  much of my machine goes with it. The retention line leads because "is a log of my day
-   *  sitting on someone's server" is the question, and asserting it plainly is the only
-   *  useful answer - a hedge here reads as a yes. */
   trust: [
     'Your prompts and replies are not logged or stored - Groq answers the request and drops it.',
     'Nothing you send is used to train any model.',
     'Meridian sends one hour of activity at a time. Your screen, your files and your keystrokes stay on this Mac.',
   ],
-  /** Keys look like `gsk_…` - shown as a placeholder so a wrong paste is obvious. */
+  // Keys look like `gsk_…`.
   keyPlaceholder: 'gsk_…',
-  /** Groq's published FREE-TIER limits for the gpt-oss pair this screen configures
-   *  (30 RPM, 1,000 RPD - console.groq.com/docs/rate-limits, checked Aug 2026).
-   *
-   *  These used to be written as 0/0 - "unknown rather than guessed" - which was right while
-   *  the model was whatever the key happened to serve, but is no longer: the model is pinned
-   *  to gpt-oss (see GROQ_MODEL_PREFERENCE) and both members carry these exact numbers. The
-   *  cost of leaving them unknown was a permanent notice on the endpoint card asking the user
-   *  to go and look up a limit we already know, and unpaced requests on a key that does have
-   *  a per-minute cap.
-   *
-   *  Understating a PAID key is the deliberate direction to be wrong in: a working day needs
-   *  23 requests against 1,000, so the verdict reads "sufficient" either way, and pacing at
-   *  30/min costs a paid user nothing at this volume. */
   freeRpm: 30,
   freeRpd: 1000,
-} as const
+  // WHY THE LIST IS ONLY TWO ENTRIES (checked against Groq's docs, Aug 2026). On Groq,
+  // `response_format: json_schema` is supported by `openai/gpt-oss-120b` and
+  // `openai/gpt-oss-20b` and NOTHING ELSE - every other model tops out at JSON Object mode,
+  // which produces valid JSON of no particular shape. That is exactly the failure this
+  // pipeline cannot absorb: a reply that parses but omits a field does not error, it drops
+  // an hour silently. So a bigger or better-reasoning model that lacks strict schema support
+  // is not a trade-off here, it is disqualified - which is why `llama-3.3-70b`,
+  // `moonshotai/kimi-k2` and the `llama-4-*` pair were removed. Ranking them ahead of the
+  // gpt-oss pair meant the setup screen picked a model the probe would then refuse, turning
+  // a working key into "could not return the structured replies Meridian needs".
+  //
+  // ACCURACY AND QUOTA DO NOT TRADE OFF AGAINST EACH OTHER HERE. Both survivors carry the
+  // same free-tier limits (30 RPM, 1,000 RPD, 8K TPM, 200K TPD), so taking the larger, more
+  // accurate 120b gives up no headroom whatsoever. 20b stays as the fallback for a key that
+  // only serves it, and is roughly twice as fast if that ever matters more.
+  modelPreference: ['openai/gpt-oss-120b', 'openai/gpt-oss-20b'],
+  nonChatFilter: ['whisper', 'tts', 'embed', 'guard', 'prompt-guard'],
+}
 
 /**
- * Which Groq model Meridian picks, best first - matched as a PREFIX against whatever the
- * endpoint's own `/models` actually returns.
+ * Ollama Cloud (`ollama.com`) - a second no-subscription preset, added alongside Groq rather
+ * than instead of it because the two fail in DIFFERENT ways: Groq's free tier caps every
+ * plain chat model's TPM well below what an hour of activity needs, while Ollama's quota is
+ * GPU-time/session-metered instead (session limit resets every ~5h, weekly every ~7 days) -
+ * a genuinely different shape of "free", not just a second key to the same problem.
  *
- * Asking the endpoint rather than hardcoding one id is the whole point. Groq's catalogue
- * turns over quickly, and a hardcoded id that has been retired fails at the first real hour
- * rather than at setup - the worst possible place. Prefixes (not exact ids) so a dated
- * revision like `…-0905` still matches its family.
- *
- * Order is by structured-output support, which is the only property that matters here: the
- * pipeline asks for JSON conforming to a schema, and an endpoint that cannot do that is
- * rejected by `production_eligible` no matter how good its prose is.
- *
- * WHY THE LIST IS ONLY TWO ENTRIES (checked against Groq's docs, Aug 2026). On Groq,
- * `response_format: json_schema` is supported by `openai/gpt-oss-120b` and
- * `openai/gpt-oss-20b` and NOTHING ELSE - every other model tops out at JSON Object mode,
- * which produces valid JSON of no particular shape. That is exactly the failure this
- * pipeline cannot absorb: a reply that parses but omits a field does not error, it drops
- * an hour silently. So a bigger or better-reasoning model that lacks strict schema support
- * is not a trade-off here, it is disqualified - which is why `llama-3.3-70b`,
- * `moonshotai/kimi-k2` and the `llama-4-*` pair were removed. Ranking them ahead of the
- * gpt-oss pair meant the setup screen picked a model the probe would then refuse,
- * turning a working key into "could not return the structured replies Meridian needs".
- *
- * ACCURACY AND QUOTA DO NOT TRADE OFF AGAINST EACH OTHER HERE. Both survivors carry the
- * same free-tier limits (30 RPM, 1,000 RPD, 8K TPM, 200K TPD), so taking the larger,
- * more accurate 120b gives up no headroom whatsoever - it is simply the better model on
- * identical quota. A working day costs 23 requests (`meridian_core::llm_capacity`), so
- * 1,000 RPD is ~43x what the automatic pipeline needs; the daily TOKEN ceiling is the
- * tighter of the two, and it is identical on both. 20b stays as the fallback for a key
- * that only serves it, and is roughly twice as fast if that ever matters more.
- *
- * The trailing fallback in `pickGroqModel` (first usable id) is kept deliberately: Groq
- * adds strict-schema models faster than this list is edited, and the probe - not this
- * list - is the real gate. A model this list has never heard of gets a chance to prove
- * itself and is refused honestly if it cannot.
+ * Verified live (this session): `GET https://ollama.com/v1/models` and
+ * `POST https://ollama.com/v1/chat/completions` are real, OpenAI-compatible, and return the
+ * standard nested error envelope on a bad key - the same wire protocol Groq already uses
+ * through `OpenAiCompatBackend`, so this preset needs no new Rust.
  */
-export const GROQ_MODEL_PREFERENCE: string[] = [
-  'openai/gpt-oss-120b',
-  'openai/gpt-oss-20b',
-]
-
-/** Model families that cannot answer a chat completion at all - speech, embeddings and the
- *  safety classifiers Groq lists alongside the chat models. Excluded before ranking so a
- *  fallback can never land on one. */
-const GROQ_NON_CHAT = ['whisper', 'tts', 'embed', 'guard', 'prompt-guard']
+export const OLLAMA: CloudKeyPreset = {
+  vendor: 'ollama',
+  name: 'Ollama',
+  baseUrl: 'https://ollama.com/v1',
+  // The direct address, by request - deliberately NOT `/signin?next=%2Fsettings%2Fkeys`,
+  // which carries the destination through Ollama's WorkOS auth redirect and lands a
+  // signed-out user straight back here. Trade-off worth knowing: visiting THIS bare address
+  // signed-out 303s to a generic `/signin` with no return path at all (verified live), so
+  // `keyStepBody` below tells a signed-out user to navigate to Settings → Keys themselves
+  // once they're in, rather than promising an automatic landing.
+  keyUrl: 'https://ollama.com/settings/keys',
+  // Spelt out, unlike Groq's: Groq's link opens a page with nothing else on it, but Ollama's
+  // settings are a tabbed page, so "create an API key" alone leaves the actual click
+  // unnamed. Named explicitly so nobody has to go hunting for it.
+  keyStepBody:
+    'Sign up with Google or an email address if you have not already - no card is asked for. ' +
+    'If it does not take you straight there, go to Settings → Keys and press Create API key ' +
+    'there and copy it, it is shown once.',
+  privacyUrl: 'https://ollama.com/privacy',
+  termsUrl: 'https://ollama.com/terms',
+  freeBadge: 'FREE',
+  // Not "ZERO DATA RETENTION" like Groq's badge - Ollama's own privacy policy (fetched
+  // during this feature's research) says cloud prompts/responses are processed
+  // TRANSIENTLY and never used for training, which is the same substance stated in the
+  // vendor's own words rather than Groq's phrasing borrowed for a different policy.
+  privacyBadge: 'TRANSIENT PROCESSING',
+  headline: 'Ollama Cloud',
+  blurb: 'A free API key, and Meridian handles the rest. No card, no subscription.',
+  trust: [
+    'Cloud prompts and responses are processed transiently, not retained - see ollama.com/privacy.',
+    'Nothing you send is used to train any model.',
+    'Meridian sends one hour of activity at a time. Your screen, your files and your keystrokes stay on this Mac.',
+  ],
+  // Ollama API keys have no single documented prefix the way Groq's `gsk_…` does.
+  keyPlaceholder: 'Paste your Ollama API key',
+  // Ollama publishes NO machine-readable rate limits - its free tier is GPU-time/session
+  // metered (session limit every ~5h, weekly every ~7 days), not a request count, and its
+  // API returns no `x-ratelimit-*` headers to learn one from reactively either. `0/0` here
+  // is the honest "not known" (see `meridian_core::llm_capacity::assess`), not a claim that
+  // Ollama is unmetered - inventing a request-count number for a quota that isn't measured
+  // in requests would produce a verdict (sufficient/tight/insufficient) about a dimension
+  // Ollama doesn't actually meter that way.
+  freeRpm: 0,
+  freeRpd: 0,
+  // Efficiency-first, not accuracy-first, and that is the opposite ranking from Groq's list
+  // on purpose: Ollama's quota is spent in GPU-TIME, so a heavier model burns through a
+  // session's or a week's allowance faster for the exact same one-hour-at-a-time workload.
+  // gpt-oss is a deliberate choice here too - it is the same family Meridian already trusts
+  // for strict-schema output via Groq, and it is present in Ollama's own catalogue
+  // (confirmed live via `/v1/models` during this feature's research). The `-cloud` suffix is
+  // Ollama's marker for "runs on their hardware, not yours"; both spellings are listed since
+  // which one a given key's plan actually serves isn't knowable ahead of the real
+  // `/v1/models` call `<CloudKeySetup>` makes with the user's own key.
+  modelPreference: ['gpt-oss:20b-cloud', 'gpt-oss:20b', 'gpt-oss:120b-cloud', 'gpt-oss:120b'],
+  // Ollama's catalogue is far more heterogeneous than Groq's curated chat-model list (it
+  // mirrors the full public model registry), so this filter is broader than Groq's.
+  nonChatFilter: ['whisper', 'tts', 'embed', 'bge', 'nomic', 'guard', 'prompt-guard'],
+}
 
 /**
- * Choose the model to configure from the ids the endpoint reported.
+ * Every no-subscription preset OFFERED for a brand-new key - the gate's free-path chooser and
+ * the "add a new endpoint" tiles in Settings read only this list.
  *
- * Falls back to the first usable id when nothing preferred is on offer, and to `null` only
- * when the list is empty or entirely non-chat - which the caller must treat as "could not
- * set this up", never as "use the default", since there is no default to use.
+ * GROQ IS DELIBERATELY NOT HERE. Groq's free tier has token-rate limits too tight for
+ * Meridian's hourly pipeline calls - a real, observed production problem (hours silently
+ * failing), not a hypothetical - so as of this list, nobody new is offered it. This is NOT
+ * the same as deleting Groq support: `GROQ` itself, its trust copy, `pickGroqModel`, and the
+ * backend registry (`add_custom_llm_provider`, `OpenAiCompatBackend`) are all untouched, and
+ * exist precisely so someone who ALREADY has a Groq row keeps a fully working, fully
+ * manageable endpoint - see `ALL_KNOWN_PRESETS` below, which is what renders THEIR tile.
+ * `src/main.rs`'s poll loop separately raises a persistent notice for exactly these
+ * users, pointing them at adding an Ollama key instead - see `llm.groq_deprecated`.
  */
-export function pickGroqModel(available: string[]): string | null {
+export const CLOUD_PRESETS: CloudKeyPreset[] = [OLLAMA]
+
+/**
+ * Every preset this build knows how to DISPLAY, offered or not - a strict superset of
+ * `CLOUD_PRESETS`. An already-configured endpoint on a retired preset (Groq, today) still
+ * needs its name/logo/blurb to render its own tile and registry screen; `CLOUD_PRESETS`
+ * alone would make that lookup fail the moment the preset stops being offered. Look up by
+ * vendor with `presetForVendor`, never by re-checking `CLOUD_PRESETS.find(...)` for display
+ * purposes - that conflates "known" with "offered", which is exactly the bug this avoids.
+ */
+export const ALL_KNOWN_PRESETS: CloudKeyPreset[] = [GROQ, OLLAMA]
+
+/** The preset for `vendor`, whether or not it's currently offered - `undefined` for a vendor
+ *  this build has never heard of (a hand-edited settings.json, or a future preset added to
+ *  Rust before its frontend data lands). See `ALL_KNOWN_PRESETS`. */
+export function presetForVendor(vendor: string): CloudKeyPreset | undefined {
+  return ALL_KNOWN_PRESETS.find((p) => p.vendor === vendor)
+}
+
+/**
+ * Choose the model to configure from the ids the endpoint reported, for a given preset.
+ *
+ * Asking the endpoint rather than hardcoding one id is the whole point of doing this at all -
+ * a cloud catalogue turns over quickly, and a hardcoded id that has been retired fails at the
+ * first real hour rather than at setup, the worst possible place. Matched as a PREFIX (not an
+ * exact id) so a dated revision like `…-0905` still counts as its family.
+ *
+ * Falls back to the first usable id when nothing in `preset.modelPreference` is on offer, and
+ * to `null` only when the list is empty or entirely non-chat - which the caller must treat as
+ * "could not set this up", never as "use the default", since there is no default to use. This
+ * fallback is deliberate: a vendor adds strict-schema models faster than this list is edited,
+ * and the probe - not this list - is the real gate. A model the list has never heard of gets a
+ * chance to prove itself and is refused honestly if it cannot.
+ */
+export function pickCloudModel(preset: CloudKeyPreset, available: string[]): string | null {
   const usable = available.filter(
-    (m) => !GROQ_NON_CHAT.some((bad) => m.toLowerCase().includes(bad)),
+    (m) => !preset.nonChatFilter.some((bad) => m.toLowerCase().includes(bad)),
   )
-  for (const want of GROQ_MODEL_PREFERENCE) {
+  for (const want of preset.modelPreference) {
     const hit = usable.find((m) => m.toLowerCase().startsWith(want.toLowerCase()))
     if (hit) return hit
   }
   return usable[0] ?? null
 }
+
+/** Groq-bound convenience wrapper, kept for the call sites and tests that already address it
+ *  by name - a thin partial application of `pickCloudModel`, never a second implementation. */
+export function pickGroqModel(available: string[]): string | null {
+  return pickCloudModel(GROQ, available)
+}
+
+/** `GROQ_MODEL_PREFERENCE` re-exported under its old name for anything still importing it
+ *  directly (see `GROQ.modelPreference`, the live copy). */
+export const GROQ_MODEL_PREFERENCE: string[] = GROQ.modelPreference
 
 /**
  * The stand-in for `custom` in any lookup - NOT a card in `LLM_PROVIDERS`.

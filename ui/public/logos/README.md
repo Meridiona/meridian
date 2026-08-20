@@ -16,10 +16,10 @@ path data inline and fills each one from a theme variable holding that brand's o
 selected tile tint them with the Meridian accent: every logo came out violet, which defeats
 the entire point of showing a real logo.
 
-The two that need care are OpenAI and Cursor, whose marks **are** black. Both flip to white
-under the `ink` theme, which is what their own brand guidance says to do on a dark
-background - and is why the fill is a CSS variable rather than a hex baked into the file.
-An `<img>` pointed at these files could not be themed at all.
+The ones that need care are OpenAI, Cursor, and Ollama, whose marks **are** black. All three
+flip to white under the `ink` theme, which is what their own brand guidance says to do on a
+dark background - and is why the fill is a CSS variable rather than a hex baked into the
+file. An `<img>` pointed at these files could not be themed at all.
 
 The same path therefore exists in two places. `__tests__/provider-logos.test.ts` asserts the
 component's copy is byte-identical to the file here, and that every brand variable is
@@ -33,6 +33,7 @@ defined (and flips, or deliberately does not), so the two cannot drift.
 | `openai.svg` | [Simple Icons](https://simpleicons.org) v16.28.0, `icons/openai.svg` | CC0-1.0 |
 | `cursor.svg` | [Simple Icons](https://simpleicons.org) v16.28.0, `icons/cursor.svg` | CC0-1.0 |
 | `groq.svg` | Groq's own `https://groq.com/favicon.svg` | see note below |
+| `ollama.svg` | [Simple Icons](https://simpleicons.org) v16.28.0, `icons/ollama.svg` | CC0-1.0 |
 
 Simple Icons was chosen over the vendors' press kits for a specific reason: its files are
 released **CC0-1.0**, which removes any question about redistributing the SVG *file* inside

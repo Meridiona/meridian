@@ -589,7 +589,7 @@ pub fn pseudonymize_account(email: &str) -> String {
 /// (`Akarshs-MacBook-Pro.local` can simply be hashed and compared) where a
 /// 128-bit hardware UUID is not.
 ///
-/// # ALPHA TESTING ONLY — per-user override (expires 2026-08-28)
+/// # ALPHA TESTING ONLY — per-user override (expires 2026-12-31)
 /// Meridian's alpha runs on a small set of hand-picked testers, several of
 /// whom run Meridian on more than one machine. For that one-month window,
 /// support needs to trace a tester's errors across their devices, so this
@@ -632,10 +632,28 @@ fn platform_prefix() -> &'static str {
 }
 
 /// Unix seconds marking the end of the ALPHA per-user pseudonym window —
-/// 2026-08-28T00:00:00Z, one month out from when this shipped (2026-07-28).
+/// 2027-01-01T00:00:00Z, i.e. the override stays active THROUGH the whole of
+/// 2026-12-31 (the check below is `now_unix >= this`, so the boundary itself
+/// must be the instant AFTER the last day the override should hold — using
+/// 2026-12-31T00:00:00Z here would have disabled it at the START of that day
+/// instead). Originally 2026-08-28 (one month out from when this shipped,
+/// 2026-07-28); extended because the alpha is still running at ~200
+/// hand-picked testers, several on more than one machine.
+///
+/// **Extending is not cosmetic — the value CHANGES at this instant.** Every
+/// signed-in install's shipped `host.name`, its Sentry `server_name`, and the
+/// Support ID shown in Settings all flip from account-seeded to
+/// hardware-seeded the moment this passes. Historical error rows keep the old
+/// value, so anything joining on a single "current" pseudonym goes blind at
+/// the boundary and reads as the whole fleet falling silent. Meridian's
+/// product analytics survives this by design — it ships `support_id` as an
+/// EVENT property, so the full set is recoverable with a `DISTINCT` (see
+/// `tray/src-tauri/src/analytics`) — but any NEW consumer must be checked
+/// against this before it is trusted across the date.
+///
 /// See [`local_host_pseudonym`]'s ALPHA doc for why this is a date, not a
 /// channel check.
-const ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX: u64 = 1_787_875_200;
+const ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX: u64 = 1_798_761_600;
 
 /// Now, as Unix seconds. Failure (a clock so broken `UNIX_EPOCH` is in the
 /// future) reads as "expired" — `u64::MAX` — rather than "still in the alpha

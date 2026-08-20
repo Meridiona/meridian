@@ -451,7 +451,7 @@ machine a new identity on every network change, silently breaking the grouping
 the value exists for. See `telemetry_spool::machine_id` before touching any of
 this; `pseudonym_is_independent_of_the_captured_hostname` pins it.
 
-**ALPHA EXCEPTION (until 2026-08-28, `redact::ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`):**
+**ALPHA EXCEPTION (until 2026-12-31, `redact::ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`):**
 while Meridian is in hand-picked-tester alpha, the two paragraphs above and
 below are only true when signed out. While a tester is signed in,
 `local_host_pseudonym` deliberately seeds from a salted hash of their Clerk

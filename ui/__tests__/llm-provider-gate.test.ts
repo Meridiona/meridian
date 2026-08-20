@@ -2,20 +2,20 @@
 import { describe, it, expect } from 'bun:test'
 import { readFileSync } from 'fs'
 import {
-  GROQ, GROQ_MODEL_PREFERENCE, LLM_GATE_CHOICES, LLM_GATE_TITLE,
-  pickGroqModel,
+  ALL_KNOWN_PRESETS, CLOUD_PRESETS, GROQ, LLM_GATE_CHOICES, LLM_GATE_TITLE, OLLAMA,
+  pickCloudModel, pickGroqModel, presetForVendor,
 } from '@/lib/llm-providers'
 
 // The no-subscription path, and the question that routes into it.
 //
 // Almost none of this is expressible in a type: that the recommendation is carried by a
-// BADGE rather than by prose, that the free path shows exactly one vendor, that a model is
-// never hardcoded, that the privacy claims carry a link. Each is a decision a later edit
-// could undo without anything failing to compile.
+// BADGE rather than by prose, that the free path offers exactly two curated vendors, that a
+// model is never hardcoded, that the privacy claims carry a link. Each is a decision a later
+// edit could undo without anything failing to compile.
 
 const uiRoot = import.meta.dir + '/..'
 const gate = readFileSync(`${uiRoot}/components/LlmProviderGate.tsx`, 'utf8')
-const groq = readFileSync(`${uiRoot}/components/GroqSetup.tsx`, 'utf8')
+const cloudSetup = readFileSync(`${uiRoot}/components/CloudKeySetup.tsx`, 'utf8')
 const picker = readFileSync(`${uiRoot}/components/LlmProviderPicker.tsx`, 'utf8')
 
 describe('the subscription gate', () => {
@@ -71,9 +71,24 @@ describe('the picker routes on the answer', () => {
     expect(picker).toContain("gate ? null : 'subscription'")
   })
 
-  it('sends the free answer straight to Groq, with no list of one', () => {
+  it('sends the free answer straight to the one offered preset, not a chooser of one', () => {
+    // CLOUD_PRESETS is down to one entry (Ollama, since Groq's removal) - a chooser
+    // containing a single tile would be asking the user to confirm an answer they just
+    // gave. The length===1 branch must render CloudKeySetup directly with that one preset.
     expect(picker).toContain("gateAnswer === 'free'")
-    expect(picker).toContain('<GroqSetup')
+    expect(picker).toContain('if (CLOUD_PRESETS.length === 1)')
+    const singlePresetBranch = picker.slice(
+      picker.indexOf('if (CLOUD_PRESETS.length === 1)'),
+      picker.indexOf('return <CloudPresetChooser'),
+    )
+    expect(singlePresetBranch).toContain('<CloudKeySetup')
+    expect(singlePresetBranch).toContain('preset={CLOUD_PRESETS[0]}')
+  })
+
+  it('falls back to a chooser the moment a second preset is offered again', () => {
+    // Nothing here assumes exactly one or exactly two - the chooser still exists as the
+    // fallthrough for whenever CLOUD_PRESETS grows past one again.
+    expect(picker).toContain('<CloudPresetChooser')
   })
 
   it('hides the bring-your-own tile under the gate', () => {
@@ -88,73 +103,107 @@ describe('the picker routes on the answer', () => {
   })
 })
 
-describe('the Groq walkthrough', () => {
+describe('the no-subscription presets', () => {
+  it('offers only Ollama - Groq is discontinued for new setups', () => {
+    // Groq's free tier has token-rate limits too tight for Meridian's hourly pipeline
+    // calls - a real production problem, not a hypothetical - so it was removed from what's
+    // OFFERED. `ALL_KNOWN_PRESETS` (checked below) still carries it, for whoever already
+    // has a Groq row: only the "offer this to someone new" list shrank.
+    expect(CLOUD_PRESETS.map((p) => p.vendor)).toEqual(['ollama'])
+  })
+
+  it('still knows Groq well enough to display an existing endpoint', () => {
+    expect(ALL_KNOWN_PRESETS.map((p) => p.vendor)).toContain('groq')
+    expect(presetForVendor('groq')?.name).toBe('Groq')
+    expect(presetForVendor('does-not-exist')).toBeUndefined()
+  })
+
   it('is the only way an endpoint gets added', () => {
     // Gemini / OpenRouter / OpenAI / a free-text endpoint all made the no-subscription path
     // a configuration exercise for someone who came here to avoid one. Once the preset list
-    // was down to Groq alone the add FORM was a questionnaire with one possible answer, so
-    // it and its tile went too - this pins that they stay gone.
+    // was down to a curated set the add FORM was a questionnaire nobody needed, so it and
+    // its tile went too - this pins that they stay gone.
     const providers = readFileSync(`${uiRoot}/components/CustomProviders.tsx`, 'utf8')
     for (const dead of ['AddCustomProvider', 'AddForm', 'CUSTOM_VENDOR_PRESETS']) {
       expect(providers.includes(dead)).toBe(false)
       expect(picker.includes(dead)).toBe(false)
     }
-    // But the registry write itself survives - GroqSetup is what calls it now.
+    // But the registry write itself survives - CloudKeySetup is what calls it now, for
+    // whichever preset it was opened with.
     expect(providers).toContain('add_custom_llm_provider')
-    expect(groq).toContain('onAdd(')
+    expect(cloudSetup).toContain('onAdd(')
   })
 
-  it('leads with free and backs its privacy claims with a link', () => {
-    // Price and retention rank together, so both are badges - the second one exists
-    // because "what happens to what I send" was answered only in body text nobody
-    // reaches before deciding whether to paste a key.
-    expect(GROQ.freeBadge).toBe('FREE')
-    expect(GROQ.privacyBadge.length).toBeGreaterThan(0)
-    expect(groq).toContain('GROQ.privacyBadge')
-    expect(GROQ.trust.length).toBeGreaterThanOrEqual(3)
-    // Asserted by CLAIM, not by phrasing: the retention answer and the training answer
-    // are the two a careful reader wants, and both must be stated somewhere in the block.
-    expect(GROQ.trust.join(' ')).toMatch(/not (logged|stored|retained)/i)
-    expect(GROQ.trust.join(' ')).toMatch(/train/i)
-    // A claim with no source is what a careful reader should refuse - each links out.
-    expect(GROQ.privacyUrl).toMatch(/^https:\/\/groq\.com\//)
-    expect(GROQ.termsUrl).toMatch(/^https:\/\/groq\.com\//)
-    expect(groq).toContain('GROQ.privacyUrl')
-    expect(groq).toContain('GROQ.termsUrl')
+  for (const preset of [GROQ, OLLAMA]) {
+    describe(preset.name, () => {
+      it('leads with free and backs its privacy claims with a link', () => {
+        // Price and retention rank together, so both are badges - the second one exists
+        // because "what happens to what I send" was answered only in body text nobody
+        // reaches before deciding whether to paste a key.
+        expect(preset.freeBadge).toBe('FREE')
+        expect(preset.privacyBadge.length).toBeGreaterThan(0)
+        expect(preset.trust.length).toBeGreaterThanOrEqual(3)
+        // Asserted by CLAIM, not by phrasing: the retention answer and the training answer
+        // are the two a careful reader wants, and both must be stated somewhere in the block.
+        expect(preset.trust.join(' ')).toMatch(/not (logged|stored|retained|used to train)/i)
+        expect(preset.trust.join(' ')).toMatch(/train/i)
+        // A claim with no source is what a careful reader should refuse - each links to the
+        // vendor's OWN domain.
+        const domain = preset.vendor === 'groq' ? 'groq.com' : 'ollama.com'
+        expect(preset.privacyUrl).toMatch(new RegExp(`^https://(www\\.)?${domain}/`))
+        expect(preset.termsUrl).toMatch(new RegExp(`^https://(www\\.)?${domain}/`))
+      })
+
+      it('uses plain hyphens in its copy', () => {
+        for (const s of [preset.blurb, preset.headline, ...preset.trust]) {
+          expect(s).not.toMatch(/[—–]|--/)
+        }
+      })
+
+      it('never has a hardcoded model preference reach the wizard verbatim', () => {
+        // A retired model id baked into the component (rather than the preset data it reads)
+        // would not fail at setup. It would fail at the first real hour, with nothing on
+        // screen connecting the two.
+        for (const m of preset.modelPreference) expect(cloudSetup).not.toContain(`'${m}'`)
+      })
+    })
+  }
+
+  it('the wizard is driven entirely by the preset, never one vendor by name', () => {
+    expect(cloudSetup).toContain('preset.privacyBadge')
+    expect(cloudSetup).toContain('preset.privacyUrl')
+    expect(cloudSetup).toContain('preset.termsUrl')
+    expect(cloudSetup).toContain('list_custom_llm_provider_models')
+    expect(cloudSetup).toContain('pickCloudModel')
+    expect(cloudSetup).not.toContain("'groq'")
+    expect(cloudSetup).not.toContain("'ollama'")
   })
 
   it('walks two steps and asks for exactly one thing', () => {
-    // Two, not three: getting the key is ONE trip to console.groq.com/keys, which handles
+    // Two, not three: getting the key is ONE trip to the vendor's key page, which handles
     // signing up on the way. A separate "create an account" step numbered the same click
     // twice and made a two-minute setup read as a chore.
-    const steps = groq.match(/<Step n=\{\d\}/g) ?? []
+    const steps = cloudSetup.match(/<Step n=\{\d\}/g) ?? []
     expect(steps.length).toBe(2)
-    // And exactly one place to go - a second outbound link here is the split coming back.
-    expect((groq.match(/<ActionLink/g) ?? []).length).toBe(1)
+    // And exactly one place to go per step - a second outbound link here is the split
+    // coming back.
+    expect((cloudSetup.match(/<ActionLink/g) ?? []).length).toBe(1)
     // One input on the whole screen. Every other field the old add-form exposed is either
     // fixed by the vendor or decided for the user.
-    expect((groq.match(/<input/g) ?? []).length).toBe(1)
-    expect(groq).toContain("type=\"password\"")
-  })
-
-  it('never hardcodes a model - it asks the endpoint', () => {
-    // A retired model id baked in here would not fail at setup. It would fail at the first
-    // real hour, with nothing on screen connecting the two.
-    expect(groq).toContain('list_custom_llm_provider_models')
-    expect(groq).toContain('pickGroqModel')
-    for (const m of GROQ_MODEL_PREFERENCE) expect(groq).not.toContain(`'${m}'`)
+    expect((cloudSetup.match(/<input/g) ?? []).length).toBe(1)
+    expect(cloudSetup).toContain("type=\"password\"")
   })
 
   it('reports an endpoint that cannot do structured replies, rather than selecting it', () => {
     // `update_settings` REJECTS an ineligible endpoint, so a silent select would roll back
     // with nothing to explain it.
-    expect(groq).toContain('production_eligible')
+    expect(cloudSetup).toContain('production_eligible')
   })
+})
 
-  it('uses plain hyphens in its copy', () => {
-    for (const s of [GROQ.blurb, GROQ.headline, ...GROQ.trust]) {
-      expect(s).not.toMatch(/[—–]|--/)
-    }
+describe('pickCloudModel / the Groq preference list', () => {
+  it('backward-compat: pickGroqModel is pickCloudModel bound to GROQ', () => {
+    expect(pickGroqModel(['openai/gpt-oss-120b'])).toBe(pickCloudModel(GROQ, ['openai/gpt-oss-120b']))
   })
 })
 
