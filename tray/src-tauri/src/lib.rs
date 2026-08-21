@@ -1308,6 +1308,7 @@ pub fn run() {
             commands::start_oauth,
             commands::cancel_oauth,
             commands::get_oauth_status,
+            commands::request_pm_tool,
             // OS/window actions
             commands::take_pending_deep_link,
             commands::open_permission_pane,

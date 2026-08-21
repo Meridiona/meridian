@@ -205,7 +205,7 @@ fn posthog_api_key() -> String {
 /// an HTTP 2xx from PostHog; `false` on a missing API key, a request/timeout
 /// error, or a non-2xx response — in every `false` case the caller must
 /// retry, never silently drop the event.
-async fn capture(
+pub(crate) async fn capture(
     event: &str,
     distinct_id: &str,
     mut properties: serde_json::Map<String, serde_json::Value>,
@@ -262,7 +262,7 @@ async fn capture(
 /// (see the module doc). Callers only ever reach this after confirming an
 /// email is present, so identity itself never needs to be threaded through
 /// here.
-fn base_properties(
+pub(crate) fn base_properties(
     app: &tauri::AppHandle,
     device_id: &str,
 ) -> serde_json::Map<String, serde_json::Value> {
@@ -369,7 +369,7 @@ fn attach_person_properties(
 /// in Settings stops the next tick's events without a relaunch. Deliberately
 /// checks `product_analytics_enabled`, NOT `error_reporting_enabled` — see the
 /// module doc's "Consent" section.
-fn analytics_allowed() -> bool {
+pub(crate) fn analytics_allowed() -> bool {
     let killed = std::env::var("MERIDIAN_TELEMETRY_DISABLED")
         .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
     if killed {
@@ -521,5 +521,38 @@ pub(crate) async fn maybe_send_daily_tick(app: &tauri::AppHandle, pool: &SqliteP
 
     if dirty {
         save_state(&path, &state);
+    }
+}
+
+/// Fire a `pm_tool_requested` event for [`crate::commands::pm_tool_request::request_pm_tool`]
+/// — a user typed a PM tool into `ConnectTrackers`' "I don't see my tool" row.
+///
+/// Best-effort and fire-and-forget by design, unlike every other event in
+/// this module: there is no bookkeeping cursor to retry from (this is a
+/// one-off ad hoc action, not a per-day/per-install rollup), so a failed send
+/// is simply lost rather than retried next tick. That is an acceptable
+/// tradeoff for a secondary demand signal — the caller ALSO persists the same
+/// text into `settings.json` (`RuntimeSettings::requested_pm_tool`), which is
+/// what survives regardless of whether this event lands.
+pub(crate) async fn send_pm_tool_requested(app: &tauri::AppHandle, tool_name: &str) {
+    if !analytics_allowed() {
+        return;
+    }
+    let Some(email) = crate::commands::account::read_account_email() else {
+        // Not signed in — no identity to attach the event to (see the module
+        // doc's "No anonymous events, ever").
+        return;
+    };
+    let Some(path) = analytics_state_path() else {
+        return;
+    };
+    let device_id = load_or_init_state(&path).device_id;
+    let mut props = base_properties(app, &device_id);
+    props.insert(
+        "tool_name".to_string(),
+        serde_json::Value::String(tool_name.to_string()),
+    );
+    if capture("pm_tool_requested", &email, props).await {
+        tracing::info!(tool_name, "analytics: pm_tool_requested sent");
     }
 }

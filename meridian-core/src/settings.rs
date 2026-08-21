@@ -355,6 +355,14 @@ pub struct RuntimeSettings {
     // falls back to the pre-existing per-machine hardware-UUID pseudonym.
     #[serde(default)]
     pub account_pseudonym: Option<String>,
+    // The free-text tool name a user typed into `ConnectTrackers`' "I don't
+    // see my tool" row (`tray/src-tauri/src/commands/pm_tool_request.rs`).
+    // Local mirror of the same value a `pm_tool_requested` PostHog event
+    // carries, kept here too so it survives even when product analytics is
+    // off (see [`Self::product_analytics_enabled`]). Last request wins — this
+    // is a demand signal, not a queue, so only the most recent ask matters.
+    #[serde(default)]
+    pub requested_pm_tool: Option<String>,
 }
 
 /// Default surface palette when `settings.json` predates the `theme` key. Must
@@ -423,6 +431,8 @@ impl Default for RuntimeSettings {
             worklog_auto_generate_prompted: false,
             // Signed out (or never signed in) until the tray says otherwise.
             account_pseudonym: None,
+            // Nobody has asked for an unsupported tool by default.
+            requested_pm_tool: None,
         }
     }
 }
@@ -821,6 +831,39 @@ mod tests {
             None,
             "and the resolver degrades it to the default"
         );
+
+        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `requested_pm_tool` defaults to `None` on a settings.json that predates
+    /// it, and round-trips through `read_settings_value`/`write_settings_value`
+    /// (the pattern `commands/pm_tool_request.rs` writes through) once set.
+    #[test]
+    fn requested_pm_tool_defaults_none_and_round_trips() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "meridian-settings-pmtool-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        with_settings_path(&path);
+
+        std::fs::write(&path, r#"{"log_level":"DEBUG"}"#).unwrap();
+        let s = load_runtime_settings();
+        assert_eq!(
+            s.requested_pm_tool, None,
+            "predates the field — must default"
+        );
+
+        let mut v = read_settings_value();
+        v["requested_pm_tool"] = json!("Shortcut");
+        write_settings_value(&v).unwrap();
+
+        let s = load_runtime_settings();
+        assert_eq!(s.requested_pm_tool, Some("Shortcut".to_string()));
 
         std::env::remove_var("MERIDIAN_SETTINGS_PATH");
         let _ = std::fs::remove_dir_all(&dir);
