@@ -55,11 +55,11 @@
 //! - **Windows** — one scheduled task with a `LogonTrigger` *and* a daily
 //!   `CalendarTrigger`, registered from XML because `schtasks`' command form
 //!   cannot express two triggers. Its `MultipleInstancesPolicy` is `IgnoreNew`,
-//!   which is what stops the 09:00 trigger starting a second tray on top of the
-//!   one the logon trigger already started.
+//!   which is what stops the new-day trigger starting a second tray on top of
+//!   the one the logon trigger already started.
 //!
 //! # Duplicates are prevented by a guard, not by hoping
-//! The 09:00 trigger is started by the OS scheduler, and **neither scheduler can
+//! The new-day trigger is started by the OS scheduler, and **neither scheduler can
 //! see that the app is already running.** launchd tracks liveness per job
 //! LABEL, so the process macOS's loginwindow started via SMAppService is
 //! invisible to our calendar job; Task Scheduler's `MultipleInstancesPolicy:
@@ -74,7 +74,7 @@
 //!
 //! An earlier version of this module claimed `RunAtLoad false` alone prevented
 //! the duplicate. It does not — it only prevents one at LOGIN, and moved the
-//! collision to 09:00.
+//! collision to the new-day trigger.
 //!
 //! # Who calls this
 //! [`crate::run`]'s `setup()` hook, once per launch, bundled runs only (see
@@ -154,13 +154,14 @@ where
     args.into_iter().any(|a| a.as_ref() == AUTOSTART_FLAG)
 }
 
-/// Local hour the morning relaunch fires, on both platforms.
-///
-/// A constant, not a setting: a settings field would need a UI, a migration and
-/// a re-registration path on change, to serve a preference nobody has asked
-/// for. Widening this to several times a day is one more entry in the plist's
-/// `StartCalendarInterval` array / the task's `Triggers`.
-pub(crate) const MORNING_HOUR: u32 = 9;
+// NOTE: there is no MORNING_HOUR any more, and that removal is the point.
+//
+// A hardcoded relaunch hour was the wrong shape for the requirement ("Meridian is
+// running after the device is turned on or woken"): it fires when the user is not
+// there and misses them when they are. Both platforms now trigger on the OS's own
+// events instead - launchd `LaunchEvents` on wake/unlock notifications
+// ([`macos::WAKE_NOTIFICATIONS`]) and Windows `SessionStateChangeTrigger` on
+// `SessionUnlock`/`ConsoleConnect`. There is no clock left in this module.
 
 /// Marker recording that the user deliberately turned autostart OFF.
 ///
