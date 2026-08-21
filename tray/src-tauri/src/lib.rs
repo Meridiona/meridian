@@ -80,8 +80,8 @@ use reopen::{is_onboarded, reopen_target, ReopenTarget};
 pub(crate) use reopen::onboarding_complete;
 #[cfg(target_os = "macos")]
 use window_panel::{
-    init_as_nspanel, install_click_outside_monitor, make_visible_over_fullscreen,
-    set_process_display_name, show_no_focus,
+    apply_corner_mask, init_as_nspanel, install_click_outside_monitor,
+    make_visible_over_fullscreen, set_process_display_name, show_no_focus,
 };
 use window_panel::{monitor_work_area, tray_anchor_position};
 
@@ -1089,6 +1089,15 @@ pub fn run() {
                     init_as_nspanel(&win);
                     make_visible_over_fullscreen(&win);
                 }
+            }
+
+            // Clip the popover's window to the card's own corner radius so
+            // the 4 corners are truly transparent (see `apply_corner_mask`'s
+            // doc comment). Only "main" - the tooltip window is deliberately
+            // larger than its card with transparent tail-placement padding.
+            #[cfg(target_os = "macos")]
+            if let Some(main_win) = app.get_webview_window("main") {
+                apply_corner_mask(&main_win, 18.0);
             }
 
             // The popover is a non-activating NSPanel — it never becomes key so
