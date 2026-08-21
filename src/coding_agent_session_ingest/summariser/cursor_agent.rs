@@ -101,8 +101,8 @@ async fn run_once(
 
     if !cap.success {
         let blob = format!("{}\n{}", cap.stderr, cap.stdout);
-        if prompts::looks_rate_limited(&blob) {
-            let msg = prompts::rate_limited_line(&blob)
+        if prompts::looks_rate_limited_cursor(&blob) {
+            let msg = prompts::rate_limited_line_cursor(&blob)
                 .unwrap_or_else(|| prompts::first_line(&cap.stderr));
             return Err(SummariserError::RateLimited(if msg.is_empty() {
                 "cursor-agent usage limit".into()

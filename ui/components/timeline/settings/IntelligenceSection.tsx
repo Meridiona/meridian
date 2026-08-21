@@ -106,9 +106,9 @@ export function IntelligenceSection({ settings, save, gate = false, onConnected 
     <div className="max-w-[760px] flex flex-col gap-5">
       {/* Suppressed under the gate. "Choose your AI provider" above "Do you have a
           subscription?" is two headings asking different questions, and the second one is
-          the one the user must answer first - the gate and the Groq walkthrough each carry
-          their own title. The Dev disconnect stays either way; it is how this state is
-          reached at all while the flow is being worked on. */}
+          the one the user must answer first - the gate and the free-key walkthrough (Ollama)
+          each carry their own title. The Dev disconnect stays either way; it is how this
+          state is reached at all while the flow is being worked on. */}
       {gate ? (
         <div className="flex justify-end"><DevDisconnect provider={provider} onDone={rescan} /></div>
       ) : (

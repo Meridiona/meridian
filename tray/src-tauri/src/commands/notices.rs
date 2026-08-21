@@ -18,7 +18,7 @@
 //!   ([`meridian_core::notices::read_notices`] / [`meridian_core::notices::delete_notice`]).
 //! - [`crate::poll`] — emits the `notices-update` event off the same read.
 
-use tauri::State;
+use tauri::{Emitter, State};
 
 /// The live notice set (the ported /api/notices/stream snapshot). No open DB →
 /// empty (matches the route's `catch → []`), so the banner just shows nothing.
@@ -49,4 +49,24 @@ pub async fn delete_notice(
     meridian_core::notices::delete_notice(pool, &notice_id)
         .await
         .map_err(|e| crate::cmd_err!(e, notice_id, "delete_notice failed"))
+}
+
+/// Push a fresh `notices-update` NOW, unconditionally — the on-demand counterpart to
+/// `crate::commands::health::push_health_update`, for the same reason: `poll::live::emit_notices`
+/// only runs on the tray's own 30 s tick and only when its dedup snapshot changed, so a banner
+/// this process just raised/cleared directly (see `update_settings`'s Groq sync) would
+/// otherwise sit unrefreshed in the webview for up to another 30 s. Unlike `emit_notices` this
+/// never checks a `last`-snapshot cache — it is called rarely (a settings write), never from
+/// the hot poll loop, so an occasional duplicate identical push costs nothing.
+///
+/// Placed LAST in this file, not between two `#[tauri::command]`s: this has no `-> ReturnType`
+/// (a plain `()` return), and `__tests__/mutate-body-contract.test.ts` parses this file's
+/// commands with a regex that lazily scans for the next `) ->` — sitting between two commands
+/// it would swallow the SECOND one's signature whole, exactly the failure mode
+/// `push_health_update` (the same no-arrow shape) avoids by being last in `health.rs` too.
+pub async fn push_notices_update(app: &tauri::AppHandle, pool: &meridian_core::SqlitePool) {
+    let notices = meridian_core::notices::read_notices(pool).await;
+    if let Err(e) = app.emit("notices-update", &notices) {
+        tracing::warn!(error = %e, "notices update emit failed - banner stays stale until the next poll tick");
+    }
 }

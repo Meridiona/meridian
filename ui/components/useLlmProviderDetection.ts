@@ -146,8 +146,21 @@ export function useLlmProviderDetection() {
         })
         void testOne(id, { silent: true })
       } else {
-        // Sign-in didn't complete - refresh at least the install state.
+        // Sign-in didn't complete, at least according to the CLI process itself - but the
+        // backend now double-checks that against a real status read before giving up (see
+        // `interactive_login` in `src/llm/detect.rs`), so `ok: false` here is not the whole
+        // story either: a stale FAILED `last_test` from an earlier real attempt could still
+        // be sitting on this provider from before the browser tab was even opened, and
+        // without a fresh test it would keep reading as broken until the panel happens to
+        // remount 60s+ later. Re-test (silently - the user is already watching the sign-in
+        // flow, this isn't a background surprise) rather than only refreshing install state,
+        // so a sign-in that quietly resolved itself a moment later is reflected right away.
+        // Sequenced, not concurrent: `detect()` REPLACES the whole status map (the backend
+        // reports `last_test: null` for every provider), so if `testOne()` settled first,
+        // `Promise.all`'s unordered resolution could let the later `detect()` overwrite the
+        // merged result and discard the just-spent probe. Same order `install()` above uses.
         await detect()
+        await testOne(id, { silent: true })
       }
       return outcome
     } catch (e) {

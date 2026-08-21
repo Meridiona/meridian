@@ -149,6 +149,36 @@ export default function NoticeBar() {
                 Reconnect →
               </button>
             )}
+            {/* The generic case, for every OTHER notice carrying a `deep_link` (migration
+                081) - `llm.groq_deprecated` today, any future one tomorrow. Routes through
+                the exact same `meridian:navigate` → `navigate()` switch a toast's [View]
+                button uses (`MeridianTimelineShell.tsx`), so a banner that outlives its toast
+                still lands somewhere real instead of just sitting there unclickable. The `pm.`
+                and `db.corrupt` cases above stay hand-written since they need bespoke buttons
+                ("Reconnect →", the repair flow) rather than a plain "View →". */}
+            {n.deep_link && !n.notice_id.startsWith('pm.') && n.notice_id !== DB_CORRUPT && (
+              <button
+                onClick={() => window.dispatchEvent(
+                  new CustomEvent('meridian:navigate', { detail: n.deep_link })
+                )}
+                style={{
+                  flexShrink: 0,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: s.text,
+                  background: 'rgba(0,0,0,0.07)',
+                  border: `1px solid ${s.border}`,
+                  borderRadius: 5,
+                  padding: '3px 8px',
+                  textDecoration: 'none',
+                  whiteSpace: 'nowrap',
+                  alignSelf: 'center',
+                  cursor: 'pointer',
+                }}
+              >
+                View →
+              </button>
+            )}
             {ACKNOWLEDGEABLE.has(n.notice_id) && (
               <DismissButton noticeId={n.notice_id} color={s.text}
                 onDone={() => setNotices(cur => cur.filter(x => x.notice_id !== n.notice_id))} />

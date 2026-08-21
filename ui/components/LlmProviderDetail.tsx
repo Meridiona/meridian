@@ -164,6 +164,20 @@ function TestAgain({ onTest, label = 'Test again' }: { onTest: () => void; label
   )
 }
 
+/** Offered ONLY on a failure - fixing this provider is never the only way forward. Plain
+ *  text-link weight (quieter than `TestAgain`'s bordered box) because retrying the SAME
+ *  provider is the more likely next move; this is the escape hatch, not a peer action. */
+function SwitchProvider({ onClick }: { onClick: () => void }) {
+  return (
+    <button onClick={onClick} className="self-start underline" style={{
+      ...T.hint, color: 'var(--t-accent)', background: 'none', border: 'none',
+      padding: 0, cursor: 'pointer', textAlign: 'left',
+    }}>
+      Try a different provider
+    </button>
+  )
+}
+
 const Mono = ({ children }: { children: React.ReactNode }) =>
   <code style={{ fontFamily: 'var(--font-mono, ui-monospace)', fontSize: '0.94em' }}>{children}</code>
 
@@ -296,6 +310,7 @@ export default function LlmProviderDetail({
             onInstall={install}
             onSignIn={signIn}
             onTest={onTest}
+            onSwitchProvider={onBack}
           />
         </div>
       </div>
@@ -361,10 +376,19 @@ export default function LlmProviderDetail({
 }
 
 /** The body of the step card — one heading, one explanation, at most one primary button. */
-function ConnectionBody({ phase, name, providerId, installHint, installMsg, signInMsg, onInstall, onSignIn, onTest }: {
+function ConnectionBody({
+  phase, name, providerId, installHint, installMsg, signInMsg, onInstall, onSignIn, onTest,
+  onSwitchProvider,
+}: {
   phase: Phase; name: string; providerId: string
   installHint?: string; installMsg: string | null; signInMsg: string | null
   onInstall: () => void; onSignIn: () => void; onTest: () => void
+  /** Back to the chooser grid - offered on a failure so getting THIS provider working is
+   *  never the only way forward. Same destination `<BackLink>` already reaches from the
+   *  top of the screen; this just puts it one click closer to where the failure is read,
+   *  matching `<AiEngineNotice>`'s "Check your provider" pattern on the dashboard's own
+   *  Draft-with-AI failure path. */
+  onSwitchProvider: () => void
 }) {
   // Providers whose CLI authenticates against the user's OWN subscription via a browser OAuth
   // Meridian can drive in-app. From the shared registry in `@/lib/llm-providers`, so the copy
@@ -467,6 +491,7 @@ function ConnectionBody({ phase, name, providerId, installHint, installMsg, sign
                 Prefer the terminal? Run <Mono>{signInProvider.cmd}</Mono>, then test again.
               </p>
             </div>
+            <SwitchProvider onClick={onSwitchProvider} />
           </>
         )
       }
@@ -475,6 +500,7 @@ function ConnectionBody({ phase, name, providerId, installHint, installMsg, sign
           <span style={T.step}>{name} isn&apos;t responding</span>
           <p style={T.body}>{phase.message}</p>
           <TestAgain onTest={onTest} />
+          <SwitchProvider onClick={onSwitchProvider} />
         </>
       )
 

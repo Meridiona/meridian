@@ -1,17 +1,31 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// Settings → Capture & Privacy. Work Hours — the scheduled capture
+// Settings → Capture & Privacy. Also the home of the "Start Meridian
+// automatically" switch (`autostart_enabled`) — see the comment above that card
+// for why it cannot live in the hidden Advanced tab, and why it is now the only
+// place autostart can be turned off at all.
+//
+// Work Hours — the scheduled capture
 // auto-pause/resume window, migrated 1:1 from the old SettingsView's "Work
 // Hours" card (manual pause/resume itself lives in the Toolbar's Capturing
 // pill, unchanged — this section is only the SCHEDULE).
 //
-// Also hosts the "Error reporting" consent switch (`error_reporting_enabled`),
-// the off-switch for the redacted, error-only telemetry a packaged install
-// ships to Meridian's central OpenObserve. It was drafted into
-// `AdvancedSection.tsx`, but that tab is hidden — an opt-OUT default with an
-// unreachable off-switch is not consent, so it lives here, next to the other
-// "what leaves my machine" controls. The setup wizard's completion note
-// ("change in Settings", `ui/app/setup/steps.tsx`) points at this switch.
+// Also hosts BOTH "what leaves my machine" consent switches, kept separate on
+// purpose because they govern two different promises:
+//
+//   - "Error reporting" (`error_reporting_enabled`) — the redacted, error-only
+//     telemetry a packaged install ships to Meridian's central OpenObserve, plus
+//     Sentry crash reports. Pseudonymous (Support ID, never the account).
+//   - "Product analytics" (`product_analytics_enabled`) — the daily heartbeat +
+//     per-day count of product ACTIONS sent to PostHog under the account email
+//     (see `meridian_core::usage_rollup` for exactly what is counted; it carries
+//     no captured content).
+//
+// Conflating them would mean turning off crash reports silently kills usage
+// reporting too, and vice versa. Both were drafted into `AdvancedSection.tsx`,
+// but that tab is hidden — an opt-OUT default with an unreachable off-switch is
+// not consent, so they live here. The setup wizard's completion note
+// ("change in Settings", `ui/app/setup/steps.tsx`) points at these switches.
 
 'use client'
 
@@ -31,6 +45,8 @@ export function CaptureSection({ settings, patch, save }: {
   const [streamingStatus, setStreamingStatus] = useState<SaveStatus>('idle')
   const [secondaryMonitorsStatus, setSecondaryMonitorsStatus] = useState<SaveStatus>('idle')
   const [errorReportingStatus, setErrorReportingStatus] = useState<SaveStatus>('idle')
+  const [productAnalyticsStatus, setProductAnalyticsStatus] = useState<SaveStatus>('idle')
+  const [autostartStatus, setAutostartStatus] = useState<SaveStatus>('idle')
 
   return (
     <div className="max-w-[640px] flex flex-col gap-5">
@@ -42,6 +58,24 @@ export function CaptureSection({ settings, patch, save }: {
           approve a work log.
         </p>
       </div>
+
+      {/* Startup. Lives here rather than in the hidden AdvancedSection for the
+          same reason the two consent switches do: an opt-OUT default whose
+          off-switch is unreachable is not a choice. It is also the ONLY place
+          this can be turned off now - the tray verifies and repairs its OS login
+          job on every launch (see tray/src-tauri/src/autostart.rs), so switching
+          the login item off in macOS System Settings no longer sticks. Writing
+          this key registers or removes that job immediately. */}
+      <SectionCard>
+        <SectionHeader>Startup</SectionHeader>
+        <FieldRow label="Start Meridian automatically" description="On by default: Meridian starts in your menu bar when you sign in, and again at 9am if you quit it. It opens quietly in the background - no window, nothing to dismiss. Meridian only records your work while it is running, so turning this off means days you forget to open it are not tracked.">
+          <Switch checked={settings.autostart_enabled} onCheckedChange={v => patch({ autostart_enabled: v })} />
+        </FieldRow>
+        <SaveButton
+          status={autostartStatus}
+          onClick={() => save({ autostart_enabled: settings.autostart_enabled }, setAutostartStatus)}
+        />
+      </SectionCard>
 
       <SectionCard>
         <SectionHeader>Work hours</SectionHeader>
@@ -113,6 +147,19 @@ export function CaptureSection({ settings, patch, save }: {
           onClick={() => save({
             error_reporting_enabled: settings.error_reporting_enabled,
           }, setErrorReportingStatus)}
+        />
+      </SectionCard>
+
+      <SectionCard>
+        <SectionHeader>Product analytics</SectionHeader>
+        <FieldRow label="Send usage stats" description="Once a day Meridian sends a count of what it did for you - tickets updated, plans confirmed, summaries written, notifications delivered - plus a health snapshot: whether the daemon and your AI provider are working, which trackers are connected and syncing, and your notification and error-reporting settings. It's counts and status only: never your screen activity, window titles, ticket names, or anything you wrote. Sent under your account email. On by default; turn it off here any time.">
+          <Switch checked={settings.product_analytics_enabled} onCheckedChange={v => patch({ product_analytics_enabled: v })} />
+        </FieldRow>
+        <SaveButton
+          status={productAnalyticsStatus}
+          onClick={() => save({
+            product_analytics_enabled: settings.product_analytics_enabled,
+          }, setProductAnalyticsStatus)}
         />
       </SectionCard>
     </div>

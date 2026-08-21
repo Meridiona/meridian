@@ -65,6 +65,7 @@ pub(crate) fn workstream_request(
         schema: Some(prompts::workstream_schema()),
         max_tokens: WORKSTREAM_MAX_TOKENS,
         label: format!("workstream {hour_label}"),
+        interactive: false,
     }
 }
 

@@ -46,6 +46,26 @@ tauri-plugin-positioner = { version = "2.3", features = ["tray-icon"] }
 # (interactive toasts are packaged-only, same class of limitation as the
 # popover-404 dev caveat).
 tauri-plugin-notifications = { version = "=0.4.6", default-features = false }
+# Single instance. LOAD-BEARING for autostart correctness, not a nicety.
+#
+# The 09:00 morning trigger (`autostart::macos` / `autostart::windows`) starts the
+# tray from the OS scheduler, and neither scheduler can see "the app is already
+# running": launchd tracks liveness per JOB LABEL, so the process macOS's
+# loginwindow started via SMAppService is invisible to our calendar job, and Task
+# Scheduler's `MultipleInstancesPolicy: IgnoreNew` only dedupes the task's own
+# instances. Without this plugin the trigger would fire daily into a running app
+# and produce two processes writing one meridian.db - the double-writer condition
+# behind the `database disk image is malformed` incidents.
+#
+# Both platform impls do exactly what is needed: the SECOND process exits.
+# macOS uses a Unix socket (`/tmp/<identifier>_si.sock`) and `std::process::exit(0)`;
+# Windows uses a named mutex plus `WM_COPYDATA` to a hidden tool window, then
+# `cleanup_before_exit()` + exit. Neither disturbs the running instance.
+#
+# MUST be registered FIRST in lib.rs's builder (upstream requirement) - that is
+# also what keeps the doomed second process from ever creating a tray icon or a
+# capture writer before it exits.
+tauri-plugin-single-instance = "2"
 tauri-plugin-opener = "2"
 # Email sign-in on the setup wizard's Sign-in step (see ui/app/setup/signin.tsx).
 # Community-maintained (Nipsuli/tauri-plugin-clerk) — originally pinned exact
@@ -79,10 +99,13 @@ tauri-plugin-store = "=2.4.3"
 # native-tls. This is the DMG path; npm installs still update via `meridian
 # update` in a Terminal (commands::run_update) — the two are independent.
 tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls"] }
-# Launch-at-login: registers a macOS LaunchAgent (matches the daemon's own
-# LaunchAgent approach, see backend_install.rs) or a Windows Run-key entry
-# pointing at the installed .app/exe. See `autostart.rs`.
-tauri-plugin-autostart = "2"
+# NOTE: `tauri-plugin-autostart` was REMOVED, not upgraded away. It could only
+# write `RunAtLoad` (verified against auto-launch's macOS impl), so it had no way
+# to express the morning relaunch the product needs, and it named its plist after
+# `productName` instead of `com.meridiona.*`, which is why uninstall never swept
+# the login item up. `autostart.rs` owns the LaunchAgent / scheduled task now,
+# with no new dependency — it reuses backend_install's launchctl + schtasks
+# shell-outs.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Minimum-supported-version comparison for mandatory updates (update.rs);
@@ -107,6 +130,13 @@ keyring = { version = "3", features = ["apple-native", "windows-native"] }
 rand = "0.8"
 hex = "0.4"
 chrono = { version = "0.4", features = ["clock"] }
+# Per-process CPU/RSS sampling for `analytics::perf`. Pinned to the 0.29 line
+# ON PURPOSE: the screenpipe fork already pulls sysinfo 0.29.11 in
+# transitively, so matching it keeps ONE copy in the tree. Taking a newer
+# major here would build a second, duplicate sysinfo and its platform FFI
+# alongside the fork's — the same shape as the notifications-plugin link flake.
+# Check `cargo tree -p meridian-tray -i sysinfo` before changing this.
+sysinfo = { version = "0.29", default-features = false }
 # Anonymous per-install id for product analytics (analytics.rs) — already in
 # the workspace lockfile transitively, so this adds no new crate to the tree.
 uuid = { version = "1", features = ["v4"] }
@@ -200,7 +230,18 @@ block2 = "0.6"
 # Typed NSWorkspace/NSImage/NSBitmapImageRep bindings for real per-app icon
 # extraction (commands/app_icons.rs) — same generation family as objc2 0.6.
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSRunningApplication"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSData", "NSDictionary", "NSGeometry"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSData", "NSDictionary", "NSGeometry", "NSProcessInfo", "NSError"] }
+# SMAppService — the sanctioned way to register a login item since macOS 13, and
+# the only one that puts a NAMED, user-togglable "Meridian" entry in System
+# Settings → General → Login Items & Extensions. Same objc2 generation (0.3.x)
+# as the app-kit/foundation bindings above, from the same maintainers, so it adds
+# no new FFI style and no new transitive tree — which is why this is preferred
+# over the third-party `smappservice-rs` wrapper (0.1.x, last touched May 2025).
+#
+# Requires macOS 13 at RUNTIME while the app declares LSMinimumSystemVersion
+# 10.13, so every call site is gated on `login_item::available()`. See
+# `autostart/login_item.rs`.
+objc2-service-management = { version = "0.3", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation"] }
 # CoreFoundation/Apple-frameworks bindings. Used ONLY for the in-process
 # Accessibility-trust prompt (`ax::is_process_trusted_with_prompt`) — the AX
 # analogue of `CGRequestScreenCaptureAccess`. Pinned to the same 0.13 line

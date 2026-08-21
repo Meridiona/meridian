@@ -47,6 +47,40 @@ use crate::coding_agent_session_ingest::summariser::run_capture;
 
 use super::{LlmBackend, LlmConfig, LlmError, LlmOutput, LlmProvider, PromptRequest};
 
+/// How long `claude auth status --json` may take — a local credential read, no network round
+/// trip; measured ~0.2s live. Generous ceiling, not a real budget.
+const LOGIN_STATUS_TIMEOUT_S: u64 = 8;
+
+/// Ternary read of `claude auth status --json`'s `loggedIn` field. `Some(true)`/`Some(false)`
+/// are authoritative; `None` means the check itself failed (spawn error, timeout, malformed
+/// output) and must not be trusted either way — see [`super::detect::interactive_login`],
+/// the sole caller: it uses this to confirm an interactive sign-in actually took even when
+/// the spawned `claude auth login` process itself timed out or exited non-zero.
+///
+/// The JSON body also carries the account email/org (`email`, `orgName`) — callers must log
+/// only the boolean this returns, never the raw response.
+pub(crate) async fn login_status_signed_in(meridian_home: &std::path::Path) -> Option<bool> {
+    let cap = run_capture(
+        "claude",
+        &["auth".into(), "status".into(), "--json".into()],
+        "",
+        meridian_home,
+        LOGIN_STATUS_TIMEOUT_S,
+        &[],
+        &[],
+    )
+    .await
+    .ok()?;
+    parse_logged_in(&cap.stdout)
+}
+
+/// The pure parse [`login_status_signed_in`] applies to the captured stdout — split out so
+/// it is unit-testable without spawning a process.
+fn parse_logged_in(stdout: &str) -> Option<bool> {
+    let v: Value = serde_json::from_str(stdout.trim()).ok()?;
+    v.get("loggedIn").and_then(Value::as_bool)
+}
+
 /// The full prompt sent over stdin — see the module doc. `req.user`, when present, follows
 /// `req.system` after a blank line (the same shape [`crate::llm::cursor`]'s `build_prompt`
 /// already uses for its combined single-channel prompt).
@@ -239,6 +273,28 @@ impl LlmBackend for ClaudeBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Verbatim shape of a live `claude auth status --json` response (signed in).
+    #[test]
+    fn parse_logged_in_reads_a_real_signed_in_response() {
+        let body = r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty",
+            "email":"user@example.com","orgId":"x","orgName":"x's Organization","subscriptionType":"max"}"#;
+        assert_eq!(parse_logged_in(body), Some(true));
+    }
+
+    #[test]
+    fn parse_logged_in_reads_a_signed_out_response() {
+        assert_eq!(parse_logged_in(r#"{"loggedIn":false}"#), Some(false));
+    }
+
+    /// Malformed/empty output (a crash, an incompatible future CLI version) must be
+    /// inconclusive, never misread as either extreme.
+    #[test]
+    fn parse_logged_in_is_none_on_malformed_output() {
+        assert_eq!(parse_logged_in(""), None);
+        assert_eq!(parse_logged_in("not json"), None);
+        assert_eq!(parse_logged_in("{}"), None);
+    }
 
     /// The regression this exists for: `req.user` used to be piped over stdin ALONGSIDE a
     /// positional `-p <req.system>` argv value — but `claude -p` silently discards piped

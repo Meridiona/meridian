@@ -56,8 +56,11 @@ pub mod capture;
 /// on a console-subsystem child spawn. No-op on every other OS.
 pub mod proc_ext;
 
-/// Bounded linear-backoff retry for transient Windows file-sharing violations,
-/// shared by the tray's backend install and this crate's encrypt-in-place swap.
+/// Bounded linear-backoff retry for transient failures. Originated for
+/// Windows file-sharing violations (the tray's backend install, this crate's
+/// encrypt-in-place swap); also backs the tray's same-boot database-repair
+/// retry (`repair_boot::retry_repair`), where the failure it absorbs is
+/// unconfirmed rather than proven — see that call site's own doc.
 pub mod retry;
 
 /// Raise the process file-descriptor soft limit. Lives here rather than in
@@ -79,8 +82,8 @@ pub use util::{date, hygiene, intervals, llm_capacity, paths};
 pub use readers::{
     active, board, capture_apps, coding_agents, current_task, day_evidence, day_summaries,
     day_task_corrections, day_task_worklogs, day_tasks, hour_status, hour_text, integrations,
-    llm_experiments, notices, plan, proposed, task_create, task_detail, tasks, today, triage, week,
-    worklogs,
+    llm_experiments, notices, plan, proposed, task_create, task_detail, tasks, today, triage,
+    usage_rollup, week, worklogs,
 };
 
 pub use canonical_task::{CanonicalTask, PersonRef, Priority, Provider, StatusCategory, TaskKind};

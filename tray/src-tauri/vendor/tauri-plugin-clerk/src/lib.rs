@@ -33,6 +33,36 @@
 //! outer-JSON and the post-backfill deserialize failure via `tracing::warn!`
 //! (see `meridian`'s `src/observability/filter.rs::CAPTURE_TARGETS`, which
 //! must include `"tauri_plugin_clerk"` for these to actually ship anywhere).
+//! The post-backfill deserialize error is wrapped in `serde_path_to_error` so
+//! the WARN log carries a JSON pointer to the exact failing field (e.g.
+//! `payload.session.status`) — added after a second, distinct instance of
+//! this same class of bug (`ClientSession.status` arriving `null`; see
+//! [`json_backfill::backfill_clerk_client_json`]'s doc) needed a raw-OTLP-spool
+//! read in production, with nothing but a bare `serde_json::Error` Display, to
+//! pin down which field it was.
+//!
+//! # Third incident (2026-08-20): the JSON pointer earned its keep
+//! The first two fixes did not end this. On 2026-08-20 a machine whose user
+//! WAS signed in logged this same WARN twice every ~44 seconds, with
+//! `path = payload.client.sign_in.status` and
+//! `error = invalid type: null, expected string or map`. So `set_client` had
+//! still never run, the offline cache was still empty, and session persistence
+//! had been broken the whole time the previous fix looked successful.
+//!
+//! Two lessons are worth more than the one-line fix:
+//!
+//! 1. **The `serde_path_to_error` pointer turned a spool dig into a grep.**
+//!    Diagnosing incident two needed raw-OTLP archaeology. This one was named
+//!    outright in the log line. Keep that wrapper.
+//! 2. **Hand-written "realistic" test fixtures hid the bugs.** The pre-existing
+//!    `sign_up`/`sign_in` fixtures were described as guest-js-shaped but had
+//!    been written from the model's requirements rather than transcribed from
+//!    the serializer, so they supplied fields guest-js never sends
+//!    (`abandon_at`, `password_enabled`, `custom_action`, `external_id`, a
+//!    populated `verifications`) and round-tripped cleanly. Transcribing the
+//!    real serializer exposed five more defects at once — see
+//!    `json_backfill`'s `idealized_sign_up_json` doc. **Copy the serializer;
+//!    do not describe it.**
 //!
 //! # Un-vendoring
 //! Once upstream releases a version with #9 (or an equivalent fix) merged,
@@ -157,7 +187,13 @@ impl<R: Runtime, T: Manager<R>> crate::ClerkExt<R> for T {
                     }
                 };
                 backfill_clerk_client_json(&mut value);
-                let payload = match serde_json::from_value::<ClerkAuthEvent>(value) {
+                // serde_path_to_error rather than a bare serde_json::from_value:
+                // a bare error's Display carries no field path, which is why
+                // the null-session-status bug (fixed alongside this) needed a
+                // raw-spool archaeology dig in production to pin down. `path`
+                // is a JSON pointer (e.g. `payload.session.status`), never a
+                // value, so it's safe to log at WARN.
+                let payload: ClerkAuthEvent = match serde_path_to_error::deserialize(&value) {
                     Ok(payload) => payload,
                     Err(e) => {
                         // If this fires, a Clerk client shape appeared that
@@ -165,7 +201,8 @@ impl<R: Runtime, T: Manager<R>> crate::ClerkExt<R> for T {
                         // extend it (see json_backfill's tests for the
                         // pattern) rather than re-swallowing the error.
                         tracing::warn!(
-                            error = %e,
+                            error = %e.inner(),
+                            path = %e.path(),
                             "clerk: auth event JSON still failed to deserialize after field \
                              backfill — the offline session cache will not reflect this \
                              sign-in, so a cold start without network will show signed-out"

@@ -229,6 +229,11 @@ export default function MeridianTimelineShell() {
         case '/tasks?integrations=1':
           openSettings('integrations')
           break
+        // Where a discontinued free preset (Groq) points its users to add a
+        // replacement (Ollama) - see `llm.groq_deprecated`.
+        case '/settings/intelligence':
+          openSettings('intelligence')
+          break
         // There is no in-app log viewer. What a user can actually do about a
         // fault is quote their Support ID and export diagnostics, both of which
         // live in Account. `/health` is an older spelling of the same intent.
@@ -241,7 +246,18 @@ export default function MeridianTimelineShell() {
           setActiveModal(null)
       }
     }
-    return subscribe<string | null>('/deep-link', 'take_pending_deep_link', 'dashboard-navigate', navigate)
+    // Same-window source: a persistent banner's own click-through (`NoticeBar.tsx`'s
+    // deep_link button). Unlike the tray-pushed half below, the window is already open and
+    // the user is already looking at it, so this is a plain same-page event rather than a
+    // round trip through the tray - but it reuses the identical `navigate` switch, so a
+    // banner's deep_link resolves exactly the way the matching toast's [View] button would.
+    const onBannerNavigate = (e: Event) => navigate((e as CustomEvent<string>).detail)
+    window.addEventListener('meridian:navigate', onBannerNavigate)
+    const unsubscribe = subscribe<string | null>('/deep-link', 'take_pending_deep_link', 'dashboard-navigate', navigate)
+    return () => {
+      window.removeEventListener('meridian:navigate', onBannerNavigate)
+      unsubscribe()
+    }
   }, [])
 
   // Changing day resets the selected hour (its detail no longer applies).

@@ -252,6 +252,39 @@ pub struct RuntimeSettings {
     // unaffected either way. Existing settings.json files without this key load
     // as `true` via the struct-level `#[serde(default)]`.
     pub error_reporting_enabled: bool,
+    // Whether the tray sends PRODUCT analytics (the `app_active` heartbeat and
+    // the `daily_usage` rollup) to PostHog. Deliberately SEPARATE from
+    // `error_reporting_enabled`: that governs the redacted, error-only crash /
+    // WARN+ stream to our own OpenObserve and Sentry, which is pseudonymous.
+    // This one governs a stream that is identified by the user's account email
+    // and describes how they use the product. Conflating the two would mean a
+    // user turning off crash reports silently loses all usage reporting, and
+    // vice versa — two different promises, two different switches.
+    //
+    // Counts product ACTIONS only (tickets updated, plan confirmed,
+    // notifications delivered — see `crate::usage_rollup`), never captured
+    // content. Default `true`: opt-OUT, matching `error_reporting_enabled`,
+    // and the hard `MERIDIAN_TELEMETRY_DISABLED` kill switch stops this too.
+    // Existing settings.json files without this key load as `true` via the
+    // struct-level `#[serde(default)]`.
+    pub product_analytics_enabled: bool,
+    // Whether Meridian starts itself at login and again each morning if it was
+    // quit (`tray/src-tauri/src/autostart.rs`). Default `true`, opt-OUT — and
+    // for this switch that default is not a preference so much as a
+    // precondition: capture runs in-process in the tray, so a tray that is not
+    // running records nothing at all.
+    //
+    // It exists because the tray now VERIFIES AND REPAIRS its registration on
+    // every launch, which it has to (the old register-once marker silently
+    // diverged from reality and left installs permanently unable to start). The
+    // side effect is that turning the login item off in the OS's own settings no
+    // longer sticks — the next launch would put it back. This is therefore the
+    // one place a deliberate "no" can be recorded, and `autostart.rs` checks it
+    // before writing anything.
+    //
+    // Existing settings.json files without this key load as `true` via the
+    // struct-level `#[serde(default)]`.
+    pub autostart_enabled: bool,
     // Notification preferences — a master switch + quiet hours. Read by
     // [`crate::notifications`] to decide whether an event may surface;
     // every event type is gated ONLY by these two (no per-category toggles —
@@ -316,7 +349,7 @@ pub struct RuntimeSettings {
     // ID/shipped `host.name` per-USER instead of per-machine, so support can
     // trace one alpha tester's errors across their Mac and Windows boxes.
     // Only takes effect before `redact::ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`
-    // (2026-08-28) — a hardcoded date, checked against the wall clock, is the
+    // (2026-12-31) — a hardcoded date, checked against the wall clock, is the
     // revert here since channel can't distinguish alpha testers from anyone
     // else on the same build. `None` (not signed in, or past the expiry)
     // falls back to the pre-existing per-machine hardware-UUID pseudonym.
@@ -335,6 +368,14 @@ pub struct RuntimeSettings {
     // time-gated at write time. `None` = signed out (or never signed in).
     #[serde(default)]
     pub account_email: Option<String>,
+    // The free-text tool name a user typed into `ConnectTrackers`' "I don't
+    // see my tool" row (`tray/src-tauri/src/commands/pm_tool_request.rs`).
+    // Local mirror of the same value a `pm_tool_requested` PostHog event
+    // carries, kept here too so it survives even when product analytics is
+    // off (see [`Self::product_analytics_enabled`]). Last request wins — this
+    // is a demand signal, not a queue, so only the most recent ask matters.
+    #[serde(default)]
+    pub requested_pm_tool: Option<String>,
 }
 
 /// Default surface palette when `settings.json` predates the `theme` key. Must
@@ -369,6 +410,13 @@ impl Default for RuntimeSettings {
             // Error reporting is opt-OUT: on by default (packaged installs only;
             // redacted + error-only). Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
             error_reporting_enabled: true,
+            // Product analytics is opt-OUT too, and separately switchable from
+            // error reporting. Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
+            product_analytics_enabled: true,
+            // Autostart on by default - the tray is what captures, so an install
+            // that does not come back after a reboot records nothing. Must match
+            // SETTINGS_DEFAULTS in ui/lib/settings.ts.
+            autostart_enabled: true,
             // Notifications on by default; quiet hours off (22:00–08:00 when
             // enabled). Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
             notifications_enabled: true,
@@ -397,6 +445,8 @@ impl Default for RuntimeSettings {
             // Signed out (or never signed in) until the tray says otherwise.
             account_pseudonym: None,
             account_email: None,
+            // Nobody has asked for an unsupported tool by default.
+            requested_pm_tool: None,
         }
     }
 }
@@ -795,6 +845,39 @@ mod tests {
             None,
             "and the resolver degrades it to the default"
         );
+
+        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `requested_pm_tool` defaults to `None` on a settings.json that predates
+    /// it, and round-trips through `read_settings_value`/`write_settings_value`
+    /// (the pattern `commands/pm_tool_request.rs` writes through) once set.
+    #[test]
+    fn requested_pm_tool_defaults_none_and_round_trips() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "meridian-settings-pmtool-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        with_settings_path(&path);
+
+        std::fs::write(&path, r#"{"log_level":"DEBUG"}"#).unwrap();
+        let s = load_runtime_settings();
+        assert_eq!(
+            s.requested_pm_tool, None,
+            "predates the field — must default"
+        );
+
+        let mut v = read_settings_value();
+        v["requested_pm_tool"] = json!("Shortcut");
+        write_settings_value(&v).unwrap();
+
+        let s = load_runtime_settings();
+        assert_eq!(s.requested_pm_tool, Some("Shortcut".to_string()));
 
         std::env::remove_var("MERIDIAN_SETTINGS_PATH");
         let _ = std::fs::remove_dir_all(&dir);

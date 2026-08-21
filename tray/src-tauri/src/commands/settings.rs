@@ -115,9 +115,6 @@ pub async fn update_settings(
     app_state: State<'_, Arc<Mutex<AppState>>>,
     body: Value,
 ) -> Result<Value, String> {
-    // `pool` is unused (settings live in a file, not the DB) but kept in the
-    // signature for a uniform command shape; touch it so it isn't a dead param.
-    let _ = pool;
     let Some(body_obj) = body.as_object() else {
         return Err("settings body must be an object".to_string());
     };
@@ -210,6 +207,29 @@ pub async fn update_settings(
     // provider health alone and shouldn't pay for a health check.
     if body_obj.contains_key("llm_provider") || body_obj.contains_key("llm_provider_custom_id") {
         crate::commands::health::push_health_update(&app).await;
+
+        // Same fix, for the SAME reason, applied to `llm.groq_deprecated` - the daemon's poll
+        // tick (`main.rs`) calls the identical `sync_groq_deprecated_notice`, so switching
+        // away from Groq here and there converge on the same answer; this just stops the
+        // banner from sitting stale for up to a minute after the switch already took effect.
+        if let Some(p) = pool.as_ref() {
+            let vendor = meridian_core::settings::load_runtime_settings()
+                .active_custom_provider()
+                .map(|c| c.vendor.clone());
+            meridian::notices::sync_groq_deprecated_notice(p, vendor.as_deref()).await;
+            crate::commands::notices::push_notices_update(&app, p).await;
+        }
+    }
+
+    // Autostart has to be applied to the OS, not just recorded. Turning it ON
+    // registers the login/morning job now rather than at the next launch;
+    // turning it OFF actively removes it, because the job already on disk is
+    // what the OS acts on - `autostart::ensure_registered` merely declining to
+    // write it would leave the user's "no" ignored until they uninstalled.
+    // Bundled-only, matching where the registration exists at all.
+    if body_obj.contains_key("autostart_enabled") && crate::sys::is_bundled() {
+        let enabled = meridian_core::settings::load_runtime_settings().autostart_enabled;
+        crate::autostart::apply_setting_change(enabled).await;
     }
 
     redact_password(&mut updated);

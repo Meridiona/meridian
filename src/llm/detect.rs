@@ -40,7 +40,10 @@ use meridian_core::LlmProvider;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
-use super::{resolver::backend_for, LlmConfig, LlmError, PromptRequest};
+use super::{
+    resolver::{backend_for, provider_key},
+    LlmConfig, LlmError, LlmOutput, PromptRequest,
+};
 
 /// How long a probe may take before we call it absent. A login shell sources the user's
 /// profile, which can be slow (nvm, rbenv, …), but not this slow.
@@ -258,9 +261,10 @@ fn provider_display_name(p: LlmProvider) -> &'static str {
 /// summary cadence it guards.
 const IN_USE_HEALTH_TTL: Duration = Duration::from_secs(300);
 
-/// Cache of the last computed provider health: `(provider wire id, computed_at, result)`. Keyed
-/// by the provider id so switching the selected provider invalidates it immediately rather than
-/// serving the previous provider's verdict for up to a TTL.
+/// Cache of the last computed provider health: `(provider_key, computed_at, result)`. Keyed by
+/// [`provider_key`] - NOT the bare `llm_provider` wire string - so switching the selected
+/// provider (including switching which specific custom endpoint is active) invalidates it
+/// immediately rather than serving the previous one's verdict for up to a TTL.
 #[allow(clippy::type_complexity)]
 static IN_USE_HEALTH_CACHE: std::sync::OnceLock<
     std::sync::Mutex<Option<(String, Instant, InUseProviderHealth)>>,
@@ -273,14 +277,22 @@ static IN_USE_HEALTH_CACHE: std::sync::OnceLock<
 /// unavailable → rate-limited → fine decision.
 #[tracing::instrument(skip(settings), fields(provider = %settings.llm_provider))]
 pub async fn in_use_provider_health(settings: &RuntimeSettings) -> InUseProviderHealth {
+    // `provider_key`, not the bare `settings.llm_provider` string: two custom endpoints both
+    // read as `"custom"` there, so switching between them used to serve THE PREVIOUS
+    // endpoint's cached verdict for up to `IN_USE_HEALTH_TTL` - the comment below used to
+    // claim this cache "invalidates immediately" on a switch, which was true for switching
+    // provider KIND but not for switching which custom endpoint, until this key change.
+    let key = LlmProvider::from_wire(&settings.llm_provider)
+        .map(|p| provider_key(p, settings.active_custom_provider().map(|c| c.id.as_str())))
+        .unwrap_or_else(|| settings.llm_provider.clone());
     // Serve a fresh-enough cached result for the SAME provider.
     {
         let guard = IN_USE_HEALTH_CACHE
             .get_or_init(Default::default)
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if let Some((provider, at, health)) = guard.as_ref() {
-            if provider == &settings.llm_provider && at.elapsed() < IN_USE_HEALTH_TTL {
+        if let Some((cached_key, at, health)) = guard.as_ref() {
+            if cached_key == &key && at.elapsed() < IN_USE_HEALTH_TTL {
                 tracing::debug!(cache = "hit", age_ms = at.elapsed().as_millis() as u64);
                 return health.clone();
             }
@@ -317,11 +329,7 @@ pub async fn in_use_provider_health(settings: &RuntimeSettings) -> InUseProvider
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    *guard = Some((
-        settings.llm_provider.clone(),
-        Instant::now(),
-        health.clone(),
-    ));
+    *guard = Some((key, Instant::now(), health.clone()));
     health
 }
 
@@ -342,13 +350,20 @@ async fn compute_in_use_provider_health(settings: &RuntimeSettings) -> InUseProv
         };
     };
     let name = provider_display_name(provider).to_string();
+    // The SAME key `test_provider`/`resolver::complete_inner` file their results under - see
+    // `provider_key`'s docs for why the bare `provider.as_str()` (`"custom"` for every cloud
+    // endpoint alike) was the wrong lookup here.
+    let key = provider_key(
+        provider,
+        settings.active_custom_provider().map(|c| c.id.as_str()),
+    );
     // Two independent signals: the last MANUAL Settings → Test, and what the pipeline last
     // observed on a real call. The manual test alone can't see a provider that passed an hour
     // ago and is failing every call since — the state that stalls the worklog pipeline — so
     // the fresher of the two wins (see `runtime_health::most_recent_outcome`).
     let cache = load_test_cache();
-    let last_test = cache.get(provider.as_str());
-    let last_runtime = super::runtime_health::latest_for(provider);
+    let last_test = cache.get(&key);
+    let last_runtime = super::runtime_health::latest_for(&key);
     let last_outcome = super::runtime_health::most_recent_outcome(last_test, last_runtime.as_ref());
     // A cloud endpoint (`Custom`, `cli_name() == None`) has no binary to probe, so it's treated
     // as "installed" here — only its last test can tell us anything.
@@ -523,12 +538,46 @@ pub struct ProviderTestResult {
 /// failed once could never be re-tested, so the failure that closed the gate would also be
 /// the thing preventing it from ever reopening. It would look like a provider that can
 /// never be reconnected, with a Test button that fails instantly for no visible reason.
+/// Whether testing `provider` must refuse outright because it resolves to the discontinued
+/// Groq endpoint — pulled out of [`test_provider`] as a pure fn so this is unit-testable
+/// without spawning a real CLI.
+///
+/// Gated on `provider == Custom`: `settings.active_custom_provider()` reads the GLOBALLY
+/// selected endpoint, not the one `provider` names. [`super::resolver::complete_inner`] gets
+/// away with the same lookup because it only ever tests the currently-selected provider, but
+/// this fn is parameterized so the UI can test any tile regardless of what's active - without
+/// this guard, testing Claude/Codex/Cursor/Copilot while a Groq endpoint happened to be the
+/// active provider would incorrectly refuse THAT test too.
+fn groq_refusal_for(provider: LlmProvider, settings: &RuntimeSettings) -> Option<LlmError> {
+    if provider != LlmProvider::Custom {
+        return None;
+    }
+    super::resolver::groq_blocked(settings.active_custom_provider().map(|c| c.vendor.as_str()))
+}
+
 pub async fn test_provider(
     provider: LlmProvider,
     settings: &RuntimeSettings,
 ) -> ProviderTestResult {
-    let id = provider.as_str().to_string();
+    // `provider_key`, NOT the bare wire id: for `Custom` that would be the literal string
+    // `"custom"`, which every configured cloud endpoint shares regardless of which one is
+    // actually active - two endpoints' test results would overwrite each other in
+    // `provider_test_cache.json` every time the user switched between them. Keying by the
+    // ACTIVE endpoint's own id is what let a real user see Groq's old rate-limit message
+    // rendered on Ollama's card after switching to it.
+    let id = provider_key(
+        provider,
+        settings.active_custom_provider().map(|c| c.id.as_str()),
+    );
     let t0 = Instant::now();
+
+    // Same unconditional refusal `complete_inner` applies to real calls — a manual "Test
+    // Connection" must never report Groq healthy while the production funnel silently
+    // refuses every call to it; that contradiction is exactly what let a stale verdict from
+    // one code path outlive the truth in the other.
+    if let Some(refusal) = groq_refusal_for(provider, settings) {
+        return finish_test(id, classify_test_outcome(Err(refusal)), t0);
+    }
 
     let mut cfg = LlmConfig::from_settings(settings);
     cfg.cli_timeout_s = PROBE_TIMEOUT_S;
@@ -543,16 +592,76 @@ pub async fn test_provider(
         schema: None,
         max_tokens: PROBE_MAX_TOKENS,
         label: format!("provider-test {id}"),
+        interactive: false,
     };
 
-    let outcome = match backend_for(provider, cfg).complete(&req).await {
-        Ok(_) => ProviderTestOutcome::Ok,
-        Err(LlmError::RateLimited { message: m, .. }) => {
-            ProviderTestOutcome::RateLimited { message: m }
-        }
-        Err(LlmError::Failed(m)) => ProviderTestOutcome::Failed { message: m },
-    };
+    let backend = backend_for(provider, cfg);
+    let outcome = probe_with_retry(&id, || backend.complete(&req)).await;
     finish_test(id, outcome, t0)
+}
+
+/// `backend.complete()`'s result, sorted into the three outcomes a test/probe reports.
+fn classify_test_outcome(result: Result<LlmOutput, LlmError>) -> ProviderTestOutcome {
+    match result {
+        Ok(_) => ProviderTestOutcome::Ok,
+        Err(LlmError::RateLimited { message, .. }) => ProviderTestOutcome::RateLimited { message },
+        Err(LlmError::Failed(message)) => ProviderTestOutcome::Failed { message },
+    }
+}
+
+/// Was this failure a plain "the CLI took too long to answer" rather than a genuine error?
+///
+/// All four CLI backends' timeouts share this exact wording — `run_capture`'s
+/// `SummariserError::Failed(format!("{program} timed out after {timeout_s}s"))`, mapped
+/// straight through by each backend's `from_summariser_error`. A custom HTTP endpoint's
+/// timeout text varies by `reqwest` version and simply won't match this, which is the safe
+/// default (no retry) rather than a false one.
+fn looks_like_a_probe_timeout(msg: &str) -> bool {
+    msg.to_lowercase().contains("timed out")
+}
+
+/// Run one connectivity-test completion, retrying exactly once if — and only if — the
+/// failure was a plain timeout.
+///
+/// # Why this exists
+///
+/// [`PROBE_TIMEOUT_S`] is deliberately tight (20s — see its own doc), which is right for
+/// catching a genuinely broken spawn path fast. It is also exactly the kind of budget a
+/// one-off cold start can miss for reasons that have nothing to do with whether the
+/// provider actually works: Windows AV/EDR scanning a vendor CLI binary the first time it
+/// runs in a while, a first-call JIT/interpreter warm-up, a transient network blip. Without
+/// a retry, ONE such miss is enough to persist a `Failed` result that then drives
+/// `in_use_provider_health` into "provider unavailable, nothing being recorded" — including
+/// right after a successful interactive sign-in, whose silent confirmation call
+/// (`useLlmProviderDetection.ts`'s `signIn`) IS this exact probe. A user who just proved
+/// their subscription works watched the app declare it broken on the strength of one slow
+/// answer. (github.com/Meridiona/meridian/issues/805)
+///
+/// Bounded to one retry, and ONLY for a timeout-shaped failure — a rate limit or a genuine
+/// error (not signed in, bad model, …) is reported immediately, matching the "never retry a
+/// rate limit" rule already followed elsewhere (`cursor_cli::run_hardened`).
+///
+/// Generic over the completion so the retry logic is testable without spawning a real
+/// vendor CLI — see this module's tests.
+async fn probe_with_retry<F, Fut>(id: &str, mut complete: F) -> ProviderTestOutcome
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<LlmOutput, LlmError>>,
+{
+    let outcome = classify_test_outcome(complete().await);
+    match &outcome {
+        ProviderTestOutcome::Failed { message } if looks_like_a_probe_timeout(message) => {
+            // No `message` field - it's the CLI's own timeout text, and WARN is the level
+            // that leaves a packaged install. `looks_like_a_probe_timeout` already pins the
+            // shape this matched, so the classification itself is the useful signal.
+            tracing::warn!(
+                provider = %id,
+                "llm: connectivity probe timed out - retrying once before reporting failure"
+            );
+            classify_test_outcome(complete().await)
+        }
+        _ => outcome,
+    }
 }
 
 fn finish_test(id: String, outcome: ProviderTestOutcome, t0: Instant) -> ProviderTestResult {
@@ -711,8 +820,9 @@ async fn resolve_installer_binary(cmd: &str) -> String {
 
 /// Build a `Command` for `path`, a CLI already located via [`resolve_cli`], with `path`'s own
 /// directory prepended onto the child's `PATH` — same fix as [`resolve_installer_binary`],
-/// applied to the sign-in flows ([`cursor_sign_in`]/[`codex_sign_in`]/[`claude_sign_in`]),
-/// which spawn the resolved binary directly rather than through a shell.
+/// applied to the sign-in flows ([`cursor_sign_in`]/[`codex_sign_in`]/[`claude_sign_in`]) AND
+/// to [`crate::coding_agent_session_ingest::summariser::run_capture`], which spawn the
+/// resolved binary directly rather than through a shell.
 ///
 /// Those CLIs are still spawned by ABSOLUTE PATH, so the OS doesn't need `PATH` to find `path`
 /// itself — but `codex`/`claude` (unlike `cursor-agent`, a native binary) are `#!/usr/bin/env
@@ -722,7 +832,16 @@ async fn resolve_installer_binary(cmd: &str) -> String {
 /// `/opt/homebrew/bin` — so that inner lookup fails with "env: node: No such file or
 /// directory" exactly like [`resolve_installer_binary`]'s install-time case, even though the
 /// CLI itself was already found and resolved correctly.
-fn command_for_resolved_cli(path: &std::path::Path) -> Command {
+///
+/// `pub(crate)`: `run_capture` used to build its own bare `Command::new(target)` without this
+/// — which is why a completed `codex login` (via [`interactive_login`], which already called
+/// this) could be followed seconds later by a failed `codex exec` (via `run_capture`, which
+/// didn't): same binary, same shim, but only one spawn path carried a working `PATH`. Observed
+/// live 2026-08-19 (staging build `1.89.0-staging.2`): sign-in traced clean end-to-end, then
+/// the immediate post-sign-in confirmation call failed with `code: Some(127)`, `stderr: "env:
+/// node: No such file or directory"` — which the UI rendered as "not signed in yet",
+/// misdirecting the report as an auth bug rather than a PATH bug.
+pub(crate) fn command_for_resolved_cli(path: &std::path::Path) -> Command {
     let mut cmd = Command::new(path);
     if let Some(dir) = path.parent() {
         let existing = std::env::var_os("PATH").unwrap_or_default();
@@ -742,6 +861,7 @@ fn command_for_resolved_cli(path: &std::path::Path) -> Command {
         provider = provider.as_str(),
         ok = tracing::field::Empty,
         cli_path = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty,
     )
 )]
 pub async fn install_provider(provider: LlmProvider) -> InstallOutcome {
@@ -980,9 +1100,309 @@ async fn warn_if_version_unpinned(provider: LlmProvider, path: &std::path::Path)
     }
 }
 
-/// How long an interactive provider sign-in (Cursor or Codex) may take - a human finishing an
-/// OAuth flow in their browser, so generous, but not unbounded.
+/// How long an interactive provider sign-in (Cursor, Codex or Claude) may take - a human
+/// finishing an OAuth flow in their browser, so generous, but not unbounded.
 const INTERACTIVE_LOGIN_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// How long to let a freshly-spawned login CLI run before the first authoritative status
+/// poll (see [`interactive_login`]) - the local OAuth round-trip legitimately takes a few
+/// seconds even on the happy path, so polling from time zero would just be a wasted extra
+/// process spawn on every sign-in.
+const VERIFY_GRACE_PERIOD: Duration = Duration::from_secs(5);
+
+/// How often to re-poll status once the grace period has elapsed. Short enough that a
+/// browser callback landing early doesn't cost the user the rest of the 180s wait if the
+/// child process itself hangs; long enough that it isn't a second CLI process running
+/// nearly back-to-back with the login itself.
+const VERIFY_POLL_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Spawn a background task that appends each line from `pipe` into a shared buffer, tagged
+/// by `stream` ("stdout"/"stderr") so both streams are distinguishable in traces. Returns
+/// the buffer immediately; empty forever if `pipe` is `None` (nothing to drain).
+///
+/// Draining BOTH streams live (not just via a final `wait_with_output`) is what lets
+/// [`interactive_login`] poll `child.try_wait()` without deadlocking a login CLI that fills
+/// its pipe buffer while we are busy waiting on something else.
+fn drain_lines(
+    pipe: Option<impl tokio::io::AsyncRead + Unpin + Send + 'static>,
+    stream: &'static str,
+) -> std::sync::Arc<std::sync::Mutex<String>> {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    if let Some(out) = pipe {
+        let seen = seen.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut lines = BufReader::new(out).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                // No `line` field - login CLI output carries OAuth verification URLs and
+                // device codes, short-lived credentials with no reason to sit in the local
+                // spool. `buffered_tail` below already retains the buffer itself for the
+                // user-facing message, so the length is all this log needs.
+                tracing::debug!(stream, chars = line.len(), "llm: interactive login output");
+                let mut buf = seen.lock().unwrap_or_else(|e| e.into_inner());
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+        });
+    }
+    seen
+}
+
+/// The last `n` characters buffered by [`drain_lines`], char-safe - see [`tail`].
+fn buffered_tail(buf: &std::sync::Mutex<String>, n: usize) -> String {
+    let s = buf.lock().unwrap_or_else(|e| e.into_inner());
+    tail(&s, n)
+}
+
+/// [`interactive_login`]'s three durations, bundled so a real sign-in and a test can each
+/// supply their own without growing the function's argument count. Production always uses
+/// [`Self::PRODUCTION`]; tests use tiny values so the same race logic exercises in
+/// milliseconds instead of minutes.
+#[derive(Clone, Copy)]
+struct InteractiveLoginTiming {
+    deadline: Duration,
+    grace: Duration,
+    poll_interval: Duration,
+}
+
+impl InteractiveLoginTiming {
+    const PRODUCTION: Self = Self {
+        deadline: INTERACTIVE_LOGIN_TIMEOUT,
+        grace: VERIFY_GRACE_PERIOD,
+        poll_interval: VERIFY_POLL_INTERVAL,
+    };
+}
+
+/// Drive one interactive `<bin> <args…>` login to completion.
+///
+/// # Sign-in detection hardening
+///
+/// Before this existed, [`cursor_sign_in`]/[`codex_sign_in`]/[`claude_sign_in`] trusted
+/// ONLY the spawned CLI child's own exit code (or a bare 180s timeout). That is provably
+/// not the whole story: a browser OAuth round-trip can genuinely complete - the vendor's
+/// own local callback server renders its own "signed in" page - while the CLI process that
+/// owns that server fails to reflect it back to us within the wait window (a hang, a
+/// secondary post-login step exiting non-zero after auth already landed, or our own
+/// `kill_on_drop` racing a credential write that was about to finish). The visible symptom
+/// was exactly what shipped as a bug report: the browser shows success, the app keeps
+/// showing "not signed in".
+///
+/// This function trusts a clean `exit 0` directly (no added latency on the happy path,
+/// which is the overwhelming common case), but treats every OTHER outcome - a non-zero
+/// exit, a spawn/wait error, or the timeout firing - as advisory rather than final: it
+/// re-checks against `verify`, a cheap LOCAL-only ground-truth probe (a cached credential
+/// file / a fast status endpoint - see `codex::login_status_signed_in`,
+/// `cursor::login_status_signed_in`, `claude::login_status_signed_in`), and reports success
+/// anyway if THAT says the user is actually signed in. Both signals are always logged, so a
+/// divergence between "the process said no" and "but you actually are" is visible in
+/// traces rather than silently resolved.
+///
+/// It also polls `verify` periodically WHILE the child is still running (after an initial
+/// grace period), so a browser callback that lands early doesn't force the user to wait out
+/// the rest of a 180s timeout just because the underlying CLI process happens to hang.
+///
+/// `display_name` is the vendor name used in user-facing copy ("Cursor"/"Codex"/"Claude").
+async fn interactive_login<V, VFut>(
+    label: &'static str,
+    bin: &str,
+    args: &[&str],
+    display_name: &str,
+    success_message: String,
+    verify: V,
+    timing: InteractiveLoginTiming,
+) -> InstallOutcome
+where
+    V: Fn() -> VFut,
+    VFut: std::future::Future<Output = Option<bool>>,
+{
+    let Some(path) = resolve_cli(bin).await else {
+        return install_failed(
+            label,
+            format!("{bin} isn't installed yet - install it first"),
+        );
+    };
+
+    tracing::info!(bin, "llm: launching interactive login");
+    let mut cmd = command_for_resolved_cli(&path);
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .no_window();
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return install_failed(label, format!("couldn't start {bin}: {e}")),
+    };
+
+    // Both streams are drained live, not just via a final `wait_with_output` - see
+    // `drain_lines`'s doc. stdout carries the verification URL / device code a stuck login
+    // prints while it waits, which is exactly what the user needs to finish it by hand.
+    let stdout_buf = drain_lines(child.stdout.take(), "stdout");
+    let stderr_buf = drain_lines(child.stderr.take(), "stderr");
+
+    enum Ended {
+        Exited(std::process::ExitStatus),
+        WaitError(std::io::Error),
+        TimedOut,
+    }
+
+    /// `None` = still running. Centralised so the loop can re-check right after waking from
+    /// a sleep without duplicating the match - see the loop body for why that second check
+    /// matters (closes a race where the child exits DURING the sleep).
+    fn poll_exit(child: &mut tokio::process::Child) -> Option<Ended> {
+        match child.try_wait() {
+            Ok(Some(status)) => Some(Ended::Exited(status)),
+            Ok(None) => None,
+            Err(e) => Some(Ended::WaitError(e)),
+        }
+    }
+
+    let deadline = tokio::time::Instant::now() + timing.deadline;
+    let mut next_verify = tokio::time::Instant::now() + timing.grace;
+
+    let ended = loop {
+        if let Some(ended) = poll_exit(&mut child) {
+            break ended;
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break Ended::TimedOut;
+        }
+        tokio::time::sleep_until(next_verify.min(deadline)).await;
+        // The child may have exited WHILE we slept - a clean exit must never pay for a
+        // verify round-trip it doesn't need, which is exactly what skipping this check
+        // would risk on a fast-exiting CLI and a short grace period.
+        if let Some(ended) = poll_exit(&mut child) {
+            break ended;
+        }
+        if tokio::time::Instant::now() >= next_verify {
+            if verify().await == Some(true) {
+                tracing::info!(
+                    bin,
+                    "llm: sign-in confirmed by status check while the CLI was still running"
+                );
+                // `child` is still running here, and `.kill_on_drop(true)` alone is not
+                // enough: Drop only calls the non-blocking `start_kill`, it never awaits
+                // the exit, so relying on it would leave a killed-but-unreaped zombie for
+                // however long it takes something else to reap it - which may be never,
+                // if nothing else ever calls `.wait()` on this process. `Child::kill`
+                // does both (`start_kill` then `wait().await`) - see tokio's doc on it.
+                let _ = child.kill().await;
+                return InstallOutcome {
+                    ok: true,
+                    message: success_message,
+                    path: Some(path.display().to_string()),
+                    command: label.to_string(),
+                };
+            }
+            next_verify = tokio::time::Instant::now() + timing.poll_interval;
+        }
+    };
+
+    match ended {
+        Ended::Exited(status) if status.success() => {
+            let span = tracing::Span::current();
+            span.record("ok", true);
+            span.record("cli_path", tracing::field::display(path.display()));
+            tracing::info!(bin, "llm: interactive login succeeded");
+            InstallOutcome {
+                ok: true,
+                message: success_message,
+                path: Some(path.display().to_string()),
+                command: label.to_string(),
+            }
+        }
+        Ended::Exited(status) => {
+            // stderr first (that is where the reason goes), but fall back to what the CLI
+            // printed on stdout - on some failures the URL/device code is the only useful
+            // thing said.
+            let stderr_tail = buffered_tail(&stderr_buf, 400);
+            let reason = if stderr_tail.is_empty() {
+                buffered_tail(&stdout_buf, 300)
+            } else {
+                stderr_tail
+            };
+            let process_message = format!(
+                "{bin} exited {:?}: {}",
+                status.code(),
+                if reason.is_empty() {
+                    "no output".to_string()
+                } else {
+                    reason
+                }
+            );
+            confirm_or_report(label, bin, &path, success_message, &verify, process_message).await
+        }
+        Ended::WaitError(e) => {
+            confirm_or_report(
+                label,
+                bin,
+                &path,
+                success_message,
+                &verify,
+                format!("couldn't run {bin}: {e}"),
+            )
+            .await
+        }
+        Ended::TimedOut => {
+            let printed = buffered_tail(&stdout_buf, 300);
+            let timeout_message = if printed.is_empty() {
+                format!(
+                    "the sign-in wasn't finished in time - click Sign in to {display_name} again"
+                )
+            } else {
+                format!(
+                    "the sign-in wasn't finished in time. Finish it by hand with what \
+                     {bin} printed:\n{printed}"
+                )
+            };
+            confirm_or_report(label, bin, &path, success_message, &verify, timeout_message).await
+        }
+    }
+}
+
+/// The shared tail of every non-happy-path outcome in [`interactive_login`]: give the
+/// process's own report one last chance to be overridden by ground truth before it becomes
+/// what the user sees.
+async fn confirm_or_report<V, VFut>(
+    label: &str,
+    bin: &str,
+    path: &std::path::Path,
+    success_message: String,
+    verify: &V,
+    process_message: String,
+) -> InstallOutcome
+where
+    V: Fn() -> VFut,
+    VFut: std::future::Future<Output = Option<bool>>,
+{
+    if verify().await == Some(true) {
+        // The two signals disagree: the CLI process reported failure/timeout, but a direct
+        // read of the vendor's own auth state says otherwise. Ground truth wins - logged at
+        // WARN (not swallowed as INFO) precisely because a real divergence like this is
+        // worth seeing on a packaged install, not just locally. No `process_message` field -
+        // it's built from the drained CLI stderr/stdout tail (see the `printed` interpolation
+        // above), which is raw vendor CLI text and must not egress via WARN.
+        tracing::warn!(
+            bin,
+            verify_overrode = true,
+            "llm: sign-in process reported failure but the status check confirms the user IS \
+             signed in - trusting the status check"
+        );
+        let span = tracing::Span::current();
+        span.record("ok", true);
+        span.record("cli_path", tracing::field::display(path.display()));
+        return InstallOutcome {
+            ok: true,
+            message: success_message,
+            path: Some(path.display().to_string()),
+            command: label.to_string(),
+        };
+    }
+    install_failed(label, process_message)
+}
 
 /// Run the interactive `cursor-agent login` on the user's behalf — the "Sign in to Cursor"
 /// button in the provider detail view.
@@ -993,105 +1413,25 @@ const INTERACTIVE_LOGIN_TIMEOUT: Duration = Duration::from_secs(180);
 /// `NO_OPEN_BROWSER` because it can't ask a human anything; this path is an explicit click, so
 /// opening the browser to finish the sign-in is exactly what's wanted). Once it completes,
 /// cursor-agent persists the auth and every later daemon run just adopts it.
-#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty))]
+///
+/// See [`interactive_login`] for the shared race/verify logic this and its two siblings run
+/// through, and `cursor::login_status_signed_in` for Cursor's ground-truth check.
+#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty, otel.status_code = tracing::field::Empty))]
 pub async fn cursor_sign_in() -> InstallOutcome {
-    let label = "cursor-agent login";
-    let Some(path) = resolve_cli("cursor-agent").await else {
-        return install_failed(
-            label,
-            "cursor-agent isn't installed yet - install it first".into(),
-        );
-    };
-
-    tracing::info!("llm: launching interactive cursor-agent login");
-    let mut cmd = command_for_resolved_cli(&path);
-    cmd.arg("login")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .no_window();
-
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => return install_failed(label, format!("couldn't start cursor-agent: {e}")),
-    };
-
-    // Drain stdout as it arrives rather than only via `wait_with_output`. `cursor-agent login`
-    // prints its verification URL / device code to STDOUT while it waits, and that is precisely
-    // what the user needs when the browser does not open for them (no default browser, wrong
-    // profile, a headless session). Waiting for exit would discard it on the timeout path -
-    // leaving a 180 s spinner followed by an error with no way to finish the sign-in by hand.
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    if let Some(out) = child.stdout.take() {
-        let seen = seen.clone();
-        tokio::spawn(async move {
-            use tokio::io::{AsyncBufReadExt, BufReader};
-            let mut lines = BufReader::new(out).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                tracing::info!(line = %line, "cursor-agent login");
-                let mut buf = seen.lock().unwrap_or_else(|e| e.into_inner());
-                buf.push_str(&line);
-                buf.push('\n');
-            }
-        });
-    }
-    let login_output = |seen: &std::sync::Mutex<String>| -> String {
-        let buf = seen.lock().unwrap_or_else(|e| e.into_inner());
-        tail(buf.trim(), 300)
-    };
-
-    let output =
-        match tokio::time::timeout(INTERACTIVE_LOGIN_TIMEOUT, child.wait_with_output()).await {
-            Ok(Ok(out)) => out,
-            Ok(Err(e)) => {
-                return install_failed(label, format!("couldn't run cursor-agent login: {e}"))
-            }
-            Err(_) => {
-                let printed = login_output(&seen);
-                return install_failed(
-                    label,
-                    if printed.is_empty() {
-                        "the sign-in wasn't finished in time - click Sign in to Cursor again".into()
-                    } else {
-                        format!(
-                            "the sign-in wasn't finished in time. Finish it by hand with what \
-                         cursor-agent printed:\n{printed}"
-                        )
-                    },
-                );
-            }
-        };
-
-    if output.status.success() {
-        let span = tracing::Span::current();
-        span.record("ok", true);
-        span.record("cli_path", tracing::field::display(path.display()));
-        tracing::info!("llm: cursor-agent login succeeded");
-        InstallOutcome {
-            ok: true,
-            message: "Signed in to Cursor.".into(),
-            path: Some(path.display().to_string()),
-            command: label.to_string(),
-        }
-    } else {
-        // stderr first (that is where the reason goes), but fall back to what the CLI printed
-        // on stdout - on some failures the URL/device code is the only useful thing said.
-        let reason = tail(String::from_utf8_lossy(&output.stderr).trim(), 400);
-        let reason = if reason.is_empty() {
-            login_output(&seen)
-        } else {
-            reason
-        };
-        install_failed(
-            label,
-            if reason.is_empty() {
-                "cursor-agent login failed".to_string()
-            } else {
-                reason
-            },
-        )
-    }
+    let meridian_home = default_meridian_home();
+    interactive_login(
+        "cursor-agent login",
+        "cursor-agent",
+        &["login"],
+        "Cursor",
+        "Signed in to Cursor.".to_string(),
+        move || {
+            let home = meridian_home.clone();
+            async move { super::cursor::login_status_signed_in(&home).await }
+        },
+        InteractiveLoginTiming::PRODUCTION,
+    )
+    .await
 }
 
 /// Run the interactive `codex login` on the user's behalf — the "Sign in to Codex" button in
@@ -1100,103 +1440,27 @@ pub async fn cursor_sign_in() -> InstallOutcome {
 /// `codex login` (no subcommand) opens the user's browser to sign into their ChatGPT account
 /// and runs a localhost callback server to receive the OAuth redirect; on success it writes
 /// `~/.codex/auth.json` and exits 0, so the summariser then runs on their **ChatGPT
-/// subscription** — no API key, nothing metered. A deliberate mirror of [`cursor_sign_in`]:
-/// the browser is enabled (this is an explicit click, not the daemon's unattended path),
-/// stdout is drained live so the verification URL is surfaced if the browser can't open, and
-/// the wait is bounded by [`INTERACTIVE_LOGIN_TIMEOUT`]. Once it completes, codex persists the
-/// auth and every later run just adopts it — the same "sign in once" model as Cursor.
-#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty))]
+/// subscription** — no API key, nothing metered. A deliberate mirror of [`cursor_sign_in`].
+///
+/// See [`interactive_login`] for the shared race/verify logic and `codex::login_status_signed_in`
+/// for Codex's ground-truth check (the same `codex login status` call `codex::signed_out`
+/// already uses as a pre-flight for a real completion call).
+#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty, otel.status_code = tracing::field::Empty))]
 pub async fn codex_sign_in() -> InstallOutcome {
-    let label = "codex login";
-    let Some(path) = resolve_cli("codex").await else {
-        return install_failed(label, "codex isn't installed yet - install it first".into());
-    };
-
-    tracing::info!("llm: launching interactive codex login");
-    let mut cmd = command_for_resolved_cli(&path);
-    cmd.arg("login")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .no_window();
-
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => return install_failed(label, format!("couldn't start codex: {e}")),
-    };
-
-    // Drain stdout as it arrives - `codex login` prints its verification URL to STDOUT while it
-    // waits, which is exactly what the user needs if the browser doesn't open for them. Same
-    // reasoning as the matching drain in `cursor_sign_in`.
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    if let Some(out) = child.stdout.take() {
-        let seen = seen.clone();
-        tokio::spawn(async move {
-            use tokio::io::{AsyncBufReadExt, BufReader};
-            let mut lines = BufReader::new(out).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                tracing::info!(line = %line, "codex login");
-                let mut buf = seen.lock().unwrap_or_else(|e| e.into_inner());
-                buf.push_str(&line);
-                buf.push('\n');
-            }
-        });
-    }
-    let login_output = |seen: &std::sync::Mutex<String>| -> String {
-        let buf = seen.lock().unwrap_or_else(|e| e.into_inner());
-        tail(buf.trim(), 300)
-    };
-
-    let output =
-        match tokio::time::timeout(INTERACTIVE_LOGIN_TIMEOUT, child.wait_with_output()).await {
-            Ok(Ok(out)) => out,
-            Ok(Err(e)) => return install_failed(label, format!("couldn't run codex login: {e}")),
-            Err(_) => {
-                let printed = login_output(&seen);
-                return install_failed(
-                    label,
-                    if printed.is_empty() {
-                        "the sign-in wasn't finished in time - click Sign in to Codex again".into()
-                    } else {
-                        format!(
-                            "the sign-in wasn't finished in time. Finish it by hand with what \
-                             codex printed:\n{printed}"
-                        )
-                    },
-                );
-            }
-        };
-
-    if output.status.success() {
-        let span = tracing::Span::current();
-        span.record("ok", true);
-        span.record("cli_path", tracing::field::display(path.display()));
-        tracing::info!("llm: codex login succeeded");
-        InstallOutcome {
-            ok: true,
-            message: "Signed in to Codex.".into(),
-            path: Some(path.display().to_string()),
-            command: label.to_string(),
-        }
-    } else {
-        // stderr first (that is where the reason goes), but fall back to what the CLI printed on
-        // stdout - on some failures the URL is the only useful thing said.
-        let reason = tail(String::from_utf8_lossy(&output.stderr).trim(), 400);
-        let reason = if reason.is_empty() {
-            login_output(&seen)
-        } else {
-            reason
-        };
-        install_failed(
-            label,
-            if reason.is_empty() {
-                "codex login failed".to_string()
-            } else {
-                reason
-            },
-        )
-    }
+    let meridian_home = default_meridian_home();
+    interactive_login(
+        "codex login",
+        "codex",
+        &["login"],
+        "Codex",
+        "Signed in to Codex.".to_string(),
+        move || {
+            let home = meridian_home.clone();
+            async move { super::codex::login_status_signed_in(&home).await }
+        },
+        InteractiveLoginTiming::PRODUCTION,
+    )
+    .await
 }
 
 /// Run the interactive `claude auth login` on the user's behalf — the "Sign in to Claude"
@@ -1204,109 +1468,33 @@ pub async fn codex_sign_in() -> InstallOutcome {
 ///
 /// `claude auth login` (default `--claudeai`) opens the user's browser to sign into their
 /// Anthropic account on their **Claude subscription** — no API key, nothing metered. A
-/// deliberate mirror of [`cursor_sign_in`]/[`codex_sign_in`]: the browser is enabled (this is
-/// an explicit click, not the daemon's unattended path), stdout is drained live so the
-/// verification URL is surfaced if the browser can't open, and the wait is bounded by
-/// [`INTERACTIVE_LOGIN_TIMEOUT`]. Once it completes, Claude Code persists the auth and every
-/// later run just adopts it — the same "sign in once" model as the other two.
-#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty))]
+/// deliberate mirror of [`cursor_sign_in`]/[`codex_sign_in`].
+///
+/// See [`interactive_login`] for the shared race/verify logic and `claude::login_status_signed_in`
+/// for Claude's ground-truth check.
+#[tracing::instrument(skip_all, fields(ok = tracing::field::Empty, cli_path = tracing::field::Empty, otel.status_code = tracing::field::Empty))]
 pub async fn claude_sign_in() -> InstallOutcome {
-    let label = "claude auth login";
-    let Some(path) = resolve_cli("claude").await else {
-        return install_failed(
-            label,
-            "claude isn't installed yet - install it first".into(),
-        );
-    };
+    let meridian_home = default_meridian_home();
+    interactive_login(
+        "claude auth login",
+        "claude",
+        &["auth", "login", "--claudeai"],
+        "Claude",
+        "Signed in to Claude.".to_string(),
+        move || {
+            let home = meridian_home.clone();
+            async move { super::claude::login_status_signed_in(&home).await }
+        },
+        InteractiveLoginTiming::PRODUCTION,
+    )
+    .await
+}
 
-    tracing::info!("llm: launching interactive claude auth login");
-    let mut cmd = command_for_resolved_cli(&path);
-    cmd.arg("auth")
-        .arg("login")
-        .arg("--claudeai")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .no_window();
-
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => return install_failed(label, format!("couldn't start claude: {e}")),
-    };
-
-    // Drain stdout as it arrives - `claude auth login` prints its verification URL to STDOUT
-    // while it waits, which is exactly what the user needs if the browser doesn't open for them.
-    // Same reasoning as the matching drain in `cursor_sign_in`.
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    if let Some(out) = child.stdout.take() {
-        let seen = seen.clone();
-        tokio::spawn(async move {
-            use tokio::io::{AsyncBufReadExt, BufReader};
-            let mut lines = BufReader::new(out).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                tracing::info!(line = %line, "claude auth login");
-                let mut buf = seen.lock().unwrap_or_else(|e| e.into_inner());
-                buf.push_str(&line);
-                buf.push('\n');
-            }
-        });
-    }
-    let login_output = |seen: &std::sync::Mutex<String>| -> String {
-        let buf = seen.lock().unwrap_or_else(|e| e.into_inner());
-        tail(buf.trim(), 300)
-    };
-
-    let output = match tokio::time::timeout(INTERACTIVE_LOGIN_TIMEOUT, child.wait_with_output())
-        .await
-    {
-        Ok(Ok(out)) => out,
-        Ok(Err(e)) => return install_failed(label, format!("couldn't run claude auth login: {e}")),
-        Err(_) => {
-            let printed = login_output(&seen);
-            return install_failed(
-                label,
-                if printed.is_empty() {
-                    "the sign-in wasn't finished in time - click Sign in to Claude again".into()
-                } else {
-                    format!(
-                        "the sign-in wasn't finished in time. Finish it by hand with what \
-                             claude printed:\n{printed}"
-                    )
-                },
-            );
-        }
-    };
-
-    if output.status.success() {
-        let span = tracing::Span::current();
-        span.record("ok", true);
-        span.record("cli_path", tracing::field::display(path.display()));
-        tracing::info!("llm: claude auth login succeeded");
-        InstallOutcome {
-            ok: true,
-            message: "Signed in to Claude.".into(),
-            path: Some(path.display().to_string()),
-            command: label.to_string(),
-        }
-    } else {
-        // stderr first (that is where the reason goes), but fall back to what the CLI printed on
-        // stdout - on some failures the URL is the only useful thing said.
-        let reason = tail(String::from_utf8_lossy(&output.stderr).trim(), 400);
-        let reason = if reason.is_empty() {
-            login_output(&seen)
-        } else {
-            reason
-        };
-        install_failed(
-            label,
-            if reason.is_empty() {
-                "claude auth login failed".to_string()
-            } else {
-                reason
-            },
-        )
-    }
+/// `~/.meridian` (or `$MERIDIAN_HOME`), resolved the same way [`LlmConfig::from_settings`]
+/// does - reused here (rather than re-deriving it) so a status-check verifier and a real
+/// backend call never disagree about which credentials directory they're reading.
+fn default_meridian_home() -> PathBuf {
+    LlmConfig::from_settings(&meridian_core::settings::load_runtime_settings()).meridian_home
 }
 
 /// The last `n` characters of `s`, char-safe.
@@ -1324,7 +1512,24 @@ fn install_failed(cmd: &str, message: String) -> InstallOutcome {
     // here, so recording on the CURRENT span marks whichever of them is running
     // as failed without threading a handle through a dozen early returns.
     tracing::Span::current().record("ok", false);
-    tracing::warn!(%cmd, %message, "llm: provider install failed");
+    // Also the OTel-standard span-status field, not just the local `ok` field
+    // above - see `tray/src-tauri/src/daemon_lifecycle.rs` for the established
+    // convention this mirrors. `ok` is this file's own boolean; the standard
+    // field is what marks the span as errored for any trace-status query (e.g.
+    // the redacted ship leg, which egresses ERROR-status spans alongside WARN+
+    // logs).
+    tracing::Span::current().record("otel.status_code", "ERROR");
+    // No `message` field: some callers (the interactive-login failure path via
+    // `confirm_or_report`) pass the buffered CLI stdout/stderr tail here, which can
+    // carry OAuth verification URLs and device codes - the same class of leak
+    // already fixed at `drain_lines`/`probe_with_retry`/`confirm_or_report`'s own
+    // WARN sites in this file. `install_failed` has no way to tell a safe static
+    // message from raw CLI output, so it must treat every message as unsafe.
+    tracing::warn!(
+        cmd,
+        message_len = message.len(),
+        "llm: provider install failed"
+    );
     InstallOutcome {
         ok: false,
         message,
@@ -1597,6 +1802,65 @@ fn path_candidate_names(bin: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    fn groq_custom_provider() -> meridian_core::settings::CustomLlmProvider {
+        meridian_core::settings::CustomLlmProvider {
+            id: "groq1".to_string(),
+            vendor: "groq".to_string(),
+            name: "My Groq endpoint".to_string(),
+            base_url: "https://api.groq.com/openai/v1".to_string(),
+            model: "openai/gpt-oss-120b".to_string(),
+            api_key: "gsk-test".to_string(),
+            rpm: 0,
+            rpd: 0,
+            rungs: Default::default(),
+        }
+    }
+
+    fn settings_with_active_groq() -> RuntimeSettings {
+        RuntimeSettings {
+            llm_provider: "custom".to_string(),
+            llm_provider_custom_id: Some("groq1".to_string()),
+            custom_llm_providers: vec![groq_custom_provider()],
+            ..Default::default()
+        }
+    }
+
+    /// The bug this fn exists to fix: testing the Custom tile while a Groq endpoint is the
+    /// active custom provider must refuse.
+    #[test]
+    fn testing_the_custom_tile_refuses_when_groq_is_active() {
+        let settings = settings_with_active_groq();
+        assert!(groq_refusal_for(LlmProvider::Custom, &settings).is_some());
+    }
+
+    /// The regression itself: testing a DIFFERENT provider's tile while Groq happens to be
+    /// the globally active one must NOT be refused - `settings.active_custom_provider()`
+    /// reads the global selection, not the provider actually under test.
+    #[test]
+    fn testing_a_different_provider_is_unaffected_by_an_active_groq_endpoint() {
+        let settings = settings_with_active_groq();
+        for p in [
+            LlmProvider::Claude,
+            LlmProvider::Codex,
+            LlmProvider::Cursor,
+            LlmProvider::Copilot,
+        ] {
+            assert!(
+                groq_refusal_for(p, &settings).is_none(),
+                "{p:?} must not be refused just because Groq is the active provider"
+            );
+        }
+    }
+
+    /// A Custom tile that ISN'T Groq (e.g. Ollama, or any other preset) must never be
+    /// refused - the block is Groq-specific, not "every custom endpoint".
+    #[test]
+    fn a_non_groq_custom_endpoint_is_never_refused() {
+        let mut settings = settings_with_active_groq();
+        settings.custom_llm_providers[0].vendor = "ollama".to_string();
+        assert!(groq_refusal_for(LlmProvider::Custom, &settings).is_none());
+    }
+
     /// The load-bearing property: whatever `resolve_cli` hands back must be something
     /// `Command::new` can spawn WITHOUT relying on the caller's `PATH` — i.e. an absolute
     /// path that exists. A bare name here would silently reintroduce the tray bug, since
@@ -1627,6 +1891,142 @@ mod tests {
         let found = resolve_cli("cmd").await.expect("cmd must resolve");
         assert!(found.is_absolute(), "not absolute: {}", found.display());
         assert!(found.exists(), "does not exist: {}", found.display());
+    }
+
+    // ── interactive_login: sign-in race/verify logic ─────────────────────────────────────
+    //
+    // Exercised against a REAL spawned `sh -c "…"` (unix-only - POSIX guarantees `sh` at an
+    // absolute path, same reasoning as `resolve_cli_returns_an_absolute_existing_path` above)
+    // rather than a mock Child, so the actual `try_wait`/`kill_on_drop`/pipe-draining
+    // machinery is what's under test, not a stand-in for it. `InteractiveLoginTiming` is
+    // always overridden to millisecond scale here - the real constants exist for a human
+    // finishing a browser OAuth flow, and using them in a unit test would make the suite
+    // take minutes for no extra coverage.
+
+    // Only the (unix-only) tests below call this - see the block comment above. Not gating
+    // it too would make it dead code on Windows and fail `-D warnings` there while looking
+    // perfectly clean on macOS/Linux, which is exactly how this was first missed.
+    // `grace`/`poll_interval` used to be 5ms/15ms - fast on an unloaded dev machine, but
+    // that races the REAL spawn→exec→exit→waitpid round trip for `sh -c "exit 0"` against
+    // GitHub's shared macOS runners under load (~990 other tests running concurrently in
+    // the same `cargo test` process). Observed failing twice in a row in CI
+    // (`a_clean_exit_is_trusted_without_ever_calling_verify`, then that test plus
+    // `a_failed_process_with_an_inconclusive_verify_reports_the_process_failure` on retry -
+    // a different pair each time, the signature of scheduler jitter rather than a logic
+    // bug) while passing 100% locally, including as part of the full suite. Still
+    // millisecond-scale (the whole file's worth of these tests stays well under a second
+    // combined), just wide enough to absorb real CI contention.
+    #[cfg(unix)]
+    fn instant_timing() -> InteractiveLoginTiming {
+        InteractiveLoginTiming {
+            deadline: Duration::from_millis(2000),
+            grace: Duration::from_millis(150),
+            poll_interval: Duration::from_millis(200),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clean_exit_is_trusted_without_ever_calling_verify() {
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called2 = called.clone();
+        let out = interactive_login(
+            "test login",
+            "sh",
+            &["-c", "exit 0"],
+            "Test",
+            "Signed in to Test.".to_string(),
+            move || {
+                called2.store(true, std::sync::atomic::Ordering::SeqCst);
+                async { Some(true) }
+            },
+            instant_timing(),
+        )
+        .await;
+        assert!(out.ok);
+        assert!(
+            !called.load(std::sync::atomic::Ordering::SeqCst),
+            "the happy path must not pay the extra verify round-trip"
+        );
+    }
+
+    /// THE regression this whole refactor exists for: a process that reports failure is
+    /// overridden by a ground-truth check that says the user really is signed in.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_process_is_overridden_by_a_confirming_verify() {
+        let out = interactive_login(
+            "test login",
+            "sh",
+            &["-c", "exit 1"],
+            "Test",
+            "Signed in to Test.".to_string(),
+            || async { Some(true) },
+            instant_timing(),
+        )
+        .await;
+        assert!(
+            out.ok,
+            "verify's confirmation must win over the process exit code"
+        );
+        assert_eq!(out.message, "Signed in to Test.");
+    }
+
+    /// The mirror case: a failed process AND an inconclusive (or negative) verify must still
+    /// report the original failure - ground truth can only ever promote a result to success,
+    /// never invent a more specific failure than what actually happened.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_process_with_an_inconclusive_verify_reports_the_process_failure() {
+        let out = interactive_login(
+            "test login",
+            "sh",
+            &["-c", "echo boom 1>&2; exit 1"],
+            "Test",
+            "Signed in to Test.".to_string(),
+            || async { None },
+            instant_timing(),
+        )
+        .await;
+        assert!(!out.ok);
+        assert!(out.message.contains("boom"), "got: {}", out.message);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_confirmed_negative_verify_does_not_override_a_failed_process() {
+        let out = interactive_login(
+            "test login",
+            "sh",
+            &["-c", "exit 1"],
+            "Test",
+            "Signed in to Test.".to_string(),
+            || async { Some(false) },
+            instant_timing(),
+        )
+        .await;
+        assert!(!out.ok);
+    }
+
+    /// A browser callback landing early must not force the user to wait out the whole
+    /// process: once `verify` confirms sign-in WHILE the child is still running, this
+    /// returns immediately rather than waiting for the child to exit or the deadline to
+    /// fire. Proven by a child that sleeps far longer than `instant_timing`'s deadline -
+    /// the test only completes because the early return actually fires.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn verify_confirming_mid_wait_returns_before_the_child_exits_or_times_out() {
+        let out = interactive_login(
+            "test login",
+            "sh",
+            &["-c", "sleep 30"],
+            "Test",
+            "Signed in to Test.".to_string(),
+            || async { Some(true) },
+            instant_timing(),
+        )
+        .await;
+        assert!(out.ok);
     }
 
     /// A miss must be `None` rather than a bare-name `PathBuf`. `run_capture` treats
@@ -1743,6 +2143,121 @@ mod tests {
             "a budget this small is spent on reasoning tokens before the model answers, and \
              the empty response reads to the user as a broken key"
         );
+    }
+
+    // ── probe_with_retry: one bounded retry, only on a plain timeout ─────────────────────
+
+    #[test]
+    fn looks_like_a_probe_timeout_matches_run_captures_exact_wording() {
+        assert!(looks_like_a_probe_timeout("codex timed out after 20s"));
+        assert!(looks_like_a_probe_timeout(
+            "cursor-agent timed out after 20s"
+        ));
+        assert!(looks_like_a_probe_timeout("claude timed out after 20s"));
+        // Ordinary failures must not spend the retry.
+        assert!(!looks_like_a_probe_timeout(
+            "Codex isn't signed in yet - run `codex login` in a terminal, then try again."
+        ));
+        assert!(!looks_like_a_probe_timeout("rate/usage limit reached"));
+    }
+
+    /// THE regression this whole fix exists for
+    /// (github.com/Meridiona/meridian/issues/805): a single cold-start miss of the 20s probe
+    /// budget must not be trusted as the final answer - a second attempt gets to prove it
+    /// wrong before a `Failed` result is persisted.
+    #[tokio::test]
+    async fn a_timeout_shaped_failure_is_retried_once_and_can_recover() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls2 = calls.clone();
+        let outcome = probe_with_retry("codex", move || {
+            let calls = calls2.clone();
+            async move {
+                let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n == 0 {
+                    Err(LlmError::Failed("codex timed out after 20s".into()))
+                } else {
+                    Ok(LlmOutput::default())
+                }
+            }
+        })
+        .await;
+        assert!(matches!(outcome, ProviderTestOutcome::Ok));
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "must have retried exactly once"
+        );
+    }
+
+    /// Bounded: a SECOND consecutive timeout is not retried again - it is reported honestly
+    /// rather than the probe silently spinning.
+    #[tokio::test]
+    async fn a_second_consecutive_timeout_is_not_retried_again() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls2 = calls.clone();
+        let outcome = probe_with_retry("codex", move || {
+            let calls = calls2.clone();
+            async move {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(LlmError::Failed("codex timed out after 20s".into()))
+            }
+        })
+        .await;
+        assert!(matches!(outcome, ProviderTestOutcome::Failed { .. }));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// A genuine (non-timeout) failure is reported immediately - retrying "you're not signed
+    /// in" wastes a call and delays the honest answer for no benefit.
+    #[tokio::test]
+    async fn a_non_timeout_failure_is_not_retried() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls2 = calls.clone();
+        let outcome = probe_with_retry("codex", move || {
+            let calls = calls2.clone();
+            async move {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(LlmError::Failed("codex isn't signed in yet".into()))
+            }
+        })
+        .await;
+        assert!(matches!(outcome, ProviderTestOutcome::Failed { .. }));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// A rate limit is never retried - Cursor/Codex/Claude limits are account-level, so a
+    /// second call spends quota to hit the same wall, matching the rule
+    /// `cursor_cli::run_hardened` already follows.
+    #[tokio::test]
+    async fn a_rate_limit_is_never_retried() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls2 = calls.clone();
+        let outcome = probe_with_retry("codex", move || {
+            let calls = calls2.clone();
+            async move {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(LlmError::rate_limited("429 too many requests"))
+            }
+        })
+        .await;
+        assert!(matches!(outcome, ProviderTestOutcome::RateLimited { .. }));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_clean_success_never_retries() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls2 = calls.clone();
+        let outcome = probe_with_retry("codex", move || {
+            let calls = calls2.clone();
+            async move {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(LlmOutput::default())
+            }
+        })
+        .await;
+        assert!(matches!(outcome, ProviderTestOutcome::Ok));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -2453,6 +2968,67 @@ mod tests {
             "FAKE_NODE_RAN",
             "{output:?}"
         );
+    }
+
+    /// The `run_capture` counterpart to `command_for_resolved_cli_fixes_the_env_node_shebang_lookup`:
+    /// the summariser's shared subprocess runner (`codex exec`/`claude -p`/`cursor-agent`/
+    /// `copilot`, `src/coding_agent_session_ingest/summariser/mod.rs::run_capture`) used to
+    /// resolve a CLI's absolute path via `resolve_cli` but then spawn it with a bare
+    /// `Command::new(target)`, never prepending PATH — so a `#!/usr/bin/env node` CLI that
+    /// `resolve_cli` found (via a candidate dir, exactly as here) still failed once actually
+    /// run. Live incident, 2026-08-19 (staging `1.89.0-staging.2`): a `codex login` — which DOES
+    /// go through `command_for_resolved_cli` via `interactive_login` — traced clean end-to-end,
+    /// then the very next `codex exec` (via `run_capture`) failed 5ms later with `code:
+    /// Some(127)`, `stderr: "env: node: No such file or directory"`, which the UI then rendered
+    /// as "not signed in yet". Only passes now that `run_capture` spawns through
+    /// `command_for_resolved_cli` too.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_capture_fixes_the_env_node_shebang_lookup() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = ENV_LOCK.lock().await;
+        let original_home = std::env::var_os("HOME");
+        let temp_home = std::env::temp_dir().join(format!(
+            "meridian-detect-run-capture-shebang-test-{}",
+            std::process::id()
+        ));
+        let bin_dir = temp_home.join(".local").join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let fake_node = bin_dir.join("node");
+        std::fs::write(&fake_node, "#!/bin/sh\necho FAKE_NODE_RAN\n").unwrap();
+        // `resolve_cli` only ever caches SUCCESSES (see `RESOLVED_BINS`'s doc), so a name
+        // unique to this test can never collide with another test's cached resolution.
+        let fake_cli = bin_dir.join("meridian-fake-run-capture-cli");
+        std::fs::write(&fake_cli, "#!/usr/bin/env node\n").unwrap();
+        for f in [&fake_node, &fake_cli] {
+            let mut perms = std::fs::metadata(f).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(f, perms).unwrap();
+        }
+        std::env::set_var("HOME", &temp_home);
+
+        let result = crate::coding_agent_session_ingest::summariser::run_capture(
+            "meridian-fake-run-capture-cli",
+            &[],
+            "",
+            &temp_home,
+            5,
+            &[],
+            &[],
+        )
+        .await;
+
+        match original_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&temp_home);
+
+        let cap = result.unwrap_or_else(|e| panic!("run_capture must succeed: {e}"));
+        assert!(cap.success, "code={:?} stderr={}", cap.code, cap.stderr);
+        assert_eq!(cap.stdout.trim(), "FAKE_NODE_RAN");
     }
 
     /// cursor-agent does not install via npm on Windows (see

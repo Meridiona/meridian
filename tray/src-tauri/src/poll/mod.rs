@@ -66,6 +66,17 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
 
         if do_health {
             refresh_health(&app, &state, pool.as_ref()).await;
+
+            // Awaited inline rather than spawned, unlike the analytics send
+            // below, for one reason: ORDERING. This call is what rolls the
+            // perf window at a local-day boundary, and `maybe_send_daily_tick`
+            // (spawned further down this same tick) reads the window it
+            // closes. Spawning both would race, and the loser would ship a
+            // `daily_usage` with no perf data on exactly the tick that had it.
+            //
+            // Safe to await: it is a socket probe for the daemon pid plus two
+            // process refreshes — no network, no DB, single-digit ms.
+            crate::analytics::perf::sample().await;
         }
         if let Some(pool) = &pool {
             refresh_active(pool, &state).await;

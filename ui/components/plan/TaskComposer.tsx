@@ -311,11 +311,16 @@ export function TaskComposer({ day, trackers, onDone, onCancel, hero = false }: 
 
         {drafting && (
           <div className="mt-3">
+            {/* No `note` override - the AI engine behind this call is whatever the user
+                picked (Cursor's default reasoning-effort model runs well under a minute,
+                but not "a few seconds"), so `<GeneratingBar>`'s own honest default
+                ("this might take a minute or so", same wording WorklogDraftDialog and
+                SummaryTaskView already use) is the one claim this button can actually
+                keep for every provider. */}
             <GeneratingBar
               hue="var(--t-accent)"
               label="Drafting your task…"
               detail="Shaping your note into a title and description - they land in the fields below, yours to edit."
-              note="this usually takes a few seconds"
             />
           </div>
         )}

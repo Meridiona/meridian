@@ -1,6 +1,25 @@
 {
   "releases": [
     {
+      "version": "1.89.0",
+      "date": "2026-08-20",
+      "highlights": [
+        "Ollama Cloud joins the setup wizard as a free, no-subscription way to draft with AI, and is now the one we recommend if you don't already have a subscription. Groq is being retired from active use - if you're currently on it, Settings will show a notice pointing you to Ollama, and your configuration stays exactly as you left it until you switch.",
+        "Settings now shows exactly what daily usage reporting sends - a health snapshot alongside the counts, never your screen activity or anything you wrote - and a new switch lets you turn it off separately from error reporting, without losing crash reports."
+      ],
+      "fixes": [
+        "Signing in sticks even on a cold start with no network. A session that was still loading could report its status as empty, which Meridian was reading as a failed sign-in and quietly dropping - so a user who had genuinely signed in before would see the sign-in screen anyway.",
+        "Codex and Cursor sign-in are detected more reliably. A browser sign-in that visibly succeeded could still get reported back to Meridian as failed; it no longer does.",
+        "Draft with AI on Cursor no longer takes up to a minute when it usually takes seconds.",
+        "A brief network or provider hiccup no longer flips your AI provider to unavailable and stops your day from being written - Meridian retries once before giving up.",
+        "Several worklog drafts falling behind in the same hour now arrive as one notification instead of landing all at once.",
+        "Drafting stopped failing with a hidden schema error on some custom AI endpoints.",
+        "Coding-agent session summaries no longer silently fail to generate on some setups.",
+        "A database repair that fails on launch now retries automatically within the same session instead of leaving Meridian stuck until you relaunch.",
+        "Testing a specific AI provider's connection is more reliable when you have more than one free-tier key configured - it could fail outright, or show one endpoint's result on another's card."
+      ]
+    },
+    {
       "version": "1.88.0",
       "date": "2026-08-17",
       "highlights": [

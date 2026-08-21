@@ -140,6 +140,36 @@ it('the subscription-provider "not signed in" copy only replaces the DISPLAY, no
   expect(registry).toMatch(/Sign in to Claude/)
 })
 
+// ── A failure is never a dead end: fixing THIS provider is never the only way forward ────────
+//
+// The dashboard's own Draft-with-AI failure path (`AiEngineNotice`) already shows the
+// engine's real error plus a one-click route back to the picker. The wizard/Settings detail
+// view had the same underlying data but only a "‹ All providers" link at the very top of the
+// screen — reachable, but not right next to the failure a user is actually reading. Both
+// failure branches (the subscription-provider "sign in" card AND the generic "isn't
+// responding" branch, for Copilot/custom endpoints) must offer the same one-click way out.
+
+it('a failed subscription-provider sign-in offers a one-click way to try a different provider', () => {
+  // `case 'failed':` also appears in `statusPill`'s switch - scope to `ConnectionBody`'s,
+  // the one that actually renders the card.
+  const connectionBody = detail.slice(detail.indexOf('function ConnectionBody'))
+  const failedBranch = connectionBody.slice(
+    connectionBody.indexOf("case 'failed':"),
+    connectionBody.indexOf("case 'ready_untested':"),
+  )
+  expect(failedBranch).toMatch(/onSwitchProvider/)
+  // Both the signInProvider branch and the generic fallback branch render it - not just one.
+  expect(failedBranch.match(/<SwitchProvider/g)?.length).toBe(2)
+})
+
+it('the switch-provider affordance is wired to the same destination as the top-of-screen back link', () => {
+  // `ConnectionBody` has no navigation of its own — it must be handed the real `onBack`
+  // callback from `LlmProviderDetail`, the same one `<BackLink>` already uses, or the button
+  // would need its own (and inevitably drifting) notion of "back to the picker".
+  expect(detail).toMatch(/onSwitchProvider=\{onBack\}/)
+  expect(detail).toMatch(/onSwitchProvider:\s*\(\)\s*=>\s*void/)
+})
+
 // The button copy and the tray command it fires used to live in two files - a provider added
 // to one and not the other got a sign-in button wired to nothing, or (worse) to another
 // vendor's login. One record now carries both, so they cannot desync.
@@ -249,10 +279,12 @@ describe('the usage claim is made once, and says the same thing everywhere', () 
 describe('the chooser grid', () => {
   const picker = src('components/LlmProviderPicker.tsx')
 
-  it('is always a complete rectangle - 3 across gated, 2 x 2 in Settings', () => {
-    // auto-fill laid four tiles out 3 + 1, which reads as "and one afterthought" and left the
-    // last card a different shape from its siblings.
-    expect(picker).toContain('repeat(${gate ? 3 : 2}, minmax(0, 1fr))')
+  it('wraps cleanly at any tile count, rather than assuming exactly four', () => {
+    // A fixed column count (3 across gated, 2 x 2 in Settings) worked while there was exactly
+    // one free-key tile standing in for every custom endpoint - it stopped being true the
+    // moment Groq and Ollama each got their own tile (5 tiles in Settings), and would break
+    // again the moment a third preset exists. Auto-fit wraps at any count instead.
+    expect(picker).toContain("gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))'")
   })
 
   it('carries the SAME ranking the gate showed, on every tile', () => {
@@ -288,14 +320,20 @@ describe('the chooser grid', () => {
     expect(badge).toContain("background: filled ? 'var(--t-box)' : 'transparent'")
   })
 
-  it('names the fourth tile Groq and says FREE, not "bring your own API key / ADVANCED"', () => {
-    // That label described the plumbing, not the offer. Someone with no subscription - the
-    // exact person the tile is for - could not tell from it that this is the free path, and
-    // "advanced" actively warns them off. Groq is the only preset left, so the tile is Groq.
-    expect(picker).toContain('name={GROQ.name}')
-    // ...and it opens the SAME three-step walkthrough the gate's free answer lands on, not a
-    // second, differently-shaped route to the same place.
-    expect(picker).toContain('custom.providers.length === 0')
+  it('gives every free preset its own tile, named and badged FREE - not one shared tile', () => {
+    // "Bring your own API key / ADVANCED" described the plumbing, not the offer. And a
+    // single collapsed tile for BOTH presets is its own failure mode: it can only ever name
+    // one vendor, so configuring Groq made Ollama disappear entirely - exactly the confusion
+    // a real user hit. Each preset (Groq, Ollama, ...) gets a tile of its own, the same way
+    // Claude/Codex/Cursor do.
+    // `gridPresets`, NOT `CLOUD_PRESETS` - the grid also carries an already-configured
+    // vendor that has since stopped being offered (Groq, today), so asserting the wrong
+    // one here would pass by coincidence off `CLOUD_PRESETS.map` appearing elsewhere in
+    // the file (`CloudPresetChooser`'s own grid) rather than actually checking this one.
+    expect(picker).toContain('gridPresets.map((preset) => (')
+    expect(picker).toContain('<CloudPresetTile')
+    // Clicking a preset's OWN tile already answers which vendor - no chooser in between.
+    expect(picker).toContain('vendorRows.length === 0')
   })
 
   it('shows a rescan long enough to be believed', () => {
@@ -307,6 +345,21 @@ describe('the chooser grid', () => {
     expect(hook).toContain('PROBE_MIN_VISIBLE_MS')
     expect(hook).toContain('await floor')
     expect(picker).toContain("animation: 'spin 0.7s linear infinite'")
+  })
+
+  it('re-tests a failed sign-in sequentially, not concurrently with detect()', () => {
+    // `detect()` REPLACES the whole status map with `last_test: null` for every provider
+    // (see `setStatus(Object.fromEntries(...))` above). Racing it against `testOne()` via
+    // `Promise.all` could let `detect()` resolve second and silently discard the just-spent
+    // probe's result, right back to a stale FAILED badge - the exact bug this path exists to
+    // fix. Must stay sequenced like `install()` already does.
+    const hook = src('components/useLlmProviderDetection.ts')
+    expect(hook).not.toContain('Promise.all([detect(), testOne')
+    const signInFailureBranch = hook.slice(hook.indexOf('} else {', hook.indexOf('const signIn =')))
+    expect(signInFailureBranch).toContain('await detect()')
+    expect(signInFailureBranch.indexOf('await detect()')).toBeLessThan(
+      signInFailureBranch.indexOf('await testOne(id'),
+    )
   })
 })
 
@@ -448,8 +501,15 @@ describe('every surface reads the same ladder', () => {
 
   it('the cloud endpoint is judged like every other provider, not by being selected', () => {
     // `value === 'custom'` may decide what is SELECTED. It may never decide what is LIVE.
-    expect(picker).toContain('const customPhase = phaseFor(')
-    expect(picker).toContain('live={!TILE_NOT_LIVE.includes(customPhase.kind)}')
+    expect(picker).toContain('const phase = selected')
+    // Both call sites share `vendorPhaseFor` - inside it, `phase` depends only on
+    // `selectedRow`, never on `value`, so the two can never disagree.
+    expect(picker).toContain('function vendorPhaseFor(')
+    expect(picker).toContain('const phase = selectedRow')
+    expect(picker).toContain(
+      'phase: vendorPhase } = vendorPhaseFor(vendorRows, selectedCustomId ?? null, status)',
+    )
+    expect(picker).toContain('live={!TILE_NOT_LIVE.includes(vendorPhase.kind)}')
     // …and the endpoint card takes that verdict rather than re-deriving one.
     expect(providers).toContain('live: boolean')
     expect(providers).toContain("{live ? 'In use' : 'Not connected'}")

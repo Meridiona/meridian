@@ -21,6 +21,13 @@
 //!    the dashboard: the auto-open never fires for them, but the toolbar's
 //!    "What's New" nav pill is always there as a manual fallback.
 //!
+//! Plus two gates that live between 2 and 3 in the code because they are about
+//! *whether a window may appear at all* rather than about this feature: the
+//! onboarding walkthrough being owed or on screen, and — since the tray owns its
+//! own login/morning job — the launch being **unattended**
+//! ([`crate::autostart::launched_by_autostart`]). Nobody asked for Meridian when
+//! the OS started it, so nothing may appear on screen.
+//!
 //! The marker is written BEFORE the window opens, same crash-safety trade-off
 //! as `plan_auto_open`: worst case of a crash between write and open is one
 //! missed popup, never a repeat-every-relaunch loop under launchd `KeepAlive`.
@@ -57,6 +64,24 @@ pub(crate) async fn maybe_auto_open_whats_new(app: &tauri::AppHandle) {
         return;
     }
 
+    // 2a. NOT on an unattended launch. When the login/morning job started this
+    //     process the user did not ask for Meridian at all - they rebooted, or
+    //     they quit yesterday and it is now 09:00. Opening a changelog window on
+    //     top of whatever they are actually doing is the specific annoyance that
+    //     makes people disable autostart, which costs us the capture the tray
+    //     exists to perform.
+    //
+    //     Deferred, not skipped, and for the same reason as the gates around it:
+    //     the marker is only written on the fire path below, so the notes still
+    //     surface the next time the user launches Meridian themselves. The
+    //     toolbar's "What's New" pill is there in the meantime either way.
+    if crate::autostart::launched_by_autostart() {
+        tracing::debug!(
+            "whats-new auto-open: unattended launch - deferring to a user-initiated one"
+        );
+        return;
+    }
+
     // 2b. …or over the WALKTHROUGH. Same reasoning as the sibling plan
     //     auto-open: `onboarded` marks the end of the WIZARD, and the tour runs
     //     after it, so this gate stops covering onboarding at the moment the
@@ -88,4 +113,31 @@ pub(crate) async fn maybe_auto_open_whats_new(app: &tauri::AppHandle) {
     crate::deep_link::navigate_dashboard(app, meridian_core::notifications::deep_links::WHATS_NEW);
     crate::tray::open_native_dashboard(app);
     tracing::info!(version = %current_version, "whats-new auto-open: opened dashboard on the What's New view");
+}
+
+#[cfg(test)]
+mod tests {
+    /// The unattended-launch gate must come BEFORE the window opener.
+    ///
+    /// Source-scanning rather than behavioural because the thing being asserted
+    /// is "no window appeared", and a headless test has no window to observe —
+    /// the same reasoning as `ui/__tests__/no-native-dialogs.test.ts`. What it
+    /// protects is specific: a future edit that reorders the gates, or drops
+    /// this one while refactoring, would silently restore a changelog window
+    /// opening on a machine the user never touched. That symptom looks like a
+    /// product decision rather than a bug, so nobody files it.
+    #[test]
+    fn the_unattended_gate_precedes_the_window_open() {
+        let src = include_str!("whats_new_auto_open.rs");
+        let gate = src
+            .find("launched_by_autostart()")
+            .expect("the unattended-launch gate is gone - an autostart would open a window");
+        let open = src
+            .find("open_native_dashboard")
+            .expect("the window opener moved - re-check this test's needles");
+        assert!(
+            gate < open,
+            "the unattended-launch gate must be checked before the window is opened"
+        );
+    }
 }

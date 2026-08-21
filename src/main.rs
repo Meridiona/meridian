@@ -1438,6 +1438,26 @@ async fn main() -> Result<()> {
                     }
                 }
 
+                // Groq is discontinued and actively BLOCKED (see the hard refusal in
+                // `llm::resolver::complete_inner` — every call is refused unconditionally
+                // while Groq is the active provider, so hourly summaries stop, not just
+                // "may fail"). Its free tier's token-rate limits are too tight for this
+                // pipeline's hourly calls — real, observed production failures, not a
+                // hypothetical. The row itself is left untouched (still visible, still
+                // manageable, still selectable) so the user isn't locked out of their own
+                // settings, but the moment Groq is active this banner says plainly that
+                // nothing is being sent to it. Raise/clear every tick, same idempotent
+                // pattern as disk-space above. This is the steady-state driver; the tray's
+                // `update_settings` calls the SAME function the instant the provider changes,
+                // so switching away from Groq clears the banner immediately rather than
+                // leaving it up for up to a minute after the fix already took effect — see
+                // `sync_groq_deprecated_notice`'s doc for why both call it.
+                meridian::notices::sync_groq_deprecated_notice(
+                    &meridian,
+                    cfg.runtime.active_custom_provider().map(|p| p.vendor.as_str()),
+                )
+                .await;
+
                 // Interactive-notification responses — act on the user's answers
                 // (snooze re-enqueues an hour out). Idempotent end-to-end, so the
                 // same cadence as the nudge above is safe.

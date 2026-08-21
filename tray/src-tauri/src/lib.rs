@@ -80,8 +80,8 @@ use reopen::{is_onboarded, reopen_target, ReopenTarget};
 pub(crate) use reopen::onboarding_complete;
 #[cfg(target_os = "macos")]
 use window_panel::{
-    init_as_nspanel, install_click_outside_monitor, make_visible_over_fullscreen,
-    set_process_display_name, show_no_focus,
+    apply_corner_mask, init_as_nspanel, install_click_outside_monitor,
+    make_visible_over_fullscreen, set_process_display_name, show_no_focus,
 };
 use window_panel::{monitor_work_area, tray_anchor_position};
 
@@ -159,6 +159,70 @@ mod catch_setup_panic_tests {
     }
 }
 
+#[cfg(test)]
+mod single_instance_tests {
+    /// The second-instance callback must never open or focus a window.
+    ///
+    /// Source-scanned because the thing being asserted is "nothing appeared",
+    /// which a headless test has no window to observe — the same reasoning as
+    /// `ui/__tests__/no-native-dialogs.test.ts`. What it protects is specific:
+    /// every single-instance example on the internet focuses the main window,
+    /// so the natural "improvement" to this callback is precisely the bug. The
+    /// common caller is the 09:00 morning trigger on a machine nobody touched.
+    #[test]
+    fn the_second_instance_callback_opens_nothing() {
+        let src = include_str!("lib.rs");
+        // Newline-anchored so it matches the DEFINITION and not the string
+        // literal on this very line — searching for the bare name found this
+        // test first and made it fail against its own forbidden-word list.
+        let start = src
+            .find("\nfn on_second_instance(")
+            .expect("callback renamed - re-check this test's needles");
+        let body_end = src[start..]
+            .find("\npub fn run()")
+            .expect("callback is expected to sit directly above run()");
+        let body = &src[start..start + body_end];
+        for forbidden in [
+            "open_native_dashboard",
+            "open_wizard_window",
+            "set_focus",
+            ".show()",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "on_second_instance must not call {forbidden} - an unattended \
+                 relaunch would put a window on screen"
+            );
+        }
+    }
+}
+
+/// What the surviving instance does when a second one was blocked: **nothing
+/// but log**.
+///
+/// This is a deliberate departure from every single-instance example, which
+/// focuses or shows the main window. Doing that here would be actively wrong:
+/// the overwhelmingly common caller is the 09:00 morning trigger passing
+/// `--autostart`, i.e. the OS starting Meridian on a machine nobody touched. A
+/// window appearing then is exactly the annoyance that makes people disable
+/// autostart, which costs us the capture the tray exists to perform.
+///
+/// A user-initiated activation does NOT arrive here. Clicking the app in
+/// Finder, Spotlight or the Dock goes through LaunchServices, which activates
+/// the running instance and fires `RunEvent::Reopen` — handled separately by
+/// [`reopen`], which opens the dashboard. This callback only sees a direct
+/// re-exec of the binary, which on this app means a scheduler.
+///
+/// So the correct behaviour is to let the second process die quietly and carry
+/// on. Logged at DEBUG rather than INFO because on a machine left running for
+/// weeks this fires once a day, forever, and says nothing new each time.
+fn on_second_instance(_app: &tauri::AppHandle, args: Vec<String>, _cwd: String) {
+    tracing::debug!(
+        unattended = autostart::args_indicate_autostart(args.iter().map(String::as_str)),
+        "single-instance: a second launch was blocked - staying as we are"
+    );
+}
+
 pub fn run() {
     // Native-crash capture (Phase 2B). MUST be first: `tauri-plugin-sentry`'s
     // minidump reporter relaunches this exe in a special reporter mode that has
@@ -174,6 +238,13 @@ pub fn run() {
     let _sentry_minidump = sentry_client
         .as_ref()
         .map(|c| tauri_plugin_sentry::minidump::init(c));
+
+    // Uptime baseline for `analytics::health`. Deliberately AFTER the minidump
+    // reporter, not before it: `crash::init_client` above must be the first
+    // thing this function does, because the reporter relaunches this exe in a
+    // special mode that short-circuits before any app work, and a process that
+    // exists only to upload a crash dump has no meaningful "uptime" to record.
+    sys::mark_process_start();
 
     // Tray telemetry. Emit the tray's own spans + logs (service.name =
     // meridian-tray) into the shared OTLP spool — the same one the daemon writes
@@ -198,6 +269,26 @@ pub fn run() {
     let app_state = Arc::new(Mutex::new(AppState::default()));
 
     let mut builder = tauri::Builder::default()
+        // SINGLE INSTANCE MUST BE FIRST. Two reasons, and the second is ours.
+        //
+        // Upstream requires it so the plugin runs before anything else can
+        // interfere. For Meridian it is also what guarantees the doomed second
+        // process exits BEFORE it can create a tray icon or, far worse, a
+        // capture writer against `meridian.db`.
+        //
+        // Why a second process happens at all: the 09:00 morning trigger
+        // (`autostart`) is started by the OS scheduler, and neither scheduler can
+        // see that the app is already running. launchd tracks liveness per job
+        // LABEL, so the process macOS's loginwindow started via SMAppService is
+        // invisible to our calendar job; Task Scheduler's
+        // `MultipleInstancesPolicy: IgnoreNew` only dedupes the task's own
+        // instances. So the trigger fires daily into a running app, and without
+        // this the result is two processes writing one SQLite file — the
+        // double-writer condition behind `database disk image is malformed`.
+        //
+        // The callback runs in the FIRST (surviving) instance. It deliberately
+        // does nothing but log — see `on_second_instance`.
+        .plugin(tauri_plugin_single_instance::init(on_second_instance))
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_opener::init())
         // DMG auto-update: reads endpoint + minisign pubkey from tauri.conf.json.
@@ -249,18 +340,12 @@ pub fn run() {
     } else {
         tracing::info!("unbundled run — notifications plugin not registered, toasts disabled");
     }
-    // Launch-at-login (see `autostart.rs`). Bundled only, same rationale as
-    // notifications above: an unbundled `cargo run`/`tauri dev` binary lives
-    // under `target/`, and registering a login item pointing at that path
-    // would be both wrong (dev builds move/vanish) and surprising.
-    if sys::is_bundled() {
-        builder = builder.plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ));
-    } else {
-        tracing::info!("unbundled run — autostart plugin not registered, no login item");
-    }
+    // NOTE: there is no autostart PLUGIN here any more. `tauri-plugin-autostart`
+    // could only write `RunAtLoad`, so it had no way to express the morning
+    // relaunch, and it named its plist after `productName` rather than
+    // `com.meridiona.*`, which is why every uninstall left the login item
+    // behind. `autostart.rs` owns the plist / scheduled task outright now; it is
+    // called from `setup()` below, still bundled-only.
     builder
         .manage(app_state.clone())
         // Pending dashboard navigation target (e.g. "/plan") — set by tray-side
@@ -1006,6 +1091,15 @@ pub fn run() {
                 }
             }
 
+            // Clip the popover's window to the card's own corner radius so
+            // the 4 corners are truly transparent (see `apply_corner_mask`'s
+            // doc comment). Only "main" - the tooltip window is deliberately
+            // larger than its card with transparent tail-placement padding.
+            #[cfg(target_os = "macos")]
+            if let Some(main_win) = app.get_webview_window("main") {
+                apply_corner_mask(&main_win, 18.0);
+            }
+
             // The popover is a non-activating NSPanel — it never becomes key so
             // Focused(false) never fires. Dismiss paths:
             //   • click-outside → global NSEvent monitor (macOS)
@@ -1043,17 +1137,20 @@ pub fn run() {
                 poll::run_daemon_watchdog().await;
             });
 
-            // Launch-at-login: self-heal (once ever, see autostart.rs) so the
-            // tray comes back on its own after a reboot/re-login instead of
-            // needing a manual relaunch. Bundled only — the plugin above is
-            // only registered there, so `app.autolaunch()` has no state
-            // otherwise. Spawned off the setup hook like the backend install
-            // below: it does file + `auto_launch` I/O that shouldn't block
-            // tray startup.
+            // Launch-at-login AND morning relaunch: VERIFY-AND-REPAIR on every
+            // launch (see autostart.rs), so the tray comes back after a reboot
+            // and again the next morning if it was quit. Deliberately not
+            // once-ever: the previous implementation trusted a
+            // `~/.meridian/autostart_configured` marker, which survives the app
+            // being trashed, reinstalled or moved — so an install could lose its
+            // login item permanently with nothing able to notice. Bundled only:
+            // an unbundled `cargo run` binary lives under `target/` and must
+            // never be pinned. Spawned off the setup hook like the backend
+            // install below, because it does file + `launchctl`/`schtasks` I/O
+            // that shouldn't block tray startup.
             if sys::is_bundled() {
-                let autostart_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    autostart::ensure_enabled_once(&autostart_handle).await;
+                    autostart::ensure_registered().await;
                 });
             }
 
@@ -1220,6 +1317,7 @@ pub fn run() {
             commands::start_oauth,
             commands::cancel_oauth,
             commands::get_oauth_status,
+            commands::request_pm_tool,
             // OS/window actions
             commands::take_pending_deep_link,
             commands::open_permission_pane,

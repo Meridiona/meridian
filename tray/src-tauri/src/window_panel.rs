@@ -216,6 +216,67 @@ pub(crate) fn init_as_nspanel(win: &tauri::WebviewWindow) {
     }
 }
 
+/// Clip the popover's native content view to a rounded rect matching the
+/// card's own CSS `border-radius`, so the window's 4 corners are genuinely
+/// transparent instead of relying on WKWebView's private `drawsBackground`
+/// hack to be pixel-perfect there.
+///
+/// The CSS card (`.pop` / `.signin-lock`, `--radius: 18px`) is rounded, but
+/// the native window and its WKWebView are a plain rectangle — CSS
+/// `overflow: hidden` only clips content *inside* the div, not the
+/// webview's own backing layer. `app.js`'s `resizeToContent` already works
+/// around the same underlying gap on the bottom edge (fitting window height
+/// to the card so no unclipped strip shows below it), but the 4 corners
+/// carved out by `border-radius` were never addressed - wry only asks
+/// WKWebView to stop painting its default background via a private
+/// `drawsBackground` KVC key, which is not always pixel-accurate right at
+/// an anti-aliased curve, so those corner triangles can render as a faint
+/// white/light patch over the desktop instead of true transparency. Masking
+/// `contentView`'s `CALayer` removes them at the compositor level - nothing
+/// paints there at all - independent of whatever WKWebView itself does.
+///
+/// Only the popover ("main") uses this: the tooltip window is deliberately
+/// *larger* than its own (differently-radiused) card, with transparent
+/// padding on all sides for tail placement (see `tooltip.css`), so clipping
+/// its whole window to a rounded rect would cut off that intentional
+/// margin.
+///
+/// Must be called after the window has a native handle (`setup` hook, same
+/// site as [`init_as_nspanel`]).
+#[cfg(target_os = "macos")]
+pub(crate) fn apply_corner_mask(win: &tauri::WebviewWindow, radius: f64) {
+    use objc2::{msg_send, runtime::AnyObject};
+
+    let ptr = match win.ns_window() {
+        Ok(p) if !p.is_null() => p as *mut AnyObject,
+        _ => {
+            tracing::warn!(label = %win.label(), "apply_corner_mask: ns_window unavailable");
+            return;
+        }
+    };
+    // Safety: `ptr` is a live NSWindow handle for the lifetime of this call
+    // (owned by the still-running app); we only send read/write property
+    // selectors that exist on every NSWindow/NSView/CALayer. Main thread
+    // (setup hook), no ownership transfer.
+    unsafe {
+        let ns = &*ptr;
+        let content_view: *mut AnyObject = msg_send![ns, contentView];
+        let Some(cv) = content_view.as_ref() else {
+            tracing::warn!(label = %win.label(), "apply_corner_mask: contentView unavailable");
+            return;
+        };
+        let _: () = msg_send![cv, setWantsLayer: true];
+        let layer: *mut AnyObject = msg_send![cv, layer];
+        let Some(l) = layer.as_ref() else {
+            tracing::warn!(label = %win.label(), "apply_corner_mask: layer unavailable");
+            return;
+        };
+        let _: () = msg_send![l, setCornerRadius: radius];
+        let _: () = msg_send![l, setMasksToBounds: true];
+    }
+    tracing::info!(label = %win.label(), radius, "apply_corner_mask: clipped content view to rounded rect");
+}
+
 /// Install a global `NSEvent` monitor that hides the popover when the user
 /// clicks outside it (in any other app or window).
 ///
