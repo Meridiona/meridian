@@ -15,6 +15,7 @@ pub mod azure_devops;
 pub mod comment;
 pub mod config;
 pub mod create;
+mod create_github;
 pub mod db;
 pub mod escalate;
 pub mod generate;

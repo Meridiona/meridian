@@ -122,14 +122,19 @@ export const TRACKERS: Tracker[] = [
       hint: 'Opens your browser and shows a one-time code to enter — no PAT to create, no CLI required.',
     },
     token: {
-      // The URL below pre-selects the repo, read:org and read:project scopes and
+      // The URL below pre-selects the repo, read:org and project scopes and
       // pre-fills the token name, so the user only picks which org/repos to grant.
       // After the PAT is saved, TokenSetup shows the GitHubProjectPicker (the same
       // discover-and-tick board list the browser flow uses) - so there is no
       // manual Projects v2 node-ID field to fill in anymore.
+      //
+      // `project`, not `read:project`: creating a task from the day plan adds the
+      // new issue to the user's board (`addProjectV2ItemById`), which is a write.
+      // Under `read:project` that mutation is refused and the created issue never
+      // syncs back. Keep this in step with meridian-oauth's REQUIRED_SCOPES.
       label: 'Personal Access Token',
-      hint: 'Open the link - the required scopes (repo, read:org, read:project) are already selected. Just choose the organisation or repositories to grant, generate the token, and paste it below.',
-      url: 'https://github.com/settings/tokens/new?scopes=repo,read:org,read:project&description=Meridian',
+      hint: 'Open the link - the required scopes (repo, read:org, project) are already selected. Just choose the organisation or repositories to grant, generate the token, and paste it below.',
+      url: 'https://github.com/settings/tokens/new?scopes=repo,read:org,project&description=Meridian',
       fields: [
         { name: 'token', label: 'Token', placeholder: 'ghp_…', password: true, required: true },
       ],

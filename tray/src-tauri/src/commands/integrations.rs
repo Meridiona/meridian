@@ -949,7 +949,7 @@ pub async fn discover_github_projects() -> Result<GithubDiscoverResponse, String
     let status = resp.status();
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
         return Err(
-            "GitHub token invalid or missing the read:project scope — reconnect GitHub".to_string(),
+            "GitHub token invalid or missing the project scope - reconnect GitHub".to_string(),
         );
     }
     if !status.is_success() {
