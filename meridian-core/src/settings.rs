@@ -356,7 +356,7 @@ pub struct RuntimeSettings {
     #[serde(default)]
     pub account_pseudonym: Option<String>,
     // ALPHA TESTING ONLY, same window as `account_pseudonym` above
-    // (`redact::ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`, 2026-08-28) — the RAW
+    // (`redact::ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`, through 2026-12-31) — the RAW
     // signed-in email, mirrored alongside the hash so BOTH the tray and the
     // daemon can attach it to their OpenObserve resource attributes and (tray
     // only) Sentry's `user.email`, which is how support tells which user and

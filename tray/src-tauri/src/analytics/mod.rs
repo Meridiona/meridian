@@ -546,13 +546,23 @@ pub(crate) async fn send_pm_tool_requested(app: &tauri::AppHandle, tool_name: &s
     let Some(path) = analytics_state_path() else {
         return;
     };
-    let device_id = load_or_init_state(&path).device_id;
-    let mut props = base_properties(app, &device_id);
+    // Persist BEFORE sending. `load_or_init_state` mints a fresh `device_id`
+    // in memory when the file is missing or unreadable and does not write it
+    // back, so without this every event from such a machine would carry a
+    // different device_id and read as a different install.
+    let state = load_or_init_state(&path);
+    save_state(&path, &state);
+    let mut props = base_properties(app, &state.device_id);
     props.insert(
         "tool_name".to_string(),
         serde_json::Value::String(tool_name.to_string()),
     );
+    // `tool_name` stays OUT of the log line - it is free text the user typed,
+    // and `tracing` is captured at full fidelity locally (and travels in an
+    // unredacted diagnostics bundle). The consented PostHog payload above is
+    // where it belongs. See `commands::pm_tool_request` for the same rule on
+    // the span field.
     if capture("pm_tool_requested", &email, props).await {
-        tracing::info!(tool_name, "analytics: pm_tool_requested sent");
+        tracing::info!("analytics: pm_tool_requested sent");
     }
 }

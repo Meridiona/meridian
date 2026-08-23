@@ -113,7 +113,7 @@ pub(crate) fn task_xml(exe: &Path) -> String {
         r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Starts Meridian in the background at sign-in, and again each morning if it was quit.</Description>
+    <Description>Starts Meridian in the background at sign-in, and again whenever you unlock or reconnect to this session.</Description>
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>

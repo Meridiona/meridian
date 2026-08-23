@@ -207,13 +207,50 @@ async fn mark_first_stale_failure(pool: &SqlitePool, provider: &str, detail: &st
         detail,
         "first transient failure since a genuine past success - staying quiet until the next attempt"
     );
-    sqlx::query(
-        "UPDATE pm_sync_state SET last_synced_at = '1970-01-01T00:00:00Z' WHERE provider = ?",
+    // The WHERE clause re-checks, inside the write, the same three conditions
+    // the caller checked in a SEPARATE statement: still stale, not already the
+    // sentinel, and carrying no error.
+    //
+    // For the same reason `insert_grace_row` needs `ON CONFLICT DO NOTHING`:
+    // `meridian ticket-update` opens its own pool to this file and runs
+    // `run_pm_force_sync` while the daemon's poll loop runs `run_pm_sync`, so
+    // the racers are separate PROCESSES and no in-process lock covers them.
+    // That path was guarded for the INSERT and left open for this UPDATE.
+    //
+    // The damage an unconditional write does is not a lost grace tick (both
+    // racers intend the same sentinel) but the opposite: a sync that SUCCEEDS
+    // between the caller's read and this statement has its fresh
+    // `last_synced_at` stamped back to the epoch. The provider then reads as
+    // never-recently-synced, and the next failure escalates a user-visible
+    // notice for a tracker that is working. A single conditional statement is
+    // atomic in SQLite, so the success either lands before this (and the
+    // `last_synced_at` guard makes this a no-op) or after it (and it wins).
+    let updated = sqlx::query(
+        "UPDATE pm_sync_state SET last_synced_at = '1970-01-01T00:00:00Z'
+         WHERE provider = ?
+           AND last_error IS NULL
+           AND last_synced_at != '1970-01-01T00:00:00Z'
+           AND last_synced_at <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)",
     )
     .bind(provider)
+    .bind(format!("-{TRANSIENT_ESCALATION_HOURS} hours"))
     .execute(pool)
     .await
-    .context("recording a resumed provider's first quiet failure since its last success")?;
+    .context("recording a resumed provider's first quiet failure since its last success")?
+    .rows_affected();
+
+    if updated == 0 {
+        // Something changed under us between the read and the write. Staying
+        // quiet is still the right answer for THIS attempt - the caller already
+        // decided not to escalate - but say so, because the alternative reading
+        // ("the write silently did nothing") is the bug this guard introduces
+        // if it is ever wrong.
+        tracing::debug!(
+            provider,
+            "grace write skipped - the row stopped being a clean stale transition \
+             (a concurrent sync succeeded, or another pass already recorded it)"
+        );
+    }
     Ok(())
 }
 

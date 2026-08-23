@@ -91,6 +91,51 @@ fn defaults_for(object_type: &str) -> &'static [FieldDefault] {
     }
 }
 
+/// Carry guest-js's `has_password` across to the `password_enabled` the model
+/// wants, when the payload said so.
+///
+/// The rename is already documented in [`defaults_for`] — but the default
+/// there is a flat `false`, which is only right when guest-js said nothing.
+/// A sign-up that DID set a password sends `"has_password": true`, and
+/// defaulting past it writes the opposite of the truth into the cached session
+/// before `ClientSignUp` ever deserializes. Silent, and exactly wrong on the
+/// account state a user would notice.
+///
+/// Runs BEFORE `defaults_for`'s `or_insert`, so the carried value wins and the
+/// `false` default only applies when neither key is present.
+fn carry_over_has_password(canonical: &str, map: &mut serde_json::Map<String, Value>) {
+    if canonical != "sign_up_attempt" || map.contains_key("password_enabled") {
+        return;
+    }
+    if let Some(has) = map.get("has_password").and_then(Value::as_bool) {
+        map.insert("password_enabled".to_string(), json!(has));
+    }
+}
+
+/// Ensure `verifications` is an object carrying ALL four keys.
+///
+/// Replacing only a non-object (the shape this started as) is not enough: every
+/// field is `Option` but carries `deserialize_with = "Option::deserialize"`, so
+/// a PARTIAL object — say one that names `email_address` alone — is missing
+/// required keys just as surely as `{}` is, and fails with `missing field`
+/// all the same. See [`empty_sign_up_verifications`] for the same reasoning
+/// applied to the empty case.
+///
+/// Populated entries are preserved; only the absent keys get a `null`.
+fn complete_sign_up_verifications(map: &mut serde_json::Map<String, Value>) {
+    let mut filled = empty_sign_up_verifications();
+    if let (Value::Object(required), Some(Value::Object(existing))) =
+        (&mut filled, map.get("verifications"))
+    {
+        // Start from the all-null skeleton and overlay whatever was populated,
+        // so a key guest-js omitted is present-and-null rather than missing.
+        for (key, value) in existing {
+            required.insert(key.clone(), value.clone());
+        }
+    }
+    map.insert("verifications".to_string(), filled);
+}
+
 /// `clerkSignUpToSignUpJSON` hardcodes `verifications: null`, but
 /// `ClientSignUp.verifications` is a non-`Option` `Box<ClientSignUpVerifications>`
 /// — so the null is rejected outright.
@@ -213,6 +258,9 @@ pub(crate) fn backfill_clerk_client_json(value: &mut Value) {
                 if canonical != object_type {
                     map.insert("object".to_string(), json!(canonical));
                 }
+                // BEFORE the blanket defaults: `password_enabled` has a real
+                // source in the payload and must not be defaulted past it.
+                carry_over_has_password(&canonical, map);
                 for (key, default) in defaults_for(&canonical) {
                     map.entry(*key).or_insert_with(default);
                 }
@@ -221,10 +269,8 @@ pub(crate) fn backfill_clerk_client_json(value: &mut Value) {
                         map.insert("status".to_string(), json!(fallback));
                     }
                 }
-                if canonical == "sign_up_attempt"
-                    && !matches!(map.get("verifications"), Some(Value::Object(_)))
-                {
-                    map.insert("verifications".to_string(), empty_sign_up_verifications());
+                if canonical == "sign_up_attempt" {
+                    complete_sign_up_verifications(map);
                 }
             }
             for v in map.values_mut() {
@@ -933,5 +979,89 @@ mod tests {
         // spellings must not match - they are rewritten first.
         assert_eq!(null_status_fallback("sign_in"), None);
         assert_eq!(null_status_fallback("sign_up"), None);
+    }
+}
+
+#[cfg(test)]
+mod backfill_gap_tests {
+    use super::*;
+
+    /// The rename `has_password` -> `password_enabled` is documented in
+    /// `defaults_for`, but the default there is a flat `false`. A sign-up that
+    /// DID set a password says so, and defaulting past it writes the opposite
+    /// of the truth into the cached session.
+    #[test]
+    fn a_real_has_password_is_carried_over_not_defaulted_to_false() {
+        let mut v = json!({ "object": "sign_up_attempt", "has_password": true });
+        backfill_clerk_client_json(&mut v);
+        assert_eq!(v["password_enabled"], json!(true));
+    }
+
+    #[test]
+    fn has_password_false_still_reads_false() {
+        let mut v = json!({ "object": "sign_up_attempt", "has_password": false });
+        backfill_clerk_client_json(&mut v);
+        assert_eq!(v["password_enabled"], json!(false));
+    }
+
+    /// Neither key present: the existing `false` default still applies.
+    #[test]
+    fn absent_on_both_sides_keeps_the_false_default() {
+        let mut v = json!({ "object": "sign_up_attempt" });
+        backfill_clerk_client_json(&mut v);
+        assert_eq!(v["password_enabled"], json!(false));
+    }
+
+    /// An explicit `password_enabled` is authoritative and must not be
+    /// overwritten by `has_password`.
+    #[test]
+    fn an_explicit_password_enabled_wins() {
+        let mut v = json!({
+            "object": "sign_up_attempt",
+            "password_enabled": true,
+            "has_password": false,
+        });
+        backfill_clerk_client_json(&mut v);
+        assert_eq!(v["password_enabled"], json!(true));
+    }
+
+    /// The gap this closes: only a NON-object `verifications` used to be
+    /// replaced, so a partial object kept its missing keys - and every field
+    /// carries `deserialize_with = "Option::deserialize"`, which needs the key
+    /// PRESENT even for a null. A partial object fails exactly like `{}` does.
+    #[test]
+    fn a_partial_verifications_object_is_completed_not_left_short() {
+        let mut v = json!({
+            "object": "sign_up_attempt",
+            "verifications": { "email_address": { "status": "verified" } },
+        });
+        backfill_clerk_client_json(&mut v);
+
+        let ver = v["verifications"].as_object().unwrap();
+        for key in [
+            "email_address",
+            "phone_number",
+            "web3_wallet",
+            "external_account",
+        ] {
+            assert!(ver.contains_key(key), "missing {key}: {ver:?}");
+        }
+        // The populated entry survives untouched.
+        assert_eq!(ver["email_address"]["status"], json!("verified"));
+        assert_eq!(ver["phone_number"], Value::Null);
+    }
+
+    /// The pre-existing cases must keep working: null and absent both become
+    /// the full all-null skeleton.
+    #[test]
+    fn a_null_or_absent_verifications_still_becomes_the_full_skeleton() {
+        for mut v in [
+            json!({ "object": "sign_up_attempt", "verifications": Value::Null }),
+            json!({ "object": "sign_up_attempt" }),
+        ] {
+            backfill_clerk_client_json(&mut v);
+            let ver = v["verifications"].as_object().unwrap();
+            assert_eq!(ver.len(), 4, "{ver:?}");
+        }
     }
 }

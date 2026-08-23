@@ -533,7 +533,13 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   // the time row first means the button is live by the time they reach it.
   await s.point('[data-tour="worklog-schedule-times"]')
   s.say('Pick a time - one of these, or type your own.')
-  await s.waitForClick('[data-tour="worklog-schedule-times"]', 300000)
+  // Wait for the BUTTON to go live, not for a click on the time row. The row is
+  // a wrapper, so `waitForClick` also matches a bubbled click on its padding or
+  // on the custom-time input - neither of which sets the dialog's `chosen`
+  // state. Advancing on one of those put the cursor on a still-disabled "Turn
+  // on" for up to the full timeout, which is the exact dead-control problem the
+  // comment above says this beat exists to avoid.
+  await s.appeared('[data-tour="worklog-schedule-on"]:not([disabled])', 300000)
   await s.point('[data-tour="worklog-schedule-on"]')
   // Resolves on the click OR on the dialog leaving the DOM, which covers "Not
   // now" and the backdrop - both are the question being answered, and neither
