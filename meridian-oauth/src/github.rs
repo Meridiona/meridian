@@ -39,7 +39,16 @@ const TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 /// Scopes needed for issue/PR reads and GitHub Projects v2 node-ID listing.
 /// Space-separated per the OAuth `scope` param (the `gh` CLI used commas — that
 /// was a `gh`-specific arg format, not the OAuth wire format).
-pub const REQUIRED_SCOPES: &str = "repo read:org read:project";
+///
+/// `project` (read-WRITE), not `read:project`: creating a task from the day plan
+/// calls `addProjectV2ItemById` to put the new issue on the user's board
+/// (`crate`-side, `src/pm_worklog/create_github.rs`), and that mutation is
+/// refused under `read:project` with an HTTP 200 + a `errors[].message` naming
+/// the missing scope. `project` subsumes `read:project`, so nothing that worked
+/// before needs the narrower one. A token minted before this change keeps only
+/// `read:project` — reads carry on working and the board add degrades to a
+/// warning, so the user is nudged to reconnect rather than broken by it.
+pub const REQUIRED_SCOPES: &str = "repo read:org project";
 
 /// Meridian's GitHub OAuth App client id — a PUBLIC identifier (device flow has
 /// no client secret), baked in at build time so the in-app browser connect needs

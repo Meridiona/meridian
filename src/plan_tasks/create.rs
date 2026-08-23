@@ -192,10 +192,12 @@ async fn create_on_tracker(
         });
     }
 
-    // The ticket is real but our mirror hasn't got it. Overwhelmingly this means the
-    // self-assign inside create_ticket failed (it is best-effort, and the sync only
-    // fetches issues assigned to the user), so waiting will not fix it. Shadow it as
-    // 'local' — prune cannot touch that, and a later sync UPSERTs over it.
+    // The ticket is real but our mirror hasn't got it. Overwhelmingly this means one
+    // of `create_ticket`'s best-effort follow-ups failed — the self-assign (every
+    // provider's sync only fetches issues assigned to the user) or, on GitHub, the
+    // board add as well (its sync walks project items, so an issue that isn't ON the
+    // board is invisible however it's assigned). Neither heals by waiting. Shadow it
+    // as 'local' — prune cannot touch that, and a later sync UPSERTs over it.
     tracing::Span::current().record("shadowed", true);
     tracing::warn!(
         task_key = key,
@@ -221,10 +223,25 @@ async fn create_on_tracker(
         task_key: key,
         provider: task_create::LOCAL_PROVIDER.to_string(),
         synced: true,
-        note: Some(format!(
-            "Created in {provider} - it'll appear on your board once it's assigned to you."
-        )),
+        note: Some(shadow_note(provider)),
     })
+}
+
+/// The soft caveat shown when a real ticket was filed but hasn't reached our
+/// mirror. Provider-specific because the thing the user has to fix differs: every
+/// tracker's sync needs the ticket assigned to them, but GitHub's ALSO needs it to
+/// be an item on a configured Projects v2 board — so telling a GitHub user to
+/// check the assignee sends them to look at something that is already correct.
+fn shadow_note(provider: &str) -> String {
+    match provider {
+        "github" => "Created on GitHub - it'll appear here once it's on your project board and \
+                     assigned to you. If it isn't, reconnect GitHub in Settings so Meridian can \
+                     add it for you."
+            .to_string(),
+        other => {
+            format!("Created in {other} - it'll appear on your board once it's assigned to you.")
+        }
+    }
 }
 
 /// Refuse early when `day`'s plan is already full.
@@ -302,6 +319,30 @@ mod tests {
             Target::Tracker("jira".to_string()),
             "a provider id means file it for real"
         );
+    }
+
+    /// GitHub's sync gate is board membership, not just the assignee — the old
+    /// one-size note sent a GitHub user to check something already correct.
+    #[test]
+    fn the_github_shadow_note_names_the_project_board() {
+        let note = shadow_note("github");
+        assert!(note.contains("project board"), "{note}");
+        assert!(note.contains("reconnect GitHub"), "{note}");
+    }
+
+    #[test]
+    fn other_providers_keep_the_assignee_note() {
+        assert!(shadow_note("jira").contains("assigned to you"));
+        assert!(shadow_note("jira").contains("jira"));
+    }
+
+    /// User-facing copy: plain hyphens only (see the repo's Hard Rules).
+    #[test]
+    fn shadow_notes_use_plain_hyphens() {
+        for p in ["github", "jira", "linear", "trello"] {
+            let note = shadow_note(p);
+            assert!(!note.contains('—') && !note.contains('–'), "{note}");
+        }
     }
 
     #[test]
