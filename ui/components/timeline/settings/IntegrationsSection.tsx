@@ -71,7 +71,7 @@ export function IntegrationsSection({ integrations, onChanged, gate = false, onD
       )}
 
       <div className="mt-5">
-        <ConnectTrackers integrations={integrations} onChanged={onChanged} />
+        <ConnectTrackers integrations={integrations} onChanged={onChanged} onDecline={gate ? onDecline : undefined} />
       </div>
 
       {/* THE WAY OUT. A required step with five providers and no exit assumes every
