@@ -48,7 +48,7 @@ tauri-plugin-positioner = { version = "2.3", features = ["tray-icon"] }
 tauri-plugin-notifications = { version = "=0.4.6", default-features = false }
 # Single instance. LOAD-BEARING for autostart correctness, not a nicety.
 #
-# The 09:00 morning trigger (`autostart::macos` / `autostart::windows`) starts the
+# The new-day relaunch trigger (`autostart::macos` / `autostart::windows`) starts the
 # tray from the OS scheduler, and neither scheduler can see "the app is already
 # running": launchd tracks liveness per JOB LABEL, so the process macOS's
 # loginwindow started via SMAppService is invisible to our calendar job, and Task

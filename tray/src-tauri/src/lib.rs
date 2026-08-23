@@ -168,7 +168,7 @@ mod single_instance_tests {
     /// `ui/__tests__/no-native-dialogs.test.ts`. What it protects is specific:
     /// every single-instance example on the internet focuses the main window,
     /// so the natural "improvement" to this callback is precisely the bug. The
-    /// common caller is the 09:00 morning trigger on a machine nobody touched.
+    /// common caller is the new-day relaunch trigger on a machine nobody touched.
     #[test]
     fn the_second_instance_callback_opens_nothing() {
         let src = include_str!("lib.rs");
@@ -202,7 +202,7 @@ mod single_instance_tests {
 ///
 /// This is a deliberate departure from every single-instance example, which
 /// focuses or shows the main window. Doing that here would be actively wrong:
-/// the overwhelmingly common caller is the 09:00 morning trigger passing
+/// the overwhelmingly common caller is the new-day relaunch trigger passing
 /// `--autostart`, i.e. the OS starting Meridian on a machine nobody touched. A
 /// window appearing then is exactly the annoyance that makes people disable
 /// autostart, which costs us the capture the tray exists to perform.
@@ -276,7 +276,7 @@ pub fn run() {
         // process exits BEFORE it can create a tray icon or, far worse, a
         // capture writer against `meridian.db`.
         //
-        // Why a second process happens at all: the 09:00 morning trigger
+        // Why a second process happens at all: the new-day relaunch trigger
         // (`autostart`) is started by the OS scheduler, and neither scheduler can
         // see that the app is already running. launchd tracks liveness per job
         // LABEL, so the process macOS's loginwindow started via SMAppService is
