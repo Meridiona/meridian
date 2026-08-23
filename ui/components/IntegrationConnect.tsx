@@ -34,11 +34,15 @@ import type { GithubProject, JiraProject } from '@/components/integrationConnect
 
 // ── Main list ─────────────────────────────────────────────────────────────────
 export default function ConnectTrackers({
-  integrations, onChanged, compact,
+  integrations, onChanged, compact, onDecline,
 }: {
   integrations: IntegrationsResponse | null
   onChanged?: () => void
   compact?: boolean
+  /** Only meaningful when this list is rendered as the onboarding gate
+   *  (`IntegrationsSection`'s `gate` prop) — see `RequestToolForm`'s doc for
+   *  why submitting "I don't see my tool" also fires this. */
+  onDecline?: () => void
 }) {
   const [open, setOpen] = useState<string | null>(null)
   const [disconnecting, setDisconnecting] = useState<string | null>(null)
@@ -116,7 +120,7 @@ export default function ConnectTrackers({
         })}
         <div style={{ borderTop: '1px solid var(--t-hair)' }}>
           {requestingTool ? (
-            <RequestToolForm onDone={() => setRequestingTool(false)} />
+            <RequestToolForm onDone={() => setRequestingTool(false)} onDecline={onDecline} />
           ) : (
             <button
               onClick={() => setRequestingTool(true)}
@@ -132,11 +136,22 @@ export default function ConnectTrackers({
 }
 
 // ── "I don't see my tool" (request_pm_tool — settings mirror + PostHog) ─────
-// A side channel, not a connect flow: submitting neither blocks nor advances
-// onboarding. `request_pm_tool` (Rust) does two independent, best-effort
-// things with the free text - mirrors it into settings.json and fires a
-// `pm_tool_requested` PostHog event - see that command's doc for why both.
-function RequestToolForm({ onDone }: { onDone: () => void }) {
+// A side channel outside the gate: submitting there neither blocks nor
+// advances anything, since there is nothing to advance. `request_pm_tool`
+// (Rust) does two independent, best-effort things with the free text -
+// mirrors it into settings.json and fires a `pm_tool_requested` PostHog
+// event - see that command's doc for why both.
+//
+// UNDER the onboarding gate, though, naming a tool IS the same answer as
+// clicking "I don't use a project tool": the user does not have one of the
+// five we support, so a successful submit also fires `onDecline` (passed
+// through from `IntegrationsSection`'s own decline handler) to release the
+// tour's lock exactly the way the explicit skip button does - the walkthrough
+// then narrates the same "let's write this one by hand instead" beat rather
+// than leaving the user stranded on the connect screen after telling us they
+// have no match here. `onDecline` is `undefined` outside the gate, so this is
+// a no-op there.
+function RequestToolForm({ onDone, onDecline }: { onDone: () => void; onDecline?: () => void }) {
   const [value, setValue] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [submitted, setSubmitted] = useState(false)
@@ -151,7 +166,7 @@ function RequestToolForm({ onDone }: { onDone: () => void }) {
     // `__tests__/mutate-body-contract.test.ts` and `save_account_email`'s
     // call sites for the same shape).
     invoke('request_pm_tool', { toolName: tool_name })
-      .then(() => setSubmitted(true))
+      .then(() => { setSubmitted(true); onDecline?.() })
       .catch((e) => setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not send'))
       .finally(() => setSubmitting(false))
   }
