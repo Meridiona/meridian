@@ -344,20 +344,41 @@ pub(super) struct GqlError {
     pub message: String,
 }
 
-/// The first GraphQL error in a response, if any.
+/// The GraphQL error worth reporting out of a response, if any.
+///
+/// A scope failure wins over any other entry. A batched board query can come
+/// back with several errors, and taking `first()` blindly would hide the one
+/// whose advice is actionable ("reconnect GitHub") behind, say, a `NOT_FOUND`
+/// for an unrelated stale board id.
 pub(super) fn graphql_error(v: &Value) -> Option<GqlError> {
-    let first = v.get("errors")?.as_array()?.first()?;
-    Some(GqlError {
-        kind: first
-            .get("type")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        message: first
+    let errors = v.get("errors")?.as_array()?;
+    let read = |e: &Value| GqlError {
+        kind: e.get("type").and_then(Value::as_str).map(str::to_string),
+        message: e
             .get("message")
             .and_then(Value::as_str)
             .unwrap_or("unknown GitHub GraphQL error")
             .to_string(),
-    })
+    };
+    errors
+        .iter()
+        .map(read)
+        .find(is_missing_project_scope)
+        .or_else(|| errors.first().map(read))
+}
+
+/// True when the response carries a `data` payload worth reading despite any
+/// accompanying `errors`.
+///
+/// GitHub reports a board it cannot resolve — a stale `PVT_…` id, or an org
+/// whose SAML SSO this token is not authorised for — as an `errors` entry
+/// **beside a usable `data`**, HTTP 200. Confirmed live: a two-board query with
+/// one bad id returns `{"data":{"p0":{…},"p1":null},"errors":[{"type":"NOT_FOUND",…}]}`.
+/// Treating that as fatal is what would make ONE stale board id block every
+/// create — the exact class of failure issue #843 was about. The same rule is
+/// already applied by `discover_github_projects` in the tray.
+pub(super) fn has_usable_data(v: &Value) -> bool {
+    v.get("data").is_some_and(|d| !d.is_null())
 }
 
 /// True when the token lacks the read-write `project` scope. Worth singling out:
@@ -406,14 +427,25 @@ async fn graphql(
     }
     let v: Value = serde_json::from_str(&body).context("parsing the GitHub GraphQL response")?;
     if let Some(err) = graphql_error(&v) {
-        if is_missing_project_scope(&err) {
-            bail!(
-                "your GitHub connection is missing the project scope - reconnect GitHub in \
-                 Settings > Integrations to grant it ({})",
-                err.message
-            );
+        // Fatal only when nothing usable came back — see [`has_usable_data`].
+        // A partial response is the normal way GitHub reports one unresolvable
+        // board out of several, and `board_repos_from_response` already skips
+        // whichever came back null.
+        if !has_usable_data(&v) {
+            if is_missing_project_scope(&err) {
+                bail!(
+                    "your GitHub connection is missing the project scope - reconnect GitHub in \
+                     Settings > Integrations to grant it ({})",
+                    err.message
+                );
+            }
+            bail!("GitHub GraphQL error: {}", err.message);
         }
-        bail!("GitHub GraphQL error: {}", err.message);
+        tracing::warn!(
+            error = %err.message,
+            kind = err.kind.as_deref().unwrap_or("unknown"),
+            "github create: partial GraphQL errors - continuing with the boards that resolved"
+        );
     }
     Ok(v)
 }
@@ -687,6 +719,72 @@ mod tests {
     /// keying the predicate on `type` rather than on the prose.
     const REAL_INSUFFICIENT_SCOPES_ERROR: &str = r#"{"errors":[{"type":"INSUFFICIENT_SCOPES",
         "message":"Your token has not been granted the required scopes to execute this query. The 'addProjectV2ItemById' field requires one of the following scopes: ['project'], but your token has only been granted the: ['gist', 'read:org', 'read:project', 'repo', 'workflow'] scopes. Please modify your token's scopes at: https://github.com/settings/tokens."}]}"#;
+
+    /// Verbatim body from running the batched board query live with one good id
+    /// and one stale one: HTTP 200, a USABLE `data` (`p0` resolved), `p1` null,
+    /// and a `NOT_FOUND` in `errors`.
+    ///
+    /// This is the shape that made the previous code wrong. `graphql` bailed on
+    /// any `errors` entry, so `fetch_board_repos` failed outright and - with no
+    /// sample key - `create` propagated that. One stale board id made every
+    /// GitHub task creation impossible, which is the failure #843 set out to fix.
+    const REAL_PARTIAL_BOARD_RESPONSE: &str = r#"{"data":{
+        "p0":{"repositories":{"nodes":[{"nameWithOwner":"Meridiona/meridian"}]}},
+        "p1":null},
+        "errors":[{"type":"NOT_FOUND","path":["p1"],
+        "message":"Could not resolve to a node with the global id of 'PVT_stale'"}]}"#;
+
+    #[test]
+    fn a_partial_board_response_is_not_fatal() {
+        let body: Value = serde_json::from_str(REAL_PARTIAL_BOARD_RESPONSE).unwrap();
+        assert!(
+            has_usable_data(&body),
+            "one unresolvable board must not discard the boards that did resolve"
+        );
+        assert_eq!(
+            graphql_error(&body).and_then(|e| e.kind).as_deref(),
+            Some("NOT_FOUND")
+        );
+    }
+
+    /// The end-to-end consequence: the good board still yields its repo, and the
+    /// stale one is skipped rather than blocking the create.
+    #[test]
+    fn a_stale_board_id_does_not_block_creating_the_task() {
+        let body: Value = serde_json::from_str(REAL_PARTIAL_BOARD_RESPONSE).unwrap();
+        let ids = vec!["PVT_good".to_string(), "PVT_stale".to_string()];
+        let boards = board_repos_from_response(&body, &ids);
+        assert_eq!(boards, vec![board("PVT_good", &["Meridiona/meridian"])]);
+        let t = resolve_target(None, ids.first(), &boards).unwrap();
+        assert_eq!(
+            (t.owner.as_str(), t.repo.as_str()),
+            ("Meridiona", "meridian")
+        );
+    }
+
+    /// A response with no usable `data` stays fatal - that is a real failure, not
+    /// a board we can skip.
+    #[test]
+    fn a_response_with_no_usable_data_is_still_fatal() {
+        for body in [
+            json!({ "errors": [{ "message": "boom" }] }),
+            json!({ "data": Value::Null, "errors": [{ "message": "boom" }] }),
+        ] {
+            assert!(!has_usable_data(&body));
+        }
+    }
+
+    /// A mixed response must not hide the one error whose advice the user can
+    /// act on behind an unrelated entry that happens to come first.
+    #[test]
+    fn a_scope_failure_wins_over_an_unrelated_first_error() {
+        let body = json!({ "errors": [
+            { "type": "NOT_FOUND", "message": "Could not resolve to a node" },
+            { "type": "INSUFFICIENT_SCOPES", "message": "needs ['project']" },
+        ]});
+        let err = graphql_error(&body).unwrap();
+        assert!(is_missing_project_scope(&err), "{err:?}");
+    }
 
     #[test]
     fn recognises_a_real_missing_project_scope() {

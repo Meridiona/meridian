@@ -44,19 +44,24 @@
 //! - **macOS 13+** — `SMAppService.mainApp` owns LOGIN (see [`login_item`]),
 //!   which is what produces a named, user-togglable "Meridian" entry in System
 //!   Settings → General → Login Items & Extensions. The plist
-//!   `~/Library/LaunchAgents/com.meridiona.tray.plist` is reduced to the morning
-//!   relaunch alone: `RunAtLoad` **false** + `StartCalendarInterval` at
-//!   [`MORNING_HOUR`], bootstrapped immediately so the trigger is live from the
-//!   moment of install rather than the next login. Below 13 there is no
-//!   SMAppService, so that plist carries both jobs with `RunAtLoad` true.
-//!   Deliberately **no `KeepAlive`** either way: the user asked for Quit to
-//!   stick for the rest of the day and be undone the next morning, and
-//!   `KeepAlive` would make quitting impossible.
-//! - **Windows** — one scheduled task with a `LogonTrigger` *and* a daily
-//!   `CalendarTrigger`, registered from XML because `schtasks`' command form
-//!   cannot express two triggers. Its `MultipleInstancesPolicy` is `IgnoreNew`,
-//!   which is what stops the new-day trigger starting a second tray on top of
-//!   the one the logon trigger already started.
+//!   `~/Library/LaunchAgents/com.meridiona.tray.plist` is reduced to the WAKE
+//!   relaunch alone: `RunAtLoad` **false** + `LaunchEvents` →
+//!   `com.apple.notifyd.matching` on [`macos::WAKE_NOTIFICATIONS`] (unlock,
+//!   desktop-up, display/power state, clamshell), bootstrapped immediately so
+//!   the trigger is live from the moment of install rather than the next login.
+//!   Below 13 there is no SMAppService, so that plist carries both jobs with
+//!   `RunAtLoad` true. Deliberately **no `KeepAlive`** either way: the user
+//!   asked for Quit to stick, and `KeepAlive` would make quitting impossible.
+//! - **Windows** — one scheduled task with a `LogonTrigger` *and* two
+//!   `SessionStateChangeTrigger`s (`SessionUnlock`, `ConsoleConnect`),
+//!   registered from XML because `schtasks`' command form cannot express
+//!   several triggers. Its `MultipleInstancesPolicy` is `IgnoreNew`, which is
+//!   what stops a wake trigger starting a second tray on top of the one the
+//!   logon trigger already started.
+//!
+//! There is **no clock in this module** — see the note beside
+//! [`launched_by_autostart`] on why the hardcoded hour was deleted rather than
+//! lowered.
 //!
 //! # Duplicates are prevented by a guard, not by hoping
 //! The new-day trigger is started by the OS scheduler, and **neither scheduler can
@@ -266,6 +271,43 @@ impl RegistrationAction {
             8 => Self::RepairedStaleDefinition,
             _ => return None,
         })
+    }
+}
+
+/// Whether the plugin-era registration (Windows' `HKCU\…\Run` value, macOS'
+/// `Meridian.plist`) may be deleted, given the verdict and whether a
+/// replacement actually got registered.
+///
+/// # Why this is shared, and why it is a pure predicate
+/// On an install upgrading across the move off `tauri-plugin-autostart`, the
+/// plugin-era registration IS the working autostart. Deleting it before a
+/// replacement exists leaves the user with none at all — and because capture
+/// runs in-process in the tray, a tray that never starts records nothing, so
+/// the cost is every day's data until the user happens to open the app by
+/// hand. The bug has no local symptom; it surfaces only as someone saying
+/// Meridian stopped starting.
+///
+/// Windows encoded this rule and macOS did not: `macos::ensure_registered`
+/// called `migrate_off_plugin()` unconditionally and FIRST, ahead of the
+/// transient-path skip and both hard-failure returns. The two platforms
+/// disagreeing is what made it invisible, so the rule now lives in ONE place
+/// that both call rather than in a comment each side restates differently.
+///
+/// Keeping it a pure predicate is deliberate: the sequencing inside each
+/// `ensure_registered` is the whole safety property and is invisible at the
+/// call site, so the table is what the tests below pin.
+pub(crate) fn may_drop_legacy(action: RegistrationAction, registered: bool) -> bool {
+    match action {
+        // Removing it IS honouring the user's "no": left behind, the stale
+        // registration keeps starting the tray and the setting reads as ignored.
+        RegistrationAction::SkippedDisabledByUser => true,
+        // Something correct is already registered, so it is redundant.
+        RegistrationAction::AlreadyCorrect => true,
+        // A repair was attempted — only safe if it actually took.
+        a if a.is_repair() => registered,
+        // Transient path, or a hard failure: nothing took over, so the legacy
+        // registration is the only autostart the user has. Keep it.
+        _ => false,
     }
 }
 
@@ -559,6 +601,54 @@ pub(crate) fn xml_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rule both platforms now share. It lived in `windows.rs` and applied
+    /// to Windows alone, while `macos::ensure_registered` deleted the
+    /// plugin-era plist unconditionally and FIRST - ahead of the transient-path
+    /// skip and both hard-failure returns - so an upgrading Mac could finish a
+    /// launch with no autostart at all. Pinned here, once, for both.
+    #[test]
+    fn the_legacy_registration_survives_until_something_replaces_it() {
+        // The three paths that used to lose a working autostart outright.
+        assert!(
+            !may_drop_legacy(RegistrationAction::RegisteredMissing, false),
+            "a failed registration must not delete the only autostart that works"
+        );
+        assert!(
+            !may_drop_legacy(RegistrationAction::Failed, false),
+            "a hard failure must not delete the only autostart that works"
+        );
+        assert!(
+            !may_drop_legacy(RegistrationAction::SkippedTransientPath, false),
+            "deferring must not delete the only autostart that works"
+        );
+
+        // The paths where dropping it is correct.
+        assert!(may_drop_legacy(RegistrationAction::RegisteredMissing, true));
+        assert!(may_drop_legacy(RegistrationAction::RepairedPathDrift, true));
+        assert!(may_drop_legacy(
+            RegistrationAction::RepairedStaleDefinition,
+            true
+        ));
+        assert!(may_drop_legacy(RegistrationAction::AlreadyCorrect, false));
+        assert!(
+            may_drop_legacy(RegistrationAction::SkippedDisabledByUser, false),
+            "a user who turned autostart off must not keep being started by the stale registration"
+        );
+
+        // Every repair variant follows the same "only if it took" rule, so a
+        // new one cannot silently default to dropping the legacy registration.
+        for a in [
+            RegistrationAction::RegisteredMissing,
+            RegistrationAction::RepairedPathDrift,
+            RegistrationAction::RepairedMissingMorningTrigger,
+            RegistrationAction::RepairedStaleDefinition,
+        ] {
+            assert!(a.is_repair());
+            assert!(!may_drop_legacy(a, false), "{a:?} must wait for a success");
+            assert!(may_drop_legacy(a, true), "{a:?} may drop once registered");
+        }
+    }
 
     const MARKER: &str = "StartCalendarInterval";
     const EXE: &str = "/Applications/Meridian.app/Contents/MacOS/Meridian";

@@ -47,7 +47,7 @@
 //! # Who calls this
 //! [`crate::autostart::ensure_registered`] and [`crate::autostart::status`].
 
-use super::{RegistrationAction, Status};
+use super::{may_drop_legacy, RegistrationAction, Status};
 use meridian_core::proc_ext::NoWindow;
 use std::path::{Path, PathBuf};
 
@@ -232,31 +232,6 @@ async fn read_registration() -> Option<String> {
 /// truth for whether autostart is wanted, and OS-level drift gets repaired.
 fn is_disabled(xml: &str) -> bool {
     xml.contains("<Enabled>false</Enabled>")
-}
-
-/// Whether the plugin-era `HKCU\…\Run` value may be deleted, given the
-/// verdict and whether a replacement got registered.
-///
-/// A pure predicate, and used by [`ensure_registered`] rather than restated
-/// there, so the test below pins the real rule: the sequencing
-/// in `ensure_registered` is the whole safety property, it is invisible at
-/// the call site, and a refactor that hoists `migrate_off_plugin` back to
-/// the top of the function would silently reintroduce "upgraded Windows
-/// install ends up with no autostart at all" — a bug with no local symptom,
-/// visible only as a user saying it stopped starting.
-fn may_drop_legacy(action: RegistrationAction, registered: bool) -> bool {
-    match action {
-        // Removing it IS honouring the user's "no": left behind, the stale
-        // value keeps starting the tray and the setting reads as ignored.
-        RegistrationAction::SkippedDisabledByUser => true,
-        // Something correct is already registered, so it is redundant.
-        RegistrationAction::AlreadyCorrect => true,
-        // A repair was attempted — only safe if it actually took.
-        a if a.is_repair() => registered,
-        // Transient path, or a hard failure: nothing took over, so the
-        // legacy value is the only autostart the user has. Keep it.
-        _ => false,
-    }
 }
 
 /// Verify and, if needed, re-register the task. See
@@ -663,31 +638,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_legacy_run_value_survives_until_something_replaces_it() {
-        // The two paths that used to lose a working autostart outright.
-        assert!(
-            !may_drop_legacy(RegistrationAction::RegisteredMissing, false),
-            "a failed registration must not delete the only autostart that works"
-        );
-        assert!(
-            !may_drop_legacy(RegistrationAction::Failed, false),
-            "a hard failure must not delete the only autostart that works"
-        );
-        assert!(
-            !may_drop_legacy(RegistrationAction::SkippedTransientPath, false),
-            "deferring must not delete the only autostart that works"
-        );
-
-        // The paths where dropping it is correct.
-        assert!(may_drop_legacy(RegistrationAction::RegisteredMissing, true));
-        assert!(may_drop_legacy(RegistrationAction::RepairedPathDrift, true));
-        assert!(may_drop_legacy(RegistrationAction::AlreadyCorrect, false));
-        assert!(
-            may_drop_legacy(RegistrationAction::SkippedDisabledByUser, false),
-            "a user who turned autostart off must not keep being started by the stale value"
-        );
-    }
+    // `the_legacy_registration_survives_until_something_replaces_it` moved to
+    // `super::super`'s tests when `may_drop_legacy` became shared - the rule is
+    // not Windows-specific, and macOS was the platform breaking it.
 
     /// The tray's task and launcher names must not collide with the daemon's
     /// (`Meridian Daemon` / `MeridianDaemon.vbs`) - registering over each other
