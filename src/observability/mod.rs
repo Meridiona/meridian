@@ -297,7 +297,7 @@ fn try_build_otel_providers(
     // opentelemetry-semantic-conventions 0.27 — not worth enabling that
     // feature flag for one stable, well-known attribute name.
     use opentelemetry_semantic_conventions::resource::SERVICE_VERSION;
-    let resource = Resource::new(vec![
+    let mut resource_kvs = vec![
         KeyValue::new("service.name", service_name.to_string()),
         KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
         // Kept RAW here on purpose. This resource set feeds the local spool,
@@ -352,7 +352,28 @@ fn try_build_otel_providers(
         // worse than an absent one; it gets trusted in a dashboard filter.
         // `deployment.environment` already separates source builds ("dev") from
         // released ones, which is the distinction that was actually wanted.
-    ]);
+    ];
+
+    // ALPHA TESTING ONLY (expires with
+    // `redact::ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`) — attach the RAW
+    // signed-in email so support can identify which user and which machine an
+    // error came from, alongside (not instead of) the per-machine/per-account
+    // pseudonym that already seeds `host.name` above. This is the one
+    // deliberate exception to this resource set otherwise carrying no PII;
+    // see `redact::alpha_account_email_if_active`'s doc for the full
+    // rationale and `redact::ACCOUNT_EMAIL_KEY`'s doc for why it's safe on
+    // the ship-leg allowlist. Runs in BOTH the daemon and the tray (this
+    // function is called from both), so either process shipping an error
+    // while the tester is signed in carries the same value.
+    if let Some(email) = crate::telemetry_spool::redact::alpha_account_email_if_active(
+        settings.account_email.as_deref(),
+    ) {
+        resource_kvs.push(KeyValue::new(
+            crate::telemetry_spool::redact::ACCOUNT_EMAIL_KEY,
+            email,
+        ));
+    }
+    let resource = Resource::new(resource_kvs);
 
     // Build spool clients — one per signal so filenames encode the correct prefix.
     let spool_trace = crate::telemetry_spool::spool_client::SpoolClient::new()
