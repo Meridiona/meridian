@@ -154,8 +154,8 @@ pub async fn ensure_backend_installed(app: &tauri::AppHandle) {
     // `None` only when the DB itself couldn't be opened, in which case there's
     // nowhere to write a notice anyway.
     let pool = app
-        .try_state::<Option<meridian_core::SqlitePool>>()
-        .and_then(|s| s.inner().clone());
+        .try_state::<crate::db_pool::DbPool>()
+        .and_then(|s| s.get());
 
     tracing::info!(hash = %bundled_hash, "backend_install: installing bundled backend");
     if let Err(e) = install(&backend, &home).await {

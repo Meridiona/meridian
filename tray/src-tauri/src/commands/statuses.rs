@@ -106,7 +106,7 @@ fn local_status_dto(o: &meridian_core::task_create::LocalStatusOption) -> Status
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn list_task_statuses(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     provider: String,
     key: String,
 ) -> Result<StatusListResponse, String> {
@@ -114,10 +114,10 @@ pub async fn list_task_statuses(
         return Err("provider and key are required".to_string());
     }
     if provider == meridian_core::task_create::LOCAL_PROVIDER {
-        let Some(pool) = pool.inner() else {
+        let Some(pool) = pool.get() else {
             return Err("meridian.db is not open yet".to_string());
         };
-        let current = meridian_core::task_create::local_task_current(pool, &key)
+        let current = meridian_core::task_create::local_task_current(&pool, &key)
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("no personal task {key}"))?;
@@ -153,14 +153,14 @@ pub async fn list_task_statuses(
 #[tauri::command]
 #[tracing::instrument(skip(body, pool), fields(provider = %body.provider, key = %body.key, status_id = %body.status_id))]
 pub async fn set_task_status(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     body: SetStatusBody,
 ) -> Result<SetStatusResponse, String> {
     if body.provider.is_empty() || body.key.is_empty() || body.status_id.is_empty() {
         return Err("provider, key and status_id are required".to_string());
     }
     if body.provider == meridian_core::task_create::LOCAL_PROVIDER {
-        let Some(pool) = pool.inner() else {
+        let Some(pool) = pool.get() else {
             return Err("meridian.db is not open yet".to_string());
         };
         let Some(opt) = meridian_core::task_create::resolve_local_status(&body.status_id) else {
@@ -169,7 +169,7 @@ pub async fn set_task_status(
         let now = chrono::Utc::now().to_rfc3339();
         let is_terminal = opt.category == "done";
         let changed = meridian_core::task_create::set_local_status(
-            pool,
+            &pool,
             &body.key,
             opt.name,
             is_terminal,

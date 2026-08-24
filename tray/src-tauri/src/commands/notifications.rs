@@ -45,14 +45,14 @@ use tracing::Instrument;
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_banner_notifications(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
 ) -> Result<Vec<meridian_core::notifications::BannerNotification>, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Ok(Vec::new());
     };
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let settings = meridian_core::settings::load_runtime_settings();
-    let banners = meridian_core::notifications::active_banners(pool, &now, &settings).await;
+    let banners = meridian_core::notifications::active_banners(&pool, &now, &settings).await;
     tracing::info!(count = banners.len(), "banner notifications served");
     Ok(banners)
 }
@@ -63,14 +63,14 @@ pub async fn get_banner_notifications(
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn dismiss_notification(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     id: i64,
 ) -> Result<(), String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    meridian_core::notifications::dismiss_banner(pool, id, &now)
+    meridian_core::notifications::dismiss_banner(&pool, id, &now)
         .await
         .map_err(|e| crate::cmd_err!(e, id, "dismiss_notification failed"))
 }
@@ -92,15 +92,15 @@ pub async fn dismiss_notification(
 #[tracing::instrument(skip(app, pool, text))]
 pub async fn record_notification_response(
     app: tauri::AppHandle,
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     id: i64,
     action: String,
     text: Option<String>,
 ) -> Result<(), String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
-    apply_response(app, pool, id, &action, text.as_deref()).await
+    apply_response(app, &pool, id, &action, text.as_deref()).await
 }
 
 /// The body of [`record_notification_response`], factored out because it has
