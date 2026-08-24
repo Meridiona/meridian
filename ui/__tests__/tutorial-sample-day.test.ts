@@ -1812,6 +1812,30 @@ describe('the closing asks: a delivery time, and the off switch', () => {
     expect(beat).toContain('s.point(\'[data-tour="worklog-schedule-on"]\')')
   })
 
+  it('does not read a failed settings fetch as the user answering', () => {
+    // `waitForWorklogAnswered` decides the beat is over when the SETTING
+    // changes, because the click primitive could not be trusted here (#852).
+    // Its first version mapped both "the read failed" and "settings say X" to
+    // the same value, so one rejected `get_settings` left `baseline` null, the
+    // next successful poll compared as a change, and the beat ended instantly
+    // with nothing recorded - reinstating the exact bug it was written to fix,
+    // through the error path.
+    //
+    // Guarded by source scan because the function is module-private and the
+    // failure needs a rejecting bridge plus a live DOM to reproduce.
+    const fn = between(
+      SCRIPT_SRC,
+      'async function waitForWorklogAnswered',
+      'export async function runDayHalf',
+    )
+    // A failed read must be its own state, and the baseline must be adopted
+    // rather than compared when it is missing.
+    expect(fn).toContain('baseline === undefined')
+    // The shape that caused it: treating a non-null reading as a change while
+    // the baseline is the same null a failed read produces.
+    expect(fn).not.toContain('current !== null && current !== baseline')
+  })
+
   it('names both things that time sets off, not just the worklogs', () => {
     // It said "Worklogs" and "Auto-draft your worklogs". The same pass composes
     // the daily summary too, so "Not now" was also switching off the screen the
