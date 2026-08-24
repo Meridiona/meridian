@@ -1,6 +1,18 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-//! Launch-at-login **and** morning relaunch registration for the tray, owned
-//! outright rather than delegated to `tauri-plugin-autostart`.
+//! Launch-at-login registration for the tray, owned outright rather than
+//! delegated to `tauri-plugin-autostart`.
+//!
+//! # Login, restart, or a manual start — never a mid-day resurrection
+//! Meridian must come back after the device is turned on or logged into. It
+//! must NOT come back on its own after the user deliberately quits it, before
+//! then — an earlier version of this module got that wrong by relaunching on
+//! OS wake/unlock events (macOS `LaunchEvents`, Windows
+//! `SessionStateChangeTrigger`), which fire many times in an ordinary day, so
+//! Quit did not stick: a user closed Meridian and had it back within minutes,
+//! the next time their screen so much as locked and unlocked. See
+//! [`macos::plist_body`] and the `windows` module docs for the removal and
+//! [`macos::disarm_relaunch`] for clearing an already-armed wake job left by
+//! an older build.
 //!
 //! # Why the tray specifically
 //! Capture runs IN-PROCESS in the tray (`crate::capture`). A tray that isn't
@@ -13,11 +25,11 @@
 //! # Why not `tauri-plugin-autostart`
 //! Two reasons, both structural:
 //!
-//! 1. **It cannot express a morning relaunch.** Verified against
-//!    `auto-launch-0.5.0/src/macos.rs`: `enable()` writes a plist carrying
-//!    `Label` + `ProgramArguments` + `RunAtLoad` and nothing else. There is no
-//!    hook for `StartCalendarInterval`, which is the only thing that brings the
-//!    tray back after the user quits it.
+//! 1. **It cannot coordinate with `SMAppService`.** Verified against
+//!    `auto-launch-0.5.0/src/macos.rs`: `enable()` always writes `RunAtLoad
+//!    true` with no way to turn it off, so on macOS 13+ it would double-launch
+//!    a tray alongside SMAppService's own login item — two processes writing
+//!    one SQLite file.
 //! 2. **It named the plist after `productName`** — `~/Library/LaunchAgents/Meridian.plist`,
 //!    not `com.meridiona.*`. `src/uninstall.rs` asserted in a comment that the
 //!    macOS login item was swept up by its `com.meridiona.*.plist` glob. It was
@@ -41,45 +53,35 @@
 //!
 //! # What gets registered
 //!
-//! - **macOS 13+** — `SMAppService.mainApp` owns LOGIN (see [`login_item`]),
-//!   which is what produces a named, user-togglable "Meridian" entry in System
-//!   Settings → General → Login Items & Extensions. The plist
-//!   `~/Library/LaunchAgents/com.meridiona.tray.plist` is reduced to the WAKE
-//!   relaunch alone: `RunAtLoad` **false** + `LaunchEvents` →
-//!   `com.apple.notifyd.matching` on [`macos::WAKE_NOTIFICATIONS`] (unlock,
-//!   desktop-up, display/power state, clamshell), bootstrapped immediately so
-//!   the trigger is live from the moment of install rather than the next login.
-//!   Below 13 there is no SMAppService, so that plist carries both jobs with
-//!   `RunAtLoad` true. Deliberately **no `KeepAlive`** either way: the user
-//!   asked for Quit to stick, and `KeepAlive` would make quitting impossible.
-//! - **Windows** — one scheduled task with a `LogonTrigger` *and* two
-//!   `SessionStateChangeTrigger`s (`SessionUnlock`, `ConsoleConnect`),
-//!   registered from XML because `schtasks`' command form cannot express
-//!   several triggers. Its `MultipleInstancesPolicy` is `IgnoreNew`, which is
-//!   what stops a wake trigger starting a second tray on top of the one the
-//!   logon trigger already started.
+//! - **macOS 13+** — `SMAppService.mainApp` owns LOGIN, and login alone (see
+//!   [`login_item`]), which is what produces a named, user-togglable
+//!   "Meridian" entry in System Settings → General → Login Items &
+//!   Extensions. This module writes NO plist at all in this case — there is
+//!   nothing left for one to do — and clears any left by an older build (see
+//!   [`macos::ensure_registered`]).
+//! - **Below macOS 13** — there is no SMAppService, so
+//!   `~/Library/LaunchAgents/com.meridiona.tray.plist` carries the login
+//!   trigger itself, with `RunAtLoad` true. Deliberately **no `KeepAlive`**
+//!   either way: the user asked for Quit to stick, and `KeepAlive` would make
+//!   quitting impossible.
+//! - **Windows** — one scheduled task with a `LogonTrigger`, registered from
+//!   XML rather than `schtasks`' command form so it can also carry the
+//!   battery-defaults and execution-time overrides (see the `windows` module
+//!   docs). Its `MultipleInstancesPolicy` is `IgnoreNew`, a defensive dedupe
+//!   against a logon race rather than a second trigger to reconcile.
 //!
 //! There is **no clock in this module** — see the note beside
-//! [`launched_by_autostart`] on why the hardcoded hour was deleted rather than
-//! lowered.
+//! [`launched_by_autostart`] for the removed hardcoded hour, and the `windows`
+//! /  [`macos::plist_body`] docs for the later removal of the wake/unlock
+//! triggers that replaced it.
 //!
-//! # Duplicates are prevented by a guard, not by hoping
-//! The new-day trigger is started by the OS scheduler, and **neither scheduler can
-//! see that the app is already running.** launchd tracks liveness per job
-//! LABEL, so the process macOS's loginwindow started via SMAppService is
-//! invisible to our calendar job; Task Scheduler's `MultipleInstancesPolicy:
-//! IgnoreNew` only dedupes the task's own instances. So the trigger fires daily
-//! into a running app.
-//!
-//! `tauri-plugin-single-instance` is therefore load-bearing, not a nicety: it is
-//! registered FIRST in [`crate::run`]'s builder so the doomed second process
+//! # Duplicates are still guarded against
+//! `tauri-plugin-single-instance` is load-bearing, not a nicety: it is
+//! registered FIRST in [`crate::run`]'s builder so a doomed second process
+//! (a logon race, a stray manual launch while the tray is already running)
 //! exits before it can create a tray icon or a capture writer. Two processes
 //! writing one `meridian.db` is the double-writer condition behind the
 //! `database disk image is malformed` incidents in [`crate::backend_install`].
-//!
-//! An earlier version of this module claimed `RunAtLoad false` alone prevented
-//! the duplicate. It does not — it only prevents one at LOGIN, and moved the
-//! collision to the new-day trigger.
 //!
 //! # Who calls this
 //! [`crate::run`]'s `setup()` hook, once per launch, bundled runs only (see
@@ -141,8 +143,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 /// continuations and should behave like one.
 pub(crate) const AUTOSTART_FLAG: &str = "--autostart";
 
-/// True when this process was started by the login/morning job rather than by
-/// the user. Consulted before anything that puts a window on screen: an
+/// True when this process was started by the login job rather than by the
+/// user. Consulted before anything that puts a window on screen: an
 /// unattended launch must stay in the menu bar and nothing else.
 pub(crate) fn launched_by_autostart() -> bool {
     args_indicate_autostart(std::env::args())
@@ -204,8 +206,11 @@ pub(crate) enum RegistrationAction {
     /// Registered, but pointing at a different executable than the one running
     /// — the app was moved after being registered.
     RepairedPathDrift,
-    /// Registered, but with no morning trigger. This is the upgrade path for
-    /// every install that was registered by `tauri-plugin-autostart`.
+    /// Registered, but missing an expected element of the definition (e.g.
+    /// Windows' `LogonTrigger`). The Windows variant name is a PostHog wire
+    /// contract ([`RegistrationAction::as_str`]) predating the removal of the
+    /// wake-relaunch trigger this originally detected — kept rather than
+    /// renamed so saved fleet queries do not silently break.
     RepairedMissingMorningTrigger,
     /// Registered at the right path, but the definition is not what this build
     /// renders — a field changed that no substring probe would have noticed.
@@ -326,43 +331,35 @@ pub(crate) fn last_action() -> Option<RegistrationAction> {
     RegistrationAction::from_code(LAST_ACTION.load(Ordering::Relaxed))
 }
 
-/// Decide what to do, given only the facts — no filesystem, no launchctl.
+/// Whether registration should be skipped outright, before either platform
+/// gets to its own job-definition check — shared because both skip conditions
+/// are platform-independent facts (a setting, and where the binary is
+/// running from), not anything about the job definition itself.
 ///
-/// `registered` is the current job definition as text (plist XML on macOS, task
-/// XML on Windows) or `None` when nothing is registered. `expected_exe` is the
-/// running executable's path and `morning_trigger_marker` the element name that
-/// proves the definition carries a morning trigger (`StartCalendarInterval` /
-/// `CalendarTrigger`).
+/// Returns `None` when neither applies, meaning the caller should proceed to
+/// its own platform-specific repair check ([`macos::ensure_registered`]'s
+/// exact-body compare, `windows`'s own private `decide_task`).
 ///
-/// Text `contains` rather than a parsed comparison is deliberate. This decides
-/// only whether to REWRITE, and the rewrite is unconditional and idempotent, so
-/// the cost of a false "needs repair" is one file write; a parser would add a
-/// dependency and a new failure mode to answer the same question. Both needles
-/// are specific enough not to collide: an absolute executable path, and an XML
-/// element name that appears nowhere else in either format.
-pub(crate) fn decide(
-    disabled_by_user: bool,
-    stable_path: bool,
-    registered: Option<&str>,
-    expected_exe: &str,
-    morning_trigger_marker: &str,
-) -> RegistrationAction {
+/// # History
+/// This used to be one shared `decide()` that also matched an "expected
+/// executable path" and a "morning trigger marker" substring against the
+/// registered job text, and both platforms called it for their full repair
+/// decision. Windows still needs a marker-based check (Task Scheduler
+/// reformats the XML it hands back, so an exact-body compare there would
+/// report drift on every launch) but no longer expresses it through a shared
+/// helper: a stale task can contain BOTH the expected `LogonTrigger` marker
+/// AND a retired `SessionStateChangeTrigger` that needs stripping, which a
+/// presence-only check cannot see. macOS dropped the marker entirely in
+/// favour of comparing the whole rendered body. So the only still-shared
+/// decision is the skip check below.
+pub(crate) fn decide_skip(disabled_by_user: bool, stable_path: bool) -> Option<RegistrationAction> {
     if disabled_by_user {
-        return RegistrationAction::SkippedDisabledByUser;
+        return Some(RegistrationAction::SkippedDisabledByUser);
     }
     if !stable_path {
-        return RegistrationAction::SkippedTransientPath;
+        return Some(RegistrationAction::SkippedTransientPath);
     }
-    let Some(text) = registered else {
-        return RegistrationAction::RegisteredMissing;
-    };
-    if !text.contains(expected_exe) {
-        return RegistrationAction::RepairedPathDrift;
-    }
-    if !text.contains(morning_trigger_marker) {
-        return RegistrationAction::RepairedMissingMorningTrigger;
-    }
-    RegistrationAction::AlreadyCorrect
+    None
 }
 
 /// True when the user has explicitly turned autostart off.
@@ -391,9 +388,9 @@ async fn clear_legacy_marker() {
     }
 }
 
-/// Verify the tray's login + morning registration and repair it if it has
-/// drifted. Safe to call on every launch; idempotent when everything is
-/// already correct.
+/// Verify the tray's login registration and repair it if it has drifted.
+/// Safe to call on every launch; idempotent when everything is already
+/// correct.
 ///
 /// Never fails: autostart is important but it is not worth crashing the tray
 /// for, so every error path logs and leaves the next launch to retry.
@@ -424,8 +421,8 @@ pub async fn ensure_registered() {
         // is how an install that silently never registers looked identical, in
         // the fleet and in `meridian logs`, to one that was working perfectly.
         // The requirement this module exists to satisfy is "the tray comes back
-        // after a restart, and again the next morning, until uninstalled"; an
-        // install sitting on either of these branches satisfies none of it, and
+        // at login and after a restart, until uninstalled"; an install sitting
+        // on either of these branches satisfies none of it, and
         // that has to be visible without asking the user to run anything.
         //
         // Volume is bounded: a transient path resolves as soon as the app is in
@@ -519,11 +516,14 @@ pub(crate) struct Status {
     /// `enabled`, `requires_approval`, `not_registered`, `not_found`, or
     /// `unavailable` below macOS 13. `None` off macOS.
     ///
-    /// Distinct from [`Self::registered`], which describes the morning-relaunch
-    /// plist. The two are separate mechanisms and can disagree, and the whole
-    /// reason this field exists is that "is Meridian actually in Login Items &
-    /// Extensions" was unanswerable from the fleet — which is exactly the
-    /// question a user asking "why doesn't it start" is really asking.
+    /// Distinct from [`Self::registered`], which on macOS 13+ describes a
+    /// LaunchAgent this module deliberately no longer writes (SMAppService
+    /// owns login there — see [`macos::ensure_registered`]) and below 13
+    /// describes the fallback LaunchAgent that DOES carry login. The two are
+    /// separate mechanisms and can disagree, and the whole reason this field
+    /// exists is that "is Meridian actually in Login Items & Extensions" was
+    /// unanswerable from the fleet — which is exactly the question a user
+    /// asking "why doesn't it start" is really asking.
     pub(crate) login_item: Option<&'static str>,
 }
 
@@ -650,26 +650,22 @@ mod tests {
         }
     }
 
-    const MARKER: &str = "StartCalendarInterval";
-    const EXE: &str = "/Applications/Meridian.app/Contents/MacOS/Meridian";
-
-    fn plist_with(exe: &str, morning: bool) -> String {
-        let trigger = if morning { MARKER } else { "" };
-        format!("<array><string>{exe}</string></array>{trigger}")
-    }
-
-    /// A deliberate opt-out outranks everything, including a missing
-    /// registration - otherwise "turn autostart off" would be undone by the
-    /// very next launch's repair pass, which is the failure mode that made the
-    /// old marker-based gate feel necessary in the first place.
+    /// A deliberate opt-out outranks everything - otherwise "turn autostart
+    /// off" would be undone by the very next launch's repair pass, which is
+    /// the failure mode that made the old marker-based gate feel necessary in
+    /// the first place.
     #[test]
-    fn user_opt_out_wins_over_every_repair() {
-        for registered in [None, Some(""), Some(plist_with(EXE, true).as_str())] {
-            assert_eq!(
-                decide(true, true, registered, EXE, MARKER),
-                RegistrationAction::SkippedDisabledByUser
-            );
-        }
+    fn user_opt_out_wins_the_skip_check() {
+        assert_eq!(
+            decide_skip(true, true),
+            Some(RegistrationAction::SkippedDisabledByUser)
+        );
+        // And it wins even when the path is ALSO unstable - either fact alone
+        // is enough to skip, so the check must not require both.
+        assert_eq!(
+            decide_skip(true, false),
+            Some(RegistrationAction::SkippedDisabledByUser)
+        );
     }
 
     /// A DMG-mounted or translocated launch must not be pinned: the path is
@@ -677,51 +673,17 @@ mod tests {
     #[test]
     fn transient_path_defers_without_writing() {
         assert_eq!(
-            decide(false, false, None, EXE, MARKER),
-            RegistrationAction::SkippedTransientPath
+            decide_skip(false, false),
+            Some(RegistrationAction::SkippedTransientPath)
         );
     }
 
+    /// Neither skip condition applies - the caller must proceed to its own
+    /// platform-specific check rather than treating `None` as any particular
+    /// registration state.
     #[test]
-    fn absent_registration_is_registered_fresh() {
-        assert_eq!(
-            decide(false, true, None, EXE, MARKER),
-            RegistrationAction::RegisteredMissing
-        );
-    }
-
-    /// The defect that made a moved app permanently unable to autostart: the
-    /// old code wrote a marker, never compared paths, and never looked again.
-    #[test]
-    fn a_moved_app_is_detected_and_repointed() {
-        let stale = plist_with(
-            "/Users/x/Downloads/Meridian.app/Contents/MacOS/Meridian",
-            true,
-        );
-        assert_eq!(
-            decide(false, true, Some(&stale), EXE, MARKER),
-            RegistrationAction::RepairedPathDrift
-        );
-    }
-
-    /// The upgrade path for every install registered by
-    /// `tauri-plugin-autostart`: right path, no morning trigger.
-    #[test]
-    fn a_plugin_era_registration_gains_the_morning_trigger() {
-        let old = plist_with(EXE, false);
-        assert_eq!(
-            decide(false, true, Some(&old), EXE, MARKER),
-            RegistrationAction::RepairedMissingMorningTrigger
-        );
-    }
-
-    #[test]
-    fn a_correct_registration_is_left_alone() {
-        let good = plist_with(EXE, true);
-        assert_eq!(
-            decide(false, true, Some(&good), EXE, MARKER),
-            RegistrationAction::AlreadyCorrect
-        );
+    fn neither_skip_condition_defers_to_the_caller() {
+        assert_eq!(decide_skip(false, true), None);
     }
 
     /// Only the variants that mean "autostart was broken until this launch"
@@ -797,6 +759,8 @@ mod tests {
     /// cannot distinguish it from "broken" once it does.
     #[test]
     fn status_never_reports_unknown_as_broken() {
+        const EXE: &str = "/Applications/Meridian.app/Contents/MacOS/Meridian";
+
         let unknown_exe = status_from(Some("<plist/>"), None);
         assert_eq!(unknown_exe.registered, Some(true));
         assert_eq!(unknown_exe.path_ok, None);
@@ -805,7 +769,10 @@ mod tests {
         assert_eq!(absent.registered, Some(false));
         assert_eq!(absent.path_ok, None);
 
-        let ok = status_from(Some(&plist_with(EXE, true)), Some(EXE));
+        let ok = status_from(
+            Some(&format!("<array><string>{EXE}</string></array>")),
+            Some(EXE),
+        );
         assert_eq!(ok.registered, Some(true));
         assert_eq!(ok.path_ok, Some(true));
     }

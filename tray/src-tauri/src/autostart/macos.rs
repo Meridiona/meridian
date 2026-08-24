@@ -1,6 +1,10 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
-//! macOS side of [`crate::autostart`] — a per-user launchd LaunchAgent carrying
-//! both the login trigger and the morning relaunch.
+//! macOS side of [`crate::autostart`] — a per-user launchd LaunchAgent that
+//! covers the LOGIN trigger below macOS 13, where `SMAppService`
+//! ([`super::login_item`]) does not exist. On macOS 13+ this module writes
+//! nothing at all: SMAppService owns login by itself, and there is no
+//! separate wake/morning relaunch any more (see [`plist_body`]'s docs for why
+//! that was removed — it is what made Quit not stick).
 //!
 //! # Who calls this
 //! [`crate::autostart::ensure_registered`] (write path) and
@@ -52,35 +56,6 @@ const LEGACY_PLIST_FILE: &str = "Meridian.plist";
 // because Task Scheduler reformats the XML it hands back, so an exact compare
 // there would report drift on every launch.
 
-/// Darwin notifications that mean "the device just became usable again".
-///
-/// See [`plist_body`] for why this is a SET rather than one name, and for where
-/// each came from. Order is irrelevant; launchd keys the dict by name.
-pub(crate) const WAKE_NOTIFICATIONS: [&str; 7] = [
-    // Unlock. macOS requires a password after sleep by default, so this is the
-    // common path for "opened the laptop". Apple triggers its own
-    // com.apple.contextstored on this exact name.
-    "com.apple.sessionagent.screenIsUnlocked",
-    // Desktop up after login / fast user switch.
-    "com.apple.system.loginwindow.desktopUp",
-    // The display coming back on - the closest thing to "the screen is usable
-    // again" for a machine woken without a password prompt.
-    "com.apple.iokit.hid.displayStatus",
-    // System power state change (sleep/wake). BOTH spellings are listed on
-    // purpose: Apple's own plists use the `com.apple.powermanagement.*` form
-    // while the community-collected list uses `com.apple.system.powermanagement.*`.
-    // One of them is wrong on any given release and neither costs anything -
-    // see `plist_body` for why an unknown name is inert.
-    "com.apple.system.powermanagement.systempowerstate",
-    "com.apple.powermanagement.systempowerstate",
-    // A power event the user actually sees, i.e. a real wake rather than a dark
-    // wake for maintenance.
-    "com.apple.system.powermanagement.uservisiblepowerevent",
-    // The laptop lid - literally "device opened". Fires on close too, which is a
-    // harmless no-op thanks to the single-instance guard.
-    "com.apple.system.powermanagement.clamshellstate",
-];
-
 /// `~/Library/LaunchAgents`, where per-user agents live. `None` when the home
 /// directory cannot be resolved, in which case there is nothing this module can
 /// do.
@@ -102,53 +77,31 @@ fn current_exe() -> Option<PathBuf> {
 /// Pure and separate from the write so every field below is unit-testable
 /// without touching `~/Library/LaunchAgents` on a developer machine.
 ///
-/// # There is no clock in here, deliberately
-/// The requirement is "Meridian is running after the device is turned on or
-/// woken" — an EVENT, not a time. This used to be a `StartCalendarInterval` at a
-/// hardcoded hour, which is the wrong shape for that: it fires when the user
-/// isn't there, and misses them when they are.
+/// # Login only — there is no wake/morning relaunch any more
+/// An earlier version of this plist also carried `LaunchEvents` on a set of
+/// Darwin notifications (unlock, display-on, power-state, clamshell), so
+/// Meridian came back on the OS's own wake events rather than a clock. That
+/// was a deliberate choice (see the removed `WAKE_NOTIFICATIONS`, still in
+/// git history) and it was wrong: those notifications fire many times in a
+/// single day — every screen lock/unlock, every display sleep/wake, every lid
+/// open/close — not once "in the morning". The practical effect was that Quit
+/// did not stick: a user closed Meridian and it was back within minutes, the
+/// next time their screen so much as locked and unlocked, which reads as "I
+/// cannot quit this app".
 ///
-/// launchd has no `wake` or `unlock` trigger among its start keys (`RunAtLoad`,
-/// `StartInterval`, `StartCalendarInterval`, `WatchPaths`, `QueueDirectories`,
-/// `StartOnMount`, `KeepAlive`, `MachServices`, `Sockets`) — but `LaunchEvents`
-/// with the `com.apple.notifyd.matching` stream starts a job on an arbitrary
-/// Darwin notification, which is how Apple's own agents do this. The shape here
-/// is copied from `/System/Library/LaunchDaemons/com.apple.contextstored.plist`,
-/// which triggers on the same unlock notification, and the mechanism was
-/// verified end-to-end on macOS 26: a probe agent did not run on bootstrap and
-/// ran the instant its notification was posted.
-///
-/// # Why SEVERAL notifications rather than the one right one
-/// These names are private, so Apple documents none of them and no single one
-/// can be relied on across releases. That would normally be a reason for
-/// caution; here it is free, for two reasons:
-///
-/// - A notification launchd never receives is simply **inert** — an unknown name
-///   costs nothing and fails silently in the safe direction.
-/// - A notification that fires while the tray is ALREADY running costs a process
-///   that exits in milliseconds, because `tauri-plugin-single-instance` is
-///   registered first (see [`crate::run`]).
-///
-/// So the set is chosen for coverage, not minimality, and no single guess has to
-/// be correct:
-///
-/// See [`WAKE_NOTIFICATIONS`] for the list and what each one covers. Both
-/// spellings of the power-state notification are included because Apple's plists
-/// and the community-collected list disagree, and being wrong about one is free.
-///
-/// **Measured, not assumed** (macOS 26): a plist carrying a deliberately bogus
-/// notification name alongside real ones still bootstrapped cleanly, and the
-/// real notification still started the job. So an unknown or renamed name
-/// degrades to "never fires" rather than breaking the whole registration.
-///
-/// Login itself is NOT here: on macOS 13+ it belongs to `SMAppService`
-/// ([`super::login_item`]), which is what produces a named, user-togglable
-/// "Meridian" entry in Login Items & Extensions.
+/// The requirement is narrower than "always running": Meridian must come back
+/// at **login, restart, or a manual start** — never resurrect itself after a
+/// deliberate Quit before then. On macOS 13+ that is exactly what
+/// `SMAppService` ([`super::login_item`]) already provides, so this plist is
+/// only written at all below macOS 13, where SMAppService does not exist and
+/// nothing else expresses "start Meridian at login". See
+/// [`ensure_registered`] for how the two are coordinated, and
+/// [`disarm_relaunch`] for clearing an already-armed wake job left by an
+/// older build.
 ///
 /// # The rest
-/// - `run_at_load` is the coordination with SMAppService. FALSE when SMAppService
-///   owns login, or both would start a tray at login. Below macOS 13 there is no
-///   SMAppService, so it is true and this plist carries login too.
+/// - `run_at_load` is true whenever this plist is written (only reached below
+///   macOS 13, where it is the sole login mechanism).
 /// - **No `KeepAlive`**, deliberately: with it Quit would be undone within
 ///   seconds and there would be no way to stop Meridian at all. The daemon's
 ///   plist makes the opposite choice because it is headless and has no Quit.
@@ -163,16 +116,6 @@ pub(crate) fn plist_body(exe: &Path, home: &Path, run_at_load: bool) -> String {
     let home = super::xml_escape(&home.to_string_lossy());
     let flag = super::AUTOSTART_FLAG;
     let run_at_load = if run_at_load { "<true/>" } else { "<false/>" };
-    // Rendered from the table rather than hand-written, so adding a trigger is
-    // one entry and the plist cannot drift from the list.
-    let events: String = WAKE_NOTIFICATIONS
-        .iter()
-        .map(|n| {
-            format!(
-                "            <key>{n}</key>\n                             <dict>\n                <key>Notification</key>\n                                 <string>{n}</string>\n            </dict>\n"
-            )
-        })
-        .collect();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -189,13 +132,6 @@ pub(crate) fn plist_body(exe: &Path, home: &Path, run_at_load: bool) -> String {
 
     <key>RunAtLoad</key>
     {run_at_load}
-
-    <key>LaunchEvents</key>
-    <dict>
-        <key>com.apple.notifyd.matching</key>
-        <dict>
-{events}        </dict>
-    </dict>
 
     <key>StandardOutPath</key>
     <string>{home}/.meridian/logs/tray.log</string>
@@ -248,19 +184,9 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
     // Skip decisions first, and they apply to BOTH mechanisms: a user who
     // turned autostart off must not get a login item either, and a transient
     // (DMG / translocated) path must not be pinned by anything.
-    let skip = super::decide(
+    if let Some(skip) = super::decide_skip(
         super::disabled_by_user(),
         crate::sys::running_from_stable_location(),
-        // `Some("")` rather than `None`: this call is only being asked about the
-        // two skip conditions, and a `None` here would answer
-        // `RegisteredMissing` before they were consulted.
-        Some(""),
-        "",
-        "",
-    );
-    if matches!(
-        skip,
-        RegistrationAction::SkippedDisabledByUser | RegistrationAction::SkippedTransientPath
     ) {
         // Disabled-by-user: dropping the legacy job IS honouring the "no".
         // Transient path: nothing replaced it, so it stays.
@@ -280,22 +206,53 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
         login_item::RegisterOutcome::Unavailable | login_item::RegisterOutcome::Failed
     );
 
-    // The MORNING half. `run_at_load` is the inverse of who owns login: if
-    // SMAppService took it, this plist must NOT also start a tray at login, or
-    // both fire and two processes write one SQLite file.
-    let run_at_load_owned_by_plist = !owns_login;
-    let expected = plist_body(&exe, &home, run_at_load_owned_by_plist);
+    if owns_login {
+        // SMAppService alone covers login on macOS 13+, and there is no wake
+        // relaunch to express any more (see `plist_body`'s docs — quitting
+        // must stick until the next login, restart, or manual start). This
+        // plist would therefore have nothing left to do, so it is not written
+        // at all here: remove any copy left by an older build, both the file
+        // (so a future login has nothing to load) and any definition already
+        // loaded into launchd's runtime state (`disarm_relaunch` — a deleted
+        // file alone does NOT stop an already-armed `LaunchEvents` trigger
+        // from firing again before the next logout).
+        let had_stale_file = read_registration().await.is_some();
+        let dest = dir.join(PLIST_FILE);
+        if had_stale_file {
+            if let Err(e) = tokio::fs::remove_file(&dest).await {
+                tracing::warn!(error = %e, plist = %dest.display(), "autostart: could not remove the stale relaunch plist");
+            }
+        }
+        disarm_relaunch().await;
+        // SMAppService already owns login, so the plugin-era job is safe to
+        // drop unconditionally here — nothing further needs to "take over"
+        // first.
+        migrate_off_plugin().await;
+
+        let action = if had_stale_file {
+            RegistrationAction::RepairedStaleDefinition
+        } else {
+            RegistrationAction::AlreadyCorrect
+        };
+        tracing::debug!(
+            login_item = login.as_str(),
+            action = action.as_str(),
+            "autostart: SMAppService owns login - no separate relaunch job needed"
+        );
+        return action;
+    }
+
+    // Below macOS 13: SMAppService is unavailable, so this plist is the only
+    // login mechanism there is, with `RunAtLoad` true.
+    let expected = plist_body(&exe, &home, true);
     let existing = read_registration().await;
 
     // Exact-body comparison, not a substring probe.
     //
-    // The substring version (path present? morning trigger present?) cannot see
-    // a change to a field it does not name — and `RunAtLoad` is exactly such a
-    // field. An install carrying the previous build's `RunAtLoad true` plist
-    // would have passed every substring check while double-launching alongside
-    // the new login item. Comparing the whole rendered body makes every future
-    // field change self-healing for free, and the cost of a false "differs" is
-    // one idempotent file write.
+    // The substring version (path present? marker present?) cannot see a
+    // change to a field it does not name. Comparing the whole rendered body
+    // makes every future field change self-healing for free, and the cost of
+    // a false "differs" is one idempotent file write.
     let action = match existing.as_deref() {
         None => RegistrationAction::RegisteredMissing,
         Some(cur) if cur == expected => RegistrationAction::AlreadyCorrect,
@@ -311,7 +268,7 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
     if action == RegistrationAction::AlreadyCorrect {
         tracing::debug!(
             login_item = login.as_str(),
-            "autostart: login item and morning trigger both already correct"
+            "autostart: login LaunchAgent already correct"
         );
         // Something correct is already registered, so the legacy job is now
         // redundant AND would double-launch alongside it.
@@ -347,52 +304,51 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
         migrate_off_plugin().await;
     }
 
-    // NOW bootstrap it, which is safe for the first time.
-    //
-    // This used to be skipped, on the grounds that `bootstrap` honours
-    // `RunAtLoad` and would start a second tray. Two things changed and both
-    // matter:
-    //
-    // 1. On macOS 13+ this plist carries `RunAtLoad false` (SMAppService owns
-    //    login), so bootstrapping loads the calendar trigger WITHOUT launching
-    //    anything at all.
-    // 2. `tauri-plugin-single-instance` now guarantees that even if something
-    //    did launch a second process, it exits before touching the tray or the
-    //    database.
-    //
-    // The gain is not cosmetic: without bootstrapping, launchd only picks the
-    // job up at the next login, so a user who installed and then quit the same
-    // day would NOT come back on the new-day trigger. Bootstrapping closes that gap, so the
-    // morning relaunch works from the moment of install.
-    //
-    // Best-effort: `bootout` first so a re-registration replaces cleanly, and a
-    // failure here only costs the current session (the next login loads it from
-    // disk regardless).
-    let target = format!("gui/{}/{LABEL}", crate::sys::uid_str());
-    if run_at_load_owned_by_plist {
-        // Below macOS 13 this plist DOES carry `RunAtLoad true`, so bootstrapping
-        // it here would start a second tray. The single-instance guard would kill
-        // that duplicate, but relying on a guard to undo a launch we chose to
-        // make is worse than not making it: skip, and let the next login load it.
-        tracing::debug!("autostart: not bootstrapping a RunAtLoad plist from inside the app");
-    } else {
-        let _ = crate::backend_install::launchctl(&["bootout", &target]).await;
-        let _ = crate::backend_install::launchctl(&[
-            "bootstrap",
-            &format!("gui/{}", crate::sys::uid_str()),
-            &dest.to_string_lossy(),
-        ])
-        .await;
-    }
-
+    // Deliberately NOT bootstrapped from here: this plist carries
+    // `RunAtLoad true` (it is the sole login mechanism below macOS 13), so
+    // bootstrapping it now would start a second tray immediately. The
+    // single-instance guard would kill that duplicate, but relying on a guard
+    // to undo a launch we chose to make is worse than not making it — skip,
+    // and let the next login load it.
     tracing::info!(
         plist = %dest.display(),
         action = action.as_str(),
         login_item = login.as_str(),
-        run_at_load = run_at_load_owned_by_plist,
-        "autostart: morning-relaunch LaunchAgent written"
+        "autostart: login LaunchAgent written (below macOS 13 fallback)"
     );
     action
+}
+
+/// Clear any relaunch job already loaded into launchd's runtime state.
+///
+/// Deleting [`PLIST_FILE`] on disk is not enough by itself: once a job with
+/// `LaunchEvents` has been bootstrapped, its triggers stay armed in launchd's
+/// in-memory state until an explicit `bootout` (or logout), regardless of
+/// whether the file that defined them still exists. A machine that had an
+/// older build's
+/// wake-relaunch job loaded before upgrading would otherwise keep coming back
+/// on the next unlock or display wake for the rest of that login session,
+/// even though the new build never re-registers it — which is the exact "I
+/// cannot quit this app" symptom this change exists to fix.
+///
+/// Best-effort and unawaited for confirmation, unlike
+/// [`crate::backend_install::bootout_agent_and_wait`]: this runs on every
+/// launch's startup path and must not add latency waiting for launchd to
+/// confirm the label cleared, since the job is either already gone (the
+/// common case, nothing to do) or about to be — bootout itself is
+/// synchronous with the daemon side effects that matter here.
+///
+/// Safe to call even if the running process happens to be that job's own
+/// child (which can only happen right after upgrading past this change,
+/// mid-relaunch): the process is either not that job's instance at all
+/// (the overwhelmingly common case — a user launch, an updater relaunch, or
+/// SMAppService's own login item, none of which go through this label), or
+/// it is, and `tauri-plugin-single-instance` combined with the app already
+/// starting up makes an unexpected exit here no worse than the exit the user
+/// was trying to cause anyway.
+pub(crate) async fn disarm_relaunch() {
+    let target = format!("gui/{}/{LABEL}", crate::sys::uid_str());
+    let _ = crate::backend_install::launchctl(&["bootout", &target]).await;
 }
 
 /// Delete the plugin-era `Meridian.plist`, so an upgraded install does not end
@@ -442,13 +398,12 @@ async fn migrate_off_plugin() {
 /// in Settings and the app they are looking at quits, because they are running
 /// as the job being booted out.
 ///
-/// The accepted cost is narrow. Our plist DOES carry a morning trigger, and it
-/// stays live until logout, so a user who turns autostart off AND quits later
-/// the same day could still be relaunched once by the new-day trigger. From the
-/// next login on
-/// there is no plist to load and the setting is fully honoured. Relaunching
-/// once beats quitting the app out from under someone who was changing a
-/// preference.
+/// Below macOS 13 this plist carries only `RunAtLoad`, which already fired at
+/// this session's login and never fires again — so deleting the file is
+/// enough to fully honour the setting from this point on, not just from the
+/// next login. (On 13+ this module never wrote a plist at all, so there is
+/// nothing here to remove; [`login_item::unregister`] above is the whole
+/// story.)
 pub(crate) async fn unregister() {
     // The login half first. Unlike `launchctl bootout` this does NOT terminate
     // the running app, so it is safe to call from the Settings toggle while the
@@ -504,10 +459,13 @@ mod tests {
         assert!(LABEL.starts_with("com.meridiona."));
     }
 
-    /// THE double-launch guard. On macOS 13+ SMAppService owns login, so this
-    /// plist must carry `RunAtLoad false` and nothing else may start a tray at
-    /// login. Both firing means two processes writing one SQLite file - the
-    /// double-writer condition behind `database disk image is malformed`.
+    /// `run_at_load` still varies as a property of this pure function, even
+    /// though [`ensure_registered`] only ever calls it with `true` now (the
+    /// `false`/SMAppService-owns-login case no longer writes a plist at all -
+    /// see its docs). Pinned here so a `false` plist can never silently start
+    /// a second tray alongside SMAppService's login item if that changes -
+    /// two processes writing one SQLite file is the double-writer condition
+    /// behind `database disk image is malformed`.
     #[test]
     fn run_at_load_is_false_when_smappservice_owns_login() {
         let with_login_item = body(false);
@@ -519,57 +477,35 @@ mod tests {
         assert!(fallback.contains("<key>RunAtLoad</key>\n    <true/>"));
     }
 
-    /// The wake triggers are this plist's reason to exist in BOTH modes -
-    /// SMAppService cannot express them at all, and there is no clock left.
+    /// **The regression test for "I cannot quit this app".** An earlier
+    /// version of this plist carried `LaunchEvents` on a set of Darwin
+    /// notifications (unlock, display wake, power state, clamshell) so
+    /// Meridian relaunched itself on those events rather than at a fixed
+    /// hour. Those notifications fire many times in an ordinary day - every
+    /// screen lock/unlock, every display sleep/wake - so a user who quit the
+    /// app watched it come back within minutes. The requirement is login,
+    /// restart, or a manual start, never an unattended resurrection before
+    /// then, so this plist must carry neither a clock NOR a wake trigger in
+    /// either mode - it is `RunAtLoad` and nothing else.
     #[test]
-    fn both_modes_carry_every_wake_notification_and_no_clock() {
+    fn plist_carries_no_wake_relaunch_trigger_and_no_clock() {
         for run_at_load in [true, false] {
             let b = body(run_at_load);
             assert!(
-                b.contains("<key>LaunchEvents</key>"),
-                "run_at_load={run_at_load}"
+                !b.contains("LaunchEvents") && !b.contains("notifyd.matching"),
+                "a wake-relaunch trigger came back (run_at_load={run_at_load}) - \
+                 quitting must stick until the next login, not the next unlock"
             );
-            assert!(
-                b.contains("com.apple.notifyd.matching"),
-                "run_at_load={run_at_load}"
-            );
-            for n in WAKE_NOTIFICATIONS {
-                assert!(b.contains(n), "missing {n} (run_at_load={run_at_load})");
-            }
-            assert!(b.contains(super::super::AUTOSTART_FLAG));
-            // The whole point of the rewrite: no hardcoded time survives.
             assert!(
                 !b.contains("StartCalendarInterval") && !b.contains("StartInterval"),
-                "a clock came back - the requirement is an event, not a time"
+                "a clock came back - the requirement is login/restart/start, not a time"
             );
+            assert!(b.contains(super::super::AUTOSTART_FLAG));
         }
-    }
-
-    /// Each notification must appear as its own `{{ Notification: <name> }}` dict
-    /// under `com.apple.notifyd.matching`, which is the shape Apple's own
-    /// `com.apple.contextstored.plist` uses. A flat array silently never fires.
-    #[test]
-    fn each_notification_is_rendered_in_apples_dict_shape() {
-        let b = body(false);
-        for n in WAKE_NOTIFICATIONS {
-            assert!(
-                b.contains(&format!("<key>{n}</key>")),
-                "{n} is not a key in the matching dict"
-            );
-            assert!(
-                b.contains(&format!("<string>{n}</string>")),
-                "{n} has no Notification value"
-            );
-        }
-        assert_eq!(
-            b.matches("<key>Notification</key>").count(),
-            WAKE_NOTIFICATIONS.len(),
-            "one Notification key per notification"
-        );
     }
 
     /// `KeepAlive` would make Quit impossible - the user explicitly wants
-    /// quitting to stick until the next morning, which is the entire reason
+    /// quitting to stick until the next login, which is the entire reason
     /// this plist differs from the daemon's.
     #[test]
     fn plist_must_not_carry_keepalive() {
