@@ -1,6 +1,26 @@
 {
   "releases": [
     {
+      "version": "1.90.0",
+      "date": "2026-08-24",
+      "highlights": [
+        "Meridian now starts itself reliably, and comes back when you actually start work rather than at a time we picked. It used to register once and never check again, so moving the app to Applications, reinstalling, or restoring it from the Bin could leave it unable to start at login with nothing to tell you - and because Meridian records your day from the app itself, a launch that never happened meant a day with nothing in it. It now checks and repairs that registration every single launch, and the next-day restart triggers on your Mac or PC waking, unlocking or signing in, instead of a fixed hour that missed you if your laptop was shut at the time.",
+        "On macOS, Meridian now appears by name under System Settings - General - Login Items & Extensions, so you can see it and turn it off there like any other app. It used to install itself as an unnamed background job, and uninstalling left that job behind pointing at an app that no longer existed.",
+        "If your project tool is not one we support yet, you can now tell us which one you use instead of being stuck on that step."
+      ],
+      "fixes": [
+        "Creating a task on GitHub from your daily plan works properly now. It used to fail outright if your project board had no GitHub task on it yet, and even when it worked the new issue never came back into Meridian - it was created but never added to your board or assigned to you, which is what Meridian looks for. New tasks are now filed, assigned to you and placed on your board. You will need to reconnect GitHub in Settings - Integrations once, because adding an issue to a board needs a permission the old connection did not ask for.",
+        "The end-of-day time you pick during the guided tour is actually saved. The tour would move on as though you had answered, and Settings still showed the old default afterwards.",
+        "The guided tour no longer gets stuck on that same question. Dismissing the dialog could leave the tour waiting on a button that was no longer on screen, and it pointed at the Turn on button before choosing a time had switched it on.",
+        "The end-of-day time dialog no longer appears twice if you skip the tour while it is opening, and it now asks you to pick a time before it will save.",
+        "Meridian no longer reports your project tool as failing to sync just because your laptop was asleep. A gap in time was being treated the same as a run of failures, so the first attempt after waking raised a warning about a tracker that was working fine.",
+        "Signing in sticks across a relaunch. A session that was still loading reported an empty status, which Meridian read as a failed sign-in and quietly dropped, so you were shown the sign-in screen again.",
+        "Several fixes that protect your database around a restart: the write-ahead log is now flushed cleanly when the daemon stops, damage is spotted from Meridian's own reads rather than waiting for a scan, an automatic repair that fails now falls back to a fresh start instead of leaving you stuck, and Meridian no longer holds a connection open across a daemon restart.",
+        "On Windows, an automatic repair no longer gives up when a file is briefly locked by another process, and updating your start-at-login setting no longer closes Meridian while it does so.",
+        "The tray popover has a cleaner edge - the window is clipped to its own rounded corners and no longer draws a second shadow behind it."
+      ]
+    },
+    {
       "version": "1.89.0",
       "date": "2026-08-20",
       "highlights": [
