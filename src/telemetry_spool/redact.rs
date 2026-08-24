@@ -475,13 +475,52 @@ fn keep_attribute(kv: &mut KeyValue, pseudonym: &str) -> bool {
                 // A number the otel bridge stringified on its way here. See
                 // `is_bare_number` — this is a TYPE rescue, not a key exemption,
                 // and it deliberately runs last so an allowlisted key keeps its
-                // own treatment.
-                is_bare_number(s)
+                // own treatment. `is_user_scoped_key` is checked FIRST so the
+                // rescue can never resurrect an identifier that names the user's
+                // data just because it happens to be spelled in digits.
+                !is_user_scoped_key(&kv.key) && is_bare_number(s)
             }
         }
         // Bytes / array / kvlist can nest arbitrary content — drop.
         _ => false,
     }
+}
+
+/// Keys that name the USER's data rather than ours, and so must stay dropped
+/// no matter what shape their value happens to take.
+///
+/// # Why this list exists only for the numeric rescue
+/// Being absent from [`SAFE_STRING_KEYS`] is normally enough — an unlisted key
+/// is dropped. [`is_bare_number`] is the one path that keeps an unlisted key, so
+/// it is also the one path that could resurrect one of these by accident: a
+/// `task_id` is a `String` in this codebase (`worklog_pipeline::task_db`) and is
+/// usually `KAN-185`, which no rescue would touch — but a provider that numbers
+/// its issues would make the same field `"4711"`, and the rescue would ship it.
+///
+/// The list is deliberately about the KEY, not the value: a numeric ticket id is
+/// indistinguishable from a row count by inspection, so the only durable signal
+/// is what the field is called. Entries mirror the denied set pinned by
+/// `user_scoped_diagnostic_keys_stay_off_the_allowlist`, plus the identifier
+/// spellings actually logged at WARN/ERROR sites today.
+///
+/// Note this does NOT cover `IntValue` — `keep_attribute`'s first arm keeps
+/// every real integer for every key, which is pre-existing behaviour this change
+/// deliberately does not alter (`row_id`, an `i64`, ships on 65,940 records
+/// today). Narrowing that is a separate decision from fixing the `u64` bug.
+const USER_SCOPED_KEYS: &[&str] = &[
+    "task_key",
+    "task_id",
+    "ticket_key",
+    "ticket_id",
+    "issue_key",
+    "issue_id",
+    "path",
+    "window_title",
+    "app_name",
+];
+
+fn is_user_scoped_key(key: &str) -> bool {
+    USER_SCOPED_KEYS.contains(&key)
 }
 
 /// True when the WHOLE value is a plain number — the shape a numeric field
@@ -1115,6 +1154,30 @@ mod tests {
             keep(&mut as_string),
             "the two spellings of the same number must not disagree"
         );
+    }
+
+    /// The numeric rescue must not resurrect a user-scoped identifier that
+    /// happens to be spelled in digits.
+    ///
+    /// `task_id` is a `String` in this codebase and is normally `KAN-185`, which
+    /// no rescue would touch — but a provider that numbers its issues makes the
+    /// same field `"4711"`, and without [`USER_SCOPED_KEYS`] the rescue would
+    /// ship it. Found by grepping WARN/ERROR sites for identifier-shaped fields
+    /// after the rescue was already written, which is the check that should have
+    /// come first.
+    #[test]
+    fn the_numeric_rescue_never_resurrects_a_user_scoped_identifier() {
+        for key in USER_SCOPED_KEYS {
+            let mut numeric = str_attr(key, "4711");
+            assert!(
+                !keep(&mut numeric),
+                "{key} must stay dropped even when its value is all digits"
+            );
+        }
+        // The control: an operational field of the same shape still ships, or
+        // the rescue would have been pointless.
+        let mut operational = str_attr("timeout_s", "4711");
+        assert!(keep(&mut operational));
     }
 
     /// `json_pointer` replaces the clerk plugin's `path` field. `path` is on the
