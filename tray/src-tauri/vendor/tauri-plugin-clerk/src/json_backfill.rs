@@ -85,8 +85,14 @@ fn defaults_for(object_type: &str) -> &'static [FieldDefault] {
         // `clerkSignUpToSignUpJSON` is missing more than one required field:
         // it emits `has_password` where the model wants `password_enabled`,
         // and never emits `custom_action` — both bare `bool`s upstream. It
-        // DOES emit `abandon_at`, so that entry is a no-op on a real payload
-        // and only guards a partial object.
+        // DOES emit `abandon_at` — as `signUp.abandonAt` with no `?? …` guard
+        // (`dist-js/index.js`), so a scratch object with no attempt in flight
+        // sends it as a literal JSON `null`, not an absent key. That is the
+        // FIFTH incident on this object (observed live on 1.90.0-staging.7,
+        // `path = payload.client.sign_up.abandon_at`, `error = invalid type:
+        // null, expected i64`) — this entry's `0` default was never a no-op
+        // on a real payload, the backfill loop just could not reach a
+        // present-but-null value to apply it. See the loop below.
         //
         // None of this had been observed in production yet. It is fixed anyway:
         // it is the same untouched guest-js code path that has now produced
@@ -343,12 +349,39 @@ fn has_null_status(map: &Map<String, Value>) -> bool {
     matches!(map.get("status"), Some(Value::Null))
 }
 
+/// Apply an object type's [`FieldDefault`] table, treating a key that is
+/// PRESENT but `null` the same as one that is ABSENT.
+///
+/// `entry(..).or_insert_with(..)` alone only ever catches the absent case,
+/// which is `defaults_for`'s namesake trap ("optional VALUE, mandatory KEY")
+/// but not its mirror: several guest-js fields (`status`, and — the fifth
+/// incident on this object, `sign_up.abandon_at` — see [`defaults_for`]'s
+/// `"sign_up_attempt"` doc) are passed straight through with no `?? …` guard,
+/// so a scratch object with nothing in flight sends them as a literal JSON
+/// `null` rather than omitting the key. A required (non-`Option`) field
+/// fails deserialization on `null` exactly as it does on absence, and
+/// `or_insert_with` cannot reach it because the key already exists.
+///
+/// Safe uniformly across every table entry, not just the ones known to hit
+/// this: any entry whose own default IS `Value::Null` (i.e. the model treats
+/// that key as genuinely optional) turns this into a null-over-null no-op,
+/// and every other entry's default is exactly the value already used to
+/// backfill an absence — the same repair, only reachable one case wider.
+fn apply_defaults(map: &mut Map<String, Value>, defaults: &[FieldDefault]) {
+    for (key, default) in defaults {
+        let needs_default = map.get(*key).is_none_or(Value::is_null);
+        if needs_default {
+            map.insert((*key).to_string(), default());
+        }
+    }
+}
+
 /// Recursively normalize a Clerk `client` JSON tree (or any subtree of one)
 /// so it deserializes cleanly into `clerk-fapi-rs`'s models. Mutates in
-/// place; safe to call on an already-well-formed payload (every backfill is
-/// an `entry(..).or_insert(..)` and every timestamp rewrite is a no-op on an
-/// already-integral value, and `canonical_object_type` is a no-op on an
-/// already-canonical `object`).
+/// place; safe to call on an already-well-formed payload (every backfill in
+/// [`apply_defaults`] is a no-op on a value that is neither absent nor null,
+/// every timestamp rewrite is a no-op on an already-integral value, and
+/// `canonical_object_type` is a no-op on an already-canonical `object`).
 pub(crate) fn backfill_clerk_client_json(value: &mut Value) {
     match value {
         Value::Array(items) => {
@@ -369,9 +402,7 @@ pub(crate) fn backfill_clerk_client_json(value: &mut Value) {
                 // BEFORE the blanket defaults: `password_enabled` has a real
                 // source in the payload and must not be defaulted past it.
                 carry_over_has_password(&canonical, map);
-                for (key, default) in defaults_for(&canonical) {
-                    map.entry(*key).or_insert_with(default);
-                }
+                apply_defaults(map, defaults_for(&canonical));
                 if has_null_status(map) {
                     if let Some(fallback) = null_status_fallback(&canonical) {
                         map.insert("status".to_string(), json!(fallback));
@@ -1062,6 +1093,68 @@ mod tests {
         assert!(
             err.to_string().contains("missing field `id`"),
             "expected the exact error production reported, got: {err}"
+        );
+    }
+
+    /// Pins the production failure observed live on 1.90.0-staging.7 — this
+    /// module's FIFTH incident on this object: `path =
+    /// payload.client.sign_up.abandon_at`, `error = invalid type: null,
+    /// expected i64`.
+    ///
+    /// # Why this one got past the "completeness proof" tests too
+    /// `clerkSignUpToSignUpJSON` emits `abandon_at: signUp.abandonAt` with no
+    /// `?? …` guard (`dist-js/index.js`), exactly like the `status` field the
+    /// third incident fixed — but `real_guest_js_sign_up_json` (transcribed
+    /// for the FOURTH incident) happened to carry a real float there, and
+    /// `a_bare_sign_up_scratch_object_deserializes_after_backfill`'s
+    /// discriminator-only fixture has the key ABSENT rather than present-null,
+    /// so neither exercised this. Present-but-null needs its own fixture
+    /// because it is a different failure mode than either.
+    #[test]
+    fn a_sign_up_whose_only_remaining_defect_is_a_null_abandon_at_names_that_field() {
+        let mut value = real_guest_js_sign_up_json();
+        backfill_clerk_client_json(&mut value);
+        value
+            .as_object_mut()
+            .expect("fixture is an object")
+            .insert("abandon_at".to_string(), Value::Null);
+        let err = serde_json::from_value::<clerk_fapi_rs::models::ClientSignUp>(value)
+            .expect_err("a sign_up with a null abandon_at must not deserialize");
+        assert!(
+            err.to_string().contains("invalid type: null, expected i64"),
+            "expected the exact error production reported, got: {err}"
+        );
+    }
+
+    #[test]
+    fn backfill_repairs_a_present_but_null_abandon_at_on_sign_up() {
+        let mut value = real_guest_js_sign_up_json();
+        value["abandon_at"] = Value::Null;
+        backfill_clerk_client_json(&mut value);
+        assert_eq!(value["abandon_at"], json!(0));
+        serde_json::from_value::<clerk_fapi_rs::models::ClientSignUp>(value)
+            .expect("a sign_up backfilled from a null abandon_at must deserialize");
+    }
+
+    /// The end-to-end case: a whole `ClientClient` carrying the exact scratch
+    /// shape production sent — no attempt in flight, `abandon_at` present and
+    /// `null` rather than an absent key or a real timestamp.
+    #[test]
+    fn a_client_carrying_a_null_abandon_at_sign_up_deserializes_after_backfill() {
+        let mut value = guest_js_shaped_client_json();
+        let mut sign_up = real_guest_js_sign_up_json();
+        sign_up["abandon_at"] = Value::Null;
+        value["sign_up"] = sign_up;
+        assert!(
+            serde_json::from_value::<ClientClient>(value.clone()).is_err(),
+            "fixture must reproduce the failure before the backfill runs"
+        );
+        backfill_clerk_client_json(&mut value);
+        assert_eq!(value["sign_up"]["abandon_at"], json!(0));
+        serde_json::from_value::<ClientClient>(value).expect(
+            "a signed-in user whose sign_up scratch object has a null abandon_at is the \
+             COMMON case, not an edge one - this is the payload that broke session \
+             persistence in production on 1.90.0-staging.7",
         );
     }
 
