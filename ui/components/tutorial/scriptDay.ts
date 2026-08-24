@@ -42,6 +42,7 @@
 import { load } from '@/lib/bridge'
 import { connectedTrackers } from '@/lib/integrations'
 import type { IntegrationsResponse } from '@/lib/api-types'
+import type { RuntimeSettings } from '@/lib/settings'
 import type { Stage } from './engine'
 import { FOCUS_TASK_ID, OFFPLAN_TASK_ID } from './sampleDay'
 
@@ -82,6 +83,54 @@ async function hasBoard(usesTracker: string | null): Promise<boolean> {
   } catch {
     return usesTracker === 'tracker'
   }
+}
+
+/** Wait for the worklog-time dialog to actually be ANSWERED, by polling the
+ *  real setting rather than waiting on a DOM click.
+ *
+ *  `waitForClick` was the original mechanism here, and an extended
+ *  investigation (see PR #849) never found why it resolves `true` with no
+ *  observable click of any kind - button, backdrop, or otherwise - having
+ *  occurred. Rather than keep chasing that, this sidesteps it: the question
+ *  this beat is asking is answered the moment `worklog_auto_generate_time` or
+ *  `worklog_auto_generate_prompted` actually changes in settings.json, no
+ *  matter which control the user pressed or how the tour's click-detection
+ *  interprets it. A snapshot taken before the dialog opens is the baseline -
+ *  necessary because a replayed tour can already have `prompted: true` from an
+ *  earlier run, which would otherwise read as "already answered" before the
+ *  user has touched anything this time.
+ *
+ *  ALSO resolves on the dialog leaving the DOM even with no settings change -
+ *  a replayed tour that already has `prompted: true` and gets declined again
+ *  ("Not now"/backdrop/×) writes back the SAME values, which the diff above
+ *  would never see as a change. The dialog closing is itself the answer in
+ *  that case, exactly like `waitForClick`'s original vanish handling, just
+ *  implemented as a plain poll rather than depending on the primitive this
+ *  beat's actual bug lives in.
+ *
+ *  ALSO races an un-awaited `waitForClick` alongside the poll, purely for its
+ *  side effect: this beat has no ring, so the engine's `FullFence` - the
+ *  full-viewport click-blocker that fills in for a ring when nothing is being
+ *  pointed at - stays up unless SOMETHING is actively `awaiting` a click. A
+ *  first version of this fix dropped `waitForClick` entirely and polled with
+ *  nothing lowering the fence, which made the whole dialog genuinely
+ *  unclickable for up to five minutes - worse than the bug it was fixing.
+ *  This still doesn't trust the click primitive's RESULT (the mystery this
+ *  investigation never closed), but its mere presence keeps the fence down
+ *  while the real answer is confirmed by polling. */
+async function waitForWorklogAnswered(s: Stage, timeoutMs: number): Promise<boolean> {
+  void s.waitForClick('[data-tour="worklog-schedule-on"]', timeoutMs)
+  const key = (v: Partial<RuntimeSettings> | null) =>
+    v ? `${v.worklog_auto_generate_time}:${v.worklog_auto_generate_prompted}` : null
+  const baseline = key(await load<RuntimeSettings>('/api/settings', 'get_settings').catch(() => null))
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (!document.querySelector('[data-tour="worklog-schedule-on"]')) return true
+    const current = key(await load<RuntimeSettings>('/api/settings', 'get_settings').catch(() => null))
+    if (current !== null && current !== baseline) return true
+    await s.pause(400)
+  }
+  return false
 }
 
 export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
@@ -559,10 +608,11 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   // `waitForClick` below stays the thing actually waiting on the user.
   await s.appeared('[data-tour="worklog-schedule-on"]:not([disabled])', 4000)
   await s.point('[data-tour="worklog-schedule-on"]')
-  // Resolves on the click OR on the dialog leaving the DOM, which covers "Not
-  // now" and the backdrop - both are the question being answered, and neither
-  // should strand the tour behind a dialog that is no longer there.
-  await s.waitForClick('[data-tour="worklog-schedule-on"]', 300000)
+  // Answered the moment the setting actually changes - see
+  // `waitForWorklogAnswered`'s doc comment for why this no longer waits on a
+  // click. Covers "Not now"/the backdrop the same as a real "Turn on": both
+  // write `worklog_auto_generate_prompted`, so both satisfy this either way.
+  await waitForWorklogAnswered(s, 300000)
   s.spotlight(null)
   s.showWorklogSchedule(false)
   await s.pause(600)
