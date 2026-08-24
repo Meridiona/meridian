@@ -105,6 +105,7 @@ const REPAIR_RETRY_BASE_DELAY: std::time::Duration = std::time::Duration::from_s
 
 /// Outcome, kept plain so `lib.rs` can turn it into a notice once it has a pool
 /// (this runs before one exists).
+#[derive(Debug)]
 pub enum Outcome {
     /// Rebuilt. Carries a user-facing summary.
     Repaired { summary: String },
@@ -279,19 +280,39 @@ fn probe_and_heal(db_path: &Path, key_hex: Option<&str>, key_trust: KeyTrust) ->
                 tracing::error!(error = %e, "could not write the repair marker - skipping the automatic repair");
                 return None;
             }
-            let outcome = execute_pending_repair(db_path, key_hex);
-            span.record(
-                "outcome",
-                match &outcome {
-                    Outcome::Repaired { .. } => "repaired",
-                    Outcome::Failed { .. } => "repair_failed",
-                    Outcome::FreshStart { .. } => "fresh_start",
-                },
-            );
-            if matches!(outcome, Outcome::Failed { .. }) {
-                span.record("otel.status_code", "ERROR");
+            match execute_pending_repair(db_path, key_hex) {
+                Outcome::Failed { error } => {
+                    // `Damaged` means the file ATTACHes - repairable in
+                    // principle - but a file that keeps failing every actual
+                    // repair attempt (all `REPAIR_RETRY_ATTEMPTS` of them) is
+                    // not actually salvageable in place, whatever the initial
+                    // classification promised. Left here, this file fails the
+                    // identical way on every future launch forever - the same
+                    // dead end `Probe::Unopenable` already has a fallback for,
+                    // just reached from the other classification. Observed in
+                    // the field (2026-08): a machine whose `meridian db
+                    // repair` failed at `ATTACH DATABASE` itself stayed
+                    // hard-down across every subsequent launch with no
+                    // further signal, exactly this profile.
+                    span.record("otel.status_code", "ERROR");
+                    tracing::error!(
+                        error = %error,
+                        "automatic repair failed after retries - falling back to a fresh start, the same last resort an unopenable database already gets"
+                    );
+                    Some(fresh_start(db_path, "unrepairable", error))
+                }
+                repaired @ Outcome::Repaired { .. } => {
+                    span.record("outcome", "repaired");
+                    Some(repaired)
+                }
+                // `execute_pending_repair` never produces this variant itself
+                // - kept exhaustive so a future change to its return type is
+                // a compile error here, not a silently mis-recorded span.
+                fresh @ Outcome::FreshStart { .. } => {
+                    span.record("outcome", "fresh_start");
+                    Some(fresh)
+                }
             }
-            Some(outcome)
         }
         Probe::Unopenable { error } => {
             // Both arms of one rule: only a key the keychain vouches for may
@@ -311,49 +332,82 @@ fn probe_and_heal(db_path: &Path, key_hex: Option<&str>, key_trust: KeyTrust) ->
                 span.record("otel.status_code", "ERROR");
                 return None;
             }
-            if let Some(previous) = recent_unopenable_backup(db_path) {
-                tracing::error!(
-                    error = %error,
-                    previous_backup = %previous.display(),
-                    "meridian.db is unopenable again within a day of being replaced - refusing a second fresh start; something is damaging databases faster than they can be replaced"
-                );
-                span.record("outcome", "refused_repeat_fresh_start");
-                span.record("otel.status_code", "ERROR");
-                return Some(Outcome::Failed { error });
-            }
             tracing::error!(
                 error = %error,
                 "meridian.db cannot be opened under its own key - nothing in it is salvageable, moving it aside and starting fresh"
             );
-            // Same handshake as the Damaged path, for the same reason: the
-            // gate proved no daemon is answering NOW, and the marker keeps a
-            // KeepAlive relaunch out of the window while the file moves.
-            // (No `set_running` call - there is provably nothing to stop.)
-            if let Err(e) = meridian::db::repair::marker::request(db_path) {
-                span.record("outcome", "marker_write_failed");
-                span.record("otel.status_code", "ERROR");
-                tracing::error!(error = %e, "could not write the repair marker - leaving the unopenable database in place");
-                return Some(Outcome::Failed { error });
+            Some(fresh_start(db_path, "unopenable", error))
+        }
+    }
+}
+
+/// Sets `db_path` aside and reports the resulting [`Outcome`] - the shared
+/// last resort both a `Probe::Unopenable` verdict and a `Probe::Damaged`
+/// verdict whose own repair attempts still failed fall back to. Refuses a
+/// second fresh start of the SAME `kind` within [`FRESH_START_GUARD`] (see
+/// [`recent_backup_of_kind`]), so a machine with failing hardware - or a
+/// corruption cause that is still active - accumulates one set-aside file and
+/// a loud error per incident, not a new empty database every launch.
+///
+/// `kind` is `"unopenable"` or `"unrepairable"` - distinct backup extensions
+/// so an operator reading the directory listing (or Export Diagnostics) knows
+/// which failure produced which backup, and so each failure mode gets its own
+/// one-shot budget rather than one silently exhausting the other's.
+///
+/// Callers must have already decided the data cannot be salvaged any other
+/// way. No marker/daemon gating of its own beyond the handshake below -
+/// both call sites already hold [`run_auto_if_needed`]'s daemon-unreachable
+/// gate.
+///
+/// Records onto `Span::current()`, NOT a passed-in `&Span` - both call sites
+/// run synchronously inside [`probe_and_heal`]'s `span.enter()` guard, so
+/// `Span::current()` resolves to that span, which already declares
+/// `otel.status_code`. This is the documented, checkable pattern
+/// (`src/observability/span_status_guard.rs`'s header names
+/// `commands::setup::mark_span_failed` as the reference shape) - an explicit
+/// `&Span` parameter is NOT: the guard cannot trace a field declaration
+/// across a function boundary, so it would flag every `record()` call in
+/// this function as an unverifiable, possibly-silent no-op.
+fn fresh_start(db_path: &Path, kind: &str, error: String) -> Outcome {
+    let span = tracing::Span::current();
+    if let Some(previous) = recent_backup_of_kind(db_path, kind) {
+        tracing::error!(
+            error = %error,
+            kind,
+            previous_backup = %previous.display(),
+            "meridian.db failed the same way again within a day of being replaced - refusing a second fresh start; something is damaging databases faster than they can be replaced"
+        );
+        span.record("outcome", "refused_repeat_fresh_start");
+        span.record("otel.status_code", "ERROR");
+        return Outcome::Failed { error };
+    }
+    // The marker keeps a KeepAlive relaunch out of the window while the file
+    // moves - same reasoning as the repair path above. (No `set_running`
+    // call: both callers already proved via `run_auto_if_needed`'s gate that
+    // no daemon is answering, so there is provably nothing to stop.)
+    if let Err(e) = meridian::db::repair::marker::request(db_path) {
+        span.record("outcome", "marker_write_failed");
+        span.record("otel.status_code", "ERROR");
+        tracing::error!(error = %e, "could not write the repair marker - leaving the database in place");
+        return Outcome::Failed { error };
+    }
+    let result = set_aside_database(db_path, kind);
+    if let Err(e) = meridian::db::repair::marker::clear(db_path) {
+        tracing::error!(error = %e, "could not clear the repair marker - the daemon will stay down until it expires");
+    }
+    match result {
+        Ok(backup) => {
+            span.record("outcome", "fresh_start");
+            Outcome::FreshStart {
+                backup: backup.display().to_string(),
             }
-            let result = set_aside_unopenable(db_path);
-            if let Err(e) = meridian::db::repair::marker::clear(db_path) {
-                tracing::error!(error = %e, "could not clear the repair marker - the daemon will stay down until it expires");
-            }
-            match result {
-                Ok(backup) => {
-                    span.record("outcome", "fresh_start");
-                    Some(Outcome::FreshStart {
-                        backup: backup.display().to_string(),
-                    })
-                }
-                Err(e) => {
-                    span.record("outcome", "set_aside_failed");
-                    span.record("otel.status_code", "ERROR");
-                    tracing::error!(error = %e, "could not move the unopenable database aside - leaving it in place");
-                    Some(Outcome::Failed {
-                        error: format!("{e:#}"),
-                    })
-                }
+        }
+        Err(e) => {
+            span.record("outcome", "set_aside_failed");
+            span.record("otel.status_code", "ERROR");
+            tracing::error!(error = %e, "could not move the database aside - leaving it in place");
+            Outcome::Failed {
+                error: format!("{e:#}"),
             }
         }
     }
@@ -496,23 +550,19 @@ async fn probe_database(db_path: &Path, key_hex: Option<&str>) -> Probe {
     }
 }
 
-/// Moves an unopenable database (and its `-wal`/`-shm` sidecars) aside under a
-/// timestamped name, so a fresh one can be created at the canonical path. The
-/// file is preserved, never deleted - it is the only copy of whatever a future
-/// offline-salvage attempt might still extract.
-#[tracing::instrument(name = "repair_boot.set_aside_unopenable", skip_all)]
-fn set_aside_unopenable(db_path: &Path) -> anyhow::Result<PathBuf> {
+/// Moves a database (and its `-wal`/`-shm` sidecars) aside under a
+/// timestamped `db.<kind>-backup-<ts>` name, so a fresh one can be created at
+/// the canonical path. The file is preserved, never deleted - it is the only
+/// copy of whatever a future offline-salvage attempt might still extract.
+#[tracing::instrument(name = "repair_boot.set_aside_database", skip(db_path))]
+fn set_aside_database(db_path: &Path, kind: &str) -> anyhow::Result<PathBuf> {
     use anyhow::Context;
     let backup = db_path.with_extension(format!(
-        "db.unopenable-backup-{}",
+        "db.{kind}-backup-{}",
         chrono::Utc::now().format("%Y%m%d%H%M%S")
     ));
-    std::fs::rename(db_path, &backup).with_context(|| {
-        format!(
-            "moving the unopenable database aside to {}",
-            backup.display()
-        )
-    })?;
+    std::fs::rename(db_path, &backup)
+        .with_context(|| format!("moving the {kind} database aside to {}", backup.display()))?;
     // Stale sidecars must follow the main file: a leftover -wal beside a fresh
     // database would be offered to SQLite as that database's log. If the
     // rename fails, deleting is the right fallback - the main file already
@@ -543,20 +593,19 @@ fn set_aside_unopenable(db_path: &Path) -> anyhow::Result<PathBuf> {
     Ok(backup)
 }
 
-/// Any `unopenable-backup` set aside within [`FRESH_START_GUARD`] (first hit
-/// in directory order - which one does not matter, any inside the window
-/// blocks) - the loop breaker that keeps a machine with failing hardware from
-/// minting a new empty database every launch.
-fn recent_unopenable_backup(db_path: &Path) -> Option<PathBuf> {
+/// Any `<kind>-backup` set aside within [`FRESH_START_GUARD`] (first hit in
+/// directory order - which one does not matter, any inside the window
+/// blocks) - the loop breaker that keeps a machine with failing hardware (or
+/// a corruption cause still active) from minting a new empty database every
+/// launch. Scoped to `kind` so an unopenable-file incident and an
+/// unrepairable-damage incident each get their own one-shot budget.
+fn recent_backup_of_kind(db_path: &Path, kind: &str) -> Option<PathBuf> {
     let dir = db_path.parent()?;
     // `with_extension` on `meridian.db` replaces the `db` extension, so the
-    // backups are named `meridian.db.unopenable-backup-<ts>` - full file name
+    // backups are named `meridian.db.<kind>-backup-<ts>` - full file name
     // plus suffix (same shape `db_crypto::interrupted_migration_leftovers`
     // documents for the plaintext backups).
-    let prefix = format!(
-        "{}.unopenable-backup-",
-        db_path.file_name()?.to_string_lossy()
-    );
+    let prefix = format!("{}.{kind}-backup-", db_path.file_name()?.to_string_lossy());
     let now = std::time::SystemTime::now();
     std::fs::read_dir(dir).ok()?.flatten().find_map(|entry| {
         let name = entry.file_name();
@@ -699,6 +748,64 @@ mod probe_tests {
         ));
     }
 
+    /// Damage to page 1's own schema b-tree (past the 100-byte file header,
+    /// which stays intact so the file still opens and classifies `Damaged`,
+    /// never `Unopenable`) reproduces the actual 2026-08-24 field incident:
+    /// `quick_check` reports damage, but `ATTACH DATABASE` inside `repair()`
+    /// ALSO fails on the very same file, because SQLCipher's `ATTACH` eagerly
+    /// re-reads the attached file's page 1 rather than lazily loading its
+    /// schema the way plain SQLite does. That combination - repairable by
+    /// classification, unrepairable in practice - is exactly what
+    /// [`fresh_start`]'s new call site in the `Damaged` arm exists for.
+    // Plain #[test], not #[tokio::test] - same reason as
+    // `unopenable_database_is_set_aside_once_and_only_once`: `probe_and_heal`
+    // drives its own async work via `block_on`, which panics inside an
+    // ambient tokio runtime. The async setup below gets its OWN runtime,
+    // dropped before `probe_and_heal` runs.
+    #[test]
+    fn damaged_page_one_that_attach_cannot_salvage_falls_back_to_fresh_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("meridian.db");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(create_sound_db(&db));
+
+        use std::io::{Seek, SeekFrom, Write};
+        let mut f = std::fs::OpenOptions::new().write(true).open(&db).unwrap();
+        // Bytes 0-99 are the SQLite file header (magic, page size, ...) -
+        // left untouched so the file still opens. Everything from 100 to the
+        // end of page 1 is the schema b-tree's own content; scribbling over
+        // it breaks both `quick_check` (Damaged, not Unopenable) and
+        // `ATTACH`'s eager schema read (fails identically).
+        f.seek(SeekFrom::Start(100)).unwrap();
+        f.write_all(&vec![0xFFu8; 4096 - 100]).unwrap();
+        drop(f);
+
+        // Precondition: this really is the `Damaged` profile, not `Unopenable`
+        // - otherwise this test would be exercising the OTHER arm.
+        assert!(
+            matches!(rt.block_on(probe_database(&db, None)), Probe::Damaged { .. }),
+            "fixture must classify as Damaged, not Unopenable, to exercise the repair-failure fallback"
+        );
+        drop(rt);
+
+        let outcome = probe_and_heal(&db, None, KeyTrust::Unverified);
+        let Some(Outcome::FreshStart { backup }) = outcome else {
+            panic!(
+                "a Damaged database whose own repair attempts fail must fall back \
+                 to a fresh start, got {outcome:?}"
+            );
+        };
+        assert!(
+            backup.contains("unrepairable-backup"),
+            "the backup must be tagged as an unrepairable-kind fresh start, not unopenable: {backup}"
+        );
+        assert!(
+            !db.exists(),
+            "the unrepairable file must leave the canonical path so a fresh one can take it"
+        );
+        assert!(Path::new(&backup).exists(), "the backup must be preserved");
+    }
+
     /// The unopenable flow end to end: the file is set aside (sidecars too), a
     /// FreshStart outcome names the backup, and a second unopenable file
     /// within the guard window is refused rather than replaced - the loop
@@ -814,13 +921,38 @@ mod probe_tests {
             .set_times(times)
             .unwrap();
 
-        assert!(recent_unopenable_backup(&db).is_none());
+        assert!(recent_backup_of_kind(&db, "unopenable").is_none());
 
         let fresh = dir
             .path()
             .join("meridian.db.unopenable-backup-20260805000000");
         std::fs::write(&fresh, b"new damage").unwrap();
-        assert_eq!(recent_unopenable_backup(&db), Some(fresh));
+        assert_eq!(recent_backup_of_kind(&db, "unopenable"), Some(fresh));
+    }
+
+    /// Each `kind` gets its OWN one-shot budget: a recent `unopenable` backup
+    /// must not block an `unrepairable` fresh start, or vice versa - the two
+    /// failure modes are unrelated incidents and must not exhaust each
+    /// other's guard window.
+    #[test]
+    fn guard_window_is_scoped_per_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("meridian.db");
+        std::fs::write(
+            dir.path()
+                .join("meridian.db.unopenable-backup-20260824000000"),
+            b"damage",
+        )
+        .unwrap();
+
+        assert!(
+            recent_backup_of_kind(&db, "unopenable").is_some(),
+            "the unopenable backup must be found under its own kind"
+        );
+        assert!(
+            recent_backup_of_kind(&db, "unrepairable").is_none(),
+            "an unopenable backup must not block an unrepairable fresh start"
+        );
     }
 
     /// A repair that fails on its first attempts but succeeds within
