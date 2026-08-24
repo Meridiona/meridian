@@ -100,6 +100,13 @@ async function hasBoard(usesTracker: string | null): Promise<boolean> {
  *  earlier run, which would otherwise read as "already answered" before the
  *  user has touched anything this time.
  *
+ *  A FAILED read is not a value, and the two must not share a representation.
+ *  When the baseline read itself fails there is nothing to compare against, so
+ *  the first reading that succeeds becomes the baseline rather than counting as
+ *  the change - otherwise one rejected `get_settings` ends the beat on the very
+ *  next poll, with nothing recorded, which is precisely the failure this
+ *  function exists to prevent.
+ *
  *  ALSO resolves on the dialog leaving the DOM even with no settings change -
  *  a replayed tour that already has `prompted: true` and gets declined again
  *  ("Not now"/backdrop/×) writes back the SAME values, which the diff above
@@ -120,14 +127,33 @@ async function hasBoard(usesTracker: string | null): Promise<boolean> {
  *  while the real answer is confirmed by polling. */
 async function waitForWorklogAnswered(s: Stage, timeoutMs: number): Promise<boolean> {
   void s.waitForClick('[data-tour="worklog-schedule-on"]', timeoutMs)
-  const key = (v: Partial<RuntimeSettings> | null) =>
-    v ? `${v.worklog_auto_generate_time}:${v.worklog_auto_generate_prompted}` : null
-  const baseline = key(await load<RuntimeSettings>('/api/settings', 'get_settings').catch(() => null))
+  // `undefined` means the READ FAILED and `string` means "this is what settings
+  // say". Collapsing those two - as returning `null` for both did - is what let
+  // a failed baseline read end the beat instantly: `baseline` was `null`, the
+  // next successful poll was a non-null string, that compared as a change, and
+  // the tour moved on having recorded nothing. Which is the bug this whole
+  // function was written to fix, reintroduced through the error path.
+  const read = async (): Promise<string | undefined> => {
+    try {
+      const v = await load<RuntimeSettings>('/api/settings', 'get_settings')
+      return `${v.worklog_auto_generate_time}:${v.worklog_auto_generate_prompted}`
+    } catch {
+      return undefined
+    }
+  }
+  let baseline = await read()
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (!document.querySelector('[data-tour="worklog-schedule-on"]')) return true
-    const current = key(await load<RuntimeSettings>('/api/settings', 'get_settings').catch(() => null))
-    if (current !== null && current !== baseline) return true
+    const current = await read()
+    if (baseline === undefined) {
+      // The baseline read failed, so there is nothing to compare against yet.
+      // Adopt the first reading that succeeds instead of counting it as the
+      // answer - a recovered read is not a user response.
+      baseline = current
+    } else if (current !== undefined && current !== baseline) {
+      return true
+    }
     await s.pause(400)
   }
   return false
