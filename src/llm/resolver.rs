@@ -116,6 +116,55 @@ pub const CUSTOM_RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(60);
 /// at 15 rpm — so it only trips when genuinely many calls are queued at once.
 const PACING_MAX_WAIT: Duration = Duration::from_secs(30);
 
+/// Deadline for the whole attempt loop when [`PromptRequest::interactive`] is set — a
+/// user watching a spinner synchronously, not a background job.
+///
+/// # Why this exists
+/// The tray's own external kill-timeout for a `plan-task-draft` CLI call is 150s
+/// (`tray/src-tauri/src/commands/plan_tasks.rs::LLM_TIMEOUT`), and nothing in
+/// [`complete_inner`] had a deadline below that — `LlmConfig::cli_timeout_s` alone can
+/// reach 300s (its own default), and the loop below can spend it TWICE on one retry.
+/// [`crate::plan_tasks::draft::draft`] already turns any `Err` this function returns
+/// into a clean, user-facing message and exits the CLI with status 0 — the bug was
+/// never that the CLI couldn't produce a good error, it never got the CHANCE to: a
+/// hanging provider ran past 150s, the tray killed the whole process (`kill_on_drop`,
+/// `tray/src-tauri/src/commands/cli_exec.rs`), and the user saw the tray's own generic
+/// "plan-task-draft timed out" instead of the real provider error already sitting in
+/// `last`, one `return` away. (github.com/Meridiona/meridian/issues/866)
+///
+/// 100s, not closer to 150s, to leave margin for everything OUTSIDE this function that
+/// still has to happen inside the tray's budget: process spawn, the health check above
+/// (usually cache-served, but not guaranteed to be), and JSON I/O on both sides of the
+/// pipe.
+///
+/// Every backend already cancels safely on drop — the CLI-spawning ones route through
+/// `run_capture`'s `kill_on_drop(true)`, and `openai_compat`'s reqwest future has
+/// nothing left behind to leak — so timing this out here cannot orphan a subprocess.
+const INTERACTIVE_DEADLINE: Duration = Duration::from_secs(100);
+
+/// Run `fut` under `deadline` when one is given, otherwise unbounded.
+///
+/// Generic over the future purely so this is unit-testable without a live provider or a
+/// real 100s wait — see the tests below, which pass millisecond deadlines instead of
+/// [`INTERACTIVE_DEADLINE`]. On a timeout this synthesises an [`LlmError::Failed`]
+/// rather than propagating [`tokio::time::error::Elapsed`], so every caller of
+/// [`complete_inner`] keeps seeing the one error type it already knows how to render.
+async fn bounded<T>(
+    deadline: Option<Duration>,
+    fut: impl std::future::Future<Output = Result<T, LlmError>>,
+) -> Result<T, LlmError> {
+    let Some(deadline) = deadline else {
+        return fut.await;
+    };
+    match tokio::time::timeout(deadline, fut).await {
+        Ok(r) => r,
+        Err(_) => Err(LlmError::Failed(format!(
+            "provider did not respond within {}s",
+            deadline.as_secs()
+        ))),
+    }
+}
+
 /// The flat backoff to use when a provider gave us nothing to go on — keyed by transport,
 /// because a flat-rate subscription and a per-minute metered quota recover on completely
 /// different timescales.
@@ -539,87 +588,108 @@ async fn complete_inner(req: &PromptRequest) -> Result<(LlmOutput, LlmProvider),
     }
 
     let backend = backend_for(chosen, cfg.clone());
-    let mut last: LlmError = LlmError::Failed("no attempt made".into());
 
-    // A `Failed` may be a blip, so it earns one retry. A `RateLimited` never does —
-    // the quota will not refill in the next two seconds.
-    for attempt in 1..=2u32 {
-        // Pace BEFORE the request, not after a failure — the whole point is that the 429
-        // never happens. No-op unless this is a custom endpoint with an `rpm` configured.
-        if chosen == LlmProvider::Custom {
-            if let Some(ep) = cfg.custom.as_ref() {
-                super::rate_limit::acquire(&key, ep.rpm, Some(PACING_MAX_WAIT)).await;
-            }
-        }
-        match backend.complete(req).await {
-            Ok(out) => {
-                // The provider answered: clear any runtime health flag it was carrying, so a
-                // recovered provider drops the banner without waiting on a manual re-test.
-                //
-                // A probe takes the unconditional path. `record_success` decides whether
-                // there is anything to clear by looking at the RUNTIME record only, and the
-                // verdict a probe was sent to disprove is usually in the manual-test cache,
-                // which that check cannot see - so it would write nothing and the next call
-                // would be refused again by the verdict this one just disproved.
-                if probing {
-                    super::runtime_health::record_probe_success(&key);
-                } else {
-                    super::runtime_health::record_success(&key);
+    // A `Failed` may be a blip, so it earns one retry. A `RateLimited` never does — the
+    // quota will not refill in the next two seconds. Wrapped in `bounded` so an
+    // interactive caller (see `PromptRequest::interactive`) cannot run past its own
+    // deadline and get killed externally with no error to show - see
+    // `INTERACTIVE_DEADLINE`'s docs.
+    let attempt_result: Result<LlmOutput, LlmError> = bounded(
+        req.interactive.then_some(INTERACTIVE_DEADLINE),
+        async {
+            let mut last: LlmError = LlmError::Failed("no attempt made".into());
+            for attempt in 1..=2u32 {
+                // Pace BEFORE the request, not after a failure — the whole point is that
+                // the 429 never happens. No-op unless this is a custom endpoint with an
+                // `rpm` configured.
+                if chosen == LlmProvider::Custom {
+                    if let Some(ep) = cfg.custom.as_ref() {
+                        super::rate_limit::acquire(&key, ep.rpm, Some(PACING_MAX_WAIT)).await;
+                    }
                 }
-                return Ok((out, chosen));
+                match backend.complete(req).await {
+                    Ok(out) => return Ok(out),
+                    Err(LlmError::RateLimited {
+                        message,
+                        retry_after,
+                    }) => {
+                        // Most authoritative first: a header the endpoint actually sent, then
+                        // the provider's own prose, then a flat per-transport default. The
+                        // header wins because it is the only one of the three that is
+                        // machine-generated.
+                        let backoff = retry_after
+                            .or_else(|| reset_time::parse_backoff(&message, chrono::Local::now()))
+                            .unwrap_or_else(|| default_backoff(chosen));
+                        tracing::warn!(
+                            provider = chosen.as_str(),
+                            label = %req.label,
+                            error = %message,
+                            backoff_s = backoff.as_secs(),
+                            backoff_source = if retry_after.is_some() { "header" } else { "message-or-default" },
+                            "llm: provider rate-limited — skipping it until the quota resets"
+                        );
+                        start_backoff(&key, backoff);
+                        last = LlmError::RateLimited {
+                            message,
+                            retry_after,
+                        };
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            provider = chosen.as_str(),
+                            label = %req.label,
+                            attempt,
+                            error = %e,
+                            "llm: provider call failed"
+                        );
+                        last = e;
+                    }
+                }
             }
-            Err(LlmError::RateLimited {
-                message,
-                retry_after,
-            }) => {
-                // Most authoritative first: a header the endpoint actually sent, then the
-                // provider's own prose, then a flat per-transport default. The header wins
-                // because it is the only one of the three that is machine-generated.
-                let backoff = retry_after
-                    .or_else(|| reset_time::parse_backoff(&message, chrono::Local::now()))
-                    .unwrap_or_else(|| default_backoff(chosen));
-                tracing::warn!(
-                    provider = chosen.as_str(),
-                    label = %req.label,
-                    error = %message,
-                    backoff_s = backoff.as_secs(),
-                    backoff_source = if retry_after.is_some() { "header" } else { "message-or-default" },
-                    "llm: provider rate-limited — skipping it until the quota resets"
-                );
-                start_backoff(&key, backoff);
-                last = LlmError::RateLimited {
-                    message,
-                    retry_after,
-                };
-                break;
+            Err(last)
+        },
+    )
+    .await;
+
+    match attempt_result {
+        Ok(out) => {
+            // The provider answered: clear any runtime health flag it was carrying, so a
+            // recovered provider drops the banner without waiting on a manual re-test.
+            //
+            // A probe takes the unconditional path. `record_success` decides whether
+            // there is anything to clear by looking at the RUNTIME record only, and the
+            // verdict a probe was sent to disprove is usually in the manual-test cache,
+            // which that check cannot see - so it would write nothing and the next call
+            // would be refused again by the verdict this one just disproved.
+            if probing {
+                super::runtime_health::record_probe_success(&key);
+            } else {
+                super::runtime_health::record_success(&key);
             }
-            Err(e) => {
-                tracing::warn!(
-                    provider = chosen.as_str(),
-                    label = %req.label,
-                    attempt,
-                    error = %e,
-                    "llm: provider call failed"
-                );
-                last = e;
-            }
+            Ok((out, chosen))
+        }
+        Err(last) => {
+            // Out of options (or, for an interactive caller, out of time): no provider
+            // answers on the user's behalf. A background caller leaves its unit of work
+            // pending and retries next tick, by which time a rate-limit window has
+            // usually expired and a transient failure has usually cleared; an interactive
+            // caller (`plan_tasks::draft::draft`) turns this `Err` into a clean message
+            // for the user instead.
+            tracing::error!(
+                provider = chosen.as_str(),
+                label = %req.label,
+                error = %last,
+                "llm: provider call did not succeed — leaving the work pending for the next tick"
+            );
+            // The one place every exhausted call converges, so the dashboard banner learns
+            // about a provider that is installed and tested-fine but failing every real
+            // call — the state that silently leaves worklog hours pending and the day
+            // timeline empty.
+            super::runtime_health::record_failure(&key, &last);
+            Err(last)
         }
     }
-
-    // Out of options: no provider answers on the user's behalf. The caller leaves its unit
-    // of work pending and retries next tick, by which time a rate-limit window has usually
-    // expired and a transient failure has usually cleared.
-    tracing::error!(
-        provider = chosen.as_str(),
-        label = %req.label,
-        error = %last,
-        "llm: provider call did not succeed — leaving the work pending for the next tick"
-    );
-    // The one place every exhausted call converges, so the dashboard banner learns about a
-    // provider that is installed and tested-fine but failing every real call — the state that
-    // silently leaves worklog hours pending and the day timeline empty.
-    super::runtime_health::record_failure(&key, &last);
-    Err(last)
 }
 
 #[cfg(test)]
@@ -848,5 +918,56 @@ mod tests {
         for p in LlmProvider::all() {
             assert_eq!(backend_for(p, cfg.clone()).provider(), p, "{p:?}");
         }
+    }
+
+    /// **The regression test for issue #866.** The tray kills a `plan-task-draft` CLI
+    /// call after 150s with a generic "timed out" and no provider detail
+    /// (`tray/src-tauri/src/commands/plan_tasks.rs::LLM_TIMEOUT`). `draft()` already
+    /// turns any `Err` this module returns into a clean, user-facing message and exits
+    /// 0 — the bug was never that the CLI couldn't produce a good error, it never got
+    /// the CHANCE to, because nothing in here had a deadline below the tray's external
+    /// kill. A hanging provider must now fail on ITS OWN deadline when the caller is
+    /// watching synchronously, with time to spare before that external kill fires.
+    #[tokio::test]
+    async fn an_interactive_call_fails_on_its_own_deadline_not_the_backends() {
+        let deadline = Duration::from_millis(30);
+        let started = std::time::Instant::now();
+        let result: Result<(), LlmError> = bounded(Some(deadline), async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            Ok(())
+        })
+        .await;
+        assert!(
+            started.elapsed() < Duration::from_millis(150),
+            "the deadline did not cut the call short - it ran close to the backend's own 300ms"
+        );
+        assert!(
+            matches!(result, Err(LlmError::Failed(_))),
+            "a timed-out interactive call must return Failed, not hang or panic; got {result:?}"
+        );
+    }
+
+    /// A background caller (worklog generation, hourly summarisation) passes no deadline
+    /// and must keep its full, unbounded budget - shrinking it for everyone would cut off
+    /// a legitimately slow real call. Only a caller a user is watching synchronously races
+    /// an external kill-timeout, and only that caller opts in.
+    #[tokio::test]
+    async fn a_call_with_no_deadline_is_not_bounded() {
+        let result: Result<u32, LlmError> = bounded(None, async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Ok(7)
+        })
+        .await;
+        assert!(matches!(result, Ok(7)), "got {result:?}");
+    }
+
+    /// A call that finishes well inside its deadline must return its own result
+    /// untouched - the deadline exists to bound a HANG, not to fail every interactive
+    /// call that happens to have one configured.
+    #[tokio::test]
+    async fn an_interactive_call_that_finishes_in_time_is_unaffected() {
+        let result: Result<u32, LlmError> =
+            bounded(Some(Duration::from_secs(5)), async { Ok(9) }).await;
+        assert!(matches!(result, Ok(9)), "got {result:?}");
     }
 }
