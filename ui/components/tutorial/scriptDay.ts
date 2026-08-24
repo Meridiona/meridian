@@ -125,22 +125,40 @@ async function hasBoard(usesTracker: string | null): Promise<boolean> {
  *  This still doesn't trust the click primitive's RESULT (the mystery this
  *  investigation never closed), but its mere presence keeps the fence down
  *  while the real answer is confirmed by polling. */
-async function waitForWorklogAnswered(s: Stage, timeoutMs: number): Promise<boolean> {
-  void s.waitForClick('[data-tour="worklog-schedule-on"]', timeoutMs)
-  // `undefined` means the READ FAILED and `string` means "this is what settings
-  // say". Collapsing those two - as returning `null` for both did - is what let
-  // a failed baseline read end the beat instantly: `baseline` was `null`, the
-  // next successful poll was a non-null string, that compared as a change, and
-  // the tour moved on having recorded nothing. Which is the bug this whole
-  // function was written to fix, reintroduced through the error path.
-  const read = async (): Promise<string | undefined> => {
-    try {
-      const v = await load<RuntimeSettings>('/api/settings', 'get_settings')
-      return `${v.worklog_auto_generate_time}:${v.worklog_auto_generate_prompted}`
-    } catch {
-      return undefined
-    }
+/** One reading of the two settings this beat watches, as a comparable string.
+ *
+ *  `undefined` means the READ FAILED and a `string` means "settings say this".
+ *  Collapsing those two - as returning `null` for both did - is what let a
+ *  failed baseline read end the beat instantly: `baseline` was `null`, the next
+ *  successful poll was a non-null string, that compared as a change, and the
+ *  tour moved on having recorded nothing. Which is the bug this whole function
+ *  was written to fix, reintroduced through the error path. */
+export type SettingsProbe = () => Promise<string | undefined>
+
+const readWorklogSettings: SettingsProbe = async () => {
+  try {
+    const v = await load<RuntimeSettings>('/api/settings', 'get_settings')
+    return `${v.worklog_auto_generate_time}:${v.worklog_auto_generate_prompted}`
+  } catch {
+    return undefined
   }
+}
+
+// EXPORTED, with an injectable `probe`, for the test harness - nothing else
+// passes the third argument and production always takes the default. The
+// behaviour that matters is an ERROR PATH (a rejected `get_settings`)
+// interleaved with a poll: a source scan cannot prove it, and no other seam in
+// this module reaches it. A parameter is the seam rather than `mock.module`
+// because bun replaces a mocked module for the WHOLE test process - stubbing
+// `@/lib/bridge` here broke every other file that imports `invoke`/
+// `openExternal` from it. See `__tests__/tour-worklog-answered.test.ts`.
+export async function waitForWorklogAnswered(
+  s: Stage,
+  timeoutMs: number,
+  probe: SettingsProbe = readWorklogSettings,
+): Promise<boolean> {
+  void s.waitForClick('[data-tour="worklog-schedule-on"]', timeoutMs)
+  const read = probe
   let baseline = await read()
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
