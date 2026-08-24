@@ -115,6 +115,10 @@ pub async fn update_settings(
     app_state: State<'_, Arc<Mutex<AppState>>>,
     body: Value,
 ) -> Result<Value, String> {
+    // TEMPORARY DIAGNOSTIC — proves whether a click ever reaches this command
+    // at all, independent of what happens after. Remove once the worklog-time
+    // save-not-sticking bug is root-caused.
+    tracing::info!(body = %body, "update_settings: invoked");
     let Some(body_obj) = body.as_object() else {
         return Err("settings body must be an object".to_string());
     };

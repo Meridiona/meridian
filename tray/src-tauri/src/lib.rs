@@ -1218,6 +1218,7 @@ pub fn run() {
             commands::repair::request_repair,
             // tray popover + daemon lifecycle
             commands::get_status,
+            commands::debug_trace,
             commands::open_dashboard,
             commands::open_worklogs,
             commands::open_setup,

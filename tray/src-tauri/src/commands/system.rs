@@ -26,6 +26,14 @@ use tauri_plugin_opener::OpenerExt;
 /// window-opening action and the popover being left on screen over the
 /// window it just opened are mutually exclusive states, regardless of which
 /// caller (popover, tray menu, notification click) triggered this.
+/// TEMPORARY DIAGNOSTIC — proves whether a specific frontend click handler
+/// actually ran, for the worklog-time onboarding-dialog investigation.
+/// Remove once that bug is root-caused.
+#[tauri::command]
+pub async fn debug_trace(tag: String) {
+    tracing::info!(tag = %tag, "debug_trace");
+}
+
 #[tauri::command]
 pub async fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
     // Same gate as the tray-menu path — see `tray::open_native_dashboard` for the
