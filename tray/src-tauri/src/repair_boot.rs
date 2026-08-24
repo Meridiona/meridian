@@ -550,10 +550,30 @@ async fn probe_database(db_path: &Path, key_hex: Option<&str>) -> Probe {
     }
 }
 
+/// Attempts for [`set_aside_database`]'s renames - cheap-failure semantics
+/// (~1s of linear backoff): if every attempt fails, [`fresh_start`] just
+/// reports [`Outcome::Failed`] having changed nothing, and the NEXT app
+/// launch re-probes and retries the whole operation from scratch. Matches
+/// `meridian_core::db_crypto::RENAME_ATTEMPTS_CHEAP`'s reasoning exactly -
+/// not reused directly since that constant is private to `db_crypto`.
+const SET_ASIDE_RENAME_ATTEMPTS: u32 = 5;
+
 /// Moves a database (and its `-wal`/`-shm` sidecars) aside under a
 /// timestamped `db.<kind>-backup-<ts>` name, so a fresh one can be created at
 /// the canonical path. The file is preserved, never deleted - it is the only
 /// copy of whatever a future offline-salvage attempt might still extract.
+///
+/// Every rename retries through [`meridian_core::retry::retry_transient_blocking`]
+/// - **required**, not defence in depth: this always runs moments after a
+/// `repair()` attempt against the very same `db_path` (either the failed
+/// `ATTACH` on the `Damaged` path, or the classification probe's own open on
+/// the `Unopenable` path), and on Windows a rename fails with os error 32
+/// ("used by another process") for as long as any handle to the file is
+/// still closing - exactly the failure `db_crypto::rename_with_retry` exists
+/// for (see its doc: "the rebuilt file was still held open by a connection
+/// `pool.close()` had not actually closed"). Reproduced directly by this
+/// module's own `damaged_page_one_that_attach_cannot_salvage_falls_back_to_fresh_start`
+/// test on Windows CI before this retry was added.
 #[tracing::instrument(name = "repair_boot.set_aside_database", skip(db_path))]
 fn set_aside_database(db_path: &Path, kind: &str) -> anyhow::Result<PathBuf> {
     use anyhow::Context;
@@ -561,8 +581,12 @@ fn set_aside_database(db_path: &Path, kind: &str) -> anyhow::Result<PathBuf> {
         "db.{kind}-backup-{}",
         chrono::Utc::now().format("%Y%m%d%H%M%S")
     ));
-    std::fs::rename(db_path, &backup)
-        .with_context(|| format!("moving the {kind} database aside to {}", backup.display()))?;
+    meridian_core::retry::retry_transient_blocking(
+        SET_ASIDE_RENAME_ATTEMPTS,
+        std::time::Duration::from_millis(100),
+        || std::fs::rename(db_path, &backup),
+    )
+    .with_context(|| format!("moving the {kind} database aside to {}", backup.display()))?;
     // Stale sidecars must follow the main file: a leftover -wal beside a fresh
     // database would be offered to SQLite as that database's log. If the
     // rename fails, deleting is the right fallback - the main file already
@@ -574,7 +598,12 @@ fn set_aside_database(db_path: &Path, kind: &str) -> anyhow::Result<PathBuf> {
             continue;
         }
         let kept = PathBuf::from(format!("{}{}", backup.display(), suffix));
-        if let Err(rename_err) = std::fs::rename(&sidecar, &kept) {
+        let rename_result = meridian_core::retry::retry_transient_blocking(
+            SET_ASIDE_RENAME_ATTEMPTS,
+            std::time::Duration::from_millis(100),
+            || std::fs::rename(&sidecar, &kept),
+        );
+        if let Err(rename_err) = rename_result {
             match std::fs::remove_file(&sidecar) {
                 Ok(()) => tracing::warn!(
                     error = %rename_err,
