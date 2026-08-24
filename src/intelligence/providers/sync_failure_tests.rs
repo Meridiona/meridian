@@ -597,3 +597,79 @@ async fn every_default_remedy_names_a_place_in_the_app() {
         );
     }
 }
+
+/// The grace write must not clobber a sync that SUCCEEDED under it.
+///
+/// `note_transient_sync_failure` reads the row's state, then writes the epoch
+/// sentinel in a SEPARATE statement. `meridian ticket-update` opens its own
+/// pool to this file and runs `run_pm_force_sync` while the daemon's poll loop
+/// runs `run_pm_sync`, so a success can land between those two - and the write
+/// used to be unconditional, stamping the fresh `last_synced_at` back to the
+/// epoch. The provider then read as never-recently-synced and the NEXT failure
+/// escalated a user-visible notice for a tracker that was working.
+///
+/// Simulating the interleaving directly needs a hook that does not exist, so
+/// this drives the same end state the racer would leave: a row that is fresh
+/// at the moment of the write. The conditional UPDATE must decline it.
+#[tokio::test]
+async fn a_concurrent_successful_sync_is_not_stamped_back_to_the_epoch() {
+    let pool = make_db().await;
+    // The state the winner of the race leaves behind: a genuinely recent sync.
+    set_last_sync(&pool, "jira", "-1 minutes").await;
+
+    mark_first_stale_failure(&pool, "jira", "dns error")
+        .await
+        .unwrap();
+
+    let (last,): (String,) =
+        sqlx::query_as("SELECT last_synced_at FROM pm_sync_state WHERE provider = 'jira'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_ne!(
+        last, "1970-01-01T00:00:00Z",
+        "a successful sync must not be stamped back to the epoch by the grace write"
+    );
+}
+
+/// The grace write still does its job on the case it exists for: a provider
+/// that genuinely went stale, with no error recorded.
+#[tokio::test]
+async fn a_clean_stale_transition_still_gets_its_grace_tick() {
+    let pool = make_db().await;
+    set_last_sync(&pool, "jira", "-7 hours").await;
+
+    mark_first_stale_failure(&pool, "jira", "dns error")
+        .await
+        .unwrap();
+
+    let (last,): (String,) =
+        sqlx::query_as("SELECT last_synced_at FROM pm_sync_state WHERE provider = 'jira'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(last, "1970-01-01T00:00:00Z");
+}
+
+/// A row that already carries an error is not a clean stale transition, so the
+/// grace write must decline it - the escalation clock is already running.
+#[tokio::test]
+async fn a_row_with_an_error_does_not_get_a_grace_tick() {
+    let pool = make_db().await;
+    set_last_sync(&pool, "jira", "-7 hours").await;
+    sqlx::query("UPDATE pm_sync_state SET last_error = 'boom' WHERE provider = 'jira'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    mark_first_stale_failure(&pool, "jira", "dns error")
+        .await
+        .unwrap();
+
+    let (last,): (String,) =
+        sqlx::query_as("SELECT last_synced_at FROM pm_sync_state WHERE provider = 'jira'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_ne!(last, "1970-01-01T00:00:00Z");
+}

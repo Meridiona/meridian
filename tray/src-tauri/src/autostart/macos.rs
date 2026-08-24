@@ -220,12 +220,22 @@ async fn read_registration() -> Option<String> {
 /// Verify and, if needed, rewrite the LaunchAgent. See
 /// [`crate::autostart::ensure_registered`] for the contract.
 pub(crate) async fn ensure_registered() -> RegistrationAction {
-    // Best-effort and first: an upgraded install has the plugin's plist too,
-    // and leaving it would mean two jobs both starting a tray at login. Done
-    // even when the decision below turns out to be a skip, because the legacy
-    // job is wrong in every one of those cases as well.
-    migrate_off_plugin().await;
-
+    // ORDER MATTERS — see [`super::may_drop_legacy`].
+    //
+    // This used to call `migrate_off_plugin()` unconditionally and FIRST, on
+    // the reasoning that the legacy job is wrong in every case anyway. It is
+    // not: on an install upgrading across this change the plugin's plist IS
+    // the working autostart, and three paths below return WITHOUT writing a
+    // replacement — the transient-path skip, and the two hard failures
+    // (`create_dir_all`, the plist write). Deleting it first meant the user
+    // ended those launches with no macOS autostart at all, and capture runs
+    // in-process in the tray, so that is every day's data until they open the
+    // app by hand.
+    //
+    // Windows already gated exactly this behind `may_drop_legacy`; its doc
+    // warned that hoisting the call back to the top would reintroduce the bug.
+    // macOS was the platform still doing it. The delete now happens only where
+    // that shared table says it is safe.
     let (Some(dir), Some(home), Some(exe)) = (
         launch_agents_dir(),
         meridian_core::paths::home_dir(),
@@ -252,6 +262,11 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
         skip,
         RegistrationAction::SkippedDisabledByUser | RegistrationAction::SkippedTransientPath
     ) {
+        // Disabled-by-user: dropping the legacy job IS honouring the "no".
+        // Transient path: nothing replaced it, so it stays.
+        if super::may_drop_legacy(skip, false) {
+            migrate_off_plugin().await;
+        }
         return skip;
     }
 
@@ -298,17 +313,38 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
             login_item = login.as_str(),
             "autostart: login item and morning trigger both already correct"
         );
+        // Something correct is already registered, so the legacy job is now
+        // redundant AND would double-launch alongside it.
+        if super::may_drop_legacy(action, false) {
+            migrate_off_plugin().await;
+        }
         return action;
     }
 
     if let Err(e) = tokio::fs::create_dir_all(&dir).await {
-        tracing::warn!(error = %e, dir = %dir.display(), "autostart: could not create LaunchAgents");
+        tracing::warn!(
+            error = %e,
+            dir = %dir.display(),
+            "autostart: could not create LaunchAgents - KEEPING the plugin-era plist so an \
+             upgraded install is not left with no autostart at all"
+        );
         return RegistrationAction::Failed;
     }
     let dest = dir.join(PLIST_FILE);
     if let Err(e) = tokio::fs::write(&dest, &expected).await {
-        tracing::warn!(error = %e, plist = %dest.display(), "autostart: could not write the plist");
+        tracing::warn!(
+            error = %e,
+            plist = %dest.display(),
+            "autostart: could not write the plist - KEEPING the plugin-era plist so an \
+             upgraded install is not left with no autostart at all"
+        );
         return RegistrationAction::Failed;
+    }
+
+    // The replacement is on disk, so the legacy job is now safe to remove -
+    // and MUST be, or both would start a tray at the next login.
+    if super::may_drop_legacy(action, true) {
+        migrate_off_plugin().await;
     }
 
     // NOW bootstrap it, which is safe for the first time.

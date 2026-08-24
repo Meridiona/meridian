@@ -191,6 +191,10 @@ function RequestToolForm({ onDone, onDecline }: { onDone: () => void; onDecline?
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') submit() }}
           placeholder="e.g. Shortcut, Height, Basecamp"
+          // Matches MAX_TOOL_NAME_LEN in commands/pm_tool_request.rs, which
+          // validates the same bound at the IPC boundary - this only stops the
+          // user reaching a rejection they cannot see coming.
+          maxLength={100}
           autoFocus
           className="mt-1 w-full text-[12px] px-2 py-1.5 rounded-md border"
           style={{ color: 'var(--t-title)', background: 'var(--t-card)', borderColor: 'var(--t-hair)', outline: 'none' }}

@@ -28,7 +28,7 @@
 //!   PostHog event is sent at all until this returns `Some` (the email
 //!   becomes the event's `distinct_id` directly, never an anonymous id).
 //!
-//! # ALPHA TESTING ONLY — per-user Support ID + raw-email telemetry (expires 2026-08-28)
+//! # ALPHA TESTING ONLY — per-user Support ID + raw-email telemetry (expires after 2026-12-31)
 //! [`save_account_email`] also derives a domain-separated, one-way hash of the email
 //! (`meridian::telemetry_spool::redact::pseudonymize_account`) and mirrors
 //! BOTH that hash AND the raw email into `settings.json` (`account_pseudonym`
