@@ -64,7 +64,24 @@ fn defaults_for(object_type: &str) -> &'static [FieldDefault] {
         // included `abandon_at`, which guest-js never sends, so it round-tripped
         // and hid this. `0` matches how every other missing timestamp is
         // defaulted here.
-        "sign_in_attempt" => &[("abandon_at", || json!(0))],
+        //
+        // EVERY OTHER FIELD ON THE MODEL IS LISTED TOO, and that is the point —
+        // see the `sign_up_attempt` note below for why this object type is
+        // defaulted exhaustively rather than field-by-field as each one is
+        // observed failing.
+        "sign_in_attempt" => &[
+            ("id", || json!("")),
+            ("status", || json!("abandoned")),
+            ("supported_identifiers", || json!([])),
+            ("supported_first_factors", || Value::Null),
+            ("supported_second_factors", || Value::Null),
+            ("first_factor_verification", || Value::Null),
+            ("second_factor_verification", || Value::Null),
+            ("identifier", || Value::Null),
+            ("user_data", || Value::Null),
+            ("created_session_id", || Value::Null),
+            ("abandon_at", || json!(0)),
+        ],
         // `clerkSignUpToSignUpJSON` is missing more than one required field:
         // it emits `has_password` where the model wants `password_enabled`,
         // and never emits `custom_action` — both bare `bool`s upstream. It
@@ -81,7 +98,50 @@ fn defaults_for(object_type: &str) -> &'static [FieldDefault] {
         // distinction (optional VALUE, mandatory KEY) is the trap running
         // through this whole module: `Option<T>` reads as "safe to leave out"
         // and is not.
+        //
+        // # Why both scratch types are now defaulted EXHAUSTIVELY
+        //
+        // `client.sign_in` / `client.sign_up` are scratch objects: clerk-js
+        // keeps them on every client whether or not an attempt is in flight,
+        // and when none is, their fields are `undefined`. `JSON.stringify`
+        // DROPS undefined-valued keys, so what reaches Rust for the ordinary
+        // signed-in user is close to `{"object": "sign_up", "status": null}` —
+        // nearly every required key absent at once.
+        //
+        // That is why this object type has now produced FOUR production
+        // incidents in a row (`status`, `verifications`,
+        // `password_enabled`/`custom_action`, and `id` — observed 2026-08-24,
+        // firing every ~43 s). Each fix repaired the one field serde happened
+        // to report, deserialization then advanced by one field, and the next
+        // release failed on the next one. Listing every field the model
+        // requires ends that sequence: there is no "next field" left.
+        //
+        // Fixtures could not catch this because a transcription of the
+        // serializer is faithful to the CODE and silently wrong about the
+        // RUNTIME - it shows `"id": signUp.id`, and a human writing the fixture
+        // fills in `"sua_abc123"`. `a_bare_sign_up_scratch_object_deserializes_
+        // after_backfill` tests the empty object instead, so it cannot rot the
+        // same way.
+        //
+        // Every value here matches the model's own `impl Default` (`""` for the
+        // `String` id, `abandoned` for the status enum, `[]` for the `Vec`s),
+        // and each is an `or_insert`, so a key guest-js DID send always wins.
         "sign_up_attempt" => &[
+            ("id", || json!("")),
+            ("status", || json!("abandoned")),
+            ("required_fields", || json!([])),
+            ("optional_fields", || json!([])),
+            ("missing_fields", || json!([])),
+            ("unverified_fields", || json!([])),
+            ("username", || Value::Null),
+            ("email_address", || Value::Null),
+            ("phone_number", || Value::Null),
+            ("web3_wallet", || Value::Null),
+            ("first_name", || Value::Null),
+            ("last_name", || Value::Null),
+            ("created_session_id", || Value::Null),
+            ("created_user_id", || Value::Null),
+            ("legal_accepted_at", || Value::Null),
             ("abandon_at", || json!(0)),
             ("password_enabled", || json!(false)),
             ("custom_action", || json!(false)),
@@ -966,6 +1026,97 @@ mod tests {
         assert!(value["sign_up"]["verifications"].is_object());
         serde_json::from_value::<ClientClient>(value)
             .expect("a guest-js-shaped sign_up must survive the round trip");
+    }
+
+    /// Pins the production failure observed 2026-08-24 on 1.90.0-staging.5:
+    /// `missing field `id``, firing every ~43 s on a machine whose user WAS
+    /// signed in.
+    ///
+    /// # Why every fixture in this module hid it
+    /// `client.signIn` / `client.signUp` are SCRATCH objects — they exist even
+    /// when no attempt is in flight, and then their `id` is `undefined`.
+    /// `JSON.stringify` drops undefined-valued keys entirely, so the key never
+    /// reaches the wire. Transcribing the serializer (as
+    /// [`real_guest_js_sign_up_json`] correctly did) still gives you `"id":
+    /// signUp.id` and a plausible-looking `"sua_abc123"` filled in by hand —
+    /// the transcription is faithful to the CODE and wrong about the RUNTIME.
+    /// That is the same trap the `abandon_at` note in [`idealized_sign_up_json`]
+    /// describes, one level deeper: it is not enough to copy the serializer, the
+    /// fixture also has to reflect what its inputs actually hold.
+    /// `id` is dropped AFTER the backfill runs, so every other defect on this
+    /// fixture (the null `status`, the null `verifications`, the float
+    /// `abandon_at`, the renamed `has_password`) is already repaired and the
+    /// absent `id` is provably the sole remaining cause. Removing it from the
+    /// raw fixture instead would report whichever defect serde happened to
+    /// reach first — which is the float `abandon_at`, not `id`.
+    #[test]
+    fn a_sign_up_whose_only_remaining_defect_is_a_missing_id_names_that_field() {
+        let mut value = real_guest_js_sign_up_json();
+        backfill_clerk_client_json(&mut value);
+        value
+            .as_object_mut()
+            .expect("fixture is an object")
+            .remove("id");
+        let err = serde_json::from_value::<clerk_fapi_rs::models::ClientSignUp>(value)
+            .expect_err("a sign_up with no id must not deserialize");
+        assert!(
+            err.to_string().contains("missing field `id`"),
+            "expected the exact error production reported, got: {err}"
+        );
+    }
+
+    /// The completeness proof for `sign_in`, and the reason it is shaped this
+    /// way rather than as another transcribed fixture.
+    ///
+    /// The input is the worst case the wire can carry: the discriminator and
+    /// NOTHING else. A test built on a realistic payload can only ever prove
+    /// that payload works, which is precisely how four separate defects
+    /// (`status`, `verifications`, `password_enabled`/`custom_action`, `id`)
+    /// went to production on this one object. This cannot pass while any
+    /// required key is unhandled, and it keeps holding if clerk-fapi-rs adds
+    /// one — a new required field breaks it immediately rather than six weeks
+    /// later on a user's machine.
+    #[test]
+    fn a_bare_sign_in_scratch_object_deserializes_after_backfill() {
+        let mut value = json!({ "object": "sign_in" });
+        backfill_clerk_client_json(&mut value);
+        serde_json::from_value::<clerk_fapi_rs::models::ClientSignIn>(value).expect(
+            "a sign_in carrying only its discriminator must round-trip - guest-js omits \
+             every key whose value is undefined, which is all of them when no sign-in is \
+             in flight",
+        );
+    }
+
+    /// The `sign_up` half of
+    /// [`a_bare_sign_in_scratch_object_deserializes_after_backfill`].
+    #[test]
+    fn a_bare_sign_up_scratch_object_deserializes_after_backfill() {
+        let mut value = json!({ "object": "sign_up" });
+        backfill_clerk_client_json(&mut value);
+        serde_json::from_value::<clerk_fapi_rs::models::ClientSignUp>(value).expect(
+            "a sign_up carrying only its discriminator must round-trip - see the sign_in \
+             counterpart for why this is the shape that proves completeness",
+        );
+    }
+
+    /// The end-to-end case, which is the only one that reflects runtime: a
+    /// standalone `ClientSignIn` is never parsed on its own — `set_client`
+    /// deserializes the whole `ClientClient` tree, so one unhandled key inside
+    /// a scratch object takes the entire session write down with it.
+    #[test]
+    fn a_client_whose_scratch_objects_have_no_id_survives_the_round_trip() {
+        let mut value = guest_js_shaped_client_json();
+        value["sign_in"] = json!({ "object": "sign_in", "status": null });
+        value["sign_up"] = json!({ "object": "sign_up", "status": null });
+        assert!(
+            serde_json::from_value::<ClientClient>(value.clone()).is_err(),
+            "fixture must reproduce the failure before the backfill runs"
+        );
+        backfill_clerk_client_json(&mut value);
+        serde_json::from_value::<ClientClient>(value).expect(
+            "a signed-in user with no attempt in flight is the COMMON case, not an edge \
+             one - this is the payload that broke session persistence in production",
+        );
     }
 
     /// The replacement must spell out all four keys: they are `Option` but
