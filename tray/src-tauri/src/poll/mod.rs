@@ -61,8 +61,8 @@ pub async fn run_poll_loop(app: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
         // DB read through it, so the loop has no HTTP dependency on the Next
         // server. `None` only before the DB is first opened.
         let pool = app
-            .try_state::<Option<meridian_core::SqlitePool>>()
-            .and_then(|s| s.inner().clone());
+            .try_state::<crate::db_pool::DbPool>()
+            .and_then(|s| s.get());
 
         if do_health {
             refresh_health(&app, &state, pool.as_ref()).await;

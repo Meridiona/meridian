@@ -23,7 +23,6 @@
 //!   out of this module (CLAUDE.md's 500-line file cap).
 
 use crate::state::{AppState, StatusPayload};
-use meridian_core::SqlitePool;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use tauri::State;
@@ -87,9 +86,9 @@ pub async fn restart_daemon() -> Result<(), String> {
 pub async fn toggle_daemon(
     _app: tauri::AppHandle,
     is_running: bool,
-    db_pool: State<'_, Option<SqlitePool>>,
+    db_pool: State<'_, crate::db_pool::DbPool>,
 ) -> Result<(), String> {
-    let pool = db_pool.inner().clone();
+    let pool = db_pool.get();
     // `is_running` is the CURRENT state, so the useful field is what the user
     // asked for, not what it already was.
     tracing::Span::current().record("action", if is_running { "pause" } else { "resume" });
@@ -177,14 +176,48 @@ pub struct ReloadResponse {
 /// Errors when the daemon isn't running (the route's 503) — callers surface
 /// that as "your change applies when the daemon starts", so it must stay
 /// reachable. See [`plan_reload`] for the macOS rate limit.
+///
+/// Also closes and reopens the tray's own `meridian.db` pool around the
+/// signal (see [`reload_with_pool_cycle`]) — a daemon restart is exactly the
+/// process-generation boundary [`crate::db_pool::DbPool`] exists to keep the
+/// tray's connection from spanning. See that module's header for the
+/// corruption incident this closes off, and [`plan_reload`]'s doc for an
+/// EARLIER, related incident this same reload path caused (repeated SIGHUPs
+/// landing inside launchd's throttle window) — different mechanism, same
+/// underlying shape: a daemon-down window the tray's pool did not know about.
 #[tauri::command]
-#[tracing::instrument]
-pub async fn reload_daemon() -> Result<ReloadResponse, String> {
+#[tracing::instrument(skip(db_pool))]
+pub async fn reload_daemon(
+    db_pool: State<'_, crate::db_pool::DbPool>,
+) -> Result<ReloadResponse, String> {
+    // Owned clone (cheap - `DbPool` is `Arc`-backed): `reload_daemon_with`
+    // needs `'static`, which a borrowed `State<'_, _>` cannot provide.
+    reload_daemon_with(db_pool.inner().clone()).await
+}
+
+/// [`reload_daemon`]'s body, taking an owned pool handle instead of a
+/// `State<'_, _>` so the two OTHER places that reload the daemon after a
+/// credential change (`integrations::save_integration_token`,
+/// `integrations::start_oauth_github_device`'s spawned polling task — see
+/// [`plan_reload`]'s doc: "a single connect flow can trip this on its own")
+/// can share this exact close/reopen + throttle logic instead of calling the
+/// bare `#[tauri::command]` fn, which a `tauri::async_runtime::spawn`'d task
+/// cannot do (it needs `'static`, `State<'_, _>` is borrowed for the
+/// invocation). `db_pool.inner().clone()` is how a command handler bridges
+/// the two - see the call sites in `integrations.rs`.
+pub(crate) async fn reload_daemon_with(
+    pool: crate::db_pool::DbPool,
+) -> Result<ReloadResponse, String> {
     #[cfg(target_os = "macos")]
     {
-        reload_throttled(reload_state(), super::daemon_control::reload, || async {
-            super::daemon_control::status().await.running
-        })
+        reload_throttled(
+            reload_state(),
+            move || {
+                let pool = pool.clone();
+                async move { reload_with_pool_cycle(&pool).await }
+            },
+            || async { super::daemon_control::status().await.running },
+        )
         .await
     }
     // Windows restarts the scheduled task (`schtasks /End` + `/Run`). There is
@@ -193,10 +226,31 @@ pub async fn reload_daemon() -> Result<ReloadResponse, String> {
     // meaning on the platform.
     #[cfg(not(target_os = "macos"))]
     {
-        let pid = super::daemon_control::reload().await?;
+        let pid = reload_with_pool_cycle(&pool).await?;
         tracing::info!(pid, "daemon reload requested");
         Ok(ReloadResponse { ok: true, pid })
     }
+}
+
+/// Closes the tray's `meridian.db` pool before signaling the daemon and
+/// reopens it right after — see [`reload_daemon`]'s doc for why. A `None`
+/// pool inside (the DB was never open, e.g. a fresh install before the
+/// daemon has created it) makes both calls no-ops, matching every other call
+/// site's tolerance for an absent pool.
+///
+/// Reopen is LAZY (`DbPool::reopen` → `open_existing_lazy`), which is what
+/// makes this safe to run immediately after sending the signal rather than
+/// polling until the new daemon process is confirmed up: no physical
+/// connection is made here, only a fresh, empty pool object with no
+/// connections cached from the process generation that just exited. The
+/// first REAL connection happens on whatever read comes next (typically the
+/// following poll tick), against whatever the file looks like by then - a
+/// point in time this function does not need to reason about.
+async fn reload_with_pool_cycle(pool: &crate::db_pool::DbPool) -> Result<u32, String> {
+    pool.close().await;
+    let result = super::daemon_control::reload().await;
+    pool.reopen().await;
+    result
 }
 
 // ── macOS reload rate limit ─────────────────────────────────────────────────

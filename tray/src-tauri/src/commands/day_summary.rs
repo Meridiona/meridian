@@ -109,14 +109,14 @@ pub async fn generate_day_summary_now(
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_day_summary(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     day: Option<String>,
 ) -> Result<Option<meridian_core::day_summaries::DaySummary>, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let date = day.unwrap_or_else(meridian_core::date::today_string);
-    meridian_core::day_summaries::get_day_summary(pool, &date)
+    meridian_core::day_summaries::get_day_summary(&pool, &date)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_day_summary failed"))
 }
@@ -145,21 +145,21 @@ pub async fn get_day_summary(
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_day_summary_data(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     day: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let date = day.unwrap_or_else(meridian_core::date::today_string);
-    let ev = meridian_core::day_evidence::collect(pool, &date)
+    let ev = meridian_core::day_evidence::collect(&pool, &date)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_day_summary_data failed"))?;
 
     // A missing summary is NOT stale: there is nothing to recompose, and the screen
     // shows its own "compose this day" state instead. Only an existing one can go
     // out of date.
-    let stale = match meridian_core::day_summaries::get_day_summary(pool, &date).await {
+    let stale = match meridian_core::day_summaries::get_day_summary(&pool, &date).await {
         Ok(Some(s)) => meridian_core::day_summaries::is_stale(&s.evidence_at, &ev.evidence_at),
         _ => false,
     };

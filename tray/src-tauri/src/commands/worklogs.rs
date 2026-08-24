@@ -30,14 +30,14 @@ fn now_iso() -> String {
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_worklogs(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     day: Option<String>,
 ) -> Result<meridian_core::worklogs::WorklogsResponse, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let day = day.unwrap_or_else(meridian_core::date::today_string);
-    meridian_core::worklogs::get_worklogs(pool, &day)
+    meridian_core::worklogs::get_worklogs(&pool, &day)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_worklogs failed"))
 }
@@ -48,15 +48,15 @@ pub async fn get_worklogs(
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_hour_text(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     day: Option<String>,
     hour: String,
 ) -> Result<meridian_core::hour_text::HourTextResponse, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let day = day.unwrap_or_else(meridian_core::date::today_string);
-    meridian_core::hour_text::get_hour_text(pool, &day, &hour)
+    meridian_core::hour_text::get_hour_text(&pool, &day, &hour)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_hour_text failed"))
 }
@@ -67,14 +67,14 @@ pub async fn get_hour_text(
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_hour_reports(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     day: Option<String>,
 ) -> Result<meridian_core::hour_text::HourReportsResponse, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let day = day.unwrap_or_else(meridian_core::date::today_string);
-    meridian_core::hour_text::get_hour_reports(pool, &day)
+    meridian_core::hour_text::get_hour_reports(&pool, &day)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_hour_reports failed"))
 }
@@ -84,14 +84,14 @@ pub async fn get_hour_reports(
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_hour_status(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     day: Option<String>,
 ) -> Result<meridian_core::hour_status::HourStatusResponse, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let day = day.unwrap_or_else(meridian_core::date::today_string);
-    meridian_core::hour_status::get_hour_status(pool, &day)
+    meridian_core::hour_status::get_hour_status(&pool, &day)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_hour_status failed"))
 }
@@ -129,13 +129,13 @@ pub struct WorklogEditBody {
 #[tauri::command]
 #[tracing::instrument(skip(pool, body), fields(id = body.id))]
 pub async fn edit_worklog(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     body: WorklogEditBody,
 ) -> Result<WorklogWriteAck, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
-    let state = meridian_core::worklogs::edit_worklog(pool, body.id, &body.summary, &now_iso())
+    let state = meridian_core::worklogs::edit_worklog(&pool, body.id, &body.summary, &now_iso())
         .await
         .map_err(|e| crate::cmd_err!(e, id = body.id, "edit_worklog failed"))?;
     Ok(WorklogWriteAck {
@@ -159,17 +159,17 @@ pub struct WorklogRematchBody {
 #[tauri::command]
 #[tracing::instrument(skip(pool, body), fields(id = body.id, task_key = %body.task_key))]
 pub async fn rematch_worklog(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     body: WorklogRematchBody,
 ) -> Result<RematchAck, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let task_key = body.task_key.trim();
     if task_key.is_empty() {
         return Err("task key must not be empty".to_string());
     }
-    let outcome = meridian_core::worklogs::rematch_worklog(pool, body.id, task_key, &now_iso())
+    let outcome = meridian_core::worklogs::rematch_worklog(&pool, body.id, task_key, &now_iso())
         .await
         .map_err(|e| crate::cmd_err!(e, id = body.id, "rematch_worklog failed"))?;
     Ok(RematchAck {
@@ -197,17 +197,17 @@ pub struct ProposedTitleBody {
 #[tauri::command]
 #[tracing::instrument(skip(pool, body), fields(id = body.id))]
 pub async fn edit_proposed_title(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     body: ProposedTitleBody,
 ) -> Result<WorklogWriteAck, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let title = body.title.trim();
     if title.is_empty() {
         return Err("title must not be empty".to_string());
     }
-    let ok = meridian_core::proposed::edit_proposed_title(pool, body.id, title, &now_iso())
+    let ok = meridian_core::proposed::edit_proposed_title(&pool, body.id, title, &now_iso())
         .await
         .map_err(|e| crate::cmd_err!(e, id = body.id, "edit_proposed_title failed"))?;
     Ok(WorklogWriteAck {
@@ -222,13 +222,13 @@ pub async fn edit_proposed_title(
 #[tauri::command]
 #[tracing::instrument(skip(pool, body), fields(id = body.id))]
 pub async fn edit_proposed_worklog(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     body: WorklogEditBody,
 ) -> Result<WorklogWriteAck, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
-    let ok = meridian_core::proposed::edit_proposed_worklog(pool, body.id, &body.summary)
+    let ok = meridian_core::proposed::edit_proposed_worklog(&pool, body.id, &body.summary)
         .await
         .map_err(|e| crate::cmd_err!(e, id = body.id, "edit_proposed_worklog failed"))?;
     Ok(WorklogWriteAck {
@@ -251,15 +251,15 @@ pub struct ProposedActionBody {
 #[tauri::command]
 #[tracing::instrument(skip(pool, body), fields(id = body.id, action = %body.action))]
 pub async fn proposed_action(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     body: ProposedActionBody,
 ) -> Result<WorklogWriteAck, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let action = meridian_core::proposed::ProposedAction::parse(&body.action)
         .ok_or("action must be approve|dismiss")?;
-    let state = meridian_core::proposed::proposed_action(pool, body.id, action, &now_iso())
+    let state = meridian_core::proposed::proposed_action(&pool, body.id, action, &now_iso())
         .await
         .map_err(|e| crate::cmd_err!(e, id = body.id, "proposed_action failed"))?
         .ok_or("proposal is missing or already resolved")?;
@@ -289,10 +289,10 @@ pub struct WorklogActionBody {
 #[tauri::command]
 #[tracing::instrument(skip(pool, body), fields(id = body.id, action = %body.action))]
 pub async fn worklog_action(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     body: WorklogActionBody,
 ) -> Result<WorklogWriteAck, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let action = meridian_core::worklogs::WorklogAction::parse(&body.action)
@@ -311,7 +311,7 @@ pub async fn worklog_action(
     let corrected_to_untracked = is_reject && body.corrected_to_untracked.unwrap_or(false);
 
     let state = meridian_core::worklogs::worklog_action(
-        pool,
+        &pool,
         body.id,
         action,
         corrected_task_key,

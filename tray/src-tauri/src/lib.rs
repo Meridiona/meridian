@@ -31,6 +31,7 @@ mod counter_ping;
 mod crash;
 mod daemon_lifecycle;
 mod db_key;
+mod db_pool;
 mod deep_link;
 
 /// Lowercase product name as macOS reports it after [`set_process_display_name`].
@@ -668,7 +669,16 @@ pub fn run() {
                     // The encryption-state notice below needs a pool handle before
                     // db_pool is moved into managed state.
                     let encryption_notice_pool = db_pool.clone();
-                    app.manage(db_pool);
+                    // Wrapped so `commands::daemon::reload_daemon` can close and
+                    // reopen it around a daemon restart instead of holding one
+                    // connection across two different daemon process
+                    // generations — see `db_pool::DbPool`'s header for the
+                    // corruption incident this closes off.
+                    app.manage(db_pool::DbPool::new(
+                        db_pool,
+                        db_path.clone(),
+                        db_key_hex.clone(),
+                    ));
 
                     // Report the repair now that there is a pool to write a notice
                     // with. Deliberately after `app.manage`: the notice is the

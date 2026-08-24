@@ -40,17 +40,17 @@ fn now_iso() -> String {
 /// Alerts style this is what makes a "fleeting" notification possible, and it
 /// makes ignored-until-expiry measurable (vs. never answered at all).
 pub(super) async fn drain_notifications(app: &tauri::AppHandle) {
-    let pool_state = app.state::<Option<meridian_core::SqlitePool>>();
-    let Some(pool) = pool_state.inner() else {
+    let pool_state = app.state::<crate::db_pool::DbPool>();
+    let Some(pool) = pool_state.get() else {
         return; // DB not open yet — nothing to drain
     };
     let settings = meridian_core::settings::load_runtime_settings();
     let now = now_iso();
-    let items = meridian_core::notifications::pending_native(pool, &now, &settings).await;
+    let items = meridian_core::notifications::pending_native(&pool, &now, &settings).await;
 
     for n in items {
         notify_outbox(app, &n);
-        if let Err(e) = meridian_core::notifications::mark_native_delivered(pool, n.id, &now).await
+        if let Err(e) = meridian_core::notifications::mark_native_delivered(&pool, n.id, &now).await
         {
             // Leave the row unacked → re-delivered next tick (at-least-once).
             tracing::warn!(error = %e, id = n.id, "notification delivered-ack failed");
@@ -60,9 +60,9 @@ pub(super) async fn drain_notifications(app: &tauri::AppHandle) {
     // Expiry sweep. Stamp BEFORE retracting: the stamp is what stops the row
     // re-qualifying next tick, and it wins races with a user answering at the
     // same moment (first answer wins via record_response's IS NULL guard).
-    for id in meridian_core::notifications::expired_unanswered(pool, &now).await {
+    for id in meridian_core::notifications::expired_unanswered(&pool, &now).await {
         if let Err(e) =
-            meridian_core::notifications::record_response(pool, id, "expired", None, &now).await
+            meridian_core::notifications::record_response(&pool, id, "expired", None, &now).await
         {
             tracing::warn!(error = %e, id, "expiry stamp failed — will retry next tick");
             continue;

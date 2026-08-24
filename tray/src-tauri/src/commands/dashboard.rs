@@ -23,13 +23,13 @@ use tauri::State;
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_active(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
 ) -> Result<Option<meridian_core::active::ActiveView>, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let now = chrono::Utc::now().to_rfc3339();
-    meridian_core::active::get_active_view(pool, &now)
+    meridian_core::active::get_active_view(&pool, &now)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_active failed"))
 }
@@ -48,14 +48,14 @@ pub async fn get_active(
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_day_draft_states(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     day: Option<String>,
 ) -> Result<Vec<meridian_core::day_task_worklogs::DayDraftState>, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let date = day.unwrap_or_else(meridian_core::date::today_string);
-    let states = meridian_core::day_task_worklogs::day_draft_states(pool, &date)
+    let states = meridian_core::day_task_worklogs::day_draft_states(&pool, &date)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_day_draft_states failed"))?;
     tracing::info!(day = %date, rows = states.len(), "day draft states served");
@@ -70,15 +70,15 @@ pub async fn get_day_draft_states(
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_today(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     day: Option<String>,
 ) -> Result<meridian_core::today::TodayResponse, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let date = day.unwrap_or_else(meridian_core::date::today_string);
     let now = chrono::Utc::now().to_rfc3339();
-    meridian_core::today::get_today(pool, &date, &now)
+    meridian_core::today::get_today(&pool, &date, &now)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_today failed"))
 }
@@ -90,14 +90,14 @@ pub async fn get_today(
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_day_tasks(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     day: Option<String>,
 ) -> Result<meridian_core::day_tasks::DayTasksResponse, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let date = day.unwrap_or_else(meridian_core::date::today_string);
-    meridian_core::day_tasks::get_day_tasks(pool, &date)
+    meridian_core::day_tasks::get_day_tasks(&pool, &date)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_day_tasks failed"))
 }
@@ -106,13 +106,13 @@ pub async fn get_day_tasks(
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_week(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
 ) -> Result<meridian_core::week::WeekResponse, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let now = chrono::Utc::now().to_rfc3339();
-    meridian_core::week::get_week(pool, &now)
+    meridian_core::week::get_week(&pool, &now)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_week failed"))
 }
@@ -129,14 +129,14 @@ pub async fn get_week(
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_coding_agents(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     day: Option<String>,
 ) -> Result<meridian_core::coding_agents::CodingAgentsResponse, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let date = day.unwrap_or_else(meridian_core::date::today_string);
-    meridian_core::coding_agents::get_coding_agents(pool, &date)
+    meridian_core::coding_agents::get_coding_agents(&pool, &date)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_coding_agents failed"))
 }
@@ -147,12 +147,12 @@ pub async fn get_coding_agents(
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_recent_capture_apps(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
 ) -> Result<Vec<meridian_core::capture_apps::CaptureApp>, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
-    meridian_core::capture_apps::recent_capture_apps(pool, 30, 60)
+    meridian_core::capture_apps::recent_capture_apps(&pool, 30, 60)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_recent_capture_apps failed"))
 }
@@ -162,14 +162,14 @@ pub async fn get_recent_capture_apps(
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_task_detail(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     key: String,
 ) -> Result<Option<meridian_core::task_detail::TaskDetail>, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let today = chrono::Local::now().date_naive();
-    meridian_core::task_detail::get_task_detail(pool, &key, today)
+    meridian_core::task_detail::get_task_detail(&pool, &key, today)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_task_detail failed"))
 }
@@ -182,18 +182,19 @@ pub async fn get_task_detail(
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_plan(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     date: Option<String>,
 ) -> Result<meridian_core::plan::PlanResponse, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let date = read_date(date);
     let (today, now_ms, recent_since) = plan_clock();
-    let available = meridian_core::plan::build_available(pool, &date, today, now_ms, &recent_since)
-        .await
-        .map_err(|e| crate::cmd_err!(e, "get_plan: build_available failed"))?;
-    meridian_core::plan::build_plan_response(pool, &date, today, available)
+    let available =
+        meridian_core::plan::build_available(&pool, &date, today, now_ms, &recent_since)
+            .await
+            .map_err(|e| crate::cmd_err!(e, "get_plan: build_available failed"))?;
+    meridian_core::plan::build_plan_response(&pool, &date, today, available)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_plan failed"))
 }
@@ -205,10 +206,10 @@ pub async fn get_plan(
 #[tauri::command]
 #[tracing::instrument(skip(pool, body), fields(action = %body.action))]
 pub async fn plan_action(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     body: meridian_core::plan::PlanBody,
 ) -> Result<meridian_core::plan::PlanResponse, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     // Writes must reject a malformed EXPLICIT date (defaulting it to today would
@@ -219,10 +220,11 @@ pub async fn plan_action(
     };
     let (today, now_ms, recent_since) = plan_clock();
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let available = meridian_core::plan::build_available(pool, &date, today, now_ms, &recent_since)
-        .await
-        .map_err(|e| crate::cmd_err!(e, "plan_action: build_available failed"))?;
-    meridian_core::plan::apply_plan_action(pool, &body, &date, today, &now, available)
+    let available =
+        meridian_core::plan::build_available(&pool, &date, today, now_ms, &recent_since)
+            .await
+            .map_err(|e| crate::cmd_err!(e, "plan_action: build_available failed"))?;
+    meridian_core::plan::apply_plan_action(&pool, &body, &date, today, &now, available)
         .await
         .map_err(|e| crate::cmd_err!(e, "plan_action failed"))
 }
@@ -259,12 +261,12 @@ pub struct BoardTicket {
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_board_tickets(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
 ) -> Result<Vec<BoardTicket>, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
-    let rows = meridian_core::board::fetch_open_board(pool, false)
+    let rows = meridian_core::board::fetch_open_board(&pool, false)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_board_tickets failed"))?;
     tracing::info!(tickets = rows.len(), "serving the board ticket picker");
@@ -300,13 +302,13 @@ pub struct RetargetBody {
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn retarget_day_task_worklog(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     body: RetargetBody,
 ) -> Result<meridian_core::day_task_worklogs::DayTaskWorklogDraft, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
-    let provider = meridian_core::board::provider_for_key(pool, &body.task_key)
+    let provider = meridian_core::board::provider_for_key(&pool, &body.task_key)
         .await
         .map_err(|e| crate::cmd_err!(e, "retarget: provider lookup failed"))?;
     let Some(provider) = provider else {
@@ -319,7 +321,7 @@ pub async fn retarget_day_task_worklog(
 
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     meridian_core::day_task_worklogs::retarget_draft(
-        pool,
+        &pool,
         &body.day,
         &body.task_id,
         &body.task_key,
@@ -356,10 +358,10 @@ pub struct SetWorklogProviderBody {
 #[tauri::command]
 #[tracing::instrument(skip(pool), err)]
 pub async fn set_worklog_provider(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     body: SetWorklogProviderBody,
 ) -> Result<meridian_core::day_task_worklogs::DayTaskWorklogDraft, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     if !crate::commands::connected_providers().contains(&body.provider.as_str()) {
@@ -372,7 +374,7 @@ pub async fn set_worklog_provider(
 
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     meridian_core::day_task_worklogs::set_draft_provider(
-        pool,
+        &pool,
         &body.day,
         &body.task_id,
         &body.provider,
@@ -399,15 +401,20 @@ pub struct DismissTargetBody {
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn dismiss_worklog_target(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     body: DismissTargetBody,
 ) -> Result<meridian_core::day_task_worklogs::DayTaskWorklogDraft, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
-    meridian_core::day_task_worklogs::dismiss_target(pool, &body.day, &body.task_id, &body.task_key)
-        .await
-        .map_err(|e| crate::cmd_err!(e, "dismiss_worklog_target failed"))
+    meridian_core::day_task_worklogs::dismiss_target(
+        &pool,
+        &body.day,
+        &body.task_id,
+        &body.task_key,
+    )
+    .await
+    .map_err(|e| crate::cmd_err!(e, "dismiss_worklog_target failed"))
 }
 
 /// The body of a [`dismiss_day_task`] / [`restore_day_task`] call.
@@ -431,17 +438,17 @@ pub struct MergeDayTaskBody {
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn dismiss_day_task(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     body: DayTaskCorrectionBody,
 ) -> Result<meridian_core::day_tasks::DayTasksResponse, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let now = chrono::Utc::now().to_rfc3339();
-    meridian_core::day_task_corrections::dismiss_day_task(pool, &body.day, &body.task_id, &now)
+    meridian_core::day_task_corrections::dismiss_day_task(&pool, &body.day, &body.task_id, &now)
         .await
         .map_err(|e| crate::cmd_err!(e, "dismiss_day_task failed"))?;
-    meridian_core::day_tasks::get_day_tasks(pool, &body.day)
+    meridian_core::day_tasks::get_day_tasks(&pool, &body.day)
         .await
         .map_err(|e| crate::cmd_err!(e, "dismiss_day_task: task-list refresh failed"))
 }
@@ -452,15 +459,15 @@ pub async fn dismiss_day_task(
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn merge_day_task(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     body: MergeDayTaskBody,
 ) -> Result<meridian_core::day_tasks::DayTasksResponse, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let now = chrono::Utc::now().to_rfc3339();
     meridian_core::day_task_corrections::merge_day_task(
-        pool,
+        &pool,
         &body.day,
         &body.task_id,
         &body.into_task_id,
@@ -468,7 +475,7 @@ pub async fn merge_day_task(
     )
     .await
     .map_err(|e| crate::cmd_err!(e, "merge_day_task failed"))?;
-    meridian_core::day_tasks::get_day_tasks(pool, &body.day)
+    meridian_core::day_tasks::get_day_tasks(&pool, &body.day)
         .await
         .map_err(|e| crate::cmd_err!(e, "merge_day_task: task-list refresh failed"))
 }
@@ -477,17 +484,17 @@ pub async fn merge_day_task(
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn restore_day_task(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     body: DayTaskCorrectionBody,
 ) -> Result<meridian_core::day_tasks::DayTasksResponse, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let now = chrono::Utc::now().to_rfc3339();
-    meridian_core::day_task_corrections::restore_day_task(pool, &body.day, &body.task_id, &now)
+    meridian_core::day_task_corrections::restore_day_task(&pool, &body.day, &body.task_id, &now)
         .await
         .map_err(|e| crate::cmd_err!(e, "restore_day_task failed"))?;
-    meridian_core::day_tasks::get_day_tasks(pool, &body.day)
+    meridian_core::day_tasks::get_day_tasks(&pool, &body.day)
         .await
         .map_err(|e| crate::cmd_err!(e, "restore_day_task: task-list refresh failed"))
 }
@@ -564,9 +571,9 @@ fn plan_clock() -> (chrono::NaiveDate, i64, String) {
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_tasks(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
 ) -> Result<meridian_core::tasks::TasksResponse, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     let today = meridian_core::date::today_string();
@@ -575,7 +582,7 @@ pub async fn get_tasks(
         .format("%Y-%m-%d")
         .to_string();
     let now_iso = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    meridian_core::tasks::get_tasks(pool, &today, &week_start, &now_iso)
+    meridian_core::tasks::get_tasks(&pool, &today, &week_start, &now_iso)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_tasks failed"))
 }

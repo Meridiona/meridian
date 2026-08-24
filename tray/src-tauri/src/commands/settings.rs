@@ -111,7 +111,7 @@ pub async fn get_settings() -> Result<Value, String> {
 #[tracing::instrument(skip(pool, app_state, body))]
 pub async fn update_settings(
     app: tauri::AppHandle,
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     app_state: State<'_, Arc<Mutex<AppState>>>,
     body: Value,
 ) -> Result<Value, String> {
@@ -212,12 +212,12 @@ pub async fn update_settings(
         // tick (`main.rs`) calls the identical `sync_groq_deprecated_notice`, so switching
         // away from Groq here and there converge on the same answer; this just stops the
         // banner from sitting stale for up to a minute after the switch already took effect.
-        if let Some(p) = pool.as_ref() {
+        if let Some(p) = pool.get() {
             let vendor = meridian_core::settings::load_runtime_settings()
                 .active_custom_provider()
                 .map(|c| c.vendor.clone());
-            meridian::notices::sync_groq_deprecated_notice(p, vendor.as_deref()).await;
-            crate::commands::notices::push_notices_update(&app, p).await;
+            meridian::notices::sync_groq_deprecated_notice(&p, vendor.as_deref()).await;
+            crate::commands::notices::push_notices_update(&app, &p).await;
         }
     }
 

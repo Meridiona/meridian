@@ -43,15 +43,15 @@ fn now_iso() -> String {
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_triage(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
 ) -> Result<meridian_core::triage::TriageResponse, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     // The triage GET route compares snoozed_until against `new Date().toISOString()`
     // (MILLIS precision) — keep millis here, not the writes' seconds-precision now.
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    meridian_core::triage::get_triage(pool, &now)
+    meridian_core::triage::get_triage(&pool, &now)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_triage failed"))
 }
@@ -82,10 +82,10 @@ pub struct TriageDecisionAck {
 #[tauri::command]
 #[tracing::instrument(skip(pool, body), fields(task_key = %body.task_key, decision = %body.decision))]
 pub async fn triage_decision(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     body: TriageDecisionBody,
 ) -> Result<TriageDecisionAck, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     if body.task_key.is_empty() {
@@ -106,7 +106,7 @@ pub async fn triage_decision(
     };
 
     meridian_core::triage::record_decision(
-        pool,
+        &pool,
         &body.task_key,
         decision,
         snoozed_until.as_deref(),
@@ -145,10 +145,10 @@ pub struct TriageIgnoreAck {
 #[tauri::command]
 #[tracing::instrument(skip(pool, body), fields(task_key = %body.task_key, code = %body.code))]
 pub async fn triage_ignore(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     body: TriageIgnoreBody,
 ) -> Result<TriageIgnoreAck, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
     if body.task_key.is_empty() {
@@ -158,7 +158,7 @@ pub async fn triage_ignore(
         return Err("code required".to_string());
     }
     let ignored = meridian_core::triage::set_ignored(
-        pool,
+        &pool,
         &body.task_key,
         &body.code,
         body.undo.unwrap_or(false),

@@ -388,7 +388,7 @@ pub fn providers_awaiting_selection() -> Vec<&'static str> {
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_integrations(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
 ) -> Result<IntegrationsResponse, String> {
     let mode = crate::install::detect_install_mode();
     let env = mode.env_path().map(parse_env).unwrap_or_default();
@@ -396,8 +396,8 @@ pub async fn get_integrations(
 
     // Sync errors are best-effort: a missing/uninitialised DB just omits them
     // (matches the route's silent catch).
-    let sync_errors = match pool.inner() {
-        Some(pool) => meridian_core::integrations::sync_errors(pool)
+    let sync_errors = match pool.get() {
+        Some(pool) => meridian_core::integrations::sync_errors(&pool)
             .await
             .unwrap_or_default(),
         None => BTreeMap::new(),
@@ -503,7 +503,7 @@ pub(crate) fn upsert_env(
 #[tracing::instrument(skip(body, pool), fields(provider = %body.provider))]
 pub async fn disconnect_integration(
     body: DisconnectBody,
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
 ) -> Result<serde_json::Value, String> {
     let provider = body.provider.as_str();
     let token_keys = TOKEN_KEYS.iter().find(|(p, _)| *p == provider);
@@ -544,8 +544,8 @@ pub async fn disconnect_integration(
 
     // Best-effort: remove the provider's tasks so they don't linger in the UI.
     // A missing DB or uninitialised tables are logged but never block disconnect.
-    if let Some(p) = pool.inner() {
-        if let Err(e) = meridian_core::integrations::clear_provider_tasks(p, provider).await {
+    if let Some(p) = pool.get() {
+        if let Err(e) = meridian_core::integrations::clear_provider_tasks(&p, provider).await {
             tracing::warn!(error = %e, provider, "could not clear provider tasks from DB");
         }
     }
@@ -577,7 +577,10 @@ pub struct SaveTokenBody {
 /// connect the GET reflects is one the daemon sees on its next reload.
 #[tauri::command]
 #[tracing::instrument(skip(body), fields(provider = %body.provider))]
-pub async fn save_integration_token(body: SaveTokenBody) -> Result<serde_json::Value, String> {
+pub async fn save_integration_token(
+    body: SaveTokenBody,
+    db_pool: State<'_, crate::db_pool::DbPool>,
+) -> Result<serde_json::Value, String> {
     let provider = body.provider.as_str();
     let field_map = TOKEN_FIELD_MAP
         .iter()
@@ -671,7 +674,9 @@ pub async fn save_integration_token(body: SaveTokenBody) -> Result<serde_json::V
     // A down daemon is fine — it reads .env on its next start. `reloaded` is
     // returned to the UI so it can warn the user when the daemon isn't running
     // (common in dev where the daemon isn't launchd-supervised).
-    let reloaded = crate::commands::daemon::reload_daemon().await.is_ok();
+    let reloaded = crate::commands::daemon::reload_daemon_with(db_pool.inner().clone())
+        .await
+        .is_ok();
     if !reloaded {
         tracing::debug!("daemon reload after token save (non-fatal — will pick up on next start)");
     }
@@ -1188,10 +1193,13 @@ pub struct StartOAuthResponse {
 ///   the user never saw the code — and always timed out.
 #[tauri::command]
 #[tracing::instrument(fields(provider = %body.provider))]
-pub async fn start_oauth(body: StartOAuthBody) -> Result<StartOAuthResponse, String> {
+pub async fn start_oauth(
+    body: StartOAuthBody,
+    db_pool: State<'_, crate::db_pool::DbPool>,
+) -> Result<StartOAuthResponse, String> {
     match body.provider.as_str() {
         "jira" | "trello" => start_oauth_in_process(body.provider),
-        "github" => start_oauth_github_device(body.provider).await,
+        "github" => start_oauth_github_device(body.provider, db_pool.inner().clone()).await,
         other => Err(format!("Unknown provider: {other}")),
     }
 }
@@ -1370,7 +1378,10 @@ fn start_oauth_in_process(provider: String) -> Result<StartOAuthResponse, String
 /// gates its "Open GitHub" button on the user first copying the code, and that
 /// button is the sole opener (via `openExternal`). Auto-opening would jump the
 /// user to GitHub before they've copied, contradicting the guided steps.
-async fn start_oauth_github_device(provider: String) -> Result<StartOAuthResponse, String> {
+async fn start_oauth_github_device(
+    provider: String,
+    db_pool: crate::db_pool::DbPool,
+) -> Result<StartOAuthResponse, String> {
     // Resolve the client id: `.env` override wins, else the baked-in default.
     // Reading .env (not process env) matches start_oauth_in_process — the daemon
     // may not have exported it into the tray's environment.
@@ -1447,7 +1458,7 @@ async fn start_oauth_github_device(provider: String) -> Result<StartOAuthRespons
                 }
                 tracing::info!("GitHub device-flow login succeeded");
                 // Best-effort reload so the token takes effect now, not next restart.
-                if let Err(e) = crate::commands::daemon::reload_daemon().await {
+                if let Err(e) = crate::commands::daemon::reload_daemon_with(db_pool).await {
                     tracing::debug!(error = %e, "daemon reload after GitHub connect (non-fatal)");
                 }
             }
