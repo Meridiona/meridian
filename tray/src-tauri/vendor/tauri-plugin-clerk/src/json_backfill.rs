@@ -102,14 +102,27 @@ fn defaults_for(object_type: &str) -> &'static [FieldDefault] {
 /// account state a user would notice.
 ///
 /// Runs BEFORE `defaults_for`'s `or_insert`, so the carried value wins and the
-/// `false` default only applies when neither key is present.
+/// `false` default only applies when neither key holds a usable answer.
+///
+/// # A present key with the wrong TYPE is treated as absent
+/// `ClientSignUp.password_enabled` is a bare `bool`, so `null`, a string, or a
+/// number there fails deserialization exactly as a missing key does — and
+/// `defaults_for`'s `or_insert` cannot rescue it, because the key exists. This
+/// is the module's "optional VALUE, mandatory KEY" trap running the other way:
+/// present, but unusable. Keying the guard on `contains_key` would leave that
+/// payload broken, so it keys on actually holding a boolean.
 fn carry_over_has_password(canonical: &str, map: &mut serde_json::Map<String, Value>) {
-    if canonical != "sign_up_attempt" || map.contains_key("password_enabled") {
+    if canonical != "sign_up_attempt" {
         return;
     }
-    if let Some(has) = map.get("has_password").and_then(Value::as_bool) {
-        map.insert("password_enabled".to_string(), json!(has));
+    if map.get("password_enabled").is_some_and(Value::is_boolean) {
+        return; // Already a usable answer — authoritative, never overwritten.
     }
+    let carried = map
+        .get("has_password")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    map.insert("password_enabled".to_string(), json!(carried));
 }
 
 /// Ensure `verifications` is an object carrying ALL four keys.
@@ -1008,6 +1021,32 @@ mod backfill_gap_tests {
     #[test]
     fn absent_on_both_sides_keeps_the_false_default() {
         let mut v = json!({ "object": "sign_up_attempt" });
+        backfill_clerk_client_json(&mut v);
+        assert_eq!(v["password_enabled"], json!(false));
+    }
+
+    /// A present-but-non-BOOLEAN `password_enabled` is unusable: the field is a
+    /// bare `bool` upstream, so it fails deserialization exactly like a missing
+    /// key - and `defaults_for`'s `or_insert` cannot rescue it, because the key
+    /// exists. It must be normalized, not left alone.
+    #[test]
+    fn a_non_boolean_password_enabled_is_normalized() {
+        for bad in [Value::Null, json!("yes"), json!(1)] {
+            let mut v = json!({
+                "object": "sign_up_attempt",
+                "password_enabled": bad,
+                "has_password": true,
+            });
+            backfill_clerk_client_json(&mut v);
+            assert_eq!(v["password_enabled"], json!(true), "from {v:?}");
+        }
+    }
+
+    /// ...and with no usable `has_password` either, it falls back to `false`
+    /// rather than staying a value that cannot deserialize.
+    #[test]
+    fn a_non_boolean_password_enabled_falls_back_to_false() {
+        let mut v = json!({ "object": "sign_up_attempt", "password_enabled": Value::Null });
         backfill_clerk_client_json(&mut v);
         assert_eq!(v["password_enabled"], json!(false));
     }

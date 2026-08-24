@@ -533,13 +533,31 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   // the time row first means the button is live by the time they reach it.
   await s.point('[data-tour="worklog-schedule-times"]')
   s.say('Pick a time - one of these, or type your own.')
-  // Wait for the BUTTON to go live, not for a click on the time row. The row is
-  // a wrapper, so `waitForClick` also matches a bubbled click on its padding or
-  // on the custom-time input - neither of which sets the dialog's `chosen`
-  // state. Advancing on one of those put the cursor on a still-disabled "Turn
-  // on" for up to the full timeout, which is the exact dead-control problem the
-  // comment above says this beat exists to avoid.
-  await s.appeared('[data-tour="worklog-schedule-on"]:not([disabled])', 300000)
+  // The HANDOVER is this click-wait, and it has to be `waitForClick`: it
+  // resolves on the click OR on the dialog leaving the DOM, so "Not now" and
+  // the backdrop both end the beat.
+  //
+  // An earlier version replaced this with `appeared(…:not([disabled]), 300000)`
+  // to dodge the bubbled-click problem below. That traded a cosmetic fault for
+  // a hang: `appeared` only ever resolves on an element APPEARING, so a user
+  // who dismissed the dialog left the tour waiting on a button that no longer
+  // existed for the full five minutes - with `handover` raised the whole time
+  // (300000 >= HANDOVER_WAIT_MS), so the fence stayed down too. The comment
+  // below this block already said dismissal must not strand the tour; that line
+  // broke the guarantee two lines above it.
+  await s.waitForClick('[data-tour="worklog-schedule-times"]', 300000)
+  // THEN a short, bounded settle for the button to go live. The time row is a
+  // wrapper, so the click above also matches its padding or the custom-time
+  // input - neither of which sets the dialog's `chosen` state, leaving "Turn
+  // on" disabled and the cursor pointing at a dead control (the problem the
+  // comment at the top of this beat exists to prevent).
+  //
+  // BOUNDED, and deliberately well under `HANDOVER_WAIT_MS` so it reads as a
+  // probe rather than a handover: on the normal path a preset click enables the
+  // button immediately and this returns at once, and on any other path -
+  // padding click, dismissed dialog - it simply expires and the dismissal-safe
+  // `waitForClick` below stays the thing actually waiting on the user.
+  await s.appeared('[data-tour="worklog-schedule-on"]:not([disabled])', 4000)
   await s.point('[data-tour="worklog-schedule-on"]')
   // Resolves on the click OR on the dialog leaving the DOM, which covers "Not
   // now" and the backdrop - both are the question being answered, and neither
