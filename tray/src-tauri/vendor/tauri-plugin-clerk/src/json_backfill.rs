@@ -122,6 +122,27 @@ fn carry_over_has_password(canonical: &str, map: &mut serde_json::Map<String, Va
         .get("has_password")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    // Observability: the SHAPE, never the payload. `carried` is one bit of
+    // account state and `had_key` says only whether a key was present — no
+    // email, no token, no field values. Worth recording because this is a
+    // silent rewrite of cached auth state, and because a `present_but_unusable`
+    // hit means guest-js sent a type we did not expect, which is the leading
+    // indicator for the next incident in this module's history.
+    let present_but_unusable = map.contains_key("password_enabled");
+    if present_but_unusable {
+        tracing::warn!(
+            object = "sign_up_attempt",
+            carried,
+            "clerk backfill: password_enabled present but not a boolean - normalized"
+        );
+    } else {
+        tracing::debug!(
+            object = "sign_up_attempt",
+            carried,
+            had_has_password = map.contains_key("has_password"),
+            "clerk backfill: password_enabled filled in"
+        );
+    }
     map.insert("password_enabled".to_string(), json!(carried));
 }
 
@@ -137,6 +158,7 @@ fn carry_over_has_password(canonical: &str, map: &mut serde_json::Map<String, Va
 /// Populated entries are preserved; only the absent keys get a `null`.
 fn complete_sign_up_verifications(map: &mut serde_json::Map<String, Value>) {
     let mut filled = empty_sign_up_verifications();
+    let mut carried_over = 0usize;
     if let (Value::Object(required), Some(Value::Object(existing))) =
         (&mut filled, map.get("verifications"))
     {
@@ -144,8 +166,21 @@ fn complete_sign_up_verifications(map: &mut serde_json::Map<String, Value>) {
         // so a key guest-js omitted is present-and-null rather than missing.
         for (key, value) in existing {
             required.insert(key.clone(), value.clone());
+            carried_over += 1;
         }
     }
+    // COUNTS ONLY. A verification entry carries the email address or phone
+    // number being verified, so the keys and values stay out of the record
+    // entirely - `carried_over` and `filled_in` are enough to tell "guest-js
+    // sent a partial object" from "it sent nothing", which is the whole
+    // diagnostic question here.
+    let total = filled.as_object().map_or(0, serde_json::Map::len);
+    tracing::debug!(
+        object = "sign_up_attempt",
+        carried_over,
+        filled_in = total.saturating_sub(carried_over),
+        "clerk backfill: sign_up verifications completed"
+    );
     map.insert("verifications".to_string(), filled);
 }
 
