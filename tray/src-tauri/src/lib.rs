@@ -895,6 +895,37 @@ pub fn run() {
             // always resolvable, so a command extracting it doesn't panic a
             // second, unrelated time on missing managed state.
             app.manage(db_setup_result.clone());
+            // The SAME guarantee, for the OTHER managed type — and it did not
+            // grow with it. `DbPool` (added when `reload_daemon` needed to
+            // close/reopen around a daemon restart) is registered INSIDE the
+            // closure above, so a panic before that point leaves it unmanaged.
+            // `State<DbPool>` is what every dashboard command and the
+            // notification drain extract, so on the panic path each one fails
+            // extraction or panics on missing state — the very second, unrelated
+            // panic the line above exists to prevent, just for the type that has
+            // since replaced `Option<SqlitePool>` at those call sites.
+            //
+            // Guarded on `try_state` rather than leaning on `manage`'s no-op so
+            // the normal path doesn't re-resolve the path (and re-log it) on
+            // every launch. `meridian_db_path()` is re-read rather than threaded
+            // out of the closure because a panicked closure has, by definition,
+            // no value to hand back — and it is a pure env/.env lookup.
+            //
+            // The key is `None`: an encrypted DB cannot be reopened through this
+            // fallback handle. That is honest about a startup that already
+            // failed — `get()` correctly reports no pool either way — and it
+            // buys back every command's ability to run and say so.
+            if app.try_state::<db_pool::DbPool>().is_none() {
+                tracing::warn!(
+                    "tray setup did not register the database pool - registering an empty \
+                     handle so commands degrade instead of failing state extraction"
+                );
+                app.manage(db_pool::DbPool::new(
+                    None,
+                    install::meridian_db_path(),
+                    None,
+                ));
+            }
             #[cfg(feature = "capture")]
             let capture_pool = db_setup_result;
 

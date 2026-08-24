@@ -146,10 +146,29 @@ pub async fn setup_db(uri: &str) -> anyhow::Result<SqlitePool> {
 /// Best-effort by design — callers should log and continue on error rather
 /// than fail shutdown over it.
 pub async fn checkpoint_wal(pool: &SqlitePool) -> anyhow::Result<()> {
-    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
-        .execute(pool)
-        .await
-        .context("WAL checkpoint failed")?;
+    // `PRAGMA wal_checkpoint(TRUNCATE)` answers with a ROW — `(busy, log,
+    // checkpointed)` — not merely a status. `busy = 1` means another connection
+    // held the file and the checkpoint did NOT truncate anything. `.execute()`
+    // discards that row, so the call reported success on a WAL it had left
+    // exactly as it found it.
+    //
+    // That is not a remote possibility here, it is the expected contention: the
+    // doc above explains this function exists BECAUSE the tray keeps its own
+    // long-lived pool on this same file, and that pool is precisely the reader
+    // that makes `busy` non-zero. Silently succeeding is the worst of the
+    // outcomes — shutdown logs a clean checkpoint and still hands the next
+    // daemon generation the half-written WAL this exists to prevent.
+    let (busy, _log, _checkpointed): (i64, i64, i64) =
+        sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)")
+            .fetch_one(pool)
+            .await
+            .context("WAL checkpoint failed")?;
+    if busy != 0 {
+        anyhow::bail!(
+            "WAL checkpoint could not truncate - another connection held the file. \
+             The next daemon generation starts on a non-empty WAL."
+        );
+    }
     Ok(())
 }
 
@@ -682,5 +701,68 @@ mod tests {
             wal_len_after, 0,
             "TRUNCATE checkpoint must leave an empty WAL, got {wal_len_after} bytes"
         );
+    }
+
+    /// The failure this used to report as SUCCESS.
+    ///
+    /// `PRAGMA wal_checkpoint(TRUNCATE)` answers with a row whose first column
+    /// is `busy`; `.execute()` discarded it, so a checkpoint blocked by another
+    /// connection returned `Ok(())` having truncated nothing. The daemon then
+    /// logged a clean shutdown and handed the next generation the very WAL this
+    /// call exists to clear.
+    ///
+    /// The second connection here is not a contrivance - it is the tray's own
+    /// long-lived pool in miniature, which `checkpoint_wal`'s doc names as the
+    /// reason this function has to exist at all.
+    #[tokio::test]
+    async fn checkpoint_wal_reports_a_busy_file_instead_of_claiming_success() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+        use sqlx::Connection;
+        use std::str::FromStr;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("busy_checkpoint.db");
+        let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))
+            .unwrap()
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal);
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts.clone())
+            .await
+            .expect("open WAL-mode db");
+        sqlx::query("CREATE TABLE t (v BLOB)")
+            .execute(&pool)
+            .await
+            .expect("create table");
+        sqlx::query("INSERT INTO t (v) VALUES (zeroblob(65536))")
+            .execute(&pool)
+            .await
+            .expect("insert");
+
+        // A separate connection holding an OPEN read transaction, which is what
+        // stops a TRUNCATE checkpoint from resetting the WAL.
+        let mut reader = sqlx::SqliteConnection::connect_with(&opts)
+            .await
+            .expect("second connection");
+        sqlx::query("BEGIN DEFERRED")
+            .execute(&mut reader)
+            .await
+            .expect("begin");
+        sqlx::query("SELECT count(*) FROM t")
+            .fetch_all(&mut reader)
+            .await
+            .expect("read inside the transaction pins the WAL");
+
+        let err = checkpoint_wal(&pool)
+            .await
+            .expect_err("a checkpoint blocked by a live reader must not report success");
+        assert!(
+            err.to_string().contains("could not truncate"),
+            "the error must say the checkpoint did not happen, got: {err}"
+        );
+
+        let _ = sqlx::query("COMMIT").execute(&mut reader).await;
     }
 }
