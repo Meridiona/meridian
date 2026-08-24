@@ -158,9 +158,17 @@ pub struct PromptRequest {
     /// composer's "Draft with AI"), as opposed to a background job (summarisation,
     /// worklog generation) where a slower, more capable model costs nothing perceptible.
     ///
-    /// A backend MAY use this to pick a faster model tier when the user has not pinned
-    /// an explicit override — see `CursorBackend::complete`, the only backend that does
-    /// today. Defaults to `false`; only [`crate::plan_tasks::draft::draft`] sets it.
+    /// Two independent effects, both scoped to this flag alone:
+    /// - A backend MAY use it to pick a faster model tier when the user has not pinned
+    ///   an explicit override — see `CursorBackend::complete`, the only backend that does
+    ///   today.
+    /// - `resolver::complete_inner` bounds the whole call under its private
+    ///   `INTERACTIVE_DEADLINE`, well below the tray's own external kill-timeout for a
+    ///   synchronous caller, so a hanging provider fails with a real error instead of
+    ///   being killed with none (github.com/Meridiona/meridian/issues/866).
+    ///
+    /// Defaults to `false`; only [`crate::plan_tasks::draft::draft`] sets it — a
+    /// background caller must keep its full, unbounded budget on both counts.
     pub interactive: bool,
 }
 
