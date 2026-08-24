@@ -277,7 +277,7 @@ fn probe_and_heal(db_path: &Path, key_hex: Option<&str>, key_trust: KeyTrust) ->
             if let Err(e) = meridian::db::repair::marker::request(db_path) {
                 span.record("outcome", "marker_write_failed");
                 span.record("otel.status_code", "ERROR");
-                tracing::error!(error = %e, "could not write the repair marker - skipping the automatic repair");
+                tracing::error!(error = %meridian::errors::chain(&e), "could not write the repair marker - skipping the automatic repair");
                 return None;
             }
             match execute_pending_repair(db_path, key_hex) {
@@ -388,12 +388,12 @@ fn fresh_start(db_path: &Path, kind: &str, error: String) -> Outcome {
     if let Err(e) = meridian::db::repair::marker::request(db_path) {
         span.record("outcome", "marker_write_failed");
         span.record("otel.status_code", "ERROR");
-        tracing::error!(error = %e, "could not write the repair marker - leaving the database in place");
+        tracing::error!(error = %meridian::errors::chain(&e), "could not write the repair marker - leaving the database in place");
         return Outcome::Failed { error };
     }
     let result = set_aside_database(db_path, kind);
     if let Err(e) = meridian::db::repair::marker::clear(db_path) {
-        tracing::error!(error = %e, "could not clear the repair marker - the daemon will stay down until it expires");
+        tracing::error!(error = %meridian::errors::chain(&e), "could not clear the repair marker - the daemon will stay down until it expires");
     }
     match result {
         Ok(backup) => {
@@ -405,7 +405,7 @@ fn fresh_start(db_path: &Path, kind: &str, error: String) -> Outcome {
         Err(e) => {
             span.record("outcome", "set_aside_failed");
             span.record("otel.status_code", "ERROR");
-            tracing::error!(error = %e, "could not move the database aside - leaving it in place");
+            tracing::error!(error = %meridian::errors::chain(&e), "could not move the database aside - leaving it in place");
             Outcome::Failed {
                 error: format!("{e:#}"),
             }
@@ -429,7 +429,7 @@ fn execute_pending_repair(db_path: &Path, key_hex: Option<&str>) -> Outcome {
     // Clear before reporting: a panic while formatting the summary must not
     // leave the marker behind and the daemon permanently down.
     if let Err(e) = meridian::db::repair::marker::clear(db_path) {
-        tracing::error!(error = %e, "could not clear the repair marker - the daemon will stay down until it expires");
+        tracing::error!(error = %meridian::errors::chain(&e), "could not clear the repair marker - the daemon will stay down until it expires");
     }
 
     match outcome {
@@ -445,7 +445,7 @@ fn execute_pending_repair(db_path: &Path, key_hex: Option<&str>) -> Outcome {
             }
         }
         Err(e) => {
-            tracing::error!(error = %e, "database repair failed - the original is unchanged");
+            tracing::error!(error = %meridian::errors::chain(&e), "database repair failed - the original is unchanged");
             Outcome::Failed {
                 error: format!("{e:#}"),
             }
@@ -512,7 +512,7 @@ async fn probe_database(db_path: &Path, key_hex: Option<&str>) -> Probe {
             };
         }
         Err(e) => {
-            tracing::warn!(error = %e, "startup probe could not open meridian.db for a reason that is not corruption - proceeding normally");
+            tracing::warn!(error = %meridian::errors::chain(&e), "startup probe could not open meridian.db for a reason that is not corruption - proceeding normally");
             return Probe::Healthy;
         }
     };
@@ -544,7 +544,7 @@ async fn probe_database(db_path: &Path, key_hex: Option<&str>) -> Probe {
             error: format!("{e:#}"),
         },
         Ok(Err(e)) => {
-            tracing::warn!(error = %e, "startup integrity probe errored inconclusively - proceeding normally");
+            tracing::warn!(error = %meridian::errors::chain(&e), "startup integrity probe errored inconclusively - proceeding normally");
             Probe::Healthy
         }
     }

@@ -200,9 +200,18 @@ impl<R: Runtime, T: Manager<R>> crate::ClerkExt<R> for T {
                         // backfill_clerk_client_json doesn't yet normalize —
                         // extend it (see json_backfill's tests for the
                         // pattern) rather than re-swallowing the error.
+                        // `json_pointer`, NOT `path`: the value is safe to ship
+                        // either way, but `path` is denied by
+                        // `telemetry_spool::redact` on purpose (it normally means
+                        // a filesystem path), so naming it that dropped it from
+                        // every shipped record - and this field exists precisely
+                        // so a failure here does NOT need a raw-spool dig. The
+                        // 2026-08-24 `missing field \`id\`` incident was
+                        // diagnosed without it, by enumerating the model's
+                        // required fields by hand.
                         tracing::warn!(
                             error = %e.inner(),
-                            path = %e.path(),
+                            json_pointer = %e.path(),
                             "clerk: auth event JSON still failed to deserialize after field \
                              backfill — the offline session cache will not reflect this \
                              sign-in, so a cold start without network will show signed-out"
