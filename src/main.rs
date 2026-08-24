@@ -1519,6 +1519,12 @@ async fn main() -> Result<()> {
     // 9. Shutdown
     tracing::info!("shutting down");
     meridian::platform::release_endpoint();
+    // See `db::meridian::checkpoint_wal`'s doc for why this runs before every
+    // close, not just a plain shutdown. Best-effort: a failed checkpoint must
+    // not block shutdown.
+    if let Err(e) = meridian::db::meridian::checkpoint_wal(&meridian).await {
+        tracing::warn!(error = %e, "WAL checkpoint on shutdown failed - continuing anyway");
+    }
     meridian.close().await;
 
     // Flush OTel exporters FIRST, while the runtime is alive — this writes the

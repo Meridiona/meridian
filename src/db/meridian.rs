@@ -128,6 +128,31 @@ pub async fn setup_db(uri: &str) -> anyhow::Result<SqlitePool> {
     Ok(pool)
 }
 
+/// Forces the WAL fully into the main database file and truncates it.
+///
+/// Called from `main.rs`'s shutdown sequence, right before closing the pool.
+/// `pool.close()` alone does not checkpoint: SQLite only auto-checkpoints when
+/// the LAST connection to the file closes, and the tray holds its own
+/// independent, long-lived pool on the same file for its entire process
+/// lifetime (`tray/src-tauri/src/lib.rs`'s `app.manage(db_pool)`) — so from
+/// this pool's point of view there is never a "last connection". Without this,
+/// every daemon restart (a crash, or `reload_daemon`'s SIGHUP, which exits and
+/// relies on launchd/the tray to relaunch it) hands a WAL in whatever
+/// half-written state it happened to be in to a brand-new process, while the
+/// tray's already-open connection keeps its stale view of the file across that
+/// boundary. A clean TRUNCATE checkpoint here gives every restart a
+/// well-defined, empty-WAL starting point instead.
+///
+/// Best-effort by design — callers should log and continue on error rather
+/// than fail shutdown over it.
+pub async fn checkpoint_wal(pool: &SqlitePool) -> anyhow::Result<()> {
+    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .execute(pool)
+        .await
+        .context("WAL checkpoint failed")?;
+    Ok(())
+}
+
 /// Realign `_sqlx_migrations` checksums with the embedded migration files.
 ///
 /// sqlx records a SHA-384 checksum of every applied migration and refuses to
@@ -604,5 +629,58 @@ mod tests {
         reconcile_migration_checksums(&pool, &migrator)
             .await
             .expect("reconcile on fresh db must be a no-op");
+    }
+
+    /// `checkpoint_wal` must actually move committed data out of the `-wal`
+    /// sidecar and truncate it — the entire point of calling it before
+    /// shutdown. `:memory:` can't exercise this (no `-wal` file exists), so
+    /// this uses a real temp-dir-backed database in WAL mode, same technique
+    /// `test_corrupt.rs` uses for byte-level fixtures.
+    #[tokio::test]
+    async fn checkpoint_wal_truncates_the_sidecar_file() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+        use std::str::FromStr;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("checkpoint_test.db");
+        let wal_path = dir.path().join("checkpoint_test.db-wal");
+
+        let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))
+            .unwrap()
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal);
+        // Single connection: a second one competing for the same WAL would
+        // make the size assertions below flaky for reasons unrelated to what
+        // this test is pinning.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .expect("open WAL-mode db");
+
+        sqlx::query("CREATE TABLE t (v BLOB)")
+            .execute(&pool)
+            .await
+            .expect("create table");
+        // A large-ish payload so the write actually lands in the WAL rather
+        // than being trivially small enough to round to zero either way.
+        sqlx::query("INSERT INTO t (v) VALUES (zeroblob(65536))")
+            .execute(&pool)
+            .await
+            .expect("insert");
+
+        let wal_len_before = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+        assert!(
+            wal_len_before > 0,
+            "fixture is wrong: nothing landed in the WAL before checkpointing"
+        );
+
+        checkpoint_wal(&pool).await.expect("checkpoint_wal");
+
+        let wal_len_after = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+        assert_eq!(
+            wal_len_after, 0,
+            "TRUNCATE checkpoint must leave an empty WAL, got {wal_len_after} bytes"
+        );
     }
 }
