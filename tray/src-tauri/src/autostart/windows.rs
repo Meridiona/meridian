@@ -1,32 +1,37 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //! Windows side of [`crate::autostart`] — one per-user scheduled task carrying
-//! both a logon trigger and a daily trigger.
+//! a logon trigger, and only a logon trigger.
 //!
-//! # The triggers are EVENTS, not a clock
-//! The requirement is "Meridian is running after the device is turned on or
-//! woken". Windows expresses that natively: `SessionStateChangeTrigger` fires on
-//! `SessionUnlock` (the user unlocked the workstation) and `ConsoleConnect` (the
-//! user connected to the session), alongside `LogonTrigger` for sign-in. There
-//! is no hardcoded time anywhere.
+//! # Login/restart/start only — no unlock or reconnect relaunch
+//! An earlier version of this task ALSO carried a `SessionStateChangeTrigger`
+//! on `SessionUnlock` and `ConsoleConnect`, on the reasoning that "Meridian is
+//! running after the device is turned on or woken" should be expressed as
+//! native OS events rather than a fixed-hour `CalendarTrigger`. That reasoning
+//! was sound for the clock but wrong for the trigger choice: unlocking a
+//! session happens many times in an ordinary day, not once "in the morning",
+//! so a user who quit Meridian watched it come back the next time they
+//! unlocked their machine - sometimes within minutes. That reads as "I cannot
+//! quit this app", and it is: the requirement is login, restart, or a manual
+//! start, never an unattended resurrection before then. `LogonTrigger` alone
+//! already covers login and restart (a restart ends in a fresh logon), so the
+//! session-state triggers are gone and there is no replacement for the
+//! "resume after a bare unlock" behaviour - that is the point, not a gap.
 //!
-//! This replaced a daily `CalendarTrigger` at a fixed hour, which was the wrong
-//! shape for the requirement: it fired when the user was not there and missed
-//! them when they were. macOS gets the same treatment through launchd's
-//! `LaunchEvents` (see [`super::macos`]); the two platforms now use each OS's
-//! own event system rather than a clock.
+//! macOS mirrors this (see [`super::macos`]): its `LaunchEvents` wake
+//! notifications are gone too, for the identical reason.
 //!
-//! Firing on every unlock is safe because `tauri-plugin-single-instance` is
+//! Firing on every logon is safe because `tauri-plugin-single-instance` is
 //! registered first, so a launch into an already-running tray exits in
 //! milliseconds.
 //!
 //! # Why XML, not `schtasks /SC`
-//! The command form takes exactly one `/SC`, so a login task and a daily task
-//! would have to be two separate tasks — and two tasks are two independent
-//! instance policies, so the daily trigger would start a second tray on top of the
-//! one the logon task already started. Registering from XML allows one task
-//! with two triggers, and therefore one `MultipleInstancesPolicy` of
-//! `IgnoreNew`, which is what makes the morning trigger a no-op while the tray
-//! is already running. That is the same property launchd gives for free on
+//! Registering from XML rather than the `schtasks` command form is still worth
+//! it with a single trigger: it is the only way to set
+//! `DisallowStartIfOnBatteries`/`StopIfGoingOnBatteries` false (the command
+//! form's defaults would make Meridian desktop-only on a laptop), an
+//! unbounded `ExecutionTimeLimit`, and `MultipleInstancesPolicy` `IgnoreNew`
+//! (a defensive dedupe against a logon race, not a second trigger to
+//! reconcile any more). That is the same property launchd gives for free on
 //! macOS by treating a job as a singleton.
 //!
 //! # Three ways to register, in descending order of fidelity
@@ -34,15 +39,16 @@
 //! all (the same policy [`crate::backend_install`] already works around for the
 //! daemon), so this degrades rather than giving up:
 //!
-//! 1. `schtasks /Create /XML` — logon + unlock + console-connect, `IgnoreNew`.
-//! 2. `schtasks /Create /SC ONLOGON` — logon only. Loses the wake triggers, keeps
-//!    the restart case. The command form takes one `/SC` and cannot express a
-//!    session-state trigger at all.
+//! 1. `schtasks /Create /XML` — logon trigger, `IgnoreNew`, the battery and
+//!    execution-time overrides above.
+//! 2. `schtasks /Create /SC ONLOGON` — logon only, without those overrides
+//!    (notably the battery defaults, which is the loss that matters). The
+//!    command form takes one `/SC` and cannot express the rest of the XML.
 //! 3. A hidden VBScript in the Startup folder — logon only, no Task Scheduler
 //!    involvement at all.
 //!
-//! Each fallback is logged at WARN, so "how many Windows installs cannot wake
-//! Meridian on unlock" is answerable from the fleet rather than guessed at.
+//! Each fallback is logged at WARN, so "how many Windows installs are on a
+//! degraded registration" is answerable from the fleet rather than guessed at.
 //!
 //! # Who calls this
 //! [`crate::autostart::ensure_registered`] and [`crate::autostart::status`].
@@ -56,12 +62,19 @@ use std::path::{Path, PathBuf};
 /// with separate lifecycles, and `src/uninstall.rs` deletes them by name.
 pub(crate) const TASK_NAME: &str = "Meridian Tray";
 
-/// Element that proves the registered task carries the wake triggers. See
-/// [`super::decide`] for why this is a text check.
-///
-/// It is also the upgrade detector for installs registered by an earlier build,
-/// whose task carried a `CalendarTrigger` at a hardcoded hour instead.
-const MORNING_TRIGGER_MARKER: &str = "SessionStateChangeTrigger";
+/// Element that proves the registered task carries the logon trigger. Used by
+/// `decide_task`, which cannot use the shared substring [`super::decide_skip`]
+/// for this part: that helper only checks the two SKIP conditions, and this is
+/// a presence check on the job definition itself — one that also has to be
+/// paired with [`STALE_SESSION_TRIGGER_MARKER`], since a stale task carrying
+/// the retired triggers would still contain this string too.
+const LOGON_TRIGGER_MARKER: &str = "LogonTrigger";
+
+/// Element that proves a registered task still carries the retired
+/// unlock/reconnect relaunch triggers — see the module docs for why those were
+/// removed (they made Quit not stick). A task containing this needs rewriting
+/// even though it already contains [`LOGON_TRIGGER_MARKER`].
+const STALE_SESSION_TRIGGER_MARKER: &str = "SessionStateChangeTrigger";
 
 /// The `HKCU\...\Run` value `tauri-plugin-autostart` used to write, named after
 /// `productName`. Removed on first run so an upgraded install does not start
@@ -95,17 +108,23 @@ fn current_exe() -> Option<PathBuf> {
 /// and CI'd on, which makes the tests the only guard it has.
 ///
 /// The non-obvious settings, each of which has a specific failure it prevents:
-/// - `MultipleInstancesPolicy` `IgnoreNew` — the whole reason for using XML.
+/// - `MultipleInstancesPolicy` `IgnoreNew` — a defensive dedupe against a
+///   logon race (e.g. a fast user switch), not a second trigger to reconcile.
 /// - `DisallowStartIfOnBatteries` / `StopIfGoingOnBatteries` `false` — both
 ///   default to TRUE in Task Scheduler, which on a laptop means the tray never
 ///   starts on battery and is KILLED when the machine unplugs. That default
 ///   would silently make Meridian a desktop-only product.
-/// - `StartWhenAvailable` `true` — runs a missed new-day trigger once the machine
-///   is next awake, matching launchd's behaviour on macOS.
+/// - `StartWhenAvailable` `true` — runs a missed logon trigger once the
+///   machine is next awake (e.g. Task Scheduler was not yet up at sign-in),
+///   matching launchd's behaviour on macOS.
 /// - `ExecutionTimeLimit` `PT0S` — no limit. The default (72 hours) would
 ///   terminate a long-running tray.
 /// - `RunLevel` `LeastPrivilege` — never elevated. An elevated tray would write
 ///   files under `~/.meridian` that the un-elevated one could not then touch.
+///
+/// Deliberately just `LogonTrigger` — no `SessionStateChangeTrigger` on
+/// unlock/reconnect. See the module docs for why: those fire many times a day
+/// and made Quit not stick.
 pub(crate) fn task_xml(exe: &Path) -> String {
     let exe = super::xml_escape(&exe.to_string_lossy());
     let flag = super::xml_escape(super::AUTOSTART_FLAG);
@@ -113,20 +132,12 @@ pub(crate) fn task_xml(exe: &Path) -> String {
         r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Starts Meridian in the background at sign-in, and again whenever you unlock or reconnect to this session.</Description>
+    <Description>Starts Meridian in the background at sign-in.</Description>
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>
       <Enabled>true</Enabled>
     </LogonTrigger>
-    <SessionStateChangeTrigger>
-      <Enabled>true</Enabled>
-      <StateChange>SessionUnlock</StateChange>
-    </SessionStateChangeTrigger>
-    <SessionStateChangeTrigger>
-      <Enabled>true</Enabled>
-      <StateChange>ConsoleConnect</StateChange>
-    </SessionStateChangeTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author">
@@ -234,6 +245,30 @@ fn is_disabled(xml: &str) -> bool {
     xml.contains("<Enabled>false</Enabled>")
 }
 
+/// Windows' own repair check, kept separate from the shared [`super::decide`]:
+/// that helper only checks a marker's PRESENCE, which cannot see a task that
+/// needs REWRITING rather than merely completing. A task carrying the retired
+/// [`STALE_SESSION_TRIGGER_MARKER`] unlock/reconnect triggers still contains
+/// [`LOGON_TRIGGER_MARKER`] too, so a presence-only probe would report it as
+/// already correct forever and never strip them — this checks for that
+/// explicitly, ahead of the presence check.
+///
+/// Pure and separate from the read, like `super::decide`, so both this and
+/// [`ensure_registered`]'s call to it are unit-testable without a Windows host.
+fn decide_task(existing: Option<&str>, expected_exe: &str) -> RegistrationAction {
+    match existing {
+        None => RegistrationAction::RegisteredMissing,
+        Some(text) if !text.contains(expected_exe) => RegistrationAction::RepairedPathDrift,
+        Some(text) if text.contains(STALE_SESSION_TRIGGER_MARKER) => {
+            RegistrationAction::RepairedStaleDefinition
+        }
+        Some(text) if !text.contains(LOGON_TRIGGER_MARKER) => {
+            RegistrationAction::RepairedMissingMorningTrigger
+        }
+        Some(_) => RegistrationAction::AlreadyCorrect,
+    }
+}
+
 /// Verify and, if needed, re-register the task. See
 /// [`crate::autostart::ensure_registered`] for the contract.
 pub(crate) async fn ensure_registered() -> RegistrationAction {
@@ -245,13 +280,19 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
     // A disabled task counts as absent — see `is_disabled` for why that is what
     // makes the Settings switch reversible rather than one-way.
     let existing = read_registration().await.filter(|xml| !is_disabled(xml));
-    let action = super::decide(
+
+    // Skip decisions first, via the same shared check macOS uses.
+    if let Some(skip) = super::decide_skip(
         super::disabled_by_user(),
         crate::sys::running_from_stable_location(),
-        existing.as_deref(),
-        &exe.to_string_lossy(),
-        MORNING_TRIGGER_MARKER,
-    );
+    ) {
+        if may_drop_legacy(skip, false) {
+            migrate_off_plugin().await;
+        }
+        return skip;
+    }
+
+    let action = decide_task(existing.as_deref(), &exe.to_string_lossy());
     // ORDER MATTERS HERE, and getting it wrong costs an upgraded user their
     // autostart entirely.
     //
@@ -288,14 +329,14 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
             tracing::info!(
                 task = TASK_NAME,
                 action = action.as_str(),
-                "autostart: scheduled task registered with logon and morning triggers"
+                "autostart: scheduled task registered with the logon trigger"
             );
             true
         }
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                "autostart: XML task registration failed - falling back to a logon-only task (no morning relaunch)"
+                "autostart: XML task registration failed - falling back to a logon-only task without the battery/execution-time overrides"
             );
             fallback_register(&exe).await
         }
@@ -342,8 +383,10 @@ async fn register_from_xml(exe: &Path) -> Result<(), String> {
 }
 
 /// Logon-only registration, then the Startup folder if even that is refused.
-/// Both lose the morning relaunch; both keep the restart case, which is
-/// strictly better than nothing.
+/// Both still cover login/restart (the XML path's only trigger to begin
+/// with); what they lose is the battery-defaults and execution-time overrides
+/// only the XML form can express, which is strictly better than no autostart
+/// at all.
 ///
 /// Returns whether ANYTHING will now start the tray at logon. The caller needs
 /// that answer, not just a log line: it decides whether the plugin-era `Run`
@@ -363,7 +406,7 @@ async fn fallback_register(exe: &Path) -> bool {
         let _ = remove_startup_folder_launcher().await;
         tracing::warn!(
             task = TASK_NAME,
-            "autostart: registered a logon-only task - the morning relaunch is unavailable on this machine"
+            "autostart: registered a logon-only task without the XML battery/execution-time overrides"
         );
         return true;
     }
@@ -503,27 +546,33 @@ mod tests {
 
     const EXE: &str = r"C:\Users\tester\AppData\Local\Meridian\Meridian.exe";
 
-    /// Two triggers on ONE task is the entire reason this uses XML: two tasks
-    /// would have two instance policies, and the morning one would start a
-    /// second tray on top of the running one.
+    /// **The regression test for "I cannot quit this app".** An earlier
+    /// version of this task also carried `SessionStateChangeTrigger` on
+    /// `SessionUnlock`/`ConsoleConnect`, which fire many times in an ordinary
+    /// day - a user who quit Meridian watched it come back the next time they
+    /// merely unlocked their machine. The requirement is login/restart/start,
+    /// never an unattended resurrection before then, so the task must carry
+    /// the logon trigger and nothing else.
     #[test]
-    fn task_carries_logon_and_wake_triggers_on_one_task() {
+    fn task_carries_only_the_logon_trigger() {
         let x = task_xml(Path::new(EXE));
         assert!(x.contains("<LogonTrigger>"));
-        assert!(x.contains(MORNING_TRIGGER_MARKER));
         assert_eq!(x.matches("<Actions").count(), 1, "one action, one task");
-        // Both native wake triggers, and NO clock.
-        assert!(x.contains("<StateChange>SessionUnlock</StateChange>"));
-        assert!(x.contains("<StateChange>ConsoleConnect</StateChange>"));
+        assert!(
+            !x.contains("SessionStateChangeTrigger"),
+            "an unlock/reconnect relaunch trigger came back - quitting must \
+             stick until the next login, not the next unlock"
+        );
         assert!(
             !x.contains("CalendarTrigger"),
-            "a hardcoded daily trigger came back - the requirement is an event, not a time"
+            "a hardcoded daily trigger came back - the requirement is login/restart/start, not a time"
         );
     }
 
-    /// `IgnoreNew` is what makes the morning trigger a no-op while the tray is
-    /// already running. Without it this design produces duplicate trays writing
-    /// to one SQLite file.
+    /// `IgnoreNew` guards against a logon race (e.g. a fast user switch)
+    /// rather than reconciling two triggers now that there is only one.
+    /// Without it this design produces duplicate trays writing to one SQLite
+    /// file.
     #[test]
     fn task_ignores_a_trigger_while_already_running() {
         assert!(task_xml(Path::new(EXE))
@@ -569,8 +618,53 @@ mod tests {
     fn a_freshly_written_task_reads_back_as_already_correct() {
         let x = task_xml(Path::new(EXE));
         assert_eq!(
-            super::super::decide(false, true, Some(&x), EXE, MORNING_TRIGGER_MARKER),
+            decide_task(Some(&x), EXE),
             RegistrationAction::AlreadyCorrect
+        );
+    }
+
+    /// The bug a presence-only marker check would miss: a task carrying the
+    /// retired unlock/reconnect triggers still contains `LogonTrigger`, so it
+    /// must be caught by an explicit stale check rather than read as already
+    /// correct forever.
+    #[test]
+    fn a_task_still_carrying_the_retired_session_triggers_is_repaired() {
+        let stale = task_xml(Path::new(EXE)).replace(
+            "<Triggers>\n    <LogonTrigger>\n      <Enabled>true</Enabled>\n    </LogonTrigger>\n  </Triggers>",
+            "<Triggers>\n    <LogonTrigger>\n      <Enabled>true</Enabled>\n    </LogonTrigger>\n    \
+             <SessionStateChangeTrigger>\n      <Enabled>true</Enabled>\n      \
+             <StateChange>SessionUnlock</StateChange>\n    </SessionStateChangeTrigger>\n  </Triggers>",
+        );
+        assert!(
+            stale.contains("SessionStateChangeTrigger"),
+            "the replace must have matched - fixture drifted from task_xml's shape"
+        );
+        assert_eq!(
+            decide_task(Some(&stale), EXE),
+            RegistrationAction::RepairedStaleDefinition
+        );
+    }
+
+    /// A task missing the logon trigger entirely (a hypothetical future
+    /// format, or a hand-edited one) must still be caught.
+    #[test]
+    fn a_task_missing_the_logon_trigger_is_repaired() {
+        let no_logon_trigger = format!("<Task><Actions><Exec>{EXE}</Exec></Actions></Task>");
+        assert_eq!(
+            decide_task(Some(&no_logon_trigger), EXE),
+            RegistrationAction::RepairedMissingMorningTrigger
+        );
+    }
+
+    /// A moved app is detected and repointed, checked ahead of the
+    /// stale-trigger/marker checks so a moved-AND-stale task still gets
+    /// exactly one rewrite that fixes everything at once.
+    #[test]
+    fn a_moved_app_is_detected_and_repointed() {
+        let elsewhere = task_xml(Path::new(r"C:\Old\Meridian.exe"));
+        assert_eq!(
+            decide_task(Some(&elsewhere), EXE),
+            RegistrationAction::RepairedPathDrift
         );
     }
 
@@ -623,17 +717,12 @@ mod tests {
             "<Enabled>false</Enabled>\n    <Hidden>false</Hidden>",
         );
         assert!(is_disabled(&disabled), "the disabled marker must be found");
-        // What `ensure_registered` does with it: filter to None, so `decide`
-        // reports a fresh registration rather than `already_correct`.
+        // What `ensure_registered` does with it: filter to None, so
+        // `decide_task` reports a fresh registration rather than
+        // `already_correct`.
         let existing = Some(disabled).filter(|xml| !is_disabled(xml));
         assert_eq!(
-            super::super::decide(
-                false,
-                true,
-                existing.as_deref(),
-                EXE,
-                MORNING_TRIGGER_MARKER
-            ),
+            decide_task(existing.as_deref(), EXE),
             RegistrationAction::RegisteredMissing
         );
     }
