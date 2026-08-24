@@ -117,13 +117,119 @@ pub enum Outcome {
     FreshStart { backup: String },
 }
 
+/// `quick_check` ran and found nothing wrong. The ONLY positive health verdict
+/// this module can produce.
+pub(crate) const VERDICT_VERIFIED: &str = "verified";
+/// No database file yet - a fresh install.
+pub(crate) const VERDICT_ABSENT: &str = "absent";
+/// The probe ran but could not conclude (timeout, or a non-corruption error).
+pub(crate) const VERDICT_INCONCLUSIVE: &str = "inconclusive";
+/// `quick_check` reported structural damage, or a read failed with SQLITE_CORRUPT
+/// (code 11). Page 1 is readable, so the file still ATTACHes and is repairable.
+pub(crate) const VERDICT_DAMAGED: &str = "damaged";
+/// A read failed with SQLITE_NOTADB (code 26) - page 1 is unreadable UNDER THE
+/// KEY THAT WAS USED.
+///
+/// Kept distinct from [`VERDICT_DAMAGED`] on purpose, and deliberately not
+/// called "corrupt": SQLCipher returns code 26 both for a damaged page 1 and
+/// for a perfectly healthy database opened with the WRONG KEY, and nothing at
+/// this layer can tell them apart (see [`Probe::Unopenable`]). Collapsing the
+/// two into one "corrupt" label would rebuild exactly the ambiguity this
+/// telemetry exists to remove - measured 2026-08-24, 58 fleet installs could
+/// not open their database and only 28 showed code 11, leaving 30 whose cause
+/// is still unknown.
+pub(crate) const VERDICT_UNOPENABLE: &str = "unopenable";
+
+/// No verdict was ever recorded - the COMMON case, because
+/// [`run_auto_if_needed`] only probes when no daemon answers, so a machine
+/// whose daemon starts normally never scans its database at all. Distinct from
+/// [`VERDICT_INCONCLUSIVE`], which means a probe ran and could not decide.
+pub(crate) const VERDICT_UNKNOWN: &str = "unknown";
+
+/// The closed set every persisted verdict must belong to. Read back through
+/// [`last_probe_verdict`], which returns one of THESE `&'static str`s rather
+/// than the file's contents - so a corrupted or hand-edited sidecar can never
+/// put arbitrary text into a telemetry property.
+const VERDICTS: &[&str] = &[
+    VERDICT_VERIFIED,
+    VERDICT_ABSENT,
+    VERDICT_INCONCLUSIVE,
+    VERDICT_DAMAGED,
+    VERDICT_UNOPENABLE,
+];
+
+/// Where the last verdict is persisted: beside the database, never inside it.
+///
+/// That placement is the whole point. The verdict that matters most describes a
+/// database that could not be opened at all, so anywhere inside `meridian.db`
+/// is unreachable exactly when the value is worth having - the same trap that
+/// makes the `db.corrupt` NOTICE (a row in that database) invisible on the
+/// machines it most needs to describe.
+fn verdict_path(db_path: &Path) -> PathBuf {
+    db_path.with_extension("db.probe")
+}
+
+/// Persist the probe verdict. Best-effort: a failure here must never affect
+/// whether the database gets healed, so it logs at DEBUG and moves on.
+fn record_probe_verdict(db_path: &Path, verdict: &str) {
+    let path = verdict_path(db_path);
+    if let Err(e) = std::fs::write(&path, verdict) {
+        tracing::debug!(
+            error = %e,
+            verdict,
+            "could not persist the startup probe verdict - analytics will report it as unknown"
+        );
+    }
+}
+
+/// The last persisted startup probe verdict, or `None` if none was ever
+/// written (the common case: [`run_auto_if_needed`] only probes when no daemon
+/// answers, so a machine whose daemon starts normally never scans).
+///
+/// Returns a `&'static str` from [`VERDICTS`] rather than the file's bytes, so
+/// a truncated, corrupted, or hand-edited sidecar reads as `None` instead of
+/// putting arbitrary text into a shipped telemetry property.
+pub(crate) fn last_probe_verdict(db_path: &Path) -> Option<&'static str> {
+    let raw = std::fs::read_to_string(verdict_path(db_path)).ok()?;
+    let raw = raw.trim();
+    VERDICTS.iter().copied().find(|v| *v == raw)
+}
+
+/// Why a probe concluded "do not repair".
+///
+/// The HEALING decision is identical for all three - leave the file alone - so
+/// [`probe_database`] deliberately collapses them for that purpose. The
+/// ANALYTICS answer is not identical, and collapsing them there would report a
+/// database we never scanned as verified-healthy. Only [`NoAction::Verified`]
+/// is evidence of health; the other two are evidence of nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoAction {
+    /// `quick_check` ran to completion and returned no problems.
+    Verified,
+    /// No database file exists yet - a fresh install the daemon has not
+    /// created its database for.
+    Absent,
+    /// The probe could not reach a verdict: it timed out, or failed with an
+    /// error that is not a corruption signature. **Not** evidence of health.
+    Inconclusive,
+}
+
+impl NoAction {
+    fn verdict(self) -> &'static str {
+        match self {
+            Self::Verified => VERDICT_VERIFIED,
+            Self::Absent => VERDICT_ABSENT,
+            Self::Inconclusive => VERDICT_INCONCLUSIVE,
+        }
+    }
+}
+
 /// What the startup probe concluded about the on-disk `meridian.db`.
 #[derive(Debug)]
 enum Probe {
-    /// Opens and passes `quick_check` - or is absent, or the probe could not
-    /// tell (inconclusive errors and timeouts deliberately land here; see
-    /// [`probe_database`]).
-    Healthy,
+    /// Nothing to repair - see [`NoAction`] for which of the three reasons,
+    /// which matters to analytics even though it does not matter to healing.
+    Healthy(NoAction),
     /// Opens, but `quick_check` reports structural damage. Repairable in
     /// place - page 1 is readable, so the salvage can ATTACH it.
     Damaged { problems: Vec<String> },
@@ -248,17 +354,18 @@ fn probe_and_heal(db_path: &Path, key_hex: Option<&str>, key_trust: KeyTrust) ->
     let _enter = span.enter();
 
     let probe = tauri::async_runtime::block_on(probe_database(db_path, key_hex));
-    span.record(
-        "verdict",
-        match &probe {
-            Probe::Healthy => "healthy",
-            Probe::Damaged { .. } => "damaged",
-            Probe::Unopenable { .. } => "unopenable",
-        },
-    );
+    let verdict = match &probe {
+        Probe::Healthy(reason) => reason.verdict(),
+        Probe::Damaged { .. } => VERDICT_DAMAGED,
+        Probe::Unopenable { .. } => VERDICT_UNOPENABLE,
+    };
+    span.record("verdict", verdict);
+    // Persisted beside the database so the analytics snapshot can report it
+    // even when the database itself cannot be opened - see `verdict_path`.
+    record_probe_verdict(db_path, verdict);
 
     match probe {
-        Probe::Healthy => {
+        Probe::Healthy(_) => {
             span.record("outcome", "none");
             None
         }
@@ -490,7 +597,7 @@ where
 )]
 async fn probe_database(db_path: &Path, key_hex: Option<&str>) -> Probe {
     if !db_path.exists() {
-        return Probe::Healthy; // fresh install - the daemon will create it
+        return Probe::Healthy(NoAction::Absent); // the daemon will create it
     }
     let uri = format!("sqlite://{}", db_path.display());
     let pool = match meridian_core::db_crypto::open_pool_with_key_readonly(&uri, key_hex).await {
@@ -513,7 +620,7 @@ async fn probe_database(db_path: &Path, key_hex: Option<&str>) -> Probe {
         }
         Err(e) => {
             tracing::warn!(error = %meridian::errors::chain(&e), "startup probe could not open meridian.db for a reason that is not corruption - proceeding normally");
-            return Probe::Healthy;
+            return Probe::Healthy(NoAction::Inconclusive);
         }
     };
     let checked = tokio::time::timeout(
@@ -528,9 +635,9 @@ async fn probe_database(db_path: &Path, key_hex: Option<&str>) -> Probe {
                 timeout_secs = PROBE_TIMEOUT.as_secs(),
                 "startup integrity probe timed out - proceeding normally rather than blocking the tray"
             );
-            Probe::Healthy
+            Probe::Healthy(NoAction::Inconclusive)
         }
-        Ok(Ok(problems)) if problems.is_empty() => Probe::Healthy,
+        Ok(Ok(problems)) if problems.is_empty() => Probe::Healthy(NoAction::Verified),
         Ok(Ok(problems)) => Probe::Damaged { problems },
         Ok(Err(e)) if meridian::db::integrity::is_corrupt_error(&e) => Probe::Damaged {
             problems: vec![format!("{e:#}")],
@@ -545,7 +652,7 @@ async fn probe_database(db_path: &Path, key_hex: Option<&str>) -> Probe {
         },
         Ok(Err(e)) => {
             tracing::warn!(error = %meridian::errors::chain(&e), "startup integrity probe errored inconclusively - proceeding normally");
-            Probe::Healthy
+            Probe::Healthy(NoAction::Inconclusive)
         }
     }
 }
@@ -734,10 +841,16 @@ mod probe_tests {
     async fn probe_reports_healthy_for_absent_and_sound_databases() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("meridian.db");
-        assert!(matches!(probe_database(&db, None).await, Probe::Healthy));
+        assert!(matches!(
+            probe_database(&db, None).await,
+            Probe::Healthy(..)
+        ));
 
         create_sound_db(&db).await;
-        assert!(matches!(probe_database(&db, None).await, Probe::Healthy));
+        assert!(matches!(
+            probe_database(&db, None).await,
+            Probe::Healthy(..)
+        ));
     }
 
     /// A file that cannot even be opened under the configured key is the
@@ -1047,6 +1160,79 @@ mod probe_tests {
 #[cfg(test)]
 mod tests {
     use meridian::db::repair::{RepairReport, TableOutcome};
+
+    /// A verdict written by one release must still read back on the next, and
+    /// nothing outside the closed set may ever reach a telemetry property.
+    #[test]
+    fn a_persisted_verdict_round_trips_and_rejects_anything_unrecognised() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("meridian.db");
+
+        // Never probed - the common case on a machine whose daemon starts fine.
+        assert_eq!(super::last_probe_verdict(&db), None);
+
+        for verdict in super::VERDICTS {
+            super::record_probe_verdict(&db, verdict);
+            assert_eq!(super::last_probe_verdict(&db), Some(*verdict));
+        }
+
+        // A truncated, hand-edited or corrupted sidecar must read as "never
+        // recorded", NOT as arbitrary text shipped to PostHog as a property.
+        for junk in [
+            "",
+            "corrupt",
+            "healthy",
+            "../../etc/passwd",
+            "verified\u{0}x",
+        ] {
+            std::fs::write(db.with_extension("db.probe"), junk).expect("write");
+            assert_eq!(
+                super::last_probe_verdict(&db),
+                None,
+                "unrecognised sidecar content must not reach telemetry: {junk:?}"
+            );
+        }
+    }
+
+    /// The sidecar must live beside the database, never inside it - the whole
+    /// point is to survive a database that cannot be opened.
+    #[test]
+    fn the_verdict_sidecar_is_a_separate_file_from_the_database() {
+        let db = std::path::Path::new("/tmp/x/meridian.db");
+        let sidecar = super::verdict_path(db);
+        assert_ne!(sidecar, db);
+        assert_eq!(sidecar.parent(), db.parent());
+        assert_eq!(sidecar.file_name().unwrap(), "meridian.db.probe");
+    }
+
+    /// Only a completed `quick_check` may report health. An absent file and an
+    /// inconclusive probe both mean "do not repair", and collapsing them into
+    /// the positive verdict is exactly how a never-scanned database would come
+    /// to read as verified-healthy in PostHog.
+    #[test]
+    fn only_a_completed_check_reports_the_positive_verdict() {
+        assert_eq!(super::NoAction::Verified.verdict(), super::VERDICT_VERIFIED);
+        assert_eq!(super::NoAction::Absent.verdict(), super::VERDICT_ABSENT);
+        assert_eq!(
+            super::NoAction::Inconclusive.verdict(),
+            super::VERDICT_INCONCLUSIVE
+        );
+        assert_ne!(super::NoAction::Absent.verdict(), super::VERDICT_VERIFIED);
+        assert_ne!(
+            super::NoAction::Inconclusive.verdict(),
+            super::VERDICT_VERIFIED
+        );
+    }
+
+    /// `damaged` (code 11) and `unopenable` (code 26) must stay distinct.
+    /// Code 26 is returned both for a damaged page 1 AND for a healthy database
+    /// opened with the wrong key, so folding them into one "corrupt" label
+    /// rebuilds the ambiguity this telemetry exists to remove.
+    #[test]
+    fn the_two_failure_verdicts_are_never_the_same_value() {
+        assert_ne!(super::VERDICT_DAMAGED, super::VERDICT_UNOPENABLE);
+        assert!(!super::VERDICTS.contains(&"corrupt"));
+    }
 
     fn outcome(table: &str, copied: u64, unreadable: u64, empty: bool) -> TableOutcome {
         TableOutcome {
