@@ -158,7 +158,29 @@ pub(crate) struct HealthSnapshot {
     /// The daemon process is alive.
     pub daemon_running: Option<bool>,
     /// `meridian.db` opened and answered a probe query.
+    ///
+    /// Deliberately NOT renamed or repurposed - existing dashboards read it,
+    /// and it answers a different question to [`HealthSnapshot::db_integrity`]:
+    /// this is "could we read it just now", which a database that is quietly
+    /// corrupting still answers `true` to.
     pub database_ready: Option<bool>,
+    /// The last startup integrity verdict: `verified`, `damaged`,
+    /// `unopenable`, `absent`, `inconclusive`, or `unknown`.
+    ///
+    /// Read from a sidecar file beside the database
+    /// ([`crate::repair_boot::last_probe_verdict`]), never from a row inside
+    /// it - the verdict that matters most describes a database that cannot be
+    /// opened, so storing it in that database would make it unreachable
+    /// exactly when it is worth having. That is the same trap that keeps the
+    /// `db.corrupt` NOTICE invisible on the machines it best describes, and
+    /// why `active_notice_ids` alone could not answer this.
+    ///
+    /// `unknown` is the honest and COMMON value: the tray only probes when no
+    /// daemon answers (`quick_check` reads every page, so scanning on every
+    /// healthy boot would tax the machines that need nothing). A working
+    /// install is therefore read from `database_ready: true` plus the ABSENCE
+    /// of `db.corrupt` in `active_notice_ids`, not from this field.
+    pub db_integrity: &'static str,
     /// The user's chosen LLM provider looks usable (installed, last test OK).
     pub llm_provider_ok: Option<bool>,
     /// That provider is usable but currently rate-limited — a soft,
@@ -240,6 +262,7 @@ impl Default for HealthSnapshot {
         Self {
             daemon_running: None,
             database_ready: None,
+            db_integrity: crate::repair_boot::VERDICT_UNKNOWN,
             llm_provider_ok: None,
             llm_provider_rate_limited: None,
             llm_provider: UNRECOGNISED_PROVIDER,
@@ -398,6 +421,10 @@ pub(crate) async fn snapshot(pool: &SqlitePool) -> HealthSnapshot {
     let snap = HealthSnapshot {
         daemon_running: h.daemon_running,
         database_ready: h.database_ready,
+        db_integrity: crate::repair_boot::last_probe_verdict(std::path::Path::new(
+            &crate::install::meridian_db_path(),
+        ))
+        .unwrap_or(crate::repair_boot::VERDICT_UNKNOWN),
         llm_provider_ok: h.llm_provider_ok,
         llm_provider_rate_limited: h.llm_provider_rate_limited,
         llm_provider: resolve_provider(&settings),
@@ -496,6 +523,24 @@ impl HealthSnapshot {
             }
             None => unset.push("llm_model".to_string()),
         }
+        // The ONE health field that belongs on the person rather than only on
+        // the event, and the reason is the rule this doc states above rather
+        // than an exception to it: `daemon_running` is excluded because it
+        // changes hour to hour, so "newest value only" would misread as
+        // current fact. Database damage is the opposite - it LATCHES. It
+        // cannot clear without an operator running a repair, so the newest
+        // value IS the current fact, for weeks at a time.
+        //
+        // It has to be here to be useful at all. A damaged install often
+        // cannot send `daily_usage` (that event needs a DB read, and
+        // `analytics::daily` returns early when it fails), so the event-only
+        // copy never arrives from exactly the machines worth finding.
+        // `app_active` carries person properties and needs no DB read, so this
+        // is the value that actually escapes a broken install.
+        person.insert(
+            "db_integrity".to_string(),
+            Value::String(self.db_integrity.to_string()),
+        );
         person.insert(
             "integrations_connected".to_string(),
             serde_json::json!(self.integrations_connected),
@@ -527,6 +572,13 @@ impl HealthSnapshot {
         props.insert(
             "health_observed_on".to_string(),
             Value::String(meridian_core::date::today_string()),
+        );
+        // Also a person property (see `write_person_properties`); kept here too
+        // so a query can see WHEN the verdict changed, which the person copy
+        // cannot show - it keeps only the newest value.
+        props.insert(
+            "health_db_integrity".to_string(),
+            Value::String(self.db_integrity.to_string()),
         );
         let mut put_bool = |k: &str, v: Option<bool>| {
             if let Some(b) = v {
@@ -987,12 +1039,70 @@ mod person_property_tests {
                 "{k} is momentary and must stay an event property"
             );
         }
+
+        // `db_integrity` IS on the person, and the distinction is the rule
+        // above rather than an exception to it: database damage LATCHES - it
+        // cannot clear without an operator running a repair - so "the newest
+        // value" is the current fact for weeks, unlike `daemon_running`.
+        // `database_ready` stays off precisely because it is the momentary
+        // half of the same subject: it answers "could we read it just now".
+        assert!(person.contains_key("db_integrity"));
+        assert!(!person.contains_key("database_ready"));
     }
 
     /// `support_id` must never become a person property. It legitimately
     /// changes (a second machine, a re-seed, the alpha window ending), and a
     /// person property keeps only the newest — which would silently orphan
     /// every error row recorded under the previous one. As an event property a
+    /// The verdict must reach PostHog as a PERSON property, not only as an
+    /// event property.
+    ///
+    /// A damaged install often cannot send `daily_usage` at all - that event
+    /// needs a DB read and `analytics::daily` returns early when it fails - so
+    /// the event-only copy never arrives from exactly the machines worth
+    /// finding. `app_active` carries person properties and needs no DB read.
+    /// If this ever moves to event-only, corrupt installs go silent again.
+    #[test]
+    fn db_integrity_reaches_posthog_as_a_person_property() {
+        let snap = HealthSnapshot {
+            db_integrity: crate::repair_boot::VERDICT_DAMAGED,
+            ..Default::default()
+        };
+        let mut person = Map::new();
+        let mut unset = Vec::new();
+        snap.write_person_properties(&mut person, &mut unset);
+        assert_eq!(
+            person.get("db_integrity").and_then(Value::as_str),
+            Some(crate::repair_boot::VERDICT_DAMAGED),
+            "a damaged install must be findable on the PostHog Persons list"
+        );
+
+        // And on the event too, where it is timestamped by health_observed_on.
+        let mut props = Map::new();
+        snap.write_properties(&mut props);
+        assert_eq!(
+            props.get("health_db_integrity").and_then(Value::as_str),
+            Some(crate::repair_boot::VERDICT_DAMAGED)
+        );
+    }
+
+    /// An install nobody scanned must not read as verified-healthy.
+    #[test]
+    fn an_unprobed_install_reports_unknown_not_healthy() {
+        let snap = HealthSnapshot::default();
+        let mut person = Map::new();
+        let mut unset = Vec::new();
+        snap.write_person_properties(&mut person, &mut unset);
+        assert_eq!(
+            person.get("db_integrity").and_then(Value::as_str),
+            Some(crate::repair_boot::VERDICT_UNKNOWN)
+        );
+        assert_ne!(
+            person.get("db_integrity").and_then(Value::as_str),
+            Some(crate::repair_boot::VERDICT_VERIFIED)
+        );
+    }
+
     /// DISTINCT recovers the full set.
     #[test]
     fn support_id_is_never_a_person_property() {
