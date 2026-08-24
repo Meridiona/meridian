@@ -384,8 +384,8 @@ supported way to read logs locally, replacing the old JSONL-tailing UI and the
 old bash `meridian logs` (which used to tail launchd-redirected stdout/stderr
 text).
 
-**Two couplings that silently delete error coverage.** Both have bitten once;
-neither fails loudly, and neither is visible from the call site.
+**Three couplings that silently delete error coverage.** Each has bitten at
+least once; none fails loudly, and none is visible from the call site.
 
 1. **The `EnvFilter` decides what is captured at all — before the spool, before
    severity, before redaction.** `EnvFilter` matches directives against targets
@@ -408,6 +408,32 @@ neither fails loudly, and neither is visible from the call site.
    list — and if it names the user's data (ticket key, file path, app name,
    window title, hour/day) it must stay off, so put the diagnostic value in the
    message or an allowlisted key instead.
+
+   Two corollaries, both measured on 2026-08-24 and both fixed since:
+   **allowlisting is keyed on the exact word you typed, and some words are
+   banned for an unrelated reason.** The clerk plugin logged a
+   `serde_path_to_error` JSON pointer as `path`, reasoned correctly in a comment
+   that a field path is safe to ship — and lost it anyway, because `path` is
+   *deliberately* denied as a filesystem path. It ships now as `json_pointer`.
+   Widening `path` would have traded a real protection for a diagnostic; renaming
+   the field was the cheaper half. Likewise a full binary path (`bin`) stays
+   denied while `bin_source` — a closed set of literals from
+   `install::bin_source` — ships in its place.
+3. **A `u64` field is not shipped as a number.** `tracing-opentelemetry` 0.28's
+   `Visit` impl has no `record_u64`, so `tracing::field::Visit`'s default applies
+   and forwards to `record_debug` — which emits a **StringValue**. The field then
+   misses the allowlist (nobody lists `timeout_s` as a *string* key) and is
+   dropped, while the identical field written as `f64` or `i64` ships fine. In
+   production this meant every `cli_exec.rs` timeout shipped `timeout_s = null`
+   while the distiller's `as_secs_f64()` shipped `210.0` on 3,329 records — same
+   name, same severity, kept or dropped purely by Rust type.
+
+   `redact::is_bare_number` now rescues these: a `StringValue` whose ENTIRE value
+   parses as a finite number is kept. That is a type rescue, not a key exemption —
+   `IntValue`/`DoubleValue` were already kept unconditionally for every key, so
+   this restores the intended semantics rather than widening egress. Requiring the
+   whole value to parse is what still excludes real `record_debug` output
+   (`?args` → `["plan-task-draft", "--note", "…"]`, `?path` → a home directory).
 
 The only thing this pipeline structurally can't capture is a hard crash
 (panic before `init` runs, segfault, OOM kill) — for that, launchd's own

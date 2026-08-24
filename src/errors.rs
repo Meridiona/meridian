@@ -139,6 +139,20 @@ mod tests {
                 include_str!("coding_agent_session_ingest/sources/mod.rs"),
             ),
             ("intelligence/mod.rs", include_str!("intelligence/mod.rs")),
+            // Added 2026-08-24. `main.rs` carries the single highest-value
+            // error site in the daemon: the startup DB open, whose own comment
+            // says it exists so a daemon that cannot open its database "is
+            // finally diagnosable in central telemetry instead of crash-looping
+            // silently" - and which then used `%e` and shipped
+            // `failed to open SQLite at <url>` with no cause under it.
+            //
+            // Measured the same day: 73,489 of those records across 58 hosts in
+            // 7 days (7.6% of the reporting fleet), one host logging 12,267 -
+            // about one every 50s, launchd `KeepAlive` against a database it
+            // will never open. 28 of the 58 also show `code: 11`; the other 30
+            // show no corruption at all and are indistinguishable from them,
+            // because the one field that would tell them apart was dropped.
+            ("main.rs", include_str!("main.rs")),
         ];
 
         for (path, src) in CONVERTED {

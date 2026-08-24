@@ -1112,7 +1112,7 @@ async fn main() -> Result<()> {
             // instead of crash-looping silently. `shutdown` consumes the guard,
             // but we exit immediately after, so the success path still owns it.
             tracing::error!(
-                error = %e,
+                error = %meridian::errors::chain(&e),
                 "daemon startup: failed to open the database — the daemon cannot start (wrong/absent encryption key, a locked file, or corruption)"
             );
             obs_guard.shutdown().await;
@@ -1241,7 +1241,7 @@ async fn main() -> Result<()> {
                     // The check itself failing is not evidence either way — carry on and
                     // let the ETL's own error path classify it.
                     Err(e) => {
-                        tracing::warn!(error = %e, "startup integrity check could not run");
+                        tracing::warn!(error = %meridian::errors::chain(&e), "startup integrity check could not run");
                     }
                 }
             }
@@ -1273,7 +1273,7 @@ async fn main() -> Result<()> {
         if !db_corrupt.load(std::sync::atomic::Ordering::Relaxed) {
             if let Err(e) = meridian::etl::capture_retention::prune_capture_tables(&meridian).await
             {
-                tracing::warn!(error = %e, "capture retention sweep failed");
+                tracing::warn!(error = %meridian::errors::chain(&e), "capture retention sweep failed");
             }
         }
         if let Err(e) = run_pm_sync(&meridian, &cfg).await {
@@ -1358,7 +1358,7 @@ async fn main() -> Result<()> {
     {
         tokio::spawn(async move {
             if let Err(e) = meridian::embedder::ensure_weights().await {
-                tracing::warn!(error = %e, "embedder: weight provisioning failed — distiller stays on lexical-only until this succeeds");
+                tracing::warn!(error = %meridian::errors::chain(&e), "embedder: weight provisioning failed — distiller stays on lexical-only until this succeeds");
             }
         });
     }
@@ -1418,14 +1418,14 @@ async fn main() -> Result<()> {
                     // paces its own incremental_vacuum to a coarser cadence.
                     if !db_corrupt.load(std::sync::atomic::Ordering::Relaxed) {
                         if let Err(e) = meridian::etl::capture_retention::prune_capture_tables(&meridian).await {
-                            tracing::warn!(error = %e, "capture retention sweep failed");
+                            tracing::warn!(error = %meridian::errors::chain(&e), "capture retention sweep failed");
                         }
                     }
                 }
 
                 // Morning plan nudge — idempotent per day, gated to working hours.
                 if let Err(e) = meridian::daily_plan::maybe_nudge(&meridian).await {
-                    tracing::debug!(error = %e, "plan nudge check skipped");
+                    tracing::debug!(error = %meridian::errors::chain(&e), "plan nudge check skipped");
                 }
 
                 // Coding-agent summariser dead-letter digest — idempotent per day.
@@ -1435,7 +1435,7 @@ async fn main() -> Result<()> {
                     )
                     .await
                 {
-                    tracing::debug!(error = %e, "summariser dead-letter digest check skipped");
+                    tracing::debug!(error = %meridian::errors::chain(&e), "summariser dead-letter digest check skipped");
                 }
 
                 // Disk space on ~/.meridian's volume — raise/clear every tick,
@@ -1494,7 +1494,7 @@ async fn main() -> Result<()> {
                 if let Err(e) =
                     meridian::notification_responses::consume_responses(&meridian).await
                 {
-                    tracing::debug!(error = %e, "notification response consume skipped");
+                    tracing::debug!(error = %meridian::errors::chain(&e), "notification response consume skipped");
                 }
 
                 // Refresh the PM task cache (pm_tasks) every tick — interval-gated
@@ -1506,7 +1506,7 @@ async fn main() -> Result<()> {
                 // stuck at whatever it was at the last daemon restart. This is
                 // the only thing that keeps it live during normal operation.
                 if let Err(e) = run_pm_sync(&meridian, &cfg).await {
-                    tracing::warn!(error = %e, "pm_tasks refresh failed — using cached tasks");
+                    tracing::warn!(error = %meridian::errors::chain(&e), "pm_tasks refresh failed — using cached tasks");
                 }
             }
         }
@@ -1523,7 +1523,7 @@ async fn main() -> Result<()> {
     // close, not just a plain shutdown. Best-effort: a failed checkpoint must
     // not block shutdown.
     if let Err(e) = meridian::db::meridian::checkpoint_wal(&meridian).await {
-        tracing::warn!(error = %e, "WAL checkpoint on shutdown failed - continuing anyway");
+        tracing::warn!(error = %meridian::errors::chain(&e), "WAL checkpoint on shutdown failed - continuing anyway");
     }
     meridian.close().await;
 
@@ -1557,7 +1557,7 @@ async fn etl_tick(meridian: &meridian::db::SqlitePool) -> bool {
         }
         Err(e) if meridian::db::integrity::is_corrupt_error(&e) => {
             tracing::error!(
-                error = %e,
+                error = %meridian::errors::chain(&e),
                 "ETL run failed: meridian.db is corrupt - stopping the ETL until it is repaired"
             );
             // Distinct from `etl.failed` on purpose. The generic notice says
@@ -1580,7 +1580,7 @@ async fn etl_tick(meridian: &meridian::db::SqlitePool) -> bool {
             true
         }
         Err(e) => {
-            tracing::error!(error = %e, "ETL run failed");
+            tracing::error!(error = %meridian::errors::chain(&e), "ETL run failed");
             let _ = meridian::notices::raise(
                 meridian,
                 "etl.failed",

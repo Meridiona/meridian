@@ -168,6 +168,25 @@ const SAFE_STRING_KEYS: &[&str] = &[
     "thread.name",
     "target",
     "level",
+    // A `serde_path_to_error` JSON pointer (`payload.client.sign_up.id`) — it
+    // names FIELDS of a schema we ship, never their values, so it carries no
+    // user content by construction.
+    //
+    // It exists as its own key because the obvious name, `path`, is on the DENY
+    // side ON PURPOSE (`user_scoped_diagnostic_keys_stay_off_the_allowlist`
+    // pins it) — `path` normally means a filesystem path. The clerk plugin
+    // originally logged this as `path` and reasoned, correctly, that a JSON
+    // pointer is safe to ship; it was dropped anyway, by a rule written for a
+    // different meaning of the same word. Widening `path` to fix that would
+    // have traded a real protection for a diagnostic. Renaming the field was
+    // the cheaper half of the trade.
+    "json_pointer",
+    // WHICH `meridian` binary a shell-out resolved to, as a closed set of
+    // literals (`staged`, `user_local_wrapper`, `path_lookup`, `env_override`,
+    // `other`) — see `install::bin_source`, whose tests pin that it can only
+    // ever return one of them. The full `bin` path stays denied: it is a home
+    // directory. This names our component, exactly as `provider`/`engine` do.
+    "bin_source",
     // ── protocol metadata (values are enums/verbs, not content) ──────────────
     "http.method",
     "http.request.method",
@@ -453,12 +472,95 @@ fn keep_attribute(kv: &mut KeyValue, pseudonym: &str) -> bool {
                 *s = scrub_paths(s);
                 true
             } else {
-                false
+                // A number the otel bridge stringified on its way here. See
+                // `is_bare_number` — this is a TYPE rescue, not a key exemption,
+                // and it deliberately runs last so an allowlisted key keeps its
+                // own treatment. `is_user_scoped_key` is checked FIRST so the
+                // rescue can never resurrect an identifier that names the user's
+                // data just because it happens to be spelled in digits.
+                !is_user_scoped_key(&kv.key) && is_bare_number(s)
             }
         }
         // Bytes / array / kvlist can nest arbitrary content — drop.
         _ => false,
     }
+}
+
+/// Keys that name the USER's data rather than ours, and so must stay dropped
+/// no matter what shape their value happens to take.
+///
+/// # Why this list exists only for the numeric rescue
+/// Being absent from [`SAFE_STRING_KEYS`] is normally enough — an unlisted key
+/// is dropped. [`is_bare_number`] is the one path that keeps an unlisted key, so
+/// it is also the one path that could resurrect one of these by accident: a
+/// `task_id` is a `String` in this codebase (`worklog_pipeline::task_db`) and is
+/// usually `KAN-185`, which no rescue would touch — but a provider that numbers
+/// its issues would make the same field `"4711"`, and the rescue would ship it.
+///
+/// The list is deliberately about the KEY, not the value: a numeric ticket id is
+/// indistinguishable from a row count by inspection, so the only durable signal
+/// is what the field is called. Entries mirror the denied set pinned by
+/// `user_scoped_diagnostic_keys_stay_off_the_allowlist`, plus the identifier
+/// spellings actually logged at WARN/ERROR sites today.
+///
+/// Note this does NOT cover `IntValue` — `keep_attribute`'s first arm keeps
+/// every real integer for every key, which is pre-existing behaviour this change
+/// deliberately does not alter (`row_id`, an `i64`, ships on 65,940 records
+/// today). Narrowing that is a separate decision from fixing the `u64` bug.
+const USER_SCOPED_KEYS: &[&str] = &[
+    "task_key",
+    "task_id",
+    "ticket_key",
+    "ticket_id",
+    "issue_key",
+    "issue_id",
+    "path",
+    "window_title",
+    "app_name",
+];
+
+fn is_user_scoped_key(key: &str) -> bool {
+    USER_SCOPED_KEYS.contains(&key)
+}
+
+/// True when the WHOLE value is a plain number — the shape a numeric field
+/// takes after `tracing-opentelemetry` stringifies it.
+///
+/// # Why this exists
+/// `tracing-opentelemetry` 0.28's `Visit` impl has no `record_u64`. The default
+/// from `tracing::field::Visit` therefore applies, and it forwards to
+/// `record_debug`, which emits a `StringValue`. So `timeout_s = t.as_secs()`
+/// (a `u64`) reaches this function as `"150"` while
+/// `timeout_s = t.as_secs_f64()` reaches it as a `DoubleValue` — the same field
+/// name and the same author intent, kept or dropped purely by Rust type. In
+/// production that meant every `cli_exec.rs` timeout shipped `timeout_s = null`
+/// while the distiller's shipped `210.0`.
+///
+/// # Why this is not a widening
+/// [`keep_attribute`]'s first arm ALREADY keeps every `IntValue`/`DoubleValue`
+/// unconditionally, for any key — the codebase's position is that a number
+/// cannot carry free text. This restores that position for numbers the bridge
+/// happened to stringify; it does not extend it. A key whose numeric value
+/// should not egress was already egressing as an `i64`.
+///
+/// # Why the whole value must parse
+/// `record_debug` also renders genuinely non-numeric fields — `?args` becomes
+/// `["plan-task-draft", "--note", "<the user's note>"]`, a `?path` becomes a
+/// home directory. Requiring the entire string to parse is what separates a
+/// stringified number from arbitrary `Debug` output; a leading-digits check
+/// (`"150ms"`, `"2026-08-24"`) would not.
+///
+/// Non-finite floats are excluded: `"inf"`/`"NaN"` parse as `f64` but are not
+/// values any of our sites emit, and letting bare words through would blunt the
+/// guard for no gain.
+fn is_bare_number(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    if s.parse::<i64>().is_ok() || s.parse::<u64>().is_ok() {
+        return true;
+    }
+    s.parse::<f64>().is_ok_and(f64::is_finite)
 }
 
 /// The one allowlisted key whose raw value must never egress verbatim.
@@ -979,6 +1081,125 @@ mod tests {
             .flat_map(|rl| rl.scope_logs)
             .flat_map(|sl| sl.log_records)
             .collect()
+    }
+
+    /// The bug this module could not see: `tracing-opentelemetry` 0.28 has no
+    /// `record_u64`.
+    ///
+    /// Its `Visit` impl covers `record_bool`/`record_f64`/`record_i64`/
+    /// `record_str`/`record_debug` and nothing else, so `tracing::field::Visit`'s
+    /// DEFAULT `record_u64` applies — and that forwards to `record_debug`, which
+    /// produces a `StringValue`. A field the author wrote as a number therefore
+    /// arrives here as the string `"150"`, misses the allowlist (nobody puts
+    /// `timeout_s` on a list of *string* keys), and is dropped.
+    ///
+    /// Measured in production 2026-08-24: every one of the 25 shipped
+    /// `cli_exec.rs` timeout records carries `timeout_s = null`, while the
+    /// distiller's `timeout_s = EMBED_TIMEOUT.as_secs_f64()` — an `f64`, so
+    /// `record_f64` — ships `210.0` on 3,329 records. Same field name, same
+    /// severity, same allowlist; only the Rust type differs.
+    ///
+    /// The blast radius is every `u64`/`usize` field on a WARN/ERROR site
+    /// (`count`, `len`, `rows`, `attempt`, `bytes`, …), which is why this is
+    /// fixed here rather than by casting at each call site: a cast fixes the
+    /// sites that exist today and silently reopens on the next one written.
+    #[test]
+    fn a_u64_field_stringified_by_the_otel_bridge_still_ships() {
+        let mut kv = str_attr("timeout_s", "150");
+        assert!(
+            keep(&mut kv),
+            "a numeric field must survive the allowlist even when the otel bridge \
+             stringified it - the author wrote a number and the record must carry one"
+        );
+    }
+
+    /// The guard that keeps the fix from becoming a hole.
+    ///
+    /// `record_debug` also handles genuinely non-numeric fields (`args = ?args`
+    /// renders `["plan-task-draft", "--note", "<the user's note>"]`), and those
+    /// must keep being dropped. Parsing the WHOLE value as a number is what
+    /// separates the two: a bare number cannot carry a path, a URL, a token, or
+    /// a sentence.
+    #[test]
+    fn debug_formatted_non_numeric_values_are_still_dropped() {
+        for value in [
+            r#"["plan-task-draft", "--note", "ship the thing"]"#,
+            "/Users/someone/.meridian/bin/meridian",
+            "150ms",
+            "2026-08-24",
+            "sess_abc123",
+            "",
+        ] {
+            let mut kv = str_attr("some_field", value);
+            assert!(
+                !keep(&mut kv),
+                "a non-numeric debug-formatted value must stay dropped: {value:?}"
+            );
+        }
+    }
+
+    /// A bare number is kept regardless of the KEY, so this must not become a
+    /// back door for a numeric identifier the allowlist deliberately denies.
+    /// It does not: `IntValue`/`DoubleValue` are ALREADY kept unconditionally
+    /// for every key (see `keep_attribute`'s first arm), so `user_id = 12345i64`
+    /// ships today. Treating the stringified `u64` the same way restores the
+    /// intended semantics rather than widening what egresses - which is exactly
+    /// why the fix belongs at the type level and not on the key list.
+    #[test]
+    fn a_stringified_number_is_kept_on_the_same_terms_as_a_real_one() {
+        let mut as_int = int_attr("rows_deleted", 42);
+        let mut as_string = str_attr("rows_deleted", "42");
+        assert!(keep(&mut as_int));
+        assert!(
+            keep(&mut as_string),
+            "the two spellings of the same number must not disagree"
+        );
+    }
+
+    /// The numeric rescue must not resurrect a user-scoped identifier that
+    /// happens to be spelled in digits.
+    ///
+    /// `task_id` is a `String` in this codebase and is normally `KAN-185`, which
+    /// no rescue would touch — but a provider that numbers its issues makes the
+    /// same field `"4711"`, and without [`USER_SCOPED_KEYS`] the rescue would
+    /// ship it. Found by grepping WARN/ERROR sites for identifier-shaped fields
+    /// after the rescue was already written, which is the check that should have
+    /// come first.
+    #[test]
+    fn the_numeric_rescue_never_resurrects_a_user_scoped_identifier() {
+        for key in USER_SCOPED_KEYS {
+            let mut numeric = str_attr(key, "4711");
+            assert!(
+                !keep(&mut numeric),
+                "{key} must stay dropped even when its value is all digits"
+            );
+        }
+        // The control: an operational field of the same shape still ships, or
+        // the rescue would have been pointless.
+        let mut operational = str_attr("timeout_s", "4711");
+        assert!(keep(&mut operational));
+    }
+
+    /// `json_pointer` replaces the clerk plugin's `path` field. `path` is on the
+    /// DENY side deliberately (`user_scoped_diagnostic_keys_stay_off_the_allowlist`
+    /// pins it) because it normally means a filesystem path. Clerk's value is a
+    /// serde JSON pointer (`payload.session.status`) naming FIELDS of a schema we
+    /// ship, never their values - so it needed a key of its own rather than a
+    /// widening of `path`.
+    #[test]
+    fn the_clerk_json_pointer_ships_while_path_stays_denied() {
+        let mut pointer = str_attr("json_pointer", "payload.client.sign_up.id");
+        assert!(
+            keep(&mut pointer),
+            "the serde field path must ship - without it, diagnosing a clerk \
+             deserialization failure needs a raw-spool dig, which is the exact \
+             cost this field was added to avoid"
+        );
+        let mut filesystem_path = str_attr("path", "/Users/someone/Documents/secret.md");
+        assert!(
+            !keep(&mut filesystem_path),
+            "the filesystem `path` key must stay denied"
+        );
     }
 
     #[test]
