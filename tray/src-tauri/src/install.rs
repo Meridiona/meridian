@@ -264,21 +264,27 @@ pub(crate) fn bin_source(bin: &str) -> &'static str {
     if std::env::var("MERIDIAN_BIN").is_ok_and(|p| p == bin) {
         return "env_override";
     }
-    // Checked as path segments so a user directory that merely CONTAINS the
-    // text (`~/projects/.meridian/bin/notes`) cannot be misread as the staged
-    // install. Windows separators included: the staged path is the only
-    // candidate that exists there.
-    let staged = bin.contains("/.meridian/bin/") || bin.contains("\\.meridian\\bin\\");
-    if staged {
+    // NORMALISE FIRST. `PathBuf::join` on Windows separates the base with `\`
+    // while the joined literal (`".meridian/bin/meridian.exe"`) keeps its own
+    // `/`, so the real resolved path is MIXED:
+    // `C:\Users\x\.meridian/bin/meridian.exe`. Matching pure-`/` or pure-`\`
+    // forms missed it, and every Windows staged install classified as `other` -
+    // invisible from macOS, and invisible to a test written with tidy paths.
+    let bin_slashed = bin.replace('\\', "/");
+
+    // Checked as path SEGMENTS so a user directory that merely contains the text
+    // (`~/projects/.meridian/bin-scripts/…`) cannot be misread as the staged
+    // install.
+    if bin_slashed.contains("/.meridian/bin/") {
         return "staged";
     }
-    if bin.contains("/.local/bin/") {
+    if bin_slashed.contains("/.local/bin/") {
         return "user_local_wrapper";
     }
     // No separator at all — `"meridian"` / `"meridian.exe"`, the bare last
     // resort resolved through `$PATH`. This is the one that silently finds
     // nothing on a per-user Windows install.
-    if !bin.contains('/') && !bin.contains('\\') {
+    if !bin_slashed.contains('/') {
         return "path_lookup";
     }
     // A resolved absolute path that matches no known candidate: a dev build out
@@ -394,6 +400,22 @@ mod tests {
         assert_eq!(bin_source("meridian"), "path_lookup");
         assert_eq!(bin_source("meridian.exe"), "path_lookup");
         assert_eq!(bin_source("/repo/target/release/meridian"), "other");
+        // The shape `PathBuf::join` ACTUALLY produces on Windows: the base uses
+        // `\\`, the joined literal keeps its own `/`. Neither pure-separator
+        // branch matched it, so every Windows staged install reported "other".
+        // The original test used only pure-`/` and pure-`\\` paths and passed.
+        assert_eq!(
+            bin_source("C:\\Users\\x\\.meridian/bin/meridian.exe"),
+            "staged"
+        );
+        assert_eq!(
+            bin_source("C:/Users/x\\.meridian\\bin\\meridian.exe"),
+            "staged"
+        );
+        assert_eq!(
+            bin_source("C:\\Users\\x\\.local/bin/meridian"),
+            "user_local_wrapper"
+        );
         // The trap a plain `.contains(".meridian/bin")` would fall into.
         assert_eq!(
             bin_source("/Users/x/projects/.meridian/bin-scripts/meridian"),

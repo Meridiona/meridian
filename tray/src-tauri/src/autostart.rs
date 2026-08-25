@@ -165,10 +165,19 @@ where
 //
 // A hardcoded relaunch hour was the wrong shape for the requirement ("Meridian is
 // running after the device is turned on or woken"): it fires when the user is not
-// there and misses them when they are. Both platforms now trigger on the OS's own
-// events instead - launchd `LaunchEvents` on wake/unlock notifications
-// ([`macos::WAKE_NOTIFICATIONS`]) and Windows `SessionStateChangeTrigger` on
-// `SessionUnlock`/`ConsoleConnect`. There is no clock left in this module.
+// there and misses them when they are.
+//
+// The wake/unlock triggers that briefly replaced it are ALSO gone - launchd
+// `LaunchEvents` on wake notifications, and Windows'
+// `SessionStateChangeTrigger` on `SessionUnlock`/`ConsoleConnect`. They made
+// Quit not stick: the app the user had just closed came back on the next unlock.
+// See this module's doc header for that history, and
+// `windows::task_carries_only_the_logon_trigger`, which asserts the Windows
+// trigger is absent.
+//
+// What remains is login and nothing else: SMAppService on macOS 13+, a
+// `RunAtLoad` plist below it, and a single logon trigger on Windows. There is no
+// clock and no session-event trigger left in this module.
 
 /// Marker recording that the user deliberately turned autostart OFF.
 ///
@@ -553,6 +562,26 @@ pub(crate) async fn status() -> Status {
     }
 }
 
+/// Does a registered job definition reference `exe`?
+///
+/// # Why this is not `text.contains(exe)`
+/// Both writers put the path through [`xml_escape`] - it is element text in a
+/// plist or a scheduled-task XML, and a user directory can legitimately contain
+/// `&`. Every comparison site then searched for the RAW `current_exe()` string,
+/// so for a path containing any of the five XML predefined entities the two
+/// forms never matched and the job read as drifted forever.
+///
+/// On Windows that was a loop rather than a cosmetic error: `decide_task` has no
+/// byte-equality fast path, so an affected install returned
+/// `RepairedPathDrift` and re-registered its scheduled task on EVERY launch.
+///
+/// Both spellings are accepted on purpose. A definition written by a build from
+/// before the escaping was added carries the raw path, and rejecting those would
+/// make this fix itself report drift for one upgrade cycle.
+pub(crate) fn job_references_exe(text: &str, exe: &str) -> bool {
+    text.contains(exe) || text.contains(&xml_escape(exe))
+}
+
 /// Shared by both platform modules: compare a job definition against the
 /// running executable, tolerating the "could not tell" cases.
 pub(crate) fn status_from(registered: Option<&str>, expected_exe: Option<&str>) -> Status {
@@ -564,7 +593,7 @@ pub(crate) fn status_from(registered: Option<&str>, expected_exe: Option<&str>) 
         },
         (Some(text), Some(exe)) => Status {
             registered: Some(true),
-            path_ok: Some(text.contains(exe)),
+            path_ok: Some(job_references_exe(text, exe)),
             login_item: None,
         },
         // Registered, but we cannot resolve our own path to compare against.
@@ -600,6 +629,71 @@ pub(crate) fn xml_escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A path containing an XML metacharacter must not read as permanently
+    /// drifted.
+    ///
+    /// `task_xml` and the macOS plist body both write the executable path
+    /// through [`xml_escape`] - `xml_escape_covers_a_path_with_an_ampersand`
+    /// pins that. Every comparison site then searched the registered job text
+    /// for the RAW `current_exe()` string. For a path containing `&`, `<`, `>`,
+    /// `"` or `'` the two forms differ, `contains` never matches, and the job
+    /// reads as drifted forever.
+    ///
+    /// Windows profile directories can legally contain `&`, and `decide_task`
+    /// has no byte-equality fast path - so an affected install re-registered its
+    /// scheduled task on EVERY launch, and reported
+    /// `health_autostart_path_ok: false` for good measure.
+    #[test]
+    fn a_path_with_xml_metacharacters_is_not_read_as_drifted() {
+        for exe in [
+            r"C:\Users\A&B\AppData\Local\Meridian\Meridian.exe",
+            "/Users/a&b/Applications/Meridian.app/Contents/MacOS/Meridian",
+            "/Users/o'brien/Meridian.app/Contents/MacOS/Meridian",
+            "/Users/a<b>c/Meridian",
+        ] {
+            let registered = format!("<string>{}</string>", xml_escape(exe));
+            assert!(
+                job_references_exe(&registered, exe),
+                "escaped-on-write must match raw-on-read for {exe:?}"
+            );
+        }
+    }
+
+    /// A definition written by an older build carries the RAW path. Those must
+    /// keep matching too, or this fix would itself register drift on every
+    /// launch for exactly one upgrade cycle.
+    #[test]
+    fn a_pre_escape_definition_still_matches() {
+        let exe = "/Users/a&b/Meridian";
+        assert!(job_references_exe(&format!("<string>{exe}</string>"), exe));
+    }
+
+    /// A genuinely moved app must still be detected - the tolerance above must
+    /// not become "always matches".
+    #[test]
+    fn a_genuinely_different_path_is_still_drift() {
+        let registered = format!(
+            "<string>{}</string>",
+            xml_escape("/Applications/Meridian.app/Contents/MacOS/Meridian")
+        );
+        assert!(!job_references_exe(
+            &registered,
+            "/Users/tester/Downloads/Meridian.app/Contents/MacOS/Meridian"
+        ));
+    }
+
+    /// The analytics half of the same defect: `status_from` reported
+    /// `path_ok: false` for a correctly registered job.
+    #[test]
+    fn status_reports_path_ok_for_an_escaped_registration() {
+        let exe = "/Users/a&b/Meridian.app/Contents/MacOS/Meridian";
+        let registered = format!("<string>{}</string>", xml_escape(exe));
+        assert_eq!(
+            status_from(Some(&registered), Some(exe)).path_ok,
+            Some(true)
+        );
+    }
     use super::*;
 
     /// The rule both platforms now share. It lived in `windows.rs` and applied
