@@ -785,6 +785,17 @@ pub struct InstallOutcome {
 /// This was a live bug: it made the Install button fail for every npm-based provider on
 /// Windows, and - because the leading token is what triggers the rewrite - Cursor was
 /// unaffected purely by accident, its command starting with `$s`.
+/// POSIX single-quote a string for safe interpolation into the shell text
+/// [`resolve_installer_binary`] builds. `dir`/`resolved` come from a local
+/// filesystem path resolution (`resolve_cli`), not a fixed literal like
+/// `rest` - an attacker able to plant a maliciously-named file in a PATH
+/// directory could otherwise inject shell syntax into the installer command
+/// this builds.
+#[cfg(not(windows))]
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
 #[cfg(windows)]
 async fn resolve_installer_binary(cmd: &str) -> String {
     cmd.to_string()
@@ -806,11 +817,11 @@ async fn resolve_installer_binary(cmd: &str) -> String {
             // npm itself fixed the first one.
             Some(resolved) => match resolved.parent() {
                 Some(dir) => format!(
-                    "export PATH=\"{}:$PATH\"; {} {rest}",
-                    dir.display(),
-                    resolved.display()
+                    "export PATH={}:$PATH; {} {rest}",
+                    shell_quote(&dir.display().to_string()),
+                    shell_quote(&resolved.display().to_string())
                 ),
-                None => format!("{} {rest}", resolved.display()),
+                None => format!("{} {rest}", shell_quote(&resolved.display().to_string())),
             },
             None => cmd.to_string(),
         },
@@ -1866,6 +1877,24 @@ mod tests {
         assert!(node_crash_message("codex", "codex 1.2.3 (Node.js v22.1.0)").is_none());
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn shell_quote_wraps_an_ordinary_path_unchanged() {
+        assert_eq!(shell_quote("/opt/homebrew/bin"), "'/opt/homebrew/bin'");
+    }
+
+    /// The finding this exists to close: an embedded single quote must not let the string
+    /// escape its own quoting and inject shell syntax.
+    #[cfg(not(windows))]
+    #[test]
+    fn shell_quote_escapes_an_embedded_single_quote() {
+        let malicious = "/tmp/evil'; rm -rf ~; echo '";
+        let quoted = shell_quote(malicious);
+        // Every character of the input must appear only inside a quoted segment -
+        // reassembling the escape sequence proves it round-trips back to the original.
+        assert_eq!(quoted, r"'/tmp/evil'\''; rm -rf ~; echo '\'''");
+    }
+
     fn groq_custom_provider() -> meridian_core::settings::CustomLlmProvider {
         meridian_core::settings::CustomLlmProvider {
             id: "groq1".to_string(),
@@ -2909,9 +2938,9 @@ mod tests {
         assert_eq!(
             resolved,
             format!(
-                "export PATH=\"{}:$PATH\"; {} i -g some-package",
-                bin_dir.display(),
-                fake_bin.display()
+                "export PATH={}:$PATH; {} i -g some-package",
+                shell_quote(&bin_dir.display().to_string()),
+                shell_quote(&fake_bin.display().to_string())
             ),
             "expected the leading binary swapped for its resolved absolute path, with its \
              directory prepended onto PATH"
