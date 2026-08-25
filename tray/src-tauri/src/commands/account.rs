@@ -305,19 +305,31 @@ fn account_email_should_be_purged(stored: Option<&str>) -> bool {
 /// crosses the boundary.
 #[tracing::instrument]
 pub(crate) fn purge_expired_account_email() {
-    let mut v = meridian_core::settings::read_settings_value();
-    let Some(obj) = v.as_object_mut() else { return };
-    let stored = obj.get("account_email").and_then(|e| e.as_str());
-    if !account_email_should_be_purged(stored) {
-        return;
-    }
-    obj.insert("account_email".to_string(), serde_json::Value::Null);
-    match meridian_core::settings::write_settings_value(&v) {
+    // Under the shared lock like every other writer. This was written as a bare
+    // read-modify-write and had the same lost-update race it removes elsewhere:
+    // it runs during tray startup, alongside the first settings reads and writes.
+    let outcome = meridian_core::settings::mutate_settings_value(|v| {
+        let Some(obj) = v.as_object_mut() else {
+            return Ok(false);
+        };
+        let stored = obj.get("account_email").and_then(|e| e.as_str());
+        if !account_email_should_be_purged(stored) {
+            return Ok(false);
+        }
+        obj.insert("account_email".to_string(), serde_json::Value::Null);
+        Ok(true)
+    });
+    // Nothing to purge is the overwhelmingly common path and must not count as
+    // a write - `mutate_settings_value` persists unconditionally, so the
+    // no-op rewrite is accepted here in exchange for one lock discipline
+    // rather than two.
+    match outcome {
         // Never log the address itself - that would defeat the removal by
         // copying it into the telemetry spool on its way out.
-        Ok(()) => tracing::info!(
+        Ok(true) => tracing::info!(
             "the alpha raw-email window has closed - removed the stored account email"
         ),
+        Ok(false) => {}
         Err(e) => tracing::warn!(
             error = %format!("{e:#}"),
             "could not remove the expired account email - will retry next launch"
