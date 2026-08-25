@@ -325,29 +325,6 @@ fn restore_custom_keys(
 /// daemon's hourly clock check (`pm_worklog::auto_generate`) and the feature
 /// would just never fire — reject it at the door instead of failing quietly
 /// later. Absent or explicit `null` (turning the feature off) both pass.
-/// Reject a merged settings document that `load_runtime_settings` would not be
-/// able to read back.
-///
-/// # Why this is checked on the DOCUMENT and not per field
-/// `update_settings` validated five fields by name and then merged the body
-/// verbatim, so any field nobody listed (`autostart_enabled` was the one found)
-/// could reach `settings.json` with the wrong type. The damage is not scoped to
-/// that field: `RuntimeSettings` carries a struct-level `#[serde(default)]`,
-/// which rescues a MISSING key but not a wrong-TYPED one, so one bad value
-/// fails the whole deserialise. `load_runtime_settings` then returns
-/// `RuntimeSettings::default()` and every unrelated setting - work hours, poll
-/// interval, log level - silently reads as its default until the file is
-/// repaired by hand. `meridian_core::settings`'s
-/// `an_unknown_llm_provider_does_not_reset_every_other_setting` documents that
-/// landmine from the other side.
-///
-/// Checking the merged document closes it for every field at once, including
-/// ones added later that nobody remembers to validate - which is the failure
-/// mode a name-by-name list reproduces every time it is extended.
-///
-/// UNKNOWN keys stay legal: `read_settings_value` deliberately preserves them so
-/// a write can round-trip a file from a newer build, and `RuntimeSettings` has
-/// no `deny_unknown_fields`. Only a wrong TYPE is rejected.
 /// Does this settings body replace the custom-endpoint registry?
 ///
 /// Named rather than inlined because it decides whether `update_settings` takes
@@ -394,6 +371,29 @@ where
     meridian_core::settings::mutate_settings_value(f)
 }
 
+/// Reject a merged settings document that `load_runtime_settings` would not be
+/// able to read back.
+///
+/// # Why this is checked on the DOCUMENT and not per field
+/// `update_settings` validated five fields by name and then merged the body
+/// verbatim, so any field nobody listed (`autostart_enabled` was the one found)
+/// could reach `settings.json` with the wrong type. The damage is not scoped to
+/// that field: `RuntimeSettings` carries a struct-level `#[serde(default)]`,
+/// which rescues a MISSING key but not a wrong-TYPED one, so one bad value
+/// fails the whole deserialise. `load_runtime_settings` then returns
+/// `RuntimeSettings::default()` and every unrelated setting - work hours, poll
+/// interval, log level - silently reads as its default until the file is
+/// repaired by hand. `meridian_core::settings`'s
+/// `an_unknown_llm_provider_does_not_reset_every_other_setting` documents that
+/// landmine from the other side.
+///
+/// Checking the merged document closes it for every field at once, including
+/// ones added later that nobody remembers to validate - which is the failure
+/// mode a name-by-name list reproduces every time it is extended.
+///
+/// UNKNOWN keys stay legal: `read_settings_value` deliberately preserves them so
+/// a write can round-trip a file from a newer build, and `RuntimeSettings` has
+/// no `deny_unknown_fields`. Only a wrong TYPE is rejected.
 fn merged_settings_are_loadable(merged: &Value) -> Result<(), String> {
     serde_json::from_value::<meridian_core::settings::RuntimeSettings>(merged.clone())
         .map(|_| ())

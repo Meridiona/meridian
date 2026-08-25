@@ -151,3 +151,28 @@ describe('waitForWorklogAnswered with a probe that never settles', () => {
     expect(answered).toBe(false)
   })
 })
+
+// ── Dismissal while a read is in flight ────────────────────────────────────
+// Bounding each read by the REMAINING deadline stopped the hang but not the
+// unresponsiveness: the loop parks inside `await read()` for up to five
+// minutes, so its dialog-removal check cannot run and a user who dismisses the
+// dialog waits out the whole timeout. The read is now bounded by a short slice.
+describe('waitForWorklogAnswered when the dialog is dismissed mid-read', () => {
+  it('returns promptly even while the probe is still pending', async () => {
+    const stage = stubStage()
+    document.body.innerHTML = '<button data-tour="worklog-schedule-on">on</button>'
+    const neverSettles = () => new Promise<string | undefined>(() => {})
+
+    const started = Date.now()
+    const pending = waitForWorklogAnswered(stage, 300000, neverSettles)
+    // The user dismisses the dialog while the first read is still in flight.
+    setTimeout(() => {
+      document.body.innerHTML = ''
+    }, 100)
+
+    const answered = await pending
+    expect(answered).toBe(true)
+    // Must be bounded by the read slice, NOT by the 300s deadline.
+    expect(Date.now() - started).toBeLessThan(15000)
+  })
+})
