@@ -38,7 +38,6 @@
 //!   line (reads the optional `tray/minimum-version` file at release time).
 //! - Plan: Obsidian `Decisions/Public distribution + auto-update for the DMG`.
 
-use meridian_core::SqlitePool;
 use semver::Version;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,8 +56,8 @@ use tauri_plugin_updater::UpdaterExt;
 /// rare background events, never a tight loop that would spam distinct keys).
 async fn notify_update(app: &AppHandle, dedup_suffix: &str, title: &str, body: &str) {
     let Some(pool) = app
-        .try_state::<Option<SqlitePool>>()
-        .and_then(|s| s.inner().clone())
+        .try_state::<crate::db_pool::DbPool>()
+        .and_then(|s| s.get())
     else {
         tracing::debug!(title, "notify_update: DB not open yet — toast dropped");
         return;

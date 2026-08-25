@@ -3,7 +3,7 @@
 //! launch. Without this, a user who double-clicks the app straight out of the
 //! mounted disk image (instead of dragging it to `/Applications` first) gets
 //! a tray that works for the current session but can never re-open itself
-//! after a reboot — [`crate::autostart::ensure_enabled_once`] correctly
+//! after a reboot — [`crate::autostart::ensure_registered`] correctly
 //! refuses to pin a login item to a path that's about to vanish, and just
 //! keeps deferring forever because nothing ever moves the app out of the way.
 //!
@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 /// process now exists; exit immediately" rather than continuing startup.
 /// Every other outcome (stable launch, declined prompt, copy/relaunch
 /// failure) returns `false` and logs why; normal startup should continue,
-/// and [`crate::autostart::ensure_enabled_once`]'s existing deferral already
+/// and [`crate::autostart::ensure_registered`]'s existing deferral already
 /// handles a still-transient launch safely on the next run.
 #[cfg(target_os = "macos")]
 pub fn maybe_relocate_to_applications() -> bool {

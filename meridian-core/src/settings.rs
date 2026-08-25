@@ -268,6 +268,23 @@ pub struct RuntimeSettings {
     // Existing settings.json files without this key load as `true` via the
     // struct-level `#[serde(default)]`.
     pub product_analytics_enabled: bool,
+    // Whether Meridian starts itself at login and again each morning if it was
+    // quit (`tray/src-tauri/src/autostart.rs`). Default `true`, opt-OUT — and
+    // for this switch that default is not a preference so much as a
+    // precondition: capture runs in-process in the tray, so a tray that is not
+    // running records nothing at all.
+    //
+    // It exists because the tray now VERIFIES AND REPAIRS its registration on
+    // every launch, which it has to (the old register-once marker silently
+    // diverged from reality and left installs permanently unable to start). The
+    // side effect is that turning the login item off in the OS's own settings no
+    // longer sticks — the next launch would put it back. This is therefore the
+    // one place a deliberate "no" can be recorded, and `autostart.rs` checks it
+    // before writing anything.
+    //
+    // Existing settings.json files without this key load as `true` via the
+    // struct-level `#[serde(default)]`.
+    pub autostart_enabled: bool,
     // Notification preferences — a master switch + quiet hours. Read by
     // [`crate::notifications`] to decide whether an event may surface;
     // every event type is gated ONLY by these two (no per-category toggles —
@@ -338,6 +355,27 @@ pub struct RuntimeSettings {
     // falls back to the pre-existing per-machine hardware-UUID pseudonym.
     #[serde(default)]
     pub account_pseudonym: Option<String>,
+    // ALPHA TESTING ONLY, same window as `account_pseudonym` above
+    // (`redact::ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`, through 2026-12-31) — the RAW
+    // signed-in email, mirrored alongside the hash so BOTH the tray and the
+    // daemon can attach it to their OpenObserve resource attributes and (tray
+    // only) Sentry's `user.email`, which is how support tells which user and
+    // which machine hit an issue during the alpha. This is a deliberate,
+    // explicitly-approved exception to "never write the raw email" — every
+    // reader of this field MUST re-check the same expiry constant before
+    // using the value (see `telemetry_spool::redact::alpha_account_email_if_active`),
+    // exactly like `account_pseudonym`'s readers do; this field itself is not
+    // time-gated at write time. `None` = signed out (or never signed in).
+    #[serde(default)]
+    pub account_email: Option<String>,
+    // The free-text tool name a user typed into `ConnectTrackers`' "I don't
+    // see my tool" row (`tray/src-tauri/src/commands/pm_tool_request.rs`).
+    // Local mirror of the same value a `pm_tool_requested` PostHog event
+    // carries, kept here too so it survives even when product analytics is
+    // off (see [`Self::product_analytics_enabled`]). Last request wins — this
+    // is a demand signal, not a queue, so only the most recent ask matters.
+    #[serde(default)]
+    pub requested_pm_tool: Option<String>,
 }
 
 /// Default surface palette when `settings.json` predates the `theme` key. Must
@@ -375,6 +413,10 @@ impl Default for RuntimeSettings {
             // Product analytics is opt-OUT too, and separately switchable from
             // error reporting. Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
             product_analytics_enabled: true,
+            // Autostart on by default - the tray is what captures, so an install
+            // that does not come back after a reboot records nothing. Must match
+            // SETTINGS_DEFAULTS in ui/lib/settings.ts.
+            autostart_enabled: true,
             // Notifications on by default; quiet hours off (22:00–08:00 when
             // enabled). Must match SETTINGS_DEFAULTS in ui/lib/settings.ts.
             notifications_enabled: true,
@@ -402,6 +444,9 @@ impl Default for RuntimeSettings {
             worklog_auto_generate_prompted: false,
             // Signed out (or never signed in) until the tray says otherwise.
             account_pseudonym: None,
+            account_email: None,
+            // Nobody has asked for an unsupported tool by default.
+            requested_pm_tool: None,
         }
     }
 }
@@ -540,6 +585,49 @@ pub fn write_settings_value(settings: &Value) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Serialise a read-modify-write of `settings.json` against every other one in
+/// this process.
+///
+/// # The race this closes
+/// `settings.json` is a single JSON document, and several commands used to
+/// independently `read_settings_value()`, mutate their own key, and
+/// `write_settings_value()`. Interleave two of those and the later write
+/// persists the document the earlier one read - silently discarding the other's
+/// change. Measured shapes: `request_pm_tool` racing `update_settings` loses
+/// whichever landed first, and the custom-endpoint registry writers race both.
+///
+/// The write itself was already crash-safe (`atomic_write_json` renames over the
+/// target), which is what made this easy to miss: no file is ever corrupted, a
+/// change simply vanishes.
+///
+/// # Scope of the guarantee
+/// Process-wide only. Two Meridian processes writing the same file would still
+/// race, but only one tray ever runs (the daemon does not write settings), so
+/// this covers the real case. A cross-process lock would need its own file and
+/// its own stale-lock story.
+///
+/// The lock is held for the WHOLE read-mutate-write, so `f` must not await or do
+/// anything slow - do that before calling, and keep the closure to the document
+/// edit.
+///
+/// Poisoning is recovered rather than propagated (`into_inner`): a panic in some
+/// other caller's closure must not make settings permanently unwritable for the
+/// rest of the session.
+pub fn mutate_settings_value<F, T>(f: F) -> anyhow::Result<T>
+where
+    F: FnOnce(&mut Value) -> anyhow::Result<T>,
+{
+    static SETTINGS_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = SETTINGS_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let mut v = read_settings_value();
+    let out = f(&mut v)?;
+    write_settings_value(&v)?;
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -551,6 +639,96 @@ mod tests {
     /// failure looks like a bug in the code under test rather than in the harness.
     /// (Held for the whole test body; `set_var`/`remove_var` inside the guard.)
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Two concurrent read-modify-writes must BOTH survive.
+    ///
+    /// Before `mutate_settings_value`, each caller independently read the whole
+    /// document, changed its own key, and wrote the result - so an interleaved
+    /// pair persisted whatever the LATER writer had read, silently discarding
+    /// the earlier one's change. `atomic_write_json` means no file is ever
+    /// corrupted, which is exactly what made this invisible: a setting simply
+    /// reverts.
+    ///
+    /// Run over many rounds because a lost update is a race: a single pass can
+    /// pass by luck even with no lock at all.
+    #[test]
+    fn concurrent_mutations_do_not_lose_each_other() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "meridian-settings-concurrent-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        with_settings_path(&path);
+
+        for round in 0..25 {
+            let _ = std::fs::remove_file(&path);
+            let (a, b) = (format!("key_a_{round}"), format!("key_b_{round}"));
+            std::thread::scope(|scope| {
+                for key in [&a, &b] {
+                    scope.spawn(move || {
+                        mutate_settings_value(|v| {
+                            if let Some(obj) = v.as_object_mut() {
+                                obj.insert(key.clone(), json!(true));
+                            }
+                            Ok(())
+                        })
+                        .expect("mutation must succeed");
+                    });
+                }
+            });
+
+            let written = read_settings_value();
+            for key in [&a, &b] {
+                assert_eq!(
+                    written.get(key.as_str()),
+                    Some(&json!(true)),
+                    "round {round}: {key} was lost - one writer overwrote the other's document"
+                );
+            }
+        }
+
+        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The lock must survive a panicking closure - a poisoned mutex would make
+    /// settings permanently unwritable for the rest of the session.
+    #[test]
+    fn a_panicking_mutation_does_not_wedge_later_writers() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "meridian-settings-poison-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        with_settings_path(&path);
+
+        let panicked = std::thread::spawn(|| {
+            let _ = mutate_settings_value(|_v| -> anyhow::Result<()> { panic!("boom") });
+        })
+        .join();
+        assert!(panicked.is_err(), "the closure must actually have panicked");
+
+        mutate_settings_value(|v| {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("after_the_panic".into(), json!(true));
+            }
+            Ok(())
+        })
+        .expect("a later writer must still be able to acquire the lock");
+        assert_eq!(
+            read_settings_value().get("after_the_panic"),
+            Some(&json!(true))
+        );
+
+        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Point settings resolution at a temp file for the duration of a test.
     fn with_settings_path(path: &std::path::Path) {
@@ -800,6 +978,39 @@ mod tests {
             None,
             "and the resolver degrades it to the default"
         );
+
+        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `requested_pm_tool` defaults to `None` on a settings.json that predates
+    /// it, and round-trips through `read_settings_value`/`write_settings_value`
+    /// (the pattern `commands/pm_tool_request.rs` writes through) once set.
+    #[test]
+    fn requested_pm_tool_defaults_none_and_round_trips() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "meridian-settings-pmtool-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        with_settings_path(&path);
+
+        std::fs::write(&path, r#"{"log_level":"DEBUG"}"#).unwrap();
+        let s = load_runtime_settings();
+        assert_eq!(
+            s.requested_pm_tool, None,
+            "predates the field — must default"
+        );
+
+        let mut v = read_settings_value();
+        v["requested_pm_tool"] = json!("Shortcut");
+        write_settings_value(&v).unwrap();
+
+        let s = load_runtime_settings();
+        assert_eq!(s.requested_pm_tool, Some("Shortcut".to_string()));
 
         std::env::remove_var("MERIDIAN_SETTINGS_PATH");
         let _ = std::fs::remove_dir_all(&dir);

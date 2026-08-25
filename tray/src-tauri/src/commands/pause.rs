@@ -102,9 +102,9 @@ pub async fn pause_for_duration(
     app: tauri::AppHandle,
     seconds: u64,
     state: State<'_, Arc<Mutex<AppState>>>,
-    db_pool: State<'_, Option<SqlitePool>>,
+    db_pool: State<'_, crate::db_pool::DbPool>,
 ) -> Result<(), String> {
-    let pool = db_pool.inner().clone();
+    let pool = db_pool.get();
 
     if seconds == 0 {
         resume_capture(state.inner(), pool.as_ref(), &app, false).await;
@@ -192,9 +192,9 @@ pub async fn pause_for_duration(
 pub async fn pause_indefinitely(
     app: tauri::AppHandle,
     state: State<'_, Arc<Mutex<AppState>>>,
-    db_pool: State<'_, Option<SqlitePool>>,
+    db_pool: State<'_, crate::db_pool::DbPool>,
 ) -> Result<(), String> {
-    let pool = db_pool.inner().clone();
+    let pool = db_pool.get();
     let now = now_secs();
 
     // Same atomic close-out-then-commit as pause_for_duration — see

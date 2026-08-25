@@ -168,6 +168,25 @@ const SAFE_STRING_KEYS: &[&str] = &[
     "thread.name",
     "target",
     "level",
+    // A `serde_path_to_error` JSON pointer (`payload.client.sign_up.id`) — it
+    // names FIELDS of a schema we ship, never their values, so it carries no
+    // user content by construction.
+    //
+    // It exists as its own key because the obvious name, `path`, is on the DENY
+    // side ON PURPOSE (`user_scoped_diagnostic_keys_stay_off_the_allowlist`
+    // pins it) — `path` normally means a filesystem path. The clerk plugin
+    // originally logged this as `path` and reasoned, correctly, that a JSON
+    // pointer is safe to ship; it was dropped anyway, by a rule written for a
+    // different meaning of the same word. Widening `path` to fix that would
+    // have traded a real protection for a diagnostic. Renaming the field was
+    // the cheaper half of the trade.
+    "json_pointer",
+    // WHICH `meridian` binary a shell-out resolved to, as a closed set of
+    // literals (`staged`, `user_local_wrapper`, `path_lookup`, `env_override`,
+    // `other`) — see `install::bin_source`, whose tests pin that it can only
+    // ever return one of them. The full `bin` path stays denied: it is a home
+    // directory. This names our component, exactly as `provider`/`engine` do.
+    "bin_source",
     // ── protocol metadata (values are enums/verbs, not content) ──────────────
     "http.method",
     "http.request.method",
@@ -175,6 +194,13 @@ const SAFE_STRING_KEYS: &[&str] = &[
     "db.operation",
     "rpc.method",
     "rpc.system",
+    // ── ALPHA TESTING ONLY — deliberate raw-PII exception ────────────────────
+    // See `ACCOUNT_EMAIL_KEY` / `alpha_account_email_if_active`'s docs. This is
+    // the one key in this list whose value is a raw email address rather than
+    // operational metadata; it is populated only for a signed-in alpha tester
+    // before `ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`, so it is absent from every
+    // other record. Must stay off `FREE_TEXT_KEYS` — see that constant's key.
+    ACCOUNT_EMAIL_KEY,
 ];
 
 /// The subset of [`SAFE_STRING_KEYS`] whose values are FREE TEXT — a human or
@@ -424,7 +450,13 @@ fn keep_attribute(kv: &mut KeyValue, pseudonym: &str) -> bool {
         // Numeric / bool can't carry free text — always safe.
         Some(Value::IntValue(_)) | Some(Value::DoubleValue(_)) | Some(Value::BoolValue(_)) => true,
         Some(Value::StringValue(s)) => {
-            if kv.key == HOST_NAME_KEY {
+            if kv.key == ACCOUNT_EMAIL_KEY && !alpha_email_window_open() {
+                // The ALPHA exception has expired. Drop the address here rather
+                // than trusting the produce-time gate: this payload may have
+                // been captured before the boundary, or by a process that
+                // started before it. See `alpha_email_window_open`.
+                false
+            } else if kv.key == HOST_NAME_KEY {
                 // REPLACED, not hashed-in-place. Hashing the captured value
                 // would inherit its instability: a spool file written on one
                 // network and shipped after joining another would carry a
@@ -446,12 +478,109 @@ fn keep_attribute(kv: &mut KeyValue, pseudonym: &str) -> bool {
                 *s = scrub_paths(s);
                 true
             } else {
-                false
+                // A number the otel bridge stringified on its way here (see
+                // `is_bare_number`). FAIL CLOSED: both the key and the value
+                // must qualify. `NUMERIC_KEYS` documents why this is an
+                // allowlist rather than the denylist it started as.
+                is_numeric_key(&kv.key) && is_bare_number(s)
             }
         }
         // Bytes / array / kvlist can nest arbitrary content — drop.
         _ => false,
     }
+}
+
+/// The ONLY keys whose stringified numeric value is rescued by
+/// [`is_bare_number`]. Everything else fails closed.
+///
+/// # Why an allowlist, after a denylist did not hold
+/// This started as `USER_SCOPED_KEYS`, a denylist: rescue any numeric-looking
+/// value unless its key names the user's data. CodeRabbit found `endpoint_id`
+/// missing from it within one review, and that key showed why the shape was
+/// wrong rather than merely incomplete - `commands::custom_llm::make_id`
+/// SLUGIFIES THE USER'S TYPED ENDPOINT NAME, so an endpoint named `4711` has
+/// `id = "4711"`. A denylist made the safety of every unlisted key depend on
+/// the shape of user-controlled data, which is not a property anyone can audit.
+///
+/// An allowlist inverts the failure: a numeric field nobody listed is DROPPED.
+/// That costs a missing diagnostic, which is recoverable by adding the key. The
+/// denylist's failure cost an egress, which is not.
+///
+/// # The asymmetry this leaves, stated plainly
+/// [`keep_attribute`]'s first arm still keeps every real `IntValue`/`DoubleValue`
+/// for ANY key, so `endpoint_id = 4711i64` would ship while `endpoint_id =
+/// "4711"` (the stringified `u64`) does not. That pre-existing rule is broader
+/// than this one and is NOT touched here: narrowing it is a separate decision
+/// with its own blast radius, and widening this to match it would reintroduce
+/// exactly the hole being closed.
+///
+/// # Adding a key
+/// It must name one of OUR operational counters - a timeout, an attempt count,
+/// a row count. `no_user_scoped_key_is_on_the_numeric_allowlist` fails the build
+/// if a key naming the user's data is added.
+const NUMERIC_KEYS: &[&str] = &[
+    // Timeouts and budgets - `u64` at every site (`Duration::as_secs`), which
+    // is precisely the stringification bug this rescue exists for.
+    "timeout_s",
+    "timeout_secs",
+    "budget_s",
+    "budget_ms",
+    "max_age_secs",
+    // Retry/attempt bookkeeping.
+    "attempt",
+    "attempts",
+    "max_attempts",
+    // Volumes - how much work a failing stage was carrying.
+    "rows",
+    "count",
+    "len",
+    "bytes",
+    "n_spans",
+    "max_results",
+];
+
+fn is_numeric_key(key: &str) -> bool {
+    NUMERIC_KEYS.contains(&key)
+}
+
+/// True when the WHOLE value is a plain number — the shape a numeric field
+/// takes after `tracing-opentelemetry` stringifies it.
+///
+/// # Why this exists
+/// `tracing-opentelemetry` 0.28's `Visit` impl has no `record_u64`. The default
+/// from `tracing::field::Visit` therefore applies, and it forwards to
+/// `record_debug`, which emits a `StringValue`. So `timeout_s = t.as_secs()`
+/// (a `u64`) reaches this function as `"150"` while
+/// `timeout_s = t.as_secs_f64()` reaches it as a `DoubleValue` — the same field
+/// name and the same author intent, kept or dropped purely by Rust type. In
+/// production that meant every `cli_exec.rs` timeout shipped `timeout_s = null`
+/// while the distiller's shipped `210.0`.
+///
+/// # Why this is not a widening
+/// [`keep_attribute`]'s first arm ALREADY keeps every `IntValue`/`DoubleValue`
+/// unconditionally, for any key — the codebase's position is that a number
+/// cannot carry free text. This restores that position for numbers the bridge
+/// happened to stringify; it does not extend it. A key whose numeric value
+/// should not egress was already egressing as an `i64`.
+///
+/// # Why the whole value must parse
+/// `record_debug` also renders genuinely non-numeric fields — `?args` becomes
+/// `["plan-task-draft", "--note", "<the user's note>"]`, a `?path` becomes a
+/// home directory. Requiring the entire string to parse is what separates a
+/// stringified number from arbitrary `Debug` output; a leading-digits check
+/// (`"150ms"`, `"2026-08-24"`) would not.
+///
+/// Non-finite floats are excluded: `"inf"`/`"NaN"` parse as `f64` but are not
+/// values any of our sites emit, and letting bare words through would blunt the
+/// guard for no gain.
+fn is_bare_number(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    if s.parse::<i64>().is_ok() || s.parse::<u64>().is_ok() {
+        return true;
+    }
+    s.parse::<f64>().is_ok_and(f64::is_finite)
 }
 
 /// The one allowlisted key whose raw value must never egress verbatim.
@@ -712,6 +841,78 @@ fn choose_pseudonym_source(now_unix: u64, account_pseudonym: Option<&str>) -> Op
         .map(str::to_string)
 }
 
+/// The RESOURCE ATTRIBUTE KEY [`observability::init`] uses for the raw signed-in
+/// email (see [`alpha_account_email_if_active`]). `pub` so the redaction
+/// allowlist test below and `observability::init` can both refer to the same
+/// literal rather than risking two copies drifting apart. `crate::observability`
+/// is a sibling module, not a dependency of this one, so it imports this
+/// constant rather than the other way around.
+///
+/// DELIBERATELY on [`SAFE_STRING_KEYS`] and NOT on [`FREE_TEXT_KEYS`] — being
+/// free-text would run it through [`scrub_text`], whose whole job includes
+/// redacting anything that looks like an email address into `<email>`, which
+/// would defeat the one thing this key exists to carry. Nothing else should
+/// ever be attached under this key; it is allowlisted for exactly one
+/// deliberate, alpha-gated purpose.
+pub const ACCOUNT_EMAIL_KEY: &str = "user.email";
+
+/// ALPHA TESTING ONLY (same window as [`choose_pseudonym_source`],
+/// [`ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`]) — whether the RAW signed-in email
+/// may be attached to outgoing telemetry right now, and if so, the value to
+/// use.
+///
+/// This is a genuine, deliberate exception to the rest of this module's "no
+/// raw PII ships" stance, made ONLY so support can identify which user and
+/// which machine an error came from during the hand-picked alpha (see
+/// `docs/privacy.md`'s alpha section). It is gated identically to
+/// [`choose_pseudonym_source`] — signed in (non-empty `account_email`) AND
+/// before the same hardcoded expiry — so the raw-email exception can never
+/// outlive the pseudonym-override exception it's a sibling of.
+///
+/// Callers: `observability::init`'s `Resource::new(...)` (attaches it under
+/// [`ACCOUNT_EMAIL_KEY`] when `Some`) and the tray's Sentry `before_send`
+/// (`crash.rs`, sets `event.user`'s email the same way).
+///
+/// Delegates to [`choose_pseudonym_source`] rather than re-implementing the
+/// same expiry-check-then-trim-then-filter-empty shape: the two exceptions
+/// share the identical rule (signed in AND before the same hardcoded date),
+/// so one pure oracle backs both, and
+/// `account_pseudonym_only_overrides_before_the_expiry` already pins its edge
+/// cases.
+pub fn alpha_account_email_if_active(account_email: Option<&str>) -> Option<String> {
+    choose_pseudonym_source(now_unix_or_expired(), account_email)
+}
+
+/// Whether the ALPHA raw-email exception is still open, evaluated AT SHIP TIME.
+///
+/// # Why the produce-time check is not enough
+/// [`alpha_account_email_if_active`] decides whether to ATTACH the address, and
+/// it runs once per process in `observability::init`. Two paths then carry the
+/// value past the window it was approved for:
+///
+/// - a tray or daemon started before the expiry keeps its `Resource` attributes
+///   for its whole lifetime, and these processes routinely run for weeks;
+/// - a spool file written before the expiry but drained after it (retention is
+///   days, and a machine offline over the boundary drains late).
+///
+/// The pseudonym exception never had this defect because `local_host_pseudonym`
+/// consults [`choose_pseudonym_source`] on every payload. This makes the email
+/// exception behave the same way: the ship leg is the last point that can
+/// enforce it, so it enforces it.
+///
+/// Past the date this returns false forever, with no deploy — which is the
+/// property the whole exception was granted on.
+fn alpha_email_window_open() -> bool {
+    alpha_email_window_open_at(now_unix_or_expired())
+}
+
+/// The pure half, split out for the same reason [`choose_pseudonym_source`] is
+/// pure: the boundary is the whole behaviour and it must be testable without
+/// waiting for 2026-12-31.
+fn alpha_email_window_open_at(now_unix: u64) -> bool {
+    now_unix < ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX
+}
+
 fn is_safe_string_key(key: &str) -> bool {
     SAFE_STRING_KEYS.contains(&key)
 }
@@ -930,6 +1131,226 @@ mod tests {
             .flat_map(|rl| rl.scope_logs)
             .flat_map(|sl| sl.log_records)
             .collect()
+    }
+
+    /// The bug this module could not see: `tracing-opentelemetry` 0.28 has no
+    /// `record_u64`.
+    ///
+    /// Its `Visit` impl covers `record_bool`/`record_f64`/`record_i64`/
+    /// `record_str`/`record_debug` and nothing else, so `tracing::field::Visit`'s
+    /// DEFAULT `record_u64` applies — and that forwards to `record_debug`, which
+    /// produces a `StringValue`. A field the author wrote as a number therefore
+    /// arrives here as the string `"150"`, misses the allowlist (nobody puts
+    /// `timeout_s` on a list of *string* keys), and is dropped.
+    ///
+    /// Measured in production 2026-08-24: every one of the 25 shipped
+    /// `cli_exec.rs` timeout records carries `timeout_s = null`, while the
+    /// distiller's `timeout_s = EMBED_TIMEOUT.as_secs_f64()` — an `f64`, so
+    /// `record_f64` — ships `210.0` on 3,329 records. Same field name, same
+    /// severity, same allowlist; only the Rust type differs.
+    ///
+    /// The blast radius is every `u64`/`usize` field on a WARN/ERROR site
+    /// (`count`, `len`, `rows`, `attempt`, `bytes`, …), which is why this is
+    /// fixed here rather than by casting at each call site: a cast fixes the
+    /// sites that exist today and silently reopens on the next one written.
+    #[test]
+    fn a_u64_field_stringified_by_the_otel_bridge_still_ships() {
+        let mut kv = str_attr("timeout_s", "150");
+        assert!(
+            keep(&mut kv),
+            "a numeric field must survive the allowlist even when the otel bridge \
+             stringified it - the author wrote a number and the record must carry one"
+        );
+    }
+
+    /// The guard that keeps the fix from becoming a hole.
+    ///
+    /// `record_debug` also handles genuinely non-numeric fields (`args = ?args`
+    /// renders `["plan-task-draft", "--note", "<the user's note>"]`), and those
+    /// must keep being dropped. Parsing the WHOLE value as a number is what
+    /// separates the two: a bare number cannot carry a path, a URL, a token, or
+    /// a sentence.
+    #[test]
+    fn debug_formatted_non_numeric_values_are_still_dropped() {
+        for value in [
+            r#"["plan-task-draft", "--note", "ship the thing"]"#,
+            "/Users/someone/.meridian/bin/meridian",
+            "150ms",
+            "2026-08-24",
+            "sess_abc123",
+            "",
+        ] {
+            let mut kv = str_attr("some_field", value);
+            assert!(
+                !keep(&mut kv),
+                "a non-numeric debug-formatted value must stay dropped: {value:?}"
+            );
+        }
+    }
+
+    /// The rescue must FAIL CLOSED: a numeric-looking value on a key nobody
+    /// allowlisted must not egress, whatever it happens to contain.
+    ///
+    /// This started as a denylist (`USER_SCOPED_KEYS`) and that shape did not
+    /// hold - `endpoint_id` was missing from it, and that key showed the flaw
+    /// was structural rather than a missed entry:
+    /// `commands::custom_llm::make_id` SLUGIFIES THE USER'S TYPED ENDPOINT
+    /// NAME, so an endpoint named `4711` has `id = "4711"` and shipped. Safety
+    /// must not depend on the shape of user-controlled data.
+    #[test]
+    fn an_unlisted_numeric_key_does_not_egress() {
+        for key in [
+            "endpoint_id",
+            "user_id",
+            "jira_issue_id",
+            "some_future_field",
+            "task_id",
+            "day",
+            "hour",
+        ] {
+            let mut kv = str_attr(key, "4711");
+            assert!(
+                !keep(&mut kv),
+                "{key} is not on NUMERIC_KEYS and must not egress just because its \
+                 value parses as a number"
+            );
+        }
+    }
+
+    /// Every key on the allowlist must actually be rescued - otherwise the
+    /// `u64` stringification bug is still live for that field.
+    #[test]
+    fn every_allowlisted_numeric_key_is_rescued() {
+        for key in NUMERIC_KEYS {
+            let mut kv = str_attr(key, "150");
+            assert!(
+                keep(&mut kv),
+                "{key} is on NUMERIC_KEYS but was dropped - the u64 bug is still \
+                 live for it"
+            );
+        }
+    }
+
+    /// The allowlist holds OUR operational counters only. This makes adding a
+    /// key that names the user's data a build failure rather than a review
+    /// habit - the habit is what let `endpoint_id` through the denylist.
+    #[test]
+    fn no_user_scoped_key_is_on_the_numeric_allowlist() {
+        for banned in [
+            "task_key",
+            "task_id",
+            "ticket_key",
+            "ticket_id",
+            "issue_key",
+            "issue_id",
+            "path",
+            "window_title",
+            "app_name",
+            "endpoint_id",
+            "email",
+            "account_email",
+            "user.email",
+            "day",
+            "hour",
+        ] {
+            assert!(
+                !NUMERIC_KEYS.contains(&banned),
+                "{banned} names the user's data and must never be numerically rescued"
+            );
+        }
+    }
+
+    /// The ALPHA raw-email exception must stop at its date on the SHIP leg, not
+    /// only where the value is produced.
+    ///
+    /// `alpha_account_email_if_active` decides whether to ATTACH the address,
+    /// and runs once per process in `observability::init`. Two paths carried it
+    /// past the approved window: a tray started before the boundary keeps its
+    /// `Resource` attributes for its whole lifetime (these run for weeks), and
+    /// a spool file written before the boundary can drain after it. The
+    /// pseudonym path never had this defect because `local_host_pseudonym`
+    /// re-consults `choose_pseudonym_source` per payload.
+    #[test]
+    fn the_alpha_email_exception_closes_at_its_expiry_on_the_ship_leg() {
+        assert!(alpha_email_window_open_at(
+            ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX - 1
+        ));
+        assert!(!alpha_email_window_open_at(
+            ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX
+        ));
+        assert!(!alpha_email_window_open_at(
+            ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX + 1
+        ));
+        assert!(
+            !alpha_email_window_open_at(u64::MAX),
+            "an unreadable clock must fail CLOSED - `now_unix_or_expired` returns \
+             u64::MAX precisely so it lands here"
+        );
+    }
+
+    /// While the window IS open the address must still ship, or the alpha
+    /// support workflow this exception exists for silently stops working.
+    #[test]
+    fn the_alpha_email_still_ships_inside_the_window() {
+        assert!(
+            alpha_email_window_open(),
+            "this test is only meaningful before the expiry; past that date, delete \
+             it along with the exception itself"
+        );
+        let mut attr = str_attr(ACCOUNT_EMAIL_KEY, "tester@example.com");
+        assert!(keep(&mut attr));
+    }
+
+    /// The asymmetry the allowlist leaves behind, pinned deliberately so nobody
+    /// "fixes" it by widening the rescue.
+    ///
+    /// `keep_attribute`'s FIRST arm keeps every real `IntValue`/`DoubleValue`
+    /// for any key, so `endpoint_id = 4711i64` ships today. The stringified
+    /// `u64` spelling of the same field does NOT, because its key is not on
+    /// `NUMERIC_KEYS`. The two disagree on purpose: matching them would mean
+    /// widening the rescue to every key, which is the hole
+    /// `an_unlisted_numeric_key_does_not_egress` exists to close. Narrowing the
+    /// integer arm instead is a separate decision with its own blast radius.
+    #[test]
+    fn the_integer_arm_stays_broader_than_the_rescue_and_that_is_deliberate() {
+        // Real integer on an unlisted key: kept (pre-existing behaviour).
+        let mut as_int = int_attr("endpoint_id", 4711);
+        assert!(keep(&mut as_int));
+
+        // Same field, stringified by the otel bridge: dropped.
+        let mut as_string = str_attr("endpoint_id", "4711");
+        assert!(
+            !keep(&mut as_string),
+            "the rescue must not extend the integer arm's breadth to strings"
+        );
+
+        // An allowlisted operational counter is rescued in both spellings.
+        let mut listed_int = int_attr("timeout_s", 150);
+        let mut listed_str = str_attr("timeout_s", "150");
+        assert!(keep(&mut listed_int));
+        assert!(keep(&mut listed_str));
+    }
+
+    /// `json_pointer` replaces the clerk plugin's `path` field. `path` is on the
+    /// DENY side deliberately (`user_scoped_diagnostic_keys_stay_off_the_allowlist`
+    /// pins it) because it normally means a filesystem path. Clerk's value is a
+    /// serde JSON pointer (`payload.session.status`) naming FIELDS of a schema we
+    /// ship, never their values - so it needed a key of its own rather than a
+    /// widening of `path`.
+    #[test]
+    fn the_clerk_json_pointer_ships_while_path_stays_denied() {
+        let mut pointer = str_attr("json_pointer", "payload.client.sign_up.id");
+        assert!(
+            keep(&mut pointer),
+            "the serde field path must ship - without it, diagnosing a clerk \
+             deserialization failure needs a raw-spool dig, which is the exact \
+             cost this field was added to avoid"
+        );
+        let mut filesystem_path = str_attr("path", "/Users/someone/Documents/secret.md");
+        assert!(
+            !keep(&mut filesystem_path),
+            "the filesystem `path` key must stay denied"
+        );
     }
 
     #[test]
@@ -1663,6 +2084,50 @@ mod tests {
                 "disagreed for account_pseudonym = {hash:?}"
             );
         }
+    }
+
+    /// [`alpha_account_email_if_active`] is a thin delegate to
+    /// [`choose_pseudonym_source`] — pin that it actually delegates (same
+    /// oracle, same answer for the same inputs) rather than trusting the doc
+    /// comment. Can't inject `now` into the public fn, so this pins the
+    /// delegation at whatever `now_unix_or_expired()` returns when the test
+    /// runs; `account_pseudonym_only_overrides_before_the_expiry` already
+    /// covers the expiry-boundary edge cases against the shared oracle
+    /// directly.
+    #[test]
+    fn alpha_account_email_delegates_to_choose_pseudonym_source() {
+        for email in [Some("tester@example.com"), None, Some("  ")] {
+            assert_eq!(
+                alpha_account_email_if_active(email),
+                choose_pseudonym_source(now_unix_or_expired(), email),
+                "disagreed for account_email = {email:?}"
+            );
+        }
+    }
+
+    /// The whole point of [`ACCOUNT_EMAIL_KEY`]: it must survive
+    /// [`keep_attribute`] with its raw value untouched (unlike a `FREE_TEXT_KEYS`
+    /// value, which the email regex in [`scrub_text`] would rewrite to
+    /// `<email>`), and it must NOT be on [`FREE_TEXT_KEYS`] at all.
+    #[test]
+    fn account_email_key_is_allowlisted_but_not_free_text() {
+        assert!(SAFE_STRING_KEYS.contains(&ACCOUNT_EMAIL_KEY));
+        assert!(
+            !FREE_TEXT_KEYS.contains(&ACCOUNT_EMAIL_KEY),
+            "must not be free-text scrubbed - that would redact the very value it exists to carry"
+        );
+        let mut attr = str_attr(ACCOUNT_EMAIL_KEY, "tester@example.com");
+        assert!(keep(&mut attr));
+        let AnyValue {
+            value: Some(any_value::Value::StringValue(v)),
+        } = attr.value.unwrap()
+        else {
+            panic!("expected string value");
+        };
+        assert_eq!(
+            v, "tester@example.com",
+            "the raw email must survive intact, not get scrubbed to <email>"
+        );
     }
 
     /// Every other free-text case here is Unix-shaped, but Windows installs

@@ -64,4 +64,19 @@ describe('skipping the walkthrough does not skip the setup', () => {
     expect(hook).toContain('onSkip={finish}')
     expect(hook).toContain('setWalkthroughRunning(false)')
   })
+
+  it('the shell retires its own trigger the moment the tour ARMS its copy, not only once answered', () => {
+    // The previous test's `onDone` assertion only covers the ANSWERED exit
+    // (Turn on / X / backdrop) - all three route through the dialog's own
+    // `commit()` → `onDone`, which clears both flags. But `finish()` (the SKIP
+    // path) resets `tourWorklogSchedule` directly, without ever mounting through
+    // `onDone` - so a skip while the tour's own dialog is still up left the
+    // shell's independently-armed `showWorklogPrompt` (latched true since the
+    // initial settings load) untouched, and the instant `tutorial.running`
+    // flipped false the shell popped the identical dialog right back up.
+    // Clearing the trigger as soon as the tour ARMS its copy - not only once
+    // it's answered - covers the skip-mid-ask exit too, since by then the tour
+    // has already put the same question in front of the user once.
+    expect(/if\s*\(\s*tourWorklogSchedule\s*\)\s*setShowWorklogPrompt\(false\)/.test(shell)).toBe(true)
+  })
 })

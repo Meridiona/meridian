@@ -89,15 +89,17 @@ OCR text, accessibility-tree content, window titles, browser URLs, coding-agent 
 
 An error report carries a **Support ID** instead of your hostname. It is a one-way pseudonym, and it exists so a support ticket you file can be matched to the errors your machine actually reported. It is derived from a hardware identifier, not your hostname — on macOS the hostname is routinely derived from your network and often contains your real name.
 
-Nothing *inside* an error report is associated with an account, and the hash cannot be reversed. You can see your own Support ID in **Settings → Account**.
+Outside the alpha window described below, nothing *inside* an error report is associated with an account, and the hash cannot be reversed. You can see your own Support ID in **Settings → Account**, which also states which mode is currently active for you.
 
-> **But if product analytics is on, we can still connect the two.** Product-analytics events carry both your account email and the same Support ID, so the pair links your errors to you. That linkage lives entirely on the analytics side - an error report itself never contains your email. Turning off **Product analytics** removes it; see [Product analytics](#product-analytics).
-
-> **Alpha exception, until 31 December 2026.** While Meridian is in invite-only alpha, signing in changes this: the Support ID is instead derived from a salted hash of your account email, so support can follow one tester's errors across their machines. Your raw email address is not included in the Support ID or in error reports - only the salted hash is. (Product analytics, if you have it on, sends the raw email separately - see [Product analytics](#product-analytics).) Settings → Account states which mode is currently active for you. After that date every install reverts to the hardware-derived pseudonym automatically, and your Support ID changes at that point.
+> **But if product analytics is on, we can still connect the two.** Product-analytics events carry both your account email and the same Support ID, so the pair links your errors to you. Outside the alpha window below, that linkage lives entirely on the analytics side - an error report itself does not contain your email. Turning off **Product analytics** removes it; see [Product analytics](#product-analytics).
+>
+> **Alpha exception, while you are signed in, until 31 December 2026.** While Meridian is in invite-only alpha, signing in changes the above in two ways: the Support ID is derived from a salted hash of your account email instead of a hardware identifier, so support can follow one tester's errors across their machines; and, in addition, **your actual account email is attached directly to error reports and crash reports** (as a plain field alongside the Support ID) so support can identify which signed-in tester and which machine an issue came from without a separate lookup step. For that period, the two statements above about an error report not containing or being associated with your account do not hold. Settings → Account states which mode is currently active for you.
+>
+> The exception ends at **00:00 UTC on 1 January 2027** - so 31 December 2026 is the last day it applies. Every install then reverts automatically, with no update required: the Support ID goes back to the hardware-derived pseudonym, your email stops being attached to reports, and any copy still stored on your machine is removed the next time Meridian starts. Signing out ends it for you at any time.
 
 ### Crash reports
 
-Packaged builds also send crash reports (via Sentry) so we learn about crashes that happen before anything can be logged. These carry the same Support ID pseudonym in place of your hostname, and are governed by the **same** Error reporting switch — turning it off disables crash reporting too.
+Packaged builds also send crash reports (via Sentry) so we learn about crashes that happen before anything can be logged. These carry the same Support ID pseudonym in place of your hostname, and are governed by the **same** Error reporting switch — turning it off disables crash reporting too. During the alpha window described above, a crash report also carries your account email for a signed-in tester, exactly like an error report does.
 
 ### Sending diagnostics manually
 
@@ -236,7 +238,7 @@ There is no on-device generative model. The only model that runs fully locally i
 
 ## Accounts
 
-Signing in is optional and is currently used to gate the invite-only alpha. Your email address is held by our authentication provider (Clerk) and is never attached to error reports — see the alpha note under [How reports are identified](#how-reports-are-identified) for the one way sign-in affects reporting.
+Signing in is optional and is currently used to gate the invite-only alpha. Your email address is held by our authentication provider (Clerk); during the alpha window it is also attached directly to your error and crash reports so support can identify which tester and machine an issue came from — see the alpha note under [How reports are identified](#how-reports-are-identified) for the full detail and its end date.
 
 ---
 

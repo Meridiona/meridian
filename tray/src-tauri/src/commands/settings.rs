@@ -111,7 +111,7 @@ pub async fn get_settings() -> Result<Value, String> {
 #[tracing::instrument(skip(pool, app_state, body))]
 pub async fn update_settings(
     app: tauri::AppHandle,
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     app_state: State<'_, Arc<Mutex<AppState>>>,
     body: Value,
 ) -> Result<Value, String> {
@@ -150,41 +150,69 @@ pub async fn update_settings(
     }
     validate_worklog_auto_generate_time(body_obj)?;
 
-    let current = meridian_core::settings::read_settings_value();
-    let mut updated = current.clone();
-    let obj = updated
-        .as_object_mut()
-        .ok_or("current settings are not an object")?;
-    // { ...current, ...body } — body keys override.
-    for (k, v) in body_obj {
-        obj.insert(k.clone(), v.clone());
-    }
+    // The whole read-modify-write runs under the shared settings lock. It used
+    // to read and write independently of `request_pm_tool`, `save_account_email`
+    // and the custom-endpoint registry, so two overlapping saves persisted the
+    // document whichever one read FIRST - silently discarding the other's
+    // change. The write was always atomic, which is what made this easy to
+    // miss: no file is corrupted, a setting simply reverts.
+    // See `meridian_core::settings::mutate_settings_value`.
+    //
+    // AND the registry lock, whenever this body carries `custom_llm_providers`.
+    // The settings lock alone is not enough: this command replaces the registry
+    // WHOLESALE (the shallow merge below, plus `restore_custom_keys`), so a save
+    // landing mid-probe would be overwritten by `custom_llm::persist_rows`'s
+    // pre-probe rows when that probe finished. `REGISTRY_LOCK`'s doc used to
+    // claim the custom-provider commands were its only writers; this path is the
+    // writer it did not know about. Order is registry-then-settings at every
+    // site, matching `custom_llm`.
+    //
+    // Scoped to a block so the guard is released before the post-write health
+    // push below, which awaits and has nothing to do with the registry.
+    let mut updated = mutate_settings_for_body(body_obj, |updated| {
+        let current = updated.clone();
+        let obj = updated
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("current settings are not an object"))?;
+        // { ...current, ...body } — body keys override.
+        for (k, v) in body_obj {
+            obj.insert(k.clone(), v.clone());
+        }
 
-    // Sentinel / empty / absent oo_password → keep the stored value.
-    let sent = body_obj.get("oo_password").and_then(Value::as_str);
-    if sent.is_none_or(|p| p.is_empty() || p == PASSWORD_SENTINEL) {
-        let kept = current
-            .get("oo_password")
-            .cloned()
-            .unwrap_or(Value::String(String::new()));
-        obj.insert("oo_password".into(), kept);
-    }
+        // Sentinel / empty / absent oo_password → keep the stored value.
+        let sent = body_obj.get("oo_password").and_then(Value::as_str);
+        if sent.is_none_or(|p| p.is_empty() || p == PASSWORD_SENTINEL) {
+            let kept = current
+                .get("oo_password")
+                .cloned()
+                .unwrap_or(Value::String(String::new()));
+            obj.insert("oo_password".into(), kept);
+        }
 
-    // Same rule per custom endpoint, matched BY ID (see `redact_custom_keys`). The merge
-    // above is shallow, so a body carrying the registry replaces it wholesale — and the UI's
-    // copy has a sentinel in every row it read back. Without this, saving any unrelated
-    // setting would overwrite every API key with "••••••••".
-    restore_custom_keys(&current, obj)?;
+        // Same rule per custom endpoint, matched BY ID (see `redact_custom_keys`). The merge
+        // above is shallow, so a body carrying the registry replaces it wholesale — and the UI's
+        // copy has a sentinel in every row it read back. Without this, saving any unrelated
+        // setting would overwrite every API key with "••••••••".
+        restore_custom_keys(&current, obj).map_err(|e| anyhow::anyhow!(e))?;
 
-    // The GATE. A custom endpoint may only run the pipeline on measured evidence
-    // (`meridian_core::SchemaRung`), and it is enforced HERE rather than only in the UI:
-    // this command is the sole writer of settings.json, so a hand-edited file or an older
-    // frontend would otherwise route a user's whole day through an endpoint nobody has
-    // shown can hold a schema. An unenforced fold doesn't fail loudly — it drops the hour.
-    enforce_custom_provider_gate(&updated)?;
+        // The GATE. A custom endpoint may only run the pipeline on measured evidence
+        // (`meridian_core::SchemaRung`), and it is enforced HERE rather than only in the UI:
+        // this command is the sole writer of settings.json, so a hand-edited file or an older
+        // frontend would otherwise route a user's whole day through an endpoint nobody has
+        // shown can hold a schema. An unenforced fold doesn't fail loudly — it drops the hour.
+        enforce_custom_provider_gate(updated).map_err(|e| anyhow::anyhow!(e))?;
 
-    meridian_core::settings::write_settings_value(&updated)
-        .map_err(|e| crate::cmd_err!(e, "update_settings: write failed"))?;
+        // LAST gate before the write, and deliberately on the whole document rather
+        // than another named field: everything above validates fields by name, so
+        // anything not on that list could reach disk with the wrong type and take
+        // the ENTIRE file down with it at load time. See
+        // `merged_settings_are_loadable`.
+        merged_settings_are_loadable(updated).map_err(|e| anyhow::anyhow!(e))?;
+
+        Ok(updated.clone())
+    })
+    .await
+    .map_err(|e| crate::cmd_err!(e, "update_settings: write failed"))?;
 
     // Refresh the live capture ignore list so a Settings change takes effect on
     // the very next captured frame — no capture restart. The frame + UI-event
@@ -212,13 +240,24 @@ pub async fn update_settings(
         // tick (`main.rs`) calls the identical `sync_groq_deprecated_notice`, so switching
         // away from Groq here and there converge on the same answer; this just stops the
         // banner from sitting stale for up to a minute after the switch already took effect.
-        if let Some(p) = pool.as_ref() {
+        if let Some(p) = pool.get() {
             let vendor = meridian_core::settings::load_runtime_settings()
                 .active_custom_provider()
                 .map(|c| c.vendor.clone());
-            meridian::notices::sync_groq_deprecated_notice(p, vendor.as_deref()).await;
-            crate::commands::notices::push_notices_update(&app, p).await;
+            meridian::notices::sync_groq_deprecated_notice(&p, vendor.as_deref()).await;
+            crate::commands::notices::push_notices_update(&app, &p).await;
         }
+    }
+
+    // Autostart has to be applied to the OS, not just recorded. Turning it ON
+    // registers the login/morning job now rather than at the next launch;
+    // turning it OFF actively removes it, because the job already on disk is
+    // what the OS acts on - `autostart::ensure_registered` merely declining to
+    // write it would leave the user's "no" ignored until they uninstalled.
+    // Bundled-only, matching where the registration exists at all.
+    if body_obj.contains_key("autostart_enabled") && crate::sys::is_bundled() {
+        let enabled = meridian_core::settings::load_runtime_settings().autostart_enabled;
+        crate::autostart::apply_setting_change(enabled).await;
     }
 
     redact_password(&mut updated);
@@ -286,6 +325,86 @@ fn restore_custom_keys(
 /// daemon's hourly clock check (`pm_worklog::auto_generate`) and the feature
 /// would just never fire — reject it at the door instead of failing quietly
 /// later. Absent or explicit `null` (turning the feature off) both pass.
+/// Does this settings body replace the custom-endpoint registry?
+///
+/// Named rather than inlined because it decides whether `update_settings` takes
+/// `custom_llm::registry_guard`, and getting it wrong is silent: too narrow and
+/// a settings save can be overwritten by an in-flight probe's pre-probe rows;
+/// too broad and every unrelated save serialises behind a probe that can take
+/// seconds.
+///
+/// Keyed on the body, not the merged document - the merged document ALWAYS
+/// carries the registry (it is a stored setting), so checking that would take
+/// the lock on every save.
+fn body_touches_registry(body_obj: &serde_json::Map<String, Value>) -> bool {
+    body_obj.contains_key("custom_llm_providers")
+}
+
+/// Run a settings mutation under the settings lock - and additionally under the
+/// REGISTRY lock when `body_obj` carries `custom_llm_providers`.
+///
+/// # Why this is a function rather than a block inside `update_settings`
+/// It is the whole registry-serialisation guarantee, and a test that reaches it
+/// only by calling `registry_guard()` itself proves nothing: it keeps passing if
+/// someone deletes the guard from this path or breaks
+/// [`body_touches_registry`]. That is exactly what the previous regression test
+/// did, and it is the third time in this series that a green test was not
+/// testing what its name claimed. Extracting it gives the test the real path -
+/// gating decision included - without needing an `AppHandle` or a live endpoint
+/// to probe.
+///
+/// Lock order is registry-then-settings, matching `custom_llm`. The registry
+/// guard is dropped when this returns, so `update_settings`'s post-write health
+/// push never holds it.
+pub(crate) async fn mutate_settings_for_body<F>(
+    body_obj: &serde_json::Map<String, Value>,
+    f: F,
+) -> anyhow::Result<Value>
+where
+    F: FnOnce(&mut Value) -> anyhow::Result<Value>,
+{
+    let _registry_guard = if body_touches_registry(body_obj) {
+        Some(crate::commands::custom_llm::registry_guard().await)
+    } else {
+        None
+    };
+    meridian_core::settings::mutate_settings_value(f)
+}
+
+/// Reject a merged settings document that `load_runtime_settings` would not be
+/// able to read back.
+///
+/// # Why this is checked on the DOCUMENT and not per field
+/// `update_settings` validated five fields by name and then merged the body
+/// verbatim, so any field nobody listed (`autostart_enabled` was the one found)
+/// could reach `settings.json` with the wrong type. The damage is not scoped to
+/// that field: `RuntimeSettings` carries a struct-level `#[serde(default)]`,
+/// which rescues a MISSING key but not a wrong-TYPED one, so one bad value
+/// fails the whole deserialise. `load_runtime_settings` then returns
+/// `RuntimeSettings::default()` and every unrelated setting - work hours, poll
+/// interval, log level - silently reads as its default until the file is
+/// repaired by hand. `meridian_core::settings`'s
+/// `an_unknown_llm_provider_does_not_reset_every_other_setting` documents that
+/// landmine from the other side.
+///
+/// Checking the merged document closes it for every field at once, including
+/// ones added later that nobody remembers to validate - which is the failure
+/// mode a name-by-name list reproduces every time it is extended.
+///
+/// UNKNOWN keys stay legal: `read_settings_value` deliberately preserves them so
+/// a write can round-trip a file from a newer build, and `RuntimeSettings` has
+/// no `deny_unknown_fields`. Only a wrong TYPE is rejected.
+fn merged_settings_are_loadable(merged: &Value) -> Result<(), String> {
+    serde_json::from_value::<meridian_core::settings::RuntimeSettings>(merged.clone())
+        .map(|_| ())
+        .map_err(|e| {
+            format!(
+                "these settings could not be saved - {e}. Nothing was written, so your \
+                 existing settings are unchanged."
+            )
+        })
+}
+
 fn validate_worklog_auto_generate_time(
     body_obj: &serde_json::Map<String, Value>,
 ) -> Result<(), String> {
@@ -363,6 +482,92 @@ fn str_list(v: &Value, key: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The registry lock must be taken for a body that carries the registry, and
+    /// NOT for one that does not - a probe can hold that lock for seconds.
+    #[test]
+    fn only_a_registry_bearing_body_takes_the_registry_lock() {
+        let with_registry = json!({"custom_llm_providers": [], "llm_provider": "claude"});
+        assert!(body_touches_registry(with_registry.as_object().unwrap()));
+
+        for unrelated in [
+            json!({"llm_provider": "claude"}),
+            json!({"autostart_enabled": true}),
+            json!({}),
+        ] {
+            assert!(
+                !body_touches_registry(unrelated.as_object().unwrap()),
+                "an unrelated save must not serialise behind an endpoint probe: {unrelated}"
+            );
+        }
+    }
+
+    /// A merged settings document that cannot deserialise must be REJECTED
+    /// rather than written.
+    ///
+    /// `update_settings` validated `otlp_endpoint`, `llm_provider`, the two
+    /// credential fields and `worklog_auto_generate_time` - and then merged the
+    /// body verbatim. `autostart_enabled` had no check, so a non-boolean reached
+    /// `settings.json`.
+    ///
+    /// The blast radius is the whole file, not one field: `RuntimeSettings`
+    /// carries a struct-level `#[serde(default)]`, which covers a MISSING key
+    /// but not a wrong-TYPED one. One bad value therefore fails the whole
+    /// deserialise, `load_runtime_settings` returns `RuntimeSettings::default()`,
+    /// and every unrelated setting - work hours, poll interval, log level -
+    /// silently reads as its default until someone repairs the file by hand.
+    /// `meridian_core::settings`'s own
+    /// `an_unknown_llm_provider_does_not_reset_every_other_setting` documents
+    /// that landmine.
+    ///
+    /// Validating the MERGED DOCUMENT rather than adding an `autostart_enabled`
+    /// check closes it for every field at once, including fields added later
+    /// that nobody remembers to validate.
+    #[test]
+    fn a_wrong_typed_field_is_rejected_before_it_can_reset_the_file() {
+        let mut doc = serde_json::to_value(meridian_core::settings::RuntimeSettings::default())
+            .expect("defaults serialise");
+        doc.as_object_mut()
+            .unwrap()
+            .insert("autostart_enabled".into(), Value::String("yes".into()));
+        assert!(
+            merged_settings_are_loadable(&doc).is_err(),
+            "a non-boolean autostart_enabled must never reach settings.json"
+        );
+    }
+
+    /// The same guard must cover fields nobody thought to validate - that is the
+    /// point of checking the document instead of a field list.
+    #[test]
+    fn the_guard_is_not_specific_to_autostart_enabled() {
+        for (key, bad) in [
+            ("poll_interval_secs", Value::String("soon".into())),
+            ("notifications_enabled", Value::String("maybe".into())),
+            ("error_reporting_enabled", serde_json::json!(3)),
+        ] {
+            let mut doc = serde_json::to_value(meridian_core::settings::RuntimeSettings::default())
+                .expect("defaults serialise");
+            doc.as_object_mut().unwrap().insert(key.into(), bad);
+            assert!(
+                merged_settings_are_loadable(&doc).is_err(),
+                "{key} with a wrong-typed value must be rejected too"
+            );
+        }
+    }
+
+    /// It must NOT reject a document carrying keys the struct does not know.
+    /// `read_settings_value` deliberately preserves unknown keys so a write can
+    /// round-trip them; rejecting those would make every save fail on a file
+    /// written by a newer build.
+    #[test]
+    fn unknown_keys_still_round_trip() {
+        let mut doc = serde_json::to_value(meridian_core::settings::RuntimeSettings::default())
+            .expect("defaults serialise");
+        doc.as_object_mut()
+            .unwrap()
+            .insert("a_key_from_a_newer_build".into(), Value::Bool(true));
+        assert!(merged_settings_are_loadable(&doc).is_ok());
+    }
     use super::*;
     use serde_json::json;
 

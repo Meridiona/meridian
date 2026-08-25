@@ -127,10 +127,30 @@ const TRANSIENT_ESCALATION_HOURS: i64 = 6;
 /// row with an epoch `last_synced_at`, which is not recent, and escalates. One
 /// sync interval of grace, and the persistently-blocked case still surfaces.
 ///
+/// **This same one-retry grace applies to a provider that has synced
+/// successfully before**, not just a brand-new one - see the `is_sentinel`
+/// branch in [`note_transient_sync_failure`]. Without it, a provider whose
+/// `last_synced_at` goes stale because the DAEMON WAS ASLEEP (laptop closed
+/// overnight, a longer Wi-Fi/VPN drop) rather than because it kept failing
+/// escalates on its very first retry after waking - the exact false-positive
+/// this module exists to remove, just triggered by a gap in *time* instead of
+/// a gap in connectivity. The grace row and this ONE mechanism (the epoch
+/// sentinel) cover both cases identically, so the escalation check cannot tell
+/// them apart and does not need to.
+///
 /// The remedy points at connectivity, NOT credentials: by construction we only
 /// reach here for failures that are not the user's token.
 ///
 /// Write the epoch-sentinel grace row for a provider that has never synced.
+///
+/// **Deliberately does NOT write `last_error`** (unlike the escalating write
+/// in [`stamp_sync_error_with_remedy`]): `meridian_core::readers::integrations::sync_errors`
+/// reads `last_error IS NOT NULL` to drive the per-provider "Sync failed"
+/// badge on the Integrations page, independent of whether a system-wide
+/// notice was raised. Setting it here would show that badge during a period
+/// this function is specifically trying to keep quiet - `detail` is still
+/// logged (below) so the attempt is not lost from telemetry, just kept out of
+/// the persisted, user-visible column.
 ///
 /// # Why `ON CONFLICT DO NOTHING`
 /// The caller's `has_row` check is a SEPARATE statement from this insert, and
@@ -156,16 +176,81 @@ const TRANSIENT_ESCALATION_HOURS: i64 = 6;
 /// behaviour a testable seam - the race itself has no deterministic hook, but
 /// "inserting over an existing row is a no-op, not an error" does.
 async fn insert_grace_row(pool: &SqlitePool, provider: &str, detail: &str) -> Result<()> {
+    tracing::debug!(
+        provider,
+        detail,
+        "grace row: recording the attempt without a user-visible error"
+    );
     sqlx::query(
         "INSERT INTO pm_sync_state (provider, last_synced_at, last_error)
-         VALUES (?, '1970-01-01T00:00:00Z', ?)
+         VALUES (?, '1970-01-01T00:00:00Z', NULL)
          ON CONFLICT(provider) DO NOTHING",
     )
     .bind(provider)
-    .bind(detail)
     .execute(pool)
     .await
     .context("recording the first transient failure for a never-synced provider")?;
+    Ok(())
+}
+
+/// Downgrade a STALE-BUT-PREVIOUSLY-SUCCESSFUL provider's `last_synced_at` to
+/// the epoch sentinel, marking its one retry of grace as used - WITHOUT
+/// writing `last_error`, for the same reason [`insert_grace_row`] doesn't (see
+/// its doc comment). Mirrors that function's shape but is an UPDATE, not an
+/// INSERT: the row already exists here, carrying a real (if old) past-success
+/// timestamp that this call intentionally overwrites, so the NEXT failure's
+/// `is_sentinel` check reads it identically to a never-synced provider's grace
+/// row and escalates.
+async fn mark_first_stale_failure(pool: &SqlitePool, provider: &str, detail: &str) -> Result<()> {
+    tracing::debug!(
+        provider,
+        detail,
+        "first transient failure since a genuine past success - staying quiet until the next attempt"
+    );
+    // The WHERE clause re-checks, inside the write, the same three conditions
+    // the caller checked in a SEPARATE statement: still stale, not already the
+    // sentinel, and carrying no error.
+    //
+    // For the same reason `insert_grace_row` needs `ON CONFLICT DO NOTHING`:
+    // `meridian ticket-update` opens its own pool to this file and runs
+    // `run_pm_force_sync` while the daemon's poll loop runs `run_pm_sync`, so
+    // the racers are separate PROCESSES and no in-process lock covers them.
+    // That path was guarded for the INSERT and left open for this UPDATE.
+    //
+    // The damage an unconditional write does is not a lost grace tick (both
+    // racers intend the same sentinel) but the opposite: a sync that SUCCEEDS
+    // between the caller's read and this statement has its fresh
+    // `last_synced_at` stamped back to the epoch. The provider then reads as
+    // never-recently-synced, and the next failure escalates a user-visible
+    // notice for a tracker that is working. A single conditional statement is
+    // atomic in SQLite, so the success either lands before this (and the
+    // `last_synced_at` guard makes this a no-op) or after it (and it wins).
+    let updated = sqlx::query(
+        "UPDATE pm_sync_state SET last_synced_at = '1970-01-01T00:00:00Z'
+         WHERE provider = ?
+           AND last_error IS NULL
+           AND last_synced_at != '1970-01-01T00:00:00Z'
+           AND last_synced_at <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)",
+    )
+    .bind(provider)
+    .bind(format!("-{TRANSIENT_ESCALATION_HOURS} hours"))
+    .execute(pool)
+    .await
+    .context("recording a resumed provider's first quiet failure since its last success")?
+    .rows_affected();
+
+    if updated == 0 {
+        // Something changed under us between the read and the write. Staying
+        // quiet is still the right answer for THIS attempt - the caller already
+        // decided not to escalate - but say so, because the alternative reading
+        // ("the write silently did nothing") is the bug this guard introduces
+        // if it is ever wrong.
+        tracing::debug!(
+            provider,
+            "grace write skipped - the row stopped being a clean stale transition \
+             (a concurrent sync succeeded, or another pass already recorded it)"
+        );
+    }
     Ok(())
 }
 
@@ -180,18 +265,27 @@ pub async fn note_transient_sync_failure(
     detail: &str,
 ) -> Result<bool> {
     let threshold = format!("-{TRANSIENT_ESCALATION_HOURS} hours");
-    let (has_row, recently_synced): (i64, i64) = sqlx::query_as(
+    let (has_row, recently_synced, is_sentinel, has_error): (i64, i64, i64, i64) = sqlx::query_as(
         "SELECT
              EXISTS(SELECT 1 FROM pm_sync_state WHERE provider = ?),
              EXISTS(
                  SELECT 1 FROM pm_sync_state
                  WHERE provider = ?
                    AND last_synced_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
+             ),
+             EXISTS(
+                 SELECT 1 FROM pm_sync_state
+                 WHERE provider = ? AND last_synced_at = '1970-01-01T00:00:00Z'
+             ),
+             EXISTS(
+                 SELECT 1 FROM pm_sync_state WHERE provider = ? AND last_error IS NOT NULL
              )",
     )
     .bind(provider)
     .bind(provider)
     .bind(&threshold)
+    .bind(provider)
+    .bind(provider)
     .fetch_one(pool)
     .await
     .context("checking sync recency for transient-failure escalation")?;
@@ -212,6 +306,22 @@ pub async fn note_transient_sync_failure(
             provider,
             "first transient failure on a never-synced provider - staying quiet until the next attempt"
         );
+        tracing::Span::current().record("escalated", false);
+        return Ok(false);
+    }
+
+    // Not recently synced, and the provider HAS synced before. Give it the
+    // SAME one retry of grace a never-synced provider gets, unless there is
+    // already something to weigh against staying quiet: `is_sentinel` covers
+    // "the grace tick already ran" (this branch set `last_synced_at` to the
+    // sentinel with no `last_error`, and a SECOND consecutive failure now
+    // finds it), and `has_error` covers "a fault is already recorded here"
+    // (a terminal failure elsewhere already wrote `last_error` and raised its
+    // own notice - nothing is gained by staying quiet on top of that). Only a
+    // row that has synced before, has since gone stale, and carries neither
+    // signal - a clean transition into staleness - gets the grace write.
+    if has_error == 0 && is_sentinel == 0 {
+        mark_first_stale_failure(pool, provider, detail).await?;
         tracing::Span::current().record("escalated", false);
         return Ok(false);
     }
@@ -383,6 +493,19 @@ pub async fn mark_retained_offboard(
     provider: &str,
     fetched_keys: &[String],
 ) -> Result<u64> {
+    // An empty fetch is NOT "everything is stale". Two things produce it — the
+    // user genuinely has nothing open, and a scope/permission blip that returns
+    // 200 with zero issues — and they are indistinguishable from here. Flagging
+    // the whole board off-board on the second one is a bad trade against leaving
+    // it alone on the first, which self-heals on the next sync.
+    //
+    // This also stopped an outright bug: an empty slice renders `NOT IN ()`,
+    // which is invalid SQL, so this path previously raised an error that every
+    // caller swallowed as a warning. It behaved correctly only by accident, and
+    // only as long as nobody looked at the log.
+    if fetched_keys.is_empty() {
+        return Ok(0);
+    }
     let placeholders = fetched_keys
         .iter()
         .map(|_| "?")

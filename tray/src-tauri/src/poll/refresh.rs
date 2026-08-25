@@ -392,6 +392,47 @@ fn decide_health_notice(
     }
 }
 
+/// If `err` indicates `meridian.db` is corrupt, raise the SAME `db.corrupt`
+/// notice `main.rs`'s `etl_tick` raises on the daemon side - immediately,
+/// from whichever side of the app noticed first.
+///
+/// The daemon already had this covered for its own queries, but the tray
+/// holds its own independent, long-lived pool on the same file (opened once
+/// at startup, `lib.rs`'s `app.manage(db_pool)`) and reads different tables
+/// on this loop's faster (~30 s) cadence than the daemon's ETL/summariser
+/// ticks. In the incident this fixes, the tray's own reads here hit
+/// `(code: 11) database disk image is malformed` a full 5+ minutes before any
+/// daemon-side query happened to touch the same damage - and until this
+/// function existed, that whole window was silent `tracing::warn!` noise with
+/// no banner, because nothing on this side of the process ever called
+/// `raise_typed`. Idempotent (`raise_typed` upserts), so calling this on
+/// every failing tick is safe and cheap - it does not need its own latch the
+/// way the daemon's ETL loop does, because a poll tick that keeps failing
+/// just keeps refreshing the same notice row rather than retrying a query
+/// with side effects.
+async fn raise_if_corrupt(pool: &SqlitePool, err: &anyhow::Error) {
+    if !meridian::db::integrity::is_corrupt_error(err) {
+        return;
+    }
+    let _ = meridian::notices::raise_typed(
+        pool,
+        meridian::notices::Notice {
+            id: meridian::notices::DB_CORRUPT,
+            severity: "error",
+            title: "Meridian's database is damaged",
+            // Full chain, not `err.to_string()` - same reasoning as
+            // `crate::cmd_err!`'s doc comment: `anyhow::Error`'s `Display`
+            // renders only the outermost `.context()` and would otherwise
+            // drop the SQLite code a reader needs.
+            detail: &format!("{err:#}"),
+            remedy: Some("Quit Meridian, then run 'meridian db repair' in a terminal"),
+            event_key: meridian::notices::DB_CORRUPT,
+            deep_link: Some(meridian_core::notifications::deep_links::LOGS),
+        },
+    )
+    .await;
+}
+
 /// Read the active session (direct DB) and store the app name + elapsed seconds.
 /// On a read error we keep the previous value rather than clearing the pill on a
 /// transient blip.
@@ -412,6 +453,7 @@ pub(super) async fn refresh_active(pool: &SqlitePool, state: &Arc<Mutex<AppState
             // drop exactly the cause (e.g. a corrupt DB's SQLite code) that a
             // reader needs.
             tracing::warn!(error = %meridian::errors::chain(&e), "refresh_active failed");
+            raise_if_corrupt(pool, &e).await;
             return;
         }
     };
@@ -450,7 +492,8 @@ pub(super) async fn refresh_current_task(pool: &SqlitePool, state: &Arc<Mutex<Ap
                 .and_then(|c| c.estimate_s.map(|e| e.max(0) as u64));
         }
         Err(e) => {
-            tracing::warn!(error = %meridian::errors::chain(&e), "refresh_current_task failed")
+            tracing::warn!(error = %meridian::errors::chain(&e), "refresh_current_task failed");
+            raise_if_corrupt(pool, &e).await;
         }
     }
 }
@@ -503,7 +546,10 @@ pub(super) async fn refresh_today(pool: &SqlitePool, state: &Arc<Mutex<AppState>
             s.switch_count = t.switch_count.max(0) as u32;
             s.today = bd;
         }
-        Err(e) => tracing::warn!(error = %e, "refresh_today failed"),
+        Err(e) => {
+            tracing::warn!(error = %meridian::errors::chain(&e), "refresh_today failed");
+            raise_if_corrupt(pool, &e).await;
+        }
     }
 }
 
@@ -535,7 +581,10 @@ pub(super) async fn refresh_worklogs(pool: &SqlitePool, state: &Arc<Mutex<AppSta
             s.drafts_count = count;
             s.logged_s = logged_s;
         }
-        Err(e) => tracing::warn!(error = %e, "refresh_worklogs failed"),
+        Err(e) => {
+            tracing::warn!(error = %meridian::errors::chain(&e), "refresh_worklogs failed");
+            raise_if_corrupt(pool, &e).await;
+        }
     }
 }
 
@@ -944,6 +993,55 @@ mod tests {
         );
         assert!(recovered.notify_back);
         assert!(!recovered.reconcile_stale);
+    }
+
+    /// The tray's own reads must raise `db.corrupt` the moment THEY hit
+    /// corruption, not wait for a daemon-side query to stumble onto the same
+    /// damage minutes later — the gap this fix closes. Real corrupted bytes on
+    /// disk aren't needed: `raise_if_corrupt` only inspects the error, and
+    /// `db::integrity::is_corrupt_error` (the classifier it delegates to) is
+    /// already pinned against the real field-incident shape elsewhere.
+    #[tokio::test]
+    async fn raise_if_corrupt_writes_the_notice_on_a_corrupt_error() {
+        let pool = fresh_db().await;
+        let err = anyhow::anyhow!(
+            "error returned from database: (code: 11) database disk image is malformed"
+        )
+        .context("current_task: fetch most recent task session");
+
+        raise_if_corrupt(&pool, &err).await;
+
+        let row: (String, String) =
+            sqlx::query_as("SELECT severity, detail FROM system_notices WHERE notice_id = ?")
+                .bind(meridian::notices::DB_CORRUPT)
+                .fetch_one(&pool)
+                .await
+                .expect("db.corrupt notice must be written");
+        assert_eq!(row.0, "error");
+        assert!(
+            row.1.contains("database disk image is malformed"),
+            "notice detail dropped the actual cause: {}",
+            row.1
+        );
+    }
+
+    /// Every other read failure (a lock, a missing table, a network blip on an
+    /// unrelated call) must NOT raise the corruption banner — that would train
+    /// the user to run `db repair` for faults it can't fix.
+    #[tokio::test]
+    async fn raise_if_corrupt_is_silent_on_unrelated_errors() {
+        let pool = fresh_db().await;
+        let err = anyhow::anyhow!("database is locked").context("today: fetch sessions");
+
+        raise_if_corrupt(&pool, &err).await;
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM system_notices WHERE notice_id = ?")
+                .bind(meridian::notices::DB_CORRUPT)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 0, "an unrelated error must not raise db.corrupt");
     }
 
     async fn fresh_db() -> meridian_core::SqlitePool {

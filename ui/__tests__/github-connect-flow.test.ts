@@ -27,8 +27,17 @@ describe('GitHub PAT metadata', () => {
 
   it('pre-selects the required scopes and a token name in the create-PAT link', () => {
     expect(token.url).toContain('github.com/settings/tokens/new')
-    expect(token.url).toContain('scopes=repo,read:org,read:project')
+    expect(token.url).toContain('scopes=repo,read:org,project')
     expect(token.url).toContain('description=Meridian')
+  })
+
+  // Regression (issue #843): under the read-only `read:project` scope the
+  // `addProjectV2ItemById` mutation that puts a newly created task on the user's
+  // board is refused, so the issue never syncs back into Meridian. The PAT link
+  // must ask for the read-write `project` scope, matching REQUIRED_SCOPES.
+  it('asks for the read-write project scope, not read-only read:project', () => {
+    expect(token.url).not.toContain('read:project')
+    expect(token.hint).not.toContain('read:project')
   })
 
   it('drops the manual "Project IDs" node-ID field — only the token is asked for', () => {
@@ -37,7 +46,7 @@ describe('GitHub PAT metadata', () => {
   })
 
   it('tells the user the scopes are already selected so they just pick an org/repo', () => {
-    expect(token.hint).toContain('repo, read:org, read:project')
+    expect(token.hint).toContain('repo, read:org, project')
     expect(token.hint.toLowerCase()).toContain('organisation or repositories')
   })
 

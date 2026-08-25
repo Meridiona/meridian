@@ -42,6 +42,7 @@
 import { load } from '@/lib/bridge'
 import { connectedTrackers } from '@/lib/integrations'
 import type { IntegrationsResponse } from '@/lib/api-types'
+import type { RuntimeSettings } from '@/lib/settings'
 import type { Stage } from './engine'
 import { FOCUS_TASK_ID, OFFPLAN_TASK_ID } from './sampleDay'
 
@@ -82,6 +83,145 @@ async function hasBoard(usesTracker: string | null): Promise<boolean> {
   } catch {
     return usesTracker === 'tracker'
   }
+}
+
+/** Wait for the worklog-time dialog to actually be ANSWERED, by polling the
+ *  real setting rather than waiting on a DOM click.
+ *
+ *  `waitForClick` was the original mechanism here, and an extended
+ *  investigation (see PR #849) never found why it resolves `true` with no
+ *  observable click of any kind - button, backdrop, or otherwise - having
+ *  occurred. Rather than keep chasing that, this sidesteps it: the question
+ *  this beat is asking is answered the moment `worklog_auto_generate_time` or
+ *  `worklog_auto_generate_prompted` actually changes in settings.json, no
+ *  matter which control the user pressed or how the tour's click-detection
+ *  interprets it. A snapshot taken before the dialog opens is the baseline -
+ *  necessary because a replayed tour can already have `prompted: true` from an
+ *  earlier run, which would otherwise read as "already answered" before the
+ *  user has touched anything this time.
+ *
+ *  A FAILED read is not a value, and the two must not share a representation.
+ *  When the baseline read itself fails there is nothing to compare against, so
+ *  the first reading that succeeds becomes the baseline rather than counting as
+ *  the change - otherwise one rejected `get_settings` ends the beat on the very
+ *  next poll, with nothing recorded, which is precisely the failure this
+ *  function exists to prevent.
+ *
+ *  ALSO resolves on the dialog leaving the DOM even with no settings change -
+ *  a replayed tour that already has `prompted: true` and gets declined again
+ *  ("Not now"/backdrop/×) writes back the SAME values, which the diff above
+ *  would never see as a change. The dialog closing is itself the answer in
+ *  that case, exactly like `waitForClick`'s original vanish handling, just
+ *  implemented as a plain poll rather than depending on the primitive this
+ *  beat's actual bug lives in.
+ *
+ *  ALSO races an un-awaited `waitForClick` alongside the poll, purely for its
+ *  side effect: this beat has no ring, so the engine's `FullFence` - the
+ *  full-viewport click-blocker that fills in for a ring when nothing is being
+ *  pointed at - stays up unless SOMETHING is actively `awaiting` a click. A
+ *  first version of this fix dropped `waitForClick` entirely and polled with
+ *  nothing lowering the fence, which made the whole dialog genuinely
+ *  unclickable for up to five minutes - worse than the bug it was fixing.
+ *  This still doesn't trust the click primitive's RESULT (the mystery this
+ *  investigation never closed), but its mere presence keeps the fence down
+ *  while the real answer is confirmed by polling. */
+/** One reading of the two settings this beat watches, as a comparable string.
+ *
+ *  `undefined` means the READ FAILED and a `string` means "settings say this".
+ *  Collapsing those two - as returning `null` for both did - is what let a
+ *  failed baseline read end the beat instantly: `baseline` was `null`, the next
+ *  successful poll was a non-null string, that compared as a change, and the
+ *  tour moved on having recorded nothing. Which is the bug this whole function
+ *  was written to fix, reintroduced through the error path. */
+export type SettingsProbe = () => Promise<string | undefined>
+
+const readWorklogSettings: SettingsProbe = async () => {
+  try {
+    const v = await load<RuntimeSettings>('/api/settings', 'get_settings')
+    return `${v.worklog_auto_generate_time}:${v.worklog_auto_generate_prompted}`
+  } catch {
+    return undefined
+  }
+}
+
+/// How long any single settings read may block the answer loop.
+///
+/// Not the remaining deadline: see `waitForWorklogAnswered`. The loop must get
+/// back to its DOM check often enough that dismissing the dialog ends the wait
+/// promptly, and 2s is comfortably longer than a healthy `get_settings` while
+/// being far below the five-minute budget.
+const READ_SLICE_MS = 2000
+
+/// Resolve `p`, or `undefined` if `ms` elapses first.
+///
+/// The timer is always cleared, so a fast read does not keep the process alive
+/// for the rest of the window - which matters here because `timeoutMs` on this
+/// path is five minutes.
+async function within<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      p,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), ms)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+// EXPORTED, with an injectable `probe`, for the test harness - nothing else
+// passes the third argument and production always takes the default. The
+// behaviour that matters is an ERROR PATH (a rejected `get_settings`)
+// interleaved with a poll: a source scan cannot prove it, and no other seam in
+// this module reaches it. A parameter is the seam rather than `mock.module`
+// because bun replaces a mocked module for the WHOLE test process - stubbing
+// `@/lib/bridge` here broke every other file that imports `invoke`/
+// `openExternal` from it. See `__tests__/tour-worklog-answered.test.ts`.
+export async function waitForWorklogAnswered(
+  s: Stage,
+  timeoutMs: number,
+  probe: SettingsProbe = readWorklogSettings,
+): Promise<boolean> {
+  void s.waitForClick('[data-tour="worklog-schedule-on"]', timeoutMs)
+  const deadline = Date.now() + timeoutMs
+  // Every read is raced against the REMAINING deadline. Awaiting `probe()`
+  // bare is what made this hang: a Tauri call that never settles blocks inside
+  // the loop, so the `Date.now() < deadline` test below never runs again and
+  // the tour can neither close the dialog nor finish - the same class of
+  // unbounded wait this function was written to remove, one level down.
+  //
+  // A timed-out read is reported as `undefined`, which is already the "read
+  // failed" case the comparison below handles: it is not evidence the user
+  // answered, so the loop keeps waiting rather than advancing.
+  //
+  // Bounded by a SHORT slice, not by the remaining deadline. Bounding by the
+  // remaining deadline stops the hang but not the unresponsiveness: a probe
+  // that never settles parks the loop inside `await read()` for up to five
+  // minutes, and the dialog-removal check below cannot run - so a user who
+  // dismisses the dialog during that await waits out the whole timeout. The
+  // slice caps how long the loop can be blind to the DOM.
+  //
+  // A working-but-slow probe reads as `undefined` for that tick and is simply
+  // retried on the next one, which the "read failed" handling already covers.
+  const read = () =>
+    within(probe(), Math.min(READ_SLICE_MS, Math.max(0, deadline - Date.now())))
+  let baseline = await read()
+  while (Date.now() < deadline) {
+    if (!document.querySelector('[data-tour="worklog-schedule-on"]')) return true
+    const current = await read()
+    if (baseline === undefined) {
+      // The baseline read failed, so there is nothing to compare against yet.
+      // Adopt the first reading that succeeds instead of counting it as the
+      // answer - a recovered read is not a user response.
+      baseline = current
+    } else if (current !== undefined && current !== baseline) {
+      return true
+    }
+    await s.pause(400)
+  }
+  return false
 }
 
 export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
@@ -525,11 +665,45 @@ export async function runDayHalf(s: Stage, ctx: DayHalfContext): Promise<void> {
   // clear above the dialog, and the cursor still does the pointing.
   s.say('Meridian has them written by then and tells you they are waiting. Change it any time.')
   await s.pause(1400)
+  // PICK THE TIME BEFORE POINTING AT "Turn on". The button only enables once
+  // the user has actually touched a preset or the custom field (see
+  // WorklogAutoGenerateDialog's `chosen` state) - pointing straight at it, as
+  // this beat used to, put the cursor on a control that could not yet respond
+  // to a click, with no instruction telling the user why. Directing them to
+  // the time row first means the button is live by the time they reach it.
+  await s.point('[data-tour="worklog-schedule-times"]')
+  s.say('Pick a time - one of these, or type your own.')
+  // The HANDOVER is this click-wait, and it has to be `waitForClick`: it
+  // resolves on the click OR on the dialog leaving the DOM, so "Not now" and
+  // the backdrop both end the beat.
+  //
+  // An earlier version replaced this with `appeared(…:not([disabled]), 300000)`
+  // to dodge the bubbled-click problem below. That traded a cosmetic fault for
+  // a hang: `appeared` only ever resolves on an element APPEARING, so a user
+  // who dismissed the dialog left the tour waiting on a button that no longer
+  // existed for the full five minutes - with `handover` raised the whole time
+  // (300000 >= HANDOVER_WAIT_MS), so the fence stayed down too. The comment
+  // below this block already said dismissal must not strand the tour; that line
+  // broke the guarantee two lines above it.
+  await s.waitForClick('[data-tour="worklog-schedule-times"]', 300000)
+  // THEN a short, bounded settle for the button to go live. The time row is a
+  // wrapper, so the click above also matches its padding or the custom-time
+  // input - neither of which sets the dialog's `chosen` state, leaving "Turn
+  // on" disabled and the cursor pointing at a dead control (the problem the
+  // comment at the top of this beat exists to prevent).
+  //
+  // BOUNDED, and deliberately well under `HANDOVER_WAIT_MS` so it reads as a
+  // probe rather than a handover: on the normal path a preset click enables the
+  // button immediately and this returns at once, and on any other path -
+  // padding click, dismissed dialog - it simply expires and the dismissal-safe
+  // `waitForClick` below stays the thing actually waiting on the user.
+  await s.appeared('[data-tour="worklog-schedule-on"]:not([disabled])', 4000)
   await s.point('[data-tour="worklog-schedule-on"]')
-  // Resolves on the click OR on the dialog leaving the DOM, which covers "Not
-  // now" and the backdrop - both are the question being answered, and neither
-  // should strand the tour behind a dialog that is no longer there.
-  await s.waitForClick('[data-tour="worklog-schedule-on"]', 300000)
+  // Answered the moment the setting actually changes - see
+  // `waitForWorklogAnswered`'s doc comment for why this no longer waits on a
+  // click. Covers "Not now"/the backdrop the same as a real "Turn on": both
+  // write `worklog_auto_generate_prompted`, so both satisfy this either way.
+  await waitForWorklogAnswered(s, 300000)
   s.spotlight(null)
   s.showWorklogSchedule(false)
   await s.pause(600)

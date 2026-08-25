@@ -165,7 +165,7 @@ fn toggle_from_menu(app: &tauri::AppHandle) {
         drop(state_guard);
         let app_for_notify = app.clone();
         tauri::async_runtime::spawn(async move {
-            let db_pool = app_for_notify.state::<Option<meridian_core::SqlitePool>>();
+            let db_pool = app_for_notify.state::<crate::db_pool::DbPool>();
             let _ =
                 crate::commands::toggle_daemon(app_for_notify.clone(), is_running, db_pool).await;
         });

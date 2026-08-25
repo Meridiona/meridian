@@ -460,7 +460,6 @@ jobs:
       MERIDIAN_COUNTER_API_KEY: ${{ secrets.COUNTER_API_KEY }}
       MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
       MERIDIAN_CHANNEL: ${{ needs.prepare.outputs.channel }}
-      MERIDIAN_HF_ENDPOINT: https://hf.meridiona.com
       # Signing + updater material. TAURI_SIGNING_* is consumed at BUNDLE time.
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -859,7 +858,6 @@ jobs:
       MERIDIAN_COUNTER_API_KEY: ${{ secrets.COUNTER_API_KEY }}
       MERIDIAN_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PROD }}
       MERIDIAN_CHANNEL: ${{ needs.prepare.outputs.channel }}
-      MERIDIAN_HF_ENDPOINT: https://hf.meridiona.com
       # The updater's minisign keypair is cross-platform — the SAME key signs
       # the macOS tarball and the Windows installer, and the pubkey baked into
       # tauri.conf.json verifies both. Consumed by `createUpdaterArtifacts` at

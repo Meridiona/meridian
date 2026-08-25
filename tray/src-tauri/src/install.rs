@@ -241,6 +241,57 @@ pub(crate) fn meridian_bin() -> String {
     }
 }
 
+/// Classify a resolved [`meridian_bin`] path into WHICH candidate won, as an
+/// enum-like `&'static str` safe to ship in telemetry.
+///
+/// # Why this exists rather than just logging the path
+/// [`meridian_bin`]'s own doc explains the failure this answers: a release tray
+/// calls the INSTALLED `meridian`, which can be OLDER than the tray asking it
+/// for a subcommand, and the candidate that won decides that. So the log sites
+/// in `commands::cli_exec` record `bin` for exactly this reason - and the full
+/// path is a home-directory path, so `telemetry_spool::redact` drops it and the
+/// shipped record answers nothing. Measured 2026-08-24: 65 `cli_exec.rs`
+/// records in central OO, not one carrying which binary ran.
+///
+/// This names OUR component, never the user's disk - the same justification
+/// `provider`/`engine` carry on `redact::SAFE_STRING_KEYS`. It CLASSIFIES an
+/// already-resolved path rather than re-running the resolution, so it cannot
+/// drift from what actually spawned.
+///
+/// The full path is still logged alongside it at DEBUG, where local
+/// full-fidelity capture keeps it for anyone reading `meridian logs`.
+pub(crate) fn bin_source(bin: &str) -> &'static str {
+    if std::env::var("MERIDIAN_BIN").is_ok_and(|p| p == bin) {
+        return "env_override";
+    }
+    // NORMALISE FIRST. `PathBuf::join` on Windows separates the base with `\`
+    // while the joined literal (`".meridian/bin/meridian.exe"`) keeps its own
+    // `/`, so the real resolved path is MIXED:
+    // `C:\Users\x\.meridian/bin/meridian.exe`. Matching pure-`/` or pure-`\`
+    // forms missed it, and every Windows staged install classified as `other` -
+    // invisible from macOS, and invisible to a test written with tidy paths.
+    let bin_slashed = bin.replace('\\', "/");
+
+    // Checked as path SEGMENTS so a user directory that merely contains the text
+    // (`~/projects/.meridian/bin-scripts/…`) cannot be misread as the staged
+    // install.
+    if bin_slashed.contains("/.meridian/bin/") {
+        return "staged";
+    }
+    if bin_slashed.contains("/.local/bin/") {
+        return "user_local_wrapper";
+    }
+    // No separator at all — `"meridian"` / `"meridian.exe"`, the bare last
+    // resort resolved through `$PATH`. This is the one that silently finds
+    // nothing on a per-user Windows install.
+    if !bin_slashed.contains('/') {
+        return "path_lookup";
+    }
+    // A resolved absolute path that matches no known candidate: a dev build out
+    // of the checkout (`target/{debug,release}/meridian`), or something new.
+    "other"
+}
+
 /// The working directory to spawn the `meridian` CLI from — the companion to
 /// [`meridian_bin`], and it must be resolved with it, never independently.
 ///
@@ -332,6 +383,70 @@ pub(crate) fn meridian_db_path() -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// The classification must name our component, never the user's disk - and
+    /// must not be fooled by a user directory that merely contains the text.
+    #[test]
+    fn bin_source_classifies_every_candidate() {
+        assert_eq!(bin_source("/Users/x/.meridian/bin/meridian"), "staged");
+        assert_eq!(
+            bin_source("C:\\Users\\x\\.meridian\\bin\\meridian.exe"),
+            "staged"
+        );
+        assert_eq!(
+            bin_source("/Users/x/.local/bin/meridian"),
+            "user_local_wrapper"
+        );
+        assert_eq!(bin_source("meridian"), "path_lookup");
+        assert_eq!(bin_source("meridian.exe"), "path_lookup");
+        assert_eq!(bin_source("/repo/target/release/meridian"), "other");
+        // The shape `PathBuf::join` ACTUALLY produces on Windows: the base uses
+        // `\\`, the joined literal keeps its own `/`. Neither pure-separator
+        // branch matched it, so every Windows staged install reported "other".
+        // The original test used only pure-`/` and pure-`\\` paths and passed.
+        assert_eq!(
+            bin_source("C:\\Users\\x\\.meridian/bin/meridian.exe"),
+            "staged"
+        );
+        assert_eq!(
+            bin_source("C:/Users/x\\.meridian\\bin\\meridian.exe"),
+            "staged"
+        );
+        assert_eq!(
+            bin_source("C:\\Users\\x\\.local/bin/meridian"),
+            "user_local_wrapper"
+        );
+        // The trap a plain `.contains(".meridian/bin")` would fall into.
+        assert_eq!(
+            bin_source("/Users/x/projects/.meridian/bin-scripts/meridian"),
+            "other"
+        );
+    }
+
+    /// Every value is a fixed literal from a closed set - the property that
+    /// makes it safe to ship. A path that leaked through would fail this.
+    #[test]
+    fn bin_source_only_ever_returns_known_literals() {
+        const KNOWN: &[&str] = &[
+            "env_override",
+            "staged",
+            "user_local_wrapper",
+            "path_lookup",
+            "other",
+        ];
+        for probe in [
+            "/Users/someone/.meridian/bin/meridian",
+            "/Users/someone/.local/bin/meridian",
+            "meridian",
+            "/tmp/whatever/meridian",
+            "",
+        ] {
+            assert!(
+                KNOWN.contains(&bin_source(probe)),
+                "bin_source leaked a non-literal for {probe:?}"
+            );
+        }
+    }
     use super::*;
 
     /// Is `name` one of `p`'s path components?

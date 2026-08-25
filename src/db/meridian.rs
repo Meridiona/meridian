@@ -128,6 +128,50 @@ pub async fn setup_db(uri: &str) -> anyhow::Result<SqlitePool> {
     Ok(pool)
 }
 
+/// Forces the WAL fully into the main database file and truncates it.
+///
+/// Called from `main.rs`'s shutdown sequence, right before closing the pool.
+/// `pool.close()` alone does not checkpoint: SQLite only auto-checkpoints when
+/// the LAST connection to the file closes, and the tray holds its own
+/// independent, long-lived pool on the same file for its entire process
+/// lifetime (`tray/src-tauri/src/lib.rs`'s `app.manage(db_pool)`) — so from
+/// this pool's point of view there is never a "last connection". Without this,
+/// every daemon restart (a crash, or `reload_daemon`'s SIGHUP, which exits and
+/// relies on launchd/the tray to relaunch it) hands a WAL in whatever
+/// half-written state it happened to be in to a brand-new process, while the
+/// tray's already-open connection keeps its stale view of the file across that
+/// boundary. A clean TRUNCATE checkpoint here gives every restart a
+/// well-defined, empty-WAL starting point instead.
+///
+/// Best-effort by design — callers should log and continue on error rather
+/// than fail shutdown over it.
+pub async fn checkpoint_wal(pool: &SqlitePool) -> anyhow::Result<()> {
+    // `PRAGMA wal_checkpoint(TRUNCATE)` answers with a ROW — `(busy, log,
+    // checkpointed)` — not merely a status. `busy = 1` means another connection
+    // held the file and the checkpoint did NOT truncate anything. `.execute()`
+    // discards that row, so the call reported success on a WAL it had left
+    // exactly as it found it.
+    //
+    // That is not a remote possibility here, it is the expected contention: the
+    // doc above explains this function exists BECAUSE the tray keeps its own
+    // long-lived pool on this same file, and that pool is precisely the reader
+    // that makes `busy` non-zero. Silently succeeding is the worst of the
+    // outcomes — shutdown logs a clean checkpoint and still hands the next
+    // daemon generation the half-written WAL this exists to prevent.
+    let (busy, _log, _checkpointed): (i64, i64, i64) =
+        sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)")
+            .fetch_one(pool)
+            .await
+            .context("WAL checkpoint failed")?;
+    if busy != 0 {
+        anyhow::bail!(
+            "WAL checkpoint could not truncate - another connection held the file. \
+             The next daemon generation starts on a non-empty WAL."
+        );
+    }
+    Ok(())
+}
+
 /// Realign `_sqlx_migrations` checksums with the embedded migration files.
 ///
 /// sqlx records a SHA-384 checksum of every applied migration and refuses to
@@ -604,5 +648,121 @@ mod tests {
         reconcile_migration_checksums(&pool, &migrator)
             .await
             .expect("reconcile on fresh db must be a no-op");
+    }
+
+    /// `checkpoint_wal` must actually move committed data out of the `-wal`
+    /// sidecar and truncate it — the entire point of calling it before
+    /// shutdown. `:memory:` can't exercise this (no `-wal` file exists), so
+    /// this uses a real temp-dir-backed database in WAL mode, same technique
+    /// `test_corrupt.rs` uses for byte-level fixtures.
+    #[tokio::test]
+    async fn checkpoint_wal_truncates_the_sidecar_file() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+        use std::str::FromStr;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("checkpoint_test.db");
+        let wal_path = dir.path().join("checkpoint_test.db-wal");
+
+        let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))
+            .unwrap()
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal);
+        // Single connection: a second one competing for the same WAL would
+        // make the size assertions below flaky for reasons unrelated to what
+        // this test is pinning.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .expect("open WAL-mode db");
+
+        sqlx::query("CREATE TABLE t (v BLOB)")
+            .execute(&pool)
+            .await
+            .expect("create table");
+        // A large-ish payload so the write actually lands in the WAL rather
+        // than being trivially small enough to round to zero either way.
+        sqlx::query("INSERT INTO t (v) VALUES (zeroblob(65536))")
+            .execute(&pool)
+            .await
+            .expect("insert");
+
+        let wal_len_before = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+        assert!(
+            wal_len_before > 0,
+            "fixture is wrong: nothing landed in the WAL before checkpointing"
+        );
+
+        checkpoint_wal(&pool).await.expect("checkpoint_wal");
+
+        let wal_len_after = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+        assert_eq!(
+            wal_len_after, 0,
+            "TRUNCATE checkpoint must leave an empty WAL, got {wal_len_after} bytes"
+        );
+    }
+
+    /// The failure this used to report as SUCCESS.
+    ///
+    /// `PRAGMA wal_checkpoint(TRUNCATE)` answers with a row whose first column
+    /// is `busy`; `.execute()` discarded it, so a checkpoint blocked by another
+    /// connection returned `Ok(())` having truncated nothing. The daemon then
+    /// logged a clean shutdown and handed the next generation the very WAL this
+    /// call exists to clear.
+    ///
+    /// The second connection here is not a contrivance - it is the tray's own
+    /// long-lived pool in miniature, which `checkpoint_wal`'s doc names as the
+    /// reason this function has to exist at all.
+    #[tokio::test]
+    async fn checkpoint_wal_reports_a_busy_file_instead_of_claiming_success() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+        use sqlx::Connection;
+        use std::str::FromStr;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("busy_checkpoint.db");
+        let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))
+            .unwrap()
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal);
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts.clone())
+            .await
+            .expect("open WAL-mode db");
+        sqlx::query("CREATE TABLE t (v BLOB)")
+            .execute(&pool)
+            .await
+            .expect("create table");
+        sqlx::query("INSERT INTO t (v) VALUES (zeroblob(65536))")
+            .execute(&pool)
+            .await
+            .expect("insert");
+
+        // A separate connection holding an OPEN read transaction, which is what
+        // stops a TRUNCATE checkpoint from resetting the WAL.
+        let mut reader = sqlx::SqliteConnection::connect_with(&opts)
+            .await
+            .expect("second connection");
+        sqlx::query("BEGIN DEFERRED")
+            .execute(&mut reader)
+            .await
+            .expect("begin");
+        sqlx::query("SELECT count(*) FROM t")
+            .fetch_all(&mut reader)
+            .await
+            .expect("read inside the transaction pins the WAL");
+
+        let err = checkpoint_wal(&pool)
+            .await
+            .expect_err("a checkpoint blocked by a live reader must not report success");
+        assert!(
+            err.to_string().contains("could not truncate"),
+            "the error must say the checkpoint did not happen, got: {err}"
+        );
+
+        let _ = sqlx::query("COMMIT").execute(&mut reader).await;
     }
 }

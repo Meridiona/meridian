@@ -25,12 +25,12 @@ use tauri::{Emitter, State};
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_notices(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
 ) -> Result<Vec<meridian_core::notices::Notice>, String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Ok(Vec::new());
     };
-    let notices = meridian_core::notices::read_notices(pool).await;
+    let notices = meridian_core::notices::read_notices(&pool).await;
     tracing::info!(count = notices.len(), "notices served");
     Ok(notices)
 }
@@ -40,13 +40,13 @@ pub async fn get_notices(
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn delete_notice(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     notice_id: String,
 ) -> Result<(), String> {
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
-    meridian_core::notices::delete_notice(pool, &notice_id)
+    meridian_core::notices::delete_notice(&pool, &notice_id)
         .await
         .map_err(|e| crate::cmd_err!(e, notice_id, "delete_notice failed"))
 }

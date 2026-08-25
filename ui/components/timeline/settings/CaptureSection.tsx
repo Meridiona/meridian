@@ -1,6 +1,11 @@
 //ambient dev tool that watches what you do and updates your PM tickets automatically, boosting developer productivity
 //
-// Settings → Capture & Privacy. Work Hours — the scheduled capture
+// Settings → Capture & Privacy. Also the home of the "Start Meridian
+// automatically" switch (`autostart_enabled`) — see the comment above that card
+// for why it cannot live in the hidden Advanced tab, and why it is now the only
+// place autostart can be turned off at all.
+//
+// Work Hours — the scheduled capture
 // auto-pause/resume window, migrated 1:1 from the old SettingsView's "Work
 // Hours" card (manual pause/resume itself lives in the Toolbar's Capturing
 // pill, unchanged — this section is only the SCHEDULE).
@@ -41,6 +46,7 @@ export function CaptureSection({ settings, patch, save }: {
   const [secondaryMonitorsStatus, setSecondaryMonitorsStatus] = useState<SaveStatus>('idle')
   const [errorReportingStatus, setErrorReportingStatus] = useState<SaveStatus>('idle')
   const [productAnalyticsStatus, setProductAnalyticsStatus] = useState<SaveStatus>('idle')
+  const [autostartStatus, setAutostartStatus] = useState<SaveStatus>('idle')
 
   return (
     <div className="max-w-[640px] flex flex-col gap-5">
@@ -52,6 +58,24 @@ export function CaptureSection({ settings, patch, save }: {
           approve a work log.
         </p>
       </div>
+
+      {/* Startup. Lives here rather than in the hidden AdvancedSection for the
+          same reason the two consent switches do: an opt-OUT default whose
+          off-switch is unreachable is not a choice. It is also the ONLY place
+          this can be turned off now - the tray verifies and repairs its OS login
+          job on every launch (see tray/src-tauri/src/autostart.rs), so switching
+          the login item off in macOS System Settings no longer sticks. Writing
+          this key registers or removes that job immediately. */}
+      <SectionCard>
+        <SectionHeader>Startup</SectionHeader>
+        <FieldRow label="Start Meridian automatically" description="On by default: Meridian starts in your menu bar when you sign in or restart your machine. It opens quietly in the background - no window, nothing to dismiss. Quitting Meridian stops it until you sign in again, so it never starts back up on its own during the day. Meridian only records your work while it is running, so turning this off means days you forget to open it are not tracked.">
+          <Switch checked={settings.autostart_enabled} onCheckedChange={v => patch({ autostart_enabled: v })} />
+        </FieldRow>
+        <SaveButton
+          status={autostartStatus}
+          onClick={() => save({ autostart_enabled: settings.autostart_enabled }, setAutostartStatus)}
+        />
+      </SectionCard>
 
       <SectionCard>
         <SectionHeader>Work hours</SectionHeader>

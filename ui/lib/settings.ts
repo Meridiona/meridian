@@ -26,6 +26,13 @@ export interface RuntimeSettings {
   // stream is pseudonymous and error-only, this one is identified by account
   // email and describes product usage.
   product_analytics_enabled: boolean
+  // Whether Meridian starts itself at login and again each morning if it was
+  // quit. Mirrors RuntimeSettings.autostart_enabled in
+  // meridian-core/src/settings.rs. On by default (opt-OUT) - capture runs
+  // inside the tray, so a tray that does not come back records nothing.
+  // Writing this key re-registers or removes the OS login job immediately
+  // (tray/src-tauri/src/autostart.rs), not at the next launch.
+  autostart_enabled: boolean
   // ETL
   poll_interval_secs: number
   agent_auto_floor: number
@@ -96,6 +103,9 @@ export const SETTINGS_DEFAULTS: RuntimeSettings = {
   // Product analytics is opt-OUT too, and switchable independently of error
   // reporting. Must match RuntimeSettings::default() in meridian-core/src/settings.rs.
   product_analytics_enabled: true,
+  // Autostart is opt-OUT: on by default, because the tray is what captures.
+  // Must match RuntimeSettings::default() in meridian-core/src/settings.rs.
+  autostart_enabled: true,
   poll_interval_secs: 60,
   agent_auto_floor: 0.65,
   agent_queue_floor: 0.40,

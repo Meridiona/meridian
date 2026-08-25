@@ -37,7 +37,7 @@
         "maximizable": false,
         "minimizable": false,
         "closable": false,
-        "shadow": true,
+        "shadow": false,
         "focus": false,
         "zoomHotkeysEnabled": true
       },

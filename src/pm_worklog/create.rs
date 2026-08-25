@@ -14,10 +14,17 @@
 //            task_key (OAuth users have no project key)
 //   linear → first configured team id                (LinearConfig.team_ids)
 //   azure  → configured project                      (AzureDevOpsConfig.project)
-//   github → owner/repo parsed from `sample_key`     (an existing GitHub task)
+//   github → owner/repo from `sample_key`, else the  (see `create_github`)
+//            single repository linked to the
+//            configured Projects v2 board
 //   trello → first list of the first board           (TrelloConfig.board_ids)
 // A target that can't be resolved is a hard error (surfaced on the proposal), so
 // we never create a ticket in the wrong place.
+//
+// GitHub is the one provider whose create is more than a POST: its sync only
+// keeps board items assigned to the viewer, so a bare issue is invisible to
+// Meridian forever. That whole flow (repo resolution, self-assign, add to the
+// board) lives in [`super::create_github`].
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -57,7 +64,9 @@ pub async fn create_ticket(
             .await
         }
         "linear" => linear_create(linear_cfg(config)?, title, description).await,
-        "github" => github_create(github_cfg(config)?, title, description, sample_key).await,
+        "github" => {
+            super::create_github::create(github_cfg(config)?, title, description, sample_key).await
+        }
         "trello" => trello_create(trello_cfg(config)?, title, description).await,
         "azure_devops" => azure_create(azure_cfg(config)?, title, description, issue_type).await,
         other => bail!("create_ticket: unknown provider '{other}'"),
@@ -286,47 +295,6 @@ async fn linear_create(linear: &LinearConfig, title: &str, description: &str) ->
         .and_then(|i| i.as_str())
         .map(str::to_string)
         .with_context(|| format!("Linear create returned no identifier: {body}"))
-}
-
-// ── GitHub: POST /repos/{owner}/{repo}/issues ─────────────────────────────────
-
-async fn github_create(
-    github: &GitHubConfig,
-    title: &str,
-    description: &str,
-    sample_key: Option<&str>,
-) -> Result<String> {
-    // Derive owner/repo from an existing GitHub task (config carries Projects-v2
-    // node ids, not a repo). `sample_key` is `owner/repo#123`.
-    let sample = sample_key
-        .context("GitHub create needs an existing repo (no GitHub task to infer owner/repo)")?;
-    let item = super::github::parse_task_key(sample).context("parsing GitHub sample key")?;
-    let url = format!(
-        "https://api.github.com/repos/{}/{}/issues",
-        item.owner, item.repo
-    );
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", github.token))
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
-        .header("User-Agent", "meridian")
-        .json(&json!({ "title": title, "body": description }))
-        .send()
-        .await
-        .context("network error reaching GitHub")?;
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        bail!("GitHub create returned {status}: {body}");
-    }
-    let v: Value = serde_json::from_str(&body).context("parsing GitHub create response")?;
-    let number = v
-        .get("number")
-        .and_then(|n| n.as_i64())
-        .context("GitHub create response missing `number`")?;
-    Ok(format!("{}/{}#{number}", item.owner, item.repo))
 }
 
 // ── Trello: POST /cards (resolve a list from the first board) ──────────────────

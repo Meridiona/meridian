@@ -105,7 +105,9 @@ pub fn init_client() -> Option<ClientInitGuard> {
 /// (`redact::pseudonymize_host`), so a crash here and an error log there
 /// resolve to the SAME machine identifier and can still be correlated.
 fn scrub_event(mut event: Event<'static>) -> Option<Event<'static>> {
-    use meridian::telemetry_spool::redact::{local_host_pseudonym, scrub_text};
+    use meridian::telemetry_spool::redact::{
+        alpha_account_email_if_active, local_host_pseudonym, scrub_text,
+    };
     if let Some(m) = event.message.take() {
         event.message = Some(scrub_text(&m));
     }
@@ -120,6 +122,20 @@ fn scrub_event(mut event: Event<'static>) -> Option<Event<'static>> {
     // pseudonym and silently decorrelate a crash from that machine's error
     // logs. Also covers the case where `sentry-contexts` left it unset.
     event.server_name = Some(local_host_pseudonym().into());
+
+    // ALPHA TESTING ONLY — same raw-email exception as the OTLP resource
+    // attribute in `observability::init` (see `alpha_account_email_if_active`'s
+    // doc), applied to Sentry's own identity field so a crash report names the
+    // signed-in tester too, not just the machine pseudonym above. `send_default_pii:
+    // false` never populated `event.user` in the first place, so there is
+    // nothing to merge with — this is the only source of it.
+    let settings = meridian_core::settings::load_runtime_settings();
+    if let Some(email) = alpha_account_email_if_active(settings.account_email.as_deref()) {
+        event.user = Some(sentry::User {
+            email: Some(email),
+            ..Default::default()
+        });
+    }
 
     // Free-text carriers that `send_default_pii: false` does NOT suppress.
     // Nothing populates these today, so CLEARING costs nothing — and clearing

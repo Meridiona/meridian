@@ -61,8 +61,17 @@ export default function PlanView() {
   const [syncing, setSyncing] = useState(false)
   const [syncError, setSyncError] = useState(false)
   const draggingRef = useRef(false)
+  // Guards the suggestion-seed auto-persist below (in `load`) to once per
+  // mount — a plan that's genuinely committed takes the other branch in
+  // `derive` and never re-seeds, but this also stops a retry loop if the
+  // one-shot save itself fails.
+  const autoSavedSeedRef = useRef(false)
 
-  const derive = useCallback((d: PlanResponse) => {
+  // Returns the seeded suggestion list when `derive` had to fall back to it
+  // (nothing committed yet), so `load` can persist it for real — see there.
+  // `null` in every other case (a real plan loaded, the day is skipped, or
+  // there was nothing to seed).
+  const derive = useCallback((d: PlanResponse): CardTask[] | null => {
     // `confirmed` is still read here to decide whether the server has a plan worth
     // restoring, but it is no longer a MODE - nothing renders differently for it,
     // because saving and confirming are now the same act. The state that mirrored
@@ -70,7 +79,10 @@ export default function PlanView() {
     const isConfirmed = d.confirmed && !d.skipped
     setSkipped(d.skipped)
     const avail = new Map(d.available.map(a => [a.key, a]))
-    if (isConfirmed || d.plan.length > 0) setToday(d.plan.map(p => fromPlan(p, avail)))
+    if (isConfirmed || d.plan.length > 0) {
+      setToday(d.plan.map(p => fromPlan(p, avail)))
+      return null
+    }
     // The suggestion pre-fill, SUPPRESSED while the walkthrough is driving.
     //
     // Seeding Today with what looks active is right on an ordinary morning - it
@@ -84,8 +96,13 @@ export default function PlanView() {
     // Only the SEEDING is skipped. A plan that actually exists (`d.plan.length`,
     // above) still loads - a replay on a real working day must show real state,
     // not an empty column.
-    else if (!d.skipped) setToday(isTutorialRunning() ? [] : d.suggestions.map(fromAvailable))
-    else setToday([])
+    if (!d.skipped) {
+      const seeded = isTutorialRunning() ? [] : d.suggestions.map(fromAvailable)
+      setToday(seeded)
+      return seeded.length > 0 ? seeded : null
+    }
+    setToday([])
+    return null
   }, [])
 
   // `initial` (mount / error-rollback) re-seeds the Today list from the server.
@@ -117,7 +134,24 @@ export default function PlanView() {
     // reported as "something broke".
     return refreshPlan(todayKey, initial).then(d => {
       if (!initial) return d != null
-      if (d) { setLoadFailed(false); derive(d); return true }
+      if (d) {
+        setLoadFailed(false)
+        const seeded = derive(d)
+        // `derive` just pre-filled Today from suggestions because nothing is
+        // committed yet — and the column already labels that "Saved" (see
+        // PlanTodayColumn). Make that true instead of relabeling it false:
+        // persist the seed for real, once, so "Today's focus" elsewhere
+        // (which only ever reads committed `plan.plan` rows — visibleFocusItems
+        // in timeline/types.ts) reflects it immediately instead of staying on
+        // the empty nudge until the user happens to touch the list. Best-effort:
+        // a failure here just leaves the pre-fill exactly as accurate as it was
+        // before this fix, it doesn't regress anything.
+        if (seeded && !autoSavedSeedRef.current) {
+          autoSavedSeedRef.current = true
+          planAction(todayKey, 'confirm', seeded.map(t => t.key)).catch(() => {})
+        }
+        return true
+      }
       setLoadFailed(true)
       return false
     })

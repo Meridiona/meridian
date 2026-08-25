@@ -40,7 +40,6 @@ updates:
       - /tray
       - /packages/meridian-mcp
       - /packages/meridian-design-system
-      - /infra/hf-proxy
     schedule:
       interval: monthly
     open-pull-requests-limit: 3

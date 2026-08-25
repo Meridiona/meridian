@@ -74,6 +74,7 @@ pub(crate) async fn run_meridian(
             // only record a timeout leaves.
             tracing::warn!(
                 bin = %bin,
+                bin_source = crate::install::bin_source(&bin),
                 cwd = %home.display(),
                 timeout_s = timeout.as_secs(),
                 "{label}: timed out"
@@ -81,7 +82,12 @@ pub(crate) async fn run_meridian(
             return Err(format!("{label} timed out"));
         }
         Ok(Err(e)) => {
-            tracing::warn!(bin = %bin, error = %e, "{label} spawn failed");
+            tracing::warn!(
+                bin = %bin,
+                bin_source = crate::install::bin_source(&bin),
+                error = %e,
+                "{label} spawn failed"
+            );
             return Err(format!("spawn error: {e}"));
         }
         Ok(Ok(o)) => o,
@@ -103,7 +109,12 @@ pub(crate) async fn run_meridian(
         } else {
             stderr
         };
-        tracing::warn!(bin = %bin, code = ?output.status.code(), "{label} non-zero: {msg}");
+        tracing::warn!(
+            bin = %bin,
+            bin_source = crate::install::bin_source(&bin),
+            code = ?output.status.code(),
+            "{label} non-zero: {msg}"
+        );
         return Err(msg);
     }
     Ok(stdout)

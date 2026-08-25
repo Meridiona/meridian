@@ -133,14 +133,14 @@ pub async fn run_llm_experiment(body: RunLlmExperimentBody) -> Result<i64, Strin
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_llm_experiments(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     limit: Option<i64>,
 ) -> Result<Vec<LlmExperimentSummary>, String> {
     dev_only()?;
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
-    meridian_core::llm_experiments::list_experiments(pool, limit.unwrap_or(20))
+    meridian_core::llm_experiments::list_experiments(&pool, limit.unwrap_or(20))
         .await
         .map_err(|e| crate::cmd_err!(e, "get_llm_experiments failed"))
 }
@@ -150,14 +150,14 @@ pub async fn get_llm_experiments(
 #[tauri::command]
 #[tracing::instrument(skip(pool))]
 pub async fn get_llm_experiment(
-    pool: State<'_, Option<meridian_core::SqlitePool>>,
+    pool: State<'_, crate::db_pool::DbPool>,
     id: i64,
 ) -> Result<Option<LlmExperimentDetail>, String> {
     dev_only()?;
-    let Some(pool) = pool.inner() else {
+    let Some(pool) = pool.get() else {
         return Err("meridian.db is not open yet".to_string());
     };
-    meridian_core::llm_experiments::get_experiment(pool, id)
+    meridian_core::llm_experiments::get_experiment(&pool, id)
         .await
         .map_err(|e| crate::cmd_err!(e, "get_llm_experiment failed"))
 }

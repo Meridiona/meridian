@@ -281,8 +281,8 @@ fn record(app: &tauri::AppHandle, id: i64, action: String, text: Option<String>)
     // Clone the pool out of the managed state before the await — a `State`
     // guard borrows the app and cannot be held across one.
     let pool = app
-        .try_state::<Option<meridian_core::SqlitePool>>()
-        .and_then(|s| s.inner().clone());
+        .try_state::<crate::db_pool::DbPool>()
+        .and_then(|s| s.get());
     let Some(pool) = pool else {
         tracing::warn!(id, action, "toast answer dropped — meridian.db is not open");
         return;

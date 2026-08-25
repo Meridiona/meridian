@@ -1780,7 +1780,23 @@ describe('the closing asks: a delivery time, and the off switch', () => {
     expect(isSavableTime('12:60')).toBe(false)
     // One source for the confirmation line and the commit, so they cannot drift.
     expect(dialog).toContain('worklog_auto_generate_time: time')
-    expect(dialog).toContain('disabled={busy !== null || !valid}')
+    // "Turn on" must also require an EXPLICIT touch (`chosen`), not merely a
+    // technically-valid default — see `chosen`'s doc comment in the component
+    // for the production incident this closes off: a pre-enabled button let a
+    // walkthrough engine race (or an accidental early click) silently commit
+    // the untouched 6:00 PM default over a user's real choice.
+    expect(dialog).toContain('disabled={busy !== null || !valid || !chosen}')
+  })
+
+  it('requires an explicit touch before the default can be saved', () => {
+    // The button starts on a real, already-valid preset (so the confirmation
+    // line has something to say from the first frame) - but "valid" alone must
+    // not be enough to enable "Turn on", or the untouched default is one
+    // premature click away from being saved as a deliberate choice.
+    expect(dialog).toContain('const [chosen, setChosen] = useState(false)')
+    expect(dialog).toContain("setTime(p.time); setChosen(true)")
+    expect(dialog).toContain('chosen && time === p.time')
+    expect(dialog).toContain('chosen && valid')
   })
 
   it('keeps the narration clear of the dialog it is narrating', () => {
@@ -1795,6 +1811,12 @@ describe('the closing asks: a delivery time, and the off switch', () => {
     expect(beat).not.toContain('s.spotlight(\'[data-tour="worklog-schedule')
     expect(beat).toContain('s.point(\'[data-tour="worklog-schedule-on"]\')')
   })
+
+  // `waitForWorklogAnswered`'s failed-read handling was guarded here by a source
+  // scan, which could not distinguish the fix from a rewrite that reintroduced
+  // the bug with different spacing. It is now driven for real - a rejecting
+  // bridge, a real document, the interleaving that actually broke it - in
+  // `__tests__/tour-worklog-answered.test.ts`.
 
   it('names both things that time sets off, not just the worklogs', () => {
     // It said "Worklogs" and "Auto-draft your worklogs". The same pass composes

@@ -23,7 +23,6 @@
 //!   out of this module (CLAUDE.md's 500-line file cap).
 
 use crate::state::{AppState, StatusPayload};
-use meridian_core::SqlitePool;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use tauri::State;
@@ -87,9 +86,9 @@ pub async fn restart_daemon() -> Result<(), String> {
 pub async fn toggle_daemon(
     _app: tauri::AppHandle,
     is_running: bool,
-    db_pool: State<'_, Option<SqlitePool>>,
+    db_pool: State<'_, crate::db_pool::DbPool>,
 ) -> Result<(), String> {
-    let pool = db_pool.inner().clone();
+    let pool = db_pool.get();
     // `is_running` is the CURRENT state, so the useful field is what the user
     // asked for, not what it already was.
     tracing::Span::current().record("action", if is_running { "pause" } else { "resume" });
@@ -177,14 +176,48 @@ pub struct ReloadResponse {
 /// Errors when the daemon isn't running (the route's 503) — callers surface
 /// that as "your change applies when the daemon starts", so it must stay
 /// reachable. See [`plan_reload`] for the macOS rate limit.
+///
+/// Also closes and reopens the tray's own `meridian.db` pool around the
+/// signal (see [`reload_with_pool_cycle`]) — a daemon restart is exactly the
+/// process-generation boundary [`crate::db_pool::DbPool`] exists to keep the
+/// tray's connection from spanning. See that module's header for the
+/// corruption incident this closes off, and [`plan_reload`]'s doc for an
+/// EARLIER, related incident this same reload path caused (repeated SIGHUPs
+/// landing inside launchd's throttle window) — different mechanism, same
+/// underlying shape: a daemon-down window the tray's pool did not know about.
 #[tauri::command]
-#[tracing::instrument]
-pub async fn reload_daemon() -> Result<ReloadResponse, String> {
+#[tracing::instrument(skip(db_pool))]
+pub async fn reload_daemon(
+    db_pool: State<'_, crate::db_pool::DbPool>,
+) -> Result<ReloadResponse, String> {
+    // Owned clone (cheap - `DbPool` is `Arc`-backed): `reload_daemon_with`
+    // needs `'static`, which a borrowed `State<'_, _>` cannot provide.
+    reload_daemon_with(db_pool.inner().clone()).await
+}
+
+/// [`reload_daemon`]'s body, taking an owned pool handle instead of a
+/// `State<'_, _>` so the two OTHER places that reload the daemon after a
+/// credential change (`integrations::save_integration_token`,
+/// `integrations::start_oauth_github_device`'s spawned polling task — see
+/// [`plan_reload`]'s doc: "a single connect flow can trip this on its own")
+/// can share this exact close/reopen + throttle logic instead of calling the
+/// bare `#[tauri::command]` fn, which a `tauri::async_runtime::spawn`'d task
+/// cannot do (it needs `'static`, `State<'_, _>` is borrowed for the
+/// invocation). `db_pool.inner().clone()` is how a command handler bridges
+/// the two - see the call sites in `integrations.rs`.
+pub(crate) async fn reload_daemon_with(
+    pool: crate::db_pool::DbPool,
+) -> Result<ReloadResponse, String> {
     #[cfg(target_os = "macos")]
     {
-        reload_throttled(reload_state(), super::daemon_control::reload, || async {
-            super::daemon_control::status().await.running
-        })
+        reload_throttled(
+            reload_state(),
+            move || {
+                let pool = pool.clone();
+                async move { reload_with_pool_cycle(&pool).await }
+            },
+            || async { super::daemon_control::status().await.running },
+        )
         .await
     }
     // Windows restarts the scheduled task (`schtasks /End` + `/Run`). There is
@@ -193,10 +226,66 @@ pub async fn reload_daemon() -> Result<ReloadResponse, String> {
     // meaning on the platform.
     #[cfg(not(target_os = "macos"))]
     {
-        let pid = super::daemon_control::reload().await?;
+        let pid = reload_with_pool_cycle(&pool).await?;
         tracing::info!(pid, "daemon reload requested");
         Ok(ReloadResponse { ok: true, pid })
     }
+}
+
+/// Closes the tray's `meridian.db` pool before signaling the daemon and
+/// reopens it right after — see [`reload_daemon`]'s doc for why. A `None`
+/// pool inside (the DB was never open, e.g. a fresh install before the
+/// daemon has created it) makes both calls no-ops, matching every other call
+/// site's tolerance for an absent pool.
+///
+/// Reopen is LAZY (`DbPool::reopen` → `open_existing_lazy`), which is what
+/// makes this safe to run immediately after sending the signal rather than
+/// polling until the new daemon process is confirmed up: no physical
+/// connection is made here, only a fresh, empty pool object with no
+/// connections cached from the process generation that just exited. The
+/// first REAL connection happens on whatever read comes next (typically the
+/// following poll tick), against whatever the file looks like by then - a
+/// point in time this function does not need to reason about.
+async fn reload_with_pool_cycle(pool: &crate::db_pool::DbPool) -> Result<u32, String> {
+    with_reload_lock(|| async {
+        pool.close().await;
+        let result = super::daemon_control::reload().await;
+        pool.reopen().await;
+        result
+    })
+    .await
+}
+
+/// Run one close → signal → reopen cycle with no other cycle interleaved.
+///
+/// # The interleaving this prevents
+/// `DbPool::close` clears the SHARED handle before awaiting the underlying
+/// close, so two overlapping reloads can cross:
+///
+/// 1. caller A closes - the handle is now `None`, A is still awaiting;
+/// 2. caller B sees `None`, treats it as "nothing to close", signals its own
+///    restart and REOPENS a fresh pool;
+/// 3. A resumes, signals a second restart, and reopens over B's pool -
+///    signalling a daemon restart while a live pool is open across it, which is
+///    precisely what the close/reopen dance exists to prevent.
+///
+/// macOS reached this through `reload_throttled`, which serialises for a
+/// different reason (launchd's `ThrottleInterval`) and so happened to cover it;
+/// the Windows path deliberately skips that throttle and had nothing. The lock
+/// lives HERE rather than at either call site so both platforms get it from one
+/// place, and it nests inside the throttle without any ordering hazard.
+///
+/// Generic over the work so the serialisation itself is testable without
+/// launchctl or a real pool - see `two_reload_cycles_never_interleave`.
+async fn with_reload_lock<F, Fut, T>(work: F) -> T
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    static RELOAD_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+    let _guard = RELOAD_LOCK.lock().await;
+    work().await
 }
 
 // ── macOS reload rate limit ─────────────────────────────────────────────────
@@ -467,6 +556,54 @@ fn plan_reload(
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+
+    /// Two overlapping reloads must not interleave their close/reopen cycles.
+    ///
+    /// `DbPool::close` clears the shared handle BEFORE awaiting the underlying
+    /// close, so without serialisation a second caller sees `None`, decides
+    /// there is nothing to close, and reopens a pool that the first caller then
+    /// signals a daemon restart across - the exact condition close/reopen
+    /// exists to prevent.
+    ///
+    /// Written against `with_reload_lock` rather than `reload_with_pool_cycle`
+    /// because the latter shells out to launchctl; the property under test is
+    /// the mutual exclusion, and this exercises it directly.
+    #[tokio::test]
+    async fn two_reload_cycles_never_interleave() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        let inside = StdArc::new(AtomicUsize::new(0));
+        let max_seen = StdArc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let inside = inside.clone();
+            let max_seen = max_seen.clone();
+            handles.push(tokio::spawn(async move {
+                with_reload_lock(|| async {
+                    let n = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_seen.fetch_max(n, Ordering::SeqCst);
+                    // Yield across the critical section: without the lock this
+                    // is where a second cycle slips in, exactly as
+                    // `close().await` yields in the real one.
+                    tokio::task::yield_now().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                    inside.fetch_sub(1, Ordering::SeqCst);
+                })
+                .await;
+            }));
+        }
+        for h in handles {
+            h.await.expect("task panicked");
+        }
+
+        assert_eq!(
+            max_seen.load(Ordering::SeqCst),
+            1,
+            "two reload cycles were inside the critical section at once"
+        );
+    }
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 

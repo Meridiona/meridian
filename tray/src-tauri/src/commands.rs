@@ -20,6 +20,8 @@
 //! - [`notices`]   — clear a fault banner (`/api/notices/[id]` DELETE).
 //! - [`notifications`] — the in-app banner dismiss write.
 //! - [`parents`]   — valid parent tickets for the hygiene "link a parent" fix.
+//! - [`pm_tool_request`] — "I don't see my tool" on `ConnectTrackers`: local
+//!   settings mirror + a best-effort PostHog demand signal.
 //! - [`settings`]  — runtime settings read + write (`/api/settings` GET/PUT).
 //! - [`statuses`]  — ticket status list + set (spawns `meridian ticket-statuses`
 //!   / `ticket-set-status`) for the dashboard's status control.
@@ -53,6 +55,7 @@ pub mod notifications;
 pub mod parents;
 pub mod pause;
 pub mod plan_tasks;
+pub mod pm_tool_request;
 pub mod repair;
 pub mod settings;
 pub mod setup;
@@ -86,6 +89,7 @@ pub use notifications::*;
 pub use parents::*;
 pub use pause::*;
 pub use plan_tasks::*;
+pub use pm_tool_request::*;
 pub use settings::*;
 pub use setup::*;
 pub use statuses::*;

@@ -7,6 +7,7 @@ Meridian is a single-process Rust daemon that normalises raw screen-capture fram
 ## Hard Rules
 
 - Do what has been asked; nothing more, nothing less
+- **Meridian has real users running it in production right now — this is not a sandbox, and a bug here can silently destroy someone's data.** Weigh every change by its blast radius, not just whether it compiles and the existing tests pass: a change with even a small chance of corrupting data, losing a signed-in session, or crash-looping the daemon/tray must not ship until you've actually reasoned through the failure paths (concurrent writers, a process dying mid-operation, a network drop, an empty/malformed payload) and, where practical, written a test that would have caught it — "it built and the happy path worked" is not the bar. This is not hypothetical: a race where the tray held a `meridian.db` connection open across a daemon restart, with no WAL checkpoint on either side, shipped to production and left a real alpha tester (issue #851) with a database so corrupted that even raw SQLCipher page reads with the correct key failed — unrecoverable, days of tracked activity gone. Nothing in CI caught it; only live use did. When you're not sure a change is safe, say so and ask, rather than pushing it and hoping — "does it currently pass" and "is it actually safe" are different questions, and only the second one is the one that matters here.
 - NEVER create files unless absolutely necessary — prefer editing existing files
 - NEVER create documentation files unless explicitly requested
 - ALWAYS read a file before editing it
@@ -18,6 +19,7 @@ Meridian is a single-process Rust daemon that normalises raw screen-capture fram
 - NEVER push directly to `main` or `pre-main` — always create a separate feature branch, commit there, and raise a PR to `pre-main`. **All features, fixes, and other changes target `pre-main`** (the staging branch), not `main` — only a maintainer opens the `pre-main → main` release PR, and only after everything on `pre-main` has been tested end-to-end on staging
 - ALWAYS use a separate branch per feature/fix — branch name format: `type/short-description` (e.g. `feat/trello-oauth`, `fix/ui-disconnect`)
 - In all **user-facing app text** — window titles, wizard/UI copy, button and menu labels, notification bodies, tray tooltips, any string the user reads — use a plain hyphen `-` only. NEVER an em-dash (`—`), en-dash (`–`), or double hyphen (`--`). Use it spaced (` - `) where a dash separates clauses. (This rule is about displayed strings; code comments and docs are exempt.)
+- **Any publicly reachable service we deploy must authenticate every request, validate its origin, allowlist the paths it serves, and rate-limit — and it gets deleted the day its last caller does.** "Authenticate" is separate from "validate the origin" on purpose: an origin check alone is a header a caller controls, and reading the two as one requirement is what permits an unauthenticated public service. An unauthenticated request must be rejected outright with a 401, and **verifying that is currently a MANUAL step** — `scripts/deploy-gateway.sh` only prints "should 401 without a Bearer token" as a reminder at the end of a deploy; it sends no request and fails on nothing, so a gateway that started answering 200 unauthenticated would deploy green. `infra/hf-proxy` (`hf.meridiona.com`) was an unauthenticated reverse proxy to huggingface.co. Its header carried a thoughtful `SECURITY:` block about cache-key poisoning and auth headers leaking into a shared cache; it never asked *who may call this*. When the MLX stack that used it was deleted it kept running with no callers and a public DNS record — and Cloudflare publishes every hostname to the Certificate Transparency logs the moment it issues the cert, so scanners find it whether or not you advertise it. It reached **173,088 requests in a day** against a 100k/day account-wide cap and took meridiona.com down with Error 1027 for traffic the site did not generate. Assume every hostname you provision is public knowledge immediately.
 
 ---
 
@@ -383,8 +385,8 @@ supported way to read logs locally, replacing the old JSONL-tailing UI and the
 old bash `meridian logs` (which used to tail launchd-redirected stdout/stderr
 text).
 
-**Two couplings that silently delete error coverage.** Both have bitten once;
-neither fails loudly, and neither is visible from the call site.
+**Three couplings that silently delete error coverage.** Each has bitten at
+least once; none fails loudly, and none is visible from the call site.
 
 1. **The `EnvFilter` decides what is captured at all — before the spool, before
    severity, before redaction.** `EnvFilter` matches directives against targets
@@ -407,6 +409,32 @@ neither fails loudly, and neither is visible from the call site.
    list — and if it names the user's data (ticket key, file path, app name,
    window title, hour/day) it must stay off, so put the diagnostic value in the
    message or an allowlisted key instead.
+
+   Two corollaries, both measured on 2026-08-24 and both fixed since:
+   **allowlisting is keyed on the exact word you typed, and some words are
+   banned for an unrelated reason.** The clerk plugin logged a
+   `serde_path_to_error` JSON pointer as `path`, reasoned correctly in a comment
+   that a field path is safe to ship — and lost it anyway, because `path` is
+   *deliberately* denied as a filesystem path. It ships now as `json_pointer`.
+   Widening `path` would have traded a real protection for a diagnostic; renaming
+   the field was the cheaper half. Likewise a full binary path (`bin`) stays
+   denied while `bin_source` — a closed set of literals from
+   `install::bin_source` — ships in its place.
+3. **A `u64` field is not shipped as a number.** `tracing-opentelemetry` 0.28's
+   `Visit` impl has no `record_u64`, so `tracing::field::Visit`'s default applies
+   and forwards to `record_debug` — which emits a **StringValue**. The field then
+   misses the allowlist (nobody lists `timeout_s` as a *string* key) and is
+   dropped, while the identical field written as `f64` or `i64` ships fine. In
+   production this meant every `cli_exec.rs` timeout shipped `timeout_s = null`
+   while the distiller's `as_secs_f64()` shipped `210.0` on 3,329 records — same
+   name, same severity, kept or dropped purely by Rust type.
+
+   `redact::is_bare_number` now rescues these: a `StringValue` whose ENTIRE value
+   parses as a finite number is kept. That is a type rescue, not a key exemption —
+   `IntValue`/`DoubleValue` were already kept unconditionally for every key, so
+   this restores the intended semantics rather than widening egress. Requiring the
+   whole value to parse is what still excludes real `record_debug` output
+   (`?args` → `["plan-task-draft", "--note", "…"]`, `?path` → a home directory).
 
 The only thing this pipeline structurally can't capture is a hard crash
 (panic before `init` runs, segfault, OOM kill) — for that, launchd's own

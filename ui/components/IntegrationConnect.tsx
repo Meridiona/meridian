@@ -15,7 +15,7 @@
 //                      `save_integration_token`.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { load, mutate, openExternal } from '@/lib/bridge'
+import { invoke, load, mutate, openExternal } from '@/lib/bridge'
 import type { IntegrationsResponse, TaskSummary, TasksResponse } from '@/lib/api-types'
 import { TRACKERS } from '@/lib/integrations'
 import type { Tracker, TokenField } from '@/lib/integrations'
@@ -34,15 +34,22 @@ import type { GithubProject, JiraProject } from '@/components/integrationConnect
 
 // ── Main list ─────────────────────────────────────────────────────────────────
 export default function ConnectTrackers({
-  integrations, onChanged, compact,
+  integrations, onChanged, compact, onDecline,
 }: {
   integrations: IntegrationsResponse | null
   onChanged?: () => void
   compact?: boolean
+  /** Only meaningful when this list is rendered as the onboarding gate
+   *  (`IntegrationsSection`'s `gate` prop) — see `RequestToolForm`'s doc for
+   *  why submitting "I don't see my tool" also fires this. */
+  onDecline?: () => void
 }) {
   const [open, setOpen] = useState<string | null>(null)
   const [disconnecting, setDisconnecting] = useState<string | null>(null)
   const anyConnected = !!integrations && TRACKERS.some((t) => integrations[t.id])
+  // "I don't see my tool" is a side channel, not a connect flow: it never
+  // gates onboarding and always coexists with the tracker list above it.
+  const [requestingTool, setRequestingTool] = useState(false)
 
   const handleDisconnect = (id: string) => {
     setDisconnecting(id)
@@ -111,6 +118,98 @@ export default function ConnectTrackers({
             </div>
           )
         })}
+        <div style={{ borderTop: '1px solid var(--t-hair)' }}>
+          {requestingTool ? (
+            <RequestToolForm onDone={() => setRequestingTool(false)} onDecline={onDecline} />
+          ) : (
+            <button
+              onClick={() => setRequestingTool(true)}
+              className="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors"
+              style={{ background: 'var(--t-card)', cursor: 'pointer' }}>
+              <span className="text-[13px]" style={{ color: 'var(--t-faint)' }}>I don&apos;t see my tool</span>
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── "I don't see my tool" (request_pm_tool — settings mirror + PostHog) ─────
+// A side channel outside the gate: submitting there neither blocks nor
+// advances anything, since there is nothing to advance. `request_pm_tool`
+// (Rust) does two independent, best-effort things with the free text -
+// mirrors it into settings.json and fires a `pm_tool_requested` PostHog
+// event - see that command's doc for why both.
+//
+// UNDER the onboarding gate, though, naming a tool IS the same answer as
+// clicking "I don't use a project tool": the user does not have one of the
+// five we support, so a successful submit also fires `onDecline` (passed
+// through from `IntegrationsSection`'s own decline handler) to release the
+// tour's lock exactly the way the explicit skip button does - the walkthrough
+// then narrates the same "let's write this one by hand instead" beat rather
+// than leaving the user stranded on the connect screen after telling us they
+// have no match here. `onDecline` is `undefined` outside the gate, so this is
+// a no-op there.
+function RequestToolForm({ onDone, onDecline }: { onDone: () => void; onDecline?: () => void }) {
+  const [value, setValue] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [submitted, setSubmitted] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const submit = () => {
+    const tool_name = value.trim()
+    if (!tool_name || submitting) return
+    setSubmitting(true); setError(null)
+    // A single top-level scalar param (`tool_name`), not a `body:` struct -
+    // reached via `invoke` directly, per `mutate`'s calling convention (see
+    // `__tests__/mutate-body-contract.test.ts` and `save_account_email`'s
+    // call sites for the same shape).
+    invoke('request_pm_tool', { toolName: tool_name })
+      .then(() => { setSubmitted(true); onDecline?.() })
+      .catch((e) => setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'Could not send'))
+      .finally(() => setSubmitting(false))
+  }
+
+  if (submitted) {
+    return (
+      <div className="px-4 py-3" style={{ background: 'var(--t-box)' }}>
+        <p className="text-[12px]" style={{ color: 'var(--color-state-approved)' }}>
+          Thanks - we&apos;ll let you know if we add it.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="px-4 py-3 space-y-2" style={{ background: 'var(--t-box)' }}>
+      <label className="block">
+        <span className="text-[11px]" style={{ color: 'var(--t-faint)' }}>What tool do you use?</span>
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') submit() }}
+          placeholder="e.g. Shortcut, Height, Basecamp"
+          // Matches MAX_TOOL_NAME_LEN in commands/pm_tool_request.rs, which
+          // validates the same bound at the IPC boundary - this only stops the
+          // user reaching a rejection they cannot see coming.
+          maxLength={100}
+          autoFocus
+          className="mt-1 w-full text-[12px] px-2 py-1.5 rounded-md border"
+          style={{ color: 'var(--t-title)', background: 'var(--t-card)', borderColor: 'var(--t-hair)', outline: 'none' }}
+        />
+      </label>
+      {error && <p className="text-[11px]" style={{ color: 'var(--status-error-dot)' }}>{error}</p>}
+      <div className="flex gap-2">
+        <button onClick={submit} disabled={!value.trim() || submitting}
+          className="text-[12px] px-3 py-1.5 rounded-md font-medium transition-opacity"
+          style={{ background: 'var(--btn-primary-bg)', color: '#fff', opacity: (!value.trim() || submitting) ? 0.5 : 1, cursor: (!value.trim() || submitting) ? 'not-allowed' : 'pointer' }}>
+          {submitting ? 'Sending…' : 'Send'}
+        </button>
+        <button onClick={onDone} className="text-[12px] px-3 py-1.5" style={{ color: 'var(--t-faint-2)', cursor: 'pointer' }}>
+          Cancel
+        </button>
       </div>
     </div>
   )

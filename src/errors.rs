@@ -100,6 +100,109 @@ mod tests {
         }
     }
 
+    /// Does this source line log an error in a way that DROPS its cause?
+    ///
+    /// Extracted from the scan so the scan's own coverage is testable. That is
+    /// not ceremony: the previous version matched only `error = %e`, `main.rs`
+    /// was added to `CONVERTED` while three of its sites used a positional
+    /// format placeholder instead, and the test passed - recording coverage it
+    /// did not provide. A predicate nothing exercises is indistinguishable from
+    /// one that works.
+    ///
+    /// Two spellings, both rendering only the outermost `.context()`:
+    /// - `error = %e`
+    /// - `tracing::error!("… failed: {}", e)` - which also breaks the repo's
+    ///   "structured fields, no format strings for data values" rule.
+    ///
+    /// Only the POSITIONAL `{}` form counts. Inline named captures
+    /// (`"{label}: timed out"`) are pervasive, usually name one of our own
+    /// static labels, and sweeping them belongs in its own change.
+    fn drops_the_cause(line: &str) -> bool {
+        if line.trim_start().starts_with("//") {
+            return false;
+        }
+        // Match the ARGUMENT SHAPE, not the macro name. Requiring `tracing::` on
+        // the same line missed the multi-line spelling entirely:
+        //
+        //     tracing::error!(
+        //         "cleanup_incomplete_runs failed: {}", e
+        //     );
+        //
+        // The scan reads that second line, finds no `tracing::`, and reports no
+        // offender - so the `main.rs` entry STILL advertised coverage the scan
+        // did not provide, for a shape the three converted sites happened not to
+        // use. That is the second time this file claimed coverage it lacked.
+        //
+        // The tell is the ARGUMENT after the placeholder, not the macro name and
+        // not the placeholder alone. Dropping the `tracing::` requirement and
+        // matching a bare `{}", ` immediately flagged
+        // `format!("provider:{}", p.as_str())` - a string being built, not an
+        // error being logged. A scan that cries wolf is a scan someone disables.
+        line.contains("error = %e") || logs_an_error_positionally(line)
+    }
+
+    /// Is the value after a positional `{}` an ERROR binding?
+    ///
+    /// Takes the identifier immediately following `{}", ` and accepts only the
+    /// names this codebase actually binds an error to. That catches both
+    /// spellings - `…: {}", e)` on one line, and `…: {}", e` on its own line
+    /// inside a multi-line macro - while ignoring every other positional format.
+    ///
+    /// Deliberately narrow. It will miss `{}", some_unusual_name`; the cost of
+    /// that is one unconverted site, against a false positive on every
+    /// `format!` in the file.
+    fn logs_an_error_positionally(line: &str) -> bool {
+        let Some(rest) = line.split("{}\", ").nth(1) else {
+            return false;
+        };
+        let ident: String = rest
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        matches!(ident.as_str(), "e" | "err" | "error")
+    }
+
+    /// The scan must catch BOTH spellings, and must not fire on the fixed form.
+    #[test]
+    fn the_scan_catches_every_cause_dropping_spelling() {
+        assert!(drops_the_cause(
+            r#"tracing::warn!(error = %e, "fetch failed");"#
+        ));
+        assert!(drops_the_cause(
+            r#"tracing::error!("cleanup_incomplete_runs failed: {}", e),"#
+        ));
+        assert!(
+            drops_the_cause(
+                r#"        Err(e) => tracing::error!("intelligence run failed: {}", e),"#
+            ),
+            "the exact spelling that slipped past the original scan"
+        );
+        // The MULTI-LINE spelling: the macro name is on a previous line, so a
+        // scan keyed on `tracing::` never sees this at all.
+        assert!(
+            drops_the_cause(r#"            "cleanup_incomplete_runs failed: {}", e"#),
+            "a positional placeholder on its own line must still be caught"
+        );
+
+        // NOT an error log: a string being built. Matching a bare `{}", `
+        // flagged this real line in `summariser/mod.rs`, and a scan that cries
+        // wolf is a scan someone disables.
+        assert!(!drops_the_cause(
+            r#"        Source::Fallback(p) => format!("provider:{}", p.as_str()),"#
+        ));
+        assert!(!drops_the_cause(r#"    let label = format!("{}", count);"#));
+
+        // The fixed form, and things that must not trip it.
+        assert!(!drops_the_cause(
+            r#"tracing::warn!(error = %meridian::errors::chain(&e), "fetch failed");"#
+        ));
+        assert!(!drops_the_cause(r#"// tracing::warn!(error = %e, "…");"#));
+        assert!(
+            !drops_the_cause(r#"tracing::warn!(bin = %bin, "{label}: timed out");"#),
+            "inline named captures are out of scope - see drops_the_cause's doc"
+        );
+    }
+
     /// The database modules converted by this change must not reintroduce an
     /// **unjustified** bare `%e`, which is how the fleet lost its corruption
     /// evidence in the first place.
@@ -139,6 +242,20 @@ mod tests {
                 include_str!("coding_agent_session_ingest/sources/mod.rs"),
             ),
             ("intelligence/mod.rs", include_str!("intelligence/mod.rs")),
+            // Added 2026-08-24. `main.rs` carries the single highest-value
+            // error site in the daemon: the startup DB open, whose own comment
+            // says it exists so a daemon that cannot open its database "is
+            // finally diagnosable in central telemetry instead of crash-looping
+            // silently" - and which then used `%e` and shipped
+            // `failed to open SQLite at <url>` with no cause under it.
+            //
+            // Measured the same day: 73,489 of those records across 58 hosts in
+            // 7 days (7.6% of the reporting fleet), one host logging 12,267 -
+            // about one every 50s, launchd `KeepAlive` against a database it
+            // will never open. 28 of the 58 also show `code: 11`; the other 30
+            // show no corruption at all and are indistinguishable from them,
+            // because the one field that would tell them apart was dropped.
+            ("main.rs", include_str!("main.rs")),
         ];
 
         for (path, src) in CONVERTED {
@@ -147,7 +264,8 @@ mod tests {
             let prod = src.split_once("\n#[cfg(test)]").map_or(*src, |(a, _)| a);
             let offenders: Vec<&str> = prod
                 .lines()
-                .filter(|l| l.contains("error = %e") && !l.trim_start().starts_with("//"))
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .filter(|l| drops_the_cause(l))
                 .filter(|l| !l.contains("not-anyhow:"))
                 .map(str::trim)
                 .collect();
@@ -157,7 +275,11 @@ mod tests {
                  .context() and drops the cause before it can egress. Use \
                  `error = %crate::errors::chain(&e)` - or, if the value is not an \
                  `anyhow::Error` and so has no chain to walk, keep `%e` and say why \
-                 with a `// not-anyhow: …` comment on the same line. \
+                 with a `// not-anyhow: …` comment on the same line. This scan \
+                 matches BOTH spellings - `error = %e` and a positional `{{}}` \
+                 format placeholder - because `main.rs` was added to this list \
+                 while three of its sites used the second one, so the entry \
+                 recorded coverage the scan did not provide. \
                  Offending line(s): {offenders:#?}"
             );
         }

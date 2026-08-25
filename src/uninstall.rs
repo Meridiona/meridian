@@ -340,16 +340,41 @@ fn run_human(plan: &Plan) {
         }
 
         // The TRAY's launch-at-login is a separate mechanism from the daemon's
-        // scheduled task above: `tauri-plugin-autostart` registers it as an
-        // HKCU Run value, not a task, so the `schtasks /Delete` never touched
-        // it. On macOS the equivalent is a `com.meridiona.*` LaunchAgent plist,
-        // which the plist loop below already sweeps up - Windows had no such
-        // coverage, so the tray kept trying to start at every login with its
-        // executable deleted.
+        // scheduled task above, so it needs its own removal on both platforms.
         //
-        // The value name is the app's productName, which is what the plugin
-        // registers under. Best-effort: `reg delete` exits non-zero when the
-        // value is absent, the normal case on a second uninstall.
+        // As of `tray/src-tauri/src/autostart.rs` owning this, the tray is
+        // registered as its own scheduled task (`Meridian Tray`) with a
+        // Startup-folder VBScript as the policy-blocked fallback. Both are
+        // removed here.
+        const TRAY_TASK: &str = "Meridian Tray";
+        let out = std::process::Command::new("schtasks")
+            .args(["/Delete", "/F", "/TN", TRAY_TASK])
+            .no_window()
+            .output();
+        match out {
+            Ok(o) if o.status.success() => println!("✓ removed login task  {TRAY_TASK}"),
+            _ => println!("✓ login task  {TRAY_TASK} (not registered)"),
+        }
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let startup = std::path::PathBuf::from(appdata)
+                .join(r"Microsoft\Windows\Start Menu\Programs\Startup");
+            for launcher in ["MeridianTray.vbs", "MeridianDaemon.vbs"] {
+                let path = startup.join(launcher);
+                if path.exists() {
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => println!("✓ removed startup launcher  {launcher}"),
+                        Err(e) => eprintln!("⚠ could not remove {}: {e}", path.display()),
+                    }
+                }
+            }
+        }
+
+        // Older builds registered the tray via `tauri-plugin-autostart`, which
+        // wrote an HKCU Run value named after the app's productName rather than
+        // a task. An install upgraded across that change still has it, and left
+        // behind it would keep trying to start a deleted executable at every
+        // login. Best-effort: `reg delete` exits non-zero when the value is
+        // absent, the normal case on a second uninstall.
         let out = std::process::Command::new("reg")
             .args([
                 "delete",
@@ -366,13 +391,55 @@ fn run_human(plan: &Plan) {
         }
     }
 
+    // macOS: the TRAY's own login item. `autostart.rs` names it
+    // `com.meridiona.tray`, so the plist loop below finds it. The plugin-era one
+    // did NOT match that glob — it was named after productName
+    // (`Meridian.plist`) — so it survived every uninstall, still pointing at a
+    // trashed app. An install upgraded across that change may still have it, so
+    // it is removed by name here.
+    //
+    // Removed WITHOUT a `bootout`, for the same reason `autostart.rs` never
+    // boots this label out: see `TRAY_LABELS` below.
+    #[cfg(target_os = "macos")]
+    if let Some(home) = meridian_core::paths::home_dir() {
+        let legacy = home.join("Library/LaunchAgents/Meridian.plist");
+        if legacy.exists() {
+            match std::fs::remove_file(&legacy) {
+                Ok(()) => println!("✓ removed agent  Meridian (legacy login item)"),
+                Err(e) => eprintln!("⚠ could not remove {}: {e}", legacy.display()),
+            }
+        }
+    }
+
+    // Labels whose plist is deleted but which are NEVER `bootout`-ed.
+    //
+    // `launchctl bootout` terminates the job's processes, and the tray is that
+    // job's process — it is what launchd started at login. This uninstall runs as
+    // a CHILD of the tray (the in-app wizard shells out to `meridian uninstall`
+    // and waits on its output, see `tray/src-tauri/src/commands/uninstall.rs`),
+    // so booting the tray's label out kills the wizard mid-run: the window
+    // vanishes, the itemized result is never shown, and the permissions guidance
+    // that is the entire reason the wizard exists never appears.
+    //
+    // This was previously invisible because the tray's login item was labelled
+    // `Meridian`, which this loop's `com.meridiona.*` glob never matched.
+    //
+    // Deleting the plist alone is sufficient: nothing loads it again, so the
+    // tray does not come back at the next login, and the user quits or trashes
+    // the app themselves — which is exactly what the wizard's next step tells
+    // them to do. The daemon is deliberately NOT in this list: it is headless,
+    // nothing is waiting on it, and it must actually stop.
+    const TRAY_LABELS: [&str; 1] = ["com.meridiona.tray"];
+
     let uid = uid_str();
     for (label, plist) in &plan.agents {
         // `bootout` can legitimately return non-zero (the agent isn't currently
         // loaded); it's best-effort, so its exit status isn't an error here.
-        let _ = std::process::Command::new("launchctl")
-            .args(["bootout", &format!("gui/{uid}/{label}")])
-            .status();
+        if !TRAY_LABELS.contains(&label.as_str()) {
+            let _ = std::process::Command::new("launchctl")
+                .args(["bootout", &format!("gui/{uid}/{label}")])
+                .status();
+        }
         // But don't claim "✓ removed" if the plist deletion actually failed.
         match std::fs::remove_file(plist) {
             Ok(()) => println!("✓ removed agent  {label}"),
@@ -531,11 +598,21 @@ fn data_items(home: &Path) -> Vec<PathBuf> {
         "walkthrough_armed",
         "icon-cache",
         "daemon.sock",
-        // Written once by the tray after it successfully registers the
-        // launch-at-login item (tray/src-tauri/src/autostart.rs). Left behind,
-        // a reinstall would believe autostart was already configured and never
-        // re-register it, so the app would silently stop starting at login.
+        // The retired one-shot autostart marker. The tray no longer reads it
+        // (`tray/src-tauri/src/autostart.rs` verifies the real registration on
+        // every launch instead, precisely because this marker survived
+        // reinstalls and moves and so routinely lied), but an install upgraded
+        // from an older build still has the file, and leaving it behind is
+        // misleading to anyone debugging autostart.
         "autostart_configured",
+        // The user's deliberate "don't start Meridian automatically" choice.
+        // Removed on uninstall so a later reinstall starts from the default
+        // (autostart on) rather than silently inheriting an opt-out from an
+        // install the user has since thrown away.
+        "autostart_disabled",
+        // The generated Windows scheduled-task definition (Windows only; absent
+        // elsewhere and filtered out below).
+        "meridian-tray-task.xml",
     ]
     .iter()
     .map(|r| meridian.join(r))
