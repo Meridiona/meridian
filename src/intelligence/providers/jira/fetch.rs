@@ -67,28 +67,56 @@ pub(super) async fn discover_start_date_field(ctx: &JiraReqCtx) -> Option<String
 // Fetch
 // ---------------------------------------------------------------------------
 
-/// The active-task scope: everything assigned to you that isn't Done.
+/// The active-task scope: everything assigned to you that isn't Done, except
+/// Epics.
 ///
-/// `Bug` belongs here for the same reason `Task` does — a bug you are assigned
-/// and working on is work, and Meridian's whole job is to notice work and log it
-/// against the right ticket. It was missing, and because this JQL is the ONLY
-/// thing that puts a Jira ticket into `pm_tasks`, a bug was invisible everywhere
-/// downstream: absent from the Tasks page, absent from the worklog matcher's
-/// candidates (so hours spent on it could only ever come back "no match"), and —
-/// worst — a bug filed through the plan composer got mirrored as a `'local'`
-/// shadow row, because `plan_tasks::create` reads "not in pm_tasks after a sync"
-/// as "self-assign failed". That shadow is meant to be temporary, healed by the
-/// next sync's UPSERT; for a bug the heal could never arrive, so a real Jira
-/// ticket sat in Meridian as a personal task forever.
+/// # Why this is a denylist, not an allowlist
 ///
-/// Jira is the only provider that filtered by type at all (Linear/GitHub/Trello
-/// fetch everything assigned to you; Azure's WIQL is `AssignedTo = @me` alone),
-/// so this one clause was the whole discrepancy.
+/// This JQL is the ONLY thing that puts a Jira ticket into `pm_tasks`, which
+/// makes an omission here invisible rather than noisy. A type left off the list
+/// is absent from the Tasks page, absent from the worklog matcher's candidates
+/// (so hours spent on it can only ever come back "no match"), and — worst — a
+/// ticket of that type filed through the plan composer gets mirrored as a
+/// `'local'` shadow row, because `plan_tasks::create` reads "not in pm_tasks
+/// after a sync" as "self-assign failed". That shadow is meant to be temporary,
+/// healed by the next sync's UPSERT; for an unfetchable type the heal can never
+/// arrive, so a real Jira ticket sits in Meridian as a personal task forever.
 ///
-/// Sub-tasks stay out deliberately — see the note in `CLAUDE.md`/memory: we
-/// track tasks/features/bugs and their epics, never subtasks.
-const ACTIVE_TASK_JQL: &str = "assignee = currentUser() AND statusCategory != Done \
-     AND type IN (Task, Feature, Bug) ORDER BY updated DESC";
+/// That is not hypothetical — it is exactly what `Bug` being missing from the
+/// old allowlist did. The list was then `(Task, Feature, Bug)`, which still
+/// omitted **`Story`**, the default primary work type in every Jira Scrum
+/// project. Any user on a standard Scrum board was therefore syncing almost
+/// nothing, silently. Fixing that by appending `Story` would have left the same
+/// trap armed for the next custom type someone's board uses.
+///
+/// So the filter names only what must stay OUT. Epics are excluded because they
+/// are containers, not work: they reach Meridian as the `parent_key`/`epic_title`
+/// of their children (see `mod.rs`'s upsert), never as rows of their own.
+///
+/// # Sub-tasks are IN
+///
+/// Reversing the earlier "tasks/features and their epics, never subtasks" rule:
+/// on many boards the subtask IS the unit of work someone spends a day on, and
+/// excluding it meant that day could not be logged against anything. `type !=
+/// Epic` admits them without naming them, which matters because the type's name
+/// is site-specific — Jira ships both `Subtask` and `Sub-task` as defaults, and
+/// custom subtask types are common. (`type IN subtaskIssueTypes()` is the
+/// function that resolves them by NAME-independent category if this ever needs
+/// to select subtasks specifically.)
+///
+/// One consequence to know: for a subtask, Jira's `parent` is its Story/Task,
+/// not its Epic, so `epic_title` holds the parent task's summary. That is
+/// harmless where the value is consumed — `task_triage` uses it only as a
+/// "context anchor" presence check, and a subtask always has a parent, so it
+/// never trips `NoContextAnchor`.
+///
+/// # Consistency
+///
+/// Jira was the only provider that filtered by type at all — Linear, GitHub and
+/// Trello fetch everything assigned to you, and Azure's WIQL is `AssignedTo =
+/// @me` alone. This brings Jira in line with them.
+const ACTIVE_TASK_JQL: &str =
+    "assignee = currentUser() AND statusCategory != Done AND type != Epic ORDER BY updated DESC";
 
 #[tracing::instrument(
     skip(ctx),
@@ -237,15 +265,43 @@ mod tests {
     }
 
     /// This JQL is the ONLY door a Jira ticket enters `pm_tasks` through, so a
-    /// type missing from it is invisible everywhere downstream — Tasks page,
-    /// worklog candidates, plan. `Bug` was missing for exactly that reason and
-    /// bugs could never be worklogged. Assert each type explicitly: dropping one
-    /// is a silent, product-wide data loss with no error anywhere.
+    /// type it excludes is invisible everywhere downstream — Tasks page, worklog
+    /// candidates, plan — with no error anywhere. That is why the filter must
+    /// stay a DENYLIST: the allowlist form shipped without `Bug` (bugs could
+    /// never be worklogged) and then without `Story` (the default work type on
+    /// every Scrum board, so those users synced almost nothing).
+    ///
+    /// The regression this guards is someone "tightening" it back into a
+    /// `type IN (...)` list, which reintroduces the same silent data loss for
+    /// whichever type they forget.
     #[test]
-    fn active_task_jql_covers_tasks_features_and_bugs() {
-        assert!(ACTIVE_TASK_JQL.contains("Task"));
-        assert!(ACTIVE_TASK_JQL.contains("Feature"));
-        assert!(ACTIVE_TASK_JQL.contains("Bug"));
+    fn active_task_jql_admits_every_type_except_epic() {
+        assert!(
+            ACTIVE_TASK_JQL.contains("type != Epic"),
+            "epics are containers, not work — they arrive as parent_key/epic_title"
+        );
+        assert!(
+            !ACTIVE_TASK_JQL.contains("type IN"),
+            "must not be an allowlist: a forgotten type is silent, product-wide data loss"
+        );
+    }
+
+    /// Sub-tasks are deliberately IN scope, reversing the older
+    /// "tasks/features and their epics, never subtasks" rule: on many boards the
+    /// subtask is the unit of work someone actually spends a day on.
+    ///
+    /// Asserted via the absence of an exclusion rather than a name, because the
+    /// type's name is site-specific — Jira ships both `Subtask` and `Sub-task`
+    /// as defaults, and custom subtask types are common.
+    #[test]
+    fn active_task_jql_does_not_exclude_subtasks() {
+        let jql = ACTIVE_TASK_JQL.to_lowercase();
+        assert!(
+            !jql.contains("subtask"),
+            "no subtask exclusion may creep back in"
+        );
+        assert!(!jql.contains("sub-task"));
+        assert!(!jql.contains("standardissuetypes"));
     }
 
     /// The scope is "mine, and not finished". Both halves matter: without the
