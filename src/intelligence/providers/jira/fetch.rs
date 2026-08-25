@@ -118,6 +118,51 @@ pub(super) async fn discover_start_date_field(ctx: &JiraReqCtx) -> Option<String
 const ACTIVE_TASK_JQL: &str =
     "assignee = currentUser() AND statusCategory != Done AND type != Epic ORDER BY updated DESC";
 
+/// One active-task fetch: the work items to upsert, plus how many rows the
+/// server actually returned before [`is_work_item`] filtered any out.
+///
+/// These two counts must not be conflated, and that is the entire reason this
+/// type exists rather than a bare `Vec`. The caller uses the count to decide
+/// whether the page may have been TRUNCATED at [`MAX_RESULTS`], and it only
+/// prunes `pm_tasks` when it was not — pruning against a partial list deletes
+/// live tickets. Using the post-filter length there would make a full page look
+/// partial the moment a single container row was dropped, silently turning the
+/// truncation guard off on exactly the boards this filter was added for.
+pub(super) struct ActiveFetch {
+    pub(super) issues: Vec<(JiraIssue, serde_json::Value)>,
+    pub(super) returned_by_server: usize,
+}
+
+/// The rung at and above which a Jira issue type is a CONTAINER rather than
+/// work: `1` is Epic, `2`+ are the Premium/Advanced-Roadmaps tiers (Initiative,
+/// Capability, and custom ones an org invents).
+const CONTAINER_HIERARCHY_LEVEL: i64 = 1;
+
+/// Is this issue something a person does work on, as opposed to a bucket that
+/// holds such things?
+///
+/// Filtering on the LEVEL rather than the NAME is the whole point. [`ACTIVE_TASK_JQL`]
+/// can only say `type != Epic`, because JQL has no portable way to express
+/// hierarchy — and a name is not a reliable proxy for a rung. "Feature" is
+/// `hierarchyLevel: 0` (ordinary work) on some boards and a container tier above
+/// Story on others; "Initiative" and "Capability" are containers that the JQL
+/// clause never mentions at all. Without this check those arrive as work items,
+/// which is precisely the category error excluding Epic exists to prevent.
+///
+/// **An unknown level counts as work.** Older Jira Server/Data Center responses
+/// omit `hierarchyLevel` entirely, and the two failure modes are not symmetric:
+/// wrongly including a container puts one extra row on the board, which is
+/// visible and correctable, while wrongly excluding real work makes it
+/// unloggable and silent — the same asymmetry that made the old `type IN (...)`
+/// allowlist so expensive. So `None` is admitted.
+fn is_work_item(issue: &JiraIssue) -> bool {
+    issue
+        .fields
+        .issuetype
+        .hierarchy_level
+        .is_none_or(|level| level < CONTAINER_HIERARCHY_LEVEL)
+}
+
 #[tracing::instrument(
     skip(ctx),
     fields(
@@ -126,11 +171,23 @@ const ACTIVE_TASK_JQL: &str =
         status_code = tracing::field::Empty,
     )
 )]
-pub(super) async fn fetch(
-    ctx: &JiraReqCtx,
-    start_date_field: Option<&str>,
-) -> Result<Vec<(JiraIssue, serde_json::Value)>> {
-    search(ctx, start_date_field, ACTIVE_TASK_JQL).await
+pub(super) async fn fetch(ctx: &JiraReqCtx, start_date_field: Option<&str>) -> Result<ActiveFetch> {
+    let all = search(ctx, start_date_field, ACTIVE_TASK_JQL).await?;
+    let returned_by_server = all.len();
+    let issues: Vec<_> = all.into_iter().filter(|(i, _)| is_work_item(i)).collect();
+    if issues.len() < returned_by_server {
+        // Worth a line: this only fires on boards with container tiers the JQL's
+        // `type != Epic` cannot name, so it is the signal that such a board exists.
+        tracing::debug!(
+            dropped = returned_by_server - issues.len(),
+            kept = issues.len(),
+            "jira: skipped container-tier issues above the work rung"
+        );
+    }
+    Ok(ActiveFetch {
+        issues,
+        returned_by_server,
+    })
 }
 
 /// Fetch specific issues by key regardless of assignee/status/type — used to
@@ -284,6 +341,58 @@ mod tests {
             !ACTIVE_TASK_JQL.contains("type IN"),
             "must not be an allowlist: a forgotten type is silent, product-wide data loss"
         );
+    }
+
+    /// Builds the minimal `JiraIssue` shape `is_work_item` reads. Deserialised
+    /// from JSON rather than constructed, so the test exercises the same
+    /// `#[serde(rename = "hierarchyLevel")]` path a live response takes — a
+    /// struct literal would pass even if the rename were wrong.
+    fn issue_at_level(level: Option<i64>) -> JiraIssue {
+        let hierarchy = match level {
+            Some(l) => format!(r#","hierarchyLevel":{l}"#),
+            None => String::new(),
+        };
+        serde_json::from_str(&format!(
+            r#"{{"key":"K-1","fields":{{
+                 "summary":"s","status":{{"name":"To Do","statusCategory":{{"key":"new"}}}},
+                 "issuetype":{{"name":"X"{hierarchy}}},"project":{{"key":"K"}},
+                 "updated":"2026-01-01T00:00:00.000+0000"}}}}"#
+        ))
+        .expect("fixture must match the real JiraIssue shape")
+    }
+
+    /// The rungs a person actually works on. Sub-tasks (-1) matter most here:
+    /// they were excluded outright until this change.
+    #[test]
+    fn work_rungs_are_kept() {
+        assert!(is_work_item(&issue_at_level(Some(-1))), "sub-task");
+        assert!(
+            is_work_item(&issue_at_level(Some(0))),
+            "task/story/bug/feature"
+        );
+    }
+
+    /// Epic (1) and the Premium tiers above it (Initiative, Capability, custom)
+    /// are buckets, not work. Level 2 is the case the JQL cannot express at all:
+    /// `type != Epic` never names those types, so without this they would arrive
+    /// as work items.
+    #[test]
+    fn container_rungs_are_dropped() {
+        assert!(!is_work_item(&issue_at_level(Some(1))), "epic");
+        assert!(
+            !is_work_item(&issue_at_level(Some(2))),
+            "initiative/capability"
+        );
+        assert!(!is_work_item(&issue_at_level(Some(3))));
+    }
+
+    /// Jira Server/DC omits the field. Admitting the unknown is the deliberate
+    /// choice: one stray container row is visible and correctable, whereas
+    /// dropping real work makes it unloggable with no error anywhere — the exact
+    /// failure the old allowlist kept producing.
+    #[test]
+    fn an_unknown_rung_is_treated_as_work() {
+        assert!(is_work_item(&issue_at_level(None)));
     }
 
     /// Sub-tasks are deliberately IN scope, reversing the older

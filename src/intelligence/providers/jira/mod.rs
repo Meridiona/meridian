@@ -90,6 +90,20 @@ struct JiraStatusCategory {
 #[derive(Deserialize)]
 struct JiraIssueType {
     name: String,
+    /// Jira's own rung number for this type: `-1` sub-task, `0` standard work
+    /// (Task/Story/Bug/Feature), `1` Epic, `2`+ the Premium/Advanced-Roadmaps
+    /// container tiers (Initiative, Capability, and custom ones).
+    ///
+    /// This is what `fetch::is_work_item` filters on, and it is the reason the
+    /// scope is correct on boards we have never seen: a container's NAME is
+    /// arbitrary (plenty of orgs configure "Feature" as a tier above Story)
+    /// but its LEVEL is not.
+    ///
+    /// `Option` because older Jira Server/Data Center responses omit the field.
+    /// Absent means "unknown", and unknown is treated as work — see
+    /// `is_work_item` for why erring toward inclusion is the right failure.
+    #[serde(rename = "hierarchyLevel", default)]
+    hierarchy_level: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -534,7 +548,10 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
     }
 
     match fetch(&ctx, start_date_field.as_deref()).await {
-        Ok(issues) => {
+        Ok(fetch::ActiveFetch {
+            issues,
+            returned_by_server,
+        }) => {
             let keys: Vec<String> = issues.iter().map(|(i, _)| i.key.clone()).collect();
             let n = keys.len();
             let project_key = issues
@@ -565,7 +582,11 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
             .execute(pool)
             .await
             .context("updating jira sync state")?;
-            if n < MAX_RESULTS {
+            // Truncation is judged on what the SERVER returned, never on `n`
+            // (the post-filter count). Dropping container-tier rows shrinks `n`,
+            // so using it here would make a full — possibly truncated — page look
+            // partial and let prune delete tickets that simply did not fit on it.
+            if returned_by_server < MAX_RESULTS {
                 match prune(pool, &keys).await {
                     Ok(0) => {}
                     Ok(pruned) => tracing::info!(pruned_count = pruned, "pruned stale jira tasks"),
@@ -574,6 +595,7 @@ pub async fn refresh_if_stale(pool: &SqlitePool, jira: &JiraConfig) -> Result<Op
             } else {
                 tracing::debug!(
                     fetched_count = n,
+                    returned_by_server,
                     max_results = MAX_RESULTS,
                     "skipping prune — response may be truncated"
                 );
