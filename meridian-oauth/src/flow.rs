@@ -7,14 +7,22 @@
 // code for tokens, and refreshes rotating tokens. Provider-specific URLs/scopes
 // are supplied via `ProviderSpec`; everything else here is provider-blind.
 //
-// THE RULE THAT MATTERS HERE: a `refresh_token` grant is NOT idempotent. Atlassian
-// rotates the refresh token on every use and applies reuse detection - presenting a
-// refresh token it has already consumed revokes the whole token family, permanently.
-// So a refresh POST may only be re-sent when we can PROVE the first one never
-// reached the server. `TokenFailure::Ambiguous` and `GrantKind` below are that
-// proof obligation made explicit; `should_retry` is where it is enforced.
+// THE RULE THAT MATTERS HERE: a `refresh_token` grant is NOT idempotent, and the
+// provider forgives that only for a bounded time. Atlassian rotates the refresh
+// token on every use, but documents a REUSE INTERVAL (10 min by default) during
+// which exchanging the same token again is explicitly allowed - "this interval
+// helps avoid network concurrency issues" - and returns a fresh, valid pair.
+// Outside it, the identical request trips breach detection and revokes the whole
+// token family, permanently.
+//
+// So the correct policy is not "never re-send a refresh grant"; it is "re-send it
+// only while the provider is still forgiving reuse". Inside the window a retry
+// RECOVERS a lost response; outside it, a retry is what destroys the grant.
+// `REUSE_GRACE_BUDGET` and `should_retry` are that rule; `wall_elapsed_since`
+// is the measurement, and it must be a wall clock - see its doc for why a
+// monotonic one silently fails exactly when this matters.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
@@ -56,40 +64,50 @@ pub struct TokenResponse {
 }
 
 /// What a token-endpoint failure says about (a) whether the user must
-/// re-authenticate and (b) whether the SAME grant may be presented again.
+/// re-authenticate and (b) whether the grant may already have been spent.
 ///
-/// Those are two different questions and conflating them is what broke real
-/// installs: the original two-variant version treated every non-4xx as
-/// "transient, retry immediately", including failures where the request had
-/// already been delivered and acted on. See [`Ambiguous`](Self::Ambiguous).
+/// Those are different questions, and the original two-variant version answered
+/// the second with the first: every non-4xx read as "transient, retry
+/// immediately", including failures where the request had already been delivered
+/// and acted on. See [`Ambiguous`](Self::Ambiguous).
+///
+/// Note this enum does NOT by itself decide retries — [`should_retry`] combines
+/// it with how long ago the grant was sent, because for a rotating token the
+/// permission to re-send expires. This is the diagnosis; the clock is the other
+/// half.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenFailure {
     /// The grant itself was rejected and won't recover on its own — an OAuth 4xx
     /// (`invalid_grant`, a revoked/expired refresh token, a bad client). The
     /// stored refresh token is dead; the user must re-authenticate.
     Terminal,
-    /// A passing condition where the endpoint provably did NOT act on the grant:
+    /// A passing condition where THIS attempt provably did NOT act on the grant:
     /// the connection was never established (`reqwest::Error::is_connect()`, which
     /// covers a connect timeout), or the server refused the request outright with
-    /// a 429 before processing it. The stored refresh token is untouched, so
-    /// re-sending it is safe.
+    /// a 429 before processing it. The stored refresh token is untouched by this
+    /// attempt — though an earlier one in the same ladder may have spent it,
+    /// which is why [`should_retry`] still checks the clock.
     Transient,
     /// The connection was made but no usable answer came back — a response
     /// timeout, a mid-response reset, a 5xx from an edge, or a 2xx whose body
     /// didn't parse. **We cannot know whether the grant was consumed.**
     ///
-    /// For a rotating refresh token that is the dangerous case, and it is not
-    /// hypothetical: on 2026-08-20 a laptop woke from sleep, the first refresh
-    /// POST failed with `error sending request`, the automatic retry 400 ms later
-    /// presented the same refresh token, and Atlassian answered
-    /// `403 unauthorized_client: refresh_token is invalid` — the first attempt HAD
-    /// reached Atlassian and rotated the token; only the response was lost. The
-    /// retry turned a recoverable blip into a permanently revoked grant, and the
-    /// user's Jira stayed disconnected until they re-authorised by hand.
+    /// For a rotating refresh token this is the case the provider's reuse
+    /// interval exists to rescue — and the case that destroys the grant when the
+    /// rescue arrives too late. It is not hypothetical: on 2026-08-20 a refresh
+    /// POST left at 18:26:55, the laptop suspended mid-request, and the attempt
+    /// did not fail until 18:55:29. The retry 400 ms after THAT re-presented a
+    /// refresh token Atlassian had rotated 29 minutes earlier — far outside its
+    /// 10-minute reuse interval — and Atlassian answered
+    /// `403 unauthorized_client: refresh_token is invalid`, revoking the grant.
+    /// The user's Jira stayed dead for five days until they re-authorised by hand.
     ///
-    /// Treated as non-terminal for user-facing purposes (the token may well still
-    /// be fine, so no "Reconnect" banner), but never retried for a rotating grant
-    /// — see [`should_retry`].
+    /// Had that same retry fired seconds after the send, the reuse would have
+    /// been forgiven and returned the pair whose delivery was lost. Hence
+    /// [`should_retry`]: retry promptly, never late.
+    ///
+    /// Treated as non-terminal for user-facing purposes either way (the stored
+    /// token may well still be fine, so no "Reconnect" banner).
     Ambiguous,
 }
 
@@ -305,31 +323,40 @@ enum GrantKind {
 
 /// Whether a failed attempt may be re-sent with the SAME grant.
 ///
-/// The whole point of this function is that it takes [`GrantKind`]: "is this
-/// error passing?" and "may I send this grant again?" are different questions,
-/// and answering the second with the first is what revoked real users' Jira
-/// grants. Pure, so the policy is unit-testable without a network.
-fn should_retry(kind: GrantKind, failure: TokenFailure) -> bool {
+/// Takes [`GrantKind`] because "is this error passing?" and "may I send this
+/// grant again?" are different questions, and `wall_elapsed` because for a
+/// rotating grant the answer to the second one EXPIRES. Pure, so the policy is
+/// unit-testable without a network or a clock.
+fn should_retry(kind: GrantKind, failure: TokenFailure, wall_elapsed: Duration) -> bool {
     match (kind, failure) {
         // A dead grant fails identically every time; retries would only delay
         // the user's remedy behind seconds of backoff.
         (_, TokenFailure::Terminal) => false,
-        // Provably not delivered (or explicitly refused unprocessed) — the grant
-        // is untouched, so re-sending it is exactly as safe as sending it once.
-        (_, TokenFailure::Transient) => true,
-        // May already have been consumed and rotated server-side. Re-sending is
-        // the difference between "probably fine next tick" and "revoked".
-        (GrantKind::Rotating, TokenFailure::Ambiguous) => false,
-        (GrantKind::Interactive, TokenFailure::Ambiguous) => true,
+        // An authorization code destroys nothing durable when re-sent: the user
+        // is standing at the browser and the worst case is one more click. Keep
+        // the full breadth so a blip mid-consent doesn't fail a working login.
+        (GrantKind::Interactive, _) => true,
+        // This attempt may have been delivered and acted on, so the retry is a
+        // reuse. Allowed only while the provider is still forgiving reuse - in
+        // which case it does not merely avoid harm, it RECOVERS: the provider
+        // answers with the fresh pair whose first delivery we lost.
+        (GrantKind::Rotating, TokenFailure::Ambiguous) => wall_elapsed < REUSE_GRACE_BUDGET,
+        // This attempt provably did not spend the grant - but an EARLIER attempt
+        // in the same ladder may have, and once a suspend has moved the wall
+        // clock we can no longer tell the two apart. Gate it identically rather
+        // than reason about which attempt we are on; at the first attempt
+        // `wall_elapsed` is ~0, so this never blocks a legitimate prompt retry.
+        (GrantKind::Rotating, TokenFailure::Transient) => wall_elapsed < REUSE_GRACE_BUDGET,
     }
 }
 
 /// Total tries [`post_token_retrying`] gives the token endpoint before it gives
-/// up on a retry-safe failure. Three attempts across ~1.6 s of backoff ride out
-/// the momentary network blips and provider 5xx/429s that otherwise surfaced a
-/// spurious "re-authenticate" sync error on the very next 30-min poll. A dead
-/// grant (4xx) still fails on the first try, and so does an ambiguous one on a
-/// rotating grant — retries are spent only where [`should_retry`] allows.
+/// up. Three attempts across ~1.6 s of backoff ride out the momentary network
+/// blips and provider 5xx/429s that otherwise surfaced a spurious
+/// "re-authenticate" sync error on the very next 30-min poll — and, for a
+/// rotating grant whose response was lost, those same attempts are the recovery.
+/// A dead grant (4xx) still fails on the first try, and [`should_retry`] can end
+/// the ladder early on the clock regardless of the count.
 pub(crate) const TOKEN_POST_ATTEMPTS: usize = 3;
 
 /// Per-attempt cap on the entire token request (connect + TLS + request +
@@ -338,6 +365,43 @@ pub(crate) const TOKEN_POST_ATTEMPTS: usize = 3;
 /// would miss the cut-off, and the reply carrying the new token was discarded —
 /// indistinguishable, from here, from a request that never landed.
 pub(crate) const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long after the first grant left this machine a retry may still re-present
+/// it.
+///
+/// Atlassian documents a 10-minute "reuse interval" in which exchanging the same
+/// rotating refresh token more than once is forgiven and yields a fresh pair.
+/// We budget a small fraction of it, for two reasons: the provider measures the
+/// interval from when IT processed the first exchange (not when we sent it), and
+/// the interval is a per-app setting we neither control nor can read back.
+///
+/// 60 s sits between the two timescales that matter. Every prompt retry is far
+/// under it (the whole backoff ladder is ~1.6 s), and the one thing that
+/// realistically pushes a retry past the window is far over it: the machine
+/// suspending mid-request. That is not hypothetical. On 2026-08-20 a refresh
+/// POST left at 18:26:55, the laptop slept, and the attempt did not fail until
+/// 18:55:29, 28 minutes later. The retry 400 ms after THAT was a reuse 29
+/// minutes stale, and Atlassian revoked the grant.
+pub(crate) const REUSE_GRACE_BUDGET: Duration = Duration::from_secs(60);
+
+/// Wall-clock time elapsed since `started`, saturating at zero.
+///
+/// Deliberately `SystemTime` and NOT `Instant`. A monotonic clock does not
+/// advance while the machine is suspended (macOS `CLOCK_UPTIME_RAW`, Linux
+/// `CLOCK_MONOTONIC`), and tokio's timers are built on it - which is why the old
+/// 8 s per-request timeout did NOT fire on the request that spanned a 28-minute
+/// sleep, and why an `Instant`-based version of this check would have reported
+/// that request as having taken milliseconds and cheerfully retried it. The
+/// clock we need is the one the provider is using, and that is a wall clock.
+///
+/// `SystemTime` can jump (NTP). Forward: we skip a retry, which is the safe
+/// direction. Backward: we saturate to zero and treat the retry as prompt, which
+/// is what it almost certainly was.
+fn wall_elapsed_since(started: SystemTime) -> Duration {
+    SystemTime::now()
+        .duration_since(started)
+        .unwrap_or(Duration::ZERO)
+}
 
 /// Cap on connection establishment alone. Splitting this out of
 /// [`TOKEN_REQUEST_TIMEOUT`] is what makes "never delivered" distinguishable from
@@ -366,9 +430,12 @@ fn truncate_body(text: &str) -> String {
 }
 
 /// [`post_token`] with bounded retry-with-backoff, gated by [`should_retry`].
-/// A terminal rejection returns immediately so a genuinely dead token isn't
-/// hidden behind seconds of backoff — and so does an ambiguous failure on a
-/// rotating grant, because re-sending it is what makes the grant dead.
+///
+/// The retry ladder is checked against the WALL CLOCK on both sides of the
+/// backoff, not just once: `tokio::time::sleep` is a monotonic timer, so a
+/// suspend during the backoff can turn a 400 ms wait into a half-hour one
+/// without the timer noticing. Re-checking after the sleep is what stops the
+/// resumed process from firing a stale reuse the instant it wakes.
 #[tracing::instrument(skip(body), fields(token_url = %token_url))]
 async fn post_token_retrying(
     token_url: &str,
@@ -383,41 +450,54 @@ async fn post_token_retrying(
         .timeout(TOKEN_REQUEST_TIMEOUT)
         .build()
         .map_err(|e| TokenError::transient(format!("building HTTP client: {e}")))?;
+    // Captured before the first grant leaves the machine: the provider's reuse
+    // window starts when IT processes that request, so this is the earliest
+    // instant we can honestly call the start of the window.
+    let first_sent_at = SystemTime::now();
     let mut backoff = Duration::from_millis(400);
-    for attempt in 1..=TOKEN_POST_ATTEMPTS {
-        match post_token(&client, token_url, body).await {
+    let mut attempt = 0usize;
+    loop {
+        attempt += 1;
+        let err = match post_token(&client, token_url, body).await {
             Ok(resp) => return Ok(resp),
-            Err(e) if should_retry(kind, e.failure) && attempt < TOKEN_POST_ATTEMPTS => {
-                tracing::warn!(
-                    attempt,
-                    max = TOKEN_POST_ATTEMPTS,
-                    error = %e,
-                    "OAuth token endpoint transient failure - retrying after backoff"
-                );
-                tokio::time::sleep(backoff).await;
-                backoff *= 3; // 400ms → 1200ms
-            }
-            Err(e) => {
-                // The case worth being able to find in the fleet: the grant may
-                // have been consumed server-side and the rotated token lost with
-                // the response. We deliberately do NOT retry (that is what
-                // revokes the family), so the next scheduled attempt either
-                // succeeds with the stored token or returns a clean 4xx.
-                if kind == GrantKind::Rotating && e.failure == TokenFailure::Ambiguous {
-                    tracing::warn!(
-                        attempt,
-                        error = %e,
-                        "OAuth refresh got no usable response - the provider may have already \
-                         rotated the refresh token; NOT retrying (a retry would revoke the grant)"
-                    );
-                }
-                return Err(e);
-            }
+            Err(e) => e,
+        };
+        let out_of_attempts = attempt >= TOKEN_POST_ATTEMPTS;
+        if out_of_attempts || !should_retry(kind, err.failure, wall_elapsed_since(first_sent_at)) {
+            report_exhausted(kind, &err, attempt, first_sent_at);
+            return Err(err);
+        }
+        tracing::warn!(
+            attempt,
+            max = TOKEN_POST_ATTEMPTS,
+            error = %err,
+            "OAuth token endpoint transient failure - retrying after backoff"
+        );
+        tokio::time::sleep(backoff).await;
+        backoff *= 3; // 400ms → 1200ms
+        if !should_retry(kind, err.failure, wall_elapsed_since(first_sent_at)) {
+            report_exhausted(kind, &err, attempt, first_sent_at);
+            return Err(err);
         }
     }
-    // The `attempt < TOKEN_POST_ATTEMPTS` guard means the final attempt always
-    // takes a return arm above.
-    unreachable!("post_token_retrying loop returns on the last attempt")
+}
+
+/// Log the give-up, loudly enough to find in the fleet when a rotating grant may
+/// have been spent without us learning its replacement — the state that ends in
+/// a user having to reconnect by hand, and the one worth being able to count.
+fn report_exhausted(kind: GrantKind, err: &TokenError, attempt: usize, first_sent_at: SystemTime) {
+    if kind != GrantKind::Rotating || err.failure == TokenFailure::Terminal {
+        return;
+    }
+    let elapsed_s = wall_elapsed_since(first_sent_at).as_secs_f64();
+    tracing::warn!(
+        attempt,
+        elapsed_s,
+        error = %err,
+        "OAuth refresh gave up without a usable response - the provider may have rotated \
+         the refresh token to one we never received. Not re-presenting the old token: \
+         outside the provider's reuse window that revokes the grant outright."
+    );
 }
 
 /// Classify a `reqwest` send failure by whether the request can have been
@@ -788,35 +868,78 @@ mod tests {
         assert!(is_transient(&ambiguous));
     }
 
-    /// The half of the split that faces the PROVIDER, and the one that regressed
-    /// in production: a rotating refresh grant may only be re-sent when the
-    /// request provably never landed. Re-sending after a lost response is what
-    /// trips Atlassian's refresh-token reuse detection and revokes the family.
+    const PROMPT: Duration = Duration::from_secs(2);
+    /// Longer than [`REUSE_GRACE_BUDGET`] — what a retry looks like on the far
+    /// side of a suspend.
+    const STALE: Duration = Duration::from_secs(29 * 60);
+
+    /// A prompt retry of a rotating grant is not merely tolerated, it is the
+    /// RECOVERY: inside the provider's reuse interval the same refresh token
+    /// yields the fresh pair whose first delivery we lost. Refusing to retry
+    /// here would leave the user disconnected just as surely as retrying late.
     #[test]
-    fn a_rotating_grant_is_never_retried_after_an_ambiguous_failure() {
-        assert!(!should_retry(GrantKind::Rotating, TokenFailure::Ambiguous));
-        // Provably-undelivered and explicitly-refused-unprocessed stay retryable,
-        // so a genuine network blip still doesn't cost a sync cycle.
-        assert!(should_retry(GrantKind::Rotating, TokenFailure::Transient));
+    fn a_rotating_grant_retries_promptly_and_recovers() {
+        assert!(should_retry(
+            GrantKind::Rotating,
+            TokenFailure::Ambiguous,
+            PROMPT
+        ));
+        assert!(should_retry(
+            GrantKind::Rotating,
+            TokenFailure::Transient,
+            PROMPT
+        ));
         // A dead grant fails identically every time — don't bury the remedy.
-        assert!(!should_retry(GrantKind::Rotating, TokenFailure::Terminal));
+        assert!(!should_retry(
+            GrantKind::Rotating,
+            TokenFailure::Terminal,
+            PROMPT
+        ));
     }
 
-    /// An interactive code exchange keeps the wider retry breadth: nothing
-    /// durable is destroyed by re-sending it, and the user is at the browser.
+    /// The regression itself. Once the wall clock has moved past the reuse
+    /// window — which on a laptop means "the machine slept mid-request" — the
+    /// same retry stops being a recovery and becomes the thing that revokes the
+    /// grant. Both failure classes are gated: a connect error proves only that
+    /// THIS attempt didn't spend the token, not that an earlier one didn't.
     #[test]
-    fn an_interactive_grant_still_retries_ambiguous_failures() {
+    fn a_rotating_grant_is_never_retried_once_the_reuse_window_has_passed() {
+        assert!(!should_retry(
+            GrantKind::Rotating,
+            TokenFailure::Ambiguous,
+            STALE
+        ));
+        assert!(!should_retry(
+            GrantKind::Rotating,
+            TokenFailure::Transient,
+            STALE
+        ));
+        assert!(!should_retry(
+            GrantKind::Rotating,
+            TokenFailure::Terminal,
+            STALE
+        ));
+    }
+
+    /// An interactive code exchange keeps the wider retry breadth regardless of
+    /// age: nothing durable is destroyed by re-sending it, and the user is at
+    /// the browser.
+    #[test]
+    fn an_interactive_grant_retries_regardless_of_age() {
         assert!(should_retry(
             GrantKind::Interactive,
-            TokenFailure::Ambiguous
+            TokenFailure::Ambiguous,
+            STALE
         ));
         assert!(should_retry(
             GrantKind::Interactive,
-            TokenFailure::Transient
+            TokenFailure::Transient,
+            STALE
         ));
         assert!(!should_retry(
             GrantKind::Interactive,
-            TokenFailure::Terminal
+            TokenFailure::Terminal,
+            STALE
         ));
     }
 
@@ -852,11 +975,17 @@ mod tests {
             classify_status(StatusCode::BAD_REQUEST),
             TokenFailure::Terminal
         );
-        // ...and 5xx must not be retried for a rotating grant, which is the
-        // behaviour change this classification exists to produce.
+        // ...and a 5xx is retryable while the reuse window is open, but not
+        // after it has closed - the distinction this whole module turns on.
+        assert!(should_retry(
+            GrantKind::Rotating,
+            classify_status(StatusCode::BAD_GATEWAY),
+            PROMPT
+        ));
         assert!(!should_retry(
             GrantKind::Rotating,
-            classify_status(StatusCode::BAD_GATEWAY)
+            classify_status(StatusCode::BAD_GATEWAY),
+            STALE
         ));
     }
 
@@ -882,7 +1011,11 @@ mod tests {
             .expect_err("nothing listens on 127.0.0.1:1");
         assert!(err.is_connect(), "expected a connect error, got: {err}");
         assert_eq!(classify_send_error(&err), TokenFailure::Transient);
-        assert!(should_retry(GrantKind::Rotating, classify_send_error(&err)));
+        assert!(should_retry(
+            GrantKind::Rotating,
+            classify_send_error(&err),
+            PROMPT
+        ));
     }
 
     fn spec() -> ProviderSpec {
@@ -1020,37 +1153,61 @@ mod tests {
         s
     }
 
-    /// THE regression test. A response lost after the request was delivered must
-    /// cost exactly ONE request to the token endpoint. The old code sent a second
-    /// one carrying the same refresh token 400 ms later, and Atlassian answered
-    /// the reuse by revoking the grant — five days of dead Jira sync on a real
-    /// install, from one dropped connection.
+    /// THE recovery test, and the shape of the incident. The endpoint reads the
+    /// grant then hangs up — request delivered, answer lost, exactly what a
+    /// dropped connection looks like from here. A prompt retry re-presents the
+    /// same refresh token INSIDE the provider's reuse interval, which is what
+    /// that interval is for, and comes back with the pair we lost. The user
+    /// never learns anything happened.
     #[tokio::test]
-    async fn a_lost_response_costs_a_rotating_grant_exactly_one_request() {
+    async fn a_lost_response_is_recovered_by_a_prompt_retry() {
+        let (url, seen) = spawn_token_stub(vec![
+            Reply::Hangup,
+            Reply::Status(
+                200,
+                r#"{"access_token":"at2","refresh_token":"rt2","expires_in":3600}"#,
+            ),
+        ])
+        .await;
+        let out = refresh("cid", &stub_spec(url), "refresh-token-1")
+            .await
+            .expect("a prompt reuse is inside the grace window and must recover");
+        assert_eq!(out.refresh_token, "rt2");
+        assert_eq!(seen.load(Ordering::SeqCst), 2);
+    }
+
+    /// When the retries cannot recover either, the grant may have been spent —
+    /// but the user must NOT be told to reconnect on that suspicion alone. The
+    /// stored token may be untouched, and a false "Reconnect Jira" for a passing
+    /// network fault is its own bug.
+    #[tokio::test]
+    async fn a_lost_response_that_stays_lost_is_not_reported_as_a_dead_grant() {
         let (url, seen) = spawn_token_stub(vec![Reply::Hangup]).await;
         let err = refresh("cid", &stub_spec(url), "refresh-token-1")
             .await
             .expect_err("a hung-up connection cannot yield tokens");
-        assert_eq!(
-            seen.load(Ordering::SeqCst),
-            1,
-            "the refresh token must be presented once and only once: {err:#}"
-        );
-        // ...and the user must not be told to reconnect, because for all we know
-        // the stored token is still perfectly good.
+        assert_eq!(seen.load(Ordering::SeqCst), TOKEN_POST_ATTEMPTS, "{err:#}");
         assert!(is_transient(&err), "must not read as a dead grant: {err:#}");
     }
 
-    /// A 5xx is the same hazard wearing a status code: an edge can answer 502
-    /// after the upstream already rotated the token.
+    /// A 5xx is the same hazard wearing a status code - an edge can answer 502
+    /// after the upstream already rotated the token - so it gets the same
+    /// treatment: retried while the window is open, and the retry recovers.
     #[tokio::test]
-    async fn a_5xx_costs_a_rotating_grant_exactly_one_request() {
-        let (url, seen) = spawn_token_stub(vec![Reply::Status(502, "bad gateway")]).await;
-        let err = refresh("cid", &stub_spec(url), "refresh-token-1")
+    async fn a_5xx_is_retried_inside_the_window_and_recovers() {
+        let (url, seen) = spawn_token_stub(vec![
+            Reply::Status(502, "bad gateway"),
+            Reply::Status(
+                200,
+                r#"{"access_token":"at2","refresh_token":"rt2","expires_in":3600}"#,
+            ),
+        ])
+        .await;
+        let out = refresh("cid", &stub_spec(url), "refresh-token-1")
             .await
-            .expect_err("502 cannot yield tokens");
-        assert_eq!(seen.load(Ordering::SeqCst), 1, "{err:#}");
-        assert!(is_transient(&err), "{err:#}");
+            .expect("a 502 inside the reuse window must be retried");
+        assert_eq!(out.refresh_token, "rt2");
+        assert_eq!(seen.load(Ordering::SeqCst), 2);
     }
 
     /// Retrying is not switched off wholesale — that would trade this bug for a

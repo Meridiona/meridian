@@ -181,15 +181,19 @@ fn lock_path(provider: &str) -> Result<PathBuf> {
 /// How long [`lock_provider`] waits for a peer to finish before giving up.
 ///
 /// This MUST comfortably exceed the worst case of a full refresh, because that
-/// is what the holder is doing: `flow`'s per-attempt budget is a 10 s connect
-/// cap inside a 30 s request cap, and a retry-safe failure may be attempted
-/// three times with backoff — roughly 32 s worst case. A timeout shorter than
-/// that turns a slow-but-succeeding peer refresh into a second process deciding
-/// the lock is stuck, and the caller must then NOT refresh anyway (see
-/// `jira::ensure_fresh`), so the only thing a short timeout buys is a skipped
-/// sync cycle. It was 10 s while the request cap was 8 s; both moved together
-/// and must keep moving together.
-const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+/// is what the holder is doing. `flow`'s retry ladder self-limits on the wall
+/// clock at `REUSE_GRACE_BUDGET`, but the attempt permitted at the last instant
+/// before that expires still gets a whole `TOKEN_REQUEST_TIMEOUT` to run — so
+/// the bound is their SUM, not either alone.
+///
+/// A timeout shorter than that turns a slow-but-succeeding peer refresh into a
+/// second process deciding the lock is stuck, and that process must then decline
+/// to refresh anyway (see `jira::ensure_fresh`), so a short timeout buys nothing
+/// but a skipped sync cycle. It was 10 s while the request cap was 8 s; these
+/// numbers move together, and `lock_wait_outlasts_the_worst_case_refresh`
+/// recomputes the bound from flow's own constants so they cannot drift apart in
+/// silence.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(150);
 
 /// Acquire the exclusive cross-process advisory lock for `provider`'s token store,
 /// blocking (async) until it's free or [`LOCK_WAIT`] elapses.
@@ -347,16 +351,10 @@ mod tests {
     /// so the drift fails the build instead of the field.
     #[test]
     fn lock_wait_outlasts_the_worst_case_refresh() {
-        use std::time::Duration;
-        // A rotating grant only ever retries a CONNECT failure (flow::should_retry),
-        // so its worst case is `TOKEN_POST_ATTEMPTS` connect timeouts plus the
-        // 400ms + 1200ms backoff...
-        let retried_connects = crate::flow::TOKEN_CONNECT_TIMEOUT
-            * crate::flow::TOKEN_POST_ATTEMPTS as u32
-            + Duration::from_millis(1600);
-        // ...or one single attempt that runs the full request budget, whichever
-        // is longer.
-        let worst = retried_connects.max(crate::flow::TOKEN_REQUEST_TIMEOUT);
+        // The ladder stops issuing retries once the wall clock passes
+        // REUSE_GRACE_BUDGET, but an attempt started a moment before that still
+        // runs its full request timeout — so the holder can be busy for the sum.
+        let worst = crate::flow::REUSE_GRACE_BUDGET + crate::flow::TOKEN_REQUEST_TIMEOUT;
         assert!(
             LOCK_WAIT > worst,
             "LOCK_WAIT ({LOCK_WAIT:?}) must outlast the worst-case refresh ({worst:?})"
