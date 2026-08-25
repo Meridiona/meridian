@@ -297,6 +297,137 @@ pub fn run_auto_if_needed(db_path: &Path, key_hex: Option<&str>) -> Option<Outco
     probe_and_heal(db_path, key_hex, KeyTrust::of(key_hex))
 }
 
+/// Why an automatic repair failed - which decides whether the database may be
+/// moved aside.
+///
+/// # Why "all attempts failed" is not evidence the file is unsalvageable
+/// `execute_pending_repair` exhausts [`REPAIR_RETRY_ATTEMPTS`] and the caller
+/// used to read that as proof, falling through to [`fresh_start`]. It is not
+/// proof. `repair()` rebuilds into a NEW file, so a failure can be about the
+/// machine rather than the database:
+///
+/// - the volume is out of space (`meridian::health::platform::meridian_data_low_gb`
+///   already treats low disk as a live condition, so this is not hypothetical);
+/// - antivirus or an indexer holds the source or the rebuilt copy open - the
+///   same Windows os-error-32 family `meridian_core::retry` exists for;
+/// - `~/.meridian` is not writable.
+///
+/// In each case `Probe::Damaged` was correct, the data is intact, and the old
+/// behaviour renamed it to `meridian.db.unrepairable-backup-<ts>` and let the
+/// daemon start empty. The user sees an empty timeline; the backup survives,
+/// but only a hand recovery brings it back, and `FRESH_START_GUARD` blocks a
+/// retry for 24 hours.
+///
+/// # The fallback is deliberate
+/// Only [`Self::Unsalvageable`] may condemn a file. Anything unrecognised is
+/// [`Self::Inconclusive`] and keeps the database exactly where it is, reporting
+/// `Outcome::Failed` so the notice still reaches the user. That costs the
+/// automatic recovery on an error shape nobody has classified yet - a visible,
+/// recoverable outcome - rather than risking a user's history on a guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepairFailure {
+    /// The FILE itself cannot be read well enough to salvage - the salvage
+    /// could not even ATTACH it. This is the profile
+    /// [`Probe::Unopenable`]'s fallback already exists for, reached from the
+    /// other classification, and the only one that may set the database aside.
+    Unsalvageable,
+    /// The MACHINE could not complete the rebuild: no space, a lock, a
+    /// read-only or unwritable location. The database is fine and must stay
+    /// exactly where it is - a later launch, or a user who frees space, will
+    /// repair it.
+    Environmental,
+    /// Unrecognised. Treated as [`Self::Environmental`] for the decision that
+    /// matters, and kept as its own variant so the two can be told apart in a
+    /// span and a new signature can be added to whichever list it belongs in.
+    Inconclusive,
+}
+
+impl RepairFailure {
+    /// The one question the caller asks.
+    fn may_set_the_database_aside(self) -> bool {
+        matches!(self, Self::Unsalvageable)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unsalvageable => "unsalvageable",
+            Self::Environmental => "environmental",
+            Self::Inconclusive => "inconclusive",
+        }
+    }
+}
+
+/// Signatures that mean the FILE cannot be salvaged. SQLCipher/SQLite report a
+/// page-1 that no reader can make sense of as `SQLITE_NOTADB` (code 26), which
+/// is what a failed `ATTACH` inside the salvage surfaces as.
+const UNSALVAGEABLE_SIGNATURES: &[&str] = &["file is not a database", "(code: 26)", "code: 26,"];
+
+/// Our OWN `.context()` from `meridian::db::repair::rebuild` (`attaching the
+/// damaged database`). Reaching it means the salvage could not ATTACH the
+/// original at all, which is a verdict about the file - and it is how the
+/// 2026-08 field case actually presents, as `(code: 11) unable to open
+/// database` rather than the `code: 26` one might expect.
+///
+/// Checked AFTER [`ENVIRONMENTAL_SIGNATURES`] on purpose: an ATTACH can also
+/// fail because the file is unreadable this instant (permissions, a lock), and
+/// that is a machine problem wearing a file-shaped context. Only the
+/// unambiguous signatures above outrank the environmental list.
+const ATTACH_FAILED_SIGNATURE: &str = "attaching the damaged database";
+
+/// Signatures that mean the MACHINE, not the file. Matched case-insensitively
+/// against the full `anyhow` chain, so a cause several layers down still counts.
+const ENVIRONMENTAL_SIGNATURES: &[&str] = &[
+    // Out of space, POSIX and SQLite spellings.
+    "no space left on device",
+    "os error 28",
+    "database or disk is full",
+    // Not writable.
+    "permission denied",
+    "os error 13",
+    "read-only file system",
+    "os error 30",
+    // Held open by another process - the Windows AV/indexer family.
+    "os error 32",
+    "being used by another process",
+    "access is denied",
+    // The disk itself is unhappy.
+    "disk i/o error",
+    "input/output error",
+    "too many open files",
+    "os error 24",
+];
+
+/// Classify a failed repair from its rendered `anyhow` chain.
+///
+/// Takes the string rather than `&anyhow::Error` because that is what
+/// [`Outcome::Failed`] already carries (`format!("{e:#}")`), and because it
+/// keeps this pure and directly testable against real error text.
+///
+/// Unsalvageable is checked FIRST: a corrupt page 1 can perfectly well be
+/// reported alongside an I/O-flavoured message, and the file verdict is the
+/// more specific one.
+fn classify_repair_failure(error: &str) -> RepairFailure {
+    let lower = error.to_lowercase();
+    // 1. Unambiguous file verdicts outrank everything: a page 1 no reader can
+    //    make sense of is a fact about the file however the rest of the chain
+    //    happens to read.
+    if UNSALVAGEABLE_SIGNATURES.iter().any(|s| lower.contains(s)) {
+        return RepairFailure::Unsalvageable;
+    }
+    // 2. Machine problems next - INCLUDING when they surface under the attach
+    //    context below, because an ATTACH that fails on permissions or a lock
+    //    is a machine problem wearing a file-shaped message.
+    if ENVIRONMENTAL_SIGNATURES.iter().any(|s| lower.contains(s)) {
+        return RepairFailure::Environmental;
+    }
+    // 3. The salvage could not attach the original, for no environmental reason
+    //    we recognise. That is the field profile the fresh start exists for.
+    if lower.contains(ATTACH_FAILED_SIGNATURE) {
+        return RepairFailure::Unsalvageable;
+    }
+    RepairFailure::Inconclusive
+}
+
 /// Whether the key in hand is provably this machine's own database key.
 ///
 /// The fresh-start branch discards a database, and it fires on a SQLCipher
@@ -349,6 +480,10 @@ fn probe_and_heal(db_path: &Path, key_hex: Option<&str>, key_trust: KeyTrust) ->
         verdict = tracing::field::Empty,
         key_trust = ?key_trust,
         outcome = tracing::field::Empty,
+        // Declared up front like every other field here: `Span::record` on an
+        // undeclared field is a silent no-op, so a verdict recorded later would
+        // never reach the exporter. See this function's Observability note.
+        repair_failure = tracing::field::Empty,
         otel.status_code = tracing::field::Empty,
     );
     let _enter = span.enter();
@@ -389,24 +524,36 @@ fn probe_and_heal(db_path: &Path, key_hex: Option<&str>, key_trust: KeyTrust) ->
             }
             match execute_pending_repair(db_path, key_hex) {
                 Outcome::Failed { error } => {
-                    // `Damaged` means the file ATTACHes - repairable in
-                    // principle - but a file that keeps failing every actual
-                    // repair attempt (all `REPAIR_RETRY_ATTEMPTS` of them) is
-                    // not actually salvageable in place, whatever the initial
-                    // classification promised. Left here, this file fails the
-                    // identical way on every future launch forever - the same
-                    // dead end `Probe::Unopenable` already has a fallback for,
-                    // just reached from the other classification. Observed in
-                    // the field (2026-08): a machine whose `meridian db
-                    // repair` failed at `ATTACH DATABASE` itself stayed
-                    // hard-down across every subsequent launch with no
-                    // further signal, exactly this profile.
+                    // Exhausting `REPAIR_RETRY_ATTEMPTS` is NOT proof the file
+                    // is unsalvageable - `repair()` rebuilds into a new file, so
+                    // the failure can be about the machine (no space, an AV
+                    // lock, an unwritable directory) with the data perfectly
+                    // intact. Setting the database aside there costs the user
+                    // their whole timeline for a full disk. See
+                    // [`RepairFailure`].
+                    //
+                    // Only a file verdict may condemn a file. Anything else -
+                    // including anything unrecognised - keeps the database
+                    // exactly where it is and reports the failure, so the user
+                    // gets a notice rather than an empty app.
+                    let failure = classify_repair_failure(&error);
+                    span.record("repair_failure", failure.as_str());
                     span.record("otel.status_code", "ERROR");
+                    if failure.may_set_the_database_aside() {
+                        tracing::error!(
+                            error = %error,
+                            repair_failure = failure.as_str(),
+                            "automatic repair failed and the file itself cannot be salvaged - falling back to a fresh start, the same last resort an unopenable database already gets"
+                        );
+                        return Some(fresh_start(db_path, "unrepairable", error));
+                    }
                     tracing::error!(
                         error = %error,
-                        "automatic repair failed after retries - falling back to a fresh start, the same last resort an unopenable database already gets"
+                        repair_failure = failure.as_str(),
+                        "automatic repair failed for a reason that is not about the file - LEAVING the database in place; it is intact and a later launch can repair it once the machine can"
                     );
-                    Some(fresh_start(db_path, "unrepairable", error))
+                    span.record("outcome", "repair_failed_kept");
+                    Some(Outcome::Failed { error })
                 }
                 repaired @ Outcome::Repaired { .. } => {
                     span.record("outcome", "repaired");
@@ -1160,6 +1307,119 @@ mod probe_tests {
 #[cfg(test)]
 mod tests {
     use meridian::db::repair::{RepairReport, TableOutcome};
+
+    /// The property that matters: ONLY a verdict about the FILE may move a
+    /// user's database aside.
+    ///
+    /// Exhausting `REPAIR_RETRY_ATTEMPTS` used to be read as proof the file was
+    /// unsalvageable. It is not - `repair()` rebuilds into a new file, so a full
+    /// disk, an antivirus lock or an unwritable `~/.meridian` fails every
+    /// attempt with the data perfectly intact. The old behaviour renamed it and
+    /// let the daemon start empty, so the user's whole timeline disappeared
+    /// because their disk was full.
+    #[test]
+    fn only_a_file_verdict_may_condemn_the_database() {
+        assert!(super::RepairFailure::Unsalvageable.may_set_the_database_aside());
+        assert!(!super::RepairFailure::Environmental.may_set_the_database_aside());
+        assert!(
+            !super::RepairFailure::Inconclusive.may_set_the_database_aside(),
+            "an unclassified failure must FALL BACK to keeping the file - a visible, \
+             recoverable outcome beats risking a user's history on a guess"
+        );
+    }
+
+    /// Machine-shaped failures, in the spellings they actually arrive in.
+    #[test]
+    fn environmental_failures_are_recognised() {
+        for error in [
+            "rebuild failed: No space left on device (os error 28)",
+            "writing the rebuilt database: database or disk is full",
+            "creating meridian.db.rebuild: Permission denied (os error 13)",
+            "rename: Read-only file system (os error 30)",
+            "The process cannot access the file because it is being used by another process. (os error 32)",
+            "open: Access is denied. (os error 5)",
+            "step: disk I/O error",
+            "os error 24: Too many open files",
+        ] {
+            assert_eq!(
+                super::classify_repair_failure(error),
+                super::RepairFailure::Environmental,
+                "must be read as a machine failure, not a file one: {error:?}"
+            );
+        }
+    }
+
+    /// The one shape that still earns a fresh start: the salvage could not
+    /// ATTACH the file at all. That is the 2026-08 field profile this fallback
+    /// was originally added for.
+    #[test]
+    fn an_unattachable_file_is_still_condemned() {
+        for error in [
+            "ATTACH DATABASE: file is not a database",
+            "rebuild failed - the original database is unchanged: (code: 26) file is not a database",
+            // The REAL text, taken from `damaged_page_one_that_attach_cannot_salvage_falls_back_to_fresh_start`.
+            // Note it is code 11, not 26 - which is why a code-only classifier
+            // would have silently stopped condemning the one file shape this
+            // fallback was built for.
+            "rebuild failed - the original database is unchanged: attaching the damaged \
+             database: error returned from database: (code: 11) unable to open database: \
+             /tmp/x/meridian.db",
+        ] {
+            assert_eq!(
+                super::classify_repair_failure(error),
+                super::RepairFailure::Unsalvageable,
+                "a file nothing can attach must still reach the fresh start: {error:?}"
+            );
+        }
+    }
+
+    /// An ATTACH that failed for a MACHINE reason must not be read as a file
+    /// verdict - the ordering inside `classify_repair_failure` is the whole
+    /// guarantee, and it is easy to invert by accident.
+    #[test]
+    fn an_attach_that_failed_on_permissions_is_environmental() {
+        assert_eq!(
+            super::classify_repair_failure(
+                "attaching the damaged database: Permission denied (os error 13)"
+            ),
+            super::RepairFailure::Environmental
+        );
+        assert_eq!(
+            super::classify_repair_failure(
+                "attaching the damaged database: The process cannot access the file \
+                 because it is being used by another process. (os error 32)"
+            ),
+            super::RepairFailure::Environmental
+        );
+    }
+    /// A file verdict wins over an environmental-sounding one in the same
+    /// chain: `code: 26` is the more specific fact.
+    #[test]
+    fn a_file_verdict_outranks_an_environmental_sounding_message() {
+        assert_eq!(
+            super::classify_repair_failure(
+                "disk I/O error while reading page 1: (code: 26) file is not a database"
+            ),
+            super::RepairFailure::Unsalvageable
+        );
+    }
+
+    /// Anything unrecognised must fall back to KEEPING the database.
+    #[test]
+    fn an_unrecognised_failure_keeps_the_database() {
+        for error in [
+            "rebuild failed - the original database is unchanged",
+            "something nobody has seen before",
+            "",
+        ] {
+            assert_eq!(
+                super::classify_repair_failure(error),
+                super::RepairFailure::Inconclusive,
+                "{error:?} must not be treated as licence to discard a database"
+            );
+            assert!(!super::classify_repair_failure(error).may_set_the_database_aside());
+        }
+    }
 
     /// A verdict written by one release must still read back on the next, and
     /// nothing outside the closed set may ever reach a telemetry property.
