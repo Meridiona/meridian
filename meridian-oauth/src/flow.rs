@@ -754,6 +754,8 @@ fn decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     /// `is_transient` must find the [`TokenError`] even under the `.context()`
     /// layers `refresh`/`ensure_fresh` wrap it in — that chain walk is the whole
@@ -932,6 +934,176 @@ mod tests {
         blank.client_secret = Some("   ".to_string());
         with_client_secret(&mut body, &blank);
         assert!(body.get("client_secret").is_none());
+    }
+
+    /// How the token endpoint behaves on one request.
+    enum Reply {
+        /// A normal HTTP response with this status and body.
+        Status(u16, &'static str),
+        /// Read the request, then close the connection without answering — the
+        /// production failure this whole module exists for. The grant was
+        /// delivered; only the answer was lost.
+        Hangup,
+    }
+
+    /// A one-shot scripted token endpoint on loopback. Returns its URL and a
+    /// counter of requests it actually READ (not merely accepted), which is the
+    /// number that matters: every read request is a grant the provider may have
+    /// consumed. `replies` is consumed in order; the last entry repeats.
+    async fn spawn_token_stub(replies: Vec<Reply>) -> (&'static str, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(AtomicUsize::new(0));
+        let counter = seen.clone();
+        tokio::spawn(async move {
+            let mut i = 0usize;
+            while let Ok((mut sock, _)) = listener.accept().await {
+                if !read_http_request(&mut sock).await {
+                    continue;
+                }
+                counter.fetch_add(1, Ordering::SeqCst);
+                let reply = &replies[i.min(replies.len() - 1)];
+                i += 1;
+                match reply {
+                    Reply::Hangup => drop(sock),
+                    Reply::Status(code, body) => {
+                        let resp = format!(
+                            "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\n\
+                             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                        let _ = sock.flush().await;
+                    }
+                }
+            }
+        });
+        // `token_url` is `&'static str` on ProviderSpec; a leak is the simplest
+        // way to hand it a per-test port and costs one small string per test.
+        let url: &'static str =
+            Box::leak(format!("http://127.0.0.1:{port}/token").into_boxed_str());
+        (url, seen)
+    }
+
+    /// Read one complete HTTP request (headers + `Content-Length` body) off the
+    /// socket. Returns false if the peer vanished first, so a probe that never
+    /// sends a grant is not counted as one.
+    async fn read_http_request(sock: &mut tokio::net::TcpStream) -> bool {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 2048];
+        loop {
+            let Ok(n) = sock.read(&mut chunk).await else {
+                return false;
+            };
+            if n == 0 {
+                return false;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            let Some(head_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                continue;
+            };
+            let head = String::from_utf8_lossy(&buf[..head_end]).to_lowercase();
+            let want: usize = head
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
+            if buf.len() >= head_end + 4 + want {
+                return true;
+            }
+        }
+    }
+
+    fn stub_spec(token_url: &'static str) -> ProviderSpec {
+        let mut s = spec();
+        s.token_url = token_url;
+        s
+    }
+
+    /// THE regression test. A response lost after the request was delivered must
+    /// cost exactly ONE request to the token endpoint. The old code sent a second
+    /// one carrying the same refresh token 400 ms later, and Atlassian answered
+    /// the reuse by revoking the grant — five days of dead Jira sync on a real
+    /// install, from one dropped connection.
+    #[tokio::test]
+    async fn a_lost_response_costs_a_rotating_grant_exactly_one_request() {
+        let (url, seen) = spawn_token_stub(vec![Reply::Hangup]).await;
+        let err = refresh("cid", &stub_spec(url), "refresh-token-1")
+            .await
+            .expect_err("a hung-up connection cannot yield tokens");
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            1,
+            "the refresh token must be presented once and only once: {err:#}"
+        );
+        // ...and the user must not be told to reconnect, because for all we know
+        // the stored token is still perfectly good.
+        assert!(is_transient(&err), "must not read as a dead grant: {err:#}");
+    }
+
+    /// A 5xx is the same hazard wearing a status code: an edge can answer 502
+    /// after the upstream already rotated the token.
+    #[tokio::test]
+    async fn a_5xx_costs_a_rotating_grant_exactly_one_request() {
+        let (url, seen) = spawn_token_stub(vec![Reply::Status(502, "bad gateway")]).await;
+        let err = refresh("cid", &stub_spec(url), "refresh-token-1")
+            .await
+            .expect_err("502 cannot yield tokens");
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "{err:#}");
+        assert!(is_transient(&err), "{err:#}");
+    }
+
+    /// Retrying is not switched off wholesale — that would trade this bug for a
+    /// sync that gives up on any hiccup. A 429 is refused BEFORE the grant is
+    /// processed, so the retry is safe and must still happen.
+    #[tokio::test]
+    async fn a_rotating_grant_still_retries_a_429_and_succeeds() {
+        let (url, seen) = spawn_token_stub(vec![
+            Reply::Status(429, r#"{"error":"rate_limited"}"#),
+            Reply::Status(
+                200,
+                r#"{"access_token":"at2","refresh_token":"rt2","expires_in":3600}"#,
+            ),
+        ])
+        .await;
+        let out = refresh("cid", &stub_spec(url), "refresh-token-1")
+            .await
+            .expect("the retry after a 429 must succeed");
+        assert_eq!(out.access_token, "at2");
+        assert_eq!(out.refresh_token, "rt2");
+        assert_eq!(seen.load(Ordering::SeqCst), 2);
+    }
+
+    /// The exact response the incident produced. One request, and this one DOES
+    /// tell the user to reconnect — the grant really is gone.
+    #[tokio::test]
+    async fn a_403_is_one_request_and_a_dead_grant() {
+        let (url, seen) = spawn_token_stub(vec![Reply::Status(
+            403,
+            r#"{"error":"unauthorized_client","error_description":"refresh_token is invalid"}"#,
+        )])
+        .await;
+        let err = refresh("cid", &stub_spec(url), "refresh-token-1")
+            .await
+            .expect_err("403 cannot yield tokens");
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "{err:#}");
+        assert!(
+            !is_transient(&err),
+            "a rejected grant must surface the reconnect remedy: {err:#}"
+        );
+    }
+
+    /// An interactive code exchange keeps the old breadth: re-sending it destroys
+    /// nothing durable, and giving up on the first blip would fail logins that
+    /// would have worked.
+    #[tokio::test]
+    async fn an_interactive_exchange_still_retries_a_5xx() {
+        let (url, seen) = spawn_token_stub(vec![Reply::Status(500, "boom")]).await;
+        let body = serde_json::json!({ "grant_type": "authorization_code" });
+        let err = post_token_retrying(url, &body, GrantKind::Interactive)
+            .await
+            .expect_err("500 cannot yield tokens");
+        assert_eq!(seen.load(Ordering::SeqCst), TOKEN_POST_ATTEMPTS, "{err}");
     }
 
     #[test]

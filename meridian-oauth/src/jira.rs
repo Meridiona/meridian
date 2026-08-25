@@ -312,23 +312,59 @@ pub async fn ensure_fresh() -> Result<OAuthTokens> {
     if !resp.scope.is_empty() {
         t.scopes = resp.scope;
     }
-    // Save the rotated tokens. If save fails (disk full, permissions), log a
-    // critical error and return the in-memory tokens anyway — the access token
-    // is valid for ~1h so the current request succeeds. On the next expiry the
-    // stored (now-invalid) refresh token will cause a 401 and the user must
-    // re-authenticate. A critical log surfaces this before it happens.
-    match store::save(&t) {
-        Ok(()) => {}
-        Err(e) => {
-            tracing::error!(
-                error = %e,
-                "CRITICAL: failed to persist rotated Jira refresh token — access token \
-                 valid for ~1h but re-authentication required after expiry. Fix \
-                 permissions at ~/.meridian/oauth/ then re-run `meridian oauth-login jira`."
-            );
+    save_rotated(&t).await;
+    Ok(t)
+}
+
+/// How many times [`save_rotated`] tries to write the rotated tokens down.
+const SAVE_ATTEMPTS: usize = 3;
+
+/// Persist the freshly rotated tokens, retrying briefly before giving up.
+///
+/// This is the disk-side twin of the wire-side hazard `flow` guards against, and
+/// it deserves the same seriousness: the refresh token in `t` is now the ONLY one
+/// the provider will accept, and the one on disk is already spent. Failing to
+/// write it costs the user exactly what losing it on the wire costs — a manual
+/// re-authorisation — just an hour later, when the access token expires. So a
+/// single `write` returning an error is not something to shrug at and move on
+/// from, which is what this used to do.
+///
+/// Retrying is worth the two extra attempts because the realistic causes are
+/// often momentary: on Windows the `rename` into place fails with a sharing
+/// violation while an indexer or antivirus has the file open, and a full disk can
+/// free up between attempts. A genuinely unwritable store (bad permissions) fails
+/// all three and we fall through to the same loud error as before.
+///
+/// Deliberately does NOT propagate the failure: the access token in hand is good
+/// for ~1 h, so the caller's Jira request should still succeed. Failing here
+/// would break sync NOW on top of breaking it later.
+async fn save_rotated(t: &OAuthTokens) {
+    let mut backoff = std::time::Duration::from_millis(200);
+    for attempt in 1..=SAVE_ATTEMPTS {
+        match store::save(t) {
+            Ok(()) => return,
+            Err(e) if attempt < SAVE_ATTEMPTS => {
+                tracing::warn!(
+                    attempt,
+                    max = SAVE_ATTEMPTS,
+                    error = %e,
+                    "could not persist the rotated Jira refresh token - retrying"
+                );
+                tokio::time::sleep(backoff).await;
+                backoff *= 3; // 200ms → 600ms
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "CRITICAL: failed to persist rotated Jira refresh token after \
+                     retries - the access token is valid for ~1h, but the stored \
+                     refresh token is already spent, so re-authentication will be \
+                     required once it expires. Fix permissions at ~/.meridian/oauth/ \
+                     then reconnect Jira in Settings - Integrations."
+                );
+            }
         }
     }
-    Ok(t)
 }
 
 /// Resolved per-request auth context. OAuth and basic auth differ in BOTH the API
