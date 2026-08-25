@@ -153,6 +153,56 @@ pub(super) async fn discover_start_date_field(ctx: &JiraReqCtx) -> Option<String
 const ACTIVE_TASK_JQL: &str = "assignee = currentUser() AND statusCategory != Done \
      AND type != Epic AND type != Story AND type != Feature ORDER BY updated DESC";
 
+/// The fallback JQL: only clauses EVERY Jira installation can answer.
+///
+/// [`ACTIVE_TASK_JQL`] names `Story` and `Feature`, and Jira rejects the whole
+/// query with HTTP 400 - `The value 'Feature' does not exist for the field
+/// 'type'` - when an installation has no issue type by that name. A site that
+/// never created them (or renamed them) therefore fails its ENTIRE active-task
+/// refresh, not just the exclusion. `type != Epic` carries the same risk in
+/// principle; Epic is a system type present in every installation, so it is far
+/// less likely, but this fallback drops it too rather than guessing which names
+/// are safe.
+///
+/// Nothing is lost by falling back: [`is_work_item`] already excludes containers
+/// by hierarchy LEVEL, and [`is_excluded_type_name`] applies the same name
+/// policy client-side. The JQL clauses are a row-count optimisation, not the
+/// correctness boundary.
+const PORTABLE_TASK_JQL: &str =
+    "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC";
+
+/// Issue type names [`ACTIVE_TASK_JQL`] excludes, enforced client-side as well.
+///
+/// On the primary path this is a no-op - the JQL already dropped them. It earns
+/// its keep on the [`PORTABLE_TASK_JQL`] fallback, where the exclusion has to
+/// happen here or the documented product policy silently stops applying on
+/// exactly the sites that hit the fallback.
+const EXCLUDED_TYPE_NAMES: &[&str] = &["epic", "story", "feature"];
+
+/// Is this issue one of the type names excluded by policy?
+///
+/// Case-insensitive: Jira type names are display strings and installations vary
+/// in casing.
+fn is_excluded_type_name(issue: &JiraIssue) -> bool {
+    EXCLUDED_TYPE_NAMES
+        .iter()
+        .any(|n| issue.fields.issuetype.name.eq_ignore_ascii_case(n))
+}
+
+/// Does this error mean the JQL referenced an issue type the site does not have?
+///
+/// Jira answers that with 400 and `The value 'X' does not exist for the field
+/// 'type'`. Matched on the field phrase rather than a specific type name so a
+/// renamed or absent `Story`, `Feature` or `Epic` all route to the fallback.
+///
+/// Deliberately narrow: every OTHER 400 (a genuinely malformed query, an
+/// unsupported field) must still fail loudly rather than silently widening the
+/// result set.
+fn is_unknown_issue_type_error(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<crate::intelligence::providers::http::HttpStatusError>()
+        .is_some_and(|e| e.status == 400 && e.body.contains("does not exist for the field 'type'"))
+}
+
 /// One active-task fetch: the work items to upsert, plus how many rows the
 /// server actually returned before [`is_work_item`] filtered any out.
 ///
@@ -207,9 +257,32 @@ fn is_work_item(issue: &JiraIssue) -> bool {
     )
 )]
 pub(super) async fn fetch(ctx: &JiraReqCtx, start_date_field: Option<&str>) -> Result<ActiveFetch> {
-    let all = search(ctx, start_date_field, ACTIVE_TASK_JQL).await?;
+    // The exclusions in `ACTIVE_TASK_JQL` name issue types, and Jira 400s the
+    // WHOLE query when a site does not have one of them - so a board without
+    // `Story` or `Feature` lost its entire refresh, not just the exclusion.
+    // Fall back to a portable query and enforce the same policy client-side.
+    let all = match search(ctx, start_date_field, ACTIVE_TASK_JQL).await {
+        Ok(rows) => rows,
+        Err(e) if is_unknown_issue_type_error(&e) => {
+            tracing::warn!(
+                provider = "jira",
+                error = %crate::errors::chain(&e),
+                "jira: this site does not have every issue type the task query names - \
+                 retrying without the type exclusions and filtering them locally"
+            );
+            search(ctx, start_date_field, PORTABLE_TASK_JQL).await?
+        }
+        Err(e) => return Err(e),
+    };
     let returned_by_server = all.len();
-    let issues: Vec<_> = all.into_iter().filter(|(i, _)| is_work_item(i)).collect();
+    // Both filters, on BOTH paths. `is_work_item` is the structural one
+    // (containers by hierarchy level); `is_excluded_type_name` carries the name
+    // policy that the JQL applies on the primary path and cannot on the
+    // portable fallback.
+    let issues: Vec<_> = all
+        .into_iter()
+        .filter(|(i, _)| is_work_item(i) && !is_excluded_type_name(i))
+        .collect();
     if issues.len() < returned_by_server {
         // Worth a line: this only fires on boards with container tiers the JQL's
         // `type != Epic` cannot name, so it is the signal that such a board exists.
@@ -338,6 +411,69 @@ async fn search(
 mod tests {
     use super::*;
 
+    /// A site without `Story` or `Feature` must still refresh.
+    ///
+    /// `ACTIVE_TASK_JQL` names those types, and Jira rejects the WHOLE query
+    /// with 400 when an installation does not have one - so the exclusion took
+    /// the entire active-task fetch down with it, on exactly the boards that
+    /// never created them.
+    #[test]
+    fn an_absent_issue_type_routes_to_the_portable_query() {
+        let err: anyhow::Error = crate::intelligence::providers::http::HttpStatusError::new(
+            400,
+            "Jira /search/jql",
+            r#"{"errorMessages":["The value 'Feature' does not exist for the field 'type'."],"errors":{}}"#,
+        )
+        .into();
+        assert!(super::is_unknown_issue_type_error(&err));
+    }
+
+    /// Every OTHER 400 must still fail loudly. Falling back on a genuinely
+    /// malformed query would silently widen the result set instead of surfacing
+    /// the bug.
+    #[test]
+    fn other_failures_do_not_route_to_the_portable_query() {
+        for (status, body) in [
+            (400, r#"{"errorMessages":["Field 'nope' does not exist."]}"#),
+            (401, r#"{"errorMessages":["Unauthorized"]}"#),
+            (429, "rate limited"),
+            (500, "boom"),
+        ] {
+            let err: anyhow::Error = crate::intelligence::providers::http::HttpStatusError::new(
+                status,
+                "Jira /search/jql",
+                body,
+            )
+            .into();
+            assert!(
+                !super::is_unknown_issue_type_error(&err),
+                "status {status} must not silently fall back"
+            );
+        }
+        // A non-HTTP error must not either.
+        assert!(!super::is_unknown_issue_type_error(&anyhow::anyhow!(
+            "network unreachable"
+        )));
+    }
+
+    /// The portable fallback drops the JQL exclusions, so the name policy has to
+    /// hold client-side or it silently stops applying on those sites.
+    #[test]
+    fn the_name_policy_is_enforced_client_side_too() {
+        for name in ["Story", "story", "Feature", "Epic"] {
+            assert!(
+                super::is_excluded_type_name(&issue_named(name)),
+                "{name} must be excluded whichever query returned it"
+            );
+        }
+        for name in ["Task", "Bug", "Sub-task", "Improvement"] {
+            assert!(
+                !super::is_excluded_type_name(&issue_named(name)),
+                "{name} is real work and must survive"
+            );
+        }
+    }
+
     #[test]
     fn key_in_jql_quotes_and_joins_keys() {
         let keys = vec!["KAN-64".to_string(), "KAN-67".to_string()];
@@ -415,6 +551,18 @@ mod tests {
     /// from JSON rather than constructed, so the test exercises the same
     /// `#[serde(rename = "hierarchyLevel")]` path a live response takes — a
     /// struct literal would pass even if the rename were wrong.
+    /// Same fixture shape as [`issue_at_level`], varying the TYPE NAME instead
+    /// of the hierarchy rung - the axis the portable-fallback policy filters on.
+    fn issue_named(name: &str) -> JiraIssue {
+        serde_json::from_str(&format!(
+            r#"{{"key":"K-1","fields":{{
+                 "summary":"s","status":{{"name":"To Do","statusCategory":{{"key":"new"}}}},
+                 "issuetype":{{"name":"{name}"}},"project":{{"key":"K"}},
+                 "updated":"2026-01-01T00:00:00.000+0000"}}}}"#
+        ))
+        .expect("fixture must match the real JiraIssue shape")
+    }
+
     fn issue_at_level(level: Option<i64>) -> JiraIssue {
         let hierarchy = match level {
             Some(l) => format!(r#","hierarchyLevel":{l}"#),
