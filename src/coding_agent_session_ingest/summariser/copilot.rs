@@ -14,6 +14,16 @@
 //   analysis.
 // * No `--json-schema`, so the JSON contract rides in the prompt and
 //   `extract` tolerates fenced/prose-wrapped objects (codex pattern).
+//
+// KNOWN WINDOWS GAP: `copilot` is also npm-installed (`npm i -g @github/copilot`),
+// so it resolves to `copilot.cmd` on Windows the same as `codex`/`claude` - and this
+// prompt is always multi-line (it embeds `prompts::summary_instruction()` plus the
+// transcript), which is exactly what makes Rust's std refuse to spawn a `.bat`/`.cmd`
+// target (the CVE-2024-24576 "BatBadBut" fix; see `codex.rs`'s/`claude.rs`'s module
+// docs for the confirmed-live error). Unlike codex/claude, this one can't simply move
+// to stdin - `-p` ignores it, per the first divergence above. Left unfixed here; a
+// real fix needs a different mechanism (e.g. a temp-file prompt, if copilot supports
+// reading one) - not yet designed.
 
 use super::config::SummariserConfig;
 use super::prompts;
