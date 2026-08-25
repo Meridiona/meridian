@@ -194,7 +194,7 @@ pub(crate) fn utf16le_with_bom(s: &str) -> Vec<u8> {
 /// the console code page depending on the Windows build and how the process was
 /// launched.
 ///
-/// This only ever feeds a `contains` check ([`super::decide`]), so a
+/// This only ever feeds a `contains` check ([`super::job_references_exe`]), so a
 /// best-effort decode is sufficient and a wrong guess costs one redundant
 /// rewrite. Guessing by counting NUL bytes rather than trusting the BOM
 /// alone: BOM-less UTF-16 output is real, and decoding it as UTF-8 yields a
@@ -245,7 +245,8 @@ fn is_disabled(xml: &str) -> bool {
     xml.contains("<Enabled>false</Enabled>")
 }
 
-/// Windows' own repair check, kept separate from the shared [`super::decide`]:
+/// Windows' own repair check, kept separate from the shared
+/// [`super::decide_skip`]:
 /// that helper only checks a marker's PRESENCE, which cannot see a task that
 /// needs REWRITING rather than merely completing. A task carrying the retired
 /// [`STALE_SESSION_TRIGGER_MARKER`] unlock/reconnect triggers still contains
@@ -253,12 +254,14 @@ fn is_disabled(xml: &str) -> bool {
 /// already correct forever and never strip them — this checks for that
 /// explicitly, ahead of the presence check.
 ///
-/// Pure and separate from the read, like `super::decide`, so both this and
+/// Pure and separate from the read, like [`super::decide_skip`], so both this and
 /// [`ensure_registered`]'s call to it are unit-testable without a Windows host.
 fn decide_task(existing: Option<&str>, expected_exe: &str) -> RegistrationAction {
     match existing {
         None => RegistrationAction::RegisteredMissing,
-        Some(text) if !text.contains(expected_exe) => RegistrationAction::RepairedPathDrift,
+        Some(text) if !super::job_references_exe(text, expected_exe) => {
+            RegistrationAction::RepairedPathDrift
+        }
         Some(text) if text.contains(STALE_SESSION_TRIGGER_MARKER) => {
             RegistrationAction::RepairedStaleDefinition
         }

@@ -259,7 +259,7 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
         // Distinguish the two repairs that matter for the fleet: a moved app is
         // a different problem from a definition this build simply renders
         // differently.
-        Some(cur) if !cur.contains(exe.to_string_lossy().as_ref()) => {
+        Some(cur) if !super::job_references_exe(cur, exe.to_string_lossy().as_ref()) => {
             RegistrationAction::RepairedPathDrift
         }
         Some(_) => RegistrationAction::RepairedStaleDefinition,
@@ -348,7 +348,61 @@ pub(crate) async fn ensure_registered() -> RegistrationAction {
 /// was trying to cause anyway.
 pub(crate) async fn disarm_relaunch() {
     let target = format!("gui/{}/{LABEL}", crate::sys::uid_str());
+    // REFUSE to boot ourselves out. `bootout` unloads a job AND terminates its
+    // processes, our plist deliberately carries no `KeepAlive`, and SMAppService
+    // only supplies a FUTURE login launch - so if this process IS that job's
+    // instance, the bootout makes the app vanish for the rest of the session
+    // with nothing to bring it back.
+    //
+    // `migrate_off_plugin` already documents this hazard for the plugin-era
+    // label and avoids it by never booting out at all. The same hazard applies
+    // here, and the justification originally written above ("no worse than the
+    // exit the user was trying to cause") only holds on the DISABLE path -
+    // the macOS 13+ startup path calls this while the user has asked for
+    // nothing of the sort.
+    //
+    // Skipping is cheap. The bootout only exists to stop an already-armed
+    // `LaunchEvents` trigger firing once more before the next logout; if it
+    // does fire, `tauri-plugin-single-instance` turns the second launch into a
+    // no-op. A spurious relaunch attempt is strictly better than a dead tray.
+    if job_is_running_this_process(&target).await {
+        tracing::info!(
+            label = LABEL,
+            "autostart: skipping bootout - this process IS that job's instance, and \
+             booting it out would terminate the tray with nothing to restart it"
+        );
+        return;
+    }
     let _ = crate::backend_install::launchctl(&["bootout", &target]).await;
+}
+
+/// Does `target`'s launchd job currently own THIS process?
+async fn job_is_running_this_process(target: &str) -> bool {
+    let Ok(out) = tokio::process::Command::new("launchctl")
+        .args(["print", target])
+        .output()
+        .await
+    else {
+        // Cannot tell. Fail SAFE - assume it might be us and skip the bootout,
+        // because the cost of a wrong "no" (a dead tray) far exceeds the cost of
+        // a wrong "yes" (one `LaunchEvents` trigger fires and single-instance
+        // absorbs it).
+        return true;
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    job_pid_from_print(&text) == Some(std::process::id())
+}
+
+/// The `pid = N` a `launchctl print` block reports for a running job.
+///
+/// `None` when the job is loaded but not running (no `pid` line), when the label
+/// is unknown (launchctl errors and prints nothing), or when the field is not a
+/// number.
+fn job_pid_from_print(text: &str) -> Option<u32> {
+    text.lines()
+        .map(str::trim)
+        .find_map(|l| l.strip_prefix("pid = "))
+        .and_then(|v| v.trim().parse().ok())
 }
 
 /// Delete the plugin-era `Meridian.plist`, so an upgraded install does not end
@@ -440,6 +494,40 @@ pub(crate) async fn status() -> Status {
 
 #[cfg(test)]
 mod tests {
+
+    /// `disarm_relaunch` must never terminate the tray it is running inside.
+    ///
+    /// `bootout` unloads a job AND kills its processes; our plist carries no
+    /// `KeepAlive`; SMAppService only arranges a FUTURE login launch. So booting
+    /// out our own label makes the app vanish for the session. The macOS 13+
+    /// startup path calls this while the user has asked for nothing, which is
+    /// where the original justification ("no worse than the exit the user was
+    /// trying to cause") stops applying.
+    #[test]
+    fn the_running_jobs_pid_is_read_from_launchctl_print() {
+        let sample = "\
+com.meridiona.tray = {
+\tactive count = 1
+\tpath = /Users/t/Library/LaunchAgents/com.meridiona.tray.plist
+\tstate = running
+\tpid = 4711
+\tprogram = /Applications/Meridian.app/Contents/MacOS/Meridian
+}";
+        assert_eq!(job_pid_from_print(sample), Some(4711));
+    }
+
+    /// A loaded-but-not-running job, an unknown label, and a malformed field
+    /// must all read as "no pid" rather than a wrong one.
+    #[test]
+    fn a_job_with_no_running_instance_reports_no_pid() {
+        assert_eq!(job_pid_from_print("state = not running\n"), None);
+        assert_eq!(job_pid_from_print(""), None);
+        assert_eq!(job_pid_from_print("pid = notanumber"), None);
+        assert_eq!(
+            job_pid_from_print("last exit code = 0\nactive count = 0"),
+            None
+        );
+    }
     use super::*;
 
     fn body(run_at_load: bool) -> String {
