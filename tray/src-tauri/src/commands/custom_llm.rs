@@ -135,6 +135,36 @@ fn read_rows(v: &Value) -> Vec<CustomLlmProvider> {
 
 /// Write the registry back into a settings value, preserving every other key (the settings
 /// write is a merge, not a replace — see `meridian_core::settings`).
+/// Persist `rows` into the CURRENT settings document, under the shared settings
+/// lock, and return the document as written.
+///
+/// # Why this re-reads instead of writing the caller's snapshot
+/// Every command here reads settings, does its work, and writes back. For
+/// `add_custom_llm_provider` and `replace_key` that work includes
+/// `probe_endpoint(...).await` - a NETWORK round trip. Writing the pre-probe
+/// snapshot means every non-registry settings change that completed during
+/// those seconds is silently discarded: a Settings save, a `request_pm_tool`, a
+/// sign-in's `write_account_pseudonym`.
+///
+/// [`REGISTRY_LOCK`] does not help. It serialises the custom-provider commands
+/// against EACH OTHER, and knows nothing about
+/// `meridian_core::settings::mutate_settings_value`, which is what every other
+/// writer now uses. Two locks that do not see each other are one lock.
+///
+/// Re-reading under the shared lock is safe precisely because `REGISTRY_LOCK` is
+/// still held: no other registry command can have changed `rows` in the
+/// meantime, so the caller's `rows` remains authoritative for its own key while
+/// every other key comes from the freshest document.
+///
+/// The shared lock is NOT held across the probe - only across this write, which
+/// is a read, an insert and an atomic rename.
+fn persist_rows(rows: &[CustomLlmProvider]) -> anyhow::Result<Value> {
+    settings::mutate_settings_value(|v| {
+        write_rows(v, rows).map_err(|e| anyhow::anyhow!(e))?;
+        Ok(v.clone())
+    })
+}
+
 fn write_rows(v: &mut Value, rows: &[CustomLlmProvider]) -> Result<(), String> {
     let obj = v.as_object_mut().ok_or("settings are not an object")?;
     obj.insert(
@@ -266,7 +296,10 @@ pub async fn add_custom_llm_provider(
     // Held across the whole read-probe-write so a concurrent add/probe/remove can't
     // lose this update. See [`REGISTRY_LOCK`].
     let _guard = REGISTRY_LOCK.lock().await;
-    let mut settings_v = settings::read_settings_value();
+    // READ-ONLY from here: this snapshot supplies the existing rows and the
+    // validation below, and is deliberately never written back - see
+    // `persist_rows` for why the write re-reads instead.
+    let settings_v = settings::read_settings_value();
     let mut rows = read_rows(&settings_v);
     if rows
         .iter()
@@ -312,9 +345,8 @@ pub async fn add_custom_llm_provider(
     );
 
     rows.push(row.clone());
-    write_rows(&mut settings_v, &rows)?;
-    settings::write_settings_value(&settings_v)
-        .map_err(|e| crate::cmd_err!(e, "custom_llm: write failed"))?;
+    let settings_v =
+        persist_rows(&rows).map_err(|e| crate::cmd_err!(e, "custom_llm: write failed"))?;
 
     Ok(ProbeOutcome {
         provider: CustomProviderView::of(&row, selected_custom_id(&settings_v).as_deref()),
@@ -350,7 +382,10 @@ pub async fn probe_custom_llm_provider(id: String, refresh: bool) -> Result<Prob
     // Held across the whole read-probe-write so a concurrent add/probe/remove can't
     // lose this update. See [`REGISTRY_LOCK`].
     let _guard = REGISTRY_LOCK.lock().await;
-    let mut settings_v = settings::read_settings_value();
+    // READ-ONLY from here: this snapshot supplies the existing rows and the
+    // validation below, and is deliberately never written back - see
+    // `persist_rows` for why the write re-reads instead.
+    let settings_v = settings::read_settings_value();
     let mut rows = read_rows(&settings_v);
     let idx = rows
         .iter()
@@ -379,8 +414,7 @@ pub async fn probe_custom_llm_provider(id: String, refresh: bool) -> Result<Prob
         "custom_llm: endpoint re-measured"
     );
 
-    write_rows(&mut settings_v, &rows)?;
-    settings::write_settings_value(&settings_v).map_err(|e| e.to_string())?;
+    let settings_v = persist_rows(&rows).map_err(|e| format!("{e:#}"))?;
 
     Ok(ProbeOutcome {
         provider: CustomProviderView::of(&rows[idx], selected_custom_id(&settings_v).as_deref()),
@@ -400,7 +434,10 @@ pub async fn remove_custom_llm_provider(id: String) -> Result<Vec<CustomProvider
     // Held across the read-modify-write so a concurrent add/probe/remove can't lose
     // this update. See [`REGISTRY_LOCK`].
     let _guard = REGISTRY_LOCK.lock().await;
-    let mut settings_v = settings::read_settings_value();
+    // READ-ONLY from here: this snapshot supplies the existing rows and the
+    // validation below, and is deliberately never written back - see
+    // `persist_rows` for why the write re-reads instead.
+    let settings_v = settings::read_settings_value();
     let mut rows = read_rows(&settings_v);
 
     if selected_custom_id(&settings_v).as_deref() == Some(id.as_str()) {
@@ -419,8 +456,7 @@ pub async fn remove_custom_llm_provider(id: String) -> Result<Vec<CustomProvider
         return Err(format!("no custom endpoint with id {id}"));
     }
 
-    write_rows(&mut settings_v, &rows)?;
-    settings::write_settings_value(&settings_v).map_err(|e| e.to_string())?;
+    let settings_v = persist_rows(&rows).map_err(|e| format!("{e:#}"))?;
     tracing::info!(endpoint_id = %id, remaining = rows.len(), "custom_llm: endpoint removed");
 
     let sel = selected_custom_id(&settings_v);
@@ -464,7 +500,10 @@ pub async fn replace_custom_llm_provider_key(
     // Held across the whole read-probe-write so a concurrent add/probe/remove can't
     // lose this update. See [`REGISTRY_LOCK`].
     let _guard = REGISTRY_LOCK.lock().await;
-    let mut settings_v = settings::read_settings_value();
+    // READ-ONLY from here: this snapshot supplies the existing rows and the
+    // validation below, and is deliberately never written back - see
+    // `persist_rows` for why the write re-reads instead.
+    let settings_v = settings::read_settings_value();
     let mut rows = read_rows(&settings_v);
     let idx = rows
         .iter()
@@ -486,9 +525,8 @@ pub async fn replace_custom_llm_provider_key(
         "custom_llm: endpoint key replaced and re-measured"
     );
 
-    write_rows(&mut settings_v, &rows)?;
-    settings::write_settings_value(&settings_v)
-        .map_err(|e| crate::cmd_err!(e, "custom_llm: write failed"))?;
+    let settings_v =
+        persist_rows(&rows).map_err(|e| crate::cmd_err!(e, "custom_llm: write failed"))?;
 
     Ok(ProbeOutcome {
         provider: CustomProviderView::of(&rows[idx], selected_custom_id(&settings_v).as_deref()),
@@ -574,6 +612,74 @@ pub async fn list_custom_llm_providers() -> Result<Vec<CustomProviderView>, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A registry write must not discard a non-registry settings change that
+    /// landed while it was probing.
+    ///
+    /// This is the shape CodeRabbit flagged after #882: `add_custom_llm_provider`
+    /// read settings, awaited `probe_endpoint` (a NETWORK round trip, seconds
+    /// wide), then wrote its PRE-PROBE snapshot. Every `update_settings`,
+    /// `request_pm_tool` or sign-in that completed during that window was
+    /// silently reverted.
+    ///
+    /// `REGISTRY_LOCK` never covered this: it serialises the custom-provider
+    /// commands against each other and knows nothing about
+    /// `mutate_settings_value`, which every other writer uses. Two locks that
+    /// cannot see each other are one lock.
+    ///
+    /// Driven through `persist_rows` rather than the `#[tauri::command]` itself
+    /// because the command needs an AppHandle and a live endpoint to probe; the
+    /// property under test is that the write re-reads, and this exercises it
+    /// directly.
+    #[test]
+    fn a_registry_write_preserves_a_concurrent_settings_change() {
+        // `MERIDIAN_SETTINGS_PATH` is PROCESS-global and cargo runs tests in
+        // threads. This is currently the only tray test that sets it, and the
+        // lock is here so it stays safe if a second one is ever added.
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "meridian-custom-llm-race-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::env::set_var("MERIDIAN_SETTINGS_PATH", &path);
+        let _ = std::fs::remove_file(&path);
+
+        // 1. The command reads its snapshot and starts probing.
+        let pre_probe = settings::read_settings_value();
+        let mut rows = read_rows(&pre_probe);
+        rows.push(row("acme", "Acme"));
+
+        // 2. An unrelated settings write completes DURING the probe window.
+        meridian_core::settings::mutate_settings_value(|v| {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("requested_pm_tool".into(), Value::String("shortcut".into()));
+            }
+            Ok(())
+        })
+        .expect("the concurrent write must succeed");
+
+        // 3. The probe finishes and the registry write lands.
+        persist_rows(&rows).expect("registry write must succeed");
+
+        let final_doc = settings::read_settings_value();
+        assert_eq!(
+            final_doc.get("requested_pm_tool").and_then(Value::as_str),
+            Some("shortcut"),
+            "the registry write discarded a settings change that completed during the probe"
+        );
+        assert_eq!(
+            read_rows(&final_doc).len(),
+            1,
+            "the registry write must still persist its own row"
+        );
+
+        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn row(id: &str, name: &str) -> CustomLlmProvider {
         CustomLlmProvider {
