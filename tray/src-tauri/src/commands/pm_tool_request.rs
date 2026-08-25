@@ -65,24 +65,29 @@ pub async fn request_pm_tool(app: tauri::AppHandle, tool_name: String) -> Result
 
     let name = tool_name.clone();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let mut v = meridian_core::settings::read_settings_value();
-        // A settings root that is not an object (a corrupt file holding `[]`,
-        // `null`, a bare scalar) used to skip the insert silently and then
-        // report success - the user is told we recorded their request and
-        // nothing was stored. Recover the root instead: the write below is
-        // about to persist it either way, so leaving a non-object in place
-        // would keep breaking every other settings writer too.
-        if !v.is_object() {
-            tracing::warn!("request_pm_tool: settings root was not an object - recovering it");
-            v = serde_json::Value::Object(serde_json::Map::new());
-        }
-        if let Some(obj) = v.as_object_mut() {
-            obj.insert(
-                "requested_pm_tool".to_string(),
-                serde_json::Value::String(name),
-            );
-        }
-        meridian_core::settings::write_settings_value(&v)
+        // Under the shared settings lock: this used to read, mutate and write
+        // independently of `update_settings`, so whichever landed second
+        // persisted the document the FIRST one had read - silently discarding
+        // the other's change. See `meridian_core::settings::mutate_settings_value`.
+        meridian_core::settings::mutate_settings_value(|v| {
+            // A settings root that is not an object (a corrupt file holding `[]`,
+            // `null`, a bare scalar) used to skip the insert silently and then
+            // report success - the user is told we recorded their request and
+            // nothing was stored. Recover the root instead: the write below is
+            // about to persist it either way, so leaving a non-object in place
+            // would keep breaking every other settings writer too.
+            if !v.is_object() {
+                tracing::warn!("request_pm_tool: settings root was not an object - recovering it");
+                *v = serde_json::Value::Object(serde_json::Map::new());
+            }
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert(
+                    "requested_pm_tool".to_string(),
+                    serde_json::Value::String(name),
+                );
+            }
+            Ok(())
+        })
     })
     .await
     .map_err(|e| format!("join settings write task: {e}"))?
