@@ -15,6 +15,8 @@
         "The end-of-day time dialog no longer appears twice if you skip the tour while it is opening, and it now asks you to pick a time before it will save.",
         "Meridian no longer reports your project tool as failing to sync just because your laptop was asleep. A gap in time was being treated the same as a run of failures, so the first attempt after waking raised a warning about a tracker that was working fine.",
         "Signing in sticks across a relaunch. A session that was still loading reported an empty status, which Meridian read as a failed sign-in and quietly dropped, so you were shown the sign-in screen again.",
+        "The sign-in fix above didn't catch every case - a couple of background fields your session carries could still arrive missing or blank and break the same offline check. Both are handled now.",
+        "Today's focus no longer shows \"What are you working on today?\" after you've already saved a plan. It used to need one extra edit in the planner before it noticed the plan was there.",
         "Several fixes that protect your database around a restart: the write-ahead log is now flushed cleanly when the daemon stops, damage is spotted from Meridian's own reads rather than waiting for a scan, an automatic repair that fails now falls back to a fresh start instead of leaving you stuck, and Meridian no longer holds a connection open across a daemon restart.",
         "On Windows, an automatic repair no longer gives up when a file is briefly locked by another process, and updating your start-at-login setting no longer closes Meridian while it does so.",
         "The tray popover has a cleaner edge - the window is clipped to its own rounded corners and no longer draws a second shadow behind it."
