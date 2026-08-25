@@ -144,6 +144,25 @@ const readWorklogSettings: SettingsProbe = async () => {
   }
 }
 
+/// Resolve `p`, or `undefined` if `ms` elapses first.
+///
+/// The timer is always cleared, so a fast read does not keep the process alive
+/// for the rest of the window - which matters here because `timeoutMs` on this
+/// path is five minutes.
+async function within<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      p,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), ms)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
 // EXPORTED, with an injectable `probe`, for the test harness - nothing else
 // passes the third argument and production always takes the default. The
 // behaviour that matters is an ERROR PATH (a rejected `get_settings`)
@@ -158,9 +177,18 @@ export async function waitForWorklogAnswered(
   probe: SettingsProbe = readWorklogSettings,
 ): Promise<boolean> {
   void s.waitForClick('[data-tour="worklog-schedule-on"]', timeoutMs)
-  const read = probe
-  let baseline = await read()
   const deadline = Date.now() + timeoutMs
+  // Every read is raced against the REMAINING deadline. Awaiting `probe()`
+  // bare is what made this hang: a Tauri call that never settles blocks inside
+  // the loop, so the `Date.now() < deadline` test below never runs again and
+  // the tour can neither close the dialog nor finish - the same class of
+  // unbounded wait this function was written to remove, one level down.
+  //
+  // A timed-out read is reported as `undefined`, which is already the "read
+  // failed" case the comparison below handles: it is not evidence the user
+  // answered, so the loop keeps waiting rather than advancing.
+  const read = () => within(probe(), Math.max(0, deadline - Date.now()))
+  let baseline = await read()
   while (Date.now() < deadline) {
     if (!document.querySelector('[data-tour="worklog-schedule-on"]')) return true
     const current = await read()

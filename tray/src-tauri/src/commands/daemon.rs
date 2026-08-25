@@ -247,10 +247,45 @@ pub(crate) async fn reload_daemon_with(
 /// following poll tick), against whatever the file looks like by then - a
 /// point in time this function does not need to reason about.
 async fn reload_with_pool_cycle(pool: &crate::db_pool::DbPool) -> Result<u32, String> {
-    pool.close().await;
-    let result = super::daemon_control::reload().await;
-    pool.reopen().await;
-    result
+    with_reload_lock(|| async {
+        pool.close().await;
+        let result = super::daemon_control::reload().await;
+        pool.reopen().await;
+        result
+    })
+    .await
+}
+
+/// Run one close → signal → reopen cycle with no other cycle interleaved.
+///
+/// # The interleaving this prevents
+/// `DbPool::close` clears the SHARED handle before awaiting the underlying
+/// close, so two overlapping reloads can cross:
+///
+/// 1. caller A closes - the handle is now `None`, A is still awaiting;
+/// 2. caller B sees `None`, treats it as "nothing to close", signals its own
+///    restart and REOPENS a fresh pool;
+/// 3. A resumes, signals a second restart, and reopens over B's pool -
+///    signalling a daemon restart while a live pool is open across it, which is
+///    precisely what the close/reopen dance exists to prevent.
+///
+/// macOS reached this through `reload_throttled`, which serialises for a
+/// different reason (launchd's `ThrottleInterval`) and so happened to cover it;
+/// the Windows path deliberately skips that throttle and had nothing. The lock
+/// lives HERE rather than at either call site so both platforms get it from one
+/// place, and it nests inside the throttle without any ordering hazard.
+///
+/// Generic over the work so the serialisation itself is testable without
+/// launchctl or a real pool - see `two_reload_cycles_never_interleave`.
+async fn with_reload_lock<F, Fut, T>(work: F) -> T
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    static RELOAD_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+    let _guard = RELOAD_LOCK.lock().await;
+    work().await
 }
 
 // ── macOS reload rate limit ─────────────────────────────────────────────────
@@ -521,6 +556,54 @@ fn plan_reload(
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+
+    /// Two overlapping reloads must not interleave their close/reopen cycles.
+    ///
+    /// `DbPool::close` clears the shared handle BEFORE awaiting the underlying
+    /// close, so without serialisation a second caller sees `None`, decides
+    /// there is nothing to close, and reopens a pool that the first caller then
+    /// signals a daemon restart across - the exact condition close/reopen
+    /// exists to prevent.
+    ///
+    /// Written against `with_reload_lock` rather than `reload_with_pool_cycle`
+    /// because the latter shells out to launchctl; the property under test is
+    /// the mutual exclusion, and this exercises it directly.
+    #[tokio::test]
+    async fn two_reload_cycles_never_interleave() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        let inside = StdArc::new(AtomicUsize::new(0));
+        let max_seen = StdArc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let inside = inside.clone();
+            let max_seen = max_seen.clone();
+            handles.push(tokio::spawn(async move {
+                with_reload_lock(|| async {
+                    let n = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_seen.fetch_max(n, Ordering::SeqCst);
+                    // Yield across the critical section: without the lock this
+                    // is where a second cycle slips in, exactly as
+                    // `close().await` yields in the real one.
+                    tokio::task::yield_now().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                    inside.fetch_sub(1, Ordering::SeqCst);
+                })
+                .await;
+            }));
+        }
+        for h in handles {
+            h.await.expect("task panicked");
+        }
+
+        assert_eq!(
+            max_seen.load(Ordering::SeqCst),
+            1,
+            "two reload cycles were inside the critical section at once"
+        );
+    }
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
