@@ -493,6 +493,19 @@ pub async fn mark_retained_offboard(
     provider: &str,
     fetched_keys: &[String],
 ) -> Result<u64> {
+    // An empty fetch is NOT "everything is stale". Two things produce it — the
+    // user genuinely has nothing open, and a scope/permission blip that returns
+    // 200 with zero issues — and they are indistinguishable from here. Flagging
+    // the whole board off-board on the second one is a bad trade against leaving
+    // it alone on the first, which self-heals on the next sync.
+    //
+    // This also stopped an outright bug: an empty slice renders `NOT IN ()`,
+    // which is invalid SQL, so this path previously raised an error that every
+    // caller swallowed as a warning. It behaved correctly only by accident, and
+    // only as long as nobody looked at the log.
+    if fetched_keys.is_empty() {
+        return Ok(0);
+    }
     let placeholders = fetched_keys
         .iter()
         .map(|_| "?")
