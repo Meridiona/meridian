@@ -392,14 +392,24 @@ pub(crate) const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// interval from when IT processed the first exchange (not when we sent it), and
 /// the interval is a per-app setting we neither control nor can read back.
 ///
-/// 60 s sits between the two timescales that matter. Every prompt retry is far
-/// under it (the whole backoff ladder is ~1.6 s), and the one thing that
-/// realistically pushes a retry past the window is far over it: the machine
-/// suspending mid-request. That is not hypothetical. On 2026-08-20 a refresh
-/// POST left at 18:26:55, the laptop slept, and the attempt did not fail until
-/// 18:55:29, 28 minutes later. The retry 400 ms after THAT was a reuse 29
-/// minutes stale, and Atlassian revoked the grant.
-pub(crate) const REUSE_GRACE_BUDGET: Duration = Duration::from_secs(60);
+/// Set at half the documented interval, and deliberately not lower. Every second
+/// of margin we leave unused is a recovery declined: an interruption of two or
+/// three minutes — a short lid-close, a slow restart, a network that drops and
+/// comes back — is squarely inside what the provider forgives, and refusing to
+/// retry there abandons a grant that one request would have restored. Five
+/// minutes still leaves five in hand, and the two clocks err the safe way: we
+/// start counting when we SEND, the provider when it PROCESSES, so our elapsed
+/// is never the smaller of the two.
+///
+/// What it must exclude is the case that cannot be forgiven, and the real one is
+/// not subtle. On 2026-08-20 a refresh POST left at 18:26:55, the laptop
+/// suspended, and the attempt did not fail until 18:55:29 — 28 minutes later. A
+/// retry there is a reuse half an hour stale.
+///
+/// Note this bounds only WHETHER a retry may happen, not how long the ladder can
+/// run: [`TOKEN_POST_ATTEMPTS`] does that, and it is the smaller bound in every
+/// realistic case.
+pub(crate) const REUSE_GRACE_BUDGET: Duration = Duration::from_secs(5 * 60);
 
 /// Wall-clock time elapsed since `started`, saturating at zero.
 ///
@@ -886,6 +896,10 @@ mod tests {
     }
 
     const PROMPT: Duration = Duration::from_secs(2);
+    /// A short interruption — a lid-close or a slow restart. Inside what the
+    /// provider forgives, so it must still be retried: this is a recovery the
+    /// budget exists to permit, not one it exists to block.
+    const SHORT_INTERRUPTION: Duration = Duration::from_secs(3 * 60);
     /// Longer than [`REUSE_GRACE_BUDGET`] — what a retry looks like on the far
     /// side of a suspend.
     const STALE: Duration = Duration::from_secs(29 * 60);
@@ -919,6 +933,18 @@ mod tests {
     /// same retry stops being a recovery and becomes the thing that revokes the
     /// grant. Both failure classes are gated: a connect error proves only that
     /// THIS attempt didn't spend the token, not that an earlier one didn't.
+    /// An interruption of a few minutes is exactly what the provider's reuse
+    /// interval is there to absorb. Declining it would trade a recoverable blip
+    /// for a manual reconnect just as surely as retrying a stale one does.
+    #[test]
+    fn a_short_interruption_is_still_inside_the_window() {
+        assert!(should_retry(
+            GrantKind::Rotating,
+            TokenFailure::Ambiguous,
+            SHORT_INTERRUPTION
+        ));
+    }
+
     #[test]
     fn a_rotating_grant_is_never_retried_once_the_reuse_window_has_passed() {
         assert!(!should_retry(

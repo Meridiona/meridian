@@ -202,10 +202,10 @@ fn lock_path(provider: &str) -> Result<PathBuf> {
 /// How long [`lock_provider`] waits for a peer to finish before giving up.
 ///
 /// This MUST comfortably exceed the worst case of a full refresh, because that
-/// is what the holder is doing. `flow`'s retry ladder self-limits on the wall
-/// clock at `REUSE_GRACE_BUDGET`, but the attempt permitted at the last instant
-/// before that expires still gets a whole `TOKEN_REQUEST_TIMEOUT` to run — so
-/// the bound is their SUM, not either alone.
+/// is what the holder is doing: every attempt in `flow`'s ladder can run a whole
+/// `TOKEN_REQUEST_TIMEOUT`, and there can be `TOKEN_POST_ATTEMPTS` of them with
+/// backoff in between. (`REUSE_GRACE_BUDGET` also caps the ladder, but on the
+/// wall clock and at a larger figure, so the attempt count is what binds here.)
 ///
 /// A timeout shorter than that turns a slow-but-succeeding peer refresh into a
 /// second process deciding the lock is stuck, and that process must then decline
@@ -374,10 +374,11 @@ mod tests {
     /// so the drift fails the build instead of the field.
     #[test]
     fn lock_wait_outlasts_the_worst_case_refresh() {
-        // The ladder stops issuing retries once the wall clock passes
-        // REUSE_GRACE_BUDGET, but an attempt started a moment before that still
-        // runs its full request timeout — so the holder can be busy for the sum.
-        let worst = crate::flow::REUSE_GRACE_BUDGET + crate::flow::TOKEN_REQUEST_TIMEOUT;
+        // Every attempt may run the full request timeout, plus the 400ms +
+        // 1200ms backoff between them. REUSE_GRACE_BUDGET caps the ladder too,
+        // but on the wall clock and higher, so it is not the binding constraint.
+        let worst = crate::flow::TOKEN_REQUEST_TIMEOUT * crate::flow::TOKEN_POST_ATTEMPTS as u32
+            + std::time::Duration::from_millis(1600);
         assert!(
             LOCK_WAIT > worst,
             "LOCK_WAIT ({LOCK_WAIT:?}) must outlast the worst-case refresh ({worst:?})"
