@@ -256,16 +256,36 @@ pub async fn ensure_fresh() -> Result<OAuthTokens> {
 
     // Slow path: enter the cross-process critical section. A peer (a second daemon,
     // the tray's in-process refresh) may be rotating the SAME refresh token right
-    // now. Best-effort — if the lock can't be taken we log and proceed rather than
-    // turn the lock itself into a new way for Jira auth to fail.
+    // now.
+    //
+    // Failing to take the lock means we must NOT refresh. This used to log and
+    // proceed anyway, on the reasoning that the lock shouldn't become a new way
+    // for Jira auth to fail — but the two outcomes are not comparable. Skipping a
+    // refresh costs one sync cycle and self-heals on the next tick; refreshing
+    // while a peer holds the lock double-spends the rotating token, and Atlassian
+    // answers a reused refresh token by revoking the whole family — a permanent
+    // disconnection only a manual re-authorisation clears.
     let _flock = match store::lock_provider("jira").await {
-        Ok(g) => Some(g),
+        Ok(g) => g,
         Err(e) => {
+            // The peer we were waiting on may have finished between our last
+            // check and its timeout, so re-read before giving up on the tick.
+            let t = store::load("jira")?;
+            if !t.is_expired(now_unix(), 120) {
+                tracing::debug!(
+                    "jira token refreshed by another process while we waited for the lock"
+                );
+                return Ok(t);
+            }
             tracing::warn!(
                 error = %e,
-                "could not acquire OAuth refresh lock — proceeding without cross-process serialisation"
+                "could not acquire the OAuth refresh lock - skipping this refresh rather than \
+                 double-spending the rotating token; will retry on the next cycle"
             );
-            None
+            return Err(anyhow::Error::new(flow::TokenError::unavailable(format!(
+                "another Meridian process is holding the Jira OAuth refresh lock: {e}"
+            )))
+            .context("refreshing Jira OAuth token"));
         }
     };
 

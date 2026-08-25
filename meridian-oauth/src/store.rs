@@ -178,8 +178,21 @@ fn lock_path(provider: &str) -> Result<PathBuf> {
     Ok(oauth_dir()?.join(format!("{provider}.lock")))
 }
 
+/// How long [`lock_provider`] waits for a peer to finish before giving up.
+///
+/// This MUST comfortably exceed the worst case of a full refresh, because that
+/// is what the holder is doing: `flow`'s per-attempt budget is a 10 s connect
+/// cap inside a 30 s request cap, and a retry-safe failure may be attempted
+/// three times with backoff — roughly 32 s worst case. A timeout shorter than
+/// that turns a slow-but-succeeding peer refresh into a second process deciding
+/// the lock is stuck, and the caller must then NOT refresh anyway (see
+/// `jira::ensure_fresh`), so the only thing a short timeout buys is a skipped
+/// sync cycle. It was 10 s while the request cap was 8 s; both moved together
+/// and must keep moving together.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Acquire the exclusive cross-process advisory lock for `provider`'s token store,
-/// blocking (async) until it's free or a 10 s safety timeout elapses.
+/// blocking (async) until it's free or [`LOCK_WAIT`] elapses.
 ///
 /// This serialises the rotating-refresh-token read-modify-write across EVERY
 /// Meridian process — a second daemon, the tray's in-process refresh, the daemon's
@@ -190,11 +203,12 @@ fn lock_path(provider: &str) -> Result<PathBuf> {
 /// AFTER acquiring this, so a process that waited adopts the peer's fresh token
 /// instead of refreshing again with the now-dead one.
 pub async fn lock_provider(provider: &str) -> Result<ProviderLock> {
-    lock_provider_with_timeout(provider, std::time::Duration::from_secs(10)).await
+    lock_provider_with_timeout(provider, LOCK_WAIT).await
 }
 
-/// [`lock_provider`] with an explicit timeout (the public fn fixes it at 10 s;
-/// tests pass a short one to exercise contention without a real wait).
+/// [`lock_provider`] with an explicit timeout (the public fn fixes it at
+/// [`LOCK_WAIT`]; tests pass a short one to exercise contention without a real
+/// wait).
 async fn lock_provider_with_timeout(
     provider: &str,
     timeout: std::time::Duration,
@@ -322,6 +336,31 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600, "token file must be 0600");
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The lock timeout and `flow`'s request budget are one coupled pair, and
+    /// nothing else connects them: raise a timeout in `flow` without raising this
+    /// and a second process starts deciding a slow-but-healthy peer refresh is a
+    /// stuck lock. That does not corrupt anything by itself — `ensure_fresh`
+    /// declines to refresh without the lock — but it silently converts every slow
+    /// refresh into a skipped sync cycle. Recomputed here from the real constants
+    /// so the drift fails the build instead of the field.
+    #[test]
+    fn lock_wait_outlasts_the_worst_case_refresh() {
+        use std::time::Duration;
+        // A rotating grant only ever retries a CONNECT failure (flow::should_retry),
+        // so its worst case is `TOKEN_POST_ATTEMPTS` connect timeouts plus the
+        // 400ms + 1200ms backoff...
+        let retried_connects = crate::flow::TOKEN_CONNECT_TIMEOUT
+            * crate::flow::TOKEN_POST_ATTEMPTS as u32
+            + Duration::from_millis(1600);
+        // ...or one single attempt that runs the full request budget, whichever
+        // is longer.
+        let worst = retried_connects.max(crate::flow::TOKEN_REQUEST_TIMEOUT);
+        assert!(
+            LOCK_WAIT > worst,
+            "LOCK_WAIT ({LOCK_WAIT:?}) must outlast the worst-case refresh ({worst:?})"
+        );
     }
 
     #[test]
