@@ -1,5 +1,84 @@
 # Changelog
 
+## [1.90.0](https://github.com/Meridiona/meridian/compare/v1.89.0...v1.90.0) (2026-08-25)
+
+### 🚀 Features
+
+* **analytics:** report database integrity to PostHog, joinable to OO ([2246e78](https://github.com/Meridiona/meridian/commit/2246e7899e2e1a4a2b28b24d7837712a9e18395d))
+* **observability:** ship the signed-in tester's raw email to OO and Sentry (alpha only) ([d4e2ba1](https://github.com/Meridiona/meridian/commit/d4e2ba17d44c472821f0cd44f72202981c9897aa))
+* **onboarding:** let a user ask for an unsupported PM tool ([1b301bf](https://github.com/Meridiona/meridian/commit/1b301bf330ce7fc5d6d82d2809ddc937aee6049d))
+* **tray:** register the macOS login item via SMAppService ([bd75b21](https://github.com/Meridiona/meridian/commit/bd75b21b6ca045151ed5b6a2d8691cf2305576c0))
+* **tray:** trigger on the OS's own wake events, deleting the hardcoded hour ([93877d0](https://github.com/Meridiona/meridian/commit/93877d0ad385f4d85d5a6c9f7020f5a16505404e))
+
+### 🐛 Bug Fixes
+
+* **autostart,pm:** stop two paths that silently leave a user with nothing ([a16f854](https://github.com/Meridiona/meridian/commit/a16f854e77a53cdeec6e83839fdcfb0f5734ff03)), closes [#846](https://github.com/Meridiona/meridian/issues/846) [#843](https://github.com/Meridiona/meridian/issues/843) [#839](https://github.com/Meridiona/meridian/issues/839)
+* **autostart:** stop reading escaped paths as drift, and never boot out ourselves ([94c65f1](https://github.com/Meridiona/meridian/commit/94c65f1585d8a3a8673205d00ddda6b3befbd125))
+* **clerk:** default every required key on the sign_in/sign_up scratch objects ([b7b9b81](https://github.com/Meridiona/meridian/commit/b7b9b81c64774dddf4f6f84eef2ef08af13cdb21))
+* **clerk:** repair a present-but-null field, not just an absent one ([7676b16](https://github.com/Meridiona/meridian/commit/7676b166c6671222b62fd22356c7b2df1d8d08a1))
+* **clerk:** stop sign-out on relaunch - null sign_in.status broke the session cache ([a27d2ce](https://github.com/Meridiona/meridian/commit/a27d2cef9ab56ccdc8d115bcda3427ff69d0351b)), closes [#726](https://github.com/Meridiona/meridian/issues/726)
+* **clerk:** trace the backfill's silent rewrites of cached auth state ([f07e5f9](https://github.com/Meridiona/meridian/commit/f07e5f990a5a377e1e2ba74a6aa86608c8b7f80c)), closes [#846](https://github.com/Meridiona/meridian/issues/846) [#848](https://github.com/Meridiona/meridian/issues/848)
+* **daemon:** catch the other cause-dropping spelling, and the failed board add ([edb7fbb](https://github.com/Meridiona/meridian/commit/edb7fbbf49b0e2c7fe7ca52475bcb7cb612b9463)), closes [#846](https://github.com/Meridiona/meridian/issues/846)
+* **daemon:** check the single-instance guard before setup_db, not after ([75c45ef](https://github.com/Meridiona/meridian/commit/75c45efc9d9dd13df7abb7c74727f19363a3fea5))
+* **db,tray:** a busy checkpoint is not a clean one, and DbPool must survive a setup panic ([aa81f6a](https://github.com/Meridiona/meridian/commit/aa81f6a79700d7056733149c07fa537c755b0fc5)), closes [#846](https://github.com/Meridiona/meridian/issues/846) [#858](https://github.com/Meridiona/meridian/issues/858)
+* **db:** checkpoint the WAL on daemon shutdown and detect corruption from the tray's own reads ([41a5e4e](https://github.com/Meridiona/meridian/commit/41a5e4ec36b76c69a5948a9691b81af412c612d2))
+* **install:** stop the daemon BEFORE staging its binary on macOS ([4509894](https://github.com/Meridiona/meridian/commit/4509894e06b5f97d92c2b279e9f6b9b7de09c50d))
+* **jira:** scope the active fetch to work items, sub-tasks included ([aae3c93](https://github.com/Meridiona/meridian/commit/aae3c935a60e8ddf702d7b59bda4fe2f29645ed5))
+* **jira:** survive a site that does not have every issue type the query names ([0512c81](https://github.com/Meridiona/meridian/commit/0512c815b1ca8d8d9cd6de114244f386a7256c62))
+* **llm:** give an interactive call its own deadline below the tray's kill-timeout ([44f3376](https://github.com/Meridiona/meridian/commit/44f3376813a35f727811720f7b8da99e711475fe))
+* **onboarding:** auto-advance past the gated PM-tool step on decline ([65c371a](https://github.com/Meridiona/meridian/commit/65c371a8e720c87b5df7cfe4e0ba078755acff97))
+* **pm-sync:** give a resumed-after-a-gap provider the same retry grace a new one gets ([ec23675](https://github.com/Meridiona/meridian/commit/ec23675d9978e94f2793696c5d6d440552bcfd4c))
+* **pm:** add GitHub-created tasks to the project board so they sync back ([035d0a2](https://github.com/Meridiona/meridian/commit/035d0a255dde804ea59ae8b9b37344b089d2bf14)), closes [#843](https://github.com/Meridiona/meridian/issues/843)
+* **repair:** only a verdict about the FILE may set a user's database aside ([6e82ed1](https://github.com/Meridiona/meridian/commit/6e82ed1f14acd75748f9816ad3091c97a325e45b))
+* **review:** tour responsiveness, scan coverage, doc pairing, blockquote ([900b34c](https://github.com/Meridiona/meridian/commit/900b34c7bb80c1f9cb5363a32bdb8b52a4ed2236))
+* **settings:** make the registry-lock test exercise update_settings ([d319c94](https://github.com/Meridiona/meridian/commit/d319c949600b4994f46d9653bc7b6c0bf0c038da)), closes [#889](https://github.com/Meridiona/meridian/issues/889)
+* **settings:** make update_settings hold the registry lock too ([af415d4](https://github.com/Meridiona/meridian/commit/af415d41f5b7d005a35ea9fb0c77d913b0d93bcb)), closes [#887](https://github.com/Meridiona/meridian/issues/887) [#887](https://github.com/Meridiona/meridian/issues/887) [#888](https://github.com/Meridiona/meridian/issues/888)
+* **settings:** route the last two writers through the shared lock ([8a79974](https://github.com/Meridiona/meridian/commit/8a79974c50a8fdbc7f359afc9d8ecd4f8474099e)), closes [#846](https://github.com/Meridiona/meridian/issues/846) [#882](https://github.com/Meridiona/meridian/issues/882) [#882](https://github.com/Meridiona/meridian/issues/882) [#880](https://github.com/Meridiona/meridian/issues/880)
+* **settings:** validate the merged document and serialise every write ([7d00f3d](https://github.com/Meridiona/meridian/commit/7d00f3de115726d186d8a452eb7cafb92fc65b43))
+* **telemetry:** keep the numeric rescue away from user-scoped identifiers ([0a088c2](https://github.com/Meridiona/meridian/commit/0a088c2e8212e87a2960e6edba5a409e41a3001d))
+* **telemetry:** make the numeric rescue fail closed and bound the alpha email ([1678b23](https://github.com/Meridiona/meridian/commit/1678b2348af3ee2a26269a63f536eabe3f648b67)), closes [#846](https://github.com/Meridiona/meridian/issues/846)
+* **telemetry:** stop dropping the diagnostics that WARN sites exist to carry ([63af201](https://github.com/Meridiona/meridian/commit/63af20113b745f725c4750c7363435d59e5a782d))
+* the non-blocking review findings from [#846](https://github.com/Meridiona/meridian/issues/846) ([b50736c](https://github.com/Meridiona/meridian/commit/b50736c3073116cdeecae1e4c70335777745ab11)), closes [#839](https://github.com/Meridiona/meridian/issues/839)
+* **tray,ui:** serialise the reload cycle and bound every tutorial settings read ([b0b8839](https://github.com/Meridiona/meridian/commit/b0b88394ebb0a7211f95bc41b127baccab2197cd))
+* **tray:** clip the popover's window to its own corner radius ([88172a9](https://github.com/Meridiona/meridian/commit/88172a99ad4ac1af4f6f17d6f3812ea5adaa7d7e))
+* **tray:** close and reopen the meridian.db pool around a daemon restart ([188f33f](https://github.com/Meridiona/meridian/commit/188f33f3fec20dcb97ac90071bffbafc61b29bc9)), closes [#856](https://github.com/Meridiona/meridian/issues/856)
+* **tray:** compile login_item on every target, not just macOS ([7af2626](https://github.com/Meridiona/meridian/commit/7af26269725f0889e63a79599d3034525e72a1f4))
+* **tray:** don't kill the running tray while migrating or disabling autostart ([7768582](https://github.com/Meridiona/meridian/commit/776858243f7d47bdac3f05a08dd9d96740404368))
+* **tray:** drop the popover's native window shadow ([3f4fe03](https://github.com/Meridiona/meridian/commit/3f4fe034b72cfdab4c1f8157ed3a2e3140a4e2fb))
+* **tray:** fall back to a fresh start when an auto-repair itself fails ([ecd7085](https://github.com/Meridiona/meridian/commit/ecd7085ceec506b00c1e0f7d23b5fcb6ea324866)), closes [#851](https://github.com/Meridiona/meridian/issues/851)
+* **tray:** guarantee one instance, and make the morning trigger live at install ([9164258](https://github.com/Meridiona/meridian/commit/91642588d37565fe54f5d2e84d5ad29540243f94))
+* **tray:** keep the legacy Windows Run value until a replacement registers ([7ea14cb](https://github.com/Meridiona/meridian/commit/7ea14cb719bdddad50f28cbfa7fc1e249936c36b)), closes [#828](https://github.com/Meridiona/meridian/issues/828) [#828](https://github.com/Meridiona/meridian/issues/828) [#828](https://github.com/Meridiona/meridian/issues/828)
+* **tray:** make the new-day relaunch land when the user starts, not at 09:00 ([6b0d0d6](https://github.com/Meridiona/meridian/commit/6b0d0d6524012e92ba68c4136eb65637b67b2c6e))
+* **tray:** repair autostart on every launch, and relaunch each morning ([bb72592](https://github.com/Meridiona/meridian/commit/bb72592090bf05210ada34146c7e7154e10a8ea6))
+* **tray:** retry the set-aside rename through Windows' transient file-lock window ([9a6bc02](https://github.com/Meridiona/meridian/commit/9a6bc02cf7295da2e752d9206ffa24341f1c3ff7))
+* **tray:** stop autostart from undoing a deliberate Quit ([f22b5dd](https://github.com/Meridiona/meridian/commit/f22b5dd6b6c9ed07ff996c842207eb68f12a4478))
+* **tray:** unbreak the Windows build, and stop a missing registration being silent ([82ba2d1](https://github.com/Meridiona/meridian/commit/82ba2d14e3a59ffd8296a423c8a6ace1fec118b8)), closes [#837](https://github.com/Meridiona/meridian/issues/837)
+* **tutorial,docs:** undo a tour hang I introduced, and a false security claim ([1b2abc0](https://github.com/Meridiona/meridian/commit/1b2abc08d6fd261d2fec36da82c619275284bcc3)), closes [#846](https://github.com/Meridiona/meridian/issues/846) [#847](https://github.com/Meridiona/meridian/issues/847) [#848](https://github.com/Meridiona/meridian/issues/848) [#848](https://github.com/Meridiona/meridian/issues/848) [#848](https://github.com/Meridiona/meridian/issues/848)
+* **tutorial:** stop a failed settings read ending the worklog-time beat ([7864084](https://github.com/Meridiona/meridian/commit/7864084ce68f41f8dbe5c664a4ed5ae1971c38b3)), closes [#846](https://github.com/Meridiona/meridian/issues/846) [#852](https://github.com/Meridiona/meridian/issues/852)
+* **tutorial:** stop waiting on a click for the worklog-time dialog ([acaab6a](https://github.com/Meridiona/meridian/commit/acaab6a793488b6ed0afdb1bbed32709f8fb3a42)), closes [#849](https://github.com/Meridiona/meridian/issues/849) [#849](https://github.com/Meridiona/meridian/issues/849)
+* **ui:** dedupe the worklog-ready-time dialog when a tour skip races it ([26d87b3](https://github.com/Meridiona/meridian/commit/26d87b3a5f7c949d61f5df8c0d7567147e16ed26))
+* **ui:** persist the daily-plan suggestion pre-fill so it's actually saved ([8c21776](https://github.com/Meridiona/meridian/commit/8c217762e547324aebe0b6f98e391e94b5963ecf))
+* **ui:** require an explicit time choice before the worklog dialog can save ([66347ac](https://github.com/Meridiona/meridian/commit/66347acf6647e4d94a3b7f4dc5491324952022f3))
+
+### ♻️ Refactoring
+
+* **jira:** split the oversized module along two real seams ([931d79a](https://github.com/Meridiona/meridian/commit/931d79a589674df793db26faa03c10ee4f3dd7f2))
+
+### ✅ Tests
+
+* **tutorial:** drive the worklog-answered failure path for real ([52c1c9a](https://github.com/Meridiona/meridian/commit/52c1c9ad2740c1f3e28e4ea83c7f339b7169453e)), closes [#846](https://github.com/Meridiona/meridian/issues/846)
+
+### 📝 Documentation
+
+* add a hard rule on production-safety caution for real users ([1ad4a70](https://github.com/Meridiona/meridian/commit/1ad4a7062a45c81f7ca00a08c6e14bb182a95e6a)), closes [#851](https://github.com/Meridiona/meridian/issues/851)
+* require auth and a rate limit on anything we expose publicly ([f661d73](https://github.com/Meridiona/meridian/commit/f661d73e90bf310d98ae2b1981580ff9673bc505))
+
+### 🔧 Chores
+
+* **infra:** delete the HuggingFace caching proxy ([5e995dd](https://github.com/Meridiona/meridian/commit/5e995dd18b29c5ff940f5a7d926d65cf4619da14))
+* **release:** add the 1.90.0 What's New entry and set the update floor ([ac964fa](https://github.com/Meridiona/meridian/commit/ac964fac20fe6ce04f968117db6b233a087eabc4))
+* **release:** note the two Clerk follow-ups and the plan-save fix in 1.90.0 ([0f16850](https://github.com/Meridiona/meridian/commit/0f16850d2c99f976edcf42a08089eaa89cce18a5)), closes [#865](https://github.com/Meridiona/meridian/issues/865) [#868](https://github.com/Meridiona/meridian/issues/868) [#869](https://github.com/Meridiona/meridian/issues/869) [#874](https://github.com/Meridiona/meridian/issues/874)
+
 ## [1.89.0](https://github.com/Meridiona/meridian/compare/v1.88.0...v1.89.0) (2026-08-20)
 
 ### 🚀 Features
