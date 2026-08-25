@@ -120,3 +120,34 @@ describe('waitForWorklogAnswered', () => {
     expect(await waitForWorklogAnswered(stubStage(), 120, probe)).toBe(false)
   })
 })
+
+// ── A probe that never settles ─────────────────────────────────────────────
+// The tour awaited `probe()` with no deadline, so a Tauri `get_settings` that
+// never resolves blocked INSIDE the loop - the `Date.now() < deadline` test
+// never ran again, and the tutorial could neither close the dialog nor finish.
+// A hang is invisible to a source scan and to every other test here, all of
+// which use probes that resolve.
+describe('waitForWorklogAnswered with a probe that never settles', () => {
+  it('still returns false at the deadline instead of hanging forever', async () => {
+    const stage = stubStage()
+    const started = Date.now()
+    const neverSettles = () => new Promise<string | undefined>(() => {})
+
+    const answered = await waitForWorklogAnswered(stage, 300, neverSettles)
+
+    expect(answered).toBe(false)
+    // Bounded by the deadline, not by the probe. Generous upper bound so this
+    // cannot flake on a loaded CI box; the point is that it RETURNS.
+    expect(Date.now() - started).toBeLessThan(5000)
+  })
+
+  it('a probe that settles only after the deadline does not count as an answer', async () => {
+    const stage = stubStage()
+    const slow = () =>
+      new Promise<string | undefined>((resolve) => setTimeout(() => resolve('19:00:1'), 2000))
+
+    const answered = await waitForWorklogAnswered(stage, 250, slow)
+
+    expect(answered).toBe(false)
+  })
+})
