@@ -1,6 +1,6 @@
 {
   "name": "meridian-ui",
-  "version": "1.89.0",
+  "version": "1.90.0",
   "private": true,
   "scripts": {
     "dev": "env -u NODE_ENV next dev --turbopack -p 3939",
