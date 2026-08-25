@@ -1188,6 +1188,20 @@ pub fn run() {
                 poll::run_daemon_watchdog().await;
             });
 
+            // One-shot: repaint the popover's online/offline banner the moment
+            // the daemon+DB are actually ready, instead of leaving it stuck on
+            // "Meridian is offline" until the poll loop's own next 30/60 s
+            // health tick. Separate from both loops above on purpose — see
+            // `poll::startup_health` for why it must not touch either one's
+            // state.
+            {
+                let app_handle = app.handle().clone();
+                let state_clone = app_state.clone();
+                tauri::async_runtime::spawn(async move {
+                    poll::fast_poll_until_healthy(app_handle, state_clone).await;
+                });
+            }
+
             // Launch-at-login AND morning relaunch: VERIFY-AND-REPAIR on every
             // launch (see autostart.rs), so the tray comes back after a reboot
             // and again the next morning if it was quit. Deliberately not

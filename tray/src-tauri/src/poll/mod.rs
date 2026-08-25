@@ -12,6 +12,10 @@
 //!   server-side per row).
 //! - [`live`] — the live data → Tauri events that replace the dashboard's SSE
 //!   streams: `notices-update`, `notifications-update`.
+//! - [`startup_health`] — a separate, faster one-shot loop (spawned
+//!   alongside this one, not called from inside it) that repaints the
+//!   displayed health status the moment the daemon+DB are ready, instead of
+//!   waiting for this loop's next 30/60 s-cadenced health tick.
 //!
 //! The tray-sync helpers (emit / tooltip / menu) stay here, coupled to the loop.
 
@@ -20,6 +24,7 @@ mod notifications;
 mod permissions;
 mod plan_auto_open;
 mod refresh;
+mod startup_health;
 mod watchdog;
 mod whats_new_auto_open;
 
@@ -29,6 +34,7 @@ use notifications::drain_notifications;
 use refresh::{
     refresh_active, refresh_current_task, refresh_health, refresh_today, refresh_worklogs,
 };
+pub use startup_health::fast_poll_until_healthy;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
