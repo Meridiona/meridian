@@ -282,24 +282,57 @@ async fn prune_deletes_embedding_before_pm_task() {
 
 #[tokio::test]
 async fn prune_with_empty_fetched_keys_is_a_no_op() {
-    // prune() is only called when fetched_count > 0, but the SQL must not
-    // blow up when called with an empty slice — it would produce
-    // "NOT IN ()" which is invalid SQL. The guard below mirrors what a
-    // caller should do; we verify the guard is sufficient.
+    // An empty fetch must NOT be read as "everything is stale" — that would
+    // delete the user's whole board on a transient scope/permission blip that
+    // answers 200 with zero issues, which is indistinguishable from genuinely
+    // having nothing open.
+    //
+    // This used to be enforced by nothing at all. The comment here claimed
+    // "callers must gate on non-empty fetched_keys", the caller in
+    // `refresh_if_stale` did not, and the empty slice rendered `NOT IN ()` —
+    // invalid SQL — so prune errored and the error was swallowed as a warning.
+    // Right outcome, entirely by accident. prune() now owns the guard, so the
+    // real function is called here rather than a hand-rolled stand-in.
     let pool = make_db().await;
 
     insert_jira_task(&pool, "KAN-30").await;
+    insert_embedding(&pool, "KAN-30").await;
 
-    // An empty IN-list is syntactically invalid in SQLite; callers must
-    // gate on non-empty fetched_keys before calling prune — so prune is
-    // intentionally NOT called here. The task must survive untouched.
+    let deleted = super::prune(&pool, &[])
+        .await
+        .expect("prune must not error");
 
-    // Task must still be present — no prune was called.
+    assert_eq!(deleted, 0, "an empty fetch must delete nothing");
     assert_eq!(
         task_count(&pool, "KAN-30").await,
         1,
-        "task must survive when prune is not called for empty set"
+        "the board must survive an empty fetch"
     );
+    assert_eq!(
+        embedding_count(&pool, "KAN-30").await,
+        1,
+        "embeddings must survive too — they cascade with the task row"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Test: an empty fetch must not flag retained rows off-board either
+// -----------------------------------------------------------------------
+
+/// The sibling half of the guard above. `mark_retained_offboard` is shared by
+/// all five providers, and carried the same `NOT IN ()` defect, so an empty
+/// fetch raised an error there too rather than doing nothing on purpose.
+#[tokio::test]
+async fn empty_fetch_does_not_flag_retained_tasks_off_board() {
+    let pool = make_db().await;
+
+    insert_jira_task(&pool, "KAN-31").await;
+
+    let flagged = crate::intelligence::providers::mark_retained_offboard(&pool, "jira", &[])
+        .await
+        .expect("must not error on an empty fetch");
+
+    assert_eq!(flagged, 0, "an empty fetch must flag nothing off-board");
 }
 
 // -----------------------------------------------------------------------
