@@ -605,6 +605,16 @@ pub fn run() {
                                 )
                             });
 
+                    // ALPHA TESTING ONLY — retention half of the raw-email
+                    // exception. Consumers already refuse to SHIP the address
+                    // past its expiry, and the write is now gated too, but a
+                    // tester who signs in before the boundary and stays signed
+                    // in never re-runs that write. Without this, their raw
+                    // address would sit in `settings.json` indefinitely. Cheap:
+                    // one settings read, and a write only on the single launch
+                    // that crosses the boundary.
+                    commands::account::purge_expired_account_email();
+
                     // Prepare the meridian.db pool ONCE at startup and share it with
                     // commands via managed state (no migrations — the daemon owns the
                     // schema). `None` only if the path/key is malformed, so reads error

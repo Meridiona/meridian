@@ -667,11 +667,11 @@ impl HealthSnapshot {
             );
         }
         props.insert(
-            "launched_by_autostart".to_string(),
+            "health_launched_by_autostart".to_string(),
             Value::Bool(self.launched_by_autostart),
         );
         if let Some(u) = self.tray_uptime_s {
-            props.insert("tray_uptime_s".to_string(), serde_json::json!(u));
+            props.insert("health_tray_uptime_s".to_string(), serde_json::json!(u));
         }
     }
 }
@@ -1050,10 +1050,6 @@ mod person_property_tests {
         assert!(!person.contains_key("database_ready"));
     }
 
-    /// `support_id` must never become a person property. It legitimately
-    /// changes (a second machine, a re-seed, the alpha window ending), and a
-    /// person property keeps only the newest — which would silently orphan
-    /// every error row recorded under the previous one. As an event property a
     /// The verdict must reach PostHog as a PERSON property, not only as an
     /// event property.
     ///
@@ -1103,6 +1099,10 @@ mod person_property_tests {
         );
     }
 
+    /// `support_id` must never become a person property. It legitimately
+    /// changes (a second machine, a re-seed, the alpha window ending), and a
+    /// person property keeps only the newest — which would silently orphan
+    /// every error row recorded under the previous one. As an event property a
     /// DISTINCT recovers the full set.
     #[test]
     fn support_id_is_never_a_person_property() {

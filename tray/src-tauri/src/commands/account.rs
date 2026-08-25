@@ -224,7 +224,14 @@ pub async fn save_account_email(email: String) -> Result<(), String> {
 #[tracing::instrument(skip(email), fields(signed_in = email.is_some()))]
 async fn write_account_pseudonym(email: Option<&str>) -> anyhow::Result<()> {
     let hash = email.map(meridian::telemetry_spool::redact::pseudonymize_account);
-    let raw_email = email.map(str::to_string);
+    // GATE THE WRITE, not just every read. Consumers already refuse to ship the
+    // address past `ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`, but nothing stopped it
+    // being STORED - so a tester who signs in after the expiry would still put
+    // raw PII in `settings.json`, for a window that had already closed. The
+    // pseudonym half is unaffected: it is a one-way hash and is what the Support
+    // ID needs after the exception lapses.
+    let raw_email = email
+        .and_then(|e| meridian::telemetry_spool::redact::alpha_account_email_if_active(Some(e)));
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let mut v = meridian_core::settings::read_settings_value();
         if let Some(obj) = v.as_object_mut() {
@@ -254,6 +261,64 @@ async fn write_account_pseudonym(email: Option<&str>) -> anyhow::Result<()> {
         tracing::error!(error = %format!("{e:#}"), "writing the account identity failed");
     }
     result
+}
+
+/// Whether a stored `account_email` must be removed now - the whole decision
+/// [`purge_expired_account_email`] makes, split out so it is testable without
+/// `MERIDIAN_SETTINGS_PATH`, which is process-global and racy under cargo's
+/// test threads (see `meridian_core::settings`'s own note on it).
+///
+/// True only when a non-empty address is stored AND the ALPHA window has
+/// closed. An absent, null, or blank value is already fine, and a value inside
+/// the window is legitimately there.
+fn account_email_should_be_purged(stored: Option<&str>) -> bool {
+    let Some(stored) = stored else { return false };
+    if stored.trim().is_empty() {
+        return false;
+    }
+    meridian::telemetry_spool::redact::alpha_account_email_if_active(Some(stored)).is_none()
+}
+
+/// Remove a stored raw `account_email` once the ALPHA exception has lapsed.
+///
+/// # Why gating the write is not enough
+/// [`write_account_pseudonym`] runs on sign-in and sign-out. A tester who signs
+/// in before [`meridian::telemetry_spool::redact::ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`]
+/// and simply STAYS signed in never calls it again, so their raw address would
+/// sit in `settings.json` indefinitely - past the window the exception was
+/// approved for, and with no user-visible sign it is still there.
+///
+/// The exception's whole premise is that it lapses automatically with no deploy
+/// (see `redact::ALPHA_ACCOUNT_OVERRIDE_EXPIRES_UNIX`). Shipping stops on its
+/// own; retention did not, until this.
+///
+/// Only the raw email is touched. `account_pseudonym` is a one-way hash and is
+/// what the Support ID falls back to afterwards, so it must survive.
+///
+/// # Who calls this
+/// `lib.rs`'s setup, once per launch. One settings read on a healthy install
+/// where the key is already absent, and a single write on the one launch that
+/// crosses the boundary.
+#[tracing::instrument]
+pub(crate) fn purge_expired_account_email() {
+    let mut v = meridian_core::settings::read_settings_value();
+    let Some(obj) = v.as_object_mut() else { return };
+    let stored = obj.get("account_email").and_then(|e| e.as_str());
+    if !account_email_should_be_purged(stored) {
+        return;
+    }
+    obj.insert("account_email".to_string(), serde_json::Value::Null);
+    match meridian_core::settings::write_settings_value(&v) {
+        // Never log the address itself - that would defeat the removal by
+        // copying it into the telemetry spool on its way out.
+        Ok(()) => tracing::info!(
+            "the alpha raw-email window has closed - removed the stored account email"
+        ),
+        Err(e) => tracing::warn!(
+            error = %format!("{e:#}"),
+            "could not remove the expired account email - will retry next launch"
+        ),
+    }
 }
 
 /// Read the persisted account email, if any. `None` before the sign-in step
@@ -349,5 +414,40 @@ mod sign_in_gate_tests {
                 "release build bypassed sign-in for key {key:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod account_email_retention_tests {
+    use super::*;
+
+    /// The retention half of the ALPHA raw-email exception.
+    ///
+    /// Consumers already refuse to SHIP the address past its expiry and the
+    /// write is gated too, but a tester who signs in before the boundary and
+    /// simply stays signed in never re-runs that write - so without a purge
+    /// their raw address sits in `settings.json` indefinitely, past the window
+    /// the exception was approved for.
+    #[test]
+    fn a_stored_address_is_purged_only_once_the_window_has_closed() {
+        let inside = meridian::telemetry_spool::redact::alpha_account_email_if_active(Some(
+            "tester@example.com",
+        ))
+        .is_some();
+        assert_eq!(
+            account_email_should_be_purged(Some("tester@example.com")),
+            !inside,
+            "purge exactly when the alpha window is closed - never while it is open"
+        );
+    }
+
+    /// Nothing to remove must never mean a settings write. `purge_expired_account_email`
+    /// rewrites the whole document, so a false positive here would rewrite
+    /// `settings.json` on every single launch.
+    #[test]
+    fn nothing_to_purge_is_never_a_write() {
+        assert!(!account_email_should_be_purged(None));
+        assert!(!account_email_should_be_purged(Some("")));
+        assert!(!account_email_should_be_purged(Some("   ")));
     }
 }
