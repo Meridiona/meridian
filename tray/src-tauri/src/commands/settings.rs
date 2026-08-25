@@ -150,41 +150,56 @@ pub async fn update_settings(
     }
     validate_worklog_auto_generate_time(body_obj)?;
 
-    let current = meridian_core::settings::read_settings_value();
-    let mut updated = current.clone();
-    let obj = updated
-        .as_object_mut()
-        .ok_or("current settings are not an object")?;
-    // { ...current, ...body } — body keys override.
-    for (k, v) in body_obj {
-        obj.insert(k.clone(), v.clone());
-    }
+    // The whole read-modify-write runs under the shared settings lock. It used
+    // to read and write independently of `request_pm_tool`, `save_account_email`
+    // and the custom-endpoint registry, so two overlapping saves persisted the
+    // document whichever one read FIRST - silently discarding the other's
+    // change. The write was always atomic, which is what made this easy to
+    // miss: no file is corrupted, a setting simply reverts.
+    // See `meridian_core::settings::mutate_settings_value`.
+    let mut updated = meridian_core::settings::mutate_settings_value(|updated| {
+        let current = updated.clone();
+        let obj = updated
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("current settings are not an object"))?;
+        // { ...current, ...body } — body keys override.
+        for (k, v) in body_obj {
+            obj.insert(k.clone(), v.clone());
+        }
 
-    // Sentinel / empty / absent oo_password → keep the stored value.
-    let sent = body_obj.get("oo_password").and_then(Value::as_str);
-    if sent.is_none_or(|p| p.is_empty() || p == PASSWORD_SENTINEL) {
-        let kept = current
-            .get("oo_password")
-            .cloned()
-            .unwrap_or(Value::String(String::new()));
-        obj.insert("oo_password".into(), kept);
-    }
+        // Sentinel / empty / absent oo_password → keep the stored value.
+        let sent = body_obj.get("oo_password").and_then(Value::as_str);
+        if sent.is_none_or(|p| p.is_empty() || p == PASSWORD_SENTINEL) {
+            let kept = current
+                .get("oo_password")
+                .cloned()
+                .unwrap_or(Value::String(String::new()));
+            obj.insert("oo_password".into(), kept);
+        }
 
-    // Same rule per custom endpoint, matched BY ID (see `redact_custom_keys`). The merge
-    // above is shallow, so a body carrying the registry replaces it wholesale — and the UI's
-    // copy has a sentinel in every row it read back. Without this, saving any unrelated
-    // setting would overwrite every API key with "••••••••".
-    restore_custom_keys(&current, obj)?;
+        // Same rule per custom endpoint, matched BY ID (see `redact_custom_keys`). The merge
+        // above is shallow, so a body carrying the registry replaces it wholesale — and the UI's
+        // copy has a sentinel in every row it read back. Without this, saving any unrelated
+        // setting would overwrite every API key with "••••••••".
+        restore_custom_keys(&current, obj).map_err(|e| anyhow::anyhow!(e))?;
 
-    // The GATE. A custom endpoint may only run the pipeline on measured evidence
-    // (`meridian_core::SchemaRung`), and it is enforced HERE rather than only in the UI:
-    // this command is the sole writer of settings.json, so a hand-edited file or an older
-    // frontend would otherwise route a user's whole day through an endpoint nobody has
-    // shown can hold a schema. An unenforced fold doesn't fail loudly — it drops the hour.
-    enforce_custom_provider_gate(&updated)?;
+        // The GATE. A custom endpoint may only run the pipeline on measured evidence
+        // (`meridian_core::SchemaRung`), and it is enforced HERE rather than only in the UI:
+        // this command is the sole writer of settings.json, so a hand-edited file or an older
+        // frontend would otherwise route a user's whole day through an endpoint nobody has
+        // shown can hold a schema. An unenforced fold doesn't fail loudly — it drops the hour.
+        enforce_custom_provider_gate(updated).map_err(|e| anyhow::anyhow!(e))?;
 
-    meridian_core::settings::write_settings_value(&updated)
-        .map_err(|e| crate::cmd_err!(e, "update_settings: write failed"))?;
+        // LAST gate before the write, and deliberately on the whole document rather
+        // than another named field: everything above validates fields by name, so
+        // anything not on that list could reach disk with the wrong type and take
+        // the ENTIRE file down with it at load time. See
+        // `merged_settings_are_loadable`.
+        merged_settings_are_loadable(updated).map_err(|e| anyhow::anyhow!(e))?;
+
+        Ok(updated.clone())
+    })
+    .map_err(|e| crate::cmd_err!(e, "update_settings: write failed"))?;
 
     // Refresh the live capture ignore list so a Settings change takes effect on
     // the very next captured frame — no capture restart. The frame + UI-event
@@ -297,6 +312,40 @@ fn restore_custom_keys(
 /// daemon's hourly clock check (`pm_worklog::auto_generate`) and the feature
 /// would just never fire — reject it at the door instead of failing quietly
 /// later. Absent or explicit `null` (turning the feature off) both pass.
+/// Reject a merged settings document that `load_runtime_settings` would not be
+/// able to read back.
+///
+/// # Why this is checked on the DOCUMENT and not per field
+/// `update_settings` validated five fields by name and then merged the body
+/// verbatim, so any field nobody listed (`autostart_enabled` was the one found)
+/// could reach `settings.json` with the wrong type. The damage is not scoped to
+/// that field: `RuntimeSettings` carries a struct-level `#[serde(default)]`,
+/// which rescues a MISSING key but not a wrong-TYPED one, so one bad value
+/// fails the whole deserialise. `load_runtime_settings` then returns
+/// `RuntimeSettings::default()` and every unrelated setting - work hours, poll
+/// interval, log level - silently reads as its default until the file is
+/// repaired by hand. `meridian_core::settings`'s
+/// `an_unknown_llm_provider_does_not_reset_every_other_setting` documents that
+/// landmine from the other side.
+///
+/// Checking the merged document closes it for every field at once, including
+/// ones added later that nobody remembers to validate - which is the failure
+/// mode a name-by-name list reproduces every time it is extended.
+///
+/// UNKNOWN keys stay legal: `read_settings_value` deliberately preserves them so
+/// a write can round-trip a file from a newer build, and `RuntimeSettings` has
+/// no `deny_unknown_fields`. Only a wrong TYPE is rejected.
+fn merged_settings_are_loadable(merged: &Value) -> Result<(), String> {
+    serde_json::from_value::<meridian_core::settings::RuntimeSettings>(merged.clone())
+        .map(|_| ())
+        .map_err(|e| {
+            format!(
+                "these settings could not be saved - {e}. Nothing was written, so your \
+                 existing settings are unchanged."
+            )
+        })
+}
+
 fn validate_worklog_auto_generate_time(
     body_obj: &serde_json::Map<String, Value>,
 ) -> Result<(), String> {
@@ -374,6 +423,73 @@ fn str_list(v: &Value, key: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A merged settings document that cannot deserialise must be REJECTED
+    /// rather than written.
+    ///
+    /// `update_settings` validated `otlp_endpoint`, `llm_provider`, the two
+    /// credential fields and `worklog_auto_generate_time` - and then merged the
+    /// body verbatim. `autostart_enabled` had no check, so a non-boolean reached
+    /// `settings.json`.
+    ///
+    /// The blast radius is the whole file, not one field: `RuntimeSettings`
+    /// carries a struct-level `#[serde(default)]`, which covers a MISSING key
+    /// but not a wrong-TYPED one. One bad value therefore fails the whole
+    /// deserialise, `load_runtime_settings` returns `RuntimeSettings::default()`,
+    /// and every unrelated setting - work hours, poll interval, log level -
+    /// silently reads as its default until someone repairs the file by hand.
+    /// `meridian_core::settings`'s own
+    /// `an_unknown_llm_provider_does_not_reset_every_other_setting` documents
+    /// that landmine.
+    ///
+    /// Validating the MERGED DOCUMENT rather than adding an `autostart_enabled`
+    /// check closes it for every field at once, including fields added later
+    /// that nobody remembers to validate.
+    #[test]
+    fn a_wrong_typed_field_is_rejected_before_it_can_reset_the_file() {
+        let mut doc = serde_json::to_value(meridian_core::settings::RuntimeSettings::default())
+            .expect("defaults serialise");
+        doc.as_object_mut()
+            .unwrap()
+            .insert("autostart_enabled".into(), Value::String("yes".into()));
+        assert!(
+            merged_settings_are_loadable(&doc).is_err(),
+            "a non-boolean autostart_enabled must never reach settings.json"
+        );
+    }
+
+    /// The same guard must cover fields nobody thought to validate - that is the
+    /// point of checking the document instead of a field list.
+    #[test]
+    fn the_guard_is_not_specific_to_autostart_enabled() {
+        for (key, bad) in [
+            ("poll_interval_secs", Value::String("soon".into())),
+            ("notifications_enabled", Value::String("maybe".into())),
+            ("error_reporting_enabled", serde_json::json!(3)),
+        ] {
+            let mut doc = serde_json::to_value(meridian_core::settings::RuntimeSettings::default())
+                .expect("defaults serialise");
+            doc.as_object_mut().unwrap().insert(key.into(), bad);
+            assert!(
+                merged_settings_are_loadable(&doc).is_err(),
+                "{key} with a wrong-typed value must be rejected too"
+            );
+        }
+    }
+
+    /// It must NOT reject a document carrying keys the struct does not know.
+    /// `read_settings_value` deliberately preserves unknown keys so a write can
+    /// round-trip them; rejecting those would make every save fail on a file
+    /// written by a newer build.
+    #[test]
+    fn unknown_keys_still_round_trip() {
+        let mut doc = serde_json::to_value(meridian_core::settings::RuntimeSettings::default())
+            .expect("defaults serialise");
+        doc.as_object_mut()
+            .unwrap()
+            .insert("a_key_from_a_newer_build".into(), Value::Bool(true));
+        assert!(merged_settings_are_loadable(&doc).is_ok());
+    }
     use super::*;
     use serde_json::json;
 

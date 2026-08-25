@@ -585,6 +585,49 @@ pub fn write_settings_value(settings: &Value) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Serialise a read-modify-write of `settings.json` against every other one in
+/// this process.
+///
+/// # The race this closes
+/// `settings.json` is a single JSON document, and several commands used to
+/// independently `read_settings_value()`, mutate their own key, and
+/// `write_settings_value()`. Interleave two of those and the later write
+/// persists the document the earlier one read - silently discarding the other's
+/// change. Measured shapes: `request_pm_tool` racing `update_settings` loses
+/// whichever landed first, and the custom-endpoint registry writers race both.
+///
+/// The write itself was already crash-safe (`atomic_write_json` renames over the
+/// target), which is what made this easy to miss: no file is ever corrupted, a
+/// change simply vanishes.
+///
+/// # Scope of the guarantee
+/// Process-wide only. Two Meridian processes writing the same file would still
+/// race, but only one tray ever runs (the daemon does not write settings), so
+/// this covers the real case. A cross-process lock would need its own file and
+/// its own stale-lock story.
+///
+/// The lock is held for the WHOLE read-mutate-write, so `f` must not await or do
+/// anything slow - do that before calling, and keep the closure to the document
+/// edit.
+///
+/// Poisoning is recovered rather than propagated (`into_inner`): a panic in some
+/// other caller's closure must not make settings permanently unwritable for the
+/// rest of the session.
+pub fn mutate_settings_value<F, T>(f: F) -> anyhow::Result<T>
+where
+    F: FnOnce(&mut Value) -> anyhow::Result<T>,
+{
+    static SETTINGS_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = SETTINGS_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let mut v = read_settings_value();
+    let out = f(&mut v)?;
+    write_settings_value(&v)?;
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -596,6 +639,96 @@ mod tests {
     /// failure looks like a bug in the code under test rather than in the harness.
     /// (Held for the whole test body; `set_var`/`remove_var` inside the guard.)
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Two concurrent read-modify-writes must BOTH survive.
+    ///
+    /// Before `mutate_settings_value`, each caller independently read the whole
+    /// document, changed its own key, and wrote the result - so an interleaved
+    /// pair persisted whatever the LATER writer had read, silently discarding
+    /// the earlier one's change. `atomic_write_json` means no file is ever
+    /// corrupted, which is exactly what made this invisible: a setting simply
+    /// reverts.
+    ///
+    /// Run over many rounds because a lost update is a race: a single pass can
+    /// pass by luck even with no lock at all.
+    #[test]
+    fn concurrent_mutations_do_not_lose_each_other() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "meridian-settings-concurrent-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        with_settings_path(&path);
+
+        for round in 0..25 {
+            let _ = std::fs::remove_file(&path);
+            let (a, b) = (format!("key_a_{round}"), format!("key_b_{round}"));
+            std::thread::scope(|scope| {
+                for key in [&a, &b] {
+                    scope.spawn(move || {
+                        mutate_settings_value(|v| {
+                            if let Some(obj) = v.as_object_mut() {
+                                obj.insert(key.clone(), json!(true));
+                            }
+                            Ok(())
+                        })
+                        .expect("mutation must succeed");
+                    });
+                }
+            });
+
+            let written = read_settings_value();
+            for key in [&a, &b] {
+                assert_eq!(
+                    written.get(key.as_str()),
+                    Some(&json!(true)),
+                    "round {round}: {key} was lost - one writer overwrote the other's document"
+                );
+            }
+        }
+
+        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The lock must survive a panicking closure - a poisoned mutex would make
+    /// settings permanently unwritable for the rest of the session.
+    #[test]
+    fn a_panicking_mutation_does_not_wedge_later_writers() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "meridian-settings-poison-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        with_settings_path(&path);
+
+        let panicked = std::thread::spawn(|| {
+            let _ = mutate_settings_value(|_v| -> anyhow::Result<()> { panic!("boom") });
+        })
+        .join();
+        assert!(panicked.is_err(), "the closure must actually have panicked");
+
+        mutate_settings_value(|v| {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("after_the_panic".into(), json!(true));
+            }
+            Ok(())
+        })
+        .expect("a later writer must still be able to acquire the lock");
+        assert_eq!(
+            read_settings_value().get("after_the_panic"),
+            Some(&json!(true))
+        );
+
+        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Point settings resolution at a temp file for the duration of a test.
     fn with_settings_path(path: &std::path::Path) {

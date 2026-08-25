@@ -226,24 +226,28 @@ async fn write_account_pseudonym(email: Option<&str>) -> anyhow::Result<()> {
     let hash = email.map(meridian::telemetry_spool::redact::pseudonymize_account);
     let raw_email = email.map(str::to_string);
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let mut v = meridian_core::settings::read_settings_value();
-        if let Some(obj) = v.as_object_mut() {
-            obj.insert(
-                "account_pseudonym".to_string(),
-                match &hash {
-                    Some(h) => serde_json::Value::String(h.clone()),
-                    None => serde_json::Value::Null,
-                },
-            );
-            obj.insert(
-                "account_email".to_string(),
-                match &raw_email {
-                    Some(e) => serde_json::Value::String(e.clone()),
-                    None => serde_json::Value::Null,
-                },
-            );
-        }
-        meridian_core::settings::write_settings_value(&v)
+        // Under the shared settings lock - see
+        // `meridian_core::settings::mutate_settings_value`. Without it a sign-in
+        // racing a Settings save silently discarded one of the two.
+        meridian_core::settings::mutate_settings_value(|v| {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert(
+                    "account_pseudonym".to_string(),
+                    match &hash {
+                        Some(h) => serde_json::Value::String(h.clone()),
+                        None => serde_json::Value::Null,
+                    },
+                );
+                obj.insert(
+                    "account_email".to_string(),
+                    match &raw_email {
+                        Some(e) => serde_json::Value::String(e.clone()),
+                        None => serde_json::Value::Null,
+                    },
+                );
+            }
+            Ok(())
+        })
     })
     .await
     .context("join settings write task")
