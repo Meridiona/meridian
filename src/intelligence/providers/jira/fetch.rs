@@ -93,6 +93,29 @@ pub(super) async fn discover_start_date_field(ctx: &JiraReqCtx) -> Option<String
 /// are containers, not work: they reach Meridian as the `parent_key`/`epic_title`
 /// of their children (see `mod.rs`'s upsert), never as rows of their own.
 ///
+/// # Story is excluded by product decision, not by principle
+///
+/// `Story` is `hierarchyLevel: 0` — the same rung as Task and Bug, and on a
+/// Scrum board it is the primary thing a person is assigned and works on. It is
+/// excluded here because the product owner asked for it, NOT because it fails
+/// any test the other included types pass.
+///
+/// The cost is real and worth restating before anyone "simplifies" this line
+/// away or reinstates it casually: on a board that uses Stories as its main work
+/// type, this leaves Meridian syncing only Tasks and Bugs, which for many teams
+/// is close to an empty board. If users report "my tickets do not show up", this
+/// clause is the first thing to check.
+///
+/// It is excluded SERVER-side, in the JQL, rather than by a name check next to
+/// [`is_work_item`]. That is deliberate: [`MAX_RESULTS`] is a hard 100-row
+/// ceiling with no pagination, so a type filtered client-side still consumes a
+/// slot and is then thrown away, making truncation strictly worse. Filtered in
+/// the JQL, Stories never occupy the budget at all.
+///
+/// Safe against a site that has no `Story` type: Jira does not error on an
+/// unrecognised type name in a `!=` clause (verified against a live Cloud site),
+/// unlike an `IN` allowlist.
+///
 /// # Sub-tasks are IN
 ///
 /// Reversing the earlier "tasks/features and their epics, never subtasks" rule:
@@ -115,8 +138,8 @@ pub(super) async fn discover_start_date_field(ctx: &JiraReqCtx) -> Option<String
 /// Jira was the only provider that filtered by type at all — Linear, GitHub and
 /// Trello fetch everything assigned to you, and Azure's WIQL is `AssignedTo =
 /// @me` alone. This brings Jira in line with them.
-const ACTIVE_TASK_JQL: &str =
-    "assignee = currentUser() AND statusCategory != Done AND type != Epic ORDER BY updated DESC";
+const ACTIVE_TASK_JQL: &str = "assignee = currentUser() AND statusCategory != Done \
+     AND type != Epic AND type != Story ORDER BY updated DESC";
 
 /// One active-task fetch: the work items to upsert, plus how many rows the
 /// server actually returned before [`is_work_item`] filtered any out.
@@ -332,7 +355,7 @@ mod tests {
     /// `type IN (...)` list, which reintroduces the same silent data loss for
     /// whichever type they forget.
     #[test]
-    fn active_task_jql_admits_every_type_except_epic() {
+    fn active_task_jql_admits_every_type_except_epic_and_story() {
         assert!(
             ACTIVE_TASK_JQL.contains("type != Epic"),
             "epics are containers, not work — they arrive as parent_key/epic_title"
@@ -341,6 +364,21 @@ mod tests {
             !ACTIVE_TASK_JQL.contains("type IN"),
             "must not be an allowlist: a forgotten type is silent, product-wide data loss"
         );
+    }
+
+    /// Story is excluded by product decision, not because it fails any test the
+    /// included types pass — it is `hierarchyLevel: 0`, the same rung as Task.
+    ///
+    /// Pinned as its own test so the exclusion is a deliberate, visible line
+    /// rather than something that quietly disappears in a future edit. If this
+    /// test is ever deleted, deleting it should be the point of the change.
+    ///
+    /// Excluded in the JQL rather than client-side on purpose: `MAX_RESULTS` is
+    /// a hard 100-row ceiling with no pagination, so a type dropped after the
+    /// fetch still burns a slot.
+    #[test]
+    fn story_is_excluded_server_side() {
+        assert!(ACTIVE_TASK_JQL.contains("type != Story"));
     }
 
     /// Builds the minimal `JiraIssue` shape `is_work_item` reads. Deserialised
