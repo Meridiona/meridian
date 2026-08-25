@@ -21,13 +21,24 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::OnceLock;
 
-/// One release's user-facing notes.
+/// One entry in a release: a short headline plus a single sentence. The
+/// deliberate shape of the whole feature — a release is at most two or three
+/// of these, so the modal can be read at a glance rather than skimmed and
+/// abandoned. Anything that needs a paragraph belongs in the docs, not here.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ReleaseItem {
+    pub title: String,
+    pub body: String,
+}
+
+/// One release's user-facing notes. No highlights/fixes split — a user reading
+/// this doesn't care which bucket a change came from, and the split doubled
+/// the length of every entry.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ReleaseNote {
     pub version: String,
     pub date: String,
-    pub highlights: Vec<String>,
-    pub fixes: Vec<String>,
+    pub items: Vec<ReleaseItem>,
 }
 
 /// A roadmap item's status. A serde enum (vs. a bare `String`) so a typo'd
@@ -134,6 +145,37 @@ mod tests {
         let data: WhatsNewData = serde_json::from_str(WHATS_NEW_JSON)
             .expect("resources/whats-new.json must be valid JSON");
         assert!(!data.releases.is_empty(), "seed at least one release");
+    }
+
+    /// The brevity rule, enforced rather than trusted: What's New is read at a
+    /// glance or not at all, so a release gets at most three entries and each
+    /// body stays one short sentence. Without this the file drifts back into
+    /// pasted commit messages within a few releases.
+    #[test]
+    fn release_notes_stay_short() {
+        let data: WhatsNewData = serde_json::from_str(WHATS_NEW_JSON).unwrap();
+        for r in &data.releases {
+            assert!(
+                !r.items.is_empty() && r.items.len() <= 3,
+                "v{}: 1-3 items, got {}",
+                r.version,
+                r.items.len()
+            );
+            for it in &r.items {
+                assert!(
+                    it.title.len() <= 44,
+                    "v{}: title too long: {:?}",
+                    r.version,
+                    it.title
+                );
+                assert!(
+                    it.body.len() <= 160,
+                    "v{}: body must be one short sentence: {:?}",
+                    r.version,
+                    it.body
+                );
+            }
+        }
     }
 
     #[test]
