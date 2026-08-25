@@ -403,6 +403,39 @@ pub(super) fn is_missing_project_scope(err: &GqlError) -> bool {
 
 // ── Network calls ────────────────────────────────────────────────────────────
 
+/// Whether a response carrying BOTH `data` and `errors` may be accepted.
+///
+/// [`has_usable_data`] answers "did anything come back", which was the right
+/// question for ONE caller and was then applied to all three. GitHub reports an
+/// unresolvable board out of several as a partial response, and
+/// `board_repos_from_response` already skips the nulls - so that query must
+/// tolerate it. A single-subject query or a MUTATION must not: there, a partial
+/// response means the one thing asked for did not happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Partial {
+    /// The multi-board query. One null board among several is normal.
+    Tolerate,
+    /// Everything else, including every mutation.
+    Reject,
+}
+
+/// The pure policy decision, split out so it is testable without HTTP.
+pub(super) fn partial_is_acceptable(partial: Partial, v: &Value) -> bool {
+    partial == Partial::Tolerate && has_usable_data(v)
+}
+
+/// Did `addProjectV2ItemById` actually return an item?
+///
+/// Checked in addition to [`partial_is_acceptable`] rather than instead of it:
+/// the policy gate only fires when GitHub sends an `errors` array, and a 200
+/// with no errors and a null item would otherwise still read as success. The
+/// mutation asks for `{ item { id } }`, so a real add always carries an id.
+pub(super) fn board_item_was_added(v: &Value) -> bool {
+    v.pointer("/data/addProjectV2ItemById/item/id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| !id.is_empty())
+}
+
 /// POST a GraphQL `payload`, returning the parsed body. Surfaces a GraphQL-level
 /// `errors` entry as a real error — see [`graphql_error`] on why HTTP status is
 /// not enough.
@@ -410,6 +443,7 @@ async fn graphql(
     github: &GitHubConfig,
     client: &reqwest::Client,
     payload: &Value,
+    partial: Partial,
 ) -> Result<Value> {
     let resp = client
         .post(GRAPHQL_URL)
@@ -431,7 +465,7 @@ async fn graphql(
         // A partial response is the normal way GitHub reports one unresolvable
         // board out of several, and `board_repos_from_response` already skips
         // whichever came back null.
-        if !has_usable_data(&v) {
+        if !partial_is_acceptable(partial, &v) {
             if is_missing_project_scope(&err) {
                 bail!(
                     "your GitHub connection is missing the project scope - reconnect GitHub in \
@@ -452,7 +486,13 @@ async fn graphql(
 
 /// The authenticated user's login, for the create's `assignees`.
 async fn fetch_viewer_login(github: &GitHubConfig, client: &reqwest::Client) -> Result<String> {
-    let v = graphql(github, client, &json!({ "query": "{ viewer { login } }" })).await?;
+    let v = graphql(
+        github,
+        client,
+        &json!({ "query": "{ viewer { login } }" }),
+        Partial::Reject,
+    )
+    .await?;
     v.pointer("/data/viewer/login")
         .and_then(Value::as_str)
         .map(str::to_string)
@@ -468,7 +508,10 @@ async fn fetch_board_repos(
         return Ok(Vec::new());
     }
     let payload = json!({ "query": board_repos_query(&github.project_ids) });
-    let v = graphql(github, client, &payload).await?;
+    // The ONE caller partial tolerance was written for: GitHub reports an
+    // unresolvable board among several this way, and `board_repos_from_response`
+    // skips whichever came back null.
+    let v = graphql(github, client, &payload, Partial::Tolerate).await?;
     let boards = board_repos_from_response(&v, &github.project_ids);
     tracing::debug!(
         boards = boards.len(),
@@ -485,18 +528,89 @@ async fn add_to_board(
     project_id: &str,
     content_id: &str,
 ) -> Result<()> {
-    graphql(
+    let v = graphql(
         github,
         client,
         &add_to_board_payload(project_id, content_id),
+        Partial::Reject,
     )
     .await?;
+    // Belt and braces. `Partial::Reject` covers the case where GitHub sends an
+    // `errors` array; this covers a 200 with no errors and a null item, which
+    // would otherwise still be read as a successful add.
+    if !board_item_was_added(&v) {
+        bail!(
+            "GitHub accepted the request but returned no board item - the issue was created \
+             but not added to the project board"
+        );
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The board MUTATION must not inherit the multi-board query's tolerance
+    /// for a partial response.
+    ///
+    /// GitHub answers a failed `addProjectV2ItemById` with HTTP 200, a non-null
+    /// `data` object whose `addProjectV2ItemById` is null, and an `errors`
+    /// entry. `has_usable_data` sees the non-null `data` and says "usable" -
+    /// correct for the boards query it was written for (one unresolvable board
+    /// out of several, and `board_repos_from_response` skips the nulls), and
+    /// exactly wrong here: `add_to_board` discarded the result, so the create
+    /// flow logged success for an issue that was never added to the board.
+    ///
+    /// That is the same defect this module was written to fix, reintroduced on
+    /// the mutation path.
+    #[test]
+    fn a_failed_board_mutation_is_not_treated_as_a_partial_success() {
+        let failed: Value = serde_json::from_str(
+            r#"{
+                "data": { "addProjectV2ItemById": null },
+                "errors": [{
+                    "type": "FORBIDDEN",
+                    "message": "Resource not accessible by personal access token"
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        // The old gate says "usable" - which is why this shipped.
+        assert!(
+            has_usable_data(&failed),
+            "fixture must reproduce the shape that fooled has_usable_data"
+        );
+        // The policy gate is what must reject it.
+        assert!(!partial_is_acceptable(Partial::Reject, &failed));
+        assert!(partial_is_acceptable(Partial::Tolerate, &failed));
+
+        // And the mutation's own result check must fail on it.
+        assert!(!board_item_was_added(&failed));
+    }
+
+    /// A genuine success must still pass both gates, or every board add breaks.
+    #[test]
+    fn a_successful_board_mutation_passes() {
+        let ok: Value = serde_json::from_str(
+            r#"{"data":{"addProjectV2ItemById":{"item":{"id":"PVTI_abc123"}}}}"#,
+        )
+        .unwrap();
+        assert!(board_item_was_added(&ok));
+    }
+
+    /// A 200 with no `errors` at all but a null item is still not an add.
+    /// Belt and braces: the policy gate only fires when `errors` is present.
+    #[test]
+    fn a_silently_empty_mutation_result_is_not_an_add() {
+        let empty: Value =
+            serde_json::from_str(r#"{"data":{"addProjectV2ItemById":null}}"#).unwrap();
+        assert!(!board_item_was_added(&empty));
+        let no_id: Value =
+            serde_json::from_str(r#"{"data":{"addProjectV2ItemById":{"item":{}}}}"#).unwrap();
+        assert!(!board_item_was_added(&no_id));
+    }
 
     fn board(id: &str, repos: &[&str]) -> BoardRepos {
         BoardRepos {
