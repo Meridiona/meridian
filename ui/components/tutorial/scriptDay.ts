@@ -144,6 +144,14 @@ const readWorklogSettings: SettingsProbe = async () => {
   }
 }
 
+/// How long any single settings read may block the answer loop.
+///
+/// Not the remaining deadline: see `waitForWorklogAnswered`. The loop must get
+/// back to its DOM check often enough that dismissing the dialog ends the wait
+/// promptly, and 2s is comfortably longer than a healthy `get_settings` while
+/// being far below the five-minute budget.
+const READ_SLICE_MS = 2000
+
 /// Resolve `p`, or `undefined` if `ms` elapses first.
 ///
 /// The timer is always cleared, so a fast read does not keep the process alive
@@ -187,7 +195,18 @@ export async function waitForWorklogAnswered(
   // A timed-out read is reported as `undefined`, which is already the "read
   // failed" case the comparison below handles: it is not evidence the user
   // answered, so the loop keeps waiting rather than advancing.
-  const read = () => within(probe(), Math.max(0, deadline - Date.now()))
+  //
+  // Bounded by a SHORT slice, not by the remaining deadline. Bounding by the
+  // remaining deadline stops the hang but not the unresponsiveness: a probe
+  // that never settles parks the loop inside `await read()` for up to five
+  // minutes, and the dialog-removal check below cannot run - so a user who
+  // dismisses the dialog during that await waits out the whole timeout. The
+  // slice caps how long the loop can be blind to the DOM.
+  //
+  // A working-but-slow probe reads as `undefined` for that tick and is simply
+  // retried on the next one, which the "read failed" handling already covers.
+  const read = () =>
+    within(probe(), Math.min(READ_SLICE_MS, Math.max(0, deadline - Date.now())))
   let baseline = await read()
   while (Date.now() < deadline) {
     if (!document.querySelector('[data-tour="worklog-schedule-on"]')) return true

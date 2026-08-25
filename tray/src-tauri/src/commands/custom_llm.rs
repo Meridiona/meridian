@@ -636,6 +636,24 @@ pub async fn list_custom_llm_providers() -> Result<Vec<CustomProviderView>, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `MERIDIAN_SETTINGS_PATH` is PROCESS-global and cargo runs tests in
+    /// threads, so every test here that points settings resolution at a temp
+    /// file must serialise on this - otherwise one test reads another's file and
+    /// the failure looks like a bug in the code under test.
+    /// A `tokio` mutex, not a `std` one: the tests below hold it across an
+    /// `.await`, which clippy rightly refuses for a `std` guard - it blocks the
+    /// executor thread and can deadlock a single-threaded runtime.
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    async fn env_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().await
+    }
+
+    /// For the one synchronous test here. Safe because it is not inside a
+    /// runtime; `blocking_lock` would panic if it were.
+    fn env_lock_blocking() -> tokio::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.blocking_lock()
+    }
 
     /// A settings-side registry edit must WAIT for an in-flight custom-provider
     /// probe rather than landing in the middle of it.
@@ -643,28 +661,57 @@ mod tests {
     /// `persist_rows` re-reads the document but replaces `custom_llm_providers`
     /// with the caller's pre-probe rows. That is safe only if no other writer
     /// can change the registry during the probe - and `update_settings` could,
-    /// because it replaces the registry wholesale through the settings lock
-    /// while never taking `REGISTRY_LOCK`. So a user saving a settings edit that
-    /// touched a custom provider, while a probe was running, had that edit
-    /// silently discarded when the probe finished.
+    /// because it replaces the registry wholesale while never taking
+    /// `REGISTRY_LOCK`. A user saving a settings edit that touched a custom
+    /// provider mid-probe had it silently discarded when the probe finished.
     ///
-    /// I asserted the opposite in #887 ("safe because REGISTRY_LOCK is held
-    /// across the whole command") and asked for the reasoning to be checked.
-    /// It was wrong: the lock covered the dedicated registry commands and not
-    /// the settings path.
+    /// # This drives the REAL path, and the first version did not
+    /// The first attempt called `registry_guard()` directly in the spawned task.
+    /// It never touched `update_settings`, never passed a registry-bearing body,
+    /// and never exercised `body_touches_registry` - so it would have kept
+    /// passing if someone deleted the guard from the settings path or broke the
+    /// gating, restoring the very race it claims to prevent. Caught by review;
+    /// the third green-but-vacuous test in this series.
+    ///
+    /// It now goes through `settings::mutate_settings_for_body`, which is the
+    /// function `update_settings` itself calls, so the gating decision is under
+    /// test too.
     #[tokio::test]
     async fn a_settings_side_registry_edit_waits_for_an_in_flight_probe() {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc as StdArc;
 
+        let _env = env_lock().await;
+        let dir = std::env::temp_dir().join(format!(
+            "meridian-registry-wait-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::env::set_var("MERIDIAN_SETTINGS_PATH", &path);
+        let _ = std::fs::remove_file(&path);
+
         // A custom-provider command holding the lock across its probe.
         let probe_guard = registry_guard().await;
 
+        // The REAL settings path, with a body that carries the registry.
+        let body = serde_json::json!({ "custom_llm_providers": [row("acme", "Acme")] });
+        let body_obj = body.as_object().unwrap().clone();
         let landed = StdArc::new(AtomicBool::new(false));
         let landed_in_task = landed.clone();
         let settings_write = tokio::spawn(async move {
-            // What `update_settings` now does when its body carries the registry.
-            let _g = registry_guard().await;
+            crate::commands::settings::mutate_settings_for_body(&body_obj, |v| {
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert(
+                        "custom_llm_providers".into(),
+                        body_obj["custom_llm_providers"].clone(),
+                    );
+                }
+                Ok(v.clone())
+            })
+            .await
+            .expect("settings write must succeed");
             landed_in_task.store(true, Ordering::SeqCst);
         });
 
@@ -677,10 +724,60 @@ mod tests {
 
         drop(probe_guard);
         settings_write.await.expect("task panicked");
+        assert!(landed.load(Ordering::SeqCst));
+        assert_eq!(
+            read_rows(&settings::read_settings_value()).len(),
+            1,
+            "the settings-side registry edit must be persisted once it proceeds"
+        );
+
+        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other half of the gate: a body that does NOT carry the registry must
+    /// NOT queue behind a probe. Without this, "always take the lock" would pass
+    /// the test above while making every unrelated Settings save wait seconds.
+    #[tokio::test]
+    async fn a_non_registry_settings_save_does_not_wait_for_a_probe() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc as StdArc;
+
+        let _env = env_lock().await;
+        let dir = std::env::temp_dir().join(format!(
+            "meridian-registry-nowait-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::env::set_var("MERIDIAN_SETTINGS_PATH", &path);
+        let _ = std::fs::remove_file(&path);
+
+        let probe_guard = registry_guard().await;
+
+        let body = serde_json::json!({ "llm_provider": "claude" });
+        let body_obj = body.as_object().unwrap().clone();
+        let landed = StdArc::new(AtomicBool::new(false));
+        let landed_in_task = landed.clone();
+        let settings_write = tokio::spawn(async move {
+            crate::commands::settings::mutate_settings_for_body(&body_obj, |v| Ok(v.clone()))
+                .await
+                .expect("settings write must succeed");
+            landed_in_task.store(true, Ordering::SeqCst);
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(
             landed.load(Ordering::SeqCst),
-            "the settings-side write must proceed once the probe releases the lock"
+            "an unrelated settings save must not serialise behind an endpoint probe"
         );
+
+        drop(probe_guard);
+        settings_write.await.expect("task panicked");
+
+        std::env::remove_var("MERIDIAN_SETTINGS_PATH");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A registry write must not discard a non-registry settings change that
@@ -703,11 +800,7 @@ mod tests {
     /// directly.
     #[test]
     fn a_registry_write_preserves_a_concurrent_settings_change() {
-        // `MERIDIAN_SETTINGS_PATH` is PROCESS-global and cargo runs tests in
-        // threads. This is currently the only tray test that sets it, and the
-        // lock is here so it stays safe if a second one is ever added.
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = env_lock_blocking();
         let dir = std::env::temp_dir().join(format!(
             "meridian-custom-llm-race-{}-{:?}",
             std::process::id(),

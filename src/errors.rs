@@ -121,7 +121,45 @@ mod tests {
         if line.trim_start().starts_with("//") {
             return false;
         }
-        line.contains("error = %e") || (line.contains("tracing::") && line.contains("{}\", "))
+        // Match the ARGUMENT SHAPE, not the macro name. Requiring `tracing::` on
+        // the same line missed the multi-line spelling entirely:
+        //
+        //     tracing::error!(
+        //         "cleanup_incomplete_runs failed: {}", e
+        //     );
+        //
+        // The scan reads that second line, finds no `tracing::`, and reports no
+        // offender - so the `main.rs` entry STILL advertised coverage the scan
+        // did not provide, for a shape the three converted sites happened not to
+        // use. That is the second time this file claimed coverage it lacked.
+        //
+        // The tell is the ARGUMENT after the placeholder, not the macro name and
+        // not the placeholder alone. Dropping the `tracing::` requirement and
+        // matching a bare `{}", ` immediately flagged
+        // `format!("provider:{}", p.as_str())` - a string being built, not an
+        // error being logged. A scan that cries wolf is a scan someone disables.
+        line.contains("error = %e") || logs_an_error_positionally(line)
+    }
+
+    /// Is the value after a positional `{}` an ERROR binding?
+    ///
+    /// Takes the identifier immediately following `{}", ` and accepts only the
+    /// names this codebase actually binds an error to. That catches both
+    /// spellings - `…: {}", e)` on one line, and `…: {}", e` on its own line
+    /// inside a multi-line macro - while ignoring every other positional format.
+    ///
+    /// Deliberately narrow. It will miss `{}", some_unusual_name`; the cost of
+    /// that is one unconverted site, against a false positive on every
+    /// `format!` in the file.
+    fn logs_an_error_positionally(line: &str) -> bool {
+        let Some(rest) = line.split("{}\", ").nth(1) else {
+            return false;
+        };
+        let ident: String = rest
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        matches!(ident.as_str(), "e" | "err" | "error")
     }
 
     /// The scan must catch BOTH spellings, and must not fire on the fixed form.
@@ -139,6 +177,20 @@ mod tests {
             ),
             "the exact spelling that slipped past the original scan"
         );
+        // The MULTI-LINE spelling: the macro name is on a previous line, so a
+        // scan keyed on `tracing::` never sees this at all.
+        assert!(
+            drops_the_cause(r#"            "cleanup_incomplete_runs failed: {}", e"#),
+            "a positional placeholder on its own line must still be caught"
+        );
+
+        // NOT an error log: a string being built. Matching a bare `{}", `
+        // flagged this real line in `summariser/mod.rs`, and a scan that cries
+        // wolf is a scan someone disables.
+        assert!(!drops_the_cause(
+            r#"        Source::Fallback(p) => format!("provider:{}", p.as_str()),"#
+        ));
+        assert!(!drops_the_cause(r#"    let label = format!("{}", count);"#));
 
         // The fixed form, and things that must not trip it.
         assert!(!drops_the_cause(
