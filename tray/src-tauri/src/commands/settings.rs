@@ -169,56 +169,50 @@ pub async fn update_settings(
     //
     // Scoped to a block so the guard is released before the post-write health
     // push below, which awaits and has nothing to do with the registry.
-    let mut updated = {
-        let _registry_guard = if body_touches_registry(body_obj) {
-            Some(crate::commands::custom_llm::registry_guard().await)
-        } else {
-            None
-        };
-        meridian_core::settings::mutate_settings_value(|updated| {
-            let current = updated.clone();
-            let obj = updated
-                .as_object_mut()
-                .ok_or_else(|| anyhow::anyhow!("current settings are not an object"))?;
-            // { ...current, ...body } — body keys override.
-            for (k, v) in body_obj {
-                obj.insert(k.clone(), v.clone());
-            }
+    let mut updated = mutate_settings_for_body(body_obj, |updated| {
+        let current = updated.clone();
+        let obj = updated
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("current settings are not an object"))?;
+        // { ...current, ...body } — body keys override.
+        for (k, v) in body_obj {
+            obj.insert(k.clone(), v.clone());
+        }
 
-            // Sentinel / empty / absent oo_password → keep the stored value.
-            let sent = body_obj.get("oo_password").and_then(Value::as_str);
-            if sent.is_none_or(|p| p.is_empty() || p == PASSWORD_SENTINEL) {
-                let kept = current
-                    .get("oo_password")
-                    .cloned()
-                    .unwrap_or(Value::String(String::new()));
-                obj.insert("oo_password".into(), kept);
-            }
+        // Sentinel / empty / absent oo_password → keep the stored value.
+        let sent = body_obj.get("oo_password").and_then(Value::as_str);
+        if sent.is_none_or(|p| p.is_empty() || p == PASSWORD_SENTINEL) {
+            let kept = current
+                .get("oo_password")
+                .cloned()
+                .unwrap_or(Value::String(String::new()));
+            obj.insert("oo_password".into(), kept);
+        }
 
-            // Same rule per custom endpoint, matched BY ID (see `redact_custom_keys`). The merge
-            // above is shallow, so a body carrying the registry replaces it wholesale — and the UI's
-            // copy has a sentinel in every row it read back. Without this, saving any unrelated
-            // setting would overwrite every API key with "••••••••".
-            restore_custom_keys(&current, obj).map_err(|e| anyhow::anyhow!(e))?;
+        // Same rule per custom endpoint, matched BY ID (see `redact_custom_keys`). The merge
+        // above is shallow, so a body carrying the registry replaces it wholesale — and the UI's
+        // copy has a sentinel in every row it read back. Without this, saving any unrelated
+        // setting would overwrite every API key with "••••••••".
+        restore_custom_keys(&current, obj).map_err(|e| anyhow::anyhow!(e))?;
 
-            // The GATE. A custom endpoint may only run the pipeline on measured evidence
-            // (`meridian_core::SchemaRung`), and it is enforced HERE rather than only in the UI:
-            // this command is the sole writer of settings.json, so a hand-edited file or an older
-            // frontend would otherwise route a user's whole day through an endpoint nobody has
-            // shown can hold a schema. An unenforced fold doesn't fail loudly — it drops the hour.
-            enforce_custom_provider_gate(updated).map_err(|e| anyhow::anyhow!(e))?;
+        // The GATE. A custom endpoint may only run the pipeline on measured evidence
+        // (`meridian_core::SchemaRung`), and it is enforced HERE rather than only in the UI:
+        // this command is the sole writer of settings.json, so a hand-edited file or an older
+        // frontend would otherwise route a user's whole day through an endpoint nobody has
+        // shown can hold a schema. An unenforced fold doesn't fail loudly — it drops the hour.
+        enforce_custom_provider_gate(updated).map_err(|e| anyhow::anyhow!(e))?;
 
-            // LAST gate before the write, and deliberately on the whole document rather
-            // than another named field: everything above validates fields by name, so
-            // anything not on that list could reach disk with the wrong type and take
-            // the ENTIRE file down with it at load time. See
-            // `merged_settings_are_loadable`.
-            merged_settings_are_loadable(updated).map_err(|e| anyhow::anyhow!(e))?;
+        // LAST gate before the write, and deliberately on the whole document rather
+        // than another named field: everything above validates fields by name, so
+        // anything not on that list could reach disk with the wrong type and take
+        // the ENTIRE file down with it at load time. See
+        // `merged_settings_are_loadable`.
+        merged_settings_are_loadable(updated).map_err(|e| anyhow::anyhow!(e))?;
 
-            Ok(updated.clone())
-        })
-        .map_err(|e| crate::cmd_err!(e, "update_settings: write failed"))?
-    };
+        Ok(updated.clone())
+    })
+    .await
+    .map_err(|e| crate::cmd_err!(e, "update_settings: write failed"))?;
 
     // Refresh the live capture ignore list so a Settings change takes effect on
     // the very next captured frame — no capture restart. The frame + UI-event
@@ -367,6 +361,37 @@ fn restore_custom_keys(
 /// the lock on every save.
 fn body_touches_registry(body_obj: &serde_json::Map<String, Value>) -> bool {
     body_obj.contains_key("custom_llm_providers")
+}
+
+/// Run a settings mutation under the settings lock - and additionally under the
+/// REGISTRY lock when `body_obj` carries `custom_llm_providers`.
+///
+/// # Why this is a function rather than a block inside `update_settings`
+/// It is the whole registry-serialisation guarantee, and a test that reaches it
+/// only by calling `registry_guard()` itself proves nothing: it keeps passing if
+/// someone deletes the guard from this path or breaks
+/// [`body_touches_registry`]. That is exactly what the previous regression test
+/// did, and it is the third time in this series that a green test was not
+/// testing what its name claimed. Extracting it gives the test the real path -
+/// gating decision included - without needing an `AppHandle` or a live endpoint
+/// to probe.
+///
+/// Lock order is registry-then-settings, matching `custom_llm`. The registry
+/// guard is dropped when this returns, so `update_settings`'s post-write health
+/// push never holds it.
+pub(crate) async fn mutate_settings_for_body<F>(
+    body_obj: &serde_json::Map<String, Value>,
+    f: F,
+) -> anyhow::Result<Value>
+where
+    F: FnOnce(&mut Value) -> anyhow::Result<Value>,
+{
+    let _registry_guard = if body_touches_registry(body_obj) {
+        Some(crate::commands::custom_llm::registry_guard().await)
+    } else {
+        None
+    };
+    meridian_core::settings::mutate_settings_value(f)
 }
 
 fn merged_settings_are_loadable(merged: &Value) -> Result<(), String> {
