@@ -33,6 +33,27 @@ pub struct OAuthTokens {
     /// The site base URL (e.g. `https://acme.atlassian.net`) for building browse links.
     #[serde(default)]
     pub site_url: String,
+    /// Unix seconds at which a refresh exchange was STARTED and whose outcome we
+    /// never learned. `0` means no exchange is outstanding.
+    ///
+    /// This is a crash-and-suspend marker, and it exists because the dangerous
+    /// state is invisible without it. A refresh POST that is sent and then never
+    /// answered — the process killed by an app update, the machine suspended
+    /// mid-request — leaves the provider holding a rotated token we did not
+    /// receive and this file holding one that is already spent. Nothing else on
+    /// disk distinguishes that from "we simply haven't refreshed lately".
+    ///
+    /// It matters because the repair has a deadline: inside the provider's reuse
+    /// interval, re-presenting the spent token is forgiven and returns the pair
+    /// we lost, so a process that starts up and acts on this marker IMMEDIATELY
+    /// recovers, where one that waits for its ordinary 30-minute sync cadence
+    /// arrives after the window has shut and the grant is gone for good. See
+    /// `jira::recover_interrupted_refresh`.
+    ///
+    /// `#[serde(default)]` so a token file written before this field existed
+    /// loads as "nothing outstanding", which is the correct reading of it.
+    #[serde(default)]
+    pub refresh_in_flight_at: i64,
 }
 
 impl OAuthTokens {
@@ -301,6 +322,7 @@ mod tests {
             scopes: String::new(),
             cloud_id: String::new(),
             site_url: String::new(),
+            refresh_in_flight_at: 0,
         };
         // 60s before expiry, with a 60s skew → treated as expired.
         assert!(t.is_expired(940, 60));
@@ -322,6 +344,7 @@ mod tests {
             scopes: "read:jira-work offline_access".into(),
             cloud_id: "cloud-1".into(),
             site_url: "https://acme.atlassian.net".into(),
+            refresh_in_flight_at: 0,
         };
         save(&t).unwrap();
         assert!(exists("jira"));

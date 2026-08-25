@@ -575,6 +575,7 @@ mod tests {
             scopes: String::new(),
             cloud_id: "c".into(),
             site_url: "https://acme.atlassian.net".into(),
+            refresh_in_flight_at: 0,
         })
         .unwrap();
         assert!(

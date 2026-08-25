@@ -81,6 +81,7 @@ pub async fn login(app_key: &str, port: u16) -> Result<()> {
         scopes: "read,write".to_string(),
         cloud_id: String::new(),
         site_url: String::new(),
+        refresh_in_flight_at: 0,
     };
     store::save(&tokens).context("saving Trello token")?;
     Ok(())

@@ -231,6 +231,8 @@ pub async fn login(client_id: &str, client_secret: &str, port: u16) -> Result<St
         scopes: tokens.scope,
         cloud_id,
         site_url: site_url.clone(),
+        // A fresh authorisation supersedes anything that was outstanding.
+        refresh_in_flight_at: 0,
     };
     store::save(&stored).context("persisting Jira OAuth tokens")?;
     Ok(site_url)
@@ -299,11 +301,27 @@ pub async fn ensure_fresh() -> Result<OAuthTokens> {
     }
 
     tracing::debug!("jira OAuth access token expired — refreshing");
-    let resp = flow::refresh(&t.client_id, &spec(), &t.refresh_token)
-        .await
-        .context(
-            "refreshing Jira OAuth token — re-run `meridian oauth-login jira` if this persists",
-        )?;
+    // Record that a grant is about to leave, BEFORE it does. If this process is
+    // killed between here and the response — an app update restarting the
+    // daemon, a laptop suspending — the marker is the only evidence that the
+    // provider may be holding a rotated token we never received, and the only
+    // way a later start knows to repair it while the reuse window is still open.
+    mark_refresh_in_flight(&mut t);
+    let resp = match flow::refresh(&t.client_id, &spec(), &t.refresh_token).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            // Clear the marker for the outcomes that resolve it: a 4xx means the
+            // grant is dead (nothing outstanding to repair) and a connect failure
+            // means it never left. Only an AMBIGUOUS failure leaves it standing —
+            // that is precisely the "may have been spent" state it exists for.
+            if !flow::may_have_spent_the_grant(&e) {
+                clear_refresh_in_flight(&mut t);
+            }
+            return Err(e).context(
+                "refreshing Jira OAuth token — re-run `meridian oauth-login jira` if this persists",
+            );
+        }
+    };
     t.access_token = resp.access_token;
     if !resp.refresh_token.is_empty() {
         t.refresh_token = resp.refresh_token; // Atlassian rotates the refresh token
@@ -312,8 +330,73 @@ pub async fn ensure_fresh() -> Result<OAuthTokens> {
     if !resp.scope.is_empty() {
         t.scopes = resp.scope;
     }
+    t.refresh_in_flight_at = 0; // resolved — saved together with the new tokens
     save_rotated(&t).await;
     Ok(t)
+}
+
+/// Stamp the in-flight marker and flush it to disk before the grant is sent.
+///
+/// Best-effort on purpose: a store we cannot write is already in trouble, but
+/// refusing to refresh because the *marker* would not persist would turn a
+/// diagnostic aid into an outage. Worst case we lose the ability to repair an
+/// interruption, which is exactly where we were before the marker existed.
+fn mark_refresh_in_flight(t: &mut OAuthTokens) {
+    t.refresh_in_flight_at = now_unix();
+    if let Err(e) = store::save(t) {
+        tracing::warn!(error = %e, "could not record the in-flight Jira refresh marker");
+    }
+}
+
+/// Clear the marker for an outcome that resolved it, and flush.
+fn clear_refresh_in_flight(t: &mut OAuthTokens) {
+    t.refresh_in_flight_at = 0;
+    if let Err(e) = store::save(t) {
+        tracing::warn!(error = %e, "could not clear the in-flight Jira refresh marker");
+    }
+}
+
+/// Repair a refresh exchange this machine started and never saw finish.
+///
+/// Call once, early, on process start. The case it exists for is mundane and
+/// was permanent before it: an app update stops the daemon while a refresh POST
+/// is on the wire. The provider completes the exchange, rotates the token, and
+/// answers into a socket belonging to a process that no longer exists. On disk
+/// we are left holding a spent refresh token.
+///
+/// The repair is that the provider forgives this — but only briefly. Inside its
+/// reuse interval, re-presenting the spent token returns the pair whose delivery
+/// we lost, and the user never learns anything happened. The reason this needs
+/// its own entry point rather than falling out of ordinary operation is timing:
+/// the daemon refreshes lazily, when a sync finds its task cache stale, which can
+/// be up to `SYNC_INTERVAL_MINS` away. An update that interrupts a refresh five
+/// minutes after a successful sync would otherwise get its next attempt twenty-
+/// five minutes later — past the window, and by then the grant is gone for good.
+///
+/// Never errors out of the caller's startup: a failure here is reported by the
+/// ordinary sync path moments later, with the ordinary user-facing remedy.
+pub async fn recover_interrupted_refresh() {
+    let Ok(t) = store::load("jira") else {
+        return; // no Jira OAuth on this install
+    };
+    if t.refresh_in_flight_at == 0 {
+        return;
+    }
+    let age_s = now_unix().saturating_sub(t.refresh_in_flight_at);
+    tracing::info!(
+        age_s,
+        "found an unfinished Jira token refresh from a previous run - retrying now while the \
+         provider may still forgive the reuse"
+    );
+    match ensure_fresh().await {
+        Ok(_) => tracing::info!(age_s, "recovered the interrupted Jira token refresh"),
+        Err(e) => tracing::warn!(
+            age_s,
+            error = %e,
+            "could not recover the interrupted Jira token refresh - if the provider had already \
+             rotated the token, reconnecting Jira is the only remedy"
+        ),
+    }
 }
 
 /// How many times [`save_rotated`] tries to write the rotated tokens down.
@@ -428,6 +511,58 @@ impl JiraReqCtx {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The in-flight marker's whole job is to survive a process that dies
+    /// between sending a grant and learning what happened to it, so the test
+    /// that matters is that it round-trips through the file a restarted process
+    /// would read. A default-constructed store (and, by `#[serde(default)]`, a
+    /// file written before the field existed) must read as "nothing
+    /// outstanding" — the correct interpretation, since the alternative would
+    /// have every existing install repair an exchange that never happened.
+    #[test]
+    fn the_in_flight_marker_round_trips_and_defaults_to_absent() {
+        let _env = crate::env_test_guard();
+        let dir =
+            std::env::temp_dir().join(format!("meridian_oauth_marker_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::env::set_var("HOME", &dir);
+
+        let mut t = OAuthTokens {
+            provider: "jira".into(),
+            client_id: "cid".into(),
+            access_token: "at".into(),
+            refresh_token: "rt".into(),
+            expires_at: 0,
+            scopes: String::new(),
+            cloud_id: "c".into(),
+            site_url: "https://acme.atlassian.net".into(),
+            refresh_in_flight_at: 0,
+        };
+        store::save(&t).unwrap();
+        assert_eq!(store::load("jira").unwrap().refresh_in_flight_at, 0);
+
+        // A token file predating the field must load as "nothing outstanding"
+        // rather than failing to parse or inventing an exchange to repair.
+        let path = store::path("jira").unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        v.as_object_mut().unwrap().remove("refresh_in_flight_at");
+        std::fs::write(&path, serde_json::to_string(&v).unwrap()).unwrap();
+        assert_eq!(store::load("jira").unwrap().refresh_in_flight_at, 0);
+
+        // And once stamped, it is what a restarted process finds.
+        mark_refresh_in_flight(&mut t);
+        assert_ne!(t.refresh_in_flight_at, 0);
+        assert_eq!(
+            store::load("jira").unwrap().refresh_in_flight_at,
+            t.refresh_in_flight_at,
+            "a process that dies here must leave the marker behind"
+        );
+
+        clear_refresh_in_flight(&mut t);
+        assert_eq!(store::load("jira").unwrap().refresh_in_flight_at, 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     fn oauth_ctx() -> JiraReqCtx {
         JiraReqCtx::OAuth {

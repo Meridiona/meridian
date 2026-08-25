@@ -166,6 +166,23 @@ impl std::fmt::Display for TokenError {
 
 impl std::error::Error for TokenError {}
 
+/// Whether an `anyhow` error from the OAuth flow left the grant possibly SPENT —
+/// i.e. carries a [`TokenFailure::Ambiguous`]. The request reached the provider
+/// and no usable answer came back, so a rotating refresh token may have been
+/// consumed and its replacement lost with the response.
+///
+/// Distinct from [`is_transient`], which answers the user-facing question. This
+/// one answers a bookkeeping question: whether an in-flight marker must be left
+/// standing so a later run can try to repair the exchange inside the provider's
+/// reuse window (see `jira::recover_interrupted_refresh`). Defaults to `false`
+/// when no [`TokenError`] is present — an unclassified failure never reached the
+/// token endpoint through this module at all.
+pub fn may_have_spent_the_grant(err: &anyhow::Error) -> bool {
+    err.chain()
+        .find_map(|cause| cause.downcast_ref::<TokenError>())
+        .is_some_and(|e| e.failure == TokenFailure::Ambiguous)
+}
+
 /// Whether an `anyhow` error from the OAuth flow was a token-endpoint failure the
 /// user cannot act on (network/timeout/429/5xx — [`TokenFailure::Transient`] or
 /// [`TokenFailure::Ambiguous`]) rather than a dead grant. Note this is NOT the

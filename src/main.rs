@@ -1181,6 +1181,22 @@ async fn main() -> Result<()> {
         ),
     }
 
+    // 7a-ter. Same shape again, for a Jira token refresh interrupted by whatever
+    //     ended the last run — most often this very restart, since an app update
+    //     stops the daemon whenever it likes. The provider completes an exchange
+    //     it has already received and answers into a socket that no longer has a
+    //     process behind it, leaving a spent refresh token on disk.
+    //
+    //     This has to happen HERE, before the first sync, rather than being left
+    //     to fall out of ordinary operation: the repair only works inside the
+    //     provider's reuse interval, and the ordinary path refreshes lazily when
+    //     a sync finds its task cache stale — up to SYNC_INTERVAL_MINS away, by
+    //     which time the window has shut and the grant is unrecoverable.
+    //
+    //     Cheap when there is nothing to do (one file read) and silent on an
+    //     install with no Jira OAuth at all.
+    meridian::intelligence::oauth::jira::recover_interrupted_refresh().await;
+
     // 7b. Shared handles the poll loop uses to signal ETL ticks to observers.
     let etl_notify: Arc<Notify> = Arc::new(Notify::new());
     let etl_tick_span: Arc<std::sync::Mutex<Option<tracing::Span>>> =
