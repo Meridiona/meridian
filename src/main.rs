@@ -1157,7 +1157,10 @@ async fn main() -> Result<()> {
             deleted_partial_sessions = n,
             "cleaned up incomplete ETL run"
         ),
-        Err(e) => tracing::error!("cleanup_incomplete_runs failed: {}", e),
+        Err(e) => tracing::error!(
+            error = %meridian::errors::chain(&e),
+            "cleanup_incomplete_runs failed"
+        ),
     }
 
     // 7a-bis. Same recovery, for the worklog pipeline's own ledger: an hour left
@@ -1172,7 +1175,10 @@ async fn main() -> Result<()> {
             reset_count = n,
             "reset worklog hour(s) stuck in generating from a previous crash"
         ),
-        Err(e) => tracing::error!("reset_stuck_generating_hours failed: {}", e),
+        Err(e) => tracing::error!(
+            error = %meridian::errors::chain(&e),
+            "reset_stuck_generating_hours failed"
+        ),
     }
 
     // 7b. Shared handles the poll loop uses to signal ETL ticks to observers.
@@ -1277,7 +1283,10 @@ async fn main() -> Result<()> {
             }
         }
         if let Err(e) = run_pm_sync(&meridian, &cfg).await {
-            tracing::error!("intelligence run failed: {}", e);
+            tracing::error!(
+                error = %meridian::errors::chain(&e),
+                "intelligence run failed"
+            );
         }
     }
 
