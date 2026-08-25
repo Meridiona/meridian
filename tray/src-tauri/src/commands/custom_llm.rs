@@ -28,13 +28,37 @@ use serde::Serialize;
 use serde_json::Value;
 
 /// Serializes the whole registry read-modify-write across concurrent commands (two
-/// "Test" clicks, an add racing a remove). Each command does read_settings_value →
-/// mutate → write_settings_value, and without this those cycles interleave and
+/// "Test" clicks, an add racing a remove). Each command reads the rows, does its
+/// work, and persists them, and without this those cycles interleave and
 /// lost-update each other — the same bug class 2104c030 fixed for the provider-test
-/// cache. The daemon only READS `custom_llm_providers` (via the resolver), so these
-/// tray commands are the only writers and a tray-process lock is sufficient. It is a
-/// `tokio` mutex because the critical section spans a probe's `.await`.
+/// cache. It is a `tokio` mutex because the critical section spans a probe's
+/// `.await`.
+///
+/// # These commands are NOT the only writers
+/// This doc used to claim they were, and that claim was the bug:
+/// `commands::settings::update_settings` also replaces `custom_llm_providers`
+/// wholesale (the shallow body merge, plus `restore_custom_keys`), and it never
+/// took this lock. So a settings save could land a registry edit in the middle
+/// of a probe, and [`persist_rows`]'s re-read would then overwrite it with the
+/// pre-probe rows - the exact lost update `persist_rows` was added to stop, via
+/// the one writer it did not know about.
+///
+/// Every writer of `custom_llm_providers` must now hold this, which is what
+/// [`registry_guard`] exists for. The daemon only READS the registry (via the
+/// resolver), so a tray-process lock is still sufficient.
+///
+/// Lock ORDER is `REGISTRY_LOCK` then the settings lock inside
+/// `meridian_core::settings::mutate_settings_value`, at every site. Never the
+/// reverse.
 static REGISTRY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Acquire [`REGISTRY_LOCK`] from outside this module.
+///
+/// `update_settings` needs it whenever its body carries `custom_llm_providers`;
+/// see [`REGISTRY_LOCK`] for why holding only the settings lock is not enough.
+pub(crate) async fn registry_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    REGISTRY_LOCK.lock().await
+}
 
 /// A registry row as the UI sees it: everything except the key, plus the verdicts the UI
 /// must not re-derive (the gate lives in one place — `meridian-core` — and this carries its
@@ -612,6 +636,52 @@ pub async fn list_custom_llm_providers() -> Result<Vec<CustomProviderView>, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A settings-side registry edit must WAIT for an in-flight custom-provider
+    /// probe rather than landing in the middle of it.
+    ///
+    /// `persist_rows` re-reads the document but replaces `custom_llm_providers`
+    /// with the caller's pre-probe rows. That is safe only if no other writer
+    /// can change the registry during the probe - and `update_settings` could,
+    /// because it replaces the registry wholesale through the settings lock
+    /// while never taking `REGISTRY_LOCK`. So a user saving a settings edit that
+    /// touched a custom provider, while a probe was running, had that edit
+    /// silently discarded when the probe finished.
+    ///
+    /// I asserted the opposite in #887 ("safe because REGISTRY_LOCK is held
+    /// across the whole command") and asked for the reasoning to be checked.
+    /// It was wrong: the lock covered the dedicated registry commands and not
+    /// the settings path.
+    #[tokio::test]
+    async fn a_settings_side_registry_edit_waits_for_an_in_flight_probe() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc as StdArc;
+
+        // A custom-provider command holding the lock across its probe.
+        let probe_guard = registry_guard().await;
+
+        let landed = StdArc::new(AtomicBool::new(false));
+        let landed_in_task = landed.clone();
+        let settings_write = tokio::spawn(async move {
+            // What `update_settings` now does when its body carries the registry.
+            let _g = registry_guard().await;
+            landed_in_task.store(true, Ordering::SeqCst);
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !landed.load(Ordering::SeqCst),
+            "a settings-side registry edit landed DURING the probe - persist_rows \
+             would overwrite it with the pre-probe rows"
+        );
+
+        drop(probe_guard);
+        settings_write.await.expect("task panicked");
+        assert!(
+            landed.load(Ordering::SeqCst),
+            "the settings-side write must proceed once the probe releases the lock"
+        );
+    }
 
     /// A registry write must not discard a non-registry settings change that
     /// landed while it was probing.
