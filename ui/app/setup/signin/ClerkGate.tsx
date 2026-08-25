@@ -9,12 +9,13 @@
 // about the bootstrap is identical, so it lives here once instead of being
 // duplicated across both widgets.
 
-import { Suspense, use, useState } from 'react'
+import { Suspense, use, useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { ClerkProvider } from '@clerk/react'
 // eslint-disable-next-line @typescript-eslint/no-var-requires -- no type defs shipped for this community plugin
 import { initClerk } from 'tauri-plugin-clerk'
 import { isTauri } from '@/lib/bridge'
+import { isLikelyClerkNetworkError } from '@/lib/clerkNetworkError'
 import { ClerkErrorBoundary } from './ClerkErrorBoundary'
 
 // The initialised clerk instance's type isn't exported by this community
@@ -32,22 +33,68 @@ function ClerkResolve({ clerkPromise, children }: {
   )
 }
 
+const INITIAL_RETRY_MS = 5_000
+const MAX_RETRY_MS = 60_000
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see ClerkResolve
+type Attempt = { key: number; clerkPromise: Promise<any> | null }
+
+function freshAttempt(key: number): Attempt {
+  return { key, clerkPromise: isTauri() ? initClerk() : null }
+}
+
 export function ClerkGate({ notInTauriMessage, fallback, children }: {
   notInTauriMessage: string
   fallback: ReactNode
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see ClerkResolve
   children: (clerk: any) => ReactNode
 }) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see ClerkResolve
-  const [clerkPromise] = useState<Promise<any> | null>(() => (isTauri() ? initClerk() : null))
+  // `retry()` replaces BOTH the promise `use()` resolves and the boundary's
+  // `key` in one update, so a retry always means a genuinely new
+  // `initClerk()` call feeding a freshly-mounted (failed: false) boundary -
+  // not the same already-rejected promise re-thrown forever.
+  const [attempt, setAttempt] = useState<Attempt>(() => freshAttempt(0))
+  const retry = useCallback(() => setAttempt((prev) => freshAttempt(prev.key + 1)), [])
 
-  if (!clerkPromise) {
+  const backoffMs = useRef(INITIAL_RETRY_MS)
+  const pending = useRef<{ timer: ReturnType<typeof setTimeout> | null; onlineListener: (() => void) | null }>({
+    timer: null,
+    onlineListener: null,
+  })
+
+  const clearPending = useCallback(() => {
+    if (pending.current.timer) clearTimeout(pending.current.timer)
+    if (pending.current.onlineListener) window.removeEventListener('online', pending.current.onlineListener)
+    pending.current = { timer: null, onlineListener: null }
+  }, [])
+
+  // Only a NETWORK-looking failure gets auto-retried - a bad key won't fix
+  // itself on a timer, so that case is left to the boundary's static message
+  // (see ClerkErrorBoundary's doc). Two independent triggers race to whichever
+  // fires first: the browser's `online` event (instant once connectivity is
+  // back) and a backoff timer (a floor for browsers/WKWebViews that don't fire
+  // `online` reliably in a login-item's background window).
+  const handleError = useCallback((error: unknown) => {
+    if (!isLikelyClerkNetworkError(error)) return
+    clearPending()
+    const onlineListener = () => { clearPending(); retry() }
+    pending.current.onlineListener = onlineListener
+    window.addEventListener('online', onlineListener)
+    pending.current.timer = setTimeout(() => { clearPending(); retry() }, backoffMs.current)
+    backoffMs.current = Math.min(backoffMs.current * 2, MAX_RETRY_MS)
+  }, [clearPending, retry])
+
+  const manualRetry = useCallback(() => { clearPending(); retry() }, [clearPending, retry])
+
+  useEffect(() => clearPending, [clearPending])
+
+  if (!attempt.clerkPromise) {
     return <p style={{ fontSize: 12.5, color: 'var(--t-muted)' }}>{notInTauriMessage}</p>
   }
   return (
-    <ClerkErrorBoundary>
+    <ClerkErrorBoundary key={attempt.key} onRetry={manualRetry} onError={handleError}>
       <Suspense fallback={fallback}>
-        <ClerkResolve clerkPromise={clerkPromise}>{children}</ClerkResolve>
+        <ClerkResolve clerkPromise={attempt.clerkPromise}>{children}</ClerkResolve>
       </Suspense>
     </ClerkErrorBoundary>
   )
