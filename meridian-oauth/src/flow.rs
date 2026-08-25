@@ -386,11 +386,19 @@ pub(crate) const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long after the first grant left this machine a retry may still re-present
 /// it.
 ///
-/// Atlassian documents a 10-minute "reuse interval" in which exchanging the same
-/// rotating refresh token more than once is forgiven and yields a fresh pair.
-/// We budget a small fraction of it, for two reasons: the provider measures the
-/// interval from when IT processed the first exchange (not when we sent it), and
-/// the interval is a per-app setting we neither control nor can read back.
+/// The number this is a fraction of is not folklore. Atlassian's 3LO docs list
+/// it under "configuration options for a rotating refresh token", verbatim:
+///
+/// > | Reuse interval or leeway | 10 minutes | Within this period, the breach
+/// > detection features don't apply when exchanging a refresh token multiple
+/// > times. This interval helps avoid network concurrency issues. |
+///
+/// <https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/>
+///
+/// Two caveats keep us well inside it. The provider measures the interval from
+/// when IT processed the first exchange, not when we sent it. And "configuration
+/// options" is aspirational: there is no control for either value in the
+/// developer console, so 10 minutes is a default we observe and cannot pin.
 ///
 /// Set at half the documented interval, and deliberately not lower. Every second
 /// of margin we leave unused is a recovery declined: an interruption of two or
