@@ -107,10 +107,9 @@ pub async fn raise_typed(pool: &SqlitePool, n: Notice<'_>) -> Result<()> {
 
     // Promote the fault to an OS-level toast (the dashboard banner already comes
     // from this table, so the notification is native-only to avoid a double
-    // banner). Deduped on `<event_key>:<id>` → one toast per fault, cleared below
-    // when the fault recovers so a later re-occurrence toasts again. Best-effort:
-    // never let notification delivery break the fault-bus write.
-    let dedup = format!("{}:{}", n.event_key, n.id);
+    // banner). Best-effort: never let notification delivery break the fault-bus
+    // write.
+    let dedup = toast_dedup_key(n.event_key, n.id);
     // Native-only (the dashboard banner already comes from this table).
     // `.interactive()` pairs category + actions from the one source of truth, so
     // the [View] button set can't drift from the other producers.
@@ -123,6 +122,32 @@ pub async fn raise_typed(pool: &SqlitePool, n: Notice<'_>) -> Result<()> {
     note.deep_link = n.deep_link;
     let _ = crate::notifications::enqueue(pool, note).await;
     Ok(())
+}
+
+/// The dedup key for a notice's paired toast.
+///
+/// For most faults this is `<event_key>:<id>` — one toast, ever, until the fault
+/// clears and the row is retracted.
+///
+/// A TRACKER fault (`pm.*`) additionally carries the local date, so it toasts
+/// again once a day for as long as it lasts. That is a deliberate exception, and
+/// it is there because "notify once" quietly failed the case it most needed to
+/// handle. A dead OAuth grant is not a condition that resolves itself: it stays
+/// until the user reconnects, and until they do, every hour of their work goes
+/// unlogged. A single toast on day one is trivially missed — dismissed while
+/// busy, fired during a meeting, delivered to a machine that was locked. One
+/// tester's Jira stayed dead for five days with a banner and a toast both
+/// technically present the whole time.
+///
+/// Daily, not hourly: this is a nag with a real remedy attached, and it has to
+/// stay on the right side of the line between "reminder" and "the thing that
+/// made me turn notifications off".
+fn toast_dedup_key(event_key: &str, id: &str) -> String {
+    if id.starts_with("pm.") {
+        format!("{event_key}:{id}:{}", meridian_core::date::today_string())
+    } else {
+        format!("{event_key}:{id}")
+    }
 }
 
 /// Clear a notice raised via [`raise`] — called when the daemon recovers from
@@ -177,17 +202,34 @@ pub async fn clear_typed_on(
         .await
         .context("clearing system notice")?;
     // Retract the paired toast so a future re-occurrence of this fault notifies
-    // again instead of being deduped away. Best-effort, matching
-    // `notifications::retract` — same statement, same dedup-key shape.
-    if let Err(e) = sqlx::query("DELETE FROM notifications WHERE dedup_key = ?")
-        .bind(format!("{event_key}:{id}"))
-        .execute(&mut *conn)
-        .instrument(tracing::debug_span!("notices.clear.notifications"))
-        .await
+    // again instead of being deduped away. Matches BOTH dedup-key shapes
+    // `toast_dedup_key` can produce: the bare `<event_key>:<id>`, and the
+    // date-suffixed rows a `pm.*` fault accumulates one per day. Missing the
+    // suffixed ones would leave an undelivered toast for today's date sitting in
+    // the outbox after the user has already fixed the fault.
+    //
+    // `\` escapes LIKE's own wildcards so an id containing `_` (which LIKE reads
+    // as "any single character") cannot widen the match to a different notice.
+    if let Err(e) =
+        sqlx::query("DELETE FROM notifications WHERE dedup_key = ? OR dedup_key LIKE ? ESCAPE '\\'")
+            .bind(format!("{event_key}:{id}"))
+            .bind(format!("{}:{}:%", like_escape(event_key), like_escape(id)))
+            .execute(&mut *conn)
+            .instrument(tracing::debug_span!("notices.clear.notifications"))
+            .await
     {
         tracing::warn!(id, event_key, error = %e, "notices: best-effort notification retract failed");
     }
     Ok(result.rows_affected() > 0)
+}
+
+/// Escape SQL `LIKE`'s wildcards (`%`, `_`) and the escape character itself, so
+/// a literal id can be used as a prefix pattern without matching more than it
+/// should. Paired with `ESCAPE '\'` at the call site.
+fn like_escape(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 /// This notice's id — shared with its own `event_key` (see [`raise_typed`]'s doc on that
@@ -245,6 +287,39 @@ pub async fn sync_groq_deprecated_notice(pool: &SqlitePool, active_vendor: Optio
 
 #[cfg(test)]
 mod tests {
+
+    /// A tracker fault must produce a NEW dedup key each local day, so the toast
+    /// fires again for a fault that is still unresolved. Everything else keeps
+    /// the once-only key — a daily nag is right for "reconnect Jira", which no
+    /// amount of waiting fixes, and wrong for faults the daemon may clear on its
+    /// own.
+    #[test]
+    fn only_tracker_faults_get_a_daily_toast_key() {
+        let today = meridian_core::date::today_string();
+        assert_eq!(
+            super::toast_dedup_key("system.fault", "pm.jira"),
+            format!("system.fault:pm.jira:{today}")
+        );
+        assert_eq!(
+            super::toast_dedup_key("system.fault", "db.corrupt"),
+            "system.fault:db.corrupt"
+        );
+        assert_eq!(
+            super::toast_dedup_key("system.fault", "etl.failed"),
+            "system.fault:etl.failed"
+        );
+    }
+
+    /// The clear path deletes by LIKE prefix, so an id carrying a LIKE wildcard
+    /// must not widen the match onto a neighbouring notice. `_` is the dangerous
+    /// one: unescaped, a `pm_x` id would also match `pm.x`.
+    #[test]
+    fn like_escape_neutralises_wildcards() {
+        assert_eq!(super::like_escape("pm.jira"), "pm.jira");
+        assert_eq!(super::like_escape("pm_jira"), r"pm\_jira");
+        assert_eq!(super::like_escape("a%b"), r"a\%b");
+        assert_eq!(super::like_escape(r"a\b"), r"a\\b");
+    }
     use super::*;
     use sqlx::sqlite::SqliteConnectOptions;
     use std::str::FromStr;
@@ -394,6 +469,90 @@ mod tests {
         sync_groq_deprecated_notice(&pool, None).await;
         let notices = meridian_core::notices::read_notices(&pool).await;
         assert!(!notices.iter().any(|n| n.notice_id == GROQ_DEPRECATED));
+    }
+
+    /// A tracker fault toasts once per day, so by the time the user fixes it
+    /// there may be several days' rows in the outbox — including one for today
+    /// that has not been delivered yet. Clearing must take all of them: leaving
+    /// today's behind means the user reconnects Jira and is then told, minutes
+    /// later, that Jira sync is failing.
+    #[tokio::test]
+    async fn clearing_a_tracker_fault_retracts_every_day_it_toasted() {
+        let pool = fresh_db().await;
+
+        // Today's row, via the real producer.
+        raise_typed(
+            &pool,
+            Notice {
+                id: "pm.jira",
+                severity: "error",
+                title: "Jira sync failing",
+                detail: "auth failed",
+                remedy: Some("Reconnect Jira in Settings - Integrations"),
+                event_key: "system.fault",
+                deep_link: Some(meridian_core::notifications::deep_links::INTEGRATIONS),
+            },
+        )
+        .await
+        .unwrap();
+
+        // Two earlier days, as the outbox would already hold them.
+        for day in ["2026-08-20", "2026-08-21"] {
+            crate::notifications::enqueue(
+                &pool,
+                crate::notifications::NewNotification::event(
+                    &format!("system.fault:pm.jira:{day}"),
+                    "system.fault",
+                    "Jira sync failing",
+                    "auth failed",
+                ),
+            )
+            .await
+            .unwrap();
+        }
+
+        // A different tracker must not be swept up by the prefix match.
+        crate::notifications::enqueue(
+            &pool,
+            crate::notifications::NewNotification::event(
+                "system.fault:pm.linear:2026-08-21",
+                "system.fault",
+                "Linear sync failing",
+                "unrelated",
+            ),
+        )
+        .await
+        .unwrap();
+
+        let jira_before: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE dedup_key LIKE 'system.fault:pm.jira%'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(jira_before, 3, "today plus the two backdated rows");
+
+        let mut conn = pool.acquire().await.unwrap();
+        clear_typed_on(&mut conn, "pm.jira", "system.fault")
+            .await
+            .unwrap();
+        drop(conn);
+
+        let jira_after: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE dedup_key LIKE 'system.fault:pm.jira%'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(jira_after, 0, "every day's toast must be retracted");
+
+        let linear_after: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE dedup_key = 'system.fault:pm.linear:2026-08-21'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(linear_after, 1, "another tracker's toast must survive");
     }
 
     /// The test above only checks `system_notices` — it would pass even if

@@ -248,11 +248,26 @@ pub async fn login(client_id: &str, client_secret: &str, port: u16) -> Result<St
 /// adopts the peer's freshly-refreshed token instead of POSTing again with the
 /// now-consumed one (the old single-process-mutex behaviour caused that 401 loop).
 pub async fn ensure_fresh() -> Result<OAuthTokens> {
+    ensure_fresh_within(REFRESH_SKEW_SECS).await
+}
+
+/// The default "how close to expiry counts as expired" margin, used by every
+/// on-demand caller. Small on purpose: an on-demand refresh happens because
+/// something needs a token NOW, so there is nothing to gain by doing it earlier.
+pub const REFRESH_SKEW_SECS: i64 = 120;
+
+/// [`ensure_fresh`] with an explicit expiry margin.
+///
+/// The margin exists so a caller that is not blocked on the token can choose to
+/// rotate it EARLY, at a moment of its choosing, rather than leaving it to
+/// whichever background tick happens to find the token dead. See
+/// [`top_up_while_awake`] for why that moment matters.
+pub async fn ensure_fresh_within(skew_secs: i64) -> Result<OAuthTokens> {
     let _guard = refresh_lock().lock().await; // intra-process serialisation
 
     // Fast path: a still-fresh token needs neither a refresh nor the file lock.
     let t = store::load("jira")?;
-    if !t.is_expired(now_unix(), 120) {
+    if !t.is_expired(now_unix(), skew_secs) {
         return Ok(t);
     }
 
@@ -273,7 +288,7 @@ pub async fn ensure_fresh() -> Result<OAuthTokens> {
             // The peer we were waiting on may have finished between our last
             // check and its timeout, so re-read before giving up on the tick.
             let t = store::load("jira")?;
-            if !t.is_expired(now_unix(), 120) {
+            if !t.is_expired(now_unix(), skew_secs) {
                 tracing::debug!(
                     "jira token refreshed by another process while we waited for the lock"
                 );
@@ -295,7 +310,7 @@ pub async fn ensure_fresh() -> Result<OAuthTokens> {
     // adopt their token instead of refreshing again with the dead one. This
     // double-check is what actually breaks the race.
     let mut t = store::load("jira")?;
-    if !t.is_expired(now_unix(), 120) {
+    if !t.is_expired(now_unix(), skew_secs) {
         tracing::debug!("jira token already refreshed by another process — adopting it");
         return Ok(t);
     }
@@ -353,6 +368,58 @@ fn clear_refresh_in_flight(t: &mut OAuthTokens) {
     t.refresh_in_flight_at = 0;
     if let Err(e) = store::save(t) {
         tracing::warn!(error = %e, "could not clear the in-flight Jira refresh marker");
+    }
+}
+
+/// How much of an access token's life may be left when [`top_up_while_awake`]
+/// rotates it early.
+///
+/// This is a rate/safety trade and the direction is not obvious, so: a shorter
+/// token life means MORE refreshes, and every refresh is another opportunity to
+/// be interrupted mid-exchange. Ten minutes off a one-hour token is about a 20%
+/// increase in rotations, bought in exchange for nearly all of them landing at a
+/// moment we have evidence is safe. Widening it further would buy less and cost
+/// more; the temptation to "refresh more often to be safe" is exactly backwards.
+pub const TOP_UP_SKEW_SECS: i64 = 10 * 60;
+
+/// Rotate the token early, while the caller can vouch that this machine is awake
+/// and staying awake.
+///
+/// The problem this solves is one of TIMING, not of correctness. A refresh is a
+/// non-idempotent exchange with a remote server, and the one thing that makes it
+/// unrecoverable is being interrupted mid-flight for longer than the provider's
+/// reuse window — which in practice means the machine suspending. Left to
+/// itself, the daemon refreshes lazily, whenever a background tick first finds
+/// the token dead. That tick is not uniformly distributed: a laptop's background
+/// work clusters around wake and dark-wake moments, which are precisely the
+/// moments it is about to sleep again. On 2026-08-20 that is exactly what
+/// happened — a poll tick fired, the refresh POST left, and the machine
+/// suspended within the second.
+///
+/// So the caller passes `awake`: its own evidence that a person is at this
+/// machine right now (Meridian has that evidence already — it is a capture
+/// tool). A machine someone is actively using does not suspend mid-request.
+///
+/// Deliberately returns nothing and never propagates an error. This is
+/// opportunistic: if it cannot rotate the token now, the ordinary on-demand path
+/// does it later and reports any real failure with the ordinary remedy. Adding a
+/// second reporting path for the same fault is how a banner ends up flapping.
+pub async fn top_up_while_awake(awake: bool) {
+    if !awake || !store::exists("jira") {
+        return;
+    }
+    // Cheap pre-check before taking any lock: almost every call lands here.
+    match store::load("jira") {
+        Ok(t) if !t.is_expired(now_unix(), TOP_UP_SKEW_SECS) => return,
+        Ok(_) => {}
+        Err(_) => return, // unreadable store — the on-demand path reports it
+    }
+    match ensure_fresh_within(TOP_UP_SKEW_SECS).await {
+        Ok(_) => tracing::debug!("rotated the Jira token early, while the machine is in use"),
+        Err(e) => tracing::debug!(
+            error = %e,
+            "early Jira token top-up did not succeed - leaving it to the on-demand path"
+        ),
     }
 }
 

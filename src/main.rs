@@ -1533,6 +1533,21 @@ async fn main() -> Result<()> {
                 if let Err(e) = run_pm_sync(&meridian, &cfg).await {
                     tracing::warn!(error = %meridian::errors::chain(&e), "pm_tasks refresh failed — using cached tasks");
                 }
+
+                // Rotate the Jira OAuth token EARLY, but only while someone is
+                // demonstrably at this machine. See `top_up_while_awake` for the
+                // reasoning; the short version is that the refresh exchange is
+                // only unrecoverable when it is interrupted by a suspend, and
+                // leaving it to whichever tick first finds the token dead aims it
+                // squarely at wake/dark-wake moments — the ones just before the
+                // machine sleeps again. A machine being typed at does not.
+                //
+                // Ordered after `run_pm_sync` on purpose: if that just refreshed
+                // the token on demand, this finds it fresh and does nothing.
+                meridian::intelligence::oauth::jira::top_up_while_awake(
+                    machine_is_in_use(&meridian).await,
+                )
+                .await;
             }
         }
     }
@@ -1563,6 +1578,35 @@ async fn main() -> Result<()> {
     let _ = shipper_shutdown_tx.send(true);
 
     Ok(())
+}
+
+/// How far back to look for evidence that a person is at this machine.
+///
+/// Capture frames stop when the display sleeps, so a frame in the last few
+/// minutes is a good proxy for "awake and in use" — and, importantly, a poor
+/// match for a dark wake, where background work runs but nothing is captured.
+/// Five minutes is long enough to survive an ordinary pause in capture and short
+/// enough that it cannot be satisfied by a machine that has since gone to sleep.
+const IN_USE_LOOKBACK_MINS: i64 = 5;
+
+/// Whether this machine looks like it is being used right now.
+///
+/// Answers with capture frames, which Meridian is already collecting — no extra
+/// platform APIs, no power-management assertions, no polling of idle timers.
+/// Errs toward `false`: the only caller uses this to decide whether to do
+/// something EARLY that will otherwise happen on demand later, so a false
+/// negative costs nothing and a false positive is the thing worth avoiding.
+async fn machine_is_in_use(pool: &sqlx::SqlitePool) -> bool {
+    let now = chrono::Utc::now();
+    let since = now - chrono::Duration::minutes(IN_USE_LOOKBACK_MINS);
+    let fmt = |t: chrono::DateTime<chrono::Utc>| t.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    match meridian::db::screenpipe::count_frames_in_window(pool, &fmt(since), &fmt(now)).await {
+        Ok((total, _idle)) => total > 0,
+        Err(e) => {
+            tracing::debug!(error = %meridian::errors::chain(&e), "in-use probe failed");
+            false
+        }
+    }
 }
 
 /// Runs one ETL pass and maps the outcome onto the notice bus.
