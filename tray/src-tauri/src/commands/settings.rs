@@ -157,7 +157,19 @@ pub async fn update_settings(
     // change. The write was always atomic, which is what made this easy to
     // miss: no file is corrupted, a setting simply reverts.
     // See `meridian_core::settings::mutate_settings_value`.
-    let mut updated = meridian_core::settings::mutate_settings_value(|updated| {
+    //
+    // AND the registry lock, whenever this body carries `custom_llm_providers`.
+    // The settings lock alone is not enough: this command replaces the registry
+    // WHOLESALE (the shallow merge below, plus `restore_custom_keys`), so a save
+    // landing mid-probe would be overwritten by `custom_llm::persist_rows`'s
+    // pre-probe rows when that probe finished. `REGISTRY_LOCK`'s doc used to
+    // claim the custom-provider commands were its only writers; this path is the
+    // writer it did not know about. Order is registry-then-settings at every
+    // site, matching `custom_llm`.
+    //
+    // Scoped to a block so the guard is released before the post-write health
+    // push below, which awaits and has nothing to do with the registry.
+    let mut updated = mutate_settings_for_body(body_obj, |updated| {
         let current = updated.clone();
         let obj = updated
             .as_object_mut()
@@ -199,6 +211,7 @@ pub async fn update_settings(
 
         Ok(updated.clone())
     })
+    .await
     .map_err(|e| crate::cmd_err!(e, "update_settings: write failed"))?;
 
     // Refresh the live capture ignore list so a Settings change takes effect on
@@ -312,6 +325,52 @@ fn restore_custom_keys(
 /// daemon's hourly clock check (`pm_worklog::auto_generate`) and the feature
 /// would just never fire — reject it at the door instead of failing quietly
 /// later. Absent or explicit `null` (turning the feature off) both pass.
+/// Does this settings body replace the custom-endpoint registry?
+///
+/// Named rather than inlined because it decides whether `update_settings` takes
+/// `custom_llm::registry_guard`, and getting it wrong is silent: too narrow and
+/// a settings save can be overwritten by an in-flight probe's pre-probe rows;
+/// too broad and every unrelated save serialises behind a probe that can take
+/// seconds.
+///
+/// Keyed on the body, not the merged document - the merged document ALWAYS
+/// carries the registry (it is a stored setting), so checking that would take
+/// the lock on every save.
+fn body_touches_registry(body_obj: &serde_json::Map<String, Value>) -> bool {
+    body_obj.contains_key("custom_llm_providers")
+}
+
+/// Run a settings mutation under the settings lock - and additionally under the
+/// REGISTRY lock when `body_obj` carries `custom_llm_providers`.
+///
+/// # Why this is a function rather than a block inside `update_settings`
+/// It is the whole registry-serialisation guarantee, and a test that reaches it
+/// only by calling `registry_guard()` itself proves nothing: it keeps passing if
+/// someone deletes the guard from this path or breaks
+/// [`body_touches_registry`]. That is exactly what the previous regression test
+/// did, and it is the third time in this series that a green test was not
+/// testing what its name claimed. Extracting it gives the test the real path -
+/// gating decision included - without needing an `AppHandle` or a live endpoint
+/// to probe.
+///
+/// Lock order is registry-then-settings, matching `custom_llm`. The registry
+/// guard is dropped when this returns, so `update_settings`'s post-write health
+/// push never holds it.
+pub(crate) async fn mutate_settings_for_body<F>(
+    body_obj: &serde_json::Map<String, Value>,
+    f: F,
+) -> anyhow::Result<Value>
+where
+    F: FnOnce(&mut Value) -> anyhow::Result<Value>,
+{
+    let _registry_guard = if body_touches_registry(body_obj) {
+        Some(crate::commands::custom_llm::registry_guard().await)
+    } else {
+        None
+    };
+    meridian_core::settings::mutate_settings_value(f)
+}
+
 /// Reject a merged settings document that `load_runtime_settings` would not be
 /// able to read back.
 ///
@@ -423,6 +482,25 @@ fn str_list(v: &Value, key: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The registry lock must be taken for a body that carries the registry, and
+    /// NOT for one that does not - a probe can hold that lock for seconds.
+    #[test]
+    fn only_a_registry_bearing_body_takes_the_registry_lock() {
+        let with_registry = json!({"custom_llm_providers": [], "llm_provider": "claude"});
+        assert!(body_touches_registry(with_registry.as_object().unwrap()));
+
+        for unrelated in [
+            json!({"llm_provider": "claude"}),
+            json!({"autostart_enabled": true}),
+            json!({}),
+        ] {
+            assert!(
+                !body_touches_registry(unrelated.as_object().unwrap()),
+                "an unrelated save must not serialise behind an endpoint probe: {unrelated}"
+            );
+        }
+    }
 
     /// A merged settings document that cannot deserialise must be REJECTED
     /// rather than written.

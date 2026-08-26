@@ -14,7 +14,7 @@
         },
         {
           "title": "Steadier around restarts",
-          "body": "Several fixes protect your database when Meridian stops, restarts or repairs itself."
+          "body": "Your database and your signed-in session both come through a restart intact."
         }
       ]
     },

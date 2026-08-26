@@ -11,6 +11,10 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use super::active_filter::{
+    is_excluded_type_name, is_unknown_issue_type_error, is_work_item, ACTIVE_TASK_JQL,
+    PORTABLE_TASK_JQL,
+};
 use super::JiraIssue;
 use crate::intelligence::oauth::jira::JiraReqCtx;
 
@@ -67,92 +71,6 @@ pub(super) async fn discover_start_date_field(ctx: &JiraReqCtx) -> Option<String
 // Fetch
 // ---------------------------------------------------------------------------
 
-/// The active-task scope: everything assigned to you that isn't Done, except
-/// Epics.
-///
-/// # Why this is a denylist, not an allowlist
-///
-/// This JQL is the ONLY thing that puts a Jira ticket into `pm_tasks`, which
-/// makes an omission here invisible rather than noisy. A type left off the list
-/// is absent from the Tasks page, absent from the worklog matcher's candidates
-/// (so hours spent on it can only ever come back "no match"), and — worst — a
-/// ticket of that type filed through the plan composer gets mirrored as a
-/// `'local'` shadow row, because `plan_tasks::create` reads "not in pm_tasks
-/// after a sync" as "self-assign failed". That shadow is meant to be temporary,
-/// healed by the next sync's UPSERT; for an unfetchable type the heal can never
-/// arrive, so a real Jira ticket sits in Meridian as a personal task forever.
-///
-/// That is not hypothetical — it is exactly what `Bug` being missing from the
-/// old allowlist did. The list was then `(Task, Feature, Bug)`, which still
-/// omitted **`Story`**, the default primary work type in every Jira Scrum
-/// project. Any user on a standard Scrum board was therefore syncing almost
-/// nothing, silently. Fixing that by appending `Story` would have left the same
-/// trap armed for the next custom type someone's board uses.
-///
-/// So the filter names only what must stay OUT. Epics are excluded because they
-/// are containers, not work: they reach Meridian as the `parent_key`/`epic_title`
-/// of their children (see `mod.rs`'s upsert), never as rows of their own.
-///
-/// # `Story` and `Feature` are excluded by product decision, not by principle
-///
-/// Both are `hierarchyLevel: 0` — the SAME rung as Task and Bug. Neither is a
-/// container; Jira treats each as an ordinary work item a person is assigned and
-/// works on, and on a Scrum board `Story` is usually the primary one. They are
-/// excluded because the product owner asked for it, NOT because they fail any
-/// test the included types pass, and NOT because they sit above the work rung —
-/// [`is_work_item`] would happily admit both.
-///
-/// That distinction matters for the next person here, because the two exclusion
-/// mechanisms in this module look alike and are not:
-///
-/// - `type != Epic` is **structural**. Epics are containers; they reach Meridian
-///   as the `parent_key`/`epic_title` of their children (see `mod.rs`'s upsert),
-///   never as rows of their own. Removing it would be a bug.
-/// - `type != Story` / `type != Feature` are **policy**. Nothing breaks if they
-///   are removed; the board simply gets more tickets.
-///
-/// The cost is real and worth restating before anyone reinstates or removes
-/// these casually: what is left is Tasks, Bugs, sub-tasks and custom types. On a
-/// board that uses Stories or Features as its main work type this is close to an
-/// empty board, and an hour spent on one of those tickets can only ever come
-/// back "no match", silently. **If a user reports "my tickets do not show up",
-/// this line is the first thing to check.**
-///
-/// Both are excluded SERVER-side, in the JQL, rather than by a name check next
-/// to [`is_work_item`]. That is deliberate: [`MAX_RESULTS`] is a hard 100-row
-/// ceiling with no pagination, so a type filtered client-side still consumes a
-/// slot and is then thrown away, making truncation strictly worse. Filtered in
-/// the JQL, they never occupy the budget at all.
-///
-/// Safe against a site that has neither type: Jira does not error on an
-/// unrecognised type name in a `!=` clause (verified against a live Cloud site),
-/// unlike an `IN` allowlist.
-///
-/// # Sub-tasks are IN
-///
-/// Reversing the earlier "tasks/features and their epics, never subtasks" rule:
-/// on many boards the subtask IS the unit of work someone spends a day on, and
-/// excluding it meant that day could not be logged against anything. `type !=
-/// Epic` admits them without naming them, which matters because the type's name
-/// is site-specific — Jira ships both `Subtask` and `Sub-task` as defaults, and
-/// custom subtask types are common. (`type IN subtaskIssueTypes()` is the
-/// function that resolves them by NAME-independent category if this ever needs
-/// to select subtasks specifically.)
-///
-/// One consequence to know: for a subtask, Jira's `parent` is its Story/Task,
-/// not its Epic, so `epic_title` holds the parent task's summary. That is
-/// harmless where the value is consumed — `task_triage` uses it only as a
-/// "context anchor" presence check, and a subtask always has a parent, so it
-/// never trips `NoContextAnchor`.
-///
-/// # Consistency
-///
-/// Jira was the only provider that filtered by type at all — Linear, GitHub and
-/// Trello fetch everything assigned to you, and Azure's WIQL is `AssignedTo =
-/// @me` alone. This brings Jira in line with them.
-const ACTIVE_TASK_JQL: &str = "assignee = currentUser() AND statusCategory != Done \
-     AND type != Epic AND type != Story AND type != Feature ORDER BY updated DESC";
-
 /// One active-task fetch: the work items to upsert, plus how many rows the
 /// server actually returned before [`is_work_item`] filtered any out.
 ///
@@ -168,36 +86,6 @@ pub(super) struct ActiveFetch {
     pub(super) returned_by_server: usize,
 }
 
-/// The rung at and above which a Jira issue type is a CONTAINER rather than
-/// work: `1` is Epic, `2`+ are the Premium/Advanced-Roadmaps tiers (Initiative,
-/// Capability, and custom ones an org invents).
-const CONTAINER_HIERARCHY_LEVEL: i64 = 1;
-
-/// Is this issue something a person does work on, as opposed to a bucket that
-/// holds such things?
-///
-/// Filtering on the LEVEL rather than the NAME is the whole point. [`ACTIVE_TASK_JQL`]
-/// can only say `type != Epic`, because JQL has no portable way to express
-/// hierarchy — and a name is not a reliable proxy for a rung. "Feature" is
-/// `hierarchyLevel: 0` (ordinary work) on some boards and a container tier above
-/// Story on others; "Initiative" and "Capability" are containers that the JQL
-/// clause never mentions at all. Without this check those arrive as work items,
-/// which is precisely the category error excluding Epic exists to prevent.
-///
-/// **An unknown level counts as work.** Older Jira Server/Data Center responses
-/// omit `hierarchyLevel` entirely, and the two failure modes are not symmetric:
-/// wrongly including a container puts one extra row on the board, which is
-/// visible and correctable, while wrongly excluding real work makes it
-/// unloggable and silent — the same asymmetry that made the old `type IN (...)`
-/// allowlist so expensive. So `None` is admitted.
-fn is_work_item(issue: &JiraIssue) -> bool {
-    issue
-        .fields
-        .issuetype
-        .hierarchy_level
-        .is_none_or(|level| level < CONTAINER_HIERARCHY_LEVEL)
-}
-
 #[tracing::instrument(
     skip(ctx),
     fields(
@@ -207,9 +95,32 @@ fn is_work_item(issue: &JiraIssue) -> bool {
     )
 )]
 pub(super) async fn fetch(ctx: &JiraReqCtx, start_date_field: Option<&str>) -> Result<ActiveFetch> {
-    let all = search(ctx, start_date_field, ACTIVE_TASK_JQL).await?;
+    // The exclusions in `ACTIVE_TASK_JQL` name issue types, and Jira 400s the
+    // WHOLE query when a site does not have one of them - so a board without
+    // `Story` or `Feature` lost its entire refresh, not just the exclusion.
+    // Fall back to a portable query and enforce the same policy client-side.
+    let all = match search(ctx, start_date_field, ACTIVE_TASK_JQL).await {
+        Ok(rows) => rows,
+        Err(e) if is_unknown_issue_type_error(&e) => {
+            tracing::warn!(
+                provider = "jira",
+                error = %crate::errors::chain(&e),
+                "jira: this site does not have every issue type the task query names - \
+                 retrying without the type exclusions and filtering them locally"
+            );
+            search(ctx, start_date_field, PORTABLE_TASK_JQL).await?
+        }
+        Err(e) => return Err(e),
+    };
     let returned_by_server = all.len();
-    let issues: Vec<_> = all.into_iter().filter(|(i, _)| is_work_item(i)).collect();
+    // Both filters, on BOTH paths. `is_work_item` is the structural one
+    // (containers by hierarchy level); `is_excluded_type_name` carries the name
+    // policy that the JQL applies on the primary path and cannot on the
+    // portable fallback.
+    let issues: Vec<_> = all
+        .into_iter()
+        .filter(|(i, _)| is_work_item(i) && !is_excluded_type_name(i))
+        .collect();
     if issues.len() < returned_by_server {
         // Worth a line: this only fires on boards with container tiers the JQL's
         // `type != Epic` cannot name, so it is the signal that such a board exists.
@@ -338,6 +249,69 @@ async fn search(
 mod tests {
     use super::*;
 
+    /// A site without `Story` or `Feature` must still refresh.
+    ///
+    /// `ACTIVE_TASK_JQL` names those types, and Jira rejects the WHOLE query
+    /// with 400 when an installation does not have one - so the exclusion took
+    /// the entire active-task fetch down with it, on exactly the boards that
+    /// never created them.
+    #[test]
+    fn an_absent_issue_type_routes_to_the_portable_query() {
+        let err: anyhow::Error = crate::intelligence::providers::http::HttpStatusError::new(
+            400,
+            "Jira /search/jql",
+            r#"{"errorMessages":["The value 'Feature' does not exist for the field 'type'."],"errors":{}}"#,
+        )
+        .into();
+        assert!(super::is_unknown_issue_type_error(&err));
+    }
+
+    /// Every OTHER 400 must still fail loudly. Falling back on a genuinely
+    /// malformed query would silently widen the result set instead of surfacing
+    /// the bug.
+    #[test]
+    fn other_failures_do_not_route_to_the_portable_query() {
+        for (status, body) in [
+            (400, r#"{"errorMessages":["Field 'nope' does not exist."]}"#),
+            (401, r#"{"errorMessages":["Unauthorized"]}"#),
+            (429, "rate limited"),
+            (500, "boom"),
+        ] {
+            let err: anyhow::Error = crate::intelligence::providers::http::HttpStatusError::new(
+                status,
+                "Jira /search/jql",
+                body,
+            )
+            .into();
+            assert!(
+                !super::is_unknown_issue_type_error(&err),
+                "status {status} must not silently fall back"
+            );
+        }
+        // A non-HTTP error must not either.
+        assert!(!super::is_unknown_issue_type_error(&anyhow::anyhow!(
+            "network unreachable"
+        )));
+    }
+
+    /// The portable fallback drops the JQL exclusions, so the name policy has to
+    /// hold client-side or it silently stops applying on those sites.
+    #[test]
+    fn the_name_policy_is_enforced_client_side_too() {
+        for name in ["Story", "story", "Feature", "Epic"] {
+            assert!(
+                super::is_excluded_type_name(&issue_named(name)),
+                "{name} must be excluded whichever query returned it"
+            );
+        }
+        for name in ["Task", "Bug", "Sub-task", "Improvement"] {
+            assert!(
+                !super::is_excluded_type_name(&issue_named(name)),
+                "{name} is real work and must survive"
+            );
+        }
+    }
+
     #[test]
     fn key_in_jql_quotes_and_joins_keys() {
         let keys = vec!["KAN-64".to_string(), "KAN-67".to_string()];
@@ -415,6 +389,18 @@ mod tests {
     /// from JSON rather than constructed, so the test exercises the same
     /// `#[serde(rename = "hierarchyLevel")]` path a live response takes — a
     /// struct literal would pass even if the rename were wrong.
+    /// Same fixture shape as [`issue_at_level`], varying the TYPE NAME instead
+    /// of the hierarchy rung - the axis the portable-fallback policy filters on.
+    fn issue_named(name: &str) -> JiraIssue {
+        serde_json::from_str(&format!(
+            r#"{{"key":"K-1","fields":{{
+                 "summary":"s","status":{{"name":"To Do","statusCategory":{{"key":"new"}}}},
+                 "issuetype":{{"name":"{name}"}},"project":{{"key":"K"}},
+                 "updated":"2026-01-01T00:00:00.000+0000"}}}}"#
+        ))
+        .expect("fixture must match the real JiraIssue shape")
+    }
+
     fn issue_at_level(level: Option<i64>) -> JiraIssue {
         let hierarchy = match level {
             Some(l) => format!(r#","hierarchyLevel":{l}"#),

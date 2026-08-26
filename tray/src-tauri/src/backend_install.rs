@@ -557,6 +557,34 @@ async fn install(backend: &Path, home: &Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     stop_running_daemon_before_stage(&daemon_bin).await?;
 
+    // macOS needs the SAME stop, for the opposite reason, and did not have it.
+    //
+    // Windows FAILS the copy while the daemon holds the exe (os error 32), so
+    // the omission there is loud. macOS lets the rename SUCCEED - the running
+    // daemon simply keeps executing the unlinked inode and keeps writing
+    // meridian.db - so the omission is silent, and what follows is the
+    // double-writer window every `code: 11` report in this fleet has come
+    // through: `register_service` below bootstraps a NEW daemon against the
+    // same database while the old one is still live.
+    //
+    // Measured on a staging install 2026-08-25: `staged binary` at 08:20:37.586
+    // and the old daemon's `SIGTERM received` at 08:20:37.595 - the swap landed
+    // NINE MILLISECONDS before anything asked it to stop, and the stop that did
+    // arrive came from `register_agent`'s bootout, after the fact.
+    //
+    // Reuses the migration path's stop rather than a second implementation:
+    // bootout the launchd job, then prove via `lsof` that NOTHING holds the
+    // database - a dev `cargo run`, a directly-spawned binary and an orphan
+    // from an overlapping install have all been seen here, and a bootout
+    // removes none of them.
+    //
+    // Failing here declines the STAGING, exactly as Windows does: the update
+    // does not apply, the existing daemon keeps running, and the next launch
+    // retries. That is the right asymmetry - a deferred update costs a version,
+    // proceeding costs the user's database.
+    #[cfg(target_os = "macos")]
+    stop_daemon_for_migration(std::path::Path::new(&crate::install::meridian_db_path())).await?;
+
     stage_binary(&backend.join(DAEMON_FILE), &daemon_bin).await?;
 
     register_service(backend, home, &daemon_bin).await
@@ -1433,6 +1461,70 @@ pub(crate) async fn launchctl(args: &[&str]) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The daemon must be stopped BEFORE its binary is staged, on BOTH
+    /// platforms.
+    ///
+    /// Windows has always done this and fails loudly if it cannot - the copy
+    /// returns os error 32 while the daemon holds the exe. macOS had no such
+    /// call at all, and there the rename SUCCEEDS: the running daemon keeps
+    /// executing the unlinked inode and keeps writing `meridian.db`, after
+    /// which `register_service` bootstraps a second daemon against the same
+    /// file. That is the double-writer window every `code: 11` report in this
+    /// fleet has come through, and it is silent by construction.
+    ///
+    /// Measured on a staging install 2026-08-25: `staged binary` at
+    /// 08:20:37.586, the old daemon's `SIGTERM received` at 08:20:37.595 - the
+    /// swap landed NINE MILLISECONDS before anything asked it to stop.
+    ///
+    /// Source-scanned because the ordering is the whole behaviour and neither
+    /// `launchctl` nor a real daemon exists in a unit test - the same idiom as
+    /// `every_early_return_still_restores_the_daemon` above and
+    /// `single_instance_check_precedes_setup_db_and_bind_follows_it` in
+    /// `main.rs`.
+    #[test]
+    fn the_daemon_is_stopped_before_its_binary_is_staged() {
+        const SRC: &str = include_str!("backend_install.rs");
+        // Truncate at THIS test module first: the file scans itself, and the
+        // needles below appear in this test's own body. Without this the scan
+        // matches its own source and can never fail.
+        let prod = SRC
+            .split_once("\n#[cfg(test)]")
+            .map_or(SRC, |(before, _)| before);
+
+        let body = prod
+            .split_once("async fn install(backend: &Path, home: &Path)")
+            .expect("install() must exist")
+            .1;
+        let end = ["\npub ", "\npub(crate) ", "\nasync fn", "\nfn "]
+            .iter()
+            .filter_map(|m| body.find(m))
+            .min()
+            .unwrap_or(body.len());
+        let body = &body[..end];
+
+        let stage = body
+            .find("stage_binary(")
+            .expect("install() must stage the binary");
+
+        for (label, needle) in [
+            ("windows", "stop_running_daemon_before_stage("),
+            ("macos", "stop_daemon_for_migration("),
+        ] {
+            let stop = body.find(needle).unwrap_or_else(|| {
+                panic!(
+                    "install() has no {label} stop before staging - on macOS that means the \
+                     binary is swapped under a live daemon that keeps writing meridian.db, \
+                     and register_service then starts a SECOND one against the same file"
+                )
+            });
+            assert!(
+                stop < stage,
+                "the {label} stop must come BEFORE stage_binary, not after it - staging \
+                 first is what makes the window silent. stop at {stop}, stage at {stage}"
+            );
+        }
+    }
 
     /// The branch that bootstraps a launchd agent whose `bootout` never cleared
     /// must report at **WARN**, because WARN+ is the only severity that leaves
