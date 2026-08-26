@@ -30,22 +30,13 @@
 //! - [`meridian_core::plan`] — `apply_plan_action("add")`, which puts the key in today.
 
 use anyhow::{Context, Result};
-use meridian_core::pm_sync_requests::SyncMode;
 use meridian_core::task_create::{self, NewTask};
 use serde::Serialize;
 use sqlx::SqlitePool;
-use std::time::Duration;
 use tracing::field::Empty;
 use tracing::Instrument;
 
 use crate::config::Config;
-use crate::intelligence::sync_delegate::Delegation;
-
-/// How long to wait for the post-create sync before falling through to the shadow row.
-/// Must stay comfortably inside the tray's 90 s `WRITE_TIMEOUT` for `plan-task-create`,
-/// since a blown tray timeout looks to the user like a failed create even though the
-/// ticket was filed.
-const POST_CREATE_SYNC_BUDGET: Duration = Duration::from_secs(60);
 
 /// Where a new task should live.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,30 +177,9 @@ async fn create_on_tracker(
     tracing::Span::current().record("synced", true);
 
     // Pull the authoritative row in immediately rather than waiting out the 5-minute
-    // sync gate. Best-effort: a failed sync is not a failed create - it just means the
-    // `task_exists` check below falls through to the shadow row.
-    //
-    // Delegated to the daemon (see `intelligence::sync_delegate`) because this is a
-    // short-lived CLI process and the rotating Jira OAuth token has exactly one safe
-    // writer. Unlike the edit/done paths this WAITS for the outcome: the very next line
-    // reads `pm_tasks`, so returning before the sync landed would shadow every created
-    // ticket. The budget sits inside the tray's 90 s `WRITE_TIMEOUT` for this command.
-    match crate::intelligence::sync_delegate::sync_and_wait(
-        pool,
-        config,
-        SyncMode::Force,
-        "plan-task-create",
-        POST_CREATE_SYNC_BUDGET,
-    )
-    .await
-    {
-        Delegation::Synced { .. } => {}
-        Delegation::Failed { error } => {
-            tracing::warn!(%error, "plan_task: post-create sync failed - will shadow the row");
-        }
-        Delegation::Pending => {
-            tracing::warn!("plan_task: post-create sync still running - will shadow the row");
-        }
+    // sync gate. Best-effort: a failed sync is not a failed create.
+    if let Err(e) = crate::intelligence::run_pm_force_sync(pool, config).await {
+        tracing::warn!(error = %e, "plan_task: post-create sync failed - will shadow the row");
     }
 
     if task_create::task_exists(pool, &key).await? {

@@ -681,14 +681,6 @@ pub async fn save_integration_token(
         tracing::debug!("daemon reload after token save (non-fatal — will pick up on next start)");
     }
 
-    // First-time (or credential-change) connect — force a sync so the board
-    // populates immediately rather than waiting for the next on-demand trigger.
-    // There's no stale cache to protect here, so gating buys nothing.
-    crate::commands::tasks::trigger_background_pm_force_sync(
-        db_pool.inner().clone(),
-        "token_connected",
-    );
-
     Ok(serde_json::json!({ "ok": true, "reloaded": reloaded }))
 }
 
@@ -1206,7 +1198,7 @@ pub async fn start_oauth(
     db_pool: State<'_, crate::db_pool::DbPool>,
 ) -> Result<StartOAuthResponse, String> {
     match body.provider.as_str() {
-        "jira" | "trello" => start_oauth_in_process(body.provider, db_pool.inner().clone()),
+        "jira" | "trello" => start_oauth_in_process(body.provider),
         "github" => start_oauth_github_device(body.provider, db_pool.inner().clone()).await,
         other => Err(format!("Unknown provider: {other}")),
     }
@@ -1259,10 +1251,7 @@ pub async fn cancel_oauth(body: CancelOAuthBody) -> Result<(), String> {
 /// functions — avoiding `std::env::set_var` on a Tokio worker thread (POSIX
 /// setenv is not thread-safe under concurrent env reads). A per-provider
 /// [`AtomicBool`] prevents two flows from racing to bind the same loopback port.
-fn start_oauth_in_process(
-    provider: String,
-    db: crate::db_pool::DbPool,
-) -> Result<StartOAuthResponse, String> {
+fn start_oauth_in_process(provider: String) -> Result<StartOAuthResponse, String> {
     // Resolve credentials from .env WITHOUT mutating process env.
     let mode = crate::install::detect_install_mode();
     let dot_env = mode.env_path().map(parse_env).unwrap_or_default();
@@ -1354,12 +1343,7 @@ fn start_oauth_in_process(
         // Always clear the in-flight flag before returning, regardless of outcome.
         in_flight.store(false, Ordering::SeqCst);
         match result {
-            Ok(()) => {
-                tracing::info!(provider = %task_provider, "in-process OAuth login succeeded");
-                // First-time connect — force a sync so the board populates
-                // immediately rather than waiting for the next on-demand trigger.
-                crate::commands::tasks::trigger_background_pm_force_sync(db, "oauth_connected");
-            }
+            Ok(()) => tracing::info!(provider = %task_provider, "in-process OAuth login succeeded"),
             Err(e) => {
                 let msg = format!("{e:#}");
                 tracing::warn!(provider = %task_provider, error = %msg, "in-process OAuth login failed");
@@ -1473,22 +1457,10 @@ async fn start_oauth_github_device(
                     return;
                 }
                 tracing::info!("GitHub device-flow login succeeded");
-                // Clone the HANDLE (not `db_pool.get()`) before `db_pool` is moved
-                // into the reload below. The old code took a pool here, which the
-                // reload's `DbPool::close` then killed - so the sync request it was
-                // saved for could never be written. The handle survives, and
-                // `request_sync` resolves it after the reopen.
-                let sync_db = db_pool.clone();
                 // Best-effort reload so the token takes effect now, not next restart.
                 if let Err(e) = crate::commands::daemon::reload_daemon_with(db_pool).await {
                     tracing::debug!(error = %e, "daemon reload after GitHub connect (non-fatal)");
                 }
-                // First-time connect — force a sync so the board populates
-                // immediately rather than waiting for the next on-demand trigger.
-                crate::commands::tasks::trigger_background_pm_force_sync(
-                    sync_db,
-                    "oauth_connected",
-                );
             }
             Err(e) => {
                 let msg = format!("{e:#}");

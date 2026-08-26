@@ -5,22 +5,15 @@
 // collapses both into a silent warn. Sync freshness + candidate count come from
 // meridian.db (content-free). Creds are read from the env (loaded via dotenv at
 // startup), so this works without reaching into Config internals.
-//
-// `sync_freshness` is outcome-driven (`pm_sync_state.last_error`), not
-// elapsed-time-driven. Syncing is on-demand now (the daily plan, the match-to-ticket
-// picker, connecting a tracker, a board write, manual "Sync now") rather than a
-// background poller ticking every ~5 minutes forever — so a quiet period with no sync
-// attempt is normal, not a symptom. A laptop shut overnight is the everyday case: it
-// wakes with a cache many hours old and nothing wrong. `last_error` reflects the actual outcome of the last attempted fetch
-// (set by `intelligence::providers::record_sync_failure`, cleared by
-// `clear_sync_error` on the next success), which stays correct however long that
-// was ago.
 
 use crate::config::Config;
 use crate::health::Check;
 use crate::intelligence::oauth::{jira as oauth_jira, store as oauth_store};
 use sqlx::SqlitePool;
 use std::time::Duration;
+
+/// Cache older than this (2× the 30-min sync interval) ⇒ fetch likely failing.
+const SYNC_STALE_SECS: f64 = 3600.0;
 
 pub async fn checks(_cfg: &Config, pool: Option<&SqlitePool>) -> Vec<Check> {
     let mut out = Vec::new();
@@ -140,29 +133,28 @@ async fn classify_auth(send: reqwest::Result<reqwest::Response>) -> Check {
 }
 
 async fn sync_freshness(pool: &SqlitePool) -> Check {
-    match sqlx::query_as::<_, (Option<String>, Option<f64>)>(
-        "SELECT last_error, (julianday('now') - julianday(last_synced_at)) * 86400.0
+    match sqlx::query_scalar::<_, Option<f64>>(
+        "SELECT (julianday('now') - julianday(MAX(last_synced_at))) * 86400.0
          FROM pm_sync_state WHERE provider = 'jira'",
     )
-    .fetch_optional(pool)
+    .fetch_one(pool)
     .await
     {
-        // A recorded failure is the real signal — the last attempted fetch didn't
-        // work, regardless of how long ago that was. Never a warn from elapsed time
-        // alone: a long quiet period between on-demand syncs is expected now.
-        Ok(Some((Some(err), _))) => {
-            Check::warn("ticket sync", "L3", format!("sync failing: {err}")).with_remedy(
-                "check the auth row above, or Reconnect Jira in Settings - Integrations",
-            )
-        }
-        Ok(Some((None, Some(age)))) => Check::ok(
+        Ok(Some(age)) if age > SYNC_STALE_SECS => Check::warn(
             "ticket sync",
             "L3",
-            format!("last synced {:.0}m ago, no errors", age / 60.0),
+            format!(
+                "cache {:.0}m stale — fetch may be failing silently",
+                age / 60.0
+            ),
+        )
+        .with_remedy("check the auth row above; the daemon refreshes every 30m"),
+        Ok(Some(age)) => Check::ok(
+            "ticket sync",
+            "L3",
+            format!("fresh ({:.0}m ago)", age / 60.0),
         ),
-        Ok(Some((None, None))) | Ok(None) => {
-            Check::info("ticket sync", "L3", "no Jira sync recorded yet")
-        }
+        Ok(None) => Check::info("ticket sync", "L3", "no Jira sync recorded yet"),
         Err(e) => Check::warn(
             "ticket sync",
             "L3",
@@ -194,74 +186,5 @@ async fn candidate_count(pool: &SqlitePool) -> Check {
             "L3",
             format!("could not count pm_tasks ({e})"),
         ),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::health::Severity;
-    use sqlx::sqlite::SqliteConnectOptions;
-    use std::str::FromStr;
-
-    async fn make_db() -> SqlitePool {
-        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
-            .unwrap()
-            .create_if_missing(true);
-        let pool = SqlitePool::connect_with(opts).await.unwrap();
-        sqlx::migrate!("src/migrations").run(&pool).await.unwrap();
-        pool
-    }
-
-    async fn seed(pool: &SqlitePool, synced_modifier: &str, last_error: Option<&str>) {
-        sqlx::query(
-            "INSERT INTO pm_sync_state (provider, last_synced_at, last_error)
-             VALUES ('jira', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?), ?)",
-        )
-        .bind(synced_modifier)
-        .bind(last_error)
-        .execute(pool)
-        .await
-        .unwrap();
-    }
-
-    /// The false positive this rewrite exists to fix: a sync that hasn't run in
-    /// hours, with no recorded error, must NOT warn — on-demand syncing means a
-    /// long quiet period is expected, not a symptom.
-    #[tokio::test]
-    async fn sync_freshness_ok_when_stale_but_no_error() {
-        let pool = make_db().await;
-        seed(&pool, "-6 hours", None).await;
-
-        let check = sync_freshness(&pool).await;
-
-        assert_eq!(check.severity, Severity::Ok, "detail was: {}", check.detail);
-    }
-
-    /// A recorded fetch failure is the real signal, regardless of how recent it is.
-    #[tokio::test]
-    async fn sync_freshness_warns_on_recorded_error() {
-        let pool = make_db().await;
-        seed(&pool, "-2 minutes", Some("401 unauthorized")).await;
-
-        let check = sync_freshness(&pool).await;
-
-        assert_eq!(check.severity, Severity::Warn);
-        assert!(
-            check.detail.contains("401 unauthorized"),
-            "detail was: {}",
-            check.detail
-        );
-    }
-
-    /// A tracker that has never synced (fresh connect, or one that's never
-    /// fetched successfully) reports as informational, not a warning.
-    #[tokio::test]
-    async fn sync_freshness_info_when_never_synced() {
-        let pool = make_db().await;
-
-        let check = sync_freshness(&pool).await;
-
-        assert_eq!(check.severity, Severity::Info);
     }
 }

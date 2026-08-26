@@ -236,58 +236,8 @@ pub async fn login(client_id: &str, client_secret: &str, port: u16) -> Result<St
     Ok(site_url)
 }
 
-/// Seconds of margin before `expires_at` at which the access token is treated as
-/// expired. Stops a request being issued with a token that expires while it is
-/// still in flight.
-pub const EXPIRY_SKEW_SECS: i64 = 120;
-
-/// The stored tokens IF the access token is still usable — never a network call,
-/// never a refresh. `None` means "no store, unreadable store, or the access token
-/// has expired", and the caller must NOT interpret that as an error.
-///
-/// # Why this exists
-///
-/// Spending the rotating refresh token is only safe when a human is present. The
-/// POST is a single-use exchange: Atlassian retires the old token the moment it
-/// issues the replacement, so if the reply is lost the grant is dead, recoverable
-/// only inside Atlassian's 10-minute reuse-leeway window. A refresh fired from a
-/// background timer can therefore be destroyed by a laptop lid closing, with
-/// nobody watching and nothing to retry against — which is exactly how a
-/// production install lost its Jira grant permanently (a refresh POST at 18:26:55
-/// straddled a 28-minute suspend; the retry, instant on wake at 18:55:29, was 18
-/// minutes outside the window).
-///
-/// So the rule this function enforces: **unattended code may USE a valid access
-/// token but must never MINT one.** Anything on a clock — the worklog drafting
-/// sweep, retention passes, any future scheduled job — calls this. Anything on
-/// the path of a real user action calls [`ensure_fresh`] instead, where the
-/// machine is provably awake and in use because someone just clicked something.
-///
-/// Deferring costs nothing in practice: an unattended sweep that finds an expired
-/// token is, by definition, running while nobody is at the machine, and the next
-/// attended request refreshes properly.
-///
-/// # Related
-/// - [`ensure_fresh`] — the attended counterpart, which may refresh.
-/// - [`crate::store::OAuthTokens::is_expired`] — the expiry predicate used here.
-pub fn current_if_valid() -> Option<OAuthTokens> {
-    let t = store::load("jira").ok()?;
-    if t.is_expired(now_unix(), EXPIRY_SKEW_SECS) {
-        tracing::debug!(
-            "jira access token expired - unattended caller deferring rather than refreshing"
-        );
-        return None;
-    }
-    Some(t)
-}
-
 /// Load the stored tokens, refreshing the access token if it's within 120 s of
 /// expiry. Persists the rotated refresh token. Returns ready-to-use tokens.
-///
-/// **Only call this on the path of a real user action.** Spending the rotating
-/// refresh token from a background timer is what permanently kills a grant when
-/// the machine suspends mid-request; see [`current_if_valid`] for the full
-/// reasoning and the unattended alternative.
 ///
 /// Refreshes are serialised on TWO levels so the rotating refresh token is never
 /// double-spent: a static mutex within this process, and an advisory FILE lock
@@ -300,7 +250,7 @@ pub async fn ensure_fresh() -> Result<OAuthTokens> {
 
     // Fast path: a still-fresh token needs neither a refresh nor the file lock.
     let t = store::load("jira")?;
-    if !t.is_expired(now_unix(), EXPIRY_SKEW_SECS) {
+    if !t.is_expired(now_unix(), 120) {
         return Ok(t);
     }
 
@@ -323,7 +273,7 @@ pub async fn ensure_fresh() -> Result<OAuthTokens> {
     // adopt their token instead of refreshing again with the dead one. This
     // double-check is what actually breaks the race.
     let mut t = store::load("jira")?;
-    if !t.is_expired(now_unix(), EXPIRY_SKEW_SECS) {
+    if !t.is_expired(now_unix(), 120) {
         tracing::debug!("jira token already refreshed by another process — adopting it");
         return Ok(t);
     }
@@ -420,4 +370,50 @@ impl JiraReqCtx {
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+
+    fn oauth_ctx() -> JiraReqCtx {
+        JiraReqCtx::OAuth {
+            token: "tok".into(),
+            cloud_id: "cloud-xyz".into(),
+            site_url: "https://acme.atlassian.net".into(),
+        }
+    }
+
+    fn basic_ctx() -> JiraReqCtx {
+        JiraReqCtx::Basic {
+            base_url: "https://acme.atlassian.net/".into(),
+            email: "a@b.com".into(),
+            api_token: "tok".into(),
+        }
+    }
+
+    #[test]
+    fn oauth_api_url_uses_gateway() {
+        assert_eq!(
+            oauth_ctx().api_url("/rest/api/3/search/jql"),
+            "https://api.atlassian.com/ex/jira/cloud-xyz/rest/api/3/search/jql"
+        );
+    }
+
+    #[test]
+    fn basic_api_url_uses_site_and_trims_slash() {
+        assert_eq!(
+            basic_ctx().api_url("/rest/api/3/search/jql"),
+            "https://acme.atlassian.net/rest/api/3/search/jql"
+        );
+    }
+
+    #[test]
+    fn browse_url_uses_site_in_both_modes() {
+        assert_eq!(
+            oauth_ctx().browse_url("KAN-1"),
+            "https://acme.atlassian.net/browse/KAN-1"
+        );
+        assert_eq!(
+            basic_ctx().browse_url("KAN-1"),
+            "https://acme.atlassian.net/browse/KAN-1"
+        );
+    }
+}

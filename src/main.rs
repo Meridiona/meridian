@@ -8,9 +8,8 @@ use anyhow::{Context, Result};
 use meridian::config::Config;
 use meridian::db::meridian::{cleanup_incomplete_runs, setup_db};
 use meridian::etl::run_etl;
-use meridian::intelligence::sync_delegate::Delegation;
+use meridian::intelligence::{run_pm_force_sync, run_pm_sync};
 use meridian::observability;
-use meridian_core::pm_sync_requests::SyncMode;
 use tokio::sync::Notify;
 use tracing::Instrument;
 
@@ -351,45 +350,23 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // `meridian tasks-sync` (force) / `meridian pm-sync` (gated) — the two on-demand
-    // CLI sync entry points. There is no background poller anymore; see
-    // `src/intelligence/mod.rs`'s doc comments for the full trigger list.
-    //
-    // `tasks-sync` bypasses the per-provider staleness gate (the user asked for fresh
-    // data now); `pm-sync` honours it, so it is a cheap no-op on an already-fresh
-    // board. Both DELEGATE to a running daemon rather than syncing here — see
-    // `cli_sync` for why the rotating credential has exactly one safe writer.
-    //
-    // One arm, because the two differ only in mode and label. They were separate
-    // copies of the same fourteen lines, which is how `pm-sync` ended up documented as
-    // the command the tray used "on opening the dashboard" — a trigger that no longer
-    // exists.
-    //
-    // Exit 1 if the DB cannot be opened, or if the sync itself failed. Reporting the
-    // sync failure in the exit code matters: with no daemon running the tray's "Sync
-    // now" shells out to `tasks-sync` and reads a non-zero exit as the failure, so
-    // exiting 0 here would show the user a successful sync that did not happen. A
-    // timeout is NOT a failure (`cli_sync` returns true) — the daemon is still working.
-    let cli_sync_mode = match std::env::args().nth(1).as_deref() {
-        Some("tasks-sync") => Some((SyncMode::Force, "tasks-sync")),
-        Some("pm-sync") => Some((SyncMode::Gated, "pm-sync")),
-        _ => None,
-    };
-    if let Some((mode, label)) = cli_sync_mode {
+    // `meridian tasks-sync` — force an immediate sync of all configured PM
+    // providers (Jira, Linear, GitHub), bypassing the 5-minute staleness gate.
+    // Exits 0 on success, non-zero if the DB cannot be opened.
+    if std::env::args().nth(1).as_deref() == Some("tasks-sync") {
         let cfg = Config::from_env();
         match setup_db(&cfg.meridian_db_uri()).await {
             Ok(pool) => {
-                let ok = cli_sync(&pool, &cfg, mode, label).await;
-                pool.close().await;
-                if !ok {
-                    std::process::exit(1);
+                if let Err(e) = run_pm_force_sync(&pool, &cfg).await {
+                    eprintln!("tasks-sync: {e}");
                 }
+                pool.close().await;
             }
             Err(e) => {
                 // `{e:#}` prints the full anyhow source chain (e.g. the sqlx
                 // "migration N was previously applied / missing" cause) instead
                 // of just the top-level "failed to run migrations" context.
-                eprintln!("{label}: open db: {e:#}");
+                eprintln!("tasks-sync: open db: {e:#}");
                 std::process::exit(1);
             }
         }
@@ -427,7 +404,7 @@ async fn main() -> Result<()> {
                     meridian::intelligence::ticket_update::ApplyStatus::Applied
                 ) {
                     if let Ok(pool) = setup_db(&cfg.meridian_db_uri()).await {
-                        cli_sync_after_write(&pool, &cfg, "ticket-update").await;
+                        let _ = run_pm_force_sync(&pool, &cfg).await;
                         pool.close().await;
                     }
                 }
@@ -533,7 +510,7 @@ async fn main() -> Result<()> {
                     meridian::intelligence::ticket_update::ApplyStatus::Applied
                 ) {
                     if let Ok(pool) = setup_db(&cfg.meridian_db_uri()).await {
-                        cli_sync_after_write(&pool, &cfg, "ticket-set-status").await;
+                        let _ = run_pm_force_sync(&pool, &cfg).await;
                         pool.close().await;
                     }
                 }
@@ -717,32 +694,6 @@ async fn main() -> Result<()> {
         let obs_guard = observability::init("meridian-rust").ok();
         match setup_db(&cfg.meridian_db_uri()).await {
             Ok(pool) => {
-                // Matching needs current ticket state — a stale board could silently
-                // bind this draft to a closed/renamed ticket. Best-effort: a sync
-                // failure must not block drafting against whatever's cached.
-                //
-                // Delegated to the daemon, the sole owner of the rotating Jira OAuth
-                // token (see `intelligence::sync_delegate`). The wait budget is short
-                // because an LLM call follows inside the tray's 150 s timeout for this
-                // command: better to draft against a slightly stale board than to blow
-                // the timeout and show the user nothing at all.
-                match meridian::intelligence::sync_delegate::sync_and_wait(
-                    &pool,
-                    &cfg,
-                    SyncMode::Gated,
-                    "worklog-generate",
-                    std::time::Duration::from_secs(30),
-                )
-                .await
-                {
-                    Delegation::Synced { .. } => {}
-                    Delegation::Failed { error } => {
-                        tracing::warn!(%error, "worklog-generate: pm sync failed — matching against cached tasks");
-                    }
-                    Delegation::Pending => {
-                        tracing::warn!("worklog-generate: pm sync still running — matching against cached tasks");
-                    }
-                }
                 match meridian::pm_worklog::generate(&pool, &cfg, &day, &task_id).await {
                     Ok(mut draft) => {
                         // A matched draft carries a target_key we can link even
@@ -1404,7 +1355,9 @@ async fn main() -> Result<()> {
     }
 
     // 7c. Run ETL once immediately before entering the loop.
+    //     Re-read config so that any settings.json present at startup takes effect.
     {
+        let cfg = Config::from_env();
         let startup_tick = tracing::info_span!("startup_tick");
         *etl_tick_span.lock().unwrap_or_else(|e| e.into_inner()) = Some(startup_tick.clone());
         let _guard = startup_tick.enter();
@@ -1428,10 +1381,12 @@ async fn main() -> Result<()> {
                 tracing::warn!(error = %meridian::errors::chain(&e), "capture retention sweep failed");
             }
         }
-        // No PM sync here anymore — there's no background poller. Syncing is
-        // on-demand now (the daily plan, the match-to-ticket picker, connecting a
-        // tracker, a board write, worklog drafting, `meridian tasks-sync`/`pm-sync`);
-        // see `src/intelligence/mod.rs`'s doc comments for the full set of triggers.
+        if let Err(e) = run_pm_sync(&meridian, &cfg).await {
+            tracing::error!(
+                error = %meridian::errors::chain(&e),
+                "intelligence run failed"
+            );
+        }
     }
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -1515,40 +1470,6 @@ async fn main() -> Result<()> {
             }
         });
     }
-
-    // 7h. PM sync request watcher — the daemon is the SOLE holder of the rotating
-    //     Jira OAuth refresh token, so every other process (the tray, the CLIs) asks
-    //     for a sync by writing a `pm_sync_requests` row instead of refreshing
-    //     itself. This drains those requests.
-    //
-    //     Why single-ownership matters: the refresh is a single-use exchange whose
-    //     lost response kills the grant outside a 10-minute window. Serialising N
-    //     processes with an advisory file lock did not work — a 10 s lock timeout
-    //     guarding a ~26 s operation, and on timeout the code proceeded WITHOUT the
-    //     lock — so two processes could spend the same token and only Atlassian's
-    //     grace window prevented corruption.
-    //
-    //     Deliberately its own task on a short cadence rather than folded into the
-    //     60 s poll loop below: a user pressing "Sync now" must not wait up to a
-    //     minute for the sync to begin. It never syncs on its own initiative — only
-    //     ever on a row a producer wrote, so every refresh still traces to a human
-    //     action, which is what keeps a refresh POST from being in flight when a
-    //     laptop lid closes.
-    //
-    //     Its `JoinHandle` is KEPT, unlike the loops above, and awaited in the
-    //     shutdown sequence before the WAL checkpoint. This task is the daemon's
-    //     only writer outside the poll loop, and `service_once` deliberately runs a
-    //     whole sync (network + `pm_tasks` writes, tens of seconds) without
-    //     re-checking the shutdown flag, so dropping the handle meant checkpointing
-    //     and closing the pool underneath live writes on every restart. See the
-    //     shutdown site for the full reasoning.
-    let sync_watcher = {
-        let pool_sync = meridian.clone();
-        let rx_sync = shutdown_rx.clone();
-        tokio::spawn(async move {
-            meridian::intelligence::sync_requests::run_watcher(pool_sync, rx_sync).await;
-        })
-    };
 
     // 8b. Poll loop — ETL, PM sync, and FM categorization on the configured interval.
     // Track the last-applied log level so we can detect changes and hot-reload
@@ -1684,16 +1605,17 @@ async fn main() -> Result<()> {
                     tracing::debug!(error = %meridian::errors::chain(&e), "notification response consume skipped");
                 }
 
-                // No PM sync on this tick anymore — there's no background poller.
-                // `pm_tasks` is refreshed on-demand instead: the daily plan and the
-                // match-to-ticket picker (the two screens that decide something from
-                // the whole board), connecting a tracker, any board write, the worklog
-                // drafting sweep (`pm_worklog::auto_generate`), and the manual
-                // `meridian tasks-sync`/`pm-sync` CLI paths. See
-                // `src/intelligence/mod.rs`'s doc comments for the full trigger list
-                // and the reasoning (fewer standing background refreshes also shrinks
-                // how often a Jira OAuth token refresh can straddle a laptop
-                // sleep/wake).
+                // Refresh the PM task cache (pm_tasks) every tick — interval-gated
+                // per provider (~5 min), so this is a cheap no-op most ticks. The
+                // legacy drafting driver that used to trigger this before every
+                // pass was retired when the worklog pipeline moved to the
+                // clock-aligned Python trigger, which never calls this itself —
+                // leaving pm_tasks (and hence a ticket's title on the timeline)
+                // stuck at whatever it was at the last daemon restart. This is
+                // the only thing that keeps it live during normal operation.
+                if let Err(e) = run_pm_sync(&meridian, &cfg).await {
+                    tracing::warn!(error = %meridian::errors::chain(&e), "pm_tasks refresh failed — using cached tasks");
+                }
             }
         }
     }
@@ -1704,45 +1626,7 @@ async fn main() -> Result<()> {
 
     // 9. Shutdown
     tracing::info!(pid = std::process::id() as i64, "shutting down");
-
-    // 9a. Wait for the PM sync watcher to actually STOP before touching the WAL.
-    //
-    //     `shutdown_tx.send(true)` above only sets a flag, and the watcher checks it
-    //     on its sleep - not around `service_once`, which is deliberate (a claimed
-    //     request finishes and records an outcome rather than being cut off with the
-    //     row left claimed). The consequence is that after the signal this task can
-    //     still be inside a full provider sync for tens of seconds, writing to
-    //     `pm_tasks`. Without this await, `checkpoint_wal` and `close` below ran
-    //     underneath those writes on EVERY restart - and a reconnect flow restarts
-    //     the daemon, which is exactly when a burst of sync requests exists to
-    //     service. A TRUNCATE checkpoint racing live writes is the one thing that
-    //     function exists to prevent (see its doc: it hands the next generation a
-    //     half-written WAL while the tray keeps a stale view of the file).
-    //
-    //     Bounded, because the whole point of the no-interrupt design is that
-    //     `service_once` may be mid-network-call: on timeout we proceed anyway and
-    //     say so, which is strictly better than the old unconditional race, and no
-    //     worse than a hard kill.
-    {
-        const WATCHER_DRAIN_TIMEOUT: Duration = Duration::from_secs(45);
-        match tokio::time::timeout(WATCHER_DRAIN_TIMEOUT, sync_watcher).await {
-            Ok(Ok(())) => tracing::debug!("PM sync watcher stopped cleanly before checkpoint"),
-            // `JoinError`'s Display ignores `f.alternate()`, so `chain()` would
-            // render byte-identically - it carries a panic payload or a
-            // cancellation, never a `.context()` chain.
-            Ok(Err(e)) => {
-                tracing::warn!(error = %e, "sync watcher ended abnormally"); // not-anyhow: JoinError
-            }
-            Err(_elapsed) => tracing::warn!(
-                timeout_s = WATCHER_DRAIN_TIMEOUT.as_secs() as i64,
-                "PM sync watcher did not stop in time - checkpointing anyway, which may leave a non-empty WAL"
-            ),
-        }
-    }
-
-    // (`release_endpoint` used to be here. It now runs at 9b, after the pool is
-    // closed - see there for why the exiting side's ordering matters too.)
-
+    meridian::platform::release_endpoint();
     // See `db::meridian::checkpoint_wal`'s doc for why this runs before every
     // close, not just a plain shutdown. Best-effort: a failed checkpoint must
     // not block shutdown.
@@ -1765,19 +1649,6 @@ async fn main() -> Result<()> {
     }
     meridian.close().await;
 
-    // 9b. Release the single-instance endpoint LAST, after the pool is closed.
-    //
-    //     This used to run first, before the checkpoint. `daemon_already_running` is
-    //     how a starting daemon decides whether to bow out (4a-ter), so releasing it
-    //     early opens the guard while THIS process is still checkpointing and closing
-    //     - the window `single_instance_check_precedes_setup_db_and_bind_follows_it`
-    //     exists to close, reopened from the exiting side. It only pinned the
-    //     STARTING daemon's ordering. Under launchd the relaunch is immediate, and a
-    //     new generation running migrations against a file the old one is mid-
-    //     checkpoint on is the double-writer profile the fleet-correlated corruption
-    //     was traced to.
-    meridian::platform::release_endpoint();
-
     // Flush OTel exporters FIRST, while the runtime is alive — this writes the
     // daemon's final shutdown spans/logs into the spool's pending/ dir...
     obs_guard.shutdown().await;
@@ -1789,76 +1660,6 @@ async fn main() -> Result<()> {
     let _ = shipper_shutdown_tx.send(true);
 
     Ok(())
-}
-
-/// Body of the `tasks-sync` / `pm-sync` CLIs: ask the daemon and report what it did.
-///
-/// The delegation itself (and why a CLI must not spend the rotating Jira OAuth token
-/// itself) lives in [`meridian::intelligence::sync_delegate`]; this only maps the
-/// outcome onto stdout/stderr and an exit code, so the user-facing wording stays in
-/// one place next to the other CLI output.
-async fn cli_sync(
-    pool: &meridian::db::SqlitePool,
-    cfg: &Config,
-    mode: SyncMode,
-    label: &str,
-) -> bool {
-    // A generous budget: a cold sync across five providers with a token refresh can
-    // legitimately take a while, and a CLI that gives up early looks like a failure
-    // when the sync is still going. Syncing IS the point of this command, so unlike
-    // the post-write callers it waits.
-    match meridian::intelligence::sync_delegate::sync_and_wait(
-        pool,
-        cfg,
-        mode,
-        label,
-        std::time::Duration::from_secs(120),
-    )
-    .await
-    {
-        Delegation::Synced { count: Some(n) } => {
-            println!("{label}: synced {n} task(s)");
-            true
-        }
-        Delegation::Synced { count: None } => {
-            println!("{label}: synced");
-            true
-        }
-        Delegation::Failed { error } => {
-            eprintln!("{label}: {error}");
-            false
-        }
-        // NOT an error exit: the request is queued and the daemon will service it.
-        // Exiting non-zero here would fail scripts over a slow sync that ultimately
-        // succeeds.
-        Delegation::Pending => {
-            println!("{label}: still running - it will finish in the background");
-            true
-        }
-    }
-}
-
-/// Refresh the board after a CLI write applied to the tracker (`ticket-update`,
-/// `ticket-set-status`).
-///
-/// Waits for the outcome (see `sync_delegate::POST_WRITE_SYNC_BUDGET`): the frontend
-/// re-reads the board as soon as this process exits, so returning before the mirror
-/// caught up would briefly show the pre-write value and read as a lost edit. Failures
-/// and timeouts are logged, never printed - the tracker write already succeeded, so a
-/// sync hiccup must not make the command look like it failed.
-async fn cli_sync_after_write(pool: &meridian::db::SqlitePool, cfg: &Config, label: &str) {
-    match meridian::intelligence::sync_delegate::sync_after_write(pool, cfg, label).await {
-        Delegation::Synced { .. } => {}
-        Delegation::Failed { error } => {
-            tracing::warn!(label, %error, "post-write pm sync failed - the tracker write still landed");
-        }
-        Delegation::Pending => {
-            tracing::warn!(
-                label,
-                "post-write pm sync still running - the tracker write still landed"
-            );
-        }
-    }
 }
 
 /// Runs one ETL pass and maps the outcome onto the notice bus.
@@ -2003,60 +1804,6 @@ mod startup_order_tests {
              exit(1) on a locked/corrupt database advertise {{\"running\":true}} \
              to the tray's watchdog. Found setup_db at byte {setup_db_pos}, \
              bind at byte {bind_pos}."
-        );
-    }
-
-    /// The EXIT-side ordering, which the test above does not cover and which was
-    /// wrong until 1.91.0-staging.2's write wedge was traced.
-    ///
-    /// Three things must happen in this order on shutdown:
-    /// 1. await the PM sync watcher — it is the daemon's only writer outside the
-    ///    poll loop, and `service_once` deliberately ignores the shutdown flag
-    ///    once it has claimed a row (so it can finish and record an outcome), so
-    ///    it can still be writing for tens of seconds after the signal;
-    /// 2. `checkpoint_wal` — a TRUNCATE checkpoint racing those live writes is
-    ///    the exact thing that function exists to prevent, and it is what hands
-    ///    the next daemon generation a half-written WAL while the tray keeps a
-    ///    stale view of the file;
-    /// 3. `release_endpoint` LAST — it is what `daemon_already_running` answers,
-    ///    so releasing it before the checkpoint and close lets a relaunching
-    ///    daemon pass the single-instance guard and start migrating against a
-    ///    file this process is still checkpointing. Under launchd the relaunch
-    ///    is immediate, so that window is real, not theoretical.
-    ///
-    /// Same self-scanning idiom (and the same truncate-at-the-test-module trap)
-    /// as the test above.
-    #[test]
-    fn shutdown_awaits_the_sync_watcher_then_checkpoints_then_releases_the_endpoint() {
-        const SRC: &str = include_str!("main.rs");
-        let prod = SRC
-            .split_once("\n#[cfg(test)]")
-            .map_or(SRC, |(before, _)| before);
-
-        let await_pos = prod
-            .find("WATCHER_DRAIN_TIMEOUT, sync_watcher)")
-            .expect("shutdown must await the PM sync watcher's JoinHandle");
-        let checkpoint_pos = prod
-            .find("meridian::db::meridian::checkpoint_wal(&meridian).await")
-            .expect("shutdown must checkpoint the WAL");
-        let release_pos = prod
-            .find("meridian::platform::release_endpoint();")
-            .expect("shutdown must release the single-instance endpoint");
-
-        assert!(
-            await_pos < checkpoint_pos,
-            "the PM sync watcher must be awaited BEFORE the WAL checkpoint — \
-             checkpointing underneath its live writes is what corrupted the \
-             shared WAL index. Found await at byte {await_pos}, checkpoint at \
-             byte {checkpoint_pos}."
-        );
-        assert!(
-            checkpoint_pos < release_pos,
-            "release_endpoint() must run AFTER the checkpoint and pool close — \
-             releasing it earlier opens the single-instance guard while this \
-             process is still writing, letting a relaunching daemon migrate \
-             against the same file. Found checkpoint at byte {checkpoint_pos}, \
-             release at byte {release_pos}."
         );
     }
 }
