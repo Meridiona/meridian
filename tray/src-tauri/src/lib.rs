@@ -1188,6 +1188,20 @@ pub fn run() {
                 poll::run_daemon_watchdog().await;
             });
 
+            // One-shot: repaint the popover's online/offline banner the moment
+            // the daemon+DB are actually ready, instead of leaving it stuck on
+            // "Meridian is offline" until the poll loop's own next 30/60 s
+            // health tick. Separate from both loops above on purpose — see
+            // `poll::startup_health` for why it must not touch either one's
+            // state.
+            {
+                let app_handle = app.handle().clone();
+                let state_clone = app_state.clone();
+                tauri::async_runtime::spawn(async move {
+                    poll::fast_poll_until_healthy(app_handle, state_clone).await;
+                });
+            }
+
             // Launch-at-login AND morning relaunch: VERIFY-AND-REPAIR on every
             // launch (see autostart.rs), so the tray comes back after a reboot
             // and again the next morning if it was quit. Deliberately not
@@ -1459,6 +1473,18 @@ pub fn run() {
                             // phase. See [`daemon_lifecycle::HeldExitGuard`].
                             let _released = daemon_lifecycle::HeldExitGuard;
                             daemon_lifecycle::stop_for_quit().await;
+                            // Push `stop_for_quit`'s verdict to the spool BEFORE
+                            // exiting. `handle.exit` is `std::process::exit`, so
+                            // it runs no destructors and takes whatever the OTel
+                            // batch processors are still holding with it — and
+                            // what they are holding at this instant is the line
+                            // that just described how stopping the daemon went.
+                            //
+                            // That line is the single most useful record for a
+                            // corruption report (quit is when the tray and the
+                            // daemon are most likely to overlap on meridian.db),
+                            // and it was the one guaranteed never to survive.
+                            meridian::observability::force_flush().await;
                             // Immediately before the exit, so the re-entrant
                             // `ExitRequested` this triggers is the one and only
                             // one allowed through.
