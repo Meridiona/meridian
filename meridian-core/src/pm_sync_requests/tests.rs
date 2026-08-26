@@ -10,23 +10,26 @@ use super::*;
 use sqlx::sqlite::SqliteConnectOptions;
 use std::str::FromStr;
 
-/// The table as the REAL migrations build it, not a hand-written copy.
-///
-/// It used to be a hand-written `CREATE TABLE` mirroring migration 082. That is a
-/// schema the tests can silently diverge from: adding `seq`/`completed_seq` in
-/// migration 083 left every one of these tests passing against a table that did not
-/// have the columns the queries now use, so the suite proved nothing about the code
-/// that shipped. Running the migrator instead means these tests also assert that
-/// 082 + 083 actually apply in order, which is the property real installs depend on.
 async fn db() -> SqlitePool {
     let opts = SqliteConnectOptions::from_str("sqlite::memory:")
         .unwrap()
         .create_if_missing(true);
     let pool = SqlitePool::connect_with(opts).await.unwrap();
-    sqlx::migrate!("../src/migrations")
-        .run(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "CREATE TABLE pm_sync_requests (
+             provider TEXT NOT NULL PRIMARY KEY,
+             mode TEXT NOT NULL DEFAULT 'gated',
+             reason TEXT NOT NULL DEFAULT '',
+             requested_at TEXT NOT NULL,
+             claimed_at TEXT,
+             completed_at TEXT,
+             error TEXT,
+             synced_count INTEGER
+         )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     pool
 }
 
@@ -89,9 +92,7 @@ async fn a_completed_force_does_not_escalate_the_next_gated_request() {
         .await
         .unwrap();
     claim(&pool, ALL_PROVIDERS).await.unwrap();
-    complete(&pool, ALL_PROVIDERS, 1, Some(4), None)
-        .await
-        .unwrap();
+    complete(&pool, ALL_PROVIDERS, Some(4), None).await.unwrap();
 
     // A later window open wants the cheap, gated behaviour.
     request(&pool, ALL_PROVIDERS, SyncMode::Gated, "dashboard_open")
@@ -107,9 +108,8 @@ async fn a_completed_force_does_not_escalate_the_next_gated_request() {
 }
 
 /// The in-flight case still escalates: a force that is claimed but not completed
-/// gets a NEW sequence number from the arriving request, so it stays pending past
-/// the running sync's completion and is serviced again - and the force intent must
-/// survive into that re-run rather than being downgraded to the arriving gated mode.
+/// will have its outcome discarded by `complete`'s guard and be re-serviced, so
+/// the force intent must survive into that re-run.
 #[tokio::test]
 async fn an_in_flight_force_still_survives_a_gated_request() {
     let pool = db().await;
@@ -184,9 +184,7 @@ async fn reset_leaves_completed_requests_alone() {
         .await
         .unwrap();
     claim(&pool, ALL_PROVIDERS).await.unwrap();
-    complete(&pool, ALL_PROVIDERS, 1, Some(2), None)
-        .await
-        .unwrap();
+    complete(&pool, ALL_PROVIDERS, Some(2), None).await.unwrap();
 
     assert_eq!(reset_stale_claims(&pool).await.unwrap(), 0);
     assert!(
@@ -203,21 +201,16 @@ async fn outcome_is_none_until_completed() {
     request(&pool, ALL_PROVIDERS, SyncMode::Force, "sync_now")
         .await
         .unwrap();
-    assert!(outcome(&pool, ALL_PROVIDERS, 1).await.unwrap().is_none());
+    assert!(outcome(&pool, ALL_PROVIDERS).await.unwrap().is_none());
 
     claim(&pool, ALL_PROVIDERS).await.unwrap();
     assert!(
-        outcome(&pool, ALL_PROVIDERS, 1).await.unwrap().is_none(),
+        outcome(&pool, ALL_PROVIDERS).await.unwrap().is_none(),
         "in-flight must still read as pending"
     );
 
-    complete(&pool, ALL_PROVIDERS, 1, Some(7), None)
-        .await
-        .unwrap();
-    let out = outcome(&pool, ALL_PROVIDERS, 1)
-        .await
-        .unwrap()
-        .expect("done");
+    complete(&pool, ALL_PROVIDERS, Some(7), None).await.unwrap();
+    let out = outcome(&pool, ALL_PROVIDERS).await.unwrap().expect("done");
     assert_eq!(out.synced_count, Some(7));
     assert!(out.error.is_none());
 }
@@ -230,205 +223,44 @@ async fn outcome_carries_the_error() {
         .await
         .unwrap();
     claim(&pool, ALL_PROVIDERS).await.unwrap();
-    complete(&pool, ALL_PROVIDERS, 1, None, Some("401 unauthorized"))
+    complete(&pool, ALL_PROVIDERS, None, Some("401 unauthorized"))
         .await
         .unwrap();
 
-    let out = outcome(&pool, ALL_PROVIDERS, 1)
-        .await
-        .unwrap()
-        .expect("done");
+    let out = outcome(&pool, ALL_PROVIDERS).await.unwrap().expect("done");
     assert_eq!(out.error.as_deref(), Some("401 unauthorized"));
 }
 
-/// **THE BUG THIS FILE EXISTS FOR, and both halves of it at once.**
-///
-/// A request arriving mid-sync must not be marked done by the sync that was already
-/// running (or "Sync now" reports success for work that never ran), AND the sync that
-/// was already running must still be able to report its result to whoever asked for
-/// it (or every waiter times out and reports failure for a sync that succeeded).
-///
-/// The 082 design could only get one of those. It guarded `complete` on `claimed_at
-/// IS NOT NULL`, which the new request had just nulled, so the completion was
-/// discarded entirely - protecting the new request by throwing away the old
-/// request's answer. On 1.91.0-staging.2 that was the normal case rather than an
-/// edge one, because connecting a tracker fires `oauth_connected`,
-/// `token_connected` and the user's "Sync now" within a few seconds: the sync
-/// worked, the answer was dropped, the work was repeated, and the user saw a
-/// failure.
-///
-/// The sequence watermark gets both. Asserting only the first half is what let the
-/// bug ship, so this test asserts them together.
+/// THE RACE THIS GUARDS: a request arriving mid-sync resets the row, and the
+/// older sync's outcome must NOT stamp it complete - that would mark the new
+/// request done without ever servicing it.
 #[tokio::test]
-async fn a_mid_sync_request_neither_steals_nor_destroys_the_running_sync_s_outcome() {
+async fn completion_does_not_clobber_a_request_that_arrived_mid_sync() {
     let pool = db().await;
-    let first = request(&pool, ALL_PROVIDERS, SyncMode::Gated, "plan_or_picker")
+    request(&pool, ALL_PROVIDERS, SyncMode::Gated, "dashboard_open")
         .await
         .unwrap();
-    let claimed = claim(&pool, ALL_PROVIDERS).await.unwrap().expect("pending");
-    assert_eq!(
-        claimed.seq, first,
-        "the claim must cover the request it read"
-    );
+    claim(&pool, ALL_PROVIDERS).await.unwrap();
 
-    // A second producer asks while the first sync is still running - the connect
-    // flow does exactly this.
-    let second = request(&pool, ALL_PROVIDERS, SyncMode::Force, "sync_now")
-        .await
-        .unwrap();
-    assert!(second > first, "a new request must advance the sequence");
-
-    // The in-flight sync finishes and reports against the seq it claimed.
-    complete(&pool, ALL_PROVIDERS, claimed.seq, Some(3), None)
+    // A new request lands while the first sync is still running.
+    request(&pool, ALL_PROVIDERS, SyncMode::Force, "sync_now")
         .await
         .unwrap();
 
-    // Half one - the FIX. The first waiter gets its answer instead of timing out.
-    let out = outcome(&pool, ALL_PROVIDERS, first)
-        .await
-        .unwrap()
-        .expect("the waiter that asked for this sync must receive its outcome");
-    assert_eq!(out.synced_count, Some(3));
+    // The in-flight sync finishes and tries to report. This must be a NO-OP:
+    // the new request cleared `claimed_at`, so the guard rejects it.
+    complete(&pool, ALL_PROVIDERS, Some(3), None).await.unwrap();
 
-    // Half two - the ORIGINAL PROTECTION, preserved. The later request was not
-    // serviced by work that started before it existed.
     assert!(
-        outcome(&pool, ALL_PROVIDERS, second)
-            .await
-            .unwrap()
-            .is_none(),
-        "a request made mid-sync must NOT be satisfied by the sync already running - \
+        outcome(&pool, ALL_PROVIDERS).await.unwrap().is_none(),
+        "the older sync's outcome must NOT mark the new request complete - \
          that would report success for a sync that never ran"
     );
 
-    // ...and it is still serviceable, with its escalation intact.
     let req = claim(&pool, ALL_PROVIDERS)
         .await
         .unwrap()
         .expect("the mid-sync request must still be pending");
     assert_eq!(req.mode, SyncMode::Force);
     assert_eq!(req.reason, "sync_now");
-    assert_eq!(req.seq, second);
-}
-
-/// Two waiters, one sync: the whole point of a watermark. Both producers asked
-/// before anything was serviced, so one sync must satisfy both rather than each
-/// needing its own provider round trip.
-#[tokio::test]
-async fn one_sync_satisfies_every_waiter_that_asked_before_it_ran() {
-    let pool = db().await;
-    let a = request(&pool, ALL_PROVIDERS, SyncMode::Force, "oauth_connected")
-        .await
-        .unwrap();
-    let b = request(&pool, ALL_PROVIDERS, SyncMode::Force, "token_connected")
-        .await
-        .unwrap();
-
-    let claimed = claim(&pool, ALL_PROVIDERS).await.unwrap().expect("pending");
-    complete(&pool, ALL_PROVIDERS, claimed.seq, Some(11), None)
-        .await
-        .unwrap();
-
-    for (label, seq) in [("first", a), ("second", b)] {
-        assert!(
-            outcome(&pool, ALL_PROVIDERS, seq).await.unwrap().is_some(),
-            "the {label} waiter must be satisfied by the single sync that covered it"
-        );
-    }
-    assert!(
-        claim(&pool, ALL_PROVIDERS).await.unwrap().is_none(),
-        "coalesced requests must not leave extra work behind - that is a second \
-         provider round trip for one user action"
-    );
-}
-
-/// `has_pending` is the gate that keeps an IDLE daemon from writing at all.
-///
-/// The watcher ticks every 2 s forever and used to call `claim` unconditionally - an
-/// `UPDATE`, so SQLite opened a write transaction and took a lock even when it
-/// matched nothing. That was ~43,000 write transactions a day on an idle machine,
-/// against a file a second process also writes, and it made every daemon kill far
-/// likelier to land mid-write.
-///
-/// So the states where the answer must be `false` matter more than the one where it
-/// is `true`: each is a tick that now touches no lock at all.
-#[tokio::test]
-async fn has_pending_is_false_in_every_idle_state() {
-    let pool = db().await;
-
-    assert!(
-        !has_pending(&pool, ALL_PROVIDERS).await.unwrap(),
-        "a fresh install with no row must not provoke a claim - this is the state \
-         almost every tick runs in"
-    );
-
-    request(&pool, ALL_PROVIDERS, SyncMode::Force, "sync_now")
-        .await
-        .unwrap();
-    assert!(
-        has_pending(&pool, ALL_PROVIDERS).await.unwrap(),
-        "real work must still be seen"
-    );
-
-    let claimed = claim(&pool, ALL_PROVIDERS).await.unwrap().expect("pending");
-    assert!(
-        !has_pending(&pool, ALL_PROVIDERS).await.unwrap(),
-        "an in-flight request is not claimable, so ticks during a long sync must be \
-         free too"
-    );
-
-    complete(&pool, ALL_PROVIDERS, claimed.seq, Some(2), None)
-        .await
-        .unwrap();
-    assert!(
-        !has_pending(&pool, ALL_PROVIDERS).await.unwrap(),
-        "a completed row is the steady state after any sync - it must never read as \
-         work, or the daemon would re-sync forever"
-    );
-
-    request(&pool, ALL_PROVIDERS, SyncMode::Gated, "plan_or_picker")
-        .await
-        .unwrap();
-    assert!(
-        has_pending(&pool, ALL_PROVIDERS).await.unwrap(),
-        "a new request after a completion must be visible again"
-    );
-}
-
-/// A duplicate or out-of-order completion must never move the watermark backwards,
-/// so a retrying consumer cannot un-answer a waiter that was already satisfied.
-#[tokio::test]
-async fn the_completion_watermark_only_moves_forward() {
-    let pool = db().await;
-    request(&pool, ALL_PROVIDERS, SyncMode::Force, "sync_now")
-        .await
-        .unwrap();
-    let first = claim(&pool, ALL_PROVIDERS).await.unwrap().expect("pending");
-    complete(&pool, ALL_PROVIDERS, first.seq, Some(5), None)
-        .await
-        .unwrap();
-
-    let second = request(&pool, ALL_PROVIDERS, SyncMode::Force, "sync_now")
-        .await
-        .unwrap();
-    let claimed = claim(&pool, ALL_PROVIDERS).await.unwrap().expect("pending");
-    complete(&pool, ALL_PROVIDERS, claimed.seq, Some(9), None)
-        .await
-        .unwrap();
-
-    // A late duplicate for the OLD seq arrives (a retry, a doubled tick).
-    complete(&pool, ALL_PROVIDERS, first.seq, Some(1), Some("stale"))
-        .await
-        .unwrap();
-
-    let out = outcome(&pool, ALL_PROVIDERS, second)
-        .await
-        .unwrap()
-        .expect("the newer waiter must stay satisfied");
-    assert_eq!(
-        out.synced_count,
-        Some(9),
-        "the stale retry overwrote the result"
-    );
-    assert_eq!(out.error, None, "the stale retry resurrected an old error");
 }

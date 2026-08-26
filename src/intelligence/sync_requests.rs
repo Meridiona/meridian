@@ -100,17 +100,9 @@ pub async fn run_watcher(pool: SqlitePool, mut shutdown_rx: watch::Receiver<bool
 /// Claim and service at most one pending request. Split from the loop so the
 /// decision logic is reachable without spawning a task.
 async fn service_once(pool: &SqlitePool) {
-    // READ first, and claim only if there is something to claim.
-    //
-    // `claim` is an UPDATE, and SQLite opens a write transaction to evaluate one even
-    // when it matches nothing - so calling it unconditionally on this 2 s tick put
-    // ~43,000 write transactions a day on an idle machine's database, and made every
-    // daemon kill far likelier to land mid-write. See
-    // `pm_sync_requests::has_pending` for the full reasoning. The read is advisory;
-    // `claim` below is still what decides, so exclusivity is unchanged.
-    match pm_sync_requests::has_pending(pool, ALL_PROVIDERS).await {
-        Ok(false) => return,
-        Ok(true) => {}
+    let req = match pm_sync_requests::claim(pool, ALL_PROVIDERS).await {
+        Ok(Some(req)) => req,
+        Ok(None) => return,
         Err(e) => {
             // Logged at debug, not warn: on a fresh install this fires every 2 s
             // until migration 082 has run, and a warn-level line every 2 s would
@@ -119,20 +111,6 @@ async fn service_once(pool: &SqlitePool) {
             tracing::debug!(
                 error = %crate::errors::chain(&e),
                 "could not read PM sync requests"
-            );
-            return;
-        }
-    }
-
-    let req = match pm_sync_requests::claim(pool, ALL_PROVIDERS).await {
-        Ok(Some(req)) => req,
-        // Lost the race to another claimant between the read and here - fine, and
-        // the reason `has_pending` is documented as advisory.
-        Ok(None) => return,
-        Err(e) => {
-            tracing::debug!(
-                error = %crate::errors::chain(&e),
-                "could not claim a PM sync request"
             );
             return;
         }
@@ -146,7 +124,6 @@ async fn service_once(pool: &SqlitePool) {
     tracing::info!(
         mode = req.mode.as_str(),
         reason = %req.reason,
-        seq = req.seq,
         "servicing PM sync request"
     );
 
@@ -180,9 +157,7 @@ async fn service_once(pool: &SqlitePool) {
         }
     };
 
-    if let Err(e) =
-        pm_sync_requests::complete(pool, &req.provider, req.seq, count, error.as_deref()).await
-    {
+    if let Err(e) = pm_sync_requests::complete(pool, &req.provider, count, error.as_deref()).await {
         tracing::warn!(
             error = %crate::errors::chain(&e),
             "could not record the PM sync outcome - the producer will keep waiting"
@@ -211,7 +186,7 @@ mod tests {
     async fn service_once_is_quiet_with_no_requests() {
         let pool = db().await;
         service_once(&pool).await;
-        assert!(pm_sync_requests::outcome(&pool, ALL_PROVIDERS, 1)
+        assert!(pm_sync_requests::outcome(&pool, ALL_PROVIDERS)
             .await
             .unwrap()
             .is_none());
@@ -229,7 +204,7 @@ mod tests {
 
         service_once(&pool).await;
 
-        let out = pm_sync_requests::outcome(&pool, ALL_PROVIDERS, 1)
+        let out = pm_sync_requests::outcome(&pool, ALL_PROVIDERS)
             .await
             .unwrap()
             .expect("the request must be completed, not left pending");

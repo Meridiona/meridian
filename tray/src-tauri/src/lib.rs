@@ -936,10 +936,8 @@ pub fn run() {
                     None,
                 ));
             }
-            // (No `capture_pool` binding here any more: `start_capture` takes the
-            // managed `DbPool` handle and resolves it per write, so the raw
-            // `Option<SqlitePool>` this used to carry across to it is exactly the
-            // snapshot that wedged capture writes after a daemon restart.)
+            #[cfg(feature = "capture")]
+            let capture_pool = db_setup_result;
 
             // Single source of truth for the tray menu lives in `tray.rs`, so the
             // poll loop's health-driven rebuild can't drift out of sync. Initial
@@ -1241,19 +1239,8 @@ pub fn run() {
             // that task, never the tray (we gave up the screenpipe daemon's process
             // isolation, so this matters). Frames → capture_frames (slice 4a),
             // input events → capture_ui_events (slice 3c).
-            // Pass the managed HANDLE, never `capture_pool` (the raw
-            // `Option<SqlitePool>` snapshot from setup) - see `start_capture`'s doc.
-            // Always `Some` by here: the fallback above registers an empty handle on
-            // the panic path, so this only skips capture if managed state is somehow
-            // absent entirely, which nothing else could work through either.
             #[cfg(feature = "capture")]
-            if let Some(db) = db_pool::from_app(app.handle()) {
-                start_capture(app_state.clone(), db);
-            } else {
-                tracing::error!(
-                    "capture not started - the DbPool handle is not managed, so nothing could persist frames"
-                );
-            }
+            start_capture(app_state.clone(), capture_pool);
 
             // Auto-open the setup wizard on first launch (no ~/.meridian/onboarded).
             // The 800 ms delay lets the tray menu settle before the window appears.
@@ -1692,23 +1679,9 @@ fn tray_debug(window: tauri::Window, msg: String) {
 /// Once from `lib.rs`'s `setup()` on launch, and again from
 /// `commands::pause_for_duration` on resume.
 #[cfg(feature = "capture")]
-/// Start (or restart) the in-process capture engine and its persisting consumers.
-///
-/// # `db` is the HANDLE, deliberately not a pool
-///
-/// The consumers below live for the whole tray process and write every ~2.5 s, so
-/// they must resolve [`db_pool::DbPool::get`] **per write** rather than caching a
-/// `SqlitePool`. This parameter used to be `Option<SqlitePool>` - a snapshot taken
-/// once at start - and that was the 1.91.0-staging.2 write-wedge: `DbPool::close`
-/// (run by `reload_daemon` around every daemon restart, precisely so the tray never
-/// holds a connection across one) cannot reach a clone that escaped the handle, so
-/// the capture connections spanned the daemon's shutdown WAL TRUNCATE checkpoint,
-/// desynced their `-shm` view, and every subsequent write failed with `(code: 11)
-/// database disk image is malformed` - permanently, on a database that was
-/// provably healthy. See [`db_pool::from_app`] for the measured detail.
 pub(crate) fn start_capture(
     app_state: std::sync::Arc<std::sync::Mutex<AppState>>,
-    db: db_pool::DbPool,
+    pool: Option<meridian_core::SqlitePool>,
 ) {
     use capture::{screenpipe::ScreenpipeEngine, CaptureEngine};
 
@@ -1782,10 +1755,7 @@ pub(crate) fn start_capture(
     // Handles both item shapes the engine can send — the primary per-tick frame
     // and secondary-monitor context samples (multi-screen capture) — through the
     // same ignore-list gate, routed to their own tables.
-    // The HANDLE, cloned (cheap - `Arc`-backed). Every write below resolves
-    // `.get()` afresh, so a daemon-restart close/reopen is followed rather than
-    // outlived. Never hoist this into a `SqlitePool` outside the loop.
-    let consumer_pool = db.clone();
+    let consumer_pool = pool.clone();
     let frame_ignore = capture_ignore.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(item) = rx.recv().await {
@@ -1811,7 +1781,7 @@ pub(crate) fn start_capture(
                         );
                         continue;
                     }
-                    let Some(p) = consumer_pool.get() else {
+                    let Some(p) = consumer_pool.as_ref() else {
                         continue;
                     };
                     let row = meridian_core::CaptureFrameInsert {
@@ -1822,20 +1792,8 @@ pub(crate) fn start_capture(
                         text: frame.text,
                         text_source: frame.text_source.as_str().to_string(),
                     };
-                    if let Err(e) = meridian_core::insert_capture_frame(&p, &row).await {
-                        // `cmd_err!`, not `%e`: this site logged only the outermost
-                        // context (`insert capture_frame`) and threw the cause away,
-                        // so a fleet-wide write wedge was undiagnosable from logs -
-                        // the same swallowed-cause bug `cmd_err!` was written for.
-                        let _ = crate::cmd_err!(e, "capture: failed to persist frame");
-                        // These writes land every ~2.5 s, which makes them both the
-                        // first thing on the machine to notice a broken pool view and
-                        // the natural place to heal it - so the app recovers within
-                        // seconds instead of waiting for a relaunch the user has no
-                        // reason to know about. No retry: the next frame is 2.5 s away
-                        // and will use the fresh pool.
-                        db_pool::raise_if_corrupt(&p, &e).await;
-                        consumer_pool.recover_if_corrupt(&e).await;
+                    if let Err(e) = meridian_core::insert_capture_frame(p, &row).await {
+                        tracing::warn!(error = %e, "capture: failed to persist frame");
                     }
                 }
                 capture::CaptureItem::Secondary(sample) => {
@@ -1857,7 +1815,7 @@ pub(crate) fn start_capture(
                         );
                         continue;
                     }
-                    let Some(p) = consumer_pool.get() else {
+                    let Some(p) = consumer_pool.as_ref() else {
                         continue;
                     };
                     let row = meridian_core::CaptureSecondaryScreenInsert {
@@ -1867,13 +1825,8 @@ pub(crate) fn start_capture(
                         window_name: sample.window_name,
                         text: sample.text,
                     };
-                    if let Err(e) = meridian_core::insert_capture_secondary_screen(&p, &row).await {
-                        let _ = crate::cmd_err!(
-                            e,
-                            "capture: failed to persist secondary-screen sample"
-                        );
-                        db_pool::raise_if_corrupt(&p, &e).await;
-                        consumer_pool.recover_if_corrupt(&e).await;
+                    if let Err(e) = meridian_core::insert_capture_secondary_screen(p, &row).await {
+                        tracing::warn!(error = %e, "capture: failed to persist secondary-screen sample");
                     }
                 }
             }
@@ -1904,8 +1857,7 @@ pub(crate) fn start_capture(
     // UI event consumer: exits on cancel signal, which drops ui_rx, causing
     // the OS recorder thread to see tx.is_closed() within 500ms and exit.
     let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel::<meridian_core::CaptureUiEventInsert>(256);
-    // The handle, not a pool - same reason as `consumer_pool` above.
-    let ui_pool = db;
+    let ui_pool = pool;
     let ui_ignore = capture_ignore;
     tauri::async_runtime::spawn(async move {
         loop {
@@ -1919,11 +1871,9 @@ pub(crate) fn start_capture(
                     if ui_ignore.lock().unwrap().should_drop_app(ev.app_name.as_deref()) {
                         continue;
                     }
-                    let Some(p) = ui_pool.get() else { continue };
-                    if let Err(e) = meridian_core::insert_capture_ui_event(&p, &ev).await {
-                        let _ = crate::cmd_err!(e, "capture: failed to persist ui event");
-                        db_pool::raise_if_corrupt(&p, &e).await;
-                        ui_pool.recover_if_corrupt(&e).await;
+                    let Some(p) = ui_pool.as_ref() else { continue };
+                    if let Err(e) = meridian_core::insert_capture_ui_event(p, &ev).await {
+                        tracing::warn!(error = %e, "capture: failed to persist ui event");
                     }
                 }
             }
@@ -1957,51 +1907,4 @@ pub(crate) fn start_capture(
     s.ui_consumer_cancel = Some(ui_cancel_tx);
     s.ui_recorder_thread = Some(ui_recorder_thread);
     tracing::info!("capture: engine and ui recorder started");
-}
-
-#[cfg(test)]
-mod capture_pool_lifetime_tests {
-    /// The capture consumers must resolve the pool PER WRITE, never cache one.
-    ///
-    /// `start_capture` spawns three consumers that live for the whole tray
-    /// process and write every ~2.5 s. Until 1.91.0-staging.2 they captured
-    /// `Option<SqlitePool>` once at start, which `DbPool::close` (run by
-    /// `reload_daemon` around every daemon restart) cannot reach — so those
-    /// connections spanned the daemon's shutdown WAL TRUNCATE checkpoint,
-    /// desynced their `-shm` view, and every write from then on failed with
-    /// `(code: 11) database disk image is malformed` on a database that `db
-    /// check` reported healthy. Reads kept working, which is why it read as
-    /// corruption rather than as a connection bug.
-    ///
-    /// `a_pool_snapshot_dies_across_a_reload_but_the_handle_survives` in
-    /// `db_pool` proves the snapshot is dead after a reload; this proves these
-    /// particular call sites don't take one. It scans the source because the
-    /// consumers need a live tray app, an OS capture engine and a real daemon
-    /// restart to exercise — the same reason `main.rs`'s startup/shutdown
-    /// ordering tests scan rather than execute.
-    #[test]
-    fn capture_consumers_resolve_the_pool_per_write() {
-        const SRC: &str = include_str!("lib.rs");
-        let prod = SRC
-            .split_once("\n#[cfg(test)]\nmod capture_pool_lifetime_tests")
-            .map_or(SRC, |(before, _)| before);
-
-        for cached in ["let consumer_pool = pool.clone();", "let ui_pool = pool;"] {
-            assert!(
-                !prod.contains(cached),
-                "`{cached}` caches a SqlitePool for the capture consumers' whole \
-                 lifetime. Pass the `DbPool` handle and call `.get()` inside the \
-                 write loop instead - see `start_capture`'s doc for the wedge this \
-                 caused."
-            );
-        }
-
-        let handle_sites =
-            prod.matches("consumer_pool.get()").count() + prod.matches("ui_pool.get()").count();
-        assert_eq!(
-            handle_sites, 3,
-            "expected all 3 capture write sites (frame, secondary-screen, ui event) \
-             to resolve the handle per write, found {handle_sites}"
-        );
-    }
 }

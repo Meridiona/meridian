@@ -684,10 +684,7 @@ pub async fn save_integration_token(
     // First-time (or credential-change) connect — force a sync so the board
     // populates immediately rather than waiting for the next on-demand trigger.
     // There's no stale cache to protect here, so gating buys nothing.
-    crate::commands::tasks::trigger_background_pm_force_sync(
-        db_pool.inner().clone(),
-        "token_connected",
-    );
+    crate::commands::tasks::trigger_background_pm_force_sync(db_pool.get(), "token_connected");
 
     Ok(serde_json::json!({ "ok": true, "reloaded": reloaded }))
 }
@@ -1206,7 +1203,7 @@ pub async fn start_oauth(
     db_pool: State<'_, crate::db_pool::DbPool>,
 ) -> Result<StartOAuthResponse, String> {
     match body.provider.as_str() {
-        "jira" | "trello" => start_oauth_in_process(body.provider, db_pool.inner().clone()),
+        "jira" | "trello" => start_oauth_in_process(body.provider, db_pool.get()),
         "github" => start_oauth_github_device(body.provider, db_pool.inner().clone()).await,
         other => Err(format!("Unknown provider: {other}")),
     }
@@ -1261,7 +1258,7 @@ pub async fn cancel_oauth(body: CancelOAuthBody) -> Result<(), String> {
 /// [`AtomicBool`] prevents two flows from racing to bind the same loopback port.
 fn start_oauth_in_process(
     provider: String,
-    db: crate::db_pool::DbPool,
+    db: Option<meridian_core::SqlitePool>,
 ) -> Result<StartOAuthResponse, String> {
     // Resolve credentials from .env WITHOUT mutating process env.
     let mode = crate::install::detect_install_mode();
@@ -1473,12 +1470,9 @@ async fn start_oauth_github_device(
                     return;
                 }
                 tracing::info!("GitHub device-flow login succeeded");
-                // Clone the HANDLE (not `db_pool.get()`) before `db_pool` is moved
-                // into the reload below. The old code took a pool here, which the
-                // reload's `DbPool::close` then killed - so the sync request it was
-                // saved for could never be written. The handle survives, and
-                // `request_sync` resolves it after the reopen.
-                let sync_db = db_pool.clone();
+                // Grab the DB handle BEFORE `db_pool` is moved into the reload below,
+                // so the sync request can still be written afterwards.
+                let sync_db = db_pool.get();
                 // Best-effort reload so the token takes effect now, not next restart.
                 if let Err(e) = crate::commands::daemon::reload_daemon_with(db_pool).await {
                     tracing::debug!(error = %e, "daemon reload after GitHub connect (non-fatal)");

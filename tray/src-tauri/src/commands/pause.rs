@@ -338,13 +338,9 @@ pub(crate) async fn resume_capture(
         }
     }
 
-    // Restart the capture engine so screen recording resumes. Resolve the managed
-    // HANDLE rather than passing `pool` (a snapshot this fn was handed): the capture
-    // consumers outlive any single pool generation - see `start_capture`'s doc.
+    // Restart the capture engine so screen recording resumes.
     #[cfg(feature = "capture")]
-    if let Some(db) = crate::db_pool::from_app(app) {
-        crate::start_capture(state.clone(), db);
-    }
+    crate::start_capture(state.clone(), pool.cloned());
 
     // Emit immediately so the popover reverts to the picker without waiting for the next tick.
     if let Ok(s) = state.lock() {
