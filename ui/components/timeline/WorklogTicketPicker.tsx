@@ -23,6 +23,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { load } from '@/lib/bridge'
+import { requestGatedTaskSync } from '@/lib/taskSync'
 import type { BoardTicket } from '@/lib/api-types'
 
 /** Rank the board against a query: key first (people type "KAN-3"), then title,
@@ -64,9 +65,22 @@ export function WorklogTicketPicker({ current, busy, onPick, onCancel, title, ex
   useEffect(() => {
     if (tickets) return
     let alive = true
-    load<BoardTicket[]>('/api/board-tickets', 'get_board_tickets')
+    const read = () => load<BoardTicket[]>('/api/board-tickets', 'get_board_tickets')
       .then(r => { if (alive) setFetched(excludeLocal ? r.filter(t => t.provider !== 'local') : r) })
       .catch(() => { if (alive) setError('Could not load your board - try again in a moment.') })
+
+    // Show the cached board immediately, then ask for a refresh and re-read.
+    //
+    // This picker is the ONE surface whose entire purpose is choosing from the whole
+    // board, so a ticket missing from it is not a cosmetic lag - the user cannot
+    // retarget onto a ticket that is not listed, and nothing on screen suggests the
+    // list is incomplete. It had no refresh of its own and relied on whatever some
+    // other screen had happened to fetch.
+    //
+    // Ordered read-then-refresh-then-read on purpose: opening a picker must never
+    // wait on a network round trip. GATED, so opening it repeatedly stays inside the
+    // per-provider staleness window rather than hitting the tracker each time.
+    void read().then(() => requestGatedTaskSync()).then(ok => { if (ok && alive) void read() })
     return () => { alive = false }
   }, [excludeLocal, tickets])
 

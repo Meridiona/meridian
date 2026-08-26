@@ -29,6 +29,7 @@ use tracing::field::Empty;
 use tracing::Instrument;
 
 use crate::config::Config;
+use crate::intelligence::sync_delegate::Delegation;
 use crate::intelligence::ticket_update::{self, ApplyStatus};
 use crate::plan_tasks::edit::EditResult;
 
@@ -117,8 +118,20 @@ async fn set_done_on_tracker(
 
     // Best-effort — the tracker has already accepted the transition, so a sync hiccup
     // must not read as a failed toggle.
-    if let Err(e) = crate::intelligence::run_pm_force_sync(pool, config).await {
-        tracing::warn!(error = %e, "plan_task: post-toggle sync failed - the change still landed");
+    //
+    // Delegated to the daemon (`intelligence::sync_delegate`), which is the only process
+    // that may spend the rotating Jira OAuth token. Nothing below reads `pm_tasks`, so
+    // this does not wait for the outcome - the request row is written and the daemon
+    // picks it up within ~2 s, well before the user's next board read.
+    match crate::intelligence::sync_delegate::sync_after_write(pool, config, "plan-task-done").await
+    {
+        Delegation::Synced { .. } => {}
+        Delegation::Failed { error } => {
+            tracing::warn!(%error, "plan_task: post-toggle sync failed - the change still landed");
+        }
+        Delegation::Pending => {
+            tracing::warn!("plan_task: post-toggle sync still running - the change still landed");
+        }
     }
     tracing::Span::current().record("status", "applied");
     tracing::info!(field, "plan_task: tracker task status set");

@@ -25,7 +25,7 @@ import { dayString } from '@/components/timeline/types'
 import type { PlanResponse, IntegrationsResponse } from '@/lib/api-types'
 import { MAX_PLAN_TASKS } from '@/lib/api-types'
 import { load as bridgeLoad } from '@/lib/bridge'
-import { lastSyncFailure, syncTasks } from '@/lib/taskSync'
+import { lastSyncFailure, requestGatedTaskSync, syncTasks } from '@/lib/taskSync'
 import { availableTrackerNames, connectedTrackers } from '@/lib/integrations'
 import { usePlan, refreshPlan, planAction, pausePlanRefresh } from '@/components/plan/planStore'
 import { isTutorialRunning } from '@/components/tutorial/engine'
@@ -219,14 +219,35 @@ export default function PlanView() {
   useEffect(() => {
     if (autoSyncedRef.current || !trackersLoaded || !data) return
     autoSyncedRef.current = true
-    // Nothing to pull, or something already there to show: the wait is over
-    // before it started.
-    if (trackers.length === 0 || (data.available?.length ?? 0) > 0) { setFirstSyncDone(true); return }
+    // Nothing to pull: the wait is over before it started.
+    if (trackers.length === 0) { setFirstSyncDone(true); return }
+    // A POPULATED board still needs a refresh, just not a blocking one.
+    //
+    // This branch used to return immediately, on the reasoning that there was
+    // "something already there to show". True for the empty-board spinner this
+    // backstop exists for, but it left the planner as the one screen that picks
+    // from the whole task list while never asking for a current copy of it - so a
+    // ticket assigned an hour ago was absent from the list, and the only way to
+    // see it was noticing the Refresh chip. Absent, not stale: it cannot be put in
+    // today's plan at all.
+    //
+    // GATED, unlike the empty branch's forced `handleSync`: this fires on every
+    // planner open, so the per-provider staleness window is what keeps it from
+    // becoming a tracker call each time. Not awaited before `setFirstSyncDone` -
+    // the cached board renders now and the 30 s poll picks the fresher rows up.
+    if ((data.available?.length ?? 0) > 0) {
+      void requestGatedTaskSync().then((ok) => { if (ok) void load(false) })
+      setFirstSyncDone(true)
+      return
+    }
     // Usually this JOINS the sync the connect flow already started - see `handleSync`.
     // It stays as a backstop because plenty of empty-board arrivals never went near a
     // connect: a reopened app, a board that emptied, a sync that failed an hour ago.
     handleSync().finally(() => setFirstSyncDone(true))
-  }, [data, trackers, trackersLoaded, handleSync])
+    // `load` is in the deps because the populated branch above calls it directly.
+    // Re-running is harmless either way: `autoSyncedRef` makes the whole effect
+    // one-shot per mount.
+  }, [data, trackers, trackersLoaded, handleSync, load])
 
   // The drag hold-off is module-global, so a planner closed mid-drag (onDragEnd
   // never fires) would strand every reader's refresh paused for the rest of the
