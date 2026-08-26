@@ -1472,6 +1472,18 @@ pub fn run() {
                             // phase. See [`daemon_lifecycle::HeldExitGuard`].
                             let _released = daemon_lifecycle::HeldExitGuard;
                             daemon_lifecycle::stop_for_quit().await;
+                            // Push `stop_for_quit`'s verdict to the spool BEFORE
+                            // exiting. `handle.exit` is `std::process::exit`, so
+                            // it runs no destructors and takes whatever the OTel
+                            // batch processors are still holding with it — and
+                            // what they are holding at this instant is the line
+                            // that just described how stopping the daemon went.
+                            //
+                            // That line is the single most useful record for a
+                            // corruption report (quit is when the tray and the
+                            // daemon are most likely to overlap on meridian.db),
+                            // and it was the one guaranteed never to survive.
+                            meridian::observability::force_flush().await;
                             // Immediately before the exit, so the re-entrant
                             // `ExitRequested` this triggers is the one and only
                             // one allowed through.

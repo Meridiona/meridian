@@ -142,6 +142,71 @@ impl ObservabilityGuard {
     }
 }
 
+/// Provider handles kept for [`force_flush`]. Set once by [`init`].
+///
+/// Separate from [`ObservabilityGuard`] because the guard is owned by whoever
+/// called `init` — in the tray that is a local in `run()` — while the code that
+/// needs to flush is somewhere else entirely (an exit handler in a spawned
+/// task). Both providers are `Arc`-backed, so this holds clones rather than
+/// taking anything away from the guard.
+static FLUSH_HANDLES: std::sync::OnceLock<FlushHandles> = std::sync::OnceLock::new();
+
+struct FlushHandles {
+    tracer_provider: Option<TracerProvider>,
+    logger_provider: Option<LoggerProvider>,
+}
+
+/// Push everything currently batched in memory out to the telemetry spool,
+/// WITHOUT shutting the providers down.
+///
+/// # Why this is needed at all
+///
+/// Spans and logs do not reach `~/.meridian/telemetry/pending/` the moment they
+/// are emitted: the batch processors hold them and drain on a timer. A process
+/// that calls `std::process::exit` — which is what `tauri::AppHandle::exit`
+/// does — takes that batch with it. Destructors do not run, so holding an RAII
+/// guard is no protection either.
+///
+/// The practical cost was that the LAST thing a process does is the thing least
+/// likely to be recorded, and for the tray the last thing it does is stop the
+/// daemon on quit. Every `daemon stopped for quit` / `could not stop the daemon
+/// on quit` / `exceeded its budget` line was emitted and then discarded
+/// microseconds later, so the outcome of the operation that most needs
+/// explaining after a corruption report was systematically the one missing from
+/// the spool.
+///
+/// [`ObservabilityGuard::shutdown`] already does this and more, but it consumes
+/// the guard and shuts the providers down; this is the "flush and keep going"
+/// half, callable from anywhere and safe to call more than once.
+///
+/// A no-op when capture is disabled (`MERIDIAN_TELEMETRY_DISABLED`) or before
+/// [`init`] has run, so callers never need to check.
+///
+/// # Who calls this
+/// - `meridian_tray_lib::run`'s `RunEvent::ExitRequested` handler, immediately
+///   before `handle.exit(0)`.
+pub async fn force_flush() {
+    let Some(handles) = FLUSH_HANDLES.get() else {
+        return;
+    };
+    if let Some(tp) = handles.tracer_provider.clone() {
+        let _ = tokio::task::spawn_blocking(move || {
+            for r in tp.force_flush() {
+                if let Err(e) = r {
+                    eprintln!("observability: span force_flush error: {e:?}");
+                }
+            }
+        })
+        .await;
+    }
+    if let Some(lp) = handles.logger_provider.clone() {
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = lp.force_flush();
+        })
+        .await;
+    }
+}
+
 /// Initialise the layered tracing subscriber.
 ///
 /// `service_name` becomes the OTel `service.name` resource attribute. The
@@ -253,6 +318,14 @@ pub fn init(service_name: &str) -> Result<ObservabilityGuard> {
             "observability initialised (no OTLP exporter)"
         );
     }
+
+    // Clones for `force_flush`, which runs far from whoever owns the guard.
+    // `set` rather than `get_or_init`: a second `init` in one process is a bug,
+    // and silently keeping the first set of handles is the safer failure.
+    let _ = FLUSH_HANDLES.set(FlushHandles {
+        tracer_provider: tracer_provider.clone(),
+        logger_provider: logger_provider.clone(),
+    });
 
     Ok(ObservabilityGuard {
         tracer_provider,
