@@ -32,7 +32,6 @@ use tracing::field::Empty;
 use tracing::Instrument;
 
 use crate::config::Config;
-use crate::intelligence::sync_delegate::Delegation;
 use crate::intelligence::ticket_update::{self, ApplyStatus};
 
 /// The outcome of an edit, serialized to the CLI's one JSON line.
@@ -158,20 +157,8 @@ async fn edit_on_tracker(
         // Reflect the applied write back into our mirror (the `ticket-update` CLI
         // does exactly this after an Applied write). Best-effort — the tracker has
         // already accepted it, so a sync hiccup must not read as a failed edit.
-        //
-        // Delegated to the daemon (`intelligence::sync_delegate`), the only process that
-        // may spend the rotating Jira OAuth token. Nothing below reads `pm_tasks`, so the
-        // outcome is not awaited.
-        match crate::intelligence::sync_delegate::sync_after_write(pool, config, "plan-task-edit")
-            .await
-        {
-            Delegation::Synced { .. } => {}
-            Delegation::Failed { error } => {
-                tracing::warn!(%error, "plan_task: post-edit sync failed - the edit still landed");
-            }
-            Delegation::Pending => {
-                tracing::warn!("plan_task: post-edit sync still running - the edit still landed");
-            }
+        if let Err(e) = crate::intelligence::run_pm_force_sync(pool, config).await {
+            tracing::warn!(error = %e, "plan_task: post-edit sync failed - the edit still landed");
         }
     }
     tracing::Span::current().record("status", "applied");
