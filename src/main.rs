@@ -1053,8 +1053,10 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // 4a-ter. Single-instance guard — CHECKED here, before `setup_db`, even
-    //     though the listener isn't bound until 5b below.
+    // 4a-ter. Single-instance guard, part 1 of 2: the endpoint PROBE. Cheap,
+    //     informative, and not authoritative — 4a-quater below is the acquire.
+    //     Checked here, before `setup_db`, even though the listener isn't
+    //     bound until 5b.
     //
     //     ~/.meridian/daemon.sock: a successful connect that gets a greeting
     //     means ANOTHER daemon already owns this data dir. That happens
@@ -1070,7 +1072,8 @@ async fn main() -> Result<()> {
     //     and ran migrations — including a live `ALTER TABLE` — against a
     //     file the winning daemon could simultaneously be writing to or
     //     checkpointing. Checking before `setup_db` means a losing daemon
-    //     never touches meridian.db at all.
+    //     never touches meridian.db at all — but only for a race this probe
+    //     can SEE, which is why the lock at 4a-quater exists.
     //
     //     Only a stale socket (no listener) is removed, and only right before
     //     THIS process binds its own — see the bind site below. Whoever starts
@@ -1084,13 +1087,83 @@ async fn main() -> Result<()> {
     //
     //     The endpoint itself is OS-specific (a socket file on Unix, a named
     //     pipe on Windows) — see `meridian::platform`.
+    //
+    //     `pid` on this and the two stand-down logs below is not decoration.
+    //     These WARNs are the ONLY record of a stand-down that reaches central
+    //     telemetry: the redaction ship leg is WARN+ only, and `meridian daemon
+    //     starting` — the line that would otherwise carry the pid — is INFO and
+    //     never egresses. Without it a stand-down arrives as an anonymous event
+    //     that cannot be tied to a process or correlated with anything around
+    //     it, which is the same gap that made the 2026-08-25 investigation
+    //     unresolvable.
     if meridian::platform::daemon_already_running().await {
         tracing::warn!(
+            pid = std::process::id() as i64,
             endpoint = %meridian::platform::endpoint_display(),
             "another meridian daemon already owns this data dir — exiting (single-instance guard)"
         );
         return Ok(());
     }
+
+    // 4a-quater. ACQUIRE the single-instance lock. The check above is a probe;
+    //     this is the acquire, and the difference is the whole point.
+    //
+    //     `daemon_already_running` asks "is anyone listening?" — and the winner
+    //     of a two-daemon race has NOT bound its listener at that moment,
+    //     because the bind is deliberately deferred to 5b so a daemon about to
+    //     `exit(1)` on a corrupt database never advertises `{"running":true}`.
+    //     So two daemons starting together both see nothing, both fall through,
+    //     and both run `setup_db` — migrations included, `ALTER TABLE`
+    //     included — against one file. That is check-then-act, and this repo
+    //     has a documented history of `database disk image is malformed`
+    //     attributed to exactly two writers.
+    //
+    //     `flock`/`LockFileEx` is atomic: exactly one caller wins however the
+    //     two interleave. The guard is held for the rest of the process's life
+    //     and released by the OS when the process dies, however it dies — so
+    //     there is no stale lock to reason about and nothing to clean up.
+    //
+    //     The probe stays. It is the cheap, informative check, it produces the
+    //     better log line, and it is the ONLY thing that sees a daemon from a
+    //     build predating this lock — which is every daemon during the rollout
+    //     window. Neither is redundant.
+    //
+    //     `None` below is "running unlocked", not "no lock needed" — see the
+    //     Unavailable arm.
+    let _single_instance_lock = match meridian::platform::acquire_single_instance_lock() {
+        meridian::platform::LockOutcome::Acquired(guard) => Some(guard),
+        // This WARN is a MEASUREMENT as much as a stand-down. It fires exactly
+        // when two daemons raced and the probe above did not see it — the case
+        // that was previously invisible AND unguarded. Because it egresses to
+        // central telemetry, its rate across the fleet is the first direct
+        // evidence of how often this actually happens, rather than how often it
+        // could happen in principle. Rewording it is fine; dropping it or
+        // demoting it below WARN removes the only signal we have.
+        meridian::platform::LockOutcome::HeldByAnother => {
+            tracing::warn!(
+                pid = std::process::id() as i64,
+                "another meridian daemon holds the single-instance lock for this data dir — exiting (lock)"
+            );
+            return Ok(());
+        }
+        // Could not find out. Proceed UNLOCKED rather than refuse to start:
+        // before this lock existed there was no lock at all, so running on is
+        // exactly the previous behaviour and gives up nothing that was ever
+        // guaranteed. Standing down here would instead be a brand-new way for
+        // the daemon to be permanently dead on a machine where nothing is
+        // wrong (a read-only home, an odd errno, an antivirus holding the
+        // file). A guard against a rare race must not be able to cause a
+        // common outage.
+        meridian::platform::LockOutcome::Unavailable(e) => {
+            tracing::warn!(
+                pid = std::process::id() as i64,
+                error = %e, // not-anyhow: a String the acquire already formatted with its full cause; there is no chain to walk
+                "could not take the single-instance lock — continuing without it; \
+                 the endpoint probe above remains the only guard this start has"
+            );
+            None
+        }
+    };
 
     // 4b. Open / create meridian pool and run migrations FIRST — before any
     //     preflight that can block or fail. The UI and MCP server read this DB
@@ -1138,9 +1211,17 @@ async fn main() -> Result<()> {
     //     would let a daemon that's about to `exit(1)` on a locked or corrupt
     //     database falsely tell the tray's watchdog it's healthy for the
     //     brief window before that failure surfaces. Safe to bind
-    //     unconditionally here: the check above already established nothing
-    //     else is listening, and nothing between there and here binds it out
-    //     from under us (both single-threaded up to the poll loop).
+    //     unconditionally here: we hold the single-instance lock taken at
+    //     4a-quater, so no other daemon process reached this line at all. (The
+    //     older justification — "the check above established nothing else is
+    //     listening, and we're single-threaded up to the poll loop" — was only
+    //     ever about THIS process's threads and said nothing about a second
+    //     process. The lock is what actually makes this claim true.)
+    //
+    //     NOTE: `spawn_health_listener` itself unlinks a stale socket and then
+    //     binds, which is its own check-then-act across processes. The lock
+    //     makes that unreachable for two daemons, but the sequence is left
+    //     untouched here on purpose — #862 owns that boundary.
     meridian::platform::spawn_health_listener()?;
     tracing::info!(endpoint = %meridian::platform::endpoint_display(), "daemon health endpoint ready");
 
@@ -1643,7 +1724,7 @@ mod startup_order_tests {
     /// `every_early_return_still_restores_the_daemon`) — this scans the
     /// source for the three call sites and asserts their relative order.
     #[test]
-    fn single_instance_check_precedes_setup_db_and_bind_follows_it() {
+    fn single_instance_lock_precedes_setup_db_and_bind_follows_it() {
         const SRC: &str = include_str!("main.rs");
         // Truncate at THIS test module first — the file scans itself, and the
         // needles below (`daemon_already_running`, `setup_db(&initial_cfg`)
@@ -1657,6 +1738,9 @@ mod startup_order_tests {
         let check_pos = prod
             .find("meridian::platform::daemon_already_running().await")
             .expect("the single-instance guard's check call must exist in main()");
+        let lock_pos = prod
+            .find("meridian::platform::acquire_single_instance_lock()")
+            .expect("the single-instance LOCK acquire must exist in main()");
         let setup_db_pos = prod
             .find("setup_db(&initial_cfg.meridian_db_uri()).await")
             .expect("the setup_db() call must exist in main()");
@@ -1665,11 +1749,21 @@ mod startup_order_tests {
             .expect("the health-listener bind call must exist in main()");
 
         assert!(
-            check_pos < setup_db_pos,
-            "the single-instance guard must be CHECKED before setup_db() opens \
+            check_pos < lock_pos,
+            "the cheap endpoint probe should run before the lock acquire, so \
+             the common case (a daemon that is plainly already up) produces \
+             the informative log line. Found check at byte {check_pos}, lock \
+             at byte {lock_pos}."
+        );
+        assert!(
+            lock_pos < setup_db_pos,
+            "the single-instance lock must be ACQUIRED before setup_db() opens \
              the pool and runs migrations — a daemon that will lose that race \
-             must never touch meridian.db. Found check at byte {check_pos}, \
-             setup_db at byte {setup_db_pos}."
+             must never touch meridian.db. This assertion used to name the \
+             PROBE instead, which is why it passed for two releases while the \
+             hazard was wide open: the probe is check-then-act, so both racers \
+             pass it. Only the lock is an acquire. Found lock at byte \
+             {lock_pos}, setup_db at byte {setup_db_pos}."
         );
         assert!(
             setup_db_pos < bind_pos,

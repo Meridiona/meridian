@@ -204,6 +204,25 @@ candle-core = "0.10"
 candle-nn = "0.10"
 candle-transformers = "0.10"
 
+# `flock` for the daemon's single-instance lock (src/platform/unix.rs). Three
+# lines of FFI; `libc` is already in the tree transitively, so this adds no
+# build cost. Deliberately not `fs2`/`fd-lock`: both wrap this same call, and
+# neither surfaces the errno, which is the ONE thing this code needs — telling
+# "another daemon holds it" apart from "the lock could not be attempted" is
+# what keeps a failed lock from bricking an install.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# `LockFileEx` for the same lock on Windows (src/platform/windows.rs). Version
+# pinned to 0.61 to match what the tray already resolves, rather than adding a
+# seventh windows-sys in the tree.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+] }
+
 [dev-dependencies]
 tokio       = { version = "1.15", features = ["full", "test-util"] }
 tempfile    = "3"
