@@ -41,6 +41,34 @@ pub struct RenderedRecord {
     pub body: String,
     pub trace_id: String,
     pub span_id: String,
+    /// The record's structured fields, already stringified, in emission order.
+    ///
+    /// These were previously decoded and thrown away, so `meridian logs` showed
+    /// the message of every record and none of its data. That is the opposite
+    /// of how this codebase is instrumented — CLAUDE.md requires values to be
+    /// structured fields and never formatted into the message — so the one
+    /// supported way to read logs locally was systematically hiding the half
+    /// that was written to be machine-readable. A `SIGTERM received` with no
+    /// `pid`, an `ETL run failed` with no `error`.
+    pub attributes: Vec<(String, String)>,
+}
+
+/// Attribute keys `meridian logs` does not print.
+///
+/// Not a privacy filter — this is the local, full-fidelity read path and
+/// nothing here is withheld from the spool or from an export bundle. It is
+/// purely about signal: `opentelemetry-appender-tracing`'s
+/// `experimental_metadata_attributes` feature stamps call-site metadata on
+/// EVERY record, which would triple the width of every line with the one thing
+/// a reader already knows (they can see the message).
+///
+/// Prefix-matched, so `code.filepath`/`code.lineno`/`code.namespace` are all
+/// covered by one entry.
+const UNPRINTED_ATTR_PREFIXES: &[&str] = &["code.", "log.target", "thread.", "busy_ns", "idle_ns"];
+
+/// Is this a call-site metadata key rather than a value the emitter chose?
+fn is_unprinted_attr(key: &str) -> bool {
+    UNPRINTED_ATTR_PREFIXES.iter().any(|p| key.starts_with(p))
 }
 
 /// Decode one spooled file into [`RenderedRecord`]s. The signal (logs vs
@@ -86,6 +114,9 @@ fn decode_logs(bytes: &[u8]) -> Result<Vec<RenderedRecord>> {
                     body: any_value_to_string(lr.body.as_ref()),
                     trace_id: hex::encode(&lr.trace_id),
                     span_id: hex::encode(&lr.span_id),
+                    attributes: collect_attributes(
+                        lr.attributes.iter().map(|kv| (&kv.key, kv.value.as_ref())),
+                    ),
                 });
             }
         }
@@ -109,6 +140,11 @@ fn decode_traces(bytes: &[u8]) -> Result<Vec<RenderedRecord>> {
                     body: span.name,
                     trace_id: hex::encode(&span.trace_id),
                     span_id: hex::encode(&span.span_id),
+                    attributes: collect_attributes(
+                        span.attributes
+                            .iter()
+                            .map(|kv| (&kv.key, kv.value.as_ref())),
+                    ),
                 });
             }
         }
@@ -122,6 +158,18 @@ fn resource_service_name(resource: Option<&Resource>) -> String {
         .map(|kv| any_value_to_string(kv.value.as_ref()))
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Stringify a record's attributes for display, dropping call-site metadata
+/// and anything with an empty value (a field that was recorded but never set —
+/// printing `outcome=` adds width and no information).
+fn collect_attributes<'a>(
+    kvs: impl Iterator<Item = (&'a String, Option<&'a AnyValue>)>,
+) -> Vec<(String, String)> {
+    kvs.filter(|(k, _)| !is_unprinted_attr(k))
+        .map(|(k, v)| (k.clone(), any_value_to_string(v)))
+        .filter(|(_, v)| !v.is_empty())
+        .collect()
 }
 
 fn any_value_to_string(v: Option<&AnyValue>) -> String {
@@ -177,6 +225,11 @@ pub fn format_line(r: &RenderedRecord) -> String {
     .unwrap_or_else(|| "?".to_string());
 
     let mut line = format!("{ts} {:>7} [{}] {}", r.severity, r.service_name, r.body);
+    // After the message, before `trace_id`: the fields are what the message is
+    // about, and the trace id is a join key nobody reads inline.
+    for (k, v) in &r.attributes {
+        line.push_str(&format!(" {k}={v}"));
+    }
     if !r.trace_id.is_empty() {
         line.push_str(&format!(" trace_id={}", r.trace_id));
     }
@@ -421,6 +474,126 @@ mod tests {
             }],
         };
         req.encode_to_vec()
+    }
+
+    /// Build one log record carrying the given attributes, so the rendering of
+    /// structured fields can be exercised without a live subscriber.
+    fn make_log_bytes_with_attrs(body: &str, attrs: &[(&str, any_value::Value)]) -> Vec<u8> {
+        let req = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue("test-svc".to_string())),
+                        }),
+                    }],
+                    dropped_attributes_count: 0,
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope::default()),
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1_700_000_000_000_000_000,
+                        severity_text: "INFO".to_string(),
+                        body: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue(body.to_string())),
+                        }),
+                        attributes: attrs
+                            .iter()
+                            .map(|(k, v)| KeyValue {
+                                key: (*k).to_string(),
+                                value: Some(AnyValue {
+                                    value: Some(v.clone()),
+                                }),
+                            })
+                            .collect(),
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        req.encode_to_vec()
+    }
+
+    /// A record's structured fields must reach the rendered line.
+    ///
+    /// They were decoded and discarded before, which made `meridian logs` show
+    /// the message of every record and none of its data — so `SIGTERM received`
+    /// could not be attributed to a process and `ETL run failed` did not carry
+    /// its error. `pid` is the concrete case this was added for: an `i64`, which
+    /// must render as a plain number rather than a debug-formatted string.
+    #[test]
+    fn structured_fields_are_rendered_not_discarded() {
+        let bytes = make_log_bytes_with_attrs(
+            "SIGTERM received",
+            &[("pid", any_value::Value::IntValue(4321))],
+        );
+        let records = decode_logs(&bytes).unwrap();
+        let r = &records[0];
+        assert_eq!(
+            r.attributes,
+            vec![("pid".to_string(), "4321".to_string())],
+            "the log's structured fields must survive decoding"
+        );
+        let line = format_line(r);
+        assert!(
+            line.contains("SIGTERM received pid=4321"),
+            "the fields must appear on the rendered line, right after the \
+             message; got {line:?}"
+        );
+    }
+
+    /// Call-site metadata is stamped on EVERY record by
+    /// `experimental_metadata_attributes`. Printing it would bury the fields
+    /// that were chosen deliberately under three that never vary in usefulness.
+    #[test]
+    fn call_site_metadata_is_not_printed() {
+        let bytes = make_log_bytes_with_attrs(
+            "shutting down",
+            &[
+                (
+                    "code.filepath",
+                    any_value::Value::StringValue("src/main.rs".into()),
+                ),
+                ("code.lineno", any_value::Value::IntValue(1547)),
+                (
+                    "code.namespace",
+                    any_value::Value::StringValue("meridian".into()),
+                ),
+                (
+                    "log.target",
+                    any_value::Value::StringValue("meridian".into()),
+                ),
+                ("pid", any_value::Value::IntValue(99)),
+            ],
+        );
+        let r = &decode_logs(&bytes).unwrap()[0];
+        assert_eq!(
+            r.attributes,
+            vec![("pid".to_string(), "99".to_string())],
+            "only the emitter's own fields should survive; got {:?}",
+            r.attributes
+        );
+    }
+
+    /// A field declared on a span but never recorded arrives as an empty value.
+    /// Rendering `outcome=` costs width and carries nothing.
+    #[test]
+    fn unset_fields_are_omitted() {
+        let bytes = make_log_bytes_with_attrs(
+            "daemon_lifecycle.stop",
+            &[
+                ("outcome", any_value::Value::StringValue(String::new())),
+                ("reason", any_value::Value::StringValue("quit".to_string())),
+            ],
+        );
+        let r = &decode_logs(&bytes).unwrap()[0];
+        assert_eq!(
+            r.attributes,
+            vec![("reason".to_string(), "quit".to_string())]
+        );
     }
 
     #[test]

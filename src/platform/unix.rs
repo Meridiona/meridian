@@ -210,10 +210,20 @@ pub async fn wait_for_shutdown() {
     let mut sigterm = signal(SignalKind::terminate()).expect("register SIGTERM handler");
     let mut sighup = signal(SignalKind::hangup()).expect("register SIGHUP handler");
 
+    // `pid` on every arm: these lines are the record of WHICH daemon generation
+    // was asked to stop, and during an update or a quit-then-relaunch there are
+    // several within seconds of each other. Without it the signal cannot be
+    // matched to the "meridian daemon starting" line it belongs to, and the
+    // shutdown sequence — the window where the tray and the daemon can overlap
+    // on meridian.db — is unreconstructable after the fact.
+    //
+    // `as i64` deliberately; see the same cast at the startup log in `main.rs`
+    // for why a `u32` would ship as a string, or not at all.
+    let pid = std::process::id() as i64;
     tokio::select! {
-        _ = sigint.recv()  => tracing::info!("SIGINT received"),
-        _ = sigterm.recv() => tracing::info!("SIGTERM received"),
-        _ = sighup.recv()  => tracing::info!("SIGHUP received — reloading (graceful restart)"),
+        _ = sigint.recv()  => tracing::info!(pid, "SIGINT received"),
+        _ = sigterm.recv() => tracing::info!(pid, "SIGTERM received"),
+        _ = sighup.recv()  => tracing::info!(pid, "SIGHUP received — reloading (graceful restart)"),
     }
 }
 

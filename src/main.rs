@@ -1023,8 +1023,26 @@ async fn main() -> Result<()> {
     let initial_cfg = Config::from_env();
     tracing::info!(stage = "config_loaded", "configuration ready");
 
-    // 4. Log startup parameters
+    // 4. Log startup parameters.
+    //
+    //    `pid` is here so a generation can be TOLD APART from the next one.
+    //    Without it, a machine that started three daemons in 35 seconds — which
+    //    is what a quit-then-relaunch during an update looks like — produces
+    //    three identical "meridian daemon starting" lines and a set of signal
+    //    lines that cannot be attributed to any of them. Every corruption
+    //    investigation so far has run aground on exactly that: the events are
+    //    all in the spool, and nothing says which process each belongs to.
+    //
+    //    Logged as `i64`, not the `u32` `std::process::id` returns, and this is
+    //    load-bearing rather than cosmetic. `tracing-opentelemetry` 0.28 has no
+    //    `record_u64`, so a `u32`/`u64` field falls through to `record_debug`
+    //    and is emitted as a STRING — which then has to survive the attribute
+    //    allowlist as a string key to egress at all. An `i64` becomes a real
+    //    `IntValue`, and `redact::keep_attribute`'s first arm keeps every
+    //    `IntValue` unconditionally. See CLAUDE.md's third "coupling that
+    //    silently deletes error coverage".
     tracing::info!(
+        pid = std::process::id() as i64,
         meridian_db = %initial_cfg.meridian_db,
         poll_interval_secs = initial_cfg.poll_interval_secs,
         "meridian daemon starting"
@@ -1526,13 +1544,27 @@ async fn main() -> Result<()> {
     let _ = shutdown_tx.send(true);
 
     // 9. Shutdown
-    tracing::info!("shutting down");
+    tracing::info!(pid = std::process::id() as i64, "shutting down");
     meridian::platform::release_endpoint();
     // See `db::meridian::checkpoint_wal`'s doc for why this runs before every
     // close, not just a plain shutdown. Best-effort: a failed checkpoint must
     // not block shutdown.
-    if let Err(e) = meridian::db::meridian::checkpoint_wal(&meridian).await {
-        tracing::warn!(error = %meridian::errors::chain(&e), "WAL checkpoint on shutdown failed - continuing anyway");
+    //
+    // BOTH outcomes are logged, and the success line is the point. Previously a
+    // failed checkpoint logged a WARN and a successful one logged nothing, so
+    // "no line after `shutting down`" meant either "it worked" or "the process
+    // was killed part-way through" — indistinguishable, and the difference is
+    // the entire question when a `meridian.db` is later found malformed. A
+    // corruption investigation on 2026-08-25 stalled on exactly this ambiguity
+    // and had to withdraw its conclusion. Now silence here means killed.
+    match meridian::db::meridian::checkpoint_wal(&meridian).await {
+        Ok(()) => tracing::info!(
+            pid = std::process::id() as i64,
+            "WAL checkpoint on shutdown complete"
+        ),
+        Err(e) => {
+            tracing::warn!(error = %meridian::errors::chain(&e), "WAL checkpoint on shutdown failed - continuing anyway")
+        }
     }
     meridian.close().await;
 

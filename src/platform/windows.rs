@@ -209,9 +209,12 @@ pub async fn wait_for_shutdown() {
     let mut close = ctrl_close().expect("register console-close handler");
     let mut shutdown = ctrl_shutdown().expect("register system-shutdown handler");
 
+    // `pid` on every arm, for the same reason as the Unix arm — see
+    // `super::unix::wait_for_shutdown`.
+    let pid = std::process::id() as i64;
     tokio::select! {
-        _ = ctrl_c.recv()   => tracing::info!("Ctrl-C received"),
-        _ = close.recv()    => tracing::info!("console close received"),
-        _ = shutdown.recv() => tracing::info!("system shutdown received"),
+        _ = ctrl_c.recv()   => tracing::info!(pid, "Ctrl-C received"),
+        _ = close.recv()    => tracing::info!(pid, "console close received"),
+        _ = shutdown.recv() => tracing::info!(pid, "system shutdown received"),
     }
 }
