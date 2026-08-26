@@ -1435,13 +1435,21 @@ async fn main() -> Result<()> {
     //     ever on a row a producer wrote, so every refresh still traces to a human
     //     action, which is what keeps a refresh POST from being in flight when a
     //     laptop lid closes.
-    {
+    //
+    //     Its `JoinHandle` is KEPT, unlike the loops above, and awaited in the
+    //     shutdown sequence before the WAL checkpoint. This task is the daemon's
+    //     only writer outside the poll loop, and `service_once` deliberately runs a
+    //     whole sync (network + `pm_tasks` writes, tens of seconds) without
+    //     re-checking the shutdown flag, so dropping the handle meant checkpointing
+    //     and closing the pool underneath live writes on every restart. See the
+    //     shutdown site for the full reasoning.
+    let sync_watcher = {
         let pool_sync = meridian.clone();
         let rx_sync = shutdown_rx.clone();
         tokio::spawn(async move {
             meridian::intelligence::sync_requests::run_watcher(pool_sync, rx_sync).await;
-        });
-    }
+        })
+    };
 
     // 8b. Poll loop — ETL, PM sync, and FM categorization on the configured interval.
     // Track the last-applied log level so we can detect changes and hot-reload
@@ -1597,7 +1605,42 @@ async fn main() -> Result<()> {
 
     // 9. Shutdown
     tracing::info!("shutting down");
-    meridian::platform::release_endpoint();
+
+    // 9a. Wait for the PM sync watcher to actually STOP before touching the WAL.
+    //
+    //     `shutdown_tx.send(true)` above only sets a flag, and the watcher checks it
+    //     on its sleep - not around `service_once`, which is deliberate (a claimed
+    //     request finishes and records an outcome rather than being cut off with the
+    //     row left claimed). The consequence is that after the signal this task can
+    //     still be inside a full provider sync for tens of seconds, writing to
+    //     `pm_tasks`. Without this await, `checkpoint_wal` and `close` below ran
+    //     underneath those writes on EVERY restart - and a reconnect flow restarts
+    //     the daemon, which is exactly when a burst of sync requests exists to
+    //     service. A TRUNCATE checkpoint racing live writes is the one thing that
+    //     function exists to prevent (see its doc: it hands the next generation a
+    //     half-written WAL while the tray keeps a stale view of the file).
+    //
+    //     Bounded, because the whole point of the no-interrupt design is that
+    //     `service_once` may be mid-network-call: on timeout we proceed anyway and
+    //     say so, which is strictly better than the old unconditional race, and no
+    //     worse than a hard kill.
+    {
+        const WATCHER_DRAIN_TIMEOUT: Duration = Duration::from_secs(45);
+        match tokio::time::timeout(WATCHER_DRAIN_TIMEOUT, sync_watcher).await {
+            Ok(Ok(())) => tracing::debug!("PM sync watcher stopped cleanly before checkpoint"),
+            // `JoinError`'s Display ignores `f.alternate()`, so `chain()` would
+            // render byte-identically - it carries a panic payload or a
+            // cancellation, never a `.context()` chain.
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "sync watcher ended abnormally"); // not-anyhow: JoinError
+            }
+            Err(_elapsed) => tracing::warn!(
+                timeout_s = WATCHER_DRAIN_TIMEOUT.as_secs() as i64,
+                "PM sync watcher did not stop in time - checkpointing anyway, which may leave a non-empty WAL"
+            ),
+        }
+    }
+
     // See `db::meridian::checkpoint_wal`'s doc for why this runs before every
     // close, not just a plain shutdown. Best-effort: a failed checkpoint must
     // not block shutdown.
@@ -1605,6 +1648,19 @@ async fn main() -> Result<()> {
         tracing::warn!(error = %meridian::errors::chain(&e), "WAL checkpoint on shutdown failed - continuing anyway");
     }
     meridian.close().await;
+
+    // 9b. Release the single-instance endpoint LAST, after the pool is closed.
+    //
+    //     This used to run first, before the checkpoint. `daemon_already_running` is
+    //     how a starting daemon decides whether to bow out (4a-ter), so releasing it
+    //     early opens the guard while THIS process is still checkpointing and closing
+    //     - the window `single_instance_check_precedes_setup_db_and_bind_follows_it`
+    //     exists to close, reopened from the exiting side. It only pinned the
+    //     STARTING daemon's ordering. Under launchd the relaunch is immediate, and a
+    //     new generation running migrations against a file the old one is mid-
+    //     checkpoint on is the double-writer profile the fleet-correlated corruption
+    //     was traced to.
+    meridian::platform::release_endpoint();
 
     // Flush OTel exporters FIRST, while the runtime is alive — this writes the
     // daemon's final shutdown spans/logs into the spool's pending/ dir...
@@ -1818,6 +1874,60 @@ mod startup_order_tests {
              exit(1) on a locked/corrupt database advertise {{\"running\":true}} \
              to the tray's watchdog. Found setup_db at byte {setup_db_pos}, \
              bind at byte {bind_pos}."
+        );
+    }
+
+    /// The EXIT-side ordering, which the test above does not cover and which was
+    /// wrong until 1.91.0-staging.2's write wedge was traced.
+    ///
+    /// Three things must happen in this order on shutdown:
+    /// 1. await the PM sync watcher — it is the daemon's only writer outside the
+    ///    poll loop, and `service_once` deliberately ignores the shutdown flag
+    ///    once it has claimed a row (so it can finish and record an outcome), so
+    ///    it can still be writing for tens of seconds after the signal;
+    /// 2. `checkpoint_wal` — a TRUNCATE checkpoint racing those live writes is
+    ///    the exact thing that function exists to prevent, and it is what hands
+    ///    the next daemon generation a half-written WAL while the tray keeps a
+    ///    stale view of the file;
+    /// 3. `release_endpoint` LAST — it is what `daemon_already_running` answers,
+    ///    so releasing it before the checkpoint and close lets a relaunching
+    ///    daemon pass the single-instance guard and start migrating against a
+    ///    file this process is still checkpointing. Under launchd the relaunch
+    ///    is immediate, so that window is real, not theoretical.
+    ///
+    /// Same self-scanning idiom (and the same truncate-at-the-test-module trap)
+    /// as the test above.
+    #[test]
+    fn shutdown_awaits_the_sync_watcher_then_checkpoints_then_releases_the_endpoint() {
+        const SRC: &str = include_str!("main.rs");
+        let prod = SRC
+            .split_once("\n#[cfg(test)]")
+            .map_or(SRC, |(before, _)| before);
+
+        let await_pos = prod
+            .find("WATCHER_DRAIN_TIMEOUT, sync_watcher)")
+            .expect("shutdown must await the PM sync watcher's JoinHandle");
+        let checkpoint_pos = prod
+            .find("meridian::db::meridian::checkpoint_wal(&meridian).await")
+            .expect("shutdown must checkpoint the WAL");
+        let release_pos = prod
+            .find("meridian::platform::release_endpoint();")
+            .expect("shutdown must release the single-instance endpoint");
+
+        assert!(
+            await_pos < checkpoint_pos,
+            "the PM sync watcher must be awaited BEFORE the WAL checkpoint — \
+             checkpointing underneath its live writes is what corrupted the \
+             shared WAL index. Found await at byte {await_pos}, checkpoint at \
+             byte {checkpoint_pos}."
+        );
+        assert!(
+            checkpoint_pos < release_pos,
+            "release_endpoint() must run AFTER the checkpoint and pool close — \
+             releasing it earlier opens the single-instance guard while this \
+             process is still writing, letting a relaunching daemon migrate \
+             against the same file. Found checkpoint at byte {checkpoint_pos}, \
+             release at byte {release_pos}."
         );
     }
 }

@@ -152,29 +152,45 @@ async fn request_and_wait(
     label: &str,
     wait: Option<Duration>,
 ) -> Delegation {
-    if let Err(e) = pm_sync_requests::request(pool, ALL_PROVIDERS, mode, label).await {
-        return Delegation::Failed {
-            error: format!(
-                "could not queue the sync request: {}",
-                crate::errors::chain(&e)
-            ),
-        };
-    }
-    tracing::debug!(label, "pm sync requested - the daemon owns tracker auth");
+    let seq = match pm_sync_requests::request(pool, ALL_PROVIDERS, mode, label).await {
+        Ok(seq) => seq,
+        Err(e) => {
+            return Delegation::Failed {
+                error: format!(
+                    "could not queue the sync request: {}",
+                    crate::errors::chain(&e)
+                ),
+            };
+        }
+    };
+    tracing::debug!(
+        label,
+        seq,
+        "pm sync requested - the daemon owns tracker auth"
+    );
 
     match wait {
-        Some(budget) => wait_for_outcome(pool, label, budget).await,
+        Some(budget) => wait_for_outcome(pool, label, seq, budget).await,
         None => Delegation::Pending,
     }
 }
 
 /// Poll the request row until the daemon records an outcome, or `budget` elapses.
 ///
-/// The row is keyed on the provider (`'*'`), so a concurrent CLI's request can reset it
-/// and this can end up reading a sibling's outcome. That is fine: both asked for the same
-/// thing, and "some sync just completed" is exactly what the caller needs to know. It
-/// cannot read a *stale* outcome, because `request` clears `completed_at`.
-async fn wait_for_outcome(pool: &SqlitePool, label: &str, budget: Duration) -> Delegation {
+/// The row is keyed on the provider (`'*'`), so a concurrent producer's request shares
+/// it. `seq` is what keeps that safe: it is the sequence number THIS caller's request
+/// was given, and `outcome` only answers once the completion watermark reaches it. So a
+/// sibling's sync can satisfy this caller (both asked for the same thing, and "a sync
+/// finished after you asked" is exactly what the caller needs to know), while a sync that
+/// finished BEFORE this request cannot - which is the stale read the previous
+/// `completed_at`-clearing design tried to prevent by destroying the other waiter's
+/// answer.
+async fn wait_for_outcome(
+    pool: &SqlitePool,
+    label: &str,
+    seq: i64,
+    budget: Duration,
+) -> Delegation {
     let deadline = std::time::Instant::now() + budget;
     loop {
         if std::time::Instant::now() >= deadline {
@@ -186,7 +202,7 @@ async fn wait_for_outcome(pool: &SqlitePool, label: &str, budget: Duration) -> D
             return Delegation::Pending;
         }
         tokio::time::sleep(POLL_INTERVAL).await;
-        match pm_sync_requests::outcome(pool, ALL_PROVIDERS).await {
+        match pm_sync_requests::outcome(pool, ALL_PROVIDERS, seq).await {
             Ok(Some(out)) => {
                 return match out.error {
                     Some(error) => Delegation::Failed { error },
@@ -236,7 +252,7 @@ mod tests {
 
         assert_eq!(got, Delegation::Synced { count: None });
         assert!(
-            pm_sync_requests::outcome(&pool, ALL_PROVIDERS)
+            pm_sync_requests::outcome(&pool, ALL_PROVIDERS, 1)
                 .await
                 .unwrap()
                 .is_none(),
@@ -289,13 +305,19 @@ mod tests {
             .await
             .unwrap();
         pm_sync_requests::claim(&pool, ALL_PROVIDERS).await.unwrap();
-        pm_sync_requests::complete(&pool, ALL_PROVIDERS, None, Some("refresh_token is invalid"))
-            .await
-            .unwrap();
+        pm_sync_requests::complete(
+            &pool,
+            ALL_PROVIDERS,
+            1,
+            None,
+            Some("refresh_token is invalid"),
+        )
+        .await
+        .unwrap();
 
         // Re-requesting clears the outcome, so the waiter must be the one to observe it:
         // drive the wait directly against the already-completed row.
-        let got = wait_for_outcome(&pool, "tasks-sync", Duration::from_secs(5)).await;
+        let got = wait_for_outcome(&pool, "tasks-sync", 1, Duration::from_secs(5)).await;
 
         assert_eq!(
             got,

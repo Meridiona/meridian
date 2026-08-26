@@ -81,14 +81,44 @@ pub struct SyncResult {
 /// tighter — a faster poll would just burn reads without seeing a result any sooner.
 const OUTCOME_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Turn a failed request-write into something a user can act on.
+/// Shown when an outbox query fails because `meridian.db` itself is damaged. Points
+/// at the banner rather than repeating the SQLite text, because
+/// [`explain_outbox_failure`] has just raised that banner and it carries both the
+/// full cause and a Repair button - a settings panel has neither.
+const DB_DAMAGED_MESSAGE: &str =
+    "Meridian's database is damaged - use the Repair Database banner on the dashboard";
+
+/// Shown during the update window described on [`explain_outbox_failure`].
+const UPDATE_IN_PROGRESS_MESSAGE: &str =
+    "Meridian is still finishing an update - try again in a moment";
+
+/// What a failed `pm_sync_requests` query means for the user, plus the side effect it
+/// must trigger first.
+///
+/// Both halves of the handoff - the request write and the outcome read - fail for the
+/// same three reasons, so they classify here instead of each growing its own ladder.
+/// Callers render and log the chain themselves via [`crate::cmd_err!`] and pass the
+/// result in as `rendered`, which keeps each site's log message a constant (better
+/// grouping in OpenObserve than one message with the operation interpolated into it).
+///
+/// # Corruption must reach the banner, not a settings panel
+///
+/// This is the branch the whole function exists for. A staging machine's
+/// `meridian.db` had real b-tree damage and these two queries were the ONLY code on
+/// it to find out: `repair_boot`'s startup probe is skipped while a daemon answers,
+/// the daemon latches only when its own queries reach a damaged page, and
+/// `poll::refresh` covers only its four dashboard reads. So the user was shown
+/// `could not queue the sync: ... database disk image is malformed` inside Settings,
+/// with no banner and no Repair button - a recoverable fault presented as a failed
+/// button press. [`crate::db_pool::raise_if_corrupt`] fixes that at the source; this
+/// function just has to call it and then say something better than the SQL.
 ///
 /// # Why the missing-table case is special-cased
 ///
 /// `pm_sync_requests` arrives in migration 082, and **only the daemon runs migrations**
 /// (the tray opens the file with `create_if_missing(false)` and assumes the daemon made
-/// it). So during an app update there is a window — new tray already running, daemon not
-/// yet restarted onto the new binary — where the table genuinely does not exist yet.
+/// it). So during an app update there is a window - new tray already running, daemon not
+/// yet restarted onto the new binary - where the table genuinely does not exist yet.
 ///
 /// It is seconds long and self-heals the moment the daemon restarts, but a user who
 /// presses "Sync now" inside it would otherwise be shown a raw SQL string:
@@ -100,24 +130,67 @@ const OUTCOME_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// `Database` error whose only distinguishing feature IS its text; the match is
 /// deliberately loose (table name plus "no such table") so a reworded sqlite message
 /// degrades to the generic branch rather than mis-reporting something else.
-fn queue_failure_message(e: &anyhow::Error) -> String {
-    let detail = format!("{e:#}");
-    if detail.contains("no such table") && detail.contains("pm_sync_requests") {
-        tracing::warn!("pm_sync_requests missing - the daemon has not applied migration 082 yet");
-        return "Meridian is still finishing an update - try again in a moment".to_string();
+/// Corruption, by contrast, is classified by `is_corrupt_error` on the real error -
+/// never by string matching - so it stays correct across sqlite wordings.
+async fn explain_outbox_failure(
+    db: &SqlitePool,
+    e: &anyhow::Error,
+    rendered: &str,
+    fallback: &str,
+) -> String {
+    crate::db_pool::raise_if_corrupt(db, e).await;
+
+    if meridian::db::integrity::is_corrupt_error(e) {
+        return DB_DAMAGED_MESSAGE.to_string();
     }
-    tracing::warn!(error = %detail, "could not queue a PM sync request");
-    format!("could not queue the sync: {detail}")
+    // "no such table" (082 not applied) OR "no such column" (083 not applied). The
+    // column case is not hypothetical: migration 083 added `seq`/`completed_seq`, and
+    // during an update the new tray queries them before the daemon has migrated. The
+    // first version of this branch only matched the table and would have shown every
+    // updating user `no such column: seq` - the exact raw-SQL-in-a-settings-panel
+    // failure it was written to prevent, one migration later. Any future migration
+    // touching this table inherits the same window, which is why this matches the
+    // schema-mismatch FAMILY rather than one message.
+    // SQLite names the TABLE for a missing table (`no such table:
+    // pm_sync_requests`) but only the COLUMN for a missing column (`no such column:
+    // seq`) - and none of this module's `.context(...)` strings contain the literal
+    // table name, so the two cases need separate needles rather than one
+    // table-plus-kind check.
+    //
+    // Matched on the full `no such column: <name>` prefix, not on the bare column
+    // name: `rendered.contains("seq")` would fire on any message containing
+    // "sequence" or "consequently" and mis-report an unrelated fault as a pending
+    // update, which sends the user to wait out an update that already finished.
+    const SCHEMA_PENDING: [&str; 3] = [
+        "no such table: pm_sync_requests",
+        "no such column: seq",
+        "no such column: completed_seq",
+    ];
+    if SCHEMA_PENDING
+        .iter()
+        .any(|needle| rendered.contains(needle))
+    {
+        return UPDATE_IN_PROGRESS_MESSAGE.to_string();
+    }
+    format!("{fallback}: {rendered}")
 }
 
-/// Resolve the tray's DB handle, or an error string suitable for returning straight
-/// to the frontend. `None` means the pool is closed (a repair or a corrupt DB), which
-/// is a real condition rather than a bug — say so plainly instead of unwrapping.
+/// Confirm a pool is currently open, without keeping the one we looked at.
+///
+/// Returns the HANDLE, not a `SqlitePool`. It used to return the pool, which every
+/// caller then held for the length of a 30 s poll loop - so a recycle or a daemon
+/// reload part-way through left the rest of that loop querying a dead pool. Callers
+/// resolve `get()` per use instead; this only answers "is there any point starting".
+///
+/// `None` means the pool is closed (a repair, or a recycle in progress), which is a
+/// real condition rather than a bug - say so plainly instead of unwrapping.
 fn require_pool(
     pool: &tauri::State<'_, crate::db_pool::DbPool>,
-) -> Result<meridian_core::SqlitePool, String> {
-    pool.get()
-        .ok_or_else(|| "the database is not open - Meridian may be repairing it".to_string())
+) -> Result<crate::db_pool::DbPool, String> {
+    if pool.get().is_none() {
+        return Err("the database is not open - Meridian may be repairing it".to_string());
+    }
+    Ok(pool.inner().clone())
 }
 
 /// Re-sync the board from the tracker (the ported /api/tasks/sync POST) — always
@@ -215,9 +288,14 @@ pub async fn request_gated_sync_tasks(
 /// writer to race for the rotating credential - the tray still never holds a token
 /// itself. Without it, a queued row would sit unserviced and the user would watch a
 /// spinner time out with the daemon stopped.
+/// Takes the `DbPool` HANDLE and resolves it per query, rather than holding one
+/// `SqlitePool` for the whole 30 s wait. That matters here specifically: a daemon
+/// reload or a `recover_if_corrupt` recycle part-way through the poll loop replaces
+/// the pool, and a cached one would spend the rest of the budget querying a closed
+/// handle and then report a timeout for a sync that had finished.
 #[tracing::instrument(skip(db), fields(mode = mode.as_str()))]
 async fn ask_daemon_to_sync(
-    db: &SqlitePool,
+    db: &crate::db_pool::DbPool,
     mode: SyncMode,
     reason: &'static str,
     fallback_cli: &'static str,
@@ -236,22 +314,65 @@ async fn ask_daemon_to_sync(
         }));
     }
 
-    if let Err(e) = pm_sync_requests::request(db, ALL_PROVIDERS, mode, reason).await {
-        return Err(queue_failure_message(&e));
-    }
+    // The sequence number this request was given. Polling the outcome WITHOUT it is
+    // what made "Sync now" report failure for syncs that had succeeded: the connect
+    // flow writes several requests seconds apart, and the old row-level
+    // `completed_at` flag could not say which one an outcome belonged to.
+    //
+    // Attempted twice: a first failure whose cause is a broken pool VIEW (not damaged
+    // data) is recovered by `recover_if_corrupt` recycling the connections, and the
+    // retry then succeeds - so the user's button works instead of them having to
+    // discover that quitting and relaunching the app is the cure. Exactly two
+    // attempts: the recycle either fixed it or the fault is real, and a loop here
+    // would hold a user-facing command open against a database that cannot serve it.
+    let mut attempt = 0;
+    let seq = loop {
+        attempt += 1;
+        let pool = db
+            .get()
+            .ok_or_else(|| "the database is not open - Meridian may be repairing it".to_string())?;
+        match pm_sync_requests::request(&pool, ALL_PROVIDERS, mode, reason).await {
+            Ok(seq) => break seq,
+            Err(e) => {
+                let rendered = crate::cmd_err!(e, "could not queue a PM sync request");
+                // Raises the banner and recycles the pool when the fault is a broken
+                // view; returns whether a retry is worth making.
+                let recovered = db.recover_if_corrupt(&e).await;
+                crate::db_pool::raise_if_corrupt(&pool, &e).await;
+                if recovered && attempt == 1 {
+                    tracing::info!("retrying the PM sync request on the recycled pool");
+                    continue;
+                }
+                return Err(explain_outbox_failure(
+                    &pool,
+                    &e,
+                    &rendered,
+                    "could not queue the sync",
+                )
+                .await);
+            }
+        }
+    };
 
     let deadline = tokio::time::Instant::now() + SYNC_TIMEOUT;
     loop {
         if tokio::time::Instant::now() >= deadline {
             tracing::warn!(
                 timeout_s = SYNC_TIMEOUT.as_secs() as i64,
+                seq,
                 "daemon did not report a sync outcome in time"
             );
             return Ok(None);
         }
         tokio::time::sleep(OUTCOME_POLL_INTERVAL).await;
 
-        match pm_sync_requests::outcome(db, ALL_PROVIDERS).await {
+        let Some(pool) = db.get() else {
+            // A recycle or a daemon reload has the pool closed right now. Keep
+            // waiting rather than failing - the request row is already written and
+            // the daemon will service it.
+            continue;
+        };
+        match pm_sync_requests::outcome(&pool, ALL_PROVIDERS, seq).await {
             Ok(Some(out)) => {
                 if let Some(err) = out.error {
                     tracing::warn!(error = %err, "daemon reported a sync failure");
@@ -265,7 +386,30 @@ async fn ask_daemon_to_sync(
                 return Ok(Some(SyncResult { ok: true, detail }));
             }
             Ok(None) => continue,
-            Err(e) => return Err(format!("could not read the sync outcome: {e}")),
+            // `cmd_err!`, never a bare `{e}`: every `pm_sync_requests` query adds its
+            // own `.context(...)`, and `anyhow`'s `Display` renders ONLY the outermost
+            // one. This site shipped as `could not read the sync outcome: reading the
+            // PM sync outcome` on a machine whose database was corrupt - the context
+            // twice over and the actual `(code: 11) database disk image is malformed`
+            // nowhere, which is precisely the 1.83.2 field incident `cmd_err!` was
+            // written for.
+            Err(e) => {
+                let rendered = crate::cmd_err!(e, "could not read the PM sync outcome");
+                // Recycle on a broken view here too, then keep waiting rather than
+                // failing: the request row is written and the daemon is servicing it,
+                // so a healed pool on the next poll turn still reports a real result.
+                if db.recover_if_corrupt(&e).await {
+                    tracing::info!("recycled the pool mid-wait - continuing to poll");
+                    continue;
+                }
+                return Err(explain_outbox_failure(
+                    &pool,
+                    &e,
+                    &rendered,
+                    "could not read the sync outcome",
+                )
+                .await);
+            }
         }
     }
 }
@@ -280,7 +424,7 @@ async fn ask_daemon_to_sync(
 /// is not evidence anyone is about to make a decision from the whole board. The two
 /// screens that genuinely are — the daily plan and the retarget ticket picker — ask
 /// for themselves through [`request_gated_sync_tasks`]. See that command's doc.
-pub(crate) fn trigger_background_pm_force_sync(db: Option<SqlitePool>, reason: &'static str) {
+pub(crate) fn trigger_background_pm_force_sync(db: crate::db_pool::DbPool, reason: &'static str) {
     request_sync(db, SyncMode::Force, reason);
 }
 
@@ -291,74 +435,45 @@ pub(crate) fn trigger_background_pm_force_sync(db: Option<SqlitePool>, reason: &
 /// result, so a queued row that the next daemon start services is the right outcome -
 /// spawning a process per window open is exactly the cost this replaced.
 ///
-/// Takes `Option<SqlitePool>` (i.e. `DbPool::get()`) rather than a pool or an
-/// `AppHandle`, because `None` is a real state and not an error: the pool is closed
-/// while a corrupt DB is being repaired. Callers pass what they already hold, which
-/// is a `DbPool` in the integration paths and app state in the window paths.
+/// Takes the [`crate::db_pool::DbPool`] HANDLE and resolves it **inside** the spawned
+/// task, not at the call site.
 ///
-/// Best-effort by design: these fire from window-open and connect-success paths
-/// where a failure must never block the thing the user asked for, and the next
-/// trigger (or their explicit "Sync now") retries anyway.
-fn request_sync(db: Option<SqlitePool>, mode: SyncMode, reason: &'static str) {
-    let Some(db) = db else {
-        tracing::debug!(reason, "pm sync request skipped - database not open");
-        return;
-    };
+/// This parameter used to be `Option<SqlitePool>`, and the reasoning was that `None`
+/// is a real state (the pool is closed while a corrupt DB is repaired) so callers
+/// should pass what they already hold. The state check was right; taking a pool to do
+/// it was not. Every caller is a connect-success path, and those paths **restart the
+/// daemon**, which calls `DbPool::close`. A pool resolved before that point is dead by
+/// the time this task runs - `integrations.rs` even had a comment explaining that it
+/// grabbed the pool early "so the sync request can still be written afterwards",
+/// which is precisely backwards. Resolving after the spawn means the task sees
+/// whichever generation is live when it actually writes.
+///
+/// Best-effort by design: these fire from connect-success paths where a failure must
+/// never block the thing the user asked for, and the next trigger (or their explicit
+/// "Sync now") retries anyway. A corrupt database is the one exception worth
+/// surfacing, so it still raises the banner.
+fn request_sync(db: crate::db_pool::DbPool, mode: SyncMode, reason: &'static str) {
     tauri::async_runtime::spawn(async move {
-        match pm_sync_requests::request(&db, ALL_PROVIDERS, mode, reason).await {
-            Ok(()) => tracing::debug!(reason, mode = mode.as_str(), "pm sync requested"),
-            Err(e) => tracing::debug!(reason, error = %e, "pm sync request failed"),
+        let Some(pool) = db.get() else {
+            tracing::debug!(reason, "pm sync request skipped - database not open");
+            return;
+        };
+        match pm_sync_requests::request(&pool, ALL_PROVIDERS, mode, reason).await {
+            // Nothing waits on this one, so the sequence number is discarded.
+            Ok(_seq) => tracing::debug!(reason, mode = mode.as_str(), "pm sync requested"),
+            Err(e) => {
+                // Full chain: `anyhow`'s `Display` would render only
+                // `"writing a PM sync request"` and drop the SQLite code under it.
+                tracing::debug!(
+                    reason,
+                    error = %meridian::errors::chain(&e),
+                    "pm sync request failed"
+                );
+                crate::db_pool::raise_if_corrupt(&pool, &e).await;
+            }
         }
     });
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The update window: `pm_sync_requests` does not exist yet because the daemon
-    /// has not applied migration 082. The user must see a transient-update message,
-    /// never a raw SQL string that reads like database damage.
-    #[test]
-    fn a_missing_requests_table_reads_as_a_pending_update() {
-        let e = anyhow::anyhow!(
-            "error returned from database: (code: 1) no such table: pm_sync_requests"
-        );
-
-        let msg = queue_failure_message(&e);
-
-        assert_eq!(
-            msg,
-            "Meridian is still finishing an update - try again in a moment"
-        );
-        assert!(!msg.contains("no such table"), "must not leak SQL: {msg}");
-    }
-
-    /// Any OTHER write failure keeps its detail. Collapsing every error into the
-    /// friendly update message would hide a real fault (a locked or corrupt DB) behind
-    /// "try again in a moment", which never resolves.
-    #[test]
-    fn other_failures_keep_their_detail() {
-        let e = anyhow::anyhow!("database is locked");
-
-        let msg = queue_failure_message(&e);
-
-        assert!(
-            msg.contains("database is locked"),
-            "detail was dropped: {msg}"
-        );
-    }
-
-    /// A missing table that is NOT ours is somebody else's problem and must not be
-    /// reported as a pending update - that would send the user to wait out an update
-    /// that is already finished while the real fault goes unnamed.
-    #[test]
-    fn a_different_missing_table_is_not_reported_as_an_update() {
-        let e = anyhow::anyhow!("no such table: pm_tasks");
-
-        let msg = queue_failure_message(&e);
-
-        assert!(msg.contains("pm_tasks"), "detail was dropped: {msg}");
-        assert!(!msg.contains("finishing an update"), "misattributed: {msg}");
-    }
-}
+mod tests;
