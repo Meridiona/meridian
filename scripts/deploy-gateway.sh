@@ -140,6 +140,42 @@ verify_public_endpoints_authenticate() {
 	return "${failed}"
 }
 
+# ── Argument dispatch ────────────────────────────────────────────────────────
+#
+# Every argument is either recognised or an ERROR. This used to be two
+# `if [ "$1" = "--flag" ]` blocks with no else, so ANY other argument fell
+# straight through to the deploy: `--help`, `--dry-run`, `-n`, or a typo like
+# `--selftest` all pushed config to the production gateway and restarted it.
+# The two safest-sounding things a person types when they are unsure what a
+# script does were the two most dangerous.
+#
+# A deploy now requires exactly zero arguments. Anything unrecognised prints
+# usage and exits 2 without touching the VM.
+case "${1:-}" in
+--verify-only | --self-test | "") ;;
+-h | --help)
+	cat <<-USAGE
+		usage: deploy-gateway.sh [--verify-only | --self-test]
+
+		  (no arguments)   deploy ops/central-observability/ to the gateway VM,
+		                   then assert both public hostnames reject
+		                   unauthenticated callers
+		  --verify-only    run only that assertion, against the live gateway,
+		                   deploying nothing
+		  --self-test      offline check of the status classifier
+
+		env: GATEWAY_VM GATEWAY_ZONE GATEWAY_PROJECT GATEWAY_DOMAIN
+		     OO_UI_DOMAIN PROBE_TIMEOUT_S PROBE_INTERVAL_S
+	USAGE
+	exit 0
+	;;
+*)
+	echo "deploy-gateway.sh: unknown argument '${1}'" >&2
+	echo "run with --help for usage; a deploy takes NO arguments" >&2
+	exit 2
+	;;
+esac
+
 # Run the auth assertion on its own, without deploying anything. Two uses: an
 # operator re-checking a gateway they did not just deploy, and testing a change
 # to the probes themselves — the alternative is running a production deploy to
