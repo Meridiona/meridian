@@ -14,12 +14,53 @@
 // spawns. `--no-session-persistence` means no JSONL is written for it either.
 // NOTE: the inherited env must carry HOME/PATH/USER/LOGNAME for the login
 // keychain to unlock (see the auth spike) — the daemon's launchd plist owns that.
+//
+// # The whole prompt goes over stdin, not argv (Windows)
+//
+// `claude` resolves to `claude.cmd` on Windows for an npm install (`npm i -g
+// @anthropic-ai/claude-code`, the exact command `install_command()` runs for this
+// provider) - an npm-generated batch file, not a native exe - and Rust's std library
+// refuses to spawn a `.bat`/`.cmd` target when an argument contains characters it
+// cannot safely escape (the CVE-2024-24576 "BatBadBut" fix), notably embedded
+// newlines. SUMMARY_RULES is sourced from a Markdown rules file, so it is always
+// multi-line - meaning every real call through this function failed to even spawn
+// on Windows with `io::Error { InvalidInput, "batch file arguments are invalid" }`.
+// `crate::llm::claude::ClaudeBackend` (the hourly worklog pipeline / connectivity
+// test) already moved off argv for exactly this reason - this applies the same fix
+// here, which had the identical bug all along. `-p` as a bare flag (no positional
+// value) reads the whole prompt from stdin instead.
 
 use serde_json::Value;
 
 use super::config::SummariserConfig;
 use super::prompts;
 use super::{run_capture, EngineOutput, SummariserError};
+
+/// The instructions + the session transcript, combined into the one blob `claude -p`
+/// reads from stdin now that no positional prompt is passed - see the module doc.
+fn claude_stdin_payload(stdin_text: &str) -> String {
+    let instructions = format!(
+        "{} Summarise the coding-session transcript provided on stdin.",
+        prompts::SUMMARY_RULES
+    );
+    format!("{instructions}\n\n{stdin_text}")
+}
+
+/// The `claude -p` argv - no prompt in here, see the module doc. Split out so the
+/// no-newline invariant this function exists to guarantee is directly testable.
+fn claude_args(model: &str) -> Vec<String> {
+    vec![
+        "-p".into(),
+        "--output-format".into(),
+        "json".into(),
+        "--json-schema".into(),
+        prompts::summary_schema_json(),
+        "--model".into(),
+        model.to_string(),
+        "--no-session-persistence".into(),
+        "--strict-mcp-config".into(), // drop MCP overhead; keeps skills working
+    ]
+}
 
 pub async fn run_claude(
     stdin_text: &str,
@@ -35,27 +76,12 @@ pub async fn run_claude(
              the env var has no effect and can be removed"
         );
     }
-    let prompt = format!(
-        "{} Summarise the coding-session transcript provided on stdin.",
-        prompts::SUMMARY_RULES
-    );
-    let args: Vec<String> = vec![
-        "-p".into(),
-        prompt,
-        "--output-format".into(),
-        "json".into(),
-        "--json-schema".into(),
-        prompts::summary_schema_json(),
-        "--model".into(),
-        cfg.claude_model.clone(),
-        "--no-session-persistence".into(),
-        "--strict-mcp-config".into(), // drop MCP overhead; keeps skills working
-    ];
+    let args = claude_args(&cfg.claude_model);
 
     let cap = run_capture(
         "claude",
         &args,
-        stdin_text,
+        &claude_stdin_payload(stdin_text),
         &cfg.meridian_home,
         cfg.claude_timeout_s,
         &[("MERIDIAN_SUMMARISER", "1")],
@@ -129,4 +155,58 @@ pub async fn run_claude(
         ));
     }
     Ok(EngineOutput { summary })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The premise the whole fix rests on: SUMMARY_RULES is sourced from a Markdown
+    /// rules file and is always multi-line. If `SKILL.md` ever became single-line, this
+    /// fix would no longer be guarding against anything real - this pins that it still is.
+    #[test]
+    fn summary_rules_is_multi_line() {
+        assert!(prompts::SUMMARY_RULES.contains('\n'));
+    }
+
+    /// The regression this fix exists to close: `claude -p` argv must never carry the
+    /// instructions prompt (or anything else newline-bearing) - that is exactly what
+    /// makes Rust's std refuse to spawn `claude.cmd` on Windows. A future edit that
+    /// reintroduces the prompt into `args` fails this test.
+    #[test]
+    fn claude_args_never_contains_a_newline() {
+        let args = claude_args("claude-opus-5");
+        for arg in &args {
+            assert!(!arg.contains('\n'), "argv entry carries a newline: {arg:?}");
+        }
+    }
+
+    /// `claude -p` must be a bare flag - a positional value right after it would force
+    /// the prompt back through argv.
+    #[test]
+    fn claude_args_has_no_positional_prompt() {
+        let args = claude_args("claude-opus-5");
+        assert_eq!(args[0], "-p");
+        assert_eq!(
+            args[1], "--output-format",
+            "the second argv entry must be a flag, not a prompt"
+        );
+    }
+
+    #[test]
+    fn claude_args_carries_the_model() {
+        let args = claude_args("claude-opus-5");
+        let i = args
+            .iter()
+            .position(|a| a == "--model")
+            .expect("--model flag present");
+        assert_eq!(args[i + 1], "claude-opus-5");
+    }
+
+    #[test]
+    fn claude_stdin_payload_carries_both_the_instructions_and_the_transcript() {
+        let payload = claude_stdin_payload("the transcript");
+        assert!(payload.contains("the transcript"));
+        assert!(payload.starts_with(&prompts::SUMMARY_RULES[..40]));
+    }
 }
