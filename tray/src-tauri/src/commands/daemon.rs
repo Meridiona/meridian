@@ -248,6 +248,14 @@ pub(crate) async fn reload_daemon_with(
 /// point in time this function does not need to reason about.
 async fn reload_with_pool_cycle(pool: &crate::db_pool::DbPool) -> Result<u32, String> {
     with_reload_lock(|| async {
+        // Also excludes a concurrent `DbPool::recover_if_corrupt`, which closes and
+        // reopens this same handle. `with_reload_lock` alone only serialises reloads
+        // against each other, so without this a recycle could REOPEN the pool in the
+        // window between the close below and the restart signal - leaving a live
+        // connection spanning two daemon generations, which is the 2026-08-24
+        // corruption profile this whole close/reopen dance exists to prevent. See
+        // `DbPool::lock_cycle`.
+        let _cycle = pool.lock_cycle().await;
         pool.close().await;
         let result = super::daemon_control::reload().await;
         pool.reopen().await;
@@ -899,6 +907,46 @@ mod tests {
             calls.load(Ordering::SeqCst),
             2,
             "a later reload still reaches the daemon"
+        );
+    }
+
+    /// Every close/reopen of the tray's pool must hold `DbPool::lock_cycle`, and
+    /// `reload_with_pool_cycle` must take it BEFORE it closes.
+    ///
+    /// `with_reload_lock` only serialises reloads against each other.
+    /// `DbPool::recover_if_corrupt` is a second close/reopen site, so without a
+    /// shared lock the two interleave:
+    ///
+    /// 1. reload closes - the handle is `None`;
+    /// 2. a recycle sees `None`, treats it as nothing to close, and REOPENS;
+    /// 3. reload signals the daemon restart, with that fresh pool open across it.
+    ///
+    /// Step 3 is the 2026-08-24 corruption profile - a tray connection spanning two
+    /// daemon generations - i.e. the self-heal would have reintroduced the very bug
+    /// this close/reopen dance exists to prevent. Source-scanned because reproducing
+    /// it needs a real launchd daemon restart racing a real corrupt write.
+    #[test]
+    fn the_reload_cycle_holds_the_shared_pool_lock_before_closing() {
+        const SRC: &str = include_str!("daemon.rs");
+        let prod = SRC
+            .split_once("\n#[cfg(test)]")
+            .map_or(SRC, |(before, _)| before);
+        let body = prod
+            .split_once("async fn reload_with_pool_cycle")
+            .expect("reload_with_pool_cycle must exist")
+            .1;
+
+        let lock_pos = body
+            .find("lock_cycle().await")
+            .expect("reload_with_pool_cycle must acquire DbPool::lock_cycle");
+        let close_pos = body
+            .find("pool.close().await")
+            .expect("reload_with_pool_cycle must close the pool");
+        assert!(
+            lock_pos < close_pos,
+            "the shared cycle lock must be held BEFORE the close - taking it after \
+             leaves the window where a concurrent recycle can reopen the pool into \
+             the daemon restart. lock at {lock_pos}, close at {close_pos}."
         );
     }
 }

@@ -74,7 +74,19 @@ pub struct SyncRequest {
     pub provider: String,
     pub mode: SyncMode,
     pub reason: String,
+    /// The sequence number this claim covers - pass it back to [`complete`].
+    ///
+    /// Captured at claim time on purpose: a request arriving DURING the sync bumps
+    /// `seq` past this value, so it stays pending and gets its own sync rather than
+    /// being silently marked done by work that started before it was asked for.
+    pub seq: i64,
 }
+
+// Every query below spells "nothing has completed yet" as
+// `COALESCE(completed_seq, 0)` and "pending" as `seq > COALESCE(completed_seq, 0)`.
+// `seq` starts at 1, so 0 is unreachable as a real watermark. It lives inline in the
+// SQL rather than as a Rust constant because it cannot be interpolated into a query
+// string without giving up the compile-time-checked literal.
 
 /// Ask the daemon to sync PM tasks. Idempotent and coalescing: repeated calls
 /// collapse into the single pending row rather than queueing, so opening the
@@ -83,10 +95,25 @@ pub struct SyncRequest {
 /// `mode` **escalates only**. A `Force` landing on a pending `Gated` upgrades it,
 /// because a user who just connected a tracker must not have that downgraded by a
 /// passing window focus; a `Gated` landing on a pending `Force` leaves the `Force`
-/// intact. Writing a new request also clears any previous completion stamps, so the
-/// row unambiguously represents work still to do.
+/// intact.
 ///
-/// `reason` is a producer tag for tracing only (`"dashboard_open"`,
+/// # Returns the sequence number to wait on
+///
+/// Pass the returned `seq` to [`outcome`]. It is what makes concurrent producers
+/// safe, and it replaces the previous design where a new request cleared the
+/// completion stamps outright.
+///
+/// Clearing them looked right - the row should represent work still to do - but it
+/// destroyed the *answer* to a request already in flight, and the tracker-connect
+/// flow always has several in flight at once (`oauth_connected`,
+/// `token_connected`, and the user's own "Sync now", within a few seconds). The
+/// completion of an earlier sync then matched nothing, the work was redone, and
+/// every waiter timed out reporting failure for a sync that had in fact succeeded.
+///
+/// So completion is now a **watermark**, never cleared: this only bumps `seq` and
+/// re-opens the claim. A holder of seq N is satisfied by any `completed_seq >= N`.
+///
+/// `reason` is a producer tag for tracing only (`"plan_or_picker"`,
 /// `"token_connected"`). Never pass user content - it is read back into logs.
 #[tracing::instrument(skip(pool))]
 pub async fn request(
@@ -94,84 +121,165 @@ pub async fn request(
     provider: &str,
     mode: SyncMode,
     reason: &str,
-) -> Result<()> {
+) -> Result<i64> {
+    // A transaction, not `RETURNING`: the upsert and the read-back of `seq` must be
+    // atomic (a concurrent producer bumping `seq` in between would hand this caller
+    // a number it never wrote, making it wait on somebody else's sync), and
+    // `RETURNING` on an upsert needs SQLite 3.35+, which is not worth depending on
+    // when the SQLCipher build is the thing supplying the library.
+    let mut tx = pool
+        .begin()
+        .await
+        .context("opening a PM sync request transaction")?;
+
     sqlx::query(
         "INSERT INTO pm_sync_requests
-             (provider, mode, reason, requested_at, claimed_at, completed_at, error, synced_count)
-         VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), NULL, NULL, NULL, NULL)
+             (provider, mode, reason, requested_at,
+              claimed_at, completed_at, error, synced_count, seq, completed_seq)
+         VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+              NULL, NULL, NULL, NULL, 1, NULL)
          ON CONFLICT(provider) DO UPDATE SET
+             -- The whole point: a new request is a new sequence number, so the
+             -- outcome of whatever is already running stays attributable to it.
+             seq = pm_sync_requests.seq + 1,
              -- Escalate to 'force', never back down from it while still pending.
              --
-             -- The `completed_at IS NULL` half is load-bearing: the row is kept after a
-             -- sync finishes (so \"Sync now\" can read its result), so without it a
-             -- SPENT 'force' would be inherited forever and every later gated request
-             -- would silently escalate. One tracker connect would then make every
-             -- planner open bypass the staleness gate and hit the provider for real -
+             -- The pendingness half is load-bearing: the row is kept after a sync
+             -- finishes (so \"Sync now\" can read its result), so without it a SPENT
+             -- 'force' would be inherited forever and every later gated request would
+             -- silently escalate. One tracker connect would then make every planner
+             -- open bypass the staleness gate and hit the provider for real -
              -- reinstating the constant polling this whole design removes, and
              -- multiplying exactly the token refreshes it exists to reduce.
              mode = CASE
                  WHEN excluded.mode = 'force'
                    OR (pm_sync_requests.mode = 'force'
-                       AND pm_sync_requests.completed_at IS NULL)
+                       AND pm_sync_requests.seq > COALESCE(pm_sync_requests.completed_seq, 0))
                       THEN 'force'
                  ELSE excluded.mode
              END,
              reason       = excluded.reason,
              requested_at = excluded.requested_at,
-             -- A fresh request re-opens the row: drop the in-flight and completion
-             -- marks so the watcher sees pending work again.
-             claimed_at   = NULL,
-             completed_at = NULL,
-             error        = NULL,
-             synced_count = NULL",
+             -- Re-open the claim so the watcher sees pending work, but do NOT touch
+             -- completed_at / completed_seq / error / synced_count: those describe
+             -- the last sync that actually ran, and erasing them is what lost
+             -- outcomes. `seq` above is what marks this as new work.
+             claimed_at   = NULL",
     )
     .bind(provider)
     .bind(mode.as_str())
     .bind(reason)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .context("writing a PM sync request")?;
-    tracing::debug!(provider, mode = mode.as_str(), reason, "PM sync requested");
-    Ok(())
+
+    let seq: i64 = sqlx::query_scalar("SELECT seq FROM pm_sync_requests WHERE provider = ?")
+        .bind(provider)
+        .fetch_one(&mut *tx)
+        .await
+        .context("reading back the PM sync request sequence")?;
+
+    tx.commit().await.context("committing a PM sync request")?;
+
+    tracing::debug!(
+        provider,
+        mode = mode.as_str(),
+        reason,
+        seq,
+        "PM sync requested"
+    );
+    Ok(seq)
+}
+
+/// Is there work to claim? A pure READ, so an idle consumer touches no locks.
+///
+/// # Why this exists rather than just calling [`claim`]
+///
+/// [`claim`] is an `UPDATE`, and SQLite opens a write transaction and takes a
+/// RESERVED lock to evaluate one even when it matches no rows. The daemon's watcher
+/// ticks every 2 s forever, so calling `claim` unconditionally meant **~43,000 write
+/// transactions a day on an idle machine** - work that did not exist before this
+/// outbox, on a file a second process also writes. Worse than the cost: it made
+/// every daemon kill far more likely to land while a write transaction was open,
+/// which is the profile behind the `-shm` desync that wedged writes on
+/// 1.91.0-staging.2 with `(code: 11) database disk image is malformed` on a database
+/// that was provably healthy.
+///
+/// Gating on this read takes an idle daemon's write load to zero. WAL readers do not
+/// take the write lock, so a tick that finds nothing is genuinely free.
+///
+/// **Advisory only.** A `true` here can go stale before [`claim`] runs, and that is
+/// fine: `claim` is still the conditional `UPDATE` that decides, so exclusivity is
+/// unchanged and a lost race just yields `None`. A `false` that was wrong costs one
+/// tick of latency.
+pub async fn has_pending(pool: &SqlitePool, provider: &str) -> Result<bool> {
+    let found: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM pm_sync_requests
+          WHERE provider = ?
+            AND claimed_at IS NULL
+            AND seq > COALESCE(completed_seq, 0)",
+    )
+    .bind(provider)
+    .fetch_optional(pool)
+    .await
+    .context("checking for a pending PM sync request")?;
+    Ok(found.is_some())
 }
 
 /// Claim the pending request for `provider`, if there is one, marking it in-flight
 /// so a second watcher tick can't pick up the same work.
 ///
-/// The claim is a conditional UPDATE (`WHERE claimed_at IS NULL AND completed_at IS
-/// NULL`) rather than a read-then-write, so two daemons racing on the same file -
-/// which the single-instance guard makes unlikely but not impossible during a
-/// restart overlap - cannot both claim it. SQLite serialises the statement, so
-/// exactly one sees a non-zero `rows_affected`.
+/// The claim is a conditional UPDATE (`WHERE claimed_at IS NULL AND <pending>`)
+/// rather than a read-then-write, so two daemons racing on the same file - which the
+/// single-instance guard makes unlikely but not impossible during a restart overlap -
+/// cannot both claim it. SQLite serialises the statement, so exactly one sees a
+/// non-zero `rows_affected`.
+///
+/// Pending is `seq > COALESCE(completed_seq, 0)`, not `completed_at IS NULL`: the
+/// completion stamps are a watermark now and are never cleared, so the only thing
+/// that makes a row claimable again is [`request`] bumping `seq` past it.
+///
+/// Reads `seq` back inside the same transaction as the claim, so the value handed to
+/// [`complete`] is exactly the one this claim covers even if a producer bumps it a
+/// microsecond later.
 #[tracing::instrument(skip(pool))]
 pub async fn claim(pool: &SqlitePool, provider: &str) -> Result<Option<SyncRequest>> {
+    let mut tx = pool
+        .begin()
+        .await
+        .context("opening a PM sync claim transaction")?;
+
     let claimed = sqlx::query(
         "UPDATE pm_sync_requests
             SET claimed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
           WHERE provider = ?
             AND claimed_at IS NULL
-            AND completed_at IS NULL",
+            AND seq > COALESCE(completed_seq, 0)",
     )
     .bind(provider)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .context("claiming a PM sync request")?;
 
     if claimed.rows_affected() == 0 {
+        // Nothing to do - roll back rather than commit an empty transaction.
         return Ok(None);
     }
 
-    let row: Option<(String, String)> =
-        sqlx::query_as("SELECT mode, reason FROM pm_sync_requests WHERE provider = ?")
+    let row: Option<(String, String, i64)> =
+        sqlx::query_as("SELECT mode, reason, seq FROM pm_sync_requests WHERE provider = ?")
             .bind(provider)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *tx)
             .await
             .context("reading the claimed PM sync request")?;
 
-    Ok(row.map(|(mode, reason)| SyncRequest {
+    tx.commit().await.context("committing a PM sync claim")?;
+
+    Ok(row.map(|(mode, reason, seq)| SyncRequest {
         provider: provider.to_string(),
         mode: SyncMode::from_str_or_gated(&mode),
         reason,
+        seq,
     }))
 }
 
@@ -179,35 +287,65 @@ pub async fn claim(pool: &SqlitePool, provider: &str) -> Result<Option<SyncReque
 /// rather than deleted so `"Sync now"` can read a real result without holding the
 /// credential, and so support has a content-free view of the last attempt.
 ///
-/// Writes only if the row is still the one that was claimed. The guard is
-/// **`claimed_at IS NOT NULL`**, and that specific predicate is the whole point:
-/// [`request`] resets `claimed_at` to `NULL`, so a request that arrived mid-sync
-/// makes this UPDATE match nothing. Guarding on `completed_at IS NULL` alone would
-/// NOT work - the fresh request leaves that NULL too, so the older sync's outcome
-/// would stamp the new request as done without it ever being serviced, and the
-/// user's "Sync now" would report success for a sync that never ran.
+/// `seq` is the value from the [`SyncRequest`] this call is reporting on. It records
+/// the watermark, and it is also the guard.
+///
+/// # Why the guard is the sequence and NOT `claimed_at`
+///
+/// It used to be `claimed_at IS NOT NULL AND completed_at IS NULL`, chosen because
+/// [`request`] nulled `claimed_at` and so a request arriving mid-sync would make this
+/// UPDATE match nothing - deliberately, to stop an older sync's outcome marking a
+/// newer request as done.
+///
+/// The intent was right and the mechanism was a data-loss bug. Discarding the write
+/// also discarded the answer the *original* waiter was polling for, and since
+/// tracker-connect fires several requests seconds apart, that was the normal case
+/// rather than the edge one: the sync succeeded, the outcome was dropped, the work
+/// was repeated, and the user was shown a failure.
+///
+/// Guarding on `seq > COALESCE(completed_seq, 0)` keeps the protection and loses the
+/// bug. The watermark only ever moves forward, so this is idempotent and a late
+/// duplicate cannot roll it back; a newer request has a HIGHER `seq` than the one
+/// being completed, so it stays pending and gets its own sync. `claimed_at` is
+/// cleared here rather than depended on, which is what makes that next sync
+/// claimable immediately.
 #[tracing::instrument(skip(pool))]
 pub async fn complete(
     pool: &SqlitePool,
     provider: &str,
+    seq: i64,
     synced_count: Option<i64>,
     error: Option<&str>,
 ) -> Result<()> {
-    sqlx::query(
+    let res = sqlx::query(
         "UPDATE pm_sync_requests
-            SET completed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-                error        = ?,
-                synced_count = ?
+            SET completed_at  = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+                completed_seq = ?,
+                claimed_at    = NULL,
+                error         = ?,
+                synced_count  = ?
           WHERE provider = ?
-            AND claimed_at IS NOT NULL
-            AND completed_at IS NULL",
+            AND ? > COALESCE(completed_seq, 0)",
     )
+    .bind(seq)
     .bind(error)
     .bind(synced_count)
     .bind(provider)
+    .bind(seq)
     .execute(pool)
     .await
     .context("completing a PM sync request")?;
+
+    if res.rows_affected() == 0 {
+        // Not an error: a duplicate or out-of-order completion for a watermark that
+        // has already moved past `seq`. Worth a line, because it should be rare and
+        // a steady stream of them would mean two consumers are running.
+        tracing::debug!(
+            provider,
+            seq,
+            "PM sync completion ignored - the watermark is already at or past it"
+        );
+    }
     Ok(())
 }
 
@@ -229,7 +367,7 @@ pub async fn reset_stale_claims(pool: &SqlitePool) -> Result<u64> {
         "UPDATE pm_sync_requests
             SET claimed_at = NULL
           WHERE claimed_at IS NOT NULL
-            AND completed_at IS NULL",
+            AND seq > COALESCE(completed_seq, 0)",
     )
     .execute(pool)
     .await
@@ -244,12 +382,24 @@ pub async fn reset_stale_claims(pool: &SqlitePool) -> Result<u64> {
     Ok(n)
 }
 
-/// The outcome of the last request for `provider`, for a producer that wants to
-/// show one ("Sync now"). `None` while the request is still pending or in flight,
-/// so a caller can poll this until it turns `Some`.
-pub async fn outcome(pool: &SqlitePool, provider: &str) -> Result<Option<SyncOutcome>> {
-    let row: Option<(Option<String>, Option<String>, Option<i64>)> = sqlx::query_as(
-        "SELECT completed_at, error, synced_count FROM pm_sync_requests WHERE provider = ?",
+/// The outcome for the request the caller wrote, for a producer that wants to show
+/// one ("Sync now"). `None` while that request is still pending or in flight, so a
+/// caller can poll this until it turns `Some`.
+///
+/// `want_seq` is the value [`request`] returned. `Some` means `completed_seq >=
+/// want_seq` - i.e. a sync that finished at or after the caller's request, which is
+/// what makes overlapping producers safe: two waiters can be satisfied by one sync,
+/// and neither can be handed the result of a sync that finished BEFORE it asked.
+///
+/// Passing a stale `want_seq` (from a previous request) therefore returns a result
+/// immediately, by design - it has genuinely been satisfied.
+pub async fn outcome(
+    pool: &SqlitePool,
+    provider: &str,
+    want_seq: i64,
+) -> Result<Option<SyncOutcome>> {
+    let row: Option<(Option<i64>, Option<String>, Option<i64>)> = sqlx::query_as(
+        "SELECT completed_seq, error, synced_count FROM pm_sync_requests WHERE provider = ?",
     )
     .bind(provider)
     .fetch_optional(pool)
@@ -257,11 +407,14 @@ pub async fn outcome(pool: &SqlitePool, provider: &str) -> Result<Option<SyncOut
     .context("reading the PM sync outcome")?;
 
     Ok(match row {
-        Some((Some(_completed), error, synced_count)) => Some(SyncOutcome {
-            error,
-            synced_count,
-        }),
-        // No row, or a row still pending / in flight.
+        Some((Some(completed_seq), error, synced_count)) if completed_seq >= want_seq => {
+            Some(SyncOutcome {
+                error,
+                synced_count,
+            })
+        }
+        // No row, nothing completed yet, or the watermark has not reached this
+        // caller's request.
         _ => None,
     })
 }
