@@ -81,6 +81,22 @@ pub struct SyncResult {
 /// tighter — a faster poll would just burn reads without seeing a result any sooner.
 const OUTCOME_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
+/// Attempts [`ask_daemon_to_sync`] makes to WRITE the request row before giving up.
+///
+/// Sized against the thing it is riding out: a daemon reload, during which the tray's
+/// pool is closed and reopened and the daemon truncates the WAL on its way out. That
+/// window is on the order of a second, so 4 attempts spaced [`REQUEST_RETRY_GAP`]
+/// apart covers it with margin while still failing in ~1.2 s if the fault is real.
+///
+/// Only retries faults that mean "not now" - a cycling pool, or a transient SQLite
+/// code. A corrupt database still fails on the first attempt (after one recycle),
+/// because retrying that only re-reads damaged pages.
+const REQUEST_ATTEMPTS: u32 = 4;
+
+/// Gap between [`REQUEST_ATTEMPTS`]. Shorter than the daemon watcher's 2 s tick on
+/// purpose: this is waiting out a pool cycle, not waiting for a sync.
+const REQUEST_RETRY_GAP: Duration = Duration::from_millis(400);
+
 /// Shown when an outbox query fails because `meridian.db` itself is damaged. Points
 /// at the banner rather than repeating the SQLite text, because
 /// [`explain_outbox_failure`] has just raised that banner and it carries both the
@@ -328,13 +344,44 @@ async fn ask_daemon_to_sync(
     let mut attempt = 0;
     let seq = loop {
         attempt += 1;
-        let pool = db
-            .get()
-            .ok_or_else(|| "the database is not open - Meridian may be repairing it".to_string())?;
+        let last_attempt = attempt >= REQUEST_ATTEMPTS;
+
+        // A CLOSED pool is a normal, momentary state, not a fault. Connecting a
+        // tracker reloads the daemon, and `reload_with_pool_cycle` closes this pool
+        // across the signal - so a "Sync now" pressed in that window used to return
+        // "the database is not open - Meridian may be repairing it" instantly, naming
+        // a repair that was not happening. Wait it out instead.
+        let Some(pool) = db.get() else {
+            if last_attempt {
+                return Err("the database is not open - Meridian may be repairing it".to_string());
+            }
+            tracing::debug!(
+                attempt,
+                "pool is cycling - waiting to queue the sync request"
+            );
+            tokio::time::sleep(REQUEST_RETRY_GAP).await;
+            continue;
+        };
+
         match pm_sync_requests::request(&pool, ALL_PROVIDERS, mode, reason).await {
             Ok(seq) => break seq,
             Err(e) => {
                 let rendered = crate::cmd_err!(e, "could not queue a PM sync request");
+
+                // Transient (locked, or a short read against a WAL the daemon is
+                // truncating on its way out): the write simply did not happen and
+                // nothing is wrong with the data. See
+                // `meridian::db::integrity::is_transient_sqlx` for the measured case.
+                if !last_attempt && meridian::db::integrity::is_transient_error(&e) {
+                    tracing::debug!(
+                        attempt,
+                        detail = %rendered,
+                        "transient fault queueing the sync request - retrying"
+                    );
+                    tokio::time::sleep(REQUEST_RETRY_GAP).await;
+                    continue;
+                }
+
                 // Raises the banner and recycles the pool when the fault is a broken
                 // view; returns whether a retry is worth making.
                 let recovered = db.recover_if_corrupt(&e).await;
@@ -395,6 +442,26 @@ async fn ask_daemon_to_sync(
             // written for.
             Err(e) => {
                 let rendered = crate::cmd_err!(e, "could not read the PM sync outcome");
+                // A TRANSIENT fault is not an answer - it is the absence of one, and
+                // the request row is already written, so the only correct response is
+                // to poll again.
+                //
+                // This branch shipped as terminal and that was the bug. Measured on
+                // 1.91.0-staging.3: connecting Jira reloads the daemon, whose shutdown
+                // runs `PRAGMA wal_checkpoint(TRUNCATE)`; a "Sync now" read landing in
+                // that window got `(code: 522) disk I/O error`
+                // (`SQLITE_IOERR_SHORT_READ` - the WAL truncated under the reader) and
+                // the user was shown a red failure. The daemon completed that very sync
+                // 5 s later, with 47 poll turns still left in the budget. Same class of
+                // lie as the outcome-destroying bug this loop was written to fix,
+                // reached from the other side.
+                if meridian::db::integrity::is_transient_error(&e) {
+                    tracing::debug!(
+                        detail = %rendered,
+                        "transient fault reading the sync outcome - retrying"
+                    );
+                    continue;
+                }
                 // Recycle on a broken view here too, then keep waiting rather than
                 // failing: the request row is written and the daemon is servicing it,
                 // so a healed pool on the next poll turn still reports a real result.

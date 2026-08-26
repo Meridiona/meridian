@@ -145,6 +145,56 @@ pub fn is_corrupt_sqlx(err: &sqlx::Error) -> bool {
     }
 }
 
+/// SQLite primary result codes that mean "this attempt failed, the database is
+/// fine" - the file was locked, or a read came up short because another process
+/// moved the ground under it.
+///
+/// `SQLITE_IOERR` (10) is the one that matters here and the reason this exists.
+/// Its extended variant `SQLITE_IOERR_SHORT_READ` (522, `10 | (2 << 8)`) is
+/// SQLite asking for a page and being handed fewer bytes than it expected -
+/// which is exactly what a reader sees when the daemon's shutdown
+/// `PRAGMA wal_checkpoint(TRUNCATE)` truncates the WAL underneath it. Measured
+/// on 1.91.0-staging.3: the tray's "Sync now" read of the outbox raced a daemon
+/// reload and surfaced `(code: 522) disk I/O error` to the user, for a sync the
+/// daemon then completed successfully 5 s later.
+///
+/// `SQLITE_BUSY` (5) and `SQLITE_LOCKED` (6) belong to the same class: two
+/// processes write this file, so losing a lock race is a normal event.
+const SQLITE_TRANSIENT: [u32; 3] = [10, 5, 6];
+
+/// True when `err` is SQLite reporting a **retryable** failure - the operation
+/// did not happen, but nothing is wrong with the data.
+///
+/// # Never confuse this with corruption
+///
+/// Corruption (11) and "file is not a database" (26) are deliberately absent.
+/// Those are latching conditions that need an operator, and retrying them just
+/// re-reads damaged pages - the daemon's ETL latch exists for precisely that
+/// reason. This predicate is only for faults where trying again is the correct
+/// and sufficient response.
+///
+/// The low byte is compared rather than the whole code, so extended variants
+/// (`_SHORT_READ`, `_READ`, `_WRITE`, `_FSYNC`, …) are all covered - the same
+/// `primary | (n << 8)` scheme [`is_corrupt_sqlx`] relies on.
+pub fn is_transient_sqlx(err: &sqlx::Error) -> bool {
+    let sqlx::Error::Database(db) = err else {
+        return false;
+    };
+    db.code()
+        .and_then(|c| c.parse::<u32>().ok())
+        .is_some_and(|code| SQLITE_TRANSIENT.contains(&(code & 0xFF)))
+}
+
+/// [`is_transient_sqlx`] over an `anyhow` chain, for callers holding a
+/// `.context(…)`-wrapped error. Same chain-walk rationale as
+/// [`is_corrupt_error`]: the `sqlx::Error` is never the outermost layer by the
+/// time a command sees it.
+pub fn is_transient_error(err: &anyhow::Error) -> bool {
+    err.chain()
+        .filter_map(|c| c.downcast_ref::<sqlx::Error>())
+        .any(is_transient_sqlx)
+}
+
 /// SQLite's `SQLITE_NOTADB` primary result code - "file is not a database".
 ///
 /// This is what a keyed open reports when page 1 itself is unreadable: SQLCipher
@@ -377,6 +427,53 @@ mod tests {
         )
         .context("failed to read first frame batch");
         assert!(is_corrupt_error(&err));
+    }
+
+    /// Guards the `& 0xFF` masking for the transient family. `522`
+    /// (`SQLITE_IOERR_SHORT_READ`) is the measured case - the code the tray was
+    /// shown when a "Sync now" read raced the daemon's shutdown WAL truncate -
+    /// and an equality test against 10 would miss it entirely.
+    #[test]
+    fn transient_codes_match_primary_and_extended() {
+        // IOERR (10) and its extended variants, plus BUSY (5) and LOCKED (6).
+        for code in [10u32, 266, 522, 778, 5, 6, 261] {
+            assert!(
+                SQLITE_TRANSIENT.contains(&(code & 0xFF)),
+                "code {code} must be transient"
+            );
+        }
+        for code in [11u32, 267, 523, 779, 26, 19, 1] {
+            assert!(
+                !SQLITE_TRANSIENT.contains(&(code & 0xFF)),
+                "code {code} must not be transient"
+            );
+        }
+    }
+
+    /// The two classifications must never overlap. A corrupt database routed into
+    /// the retry path would spin re-reading damaged pages instead of latching and
+    /// raising the banner - the exact failure the ETL latch exists to prevent.
+    #[test]
+    fn corruption_is_never_transient() {
+        for code in [11u32, 267, 523, 779] {
+            assert_eq!(code & 0xFF, SQLITE_CORRUPT);
+            assert!(
+                !SQLITE_TRANSIENT.contains(&(code & 0xFF)),
+                "corrupt code {code} must never be retryable"
+            );
+        }
+    }
+
+    /// Unlike [`is_corrupt_error`], the transient predicate has NO message
+    /// fallback: a stringified error is classified as non-transient and therefore
+    /// terminal. That is the safe direction (a real fault surfaces instead of
+    /// being silently retried), and it is pinned so nobody "fixes" the asymmetry
+    /// without weighing it.
+    #[test]
+    fn a_stringified_transient_error_is_not_retried() {
+        let err = anyhow::anyhow!("error returned from database: (code: 522) disk I/O error")
+            .context("reading the PM sync outcome");
+        assert!(!is_transient_error(&err));
     }
 
     #[test]

@@ -160,3 +160,61 @@ async fn the_fallback_names_the_operation_that_actually_failed() {
     );
     assert!(write.starts_with("could not queue the sync"), "{write}");
 }
+
+/// The whole point of the 1.91.0-staging.3 fix, pinned where it can regress.
+///
+/// `ask_daemon_to_sync` has two SQLite call sites - the request write and the
+/// outcome read - and both used to treat any `Err` as terminal. A daemon reload
+/// truncates the WAL on its way out, so a read landing in that window returned
+/// `(code: 522) disk I/O error` and the user was shown a red failure for a sync
+/// the daemon went on to complete seconds later, with most of the 30 s budget
+/// unspent.
+///
+/// A source scan rather than a behavioural test because provoking a short read
+/// needs two real processes racing a `wal_checkpoint(TRUNCATE)` on a real file -
+/// the one thing an in-memory pool cannot reproduce. Same idiom, and the same
+/// reason, as `ui/__tests__/no-native-dialogs.test.ts`.
+#[test]
+fn transient_faults_are_retried_before_any_terminal_failure() {
+    let src = include_str!("mod.rs");
+
+    let guards: Vec<_> = src
+        .match_indices("is_transient_error")
+        .map(|(i, _)| i)
+        .collect();
+    let terminals: Vec<_> = src
+        .match_indices("explain_outbox_failure(")
+        .map(|(i, _)| i)
+        // Skip the definition itself; only the call sites matter.
+        .filter(|i| !src[..*i].ends_with("async fn "))
+        .collect();
+
+    assert_eq!(
+        guards.len(),
+        2,
+        "both SQLite call sites in ask_daemon_to_sync must classify transient faults"
+    );
+    for terminal in &terminals {
+        assert!(
+            guards.iter().any(|g| g < terminal),
+            "a terminal failure at byte {terminal} is reachable with no transient check before it"
+        );
+    }
+}
+
+/// The retry budget has to outlast the thing it exists to ride out. A daemon
+/// reload closes the tray's pool, signals, and lets the daemon checkpoint and
+/// exit - on the order of a second. A budget shorter than that would turn this
+/// fix into a coin flip.
+#[test]
+fn the_request_retry_budget_covers_a_daemon_reload() {
+    let covered = REQUEST_RETRY_GAP * (REQUEST_ATTEMPTS - 1);
+    assert!(
+        covered >= Duration::from_millis(1200),
+        "retry budget {covered:?} is too short to outlast a daemon reload"
+    );
+    assert!(
+        covered < SYNC_TIMEOUT,
+        "the write retries must fit well inside the overall wait budget"
+    );
+}
