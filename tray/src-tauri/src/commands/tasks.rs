@@ -81,6 +81,35 @@ pub struct SyncResult {
 /// tighter — a faster poll would just burn reads without seeing a result any sooner.
 const OUTCOME_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
+/// Turn a failed request-write into something a user can act on.
+///
+/// # Why the missing-table case is special-cased
+///
+/// `pm_sync_requests` arrives in migration 082, and **only the daemon runs migrations**
+/// (the tray opens the file with `create_if_missing(false)` and assumes the daemon made
+/// it). So during an app update there is a window — new tray already running, daemon not
+/// yet restarted onto the new binary — where the table genuinely does not exist yet.
+///
+/// It is seconds long and self-heals the moment the daemon restarts, but a user who
+/// presses "Sync now" inside it would otherwise be shown a raw SQL string:
+/// `could not queue the sync: no such table: pm_sync_requests`. That reads like
+/// database damage for what is in fact a normal, transient update state, and it is the
+/// kind of message that produces a support ticket about a non-problem.
+///
+/// Matched on the message rather than a typed error because sqlx surfaces this as a
+/// `Database` error whose only distinguishing feature IS its text; the match is
+/// deliberately loose (table name plus "no such table") so a reworded sqlite message
+/// degrades to the generic branch rather than mis-reporting something else.
+fn queue_failure_message(e: &anyhow::Error) -> String {
+    let detail = format!("{e:#}");
+    if detail.contains("no such table") && detail.contains("pm_sync_requests") {
+        tracing::warn!("pm_sync_requests missing - the daemon has not applied migration 082 yet");
+        return "Meridian is still finishing an update - try again in a moment".to_string();
+    }
+    tracing::warn!(error = %detail, "could not queue a PM sync request");
+    format!("could not queue the sync: {detail}")
+}
+
 /// Resolve the tray's DB handle, or an error string suitable for returning straight
 /// to the frontend. `None` means the pool is closed (a repair or a corrupt DB), which
 /// is a real condition rather than a bug — say so plainly instead of unwrapping.
@@ -207,9 +236,9 @@ async fn ask_daemon_to_sync(
         }));
     }
 
-    pm_sync_requests::request(db, ALL_PROVIDERS, mode, reason)
-        .await
-        .map_err(|e| format!("could not queue the sync: {e}"))?;
+    if let Err(e) = pm_sync_requests::request(db, ALL_PROVIDERS, mode, reason).await {
+        return Err(queue_failure_message(&e));
+    }
 
     let deadline = tokio::time::Instant::now() + SYNC_TIMEOUT;
     loop {
@@ -281,4 +310,55 @@ fn request_sync(db: Option<SqlitePool>, mode: SyncMode, reason: &'static str) {
             Err(e) => tracing::debug!(reason, error = %e, "pm sync request failed"),
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The update window: `pm_sync_requests` does not exist yet because the daemon
+    /// has not applied migration 082. The user must see a transient-update message,
+    /// never a raw SQL string that reads like database damage.
+    #[test]
+    fn a_missing_requests_table_reads_as_a_pending_update() {
+        let e = anyhow::anyhow!(
+            "error returned from database: (code: 1) no such table: pm_sync_requests"
+        );
+
+        let msg = queue_failure_message(&e);
+
+        assert_eq!(
+            msg,
+            "Meridian is still finishing an update - try again in a moment"
+        );
+        assert!(!msg.contains("no such table"), "must not leak SQL: {msg}");
+    }
+
+    /// Any OTHER write failure keeps its detail. Collapsing every error into the
+    /// friendly update message would hide a real fault (a locked or corrupt DB) behind
+    /// "try again in a moment", which never resolves.
+    #[test]
+    fn other_failures_keep_their_detail() {
+        let e = anyhow::anyhow!("database is locked");
+
+        let msg = queue_failure_message(&e);
+
+        assert!(
+            msg.contains("database is locked"),
+            "detail was dropped: {msg}"
+        );
+    }
+
+    /// A missing table that is NOT ours is somebody else's problem and must not be
+    /// reported as a pending update - that would send the user to wait out an update
+    /// that is already finished while the real fault goes unnamed.
+    #[test]
+    fn a_different_missing_table_is_not_reported_as_an_update() {
+        let e = anyhow::anyhow!("no such table: pm_tasks");
+
+        let msg = queue_failure_message(&e);
+
+        assert!(msg.contains("pm_tasks"), "detail was dropped: {msg}");
+        assert!(!msg.contains("finishing an update"), "misattributed: {msg}");
+    }
 }
