@@ -3,13 +3,36 @@
 pub mod oauth;
 pub mod providers;
 pub mod session_categorizer;
+/// Producer side of the `pm_sync_requests` outbox for short-lived CLI processes — how
+/// `plan-task-*`, `ticket-update` and `worklog-generate` refresh the board without
+/// becoming a second writer of the rotating Jira OAuth token.
+pub mod sync_delegate;
+/// Daemon-side consumer of the `pm_sync_requests` outbox — the reason the daemon is
+/// the only process that ever holds the rotating Jira OAuth token.
+pub mod sync_requests;
 pub mod task_triage;
 pub mod ticket_update;
 
 use anyhow::Result;
 use sqlx::SqlitePool;
+use std::sync::OnceLock;
+use tokio::sync::Mutex;
 
 use crate::config::{Config, PmProviderConfig};
+
+/// In-process serialisation for [`run_pm_sync`]. Now that syncing is triggered from
+/// several independent on-demand call sites (the daily plan, worklog drafting sweep,
+/// `meridian pm-sync`) instead of one single poll-loop tick, two of them can land in
+/// the same instant — e.g. opening the planner while a drafting sweep is mid-flight.
+/// Both would otherwise read `pm_sync_state` as stale and fire a real fetch
+/// concurrently, wasting a call for every redundant racer. This only dedups within
+/// ONE process; the Jira OAuth refresh-token race across processes is a separate,
+/// already-solved problem (`meridian-oauth/src/store.rs::lock_provider`, a
+/// cross-process file lock inside the refresh path itself).
+fn sync_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 /// True once at least one PM task is cached. Rows only land in `pm_tasks` after a
 /// provider authenticated and fetched successfully, so a non-zero count is proof
@@ -73,20 +96,74 @@ pub async fn run_pm_force_sync(meridian: &SqlitePool, config: &Config) -> Result
     Ok(())
 }
 
-/// Refreshes PM task caches from all configured providers.
+/// Whether a sync is happening behind a real user action or on a clock. Only Jira
+/// OAuth cares, and the difference is not cosmetic: see [`Trigger::Unattended`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    /// A human just did something — opened the planner, connected a tracker,
+    /// pressed Sync now, edited a ticket, ran a CLI. The machine is provably awake
+    /// and in use, so spending the rotating refresh token is safe.
+    Attended,
+    /// A clock fired and nobody is necessarily there (the hourly worklog drafting
+    /// sweep). Jira OAuth must NOT refresh here: the refresh is a single-use
+    /// exchange whose lost response kills the grant permanently outside a
+    /// 10-minute window, and a laptop suspending mid-POST is exactly how that
+    /// happens with no one watching. An expired token means skip this pass; the
+    /// next attended request refreshes properly. Providers with static
+    /// credentials (GitHub/Linear/Trello/Azure) are unaffected — they have no
+    /// rotating credential to lose.
+    Unattended,
+}
+
+/// Refreshes PM task caches from all configured providers whose cache has gone
+/// stale, behind a real user action. See [`run_pm_sync_with`] for the shared body
+/// and [`Trigger`] for why the distinction exists.
 #[tracing::instrument(skip_all)]
 pub async fn run_pm_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
+    run_pm_sync_with(meridian, config, Trigger::Attended).await
+}
+
+/// [`run_pm_sync`] for clock-driven callers: refreshes the ticket cache only if it
+/// can be done without minting a new Jira OAuth token, and quietly keeps the stale
+/// cache otherwise. Used by the hourly worklog drafting sweep.
+#[tracing::instrument(skip_all)]
+pub async fn run_pm_sync_unattended(meridian: &SqlitePool, config: &Config) -> Result<()> {
+    run_pm_sync_with(meridian, config, Trigger::Unattended).await
+}
+
+/// Refreshes PM task caches from all configured providers whose cache has gone stale
+/// (per-provider `refresh_if_stale`) — a cheap no-op when nothing is stale. Called
+/// from every on-demand trigger (the daily plan, worklog drafting, `meridian
+/// pm-sync`), not a timer, so [`sync_lock`] serialises same-process callers that land
+/// in the same instant rather than each racing the staleness check independently.
+#[tracing::instrument(skip(meridian, config))]
+pub async fn run_pm_sync_with(
+    meridian: &SqlitePool,
+    config: &Config,
+    trigger: Trigger,
+) -> Result<()> {
     if config.pm_providers.is_empty() {
         tracing::warn!("no PM providers configured — pm_tasks will stay empty (set JIRA_BASE_URL/GITHUB_TOKEN/LINEAR_API_KEY/AZURE_DEVOPS_PAT)");
         return Ok(());
     }
+
+    let _guard = match sync_lock().try_lock() {
+        Ok(g) => g,
+        Err(_) => {
+            tracing::debug!("run_pm_sync: another sync is already in flight — waiting for it");
+            sync_lock().lock().await
+        }
+    };
+
     let provider_count = config.pm_providers.len();
     tracing::debug!(provider_count, "syncing PM providers");
 
     for provider in &config.pm_providers {
         let name = provider.provider_name();
         let result = match provider {
-            PmProviderConfig::Jira(cfg) => providers::jira::refresh_if_stale(meridian, cfg).await,
+            PmProviderConfig::Jira(cfg) => {
+                providers::jira::refresh_if_stale(meridian, cfg, trigger).await
+            }
             PmProviderConfig::GitHub(cfg) => {
                 providers::github::refresh_if_stale(meridian, cfg).await
             }
@@ -219,5 +296,37 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(queued, 0, "the board hygiene digest producer was removed");
+    }
+
+    /// `run_pm_sync` now fires from several independent on-demand callers instead of
+    /// one poll-loop tick, so two of them can land in the same instant. This proves
+    /// [`sync_lock`] actually serialises concurrent holders rather than being a no-op
+    /// — tested directly against the lock primitive since exercising the full
+    /// `run_pm_sync` path needs a live (or mocked) provider HTTP call this crate has
+    /// no test seam for.
+    #[tokio::test]
+    async fn sync_lock_serialises_concurrent_holders() {
+        let order = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<&str>::new()));
+
+        let first_guard = sync_lock().lock().await;
+        let order_clone = order.clone();
+        let second = tokio::spawn(async move {
+            let _g = sync_lock().lock().await; // must wait for `first_guard` to drop
+            order_clone.lock().await.push("second");
+        });
+
+        // Give the spawned task a chance to actually block on the lock before we
+        // release it — otherwise a fast scheduler could run it after the drop below
+        // and the ordering assertion would prove nothing.
+        tokio::task::yield_now().await;
+        order.lock().await.push("first");
+        drop(first_guard);
+
+        second.await.unwrap();
+        assert_eq!(
+            *order.lock().await,
+            vec!["first", "second"],
+            "the second acquirer must not proceed until the first guard drops"
+        );
     }
 }

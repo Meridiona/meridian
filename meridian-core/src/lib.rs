@@ -44,6 +44,10 @@ pub mod settings;
 /// Notification delivery policy + native pending queue (ported from lib/notifications.ts).
 pub mod notifications;
 
+/// Single-owner PM sync request outbox (migration 082) - producers ask, the daemon
+/// alone services them, so the rotating Jira OAuth token has exactly one writer.
+pub mod pm_sync_requests;
+
 /// The `~/.meridian/plan_auto_opened` marker format — written by the tray's
 /// daily planner auto-open, read by the daemon's plan-nudge hold-back.
 pub mod plan_marker;

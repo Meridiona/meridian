@@ -1358,6 +1358,7 @@ pub fn run() {
             // process / service control (ported /api process routes)
             commands::reload_daemon,
             commands::sync_tasks,
+            commands::request_gated_sync_tasks,
             commands::run_update,
             // tracker connect/disconnect (ported /api/integrations + /api/auth/oauth)
             commands::disconnect_integration,
