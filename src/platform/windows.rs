@@ -109,6 +109,64 @@ pub fn spawn_health_listener() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Take an exclusive, immediately-failing byte-range lock on an already-open
+/// file — the Windows counterpart of `super::unix`'s `flock`.
+///
+/// # Why `LockFileEx` and not an exclusive `share_mode(0)` open
+///
+/// Opening the file with no sharing is the shorter way to get mutual exclusion
+/// on Windows, and it is the wrong one here. A `share_mode(0)` open fails with
+/// `ERROR_SHARING_VIOLATION` when **anything** else has the file open — an
+/// antivirus scanner mid-scan, a backup agent, a search indexer — and that is
+/// byte-for-byte the same error a real second daemon produces. The one mistake
+/// this whole module must not make is concluding "another daemon owns this data
+/// dir" when nothing of the sort is true.
+///
+/// `LockFileEx` on a normally-shared handle separates the two: a genuine lock
+/// conflict is `ERROR_LOCK_VIOLATION` (33), which no passive file-opener can
+/// cause. So contention is reported as [`super::LockError::Held`] and every
+/// other failure — including a sharing violation — becomes
+/// [`super::LockError::Other`], which makes the caller proceed unlocked rather
+/// than refuse to start.
+///
+/// The lock is released by the kernel when the handle closes, on process exit
+/// or kill, matching the `flock` guarantee the Unix side relies on. One byte at
+/// offset 0 is locked: the file has no content, so the range is a token, not a
+/// region anyone reads.
+pub(crate) fn lock_file_exclusive(file: &std::fs::File) -> Result<(), super::LockError> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Foundation::{ERROR_LOCK_VIOLATION, HANDLE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+    };
+
+    let mut overlapped =
+        unsafe { std::mem::zeroed::<windows_sys::Win32::System::IO::OVERLAPPED>() };
+    // SAFETY: `file` is a live `File` borrowed for the whole call, so its
+    // handle is valid. `overlapped` is a correctly zeroed, stack-owned struct
+    // that outlives the call — LOCKFILE_FAIL_IMMEDIATELY means the call cannot
+    // complete asynchronously, so nothing retains the pointer past return.
+    let ok = unsafe {
+        LockFileEx(
+            file.as_raw_handle() as HANDLE,
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            1,
+            0,
+            &mut overlapped,
+        )
+    };
+    if ok != 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+        Err(super::LockError::Held)
+    } else {
+        Err(super::LockError::Other(format!("LockFileEx failed: {err}")))
+    }
+}
+
 /// No-op: a named pipe disappears with the process that holds it, so unlike a
 /// socket file there is nothing to unlink.
 pub fn release_endpoint() {}
