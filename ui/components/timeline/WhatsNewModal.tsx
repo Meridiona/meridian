@@ -6,6 +6,11 @@
 // (releases newest-first, from `get_whats_new`) and Roadmap. `scrollInside`
 // gives the tab bar a fixed home while the content below scrolls on its own,
 // same layout technique SettingsModal uses for its sidebar + content split.
+//
+// A release renders as at most three title + one-sentence entries, with no
+// highlights/fixes split: the previous bulleted paragraphs were too long to
+// actually get read, and the bucket a change came from is our concern, not
+// the reader's. The brevity is enforced in `whats_new.rs`, not just curated.
 
 'use client'
 
@@ -106,18 +111,14 @@ function ReleaseList({ releases }: { releases: ReleaseNote[] }) {
               {latest && <LatestBadge />}
               <p className="mt-body-sm ml-auto" style={{ color: 'var(--t-faint)' }}>{r.date}</p>
             </div>
-            {r.highlights.length > 0 && (
-              <BulletList items={r.highlights} dotColor="var(--color-state-approved)" />
-            )}
-            {r.fixes.length > 0 && (
-              <>
-                <div className="flex items-center gap-1.5 mt-4 mb-1.5">
-                  <span aria-hidden="true" style={{ fontSize: 11 }}>🔧</span>
-                  <p className="mt-label" style={{ color: 'var(--color-state-pending)' }}>FIXES</p>
+            <div className="flex flex-col gap-3">
+              {r.items.map(item => (
+                <div key={item.title}>
+                  <p className="mt-body-sm" style={{ color: 'var(--t-title)', fontWeight: 600 }}>{item.title}</p>
+                  <p className="mt-body-sm" style={{ color: 'var(--t-muted)', marginTop: 2 }}>{item.body}</p>
                 </div>
-                <BulletList items={r.fixes} dotColor="var(--color-state-pending)" />
-              </>
-            )}
+              ))}
+            </div>
           </div>
         )
       })}
@@ -137,20 +138,6 @@ function LatestBadge() {
     }}>
       ✨ Latest
     </span>
-  )
-}
-
-function BulletList({ items, dotColor }: { items: string[]; dotColor: string }) {
-  return (
-    <ul className="flex flex-col gap-1.5">
-      {items.map((item, i) => (
-        <li key={i} className="mt-body-sm flex gap-2.5" style={{ color: 'var(--t-muted)' }}>
-          <span aria-hidden="true" className="shrink-0 rounded-full"
-            style={{ width: 5, height: 5, marginTop: 6, background: dotColor }} />
-          <span>{item}</span>
-        </li>
-      ))}
-    </ul>
   )
 }
 
