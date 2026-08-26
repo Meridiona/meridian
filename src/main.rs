@@ -1087,8 +1087,18 @@ async fn main() -> Result<()> {
     //
     //     The endpoint itself is OS-specific (a socket file on Unix, a named
     //     pipe on Windows) — see `meridian::platform`.
+    //
+    //     `pid` on this and the two stand-down logs below is not decoration.
+    //     These WARNs are the ONLY record of a stand-down that reaches central
+    //     telemetry: the redaction ship leg is WARN+ only, and `meridian daemon
+    //     starting` — the line that would otherwise carry the pid — is INFO and
+    //     never egresses. Without it a stand-down arrives as an anonymous event
+    //     that cannot be tied to a process or correlated with anything around
+    //     it, which is the same gap that made the 2026-08-25 investigation
+    //     unresolvable.
     if meridian::platform::daemon_already_running().await {
         tracing::warn!(
+            pid = std::process::id() as i64,
             endpoint = %meridian::platform::endpoint_display(),
             "another meridian daemon already owns this data dir — exiting (single-instance guard)"
         );
@@ -1122,8 +1132,16 @@ async fn main() -> Result<()> {
     //     Unavailable arm.
     let _single_instance_lock = match meridian::platform::acquire_single_instance_lock() {
         meridian::platform::LockOutcome::Acquired(guard) => Some(guard),
+        // This WARN is a MEASUREMENT as much as a stand-down. It fires exactly
+        // when two daemons raced and the probe above did not see it — the case
+        // that was previously invisible AND unguarded. Because it egresses to
+        // central telemetry, its rate across the fleet is the first direct
+        // evidence of how often this actually happens, rather than how often it
+        // could happen in principle. Rewording it is fine; dropping it or
+        // demoting it below WARN removes the only signal we have.
         meridian::platform::LockOutcome::HeldByAnother => {
             tracing::warn!(
+                pid = std::process::id() as i64,
                 "another meridian daemon holds the single-instance lock for this data dir — exiting (lock)"
             );
             return Ok(());
@@ -1138,6 +1156,7 @@ async fn main() -> Result<()> {
         // common outage.
         meridian::platform::LockOutcome::Unavailable(e) => {
             tracing::warn!(
+                pid = std::process::id() as i64,
                 error = %e, // not-anyhow: a String the acquire already formatted with its full cause; there is no chain to walk
                 "could not take the single-instance lock — continuing without it; \
                  the endpoint probe above remains the only guard this start has"
