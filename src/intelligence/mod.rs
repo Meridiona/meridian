@@ -3,6 +3,7 @@
 pub mod oauth;
 pub mod providers;
 pub mod session_categorizer;
+pub mod sync_lock;
 pub mod task_triage;
 pub mod ticket_update;
 
@@ -10,6 +11,24 @@ use anyhow::Result;
 use sqlx::SqlitePool;
 
 use crate::config::{Config, PmProviderConfig};
+
+/// Serialises PM sync WITHIN this process, above [`sync_lock`]'s cross-process
+/// file lock.
+///
+/// Both layers are needed and neither subsumes the other: `flock` is held per
+/// open-file-description, so two tasks in ONE process would each open the lock
+/// file and each be granted it. The daemon has two callers that can overlap (a
+/// worklog drafting sweep and a forced sync from `ticket-update`), so without
+/// this the file lock would not dedupe them at all.
+///
+/// A `tokio::sync::Mutex` rather than a `std` one because it is held across the
+/// provider loop's `.await`s.
+static IN_PROCESS_SYNC: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// How long a FORCED sync waits for a gated one to finish before giving up on
+/// the lock. Comfortably inside the tray's 30 s `tasks-sync` budget, so the
+/// caller reports honestly instead of being killed mid-wait.
+const FORCE_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// True once at least one PM task is cached. Rows only land in `pm_tasks` after a
 /// provider authenticated and fetched successfully, so a non-zero count is proof
@@ -39,6 +58,31 @@ pub async fn run_pm_force_sync(meridian: &SqlitePool, config: &Config) -> Result
     if config.pm_providers.is_empty() {
         return Ok(());
     }
+    let _in_process = IN_PROCESS_SYNC.lock().await;
+    // A forced sync must NOT skip on contention - somebody pressed "Sync now",
+    // or a tracker write just landed and the board is knowingly behind. So wait
+    // for the holder, and if the budget expires proceed anyway: a duplicate
+    // fetch is wasteful, whereas silently doing nothing after an explicit
+    // request is the "sync is still running" dead end users already hit.
+    // Lock evaluation failing is logged and ignored for the same reason - the
+    // dedup lock must never become a new way for a sync to fail.
+    let _cross_process = match sync_lock::acquire_waiting(FORCE_LOCK_WAIT).await {
+        Ok(Some(guard)) => Some(guard),
+        Ok(None) => {
+            tracing::info!(
+                waited_s = FORCE_LOCK_WAIT.as_secs(),
+                "force sync: another sync still holds the lock - proceeding anyway"
+            );
+            None
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %crate::errors::chain(&e),
+                "force sync: could not evaluate the PM sync lock - proceeding without dedup"
+            );
+            None
+        }
+    };
     for provider in &config.pm_providers {
         let name = provider.provider_name();
         let result = match provider {
@@ -80,6 +124,35 @@ pub async fn run_pm_sync(meridian: &SqlitePool, config: &Config) -> Result<()> {
         tracing::warn!("no PM providers configured — pm_tasks will stay empty (set JIRA_BASE_URL/GITHUB_TOKEN/LINEAR_API_KEY/AZURE_DEVOPS_PAT)");
         return Ok(());
     }
+    let _in_process = IN_PROCESS_SYNC.lock().await;
+    // Gated callers SKIP when another sync is in flight: that run is already
+    // fetching the board this one wanted, so a second fetch is pure duplicate
+    // load on the tracker's API. This is the only thing standing between "the
+    // dashboard was opened while a drafting sweep started" and two identical
+    // board fetches.
+    let _cross_process = match sync_lock::try_acquire() {
+        Ok(Some(guard)) => guard,
+        Ok(None) => {
+            tracing::debug!("pm sync already in flight in another process - skipping");
+            return Ok(());
+        }
+        // Never fail a sync because the DEDUP lock was unreadable - degrading to
+        // "no dedup" is strictly better than degrading to "no sync".
+        Err(e) => {
+            tracing::warn!(
+                error = %crate::errors::chain(&e),
+                "could not evaluate the PM sync lock - proceeding without dedup"
+            );
+            return run_pm_sync_providers(meridian, config).await;
+        }
+    };
+    run_pm_sync_providers(meridian, config).await
+}
+
+/// The provider loop itself, split from [`run_pm_sync`] so the locking policy
+/// above has exactly one body to guard and cannot drift from it.
+#[tracing::instrument(skip_all)]
+async fn run_pm_sync_providers(meridian: &SqlitePool, config: &Config) -> Result<()> {
     let provider_count = config.pm_providers.len();
     tracing::debug!(provider_count, "syncing PM providers");
 
@@ -219,5 +292,47 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(queued, 0, "the board hygiene digest producer was removed");
+    }
+
+    /// NO TIMER MAY SYNC THE BOARD. This is a source-level guard because the
+    /// regression it prevents is invisible: a `run_pm_sync` call added back into
+    /// the daemon's poll loop would work perfectly, sync the board, pass every
+    /// test - and start silently destroying users' Jira OAuth grants again.
+    ///
+    /// The mechanism, in one paragraph, because it is not guessable from the call
+    /// site: macOS dark-wakes a sleeping machine every 15-16 minutes. A timer
+    /// resumed, found the access token expired, and POSTed a refresh; Atlassian
+    /// rotated the refresh token and replied; the machine re-suspended before the
+    /// response was read. `reqwest`'s timeout could not cancel it, because the
+    /// timeout is `Instant`-based and the monotonic clock does not advance while
+    /// the system is asleep. The next dark wake retried with the OLD refresh
+    /// token, by then past Atlassian's 10-minute reuse leeway - `invalid_grant`,
+    /// terminal, grant dead forever. The dark-wake interval is LONGER than the
+    /// leeway, which is why no retry policy fixes it and why the only fix is to
+    /// attempt no refresh while nobody is there.
+    ///
+    /// Every legitimate caller is a ONE-SHOT CLI arm, all of which sit before the
+    /// daemon boots. So the rule is positional: nothing after the poll loop
+    /// begins. If this fails, do not silence it - move the trigger to something a
+    /// present user did (see `tray/src-tauri/src/commands/tasks.rs`).
+    #[test]
+    fn the_daemon_poll_loop_never_syncs_pm_tasks() {
+        let main_rs = include_str!("../main.rs");
+        // The loop's own `tokio::select!` is the boundary: CLI arms are all above
+        // it, the daemon's recurring work is all below.
+        let loop_start = main_rs
+            .find("tokio::select! {")
+            .expect("main.rs must still have the poll loop's tokio::select!");
+        let after = &main_rs[loop_start..];
+        let offenders: Vec<&str> = after
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| l.contains("run_pm_sync(") || l.contains("run_pm_force_sync("))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "PM sync is back on a timer, which permanently kills Jira OAuth grants \
+             on sleeping machines - see this test's doc comment. Offending lines: {offenders:?}"
+        );
     }
 }

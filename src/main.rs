@@ -373,6 +373,38 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `meridian pm-sync` — the GATED sibling of `tasks-sync`: sync all configured
+    // PM providers, but honour each provider's staleness gate so a fresh cache is
+    // a cheap no-op. This is what every ON-DEMAND trigger spawns (tracker
+    // connected, dashboard opened), which is why it must not be `tasks-sync`:
+    // those triggers can fire repeatedly within seconds and a forced fetch each
+    // time would be exactly the API hammering the timer used to do.
+    //
+    // Exits 0 whether it fetched, skipped as fresh, or skipped because another
+    // sync held the dedup lock — all three are successful outcomes for a
+    // best-effort trigger, and only a DB that cannot be opened is a real failure.
+    if std::env::args().nth(1).as_deref() == Some("pm-sync") {
+        let cfg = Config::from_env();
+        match setup_db(&cfg.meridian_db_uri()).await {
+            Ok(pool) => {
+                if let Err(e) = run_pm_sync(&pool, &cfg).await {
+                    eprintln!("pm-sync: {}", meridian::errors::chain(&e));
+                }
+                // Close the pool explicitly, same as `tasks-sync`: this is a
+                // short-lived process writing the SAME meridian.db the daemon and
+                // tray hold open, and dropping a pool without closing it can
+                // leave the WAL un-checkpointed behind a connection the OS is
+                // still tearing down.
+                pool.close().await;
+            }
+            Err(e) => {
+                eprintln!("pm-sync: open db: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
     // `meridian ticket-update --provider P --key K --field F --value V` — apply
     // ONE board-hygiene fix to the real tracker (due date, assignee, label, …).
     // Prints a JSON result the UI reads: {"status":"applied"} or
@@ -694,6 +726,18 @@ async fn main() -> Result<()> {
         let obs_guard = observability::init("meridian-rust").ok();
         match setup_db(&cfg.meridian_db_uri()).await {
             Ok(pool) => {
+                // Refresh the board BEFORE matching, now that nothing does it on
+                // a timer. A stale `pm_tasks` is not a cosmetic problem here: it
+                // is what silently binds an hour of work to a ticket that was
+                // closed or reassigned hours ago. Gated (a fresh cache no-ops)
+                // and log-and-continue — drafting from a slightly stale board
+                // beats not drafting at all.
+                if let Err(e) = run_pm_sync(&pool, &cfg).await {
+                    tracing::warn!(
+                        error = %meridian::errors::chain(&e),
+                        "worklog-generate: pre-draft PM sync failed — matching against the cached board"
+                    );
+                }
                 match meridian::pm_worklog::generate(&pool, &cfg, &day, &task_id).await {
                     Ok(mut draft) => {
                         // A matched draft carries a target_key we can link even
@@ -1355,9 +1399,12 @@ async fn main() -> Result<()> {
     }
 
     // 7c. Run ETL once immediately before entering the loop.
-    //     Re-read config so that any settings.json present at startup takes effect.
+    //
+    //     No `Config::from_env()` re-read here any more: it existed only to hand
+    //     a fresh config to the startup PM sync that used to live at the end of
+    //     this block, and nothing else in the block reads it. ETL and the
+    //     retention sweep take the pool alone.
     {
-        let cfg = Config::from_env();
         let startup_tick = tracing::info_span!("startup_tick");
         *etl_tick_span.lock().unwrap_or_else(|e| e.into_inner()) = Some(startup_tick.clone());
         let _guard = startup_tick.enter();
@@ -1381,12 +1428,11 @@ async fn main() -> Result<()> {
                 tracing::warn!(error = %meridian::errors::chain(&e), "capture retention sweep failed");
             }
         }
-        if let Err(e) = run_pm_sync(&meridian, &cfg).await {
-            tracing::error!(
-                error = %meridian::errors::chain(&e),
-                "intelligence run failed"
-            );
-        }
+        // No startup PM sync either, for the same reason as the poll tick above:
+        // launchd `KeepAlive` restarts this process on every wake, so a
+        // sync-on-boot IS a wake-triggered token refresh wearing different
+        // clothes. Nothing at startup needs a fresh board - `pm_tasks_present`
+        // and `daily_plan::maybe_nudge` only check EXISTENCE, not freshness.
     }
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -1605,17 +1651,38 @@ async fn main() -> Result<()> {
                     tracing::debug!(error = %meridian::errors::chain(&e), "notification response consume skipped");
                 }
 
-                // Refresh the PM task cache (pm_tasks) every tick — interval-gated
-                // per provider (~5 min), so this is a cheap no-op most ticks. The
-                // legacy drafting driver that used to trigger this before every
-                // pass was retired when the worklog pipeline moved to the
-                // clock-aligned Python trigger, which never calls this itself —
-                // leaving pm_tasks (and hence a ticket's title on the timeline)
-                // stuck at whatever it was at the last daemon restart. This is
-                // the only thing that keeps it live during normal operation.
-                if let Err(e) = run_pm_sync(&meridian, &cfg).await {
-                    tracing::warn!(error = %meridian::errors::chain(&e), "pm_tasks refresh failed — using cached tasks");
-                }
+        // ── NO PM SYNC ON THE POLL TICK. ────────────────────────────────────
+        //
+        // This used to call `run_pm_sync` every tick (~60 s), interval-gated per
+        // provider to ~5 min. It was removed because the timer, not the network,
+        // is what was permanently destroying production users' Jira grants.
+        //
+        // macOS dark-wakes a sleeping machine every 15-16 minutes. The daemon
+        // resumed, found the OAuth access token expired, and POSTed a refresh.
+        // Atlassian rotated the refresh token and replied - and the machine
+        // re-suspended before the response was read. `reqwest`'s timeout could
+        // not save it: the timeout is `Instant`-based and the monotonic clock
+        // does not advance while the system is asleep, so the request simply
+        // hung. On the NEXT dark wake, 15-16 minutes later, the socket was dead
+        // and the retry went out with the OLD refresh token - now past
+        // Atlassian's 10-minute reuse leeway. `invalid_grant`, classified
+        // terminal, grant dead forever, user sees "refresh_token is invalid".
+        //
+        // The dark-wake interval being LONGER than the leeway is why no retry
+        // policy can fix this from inside the daemon; see
+        // `~/.claude` notes and `meridian-oauth::jira::ensure_fresh`.
+        //
+        // A sleeping machine has no work to do, so it must attempt no token
+        // refreshes. Nothing here needs `pm_tasks` fresh on a clock either: the
+        // hourly worklog fold never reads it, and the one place that matches
+        // sessions to tickets now syncs for itself
+        // (`pm_worklog::auto_generate::sweep::draft_qualifying_tasks`). The
+        // remaining triggers are all things a PRESENT user did - connecting a
+        // tracker, opening the dashboard, pressing Sync now, a tracker write -
+        // and they live in `tray/src-tauri/src/commands/tasks.rs`.
+        //
+        // Do not reintroduce a timer here. If something needs a fresher board,
+        // give it its own trigger and let `intelligence::sync_lock` dedupe it.
             }
         }
     }
