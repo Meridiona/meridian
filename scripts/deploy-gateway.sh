@@ -94,7 +94,16 @@ probe_rejects_unauthenticated() {
 	shift 2
 	local deadline=$((SECONDS + PROBE_TIMEOUT_S)) code verdict
 	while :; do
-		code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$@" "${url}" || true)"
+		# --noproxy '*': the point of this probe is that THE GATEWAY rejects
+		# the caller. curl honours http_proxy/https_proxy/ALL_PROXY, so on a
+		# machine with a proxy configured an intercepting proxy's own 401
+		# would satisfy the assertion without the request ever reaching the
+		# gateway - a security check passing on someone else's answer.
+		# Verified: with https_proxy pointed at a dead port the probe returns
+		# 000, and --noproxy '*' returns the gateway's real 401. If direct
+		# egress is genuinely impossible here, 000 retries and then FAILS,
+		# which is the intended "fail rather than falsely pass" behaviour.
+		code="$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 15 "$@" "${url}" || true)"
 		verdict="$(classify_probe "${code}")"
 		case "${verdict}" in
 		pass)
@@ -151,6 +160,22 @@ verify_public_endpoints_authenticate() {
 #
 # A deploy now requires exactly zero arguments. Anything unrecognised prints
 # usage and exits 2 without touching the VM.
+# `$#` first: the `case` below only ever inspects `$1`, so without this
+# `--verify-only somethingelse` would silently ignore the extra word, and a
+# single EMPTY argument (`"$SOME_UNSET_VAR"`) would match the `""` arm and
+# deploy. Both are the same class of bug as the one this dispatch was added to
+# fix - an argument that does not mean what it looks like, ending in a
+# production deploy.
+if [ "$#" -gt 1 ]; then
+	echo "deploy-gateway.sh: unexpected extra argument '${2}'" >&2
+	echo "run with --help for usage" >&2
+	exit 2
+fi
+if [ "$#" -eq 1 ] && [ -z "${1}" ]; then
+	echo "deploy-gateway.sh: empty argument - a deploy takes NO arguments" >&2
+	echo "run with --help for usage" >&2
+	exit 2
+fi
 case "${1:-}" in
 --verify-only | --self-test | "") ;;
 -h | --help)

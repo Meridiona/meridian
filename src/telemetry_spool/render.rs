@@ -62,13 +62,23 @@ pub struct RenderedRecord {
 /// EVERY record, which would triple the width of every line with the one thing
 /// a reader already knows (they can see the message).
 ///
-/// Prefix-matched, so `code.filepath`/`code.lineno`/`code.namespace` are all
-/// covered by one entry.
-const UNPRINTED_ATTR_PREFIXES: &[&str] = &["code.", "log.target", "thread.", "busy_ns", "idle_ns"];
+/// Namespaces: every key under them is call-site metadata, so a prefix match
+/// is correct and `code.filepath`/`code.lineno`/`code.namespace` are covered by
+/// one entry.
+const UNPRINTED_ATTR_NAMESPACES: &[&str] = &["code.", "thread."];
+
+/// Whole keys. Deliberately NOT prefixes: these are single field names, and
+/// matching them by prefix would silently swallow an emitter's own field that
+/// merely starts the same way - `log.target_override`, `busy_ns_budget`,
+/// `idle_ns_extra`. Hiding a field the author chose to record is precisely the
+/// bug this rendering exists to fix, so it must not be reintroduced by the
+/// filter meant to reduce noise.
+const UNPRINTED_ATTR_KEYS: &[&str] = &["log.target", "busy_ns", "idle_ns"];
 
 /// Is this a call-site metadata key rather than a value the emitter chose?
 fn is_unprinted_attr(key: &str) -> bool {
-    UNPRINTED_ATTR_PREFIXES.iter().any(|p| key.starts_with(p))
+    UNPRINTED_ATTR_NAMESPACES.iter().any(|p| key.starts_with(p))
+        || UNPRINTED_ATTR_KEYS.contains(&key)
 }
 
 /// Decode one spooled file into [`RenderedRecord`]s. The signal (logs vs
@@ -576,6 +586,36 @@ mod tests {
             "only the emitter's own fields should survive; got {:?}",
             r.attributes
         );
+    }
+
+    /// A near-miss on an exact-match key must NOT be suppressed.
+    ///
+    /// `log.target`, `busy_ns` and `idle_ns` are whole field names, not
+    /// namespaces. When they were prefix-matched alongside `code.`/`thread.`,
+    /// any emitter field that merely started the same way was silently hidden -
+    /// which is the exact failure this rendering was added to fix, reintroduced
+    /// by the filter meant to reduce noise.
+    #[test]
+    fn a_field_that_merely_starts_like_a_metadata_key_still_prints() {
+        for key in ["log.target_override", "busy_ns_budget", "idle_ns_extra"] {
+            assert!(
+                !is_unprinted_attr(key),
+                "{key} is an emitter field, not call-site metadata, and must be \
+                 displayed"
+            );
+        }
+        // ...while the exact keys and the real namespaces stay suppressed.
+        for key in [
+            "log.target",
+            "busy_ns",
+            "idle_ns",
+            "code.filepath",
+            "code.lineno",
+            "thread.id",
+            "thread.name",
+        ] {
+            assert!(is_unprinted_attr(key), "{key} is call-site metadata");
+        }
     }
 
     /// A field declared on a span but never recorded arrives as an empty value.

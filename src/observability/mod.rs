@@ -134,7 +134,13 @@ impl ObservabilityGuard {
         }
         if let Some(lp) = self.logger_provider {
             let _ = tokio::task::spawn_blocking(move || {
-                let _ = lp.force_flush();
+                // See `force_flush` for why this reports to stderr rather than
+                // through `tracing`.
+                for r in lp.force_flush() {
+                    if let Err(e) = r {
+                        eprintln!("observability: log force_flush error: {e:?}");
+                    }
+                }
                 let _ = lp.shutdown();
             })
             .await;
@@ -201,7 +207,22 @@ pub async fn force_flush() {
     }
     if let Some(lp) = handles.logger_provider.clone() {
         let _ = tokio::task::spawn_blocking(move || {
-            let _ = lp.force_flush();
+            // Reported, not discarded - the tracer arm above already prints its
+            // error and the logger arm silently swallowed one.
+            //
+            // `eprintln!` rather than `tracing::error!` DELIBERATELY: this is
+            // the code that flushes the telemetry pipeline, so routing its own
+            // failure back into that pipeline is circular. On the quit path the
+            // process exits microseconds later, so a `tracing::error!` here
+            // would land in the very batch that just failed to flush and be
+            // lost - reporting the failure by the one mechanism the failure
+            // proves is broken. stderr is the only sink that does not depend on
+            // what is failing.
+            for r in lp.force_flush() {
+                if let Err(e) = r {
+                    eprintln!("observability: log force_flush error: {e:?}");
+                }
+            }
         })
         .await;
     }
