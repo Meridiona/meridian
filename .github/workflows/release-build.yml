@@ -519,6 +519,7 @@ jobs:
       # for v0-rust-macos-release-aarch64-apple-darwin" — so stale entries
       # stopped being reaped too, feeding the same eviction.
       - uses: Swatinem/rust-cache@v2
+        id: rust-cache
         with:
           # shared-key REPLACES rust-cache's automatic job-based key. That
           # matters: by default `add-job-id-key` is true, so ci.yml's
@@ -561,6 +562,70 @@ jobs:
           # nothing can restore from — which is exactly how the repo's 10 GiB
           # quota filled up and began evicting caches other jobs needed.
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          # SAVE THE CACHE EVEN WHEN THE JOB FAILS.
+          #
+          # Defaults to false, so a run that compiles for 30 minutes and then
+          # dies in bundling, signing, notarization or upload throws that whole
+          # compile away, and the retry starts cold again - paying twice for one
+          # release. The compile is the expensive half and it SUCCEEDED; a later
+          # step failing says nothing about the artifacts it produced. A partial
+          # `target/` is not a hazard either: cargo fingerprints it correctly,
+          # which is the same property every incremental build already relies on.
+          cache-on-failure: true
+
+      # A COLD BUILD MUST NOT BE SILENT. This is the release pipeline's oldest
+      # and most expensive failure mode, and it has never once announced itself.
+      #
+      # The shape every time: the cache key drifts or the entry is evicted,
+      # `No cache found.` is written into a COLLAPSED log group, the build takes
+      # 20-30 extra minutes, and every check goes green with correct binaries at
+      # the end. It has only ever been caught by someone happening to watch the
+      # clock - most recently 2026-08-27, when the Windows job compiled for 36
+      # minutes while the cache it wanted sat unread on `main` (see the
+      # `runs-on` note in the windows job). The same silence let cache-warm.yml
+      # write an unreadable key for this pipeline's entire history.
+      #
+      # Deliberately an `::error::` ANNOTATION that does NOT fail the step. The
+      # asymmetry matters: a cache miss must never block shipping a release -
+      # the build is slow, not wrong, and failing here would turn a GitHub image
+      # roll into a release outage. But it must be impossible to overlook, so it
+      # lands as a red annotation on the run page and as a section in
+      # `$GITHUB_STEP_SUMMARY`, both of which sit ABOVE the logs rather than
+      # inside a collapsed group.
+      #
+      # The env dump is the other half, and it is what makes the NEXT occurrence
+      # cheap. rust-cache hashes the NAMES AND VALUES of every
+      # CARGO_*/CC*/CFLAGS/CXX/CMAKE*/RUST* variable into the key component that
+      # drifts, and nothing has ever recorded what those were on a run that
+      # missed - so each time the cause has to be re-derived from the cache API
+      # and guesswork. Printing them on a miss turns that into a diff between
+      # two runs. Values that look like credentials are dropped rather than
+      # printed; none of the hashed prefixes should carry one, and a build log
+      # is not the place to find out otherwise.
+      - name: Report the rust-cache outcome
+        run: |
+          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "rust-cache: HIT - this build starts warm."
+            exit 0
+          fi
+          msg="rust-cache MISSED on ${{ runner.os }}: this build compiles from scratch (~35 min on Windows, ~20 min on macOS). The key drifted or the entry was evicted - compare the environment below against a run that hit."
+          echo "::error title=Cold Rust build (${{ runner.os }})::${msg}"
+          {
+            echo "### rust-cache miss - ${{ runner.os }}"
+            echo
+            echo "${msg}"
+            echo
+            echo "<details><summary>Cache-key environment (rust-cache hashes these names and values)</summary>"
+            echo
+            echo '```'
+            env \
+              | grep -E '^(CARGO|CC|CFLAGS|CXX|CMAKE|RUST)' \
+              | grep -viE '(TOKEN|SECRET|PASSWORD|CREDENTIAL|_KEY)' \
+              | sort || true
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-node@v7
         with:
@@ -836,7 +901,25 @@ jobs:
   windows:
     name: Windows x86_64
     needs: prepare
-    runs-on: windows-latest
+    # PINNED, not `windows-latest`. The macOS job is pinned to `macos-26` and
+    # this one was not, and that asymmetry is not cosmetic: on 2026-08-27 the
+    # release's Windows job asked for
+    # `...-Windows_NT-x64-cd9df261-fb0b6063` while a 1305 MiB entry sat on
+    # `main` under `...-Windows_NT-x64-581b1cd0-fb0b6063`, so it compiled for
+    # 36 minutes with the cache it needed one API call away. The same day's
+    # ci.yml Windows jobs asked for `581b1cd0` and missed a `cd9df261` entry -
+    # the two workflows had SWAPPED hashes overnight. Nothing in the repo
+    # changed (identical Cargo.lock, rust-toolchain, workflow file and env
+    # block), so the drift came from the runner image: the fleet was serving
+    # more than one Windows environment (`windows-2025-vs2026` observed), and
+    # rust-cache hashes the CARGO_*/CC*/CFLAGS/CXX/CMAKE*/RUST* vars, so which
+    # runner you land on decides whether you start warm.
+    #
+    # Pinning the label removes the 2022 -> 2025 major roll as a variable. It
+    # does NOT freeze the weekly image refresh, and it cannot fix a fleet that
+    # is heterogeneous within one label - which is exactly why this line is not
+    # treated as the fix. The cache-outcome report below is.
+    runs-on: windows-2025
     timeout-minutes: 60 # same cap as macos — bound a hung build instead of falling back to GitHub's 360-minute default
     permissions:
       contents: write # uploads assets into the draft
@@ -929,6 +1012,7 @@ jobs:
       # equivalent step for the measurement (5288 cache entries evicting the
       # tarball that actually matters, for a 0.00% Rust hit rate).
       - uses: Swatinem/rust-cache@v2
+        id: rust-cache
         with:
           # Keyed by triple only, same reasoning as the macOS job — one warm
           # cache shared across every workflow that compiles this target.
@@ -941,6 +1025,70 @@ jobs:
           # compiled OpenSSL-from-source + SQLCipher + the daemon and tray from
           # a stone-cold cache, 35.7 min of a 37 min job, every single time.
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          # SAVE THE CACHE EVEN WHEN THE JOB FAILS.
+          #
+          # Defaults to false, so a run that compiles for 30 minutes and then
+          # dies in bundling, signing, notarization or upload throws that whole
+          # compile away, and the retry starts cold again - paying twice for one
+          # release. The compile is the expensive half and it SUCCEEDED; a later
+          # step failing says nothing about the artifacts it produced. A partial
+          # `target/` is not a hazard either: cargo fingerprints it correctly,
+          # which is the same property every incremental build already relies on.
+          cache-on-failure: true
+
+      # A COLD BUILD MUST NOT BE SILENT. This is the release pipeline's oldest
+      # and most expensive failure mode, and it has never once announced itself.
+      #
+      # The shape every time: the cache key drifts or the entry is evicted,
+      # `No cache found.` is written into a COLLAPSED log group, the build takes
+      # 20-30 extra minutes, and every check goes green with correct binaries at
+      # the end. It has only ever been caught by someone happening to watch the
+      # clock - most recently 2026-08-27, when the Windows job compiled for 36
+      # minutes while the cache it wanted sat unread on `main` (see the
+      # `runs-on` note in the windows job). The same silence let cache-warm.yml
+      # write an unreadable key for this pipeline's entire history.
+      #
+      # Deliberately an `::error::` ANNOTATION that does NOT fail the step. The
+      # asymmetry matters: a cache miss must never block shipping a release -
+      # the build is slow, not wrong, and failing here would turn a GitHub image
+      # roll into a release outage. But it must be impossible to overlook, so it
+      # lands as a red annotation on the run page and as a section in
+      # `$GITHUB_STEP_SUMMARY`, both of which sit ABOVE the logs rather than
+      # inside a collapsed group.
+      #
+      # The env dump is the other half, and it is what makes the NEXT occurrence
+      # cheap. rust-cache hashes the NAMES AND VALUES of every
+      # CARGO_*/CC*/CFLAGS/CXX/CMAKE*/RUST* variable into the key component that
+      # drifts, and nothing has ever recorded what those were on a run that
+      # missed - so each time the cause has to be re-derived from the cache API
+      # and guesswork. Printing them on a miss turns that into a diff between
+      # two runs. Values that look like credentials are dropped rather than
+      # printed; none of the hashed prefixes should carry one, and a build log
+      # is not the place to find out otherwise.
+      - name: Report the rust-cache outcome
+        run: |
+          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "rust-cache: HIT - this build starts warm."
+            exit 0
+          fi
+          msg="rust-cache MISSED on ${{ runner.os }}: this build compiles from scratch (~35 min on Windows, ~20 min on macOS). The key drifted or the entry was evicted - compare the environment below against a run that hit."
+          echo "::error title=Cold Rust build (${{ runner.os }})::${msg}"
+          {
+            echo "### rust-cache miss - ${{ runner.os }}"
+            echo
+            echo "${msg}"
+            echo
+            echo "<details><summary>Cache-key environment (rust-cache hashes these names and values)</summary>"
+            echo
+            echo '```'
+            env \
+              | grep -E '^(CARGO|CC|CFLAGS|CXX|CMAKE|RUST)' \
+              | grep -viE '(TOKEN|SECRET|PASSWORD|CREDENTIAL|_KEY)' \
+              | sort || true
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-node@v7
         with:
