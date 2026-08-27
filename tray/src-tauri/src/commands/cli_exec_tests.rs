@@ -121,6 +121,55 @@ fn a_non_zero_exit_keeps_subprocess_stderr_out_of_the_message_body() {
     );
 }
 
+/// `provider` SHIPS, so an unrecognised value must not reach the wire verbatim.
+/// It arrives here from the frontend as a plain `String` with nothing
+/// validating it - see `provider_label`.
+#[test]
+fn an_unrecognised_provider_is_narrowed_before_it_ships() {
+    fn shipped_provider(p: &str) -> String {
+        let events = capture(|| {
+            log_non_zero_exit(NonZeroExit {
+                label: "ticket-update",
+                bin: None,
+                provider: Some(p),
+                key: None,
+                code: Some(1),
+                stderr: "boom",
+            })
+        });
+        events[0]
+            .fields
+            .iter()
+            .find(|(k, _)| k == "provider")
+            .map(|(_, v)| v.clone())
+            .expect("provider field missing")
+    }
+
+    let shipped = shipped_provider("acme-internal-tracker-prod");
+    assert!(
+        !shipped.contains("acme-internal-tracker-prod"),
+        "an unvalidated provider name reached an ALLOWLISTED field: {shipped}"
+    );
+    assert!(shipped.contains("other"), "{shipped}");
+
+    // …while every real tracker still reports itself.
+    for p in [
+        "jira",
+        "linear",
+        "github",
+        "azure_devops",
+        "asana",
+        "trello",
+    ] {
+        let shipped = shipped_provider(p);
+        assert!(
+            shipped.contains(p),
+            "`{p}` was narrowed away - provider_label has drifted from \
+             meridian_core::canonical_task::Provider::as_str: {shipped}"
+        );
+    }
+}
+
 /// `stderr_tail` must stay OFF `redact::SAFE_STRING_KEYS`, or moving the
 /// stderr out of the body accomplishes nothing - it would ship under its new
 /// name instead. Pinning it here rather than trusting the reader to

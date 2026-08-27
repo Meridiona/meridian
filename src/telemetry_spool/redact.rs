@@ -125,9 +125,19 @@ const SAFE_STRING_KEYS: &[&str] = &[
     // output, so it needs the full scrub, not just a path scrub.
     "error",
     // Which provider/engine a failure came from. Enum-like values from a fixed
-    // internal set (`claude`, `codex`, `anthropic`, `gemini`, …) — they name
-    // OUR components, never the user's data, and without them an LLM or
-    // summariser failure can't be attributed to a backend at all.
+    // internal set — they name OUR components, never the user's data, and
+    // without them an LLM or summariser failure can't be attributed to a
+    // backend at all.
+    //
+    // TWO value domains share this key, and the second is easy to miss: LLM
+    // engines (`claude`, `codex`, `anthropic`, `gemini`, …) AND task trackers
+    // (`jira`, `linear`, `github`, `azure_devops`, `asana`, `trello`), from the
+    // tray's `ticket-parents`/`ticket-update` shell-outs. That second domain
+    // reaches the tray as a plain `String` from the frontend, so
+    // `commands::cli_exec::provider_label` narrows it to those literals or
+    // `"other"` before it is logged. An allowlist entry whose comment does not
+    // describe all of its emitters is the exact shape of #872 - do not add a
+    // third domain here without naming it.
     "provider",
     "engine",
     // ── health checks (`crate::health::Report::log`) ─────────────────────────

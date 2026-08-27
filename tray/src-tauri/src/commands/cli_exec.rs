@@ -170,6 +170,33 @@ pub(crate) struct NonZeroExit<'a> {
 /// from every shipped record. An `IntValue` is kept unconditionally for any key
 /// ([`meridian::telemetry_spool::redact`]'s first `keep_attribute` arm), so this
 /// change also *restores* a diagnostic the previous form silently lost.
+/// Map a tracker name onto a fixed set of literals, or `"other"`.
+///
+/// `provider` is on `redact::SAFE_STRING_KEYS` and therefore SHIPS, justified
+/// there as "enum-like values from a fixed internal set". At this call site the
+/// value arrives from the frontend as a plain `String` (`get_ticket_parents`'s
+/// and `apply_ticket_fix`'s parameters) and nothing between there and here
+/// validates it - so the allowlist's premise would have rested on the frontend
+/// behaving, which is not a property anyone can audit. Normalising here makes it
+/// structurally true instead, the same way `install::bin_source` can only ever
+/// return one of five literals.
+///
+/// Mirrors `meridian_core::canonical_task::Provider::as_str`. A name that falls
+/// through to `"other"` still says a tracker call failed, which is the whole
+/// diagnostic value; it just cannot smuggle a typed string onto the wire.
+fn provider_label(p: &str) -> &'static str {
+    match p {
+        "jira" => "jira",
+        "linear" => "linear",
+        "github" => "github",
+        "azure_devops" => "azure_devops",
+        "asana" => "asana",
+        "trello" => "trello",
+        "" => "",
+        _ => "other",
+    }
+}
+
 pub(crate) fn log_non_zero_exit(ctx: NonZeroExit<'_>) {
     let NonZeroExit {
         label,
@@ -182,7 +209,7 @@ pub(crate) fn log_non_zero_exit(ctx: NonZeroExit<'_>) {
     tracing::warn!(
         bin = bin.unwrap_or(""),
         bin_source = bin.map(crate::install::bin_source).unwrap_or(""),
-        provider = provider.unwrap_or(""),
+        provider = provider.map(provider_label).unwrap_or(""),
         key = key.unwrap_or(""),
         // `-1` for "signalled, no exit code" - `Option` would stringify.
         code = code.unwrap_or(-1) as i64,
