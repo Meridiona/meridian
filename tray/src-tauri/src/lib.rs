@@ -133,8 +133,14 @@ fn catch_setup_panic<T>(what: &str, f: impl FnOnce() -> T + std::panic::UnwindSa
                 .map(|s| s.to_string())
                 .or_else(|| payload.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "non-string panic payload".to_string());
+            // `panic_msg`, not `msg`: `errors.rs::no_user_data_interpolated_into_a_log_body`
+            // allows exactly three identifiers into a WARN+ body and this is one of
+            // them, named so the exemption is legible at the call site. A panic
+            // payload is our own `expect`/`panic!` text, not a subprocess's or a
+            // provider's output - the distinction that guard exists to force.
+            let panic_msg = msg;
             tracing::error!(
-                "tray setup panicked during {what}: {msg} — degrading to a disabled state instead of crashing the tray"
+                "tray setup panicked during {what}: {panic_msg} — degrading to a disabled state instead of crashing the tray"
             );
             None
         }
